@@ -25,7 +25,7 @@ async fn a_replaced_session_ends_as_superseded_unless_its_device_lost_the_room()
         let error = audit_subscriber_access(
             &fixture.recipient,
             &session,
-            &[fixture.store.workspace_id()],
+            &mut vec![fixture.store.workspace_id()],
         )
         .await
         .unwrap_err();

@@ -16,6 +16,7 @@
 //! opens again, and the workspace is never made again under its identity.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use tilo_peer_state::GovernedAccess;
 use tilo_relay_protocol::refusal::WORKSPACE_DELETED;
@@ -52,19 +53,32 @@ impl Workspaces {
             .ok_or("this host does not govern that room")?;
         let governed = governed.lock().await;
         let workspace_id = governed.workspace_id();
-        // Recorded first: a host stopped halfway finishes it when it opens.
+        // Recorded first: a host stopped halfway finishes when it opens.
+        // Written off the runtime's threads: a sync of a new file is disk
+        // latency, which every other request on this runtime would wait for.
         let marker = governed.path.with_extension(DELETED);
-        let file = std::fs::File::create(&marker).map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-        if let Some(dir) = marker.parent() {
-            std::fs::File::open(dir)
-                .and_then(|dir| dir.sync_all())
-                .map_err(|error| error.to_string())?;
-        }
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let file = std::fs::File::create(&marker).map_err(|error| error.to_string())?;
+            file.sync_all().map_err(|error| error.to_string())?;
+            if let Some(dir) = marker.parent() {
+                std::fs::File::open(dir)
+                    .and_then(|dir| dir.sync_all())
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| error.to_string())??;
         self.inner.workspaces.lock().await.remove(workspace);
+        self.inner.ids.forget(workspace_id);
+        // A workspace gone from here admits nobody at the handshake either.
+        self.inner.host.access.forget_workspace(workspace_id);
         self.inner.direct.delete(workspace_id);
         // Everyone in it hears why while their session is open, then nobody
-        // is let in.
+        // is let in. The workspace is already recorded as deleted, so a
+        // connection auditing its subscriptions drops this one instead of
+        // ending a session that serves other workspaces too — a backend
+        // reaches all its customers' workspaces on one session.
         let bound = self
             .inner
             .host
@@ -94,7 +108,7 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
         drop(governed);
-        self.forget_deleted(workspace, workspace_id);
+        self.forget_deleted(workspace, workspace_id).await;
         tracing::info!(%workspace, workspace_id = %workspace_id, "governed workspace deleted");
         let _ = self
             .inner
@@ -124,7 +138,7 @@ impl Workspaces {
     /// Forget everything this host keeps of `workspace` (`workspace_id`),
     /// deleted: who owns it and what it took, who it listed, and its files. Its
     /// door went with its governance.
-    fn forget_deleted(&self, workspace: &str, workspace_id: WorkspaceId) {
+    async fn forget_deleted(&self, workspace: &str, workspace_id: WorkspaceId) {
         if let Some(own) = self.own()
             && let Err(error) = own.forget(workspace)
         {
@@ -141,10 +155,24 @@ impl Workspaces {
             .unbuildable_windows
             .lock_recover()
             .remove(workspace);
-        if let Err(error) = self.inner.store.compact(workspace_id, u64::MAX) {
-            tracing::warn!(%workspace, %error, "a deleted workspace's history stays in the store");
+        // Its retained history and its files go off the runtime's threads:
+        // removing a workspace walks and unlinks directories, and the store's
+        // index is held only while its entry is dropped.
+        let (store, dir, workspace_owned) = (
+            Arc::clone(&self.inner.store),
+            self.inner.dir.clone(),
+            workspace.to_owned(),
+        );
+        let removed = tokio::task::spawn_blocking(move || {
+            if let Err(error) = store.forget(workspace_id) {
+                tracing::warn!(%workspace_owned, %error, "a deleted workspace's history stays in the store");
+            }
+            remove_files(&dir, &workspace_owned);
+        })
+        .await;
+        if let Err(error) = removed {
+            tracing::warn!(%workspace, %error, "a deleted workspace's files are not removed");
         }
-        remove_files(&self.inner.dir, workspace);
     }
 }
 

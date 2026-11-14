@@ -14,12 +14,18 @@ use tilo_relay_protocol::WorkspaceId;
 /// while no live watch covers the workspace, and ends the session if the
 /// device's own cert was revoked or it fell out of membership.
 ///
+/// A workspace its host deleted is not a lapsed subscription: the refusal
+/// that went with the deletion says so, the connection stops following it,
+/// and the session stays for the other workspaces the connection serves — a
+/// backend reaches hundreds of its customers' workspaces on one session, and
+/// deleting one of them must not take the rest away.
+///
 /// Returns whether every subscribed workspace's membership is change-notified,
 /// so the next audit can wait for a change instead of the disk.
 pub(super) async fn audit_subscriber_access(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-    subscribed: &[WorkspaceId],
+    subscribed: &mut Vec<WorkspaceId>,
 ) -> Result<bool, PeerError> {
     let mut watched = true;
     // Relay-wide first, so a revoked or untrusted device ends even with no
@@ -28,8 +34,19 @@ pub(super) async fn audit_subscriber_access(
         .trust()
         .cert(peer, unix_now_ns())
         .map_err(|reason| PeerError::Protocol(reason.reason().into()))?;
-    for workspace_id in subscribed {
-        let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
+    let mut gone = Vec::new();
+    for workspace_id in subscribed.iter().copied() {
+        if session
+            .admin
+            .is_some_and(|admin| admin.deleted(workspace_id))
+        {
+            gone.push(workspace_id);
+            continue;
+        }
+        let Some(workspace) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+            // Not served here any more (released to another host): the
+            // connection follows where it went, and keeps the rest.
+            gone.push(workspace_id);
             continue;
         };
         let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
@@ -52,6 +69,9 @@ pub(super) async fn audit_subscriber_access(
             }
             Decision::Deny(reason) => return Err(PeerError::Protocol(reason.reason().into())),
         }
+    }
+    if !gone.is_empty() {
+        subscribed.retain(|workspace| !gone.contains(workspace));
     }
     Ok(watched)
 }

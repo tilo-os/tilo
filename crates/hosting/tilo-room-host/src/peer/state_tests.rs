@@ -2234,3 +2234,29 @@ async fn access_requests_reach_every_member() {
         );
     }
 }
+
+/// A host deleting one of a connection's workspaces takes that workspace off
+/// the connection, not the connection: a backend reaches all its customers'
+/// workspaces on one session, so deleting one customer's workspace must leave
+/// the rest of the session serving.
+#[tokio::test]
+async fn a_deleted_workspace_leaves_the_session_its_other_workspaces() {
+    let fixture = Fixture::new();
+    let ctx = fixture.ctx(Side::Recipient, None, None, None);
+    let mut subscribed = vec![WS];
+    super::access::audit_subscriber_access(&fixture.recipient, &ctx, &mut subscribed)
+        .await
+        .expect("an admitted subscription passes the audit");
+    assert_eq!(subscribed, vec![WS], "a served workspace stays subscribed");
+
+    // The host deletes it: it leaves the registry before its subscribers are
+    // told, so the next audit finds it no longer served.
+    fixture.registry.lock().await.remove(&WS);
+    super::access::audit_subscriber_access(&fixture.recipient, &ctx, &mut subscribed)
+        .await
+        .expect("a deleted workspace does not end the session");
+    assert!(
+        subscribed.is_empty(),
+        "the deleted workspace's subscription went with it"
+    );
+}

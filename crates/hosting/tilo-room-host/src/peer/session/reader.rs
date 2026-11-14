@@ -359,8 +359,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 Ok(resume.map(EnvelopeV2::State))
             }
             () = crate::peer::access_audit::until(audit_due) => {
-                let watched = audit_subscriber_access(cx.peer, cx.session, self.subscribed).await?;
-                self.access_audit.audited(cx.peer, cx.session.agents, self.subscribed, watched);
+                let watched = audit_subscriber_access(cx.peer, cx.session, self.subscribed).await?;                self.access_audit.audited(cx.peer, cx.session.agents, self.subscribed, watched);
                 Ok(None)
             }
             // The epoch's sender is a process-wide static and never
