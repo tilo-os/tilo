@@ -14,7 +14,6 @@ use super::{
 pub(super) fn admit_agent_cert(admitted: &mut AdmittedJoinIdentity, cert: AgentCert) {
     admitted.role = roles::agent_policy::role(admitted.role, roles::agent_policy::ROLE_CAP);
     admitted.agent_id = Some(cert.agent_id.clone());
-    admitted.display_handle = Some(cert.agent_id.clone());
     admitted.session_delegated = true;
     admitted.agent_cert = Some(Box::new(cert));
 }
@@ -202,7 +201,6 @@ pub(super) fn admit_kept_agent(
     }
     admitted.role = roles::agent_policy::role(admitted.role, roles::agent_policy::ROLE_CAP);
     admitted.agent_id = Some(agent_id.to_string());
-    admitted.display_handle = Some(agent_id.to_string());
     admitted.session_delegated = true;
     Ok(())
 }

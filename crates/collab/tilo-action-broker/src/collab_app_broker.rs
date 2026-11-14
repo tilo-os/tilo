@@ -7384,15 +7384,11 @@ impl AppBrokerState {
                 members.push(row);
             }
         }
-        // The person is called what the workspace's member list calls them, as everyone else
-        // is, unless their session announced a name of its own; never by their key. An agent's
-        // row is named by the record of the workspace's agents.
+        // The person is called what the workspace's member list calls them, as everyone else is,
+        // unless their session announced a name of its own; never by their key.
         let mut me = mine.unwrap_or_else(|| {
             collab_types::Member::of_person(
-                &collab_types::Person::new(
-                    admitted.principal_id.clone(),
-                    admitted.agent_id.clone().unwrap_or_default(),
-                ),
+                &collab_types::Person::new(admitted.principal_id.clone(), String::new()),
                 None,
             )
         });
