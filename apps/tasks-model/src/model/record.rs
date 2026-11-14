@@ -3,11 +3,14 @@
 use tilo_document::RichText;
 use tilo_reference::ResourceAt;
 use tilo_resource::{
-    self, ActionCx, Collection, Counter, Id, Model, NonBlank, Refusal, Set, resource,
+    self, ActionCx, Bytes, Collection, Counter, Id, Model, NonBlank, Origin, Refusal, Set, resource,
 };
 
 use crate::model::goal::Area;
-use crate::model::issue::{Imported, Issue, Link, MAX_MESSAGE_CHARS, Message, Status};
+use crate::model::issue::{
+    Attachment, Imported, Issue, Link, MAX_ATTACHMENT_NAME_CHARS, MAX_ESTIMATE, MAX_MESSAGE_CHARS,
+    Message, NewIssue, Priority, Status, checked_assignee,
+};
 use crate::model::tracker_area::{Kind, Person, TrackerArea};
 
 /// A workspace's issues, the projects and areas above them, and who is
@@ -125,6 +128,13 @@ impl Tracker {
         u64::try_from(self.numbers.get()).unwrap_or_default()
     }
 
+    /// What an issue that works towards the project or area `area` names as
+    /// its goal; refused when the tracker has no such project.
+    fn goal_of(&self, area: &Id) -> Result<Area, Refusal> {
+        let named = self.areas.get(area).ok_or_else(Self::no_area)?;
+        Ok(crate::model::area_goal(area, &named.name))
+    }
+
     fn check_parent(&self, parent: Option<&Id>) -> Result<(), Refusal> {
         match parent {
             Some(parent) if !self.issues.contains(parent) => {
@@ -139,6 +149,13 @@ fn author(cx: &ActionCx) -> Result<String, Refusal> {
     cx.author()
         .map(str::to_owned)
         .ok_or_else(|| Refusal::new("Sign in to do this"))
+}
+
+fn check_estimate(estimate: Option<u32>) -> Result<(), Refusal> {
+    if estimate.is_some_and(|estimate| estimate > MAX_ESTIMATE) {
+        return Err(Refusal::new("An estimate is at most 1000 points"));
+    }
+    Ok(())
 }
 
 fn by_agent(cx: &ActionCx) -> bool {
@@ -182,34 +199,68 @@ impl Tracker {
 )]
 impl Tracker {
     /// Create an issue.
+    ///
+    /// An issue moved from another tracker keeps where it came from in
+    /// `origin`: its author and date there show as the issue's, and its
+    /// history still says who moved it.
     #[action(writes = issues, step = "create")]
     pub fn create(
         &mut self,
         cx: &mut ActionCx,
-        #[param("What the issue is about, in a line")] title: NonBlank,
-        #[param("The issue it is a sub-issue of")] parent: Option<Id>,
-        #[param("Its description, in markdown")] body: Option<String>,
-        #[param("Where it starts; Backlog without")] status: Option<Status>,
-        #[param("person:<id> or agent:<id>")] assignee: Option<String>,
-        #[param("The page it is read at elsewhere, when it was written from one")] url: Option<
-            String,
-        >,
+        #[param(flatten)] issue: NewIssue,
     ) -> Result<(), Refusal> {
+        let NewIssue {
+            title,
+            parent,
+            body,
+            status,
+            assignee,
+            url,
+            project,
+            priority,
+            estimate,
+            due_ms,
+            labels,
+            origin,
+        } = issue;
         self.check_parent(parent.as_ref())?;
+        let area = project
+            .as_ref()
+            .map(|project| self.goal_of(project))
+            .transpose()?;
+        check_estimate(estimate)?;
+        let origin = Origin::checked_option(origin)?;
+        let assignee = checked_assignee(assignee)?;
         let author = author(cx)?;
+        let author_name = tilo_resource::acting_name(cx);
         let number = self.next_number();
+        let mut kept_labels = tilo_resource::Set::new();
+        for label in labels.unwrap_or_default() {
+            let label = label.trim();
+            if !label.is_empty() {
+                kept_labels.insert(label.to_owned());
+            }
+        }
         let issue = Issue {
             number,
             title: title.into_string(),
             body: RichText::from_markdown(body.unwrap_or_default()),
             status: status.unwrap_or_default(),
-            assignee: assignee.map(tilo_resource::Atom),
+            assignee,
             url: url
                 .map(|url| url.trim().to_owned())
-                .filter(|url| !url.is_empty()),
+                .filter(|url| !url.is_empty())
+                .or_else(|| origin.as_ref().and_then(|origin| origin.url.clone())),
             parent,
             author,
+            author_name,
             created_ms: cx.now_ms(),
+            area,
+            priority: priority.and_then(Priority::level),
+            estimate,
+            due_ms,
+            labels: kept_labels,
+            origin,
             ..Issue::default()
         };
         let id = cx.id();
@@ -325,17 +376,104 @@ impl Tracker {
         Ok(())
     }
 
-    /// Assign an issue to a person or an agent, or to nobody.
+    /// Assign an issue to a person or an agent, to someone not in the
+    /// workspace yet by their name, or to nobody.
     #[action(item = issues, step = "edit", writes = issues)]
     pub fn assign(
         &mut self,
         issue: &Id,
-        #[param("person:<id> or agent:<id>; nobody without")] assignee: Option<String>,
+        #[param(
+            "person:<id>, agent:<id>, or outside:<name> for someone not in the workspace yet; nobody without"
+        )]
+        assignee: Option<String>,
     ) -> Result<(), Refusal> {
-        self.issue_mut(issue)?.assignee = assignee
-            .map(|assignee| assignee.trim().to_owned())
-            .filter(|assignee| !assignee.is_empty())
-            .map(tilo_resource::Atom);
+        let assignee = checked_assignee(assignee)?;
+        self.issue_mut(issue)?.assignee = assignee;
+        Ok(())
+    }
+
+    /// Move an issue into a project or an area, or out of every one.
+    ///
+    /// # Errors
+    /// Refuses a project the tracker does not have.
+    #[action(item = issues, step = "move", writes = issues)]
+    pub fn set_project(
+        &mut self,
+        issue: &Id,
+        #[param("The project or area it works towards, by its id; none without")] project: Option<
+            Id,
+        >,
+    ) -> Result<(), Refusal> {
+        let area = project
+            .as_ref()
+            .map(|project| self.goal_of(project))
+            .transpose()?;
+        self.issue_mut(issue)?.area = area;
+        Ok(())
+    }
+
+    /// Delete a project or an area. Its issues stay, working towards no
+    /// project.
+    #[action(item = areas, step = "delete", destructive, writes = areas, writes = issues)]
+    pub fn delete_area(&mut self, area: &Id) -> Result<(), Refusal> {
+        self.areas.remove(area).ok_or_else(Self::no_area)?;
+        let holding: Vec<Id> = self.in_area(area).map(|(id, _)| id.clone()).collect();
+        for issue in holding {
+            if let Some(issue) = self.issues.get_mut(&issue) {
+                issue.area = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Attach a file to an issue: its bytes, or the content reference a put
+    /// answered.
+    ///
+    /// # Errors
+    /// Refuses an empty file or a name too long.
+    #[action(item = issues, step = "create", writes = issues)]
+    pub fn attach(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("Its file name")] name: NonBlank,
+        #[param("Its bytes, inline or as a content reference (blake3:<hex>:<len>)")] bytes: Bytes,
+        #[param("Its media type, such as image/png")] media_type: Option<String>,
+    ) -> Result<(), Refusal> {
+        if bytes == Bytes::default() {
+            return Err(Refusal::new("An attachment has content"));
+        }
+        let name = name.into_string();
+        if name.chars().count() > MAX_ATTACHMENT_NAME_CHARS {
+            return Err(Refusal::new("An attachment's name fits on a line"));
+        }
+        let author = author(cx)?;
+        let author_name = tilo_resource::acting_name(cx);
+        let at_ms = cx.now_ms();
+        let id = cx.id();
+        self.issue_mut(issue)?.attachments.push(
+            id,
+            Attachment {
+                name,
+                media_type: media_type
+                    .map(|media_type| media_type.trim().to_owned())
+                    .filter(|media_type| !media_type.is_empty()),
+                bytes,
+                author,
+                author_name,
+                at_ms,
+            },
+        );
+        Ok(())
+    }
+
+    /// Take a file off an issue.
+    #[action(item = issues, step = "delete", writes = issues)]
+    pub fn detach(&mut self, issue: &Id, attachment: &Id) -> Result<(), Refusal> {
+        self.issue_mut(issue)?
+            .attachments
+            .remove(attachment)
+            .ok_or_else(|| Refusal::new("That file is not attached"))?;
         Ok(())
     }
 
@@ -373,16 +511,23 @@ impl Tracker {
         Ok(())
     }
 
-    /// Comment on an issue.
+    /// Comment on an issue. A comment moved from another tracker keeps
+    /// where it came from in `origin`.
     #[action(item = issues, field = "comments", step = "write", writes = issues)]
     pub fn comment(
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        text: NonBlank,
+        #[param("What it says, in markdown")] text: NonBlank,
+        #[param(
+            "Where it was first written, when it is moved here from elsewhere: shown as its author and date, while its history keeps who moved it"
+        )]
+        origin: Option<Origin>,
     ) -> Result<(), Refusal> {
         let text = message_text(text)?;
+        let origin = Origin::checked_option(origin)?;
         let author = author(cx)?;
+        let author_name = tilo_resource::acting_name(cx);
         let agent = by_agent(cx);
         let at_ms = cx.now_ms();
         let target = self.issue_mut(issue)?;
@@ -391,9 +536,11 @@ impl Tracker {
             cx,
             Message {
                 author,
+                author_name,
                 by_agent: agent,
                 at_ms,
                 text,
+                origin,
                 ..Message::default()
             },
         );
@@ -473,20 +620,22 @@ impl Tracker {
         Ok(())
     }
 
-    /// Plan the issue: the goal it works towards, how urgent it is and when
-    /// it is wanted. Each argument is optional, and the one given is the one
-    /// written; the others stay as they were.
+    /// Plan the issue: the goal it works towards, how urgent it is, how much
+    /// work it is and when it is wanted. Each argument is optional, and the
+    /// one given is the one written; the others stay as they were.
     ///
     /// # Errors
-    /// Refuses a goal that is not a resource, or an urgency outside 1 to 4.
+    /// Refuses a goal that is not a resource, or an estimate over 1000.
     #[action(item = issues, step = "edit", audience = "people", writes = issues)]
     pub fn plan(
         &mut self,
         issue: &Id,
         #[param("The resource it works towards: resource, app, kind and label")] area: Option<Area>,
-        #[param("How urgent it is, 1 (most urgent) to 4")] priority: Option<u8>,
+        #[param("How urgent it is: none, urgent, high, medium or low")] priority: Option<Priority>,
+        #[param("How much work it is, in points")] estimate: Option<u32>,
         #[param("When it is wanted, in milliseconds since the epoch")] due_ms: Option<i64>,
     ) -> Result<(), Refusal> {
+        check_estimate(estimate)?;
         let target = self.issue_mut(issue)?;
         if let Some(area) = area {
             if !area.names_a_resource() {
@@ -495,10 +644,10 @@ impl Tracker {
             target.area = Some(area);
         }
         if let Some(priority) = priority {
-            if !(1..=4).contains(&priority) {
-                return Err(Refusal::new("A priority is 1 (most urgent) to 4"));
-            }
-            target.priority = Some(priority);
+            target.priority = priority.level();
+        }
+        if let Some(estimate) = estimate {
+            target.estimate = Some(estimate);
         }
         if let Some(due_ms) = due_ms {
             target.due_ms = Some(due_ms);

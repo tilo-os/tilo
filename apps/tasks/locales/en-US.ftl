@@ -76,7 +76,16 @@ tasks-link-note = Link a note
 tasks-link-note-scope = This issue
 tasks-notebook = Notebook
 tasks-fact-goal = Goal: { $goal }
-tasks-fact-priority = Priority { $priority }
+tasks-fact-priority = Priority: { $priority }
+tasks-fact-estimate = Estimate: { $points } points
+tasks-fact-attachment = Attached: { $name }
+# Who wrote the issue and when: "Jane Doe in Jira, 3 Mar 2025" or "Ada, 3 Mar 2025".
+tasks-fact-written = By { $byline }
+tasks-priority-none = None
+tasks-priority-urgent = Urgent
+tasks-priority-high = High
+tasks-priority-medium = Medium
+tasks-priority-low = Low
 tasks-fact-due = Due { $date }
 
 

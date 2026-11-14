@@ -76,7 +76,16 @@ tasks-link-note = Notiz verknüpfen
 tasks-link-note-scope = Diese Aufgabe
 tasks-notebook = Notizbuch
 tasks-fact-goal = Ziel: { $goal }
-tasks-fact-priority = Priorität { $priority }
+tasks-fact-priority = Priorität: { $priority }
+tasks-fact-estimate = Schätzung: { $points } Punkte
+tasks-fact-attachment = Angehängt: { $name }
+# Wer die Aufgabe geschrieben hat und wann.
+tasks-fact-written = Von { $byline }
+tasks-priority-none = Keine
+tasks-priority-urgent = Dringend
+tasks-priority-high = Hoch
+tasks-priority-medium = Mittel
+tasks-priority-low = Niedrig
 tasks-fact-due = Fällig { $date }
 
 

@@ -100,13 +100,19 @@ pub(crate) fn tracker(person: &str) -> Tracker {
         replica = replica.as_author(person);
         replica.set_now_ms(at);
         if replica
-            .apply(Tracker::CREATE.with(tracker::Create {
+            .apply(Tracker::CREATE.with(crate::model::NewIssue {
                 title,
                 parent: None,
                 body: Some(format!("## Why\n\n{} before the launch.", issue.title)),
                 status: Some(issue.status),
                 assignee,
                 url: None,
+                project: None,
+                priority: None,
+                estimate: None,
+                due_ms: None,
+                labels: None,
+                origin: None,
             }))
             .is_err()
         {
@@ -128,6 +134,7 @@ pub(crate) fn tracker(person: &str) -> Tracker {
                 .apply(Tracker::COMMENT.with(tracker::Comment {
                     issue: id.clone(),
                     text,
+                    origin: None,
                 }))
                 .ok();
         }

@@ -120,9 +120,7 @@ pub(crate) fn apply(
         let status = serde_json::from_value::<Status>(entry["status"].clone()).ok();
         replica
             .apply_confirmed(
-                Tracker::CREATE.with(tracker::Create {
-                    title,
-                    parent: None,
+                Tracker::CREATE.with(crate::model::NewIssue {
                     body: Some(described(entry)),
                     status,
                     assignee: entry
@@ -130,6 +128,7 @@ pub(crate) fn apply(
                         .and_then(Value::as_str)
                         .map(str::to_owned),
                     url: Some(text(entry, "url").to_owned()),
+                    ..crate::model::NewIssue::titled(title)
                 }),
             )
             .map_err(|error| error.to_string())?;
@@ -175,6 +174,7 @@ fn fill(
                 .apply_confirmed(Tracker::COMMENT.with(tracker::Comment {
                     issue: issue.clone(),
                     text: said,
+                    origin: None,
                 }))
                 .map_err(|error| error.to_string())?;
         }

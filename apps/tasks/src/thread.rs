@@ -26,7 +26,14 @@ struct Row {
 impl Row {
     fn of(issue: &Issue, people: &ui::framework::People) -> Option<Self> {
         let (_, last) = issue.comments.iter().last()?;
-        let speaker = people.actor(&last.author).name;
+        let speaker = people
+            .byline(
+                &last.author,
+                &last.author_name,
+                last.at_ms,
+                last.origin.as_ref(),
+            )
+            .name;
         Some(Self {
             number: issue.number,
             title: format!("{}  {}", reference(issue.number), issue.title),

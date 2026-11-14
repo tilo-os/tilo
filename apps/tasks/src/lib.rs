@@ -310,13 +310,19 @@ pub(crate) fn new_issue(
     // blank, so the button is disabled and Enter does nothing until there is
     // a title.
     let create = Tracker::CREATE.try_map(move |title: String| {
-        Some(crate::model::tracker::Create {
+        Some(crate::model::NewIssue {
             title: ui::tilo_resource::NonBlank::parse(&title)?,
             parent: parent.clone(),
             body: None,
             status,
             assignee: None,
             url: None,
+            project: None,
+            priority: None,
+            estimate: None,
+            due_ms: None,
+            labels: None,
+            origin: None,
         })
     });
     let title = cx.actions().submit_draft(
