@@ -105,20 +105,41 @@ pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
     .filter(|badge| !badge.trim().is_empty())
 }
 
-/// The two names a folder row shows for a file's newest change: the person
-/// it is in the name of, and the agent that wrote for them when one did — so a
-/// row reads "Ada · Claude Code" wherever the folder is shown.
+/// An author as the separate fields a surface renders with its own elements:
+/// the person the change is in the name of, the key presence knows them by, the
+/// software that wrote for them when one did, and the computer whose session
+/// vouched for it. A row renders each with the widget it has for people and
+/// agents — never one line joined from names.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuthorParts {
+    /// The person the change is in the name of.
+    pub person: String,
+    /// That person's principal, as presence knows them.
+    pub person_identity: Option<String>,
+    /// The agent (or app, or program) that wrote for the person, when one did.
+    pub writer: Option<String>,
+    /// The computer whose session vouched for the writer, when one is known.
+    pub device: Option<String>,
+}
+
+/// [`AuthorParts`] for `author`: what a row shows, field by field.
 #[must_use]
-pub fn row_people(author: &HistoryAuthor) -> (String, Option<String>) {
-    let person = author
-        .attribution
-        .as_ref()
+pub fn author_parts(author: &HistoryAuthor) -> AuthorParts {
+    let attribution = author.attribution.as_ref();
+    let person = attribution
         .and_then(|attribution| attribution.on_behalf_of_name.clone())
         .unwrap_or_else(|| author.name.clone());
-    let agent = writer_badge(author)
+    let person_identity = attribution
+        .and_then(|attribution| attribution.acting.acted_for_person().map(str::to_owned));
+    let writer = writer_badge(author)
         .or_else(|| (author.relation == AuthorRelation::Software).then(|| author.name.clone()))
-        .filter(|agent| agent.trim() != person.trim());
-    (person, agent)
+        .filter(|writer| writer.trim() != person.trim());
+    AuthorParts {
+        person,
+        person_identity,
+        writer,
+        device: attribution.and_then(|attribution| attribution.device.clone()),
+    }
 }
 
 /// The hover that names what wrote an attributed change, field by field:
@@ -126,7 +147,24 @@ pub fn row_people(author: &HistoryAuthor) -> (String, Option<String>) {
 /// `None` for a change with no recorded writer, whose row names a person.
 pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     let attribution = author.attribution.as_ref()?;
-    let writer = attribution.writer.as_ref()?;
+    let Some(writer) = attribution.writer.as_ref() else {
+        // An agent's own device signed the change: the agent, the computer and
+        // the folder, as its own fields.
+        if author.relation != AuthorRelation::Software {
+            return None;
+        }
+        let mut parts = vec![
+            crate::i18n::widget_format("history-writer-agent", &[]),
+            author.name.clone(),
+        ];
+        if let Some(device) = attribution.device.as_deref()
+            && !parts.iter().any(|part| part == device)
+        {
+            parts.push(device.to_owned());
+        }
+        parts.extend(attribution.folder.clone());
+        return Some(parts.join(" · "));
+    };
     let label = attribution.writer_label.as_deref().unwrap_or_default();
     let mut parts = Vec::with_capacity(5);
     match writer {

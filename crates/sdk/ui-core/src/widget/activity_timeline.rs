@@ -1149,8 +1149,10 @@ impl ActivityTimeline {
         if self.filters_people {
             entry.author.name.clone()
         } else {
-            crate::history_source::sentence::attribution_hover(&entry.author)
-                .unwrap_or_else(|| crate::history_source::sentence::author_line(&entry.author))
+            // The person the change is in the name of, and what wrote beside
+            // it as its own chip: a row never reads "X for Y", which is not a
+            // person's or an agent's name.
+            crate::history_source::sentence::author_parts(&entry.author).person
         }
     }
 
@@ -1161,7 +1163,12 @@ impl ActivityTimeline {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) -> Option<(String, f64)> {
-        let label = crate::history_source::sentence::writer_badge(&entry.author)?;
+        // An agent's own device writes under the agent's name; an attributed
+        // session names its tool. Either way the chip is the software's own.
+        let label = crate::history_source::sentence::writer_badge(&entry.author).or_else(|| {
+            (entry.author.relation == crate::widget::history::AuthorRelation::Software)
+                .then(|| entry.author.name.clone())
+        })?;
         let width = crate::widget::ChipFace::intrinsic_width(
             &label,
             crate::widget::ChipLead::None,

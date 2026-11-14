@@ -787,10 +787,10 @@ mod folder_rows_tests {
         let rows = folder_rows(&doc, &authors(), 100);
         assert_eq!(rows.len(), 1, "one row for the one session's run");
         assert_eq!(rows[0].summary, "Edited · terms.txt");
-        assert_eq!(
-            ui::row_people(&rows[0].author),
-            ("Ada".to_owned(), Some("Claude Code".to_owned()))
-        );
+        let parts = ui::author_parts(&rows[0].author);
+        assert_eq!(parts.person, "Ada");
+        assert_eq!(parts.writer.as_deref(), Some("Claude Code"));
+        assert_eq!(parts.device.as_deref(), Some("Ada's laptop"));
         assert_eq!(
             ui::attribution_hover(&rows[0].author).as_deref(),
             Some("External agent · Claude Code · Ada's laptop · /")

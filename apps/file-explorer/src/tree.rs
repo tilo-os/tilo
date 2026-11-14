@@ -295,17 +295,42 @@ impl TreeBrowser {
             row = row.mark(Icon::Folder);
         }
         if let Some(author) = self.author_of(node) {
-            // The person, and the agent when one wrote for them: what a
-            // computer's Files says of the same change.
-            let (person, agent) = ui::row_people(&author);
-            let meta = agent.map_or_else(|| person.clone(), |agent| format!("{person} · {agent}"));
-            row = row.meta(meta);
+            // The author as its own element: a person wears their avatar, an
+            // agent wears the agent mark and its own colour with its name
+            // beside it, and the hover names what wrote, its session, the
+            // computer and the folder. Never one line joined from names.
+            let parts = ui::author_parts(&author);
+            let identity = parts
+                .person_identity
+                .clone()
+                .unwrap_or_else(|| parts.person.clone());
+            let (shown, agent, hue) = match &parts.writer {
+                Some(writer) => (
+                    writer.clone(),
+                    true,
+                    ui::tokens::PresenceHue::of_agent(writer),
+                ),
+                None => (
+                    parts.person.clone(),
+                    false,
+                    ui::tokens::PresenceHue::of_identity(&identity),
+                ),
+            };
+            row = row.avatar(shown.clone(), identity).avatar_hue(hue);
+            if agent {
+                row = row.agent_face();
+            }
+            row = row.meta(shown);
+            if agent {
+                // For a reader who cannot see the mark: whose change it is.
+                row = row.description(parts.person);
+            }
             if let Some(hover) = ui::attribution_hover(&author) {
                 row = row.tooltip(hover);
             }
         } else if let Some(author) = node.author.as_deref() {
-            // A tree that records no version here yet: the device that wrote
-            // it, when the workspace names that device.
+            // A tree that records no version here yet: the person or device
+            // the workspace names, as a name alone.
             row = row.meta(self.people.name(author));
         }
         if is_folder {
