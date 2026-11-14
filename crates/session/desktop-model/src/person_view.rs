@@ -1,5 +1,6 @@
 //! What one person sees of a workspace's layout: the strip and the group in front, the tab in
-//! front of each group, how wide each window is and which ones are as large as their display.
+//! front of each group, how wide each window is and which ones are as large as their display, and
+//! the windows of their own ([`crate::personal`]) the workspace's layout never holds.
 //!
 //! It is the person's, not the workspace's and not a device's: it is kept in the workspace, so
 //! every device of theirs shows the layout the way they left it, and the people they work with
@@ -13,6 +14,7 @@ use automerge::{AutoCommit, ObjId, ROOT, ReadDoc as _, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
+use crate::layout::{Tab, TileContent, WindowGroup};
 use crate::serde_ids::deserialize_id_btree_map;
 use crate::tree::Layout;
 use crate::width::WindowWidth;
@@ -36,6 +38,21 @@ const FRONT_GROUP: &str = "front_group";
 const FRONT_TAB: &str = "front_tab";
 const WIDTHS: &str = "widths";
 const MAXIMIZED: &str = "maximized";
+const OWN: &str = "own";
+
+/// Where a window of the person's own stands on the layout, and what opens it again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnWindow {
+    pub strip: StripId,
+    /// The group it is a tab of.
+    pub group: GroupId,
+    /// The group before that one in the strip, when the window's group is its own: it goes back
+    /// after it, or first in the strip when there is none.
+    pub after: Option<GroupId>,
+    pub title: String,
+    /// The window in the form that opens it again ([`Tab::relaunchable`]).
+    pub tile: TileContent,
+}
 
 /// What one person sees of one workspace's layout.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +84,13 @@ pub struct PersonView {
     /// The groups made as large as their display.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub maximized: BTreeSet<GroupId>,
+    /// The person's own windows, by tab.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_id_btree_map"
+    )]
+    pub own: BTreeMap<TabId, OwnWindow>,
 }
 
 impl PersonView {
@@ -84,15 +108,90 @@ impl PersonView {
             if let Some(group) = tree.active_group.get(&strip.id) {
                 view.front_group.insert(strip.id, *group);
             }
+            let mut after = None;
             for group in &strip.window_groups {
                 view.front_tab.insert(group.id, group.active_tab);
                 view.widths.insert(group.id, group.width);
                 if group.maximized {
                     view.maximized.insert(group.id);
                 }
+                for tab in group.tabs.iter().filter(|tab| tab.is_personal()) {
+                    let tab = tab.relaunchable();
+                    view.own.insert(
+                        tab.id,
+                        OwnWindow {
+                            strip: strip.id,
+                            group: group.id,
+                            after,
+                            title: tab.title,
+                            tile: tab.tile,
+                        },
+                    );
+                }
+                after = Some(group.id);
             }
         }
         view
+    }
+
+    /// Put the person's own windows the view keeps and the workspace `workspace` of `tree` does not
+    /// show back where they stood. One whose strip is gone went with it. Whether any came back.
+    fn own_placed(&self, workspace: &mut crate::Workspace) -> bool {
+        let mut placed = false;
+        for (id, own) in &self.own {
+            if workspace.tabs().any(|tab| tab.id == *id) {
+                continue;
+            }
+            let Some(strip) = workspace
+                .strips
+                .iter_mut()
+                .find(|strip| strip.id == own.strip)
+            else {
+                continue;
+            };
+            let tab = Tab {
+                id: *id,
+                title: own.title.clone(),
+                tile: own.tile.clone(),
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            };
+            if let Some(group) = strip
+                .window_groups
+                .iter_mut()
+                .find(|group| group.id == own.group)
+            {
+                group.tabs.push(tab);
+            } else {
+                let at = own
+                    .after
+                    .and_then(|after| {
+                        strip
+                            .window_groups
+                            .iter()
+                            .position(|group| group.id == after)
+                    })
+                    .map_or(0, |before| before.saturating_add(1));
+                strip.window_groups.insert(
+                    at,
+                    WindowGroup {
+                        id: own.group,
+                        tabs: vec![tab],
+                        active_tab: *id,
+                        width: self
+                            .widths
+                            .get(&own.group)
+                            .copied()
+                            .unwrap_or(WindowWidth::Normal),
+                        maximized: false,
+                        focus_history: Vec::new(),
+                    },
+                );
+            }
+            placed = true;
+        }
+        placed
     }
 
     /// Show the workspace `id` of `tree` as this view says. A strip, a group or a tab the view names and the
@@ -102,6 +201,7 @@ impl PersonView {
         let Some(workspace) = tree.workspaces.iter_mut().find(|held| held.id() == id) else {
             return false;
         };
+        changed |= self.own_placed(workspace);
         if let Some(strip) = self.front_strip
             && workspace.strips.iter().any(|held| held.id == strip)
             && tree.active_strip.get(&id) != Some(&strip)
@@ -173,6 +273,12 @@ impl PersonView {
             front_tab: each(&self.front_tab, &here.front_tab, &written.front_tab),
             widths: each(&self.widths, &here.widths, &written.widths),
             maximized,
+            own: {
+                // A window closed here is gone, whatever the record still says of it.
+                let mut own = each(&self.own, &here.own, &written.own);
+                own.retain(|tab, _| here.own.contains_key(tab) || !written.own.contains_key(tab));
+                own
+            },
         }
     }
 
@@ -185,6 +291,7 @@ impl PersonView {
             front_tab: field(doc, FRONT_TAB).unwrap_or_default(),
             widths: field(doc, WIDTHS).unwrap_or_default(),
             maximized: field(doc, MAXIMIZED).unwrap_or_default(),
+            own: field(doc, OWN).unwrap_or_default(),
         }
     }
 
@@ -200,6 +307,7 @@ impl PersonView {
             (FRONT_TAB, serde_json::to_value(&self.front_tab)),
             (WIDTHS, serde_json::to_value(&self.widths)),
             (MAXIMIZED, serde_json::to_value(&self.maximized)),
+            (OWN, serde_json::to_value(&self.own)),
         ] {
             let value = value.unwrap_or(serde_json::Value::Null);
             tilo_automerge::json::write(doc, &ObjId::Root, key, &value).map_err(
@@ -313,6 +421,7 @@ mod tests {
                 front_tab: BTreeMap::from([(21, 32)]),
                 widths: BTreeMap::from([(21, WindowWidth::Fraction(700))]),
                 maximized: BTreeSet::from([23]),
+                own: BTreeMap::new(),
             };
             assert!(her_view.applied(&mut hers, WorkspaceId::from_u128(1)));
             let his_view = PersonView {
@@ -390,6 +499,65 @@ mod tests {
             assert_eq!(tree.active_strip.get(&WorkspaceId::from_u128(1)), None);
             assert_eq!(PersonView::of(&tree, WorkspaceId::from_u128(1)).front_tab.len(), 3);
         }
+    }
+
+    /// The person's own Settings window is never on the workspace's layout: the view keeps where
+    /// it stood, so it comes back there on every device of theirs, and once it is closed it stays
+    /// closed.
+    #[test]
+    fn the_persons_own_window_comes_back_where_it_stood_until_it_is_closed() {
+        let mut tree = Layout {
+            workspaces: vec![workspace()],
+            ..Layout::default()
+        };
+        let settings = Tab {
+            id: 35,
+            title: "Settings".into(),
+            tile: TileContent::Foreign {
+                app_id: "so.tilo.settings".into(),
+                surface_id: 9,
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        };
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .insert(1, group(24, vec![settings]));
+        let here = PersonView::of(&tree, WorkspaceId::from_u128(1));
+        let mut doc = AutoCommit::new();
+        here.write(&mut doc).expect("the view is written");
+        let kept = PersonView::read(&AutoCommit::load(&doc.save()).expect("the view's record"));
+        assert_eq!(kept, here);
+
+        let mut restarted = layout();
+        assert!(kept.applied(&mut restarted, WorkspaceId::from_u128(1)));
+        let groups: Vec<u64> = restarted.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|group| group.id)
+            .collect();
+        assert_eq!(
+            groups,
+            [21, 24, 22],
+            "back between the windows it stood between"
+        );
+        let back = &restarted.workspaces[0].strips[0].window_groups[1].tabs[0];
+        assert_eq!(back.id, 35);
+        assert!(
+            matches!(&back.tile, TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.settings"),
+            "as the app that opens it again"
+        );
+        assert!(
+            !kept.applied(&mut restarted, WorkspaceId::from_u128(1)),
+            "a window already back is not placed twice"
+        );
+
+        let closed = PersonView::of(&layout(), WorkspaceId::from_u128(1));
+        assert!(
+            kept.over(&closed, &here).own.is_empty(),
+            "a window closed here does not come back"
+        );
     }
 
     /// A view reads back as it was written, the groups made as large as their display with it.

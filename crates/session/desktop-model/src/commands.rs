@@ -29,8 +29,6 @@ pub use policy::{Refusal, Standing, may_command, may_create_workspace};
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";
 pub const ACTION: &str = "command";
-/// Action id of the per-application open action.
-pub const OPEN_APP_ACTION: &str = "open";
 
 /// The desktop's layout actions on this device's broker, on [`RESOURCE`]:
 /// what an agent opens and arranges windows with, by id.

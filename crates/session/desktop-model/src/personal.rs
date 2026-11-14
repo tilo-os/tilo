@@ -52,13 +52,6 @@ pub fn personal_tabs(tree: &Layout) -> Vec<crate::TabId> {
         .collect()
 }
 
-/// `tree` without its personal windows: a group left empty goes with them.
-pub fn leave_out_of_tree(tree: &mut Layout) {
-    for tab in personal_tabs(tree) {
-        tree.remove_tab(tab);
-    }
-}
-
 /// `desktop` as a workspace shares it: without its personal windows, nor the
 /// record, maker or agent run noted for them.
 pub fn leave_out(desktop: &mut SharedDesktop) {

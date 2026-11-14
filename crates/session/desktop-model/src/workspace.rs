@@ -498,14 +498,6 @@ impl Workspace {
         Authority::person(self.policy.party(user))
     }
 
-    /// A person's authority, held to the foreign-device bound when they work
-    /// from a device that is not theirs, in a workspace this machine does not
-    /// govern (the caller decides `foreign` accordingly).
-    #[must_use]
-    pub fn person_authority_on(&self, user: &str, foreign: bool) -> Authority<'_> {
-        self.policy.person_on_device(user, foreign)
-    }
-
     /// The authority of `subject` acting on its own (an app, or an agent no
     /// person delegated): only what the workspace grants it.
     #[must_use]
