@@ -170,19 +170,22 @@ impl ChatApp {
             if to.len() > 1 {
                 return Err(crate::i18n::t("chat-send-one-conversation"));
             }
-            return Ok(Id::from_raw(conversation.id.clone()));
+            if !conversation.id.is_empty() {
+                return Ok(Id::from_raw(conversation.id.clone()));
+            }
+            let name = conversation.name.trim().to_lowercase();
+            return chat
+                .channels
+                .iter()
+                .find(|(_, channel)| channel.name.trim().to_lowercase() == name)
+                .map(|(id, _)| id.clone())
+                .ok_or_else(|| crate::i18n::t("chat-send-needs-recipient"));
         }
         let mut participants = vec![MemberId::person(self.me.id.clone())];
         for recipient in to {
             match recipient.kind {
-                RecipientKind::Person => {
-                    if !chat.people.iter().any(|person| person.id.0 == recipient.id) {
-                        return Err(crate::i18n::t("chat-person-unknown"));
-                    }
-                    participants.push(MemberId::person(recipient.id.clone()));
-                }
-                RecipientKind::Agent => {
-                    participants.push(MemberId::agent(recipient.id.clone()));
+                RecipientKind::Person | RecipientKind::Agent => {
+                    participants.push(self.member_named(recipient, chat)?);
                 }
                 // What a box holds of a new agent is made before it sends
                 // ([`crate::effects::ChatEffect::Send`]): an agent still
@@ -198,6 +201,52 @@ impl ChatApp {
             return Err(crate::i18n::t("chat-send-needs-recipient"));
         }
         Ok(Chat::direct_id(participants))
+    }
+
+    /// The member `recipient` names: by its id, or, named by its name alone (as an agent's send
+    /// names one), the workspace's person or agent called that.
+    fn member_named(
+        &self,
+        recipient: &ui::floating_surface::Recipient,
+        chat: &Chat,
+    ) -> Result<MemberId, String> {
+        let agent = recipient.kind == ui::floating_surface::RecipientKind::Agent;
+        let unknown = || crate::i18n::t("chat-person-unknown");
+        if !recipient.id.is_empty() {
+            if agent {
+                return Ok(MemberId::agent(recipient.id.clone()));
+            }
+            return chat
+                .people
+                .iter()
+                .any(|person| person.id.0 == recipient.id)
+                .then(|| MemberId::person(recipient.id.clone()))
+                .ok_or_else(unknown);
+        }
+        let name = recipient.name.trim().to_lowercase();
+        if name.is_empty() {
+            return Err(unknown());
+        }
+        if agent
+            && let Some((id, _)) = self
+                .workspace_agent_names
+                .iter()
+                .find(|(_, named)| named.trim().to_lowercase() == name)
+        {
+            return Ok(MemberId::agent(id.clone()));
+        }
+        chat.people
+            .iter()
+            .filter(|person| person.name.trim().to_lowercase() == name)
+            .filter_map(crate::record::Person::member)
+            .find(|member| {
+                (if agent {
+                    member.is_agent()
+                } else {
+                    member.is_person()
+                }) && member.id() != self.me.id
+            })
+            .ok_or_else(unknown)
     }
 
     /// The person the direct conversation `channel` is with, when it is one of this window's

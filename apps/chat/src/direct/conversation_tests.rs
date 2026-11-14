@@ -353,6 +353,37 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
     });
 }
 
+/// An agent's send names whom it goes to by name alone: the person the workspace's people call
+/// that, or the agent its record of agents does.
+#[test]
+fn a_send_by_name_reaches_the_member_called_that() {
+    use ui::floating_surface::{Recipient, RecipientKind};
+
+    let mut app = crate::ChatApp::new_ephemeral();
+    let agent = "a5".repeat(16);
+    app.workspace_agent_names
+        .insert(agent.clone(), "Reviewer".to_owned());
+    let mut chat = Chat::default();
+    chat.people.push(crate::record::Person {
+        id: ui::tilo_resource::Atom("ad".repeat(32)),
+        name: "Ada".into(),
+        ..Default::default()
+    });
+    let named = |kind, name: &str| app.member_named(&Recipient::found(kind, "", name), &chat);
+    assert_eq!(
+        named(RecipientKind::Person, "ada"),
+        Ok(MemberId::person("ad".repeat(32)))
+    );
+    assert_eq!(
+        named(RecipientKind::Agent, "reviewer"),
+        Ok(MemberId::agent(agent))
+    );
+    assert!(
+        named(RecipientKind::Agent, "Ada").is_err(),
+        "a name nobody of that kind has is refused, not sent to an empty conversation"
+    );
+}
+
 /// The window a box's send floats over the desk opens on the item the send answered, as a
 /// window launched to reveal it does: a conversation with an agent is one by its id, listed in
 /// the sidebar or not, so the window shows the message that was sent instead of the first channel.
