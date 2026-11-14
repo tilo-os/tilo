@@ -610,8 +610,12 @@ tilo_test_env::scenario! {
         assert!(invoker.acting.is_agent());
         assert_eq!(invoker.acting.acted_for_person(), Some("person:ada"));
         let listed = newest(&mut app);
-        assert_eq!(listed["actor"]["kind"], "agent", "{listed}");
-        assert_eq!(listed["actor"]["for"], "person:ada", "{listed}");
+        assert_eq!(listed["actor"]["by"]["member"]["agent"], "claude", "{listed}");
+        assert_eq!(
+            listed["actor"]["for"][0]["by"]["member"]["person"],
+            "person:ada",
+            "{listed}"
+        );
     }
 
     phase a_field_edit_without_a_message_is_named_by_the_fields_title;

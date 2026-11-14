@@ -1052,7 +1052,7 @@ tilo_test_env::scenario! {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .filter(|version| version["actor"]["id"] == "grace")
+                    .filter(|version| version["actor"]["by"]["member"]["person"] == "grace")
                     .count();
                 assert_eq!(hers, 3, "{value}");
             }

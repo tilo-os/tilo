@@ -583,8 +583,8 @@ fn by(version: &Version) -> String {
 
 /// What a change's entry records, as data: what was done (`what`, with
 /// field paths, values and verb arguments), to which `item`, by which
-/// `actor` (`id`, `kind`, the person it acted `for`, and for an agent with a
-/// name the `name` and `colour` it shows by), in which `run`, through which
+/// `actor` (the acting tree, and for an agent with a name the `name` and
+/// `colour` it shows by), in which `run`, through which
 /// `invocation` of the action door, as part of which undo `step` (its
 /// gesture), and what kind of action and change it was. The invocation and
 /// the step are what a caller that ran an action finds its own changes by,
@@ -597,31 +597,16 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
         out.insert("item".into(), json!(item));
     }
     if let Some(invoker) = &context.invoker {
-        let mut actor = serde_json::Map::new();
-        actor.insert("id".into(), invoker.key().into());
-        let acting = &invoker.acting;
-        let kind = if acting.is_agent() {
-            "agent"
-        } else if acting.is_bot() {
-            "bot"
-        } else if acting.is_automation() {
-            "automation"
-        } else {
-            "person"
-        };
-        actor.insert("kind".into(), kind.into());
-        if let Some(person) = acting.acted_for_person() {
-            actor.insert("for".into(), person.into());
-        }
-        if let Some(name) = &invoker.name {
+        let mut actor = json!(invoker.acting);
+        if let (Some(name), Some(fields)) = (&invoker.name, actor.as_object_mut()) {
             let (red, green, blue) = collab_types::presence::agent_rgb(name);
-            actor.insert("name".into(), name.clone().into());
-            actor.insert(
+            fields.insert("name".into(), name.clone().into());
+            fields.insert(
                 "colour".into(),
                 format!("#{red:02x}{green:02x}{blue:02x}").into(),
             );
         }
-        out.insert("actor".into(), Value::Object(actor));
+        out.insert("actor".into(), actor);
     }
     if let Some(group) = &context.group {
         out.insert("run".into(), group.label.clone().into());

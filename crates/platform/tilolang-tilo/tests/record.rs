@@ -650,7 +650,7 @@ fn steps_of(record: &InstanceRecord, person: &str) -> usize {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|version| version["actor"]["id"] == person)
+        .filter(|version| version["actor"]["by"]["member"]["person"] == person)
         .count()
 }
 

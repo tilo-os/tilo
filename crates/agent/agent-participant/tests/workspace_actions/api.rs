@@ -341,7 +341,8 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
     assert!(
         !edits.is_empty()
             && edits.iter().all(|version| {
-                version["actor"]["kind"] == "agent" && version["actor"]["for"] == ada_hex.as_str()
+                version["actor"]["by"]["member"]["agent"].is_string()
+                    && version["actor"]["for"][0]["by"]["member"]["person"] == ada_hex.as_str()
             }),
         "{history}"
     );
@@ -764,7 +765,7 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|version| version["actor"]["kind"] == "agent")
+        .filter(|version| version["actor"]["by"]["member"]["agent"].is_string())
         .collect();
     let (red, green, blue) = collab_types::presence::agent_rgb("Jane Doe's agent");
     let colour = format!("#{red:02x}{green:02x}{blue:02x}");
