@@ -216,91 +216,96 @@ impl CalendarApp {
 mod tests {
     use super::*;
 
-    // A failure is an error notice because the place that raised it said so, not for its words.
-    #[test]
-    fn a_message_says_the_severity_it_was_raised_with() {
-        let mut app = CalendarApp::new_detached();
-        app.status.failed("Sync failed. Check the account.");
-        app.publish_status();
-        let notice = ui::window_toolbar::notice().expect("the bar shows the status");
-        assert_eq!(notice.kind, ToastKind::Error);
-        assert_eq!(notice.text, "Sync failed. Check the account.");
+    tilo_test_env::scenario! {
+        /// The status notice in the window bar: its severity and its lifetime.
+        fn a_status_says_its_severity_and_leaves_when_due;
 
-        app.status
-            .show("Sync failed. Check the account.", ToastKind::Info);
-        app.publish_status();
-        let notice = ui::window_toolbar::notice().expect("the bar shows the status");
-        assert_eq!(notice.kind, ToastKind::Info);
-    }
-
-    #[test]
-    fn a_status_leaves_on_its_own() {
-        use ui::Widget;
-        use ui::time::testing::with_monotonic_time;
-        let mut app = CalendarApp::new_detached();
-        let start = ui::time::now();
-        let at = |seconds: u64| start + std::time::Duration::from_secs(seconds);
-        with_monotonic_time(start, || {
-            app.status.show("Event deleted", ToastKind::Info);
-        });
-        let due = start + ui::widget::toast::NOTICE_LIFETIME;
-        assert_eq!(app.status.deadline(), Some(due));
-        assert!(
-            app.next_wake_deadline().is_some_and(|wake| wake <= due),
-            "the app wakes when the status is due to leave"
-        );
-        with_monotonic_time(at(2), || {
-            app.status.show("Imported calendar items", ToastKind::Info);
-        });
-        with_monotonic_time(at(5), || {
-            assert!(!app.status.expire(), "the newer status keeps its time");
-            assert_eq!(app.status.text(), Some("Imported calendar items"));
-        });
-        with_monotonic_time(at(5), || app.publish_status());
-        assert_eq!(
-            ui::window_toolbar::notice().map(|notice| notice.text),
-            Some("Imported calendar items".to_owned()),
-            "the window bar says the status"
-        );
-        with_monotonic_time(at(7), || app.publish_status());
-        assert!(!app.status.is_shown());
-        assert_eq!(app.status.deadline(), None, "nothing left to wake for");
-        assert_eq!(
-            ui::window_toolbar::notice(),
-            None,
-            "the gone status leaves the window bar"
-        );
-    }
-
-    #[test]
-    fn syncing_stays_while_the_sync_runs() {
-        use ui::time::testing::with_monotonic_time;
-        let mut app = CalendarApp::new_detached();
-        let start = ui::time::now();
-        let at = |seconds: u64| start + std::time::Duration::from_secs(seconds);
-        let draw = |app: &mut CalendarApp| {
+        phase a_message_says_the_severity_it_was_raised_with;
+        // A failure is an error notice because the place that raised it said so, not for its words.
+        {
+            let mut app = CalendarApp::new_detached();
+            app.status.failed("Sync failed. Check the account.");
             app.publish_status();
-            ui::window_toolbar::notice().map(|notice| notice.text)
-        };
-        with_monotonic_time(start, || app.shots_set_sync_state("syncing"));
-        for second in [3, 6, 9] {
-            with_monotonic_time(at(second), || {
-                assert_eq!(
-                    draw(&mut app).as_deref(),
-                    Some("Syncing calendars…"),
-                    "still syncing at {second}s"
-                );
+            let notice = ui::window_toolbar::notice().expect("the bar shows the status");
+            assert_eq!(notice.kind, ToastKind::Error);
+            assert_eq!(notice.text, "Sync failed. Check the account.");
+
+            app.status
+                .show("Sync failed. Check the account.", ToastKind::Info);
+            app.publish_status();
+            let notice = ui::window_toolbar::notice().expect("the bar shows the status");
+            assert_eq!(notice.kind, ToastKind::Info);
+        }
+
+        phase a_status_leaves_on_its_own;
+        {
+            use ui::Widget;
+            use ui::time::testing::with_monotonic_time;
+            let mut app = CalendarApp::new_detached();
+            let start = ui::time::now();
+            let at = |seconds: u64| start + std::time::Duration::from_secs(seconds);
+            with_monotonic_time(start, || {
+                app.status.show("Event deleted", ToastKind::Info);
+            });
+            let due = start + ui::widget::toast::NOTICE_LIFETIME;
+            assert_eq!(app.status.deadline(), Some(due));
+            assert!(
+                app.next_wake_deadline().is_some_and(|wake| wake <= due),
+                "the app wakes when the status is due to leave"
+            );
+            with_monotonic_time(at(2), || {
+                app.status.show("Imported calendar items", ToastKind::Info);
+            });
+            with_monotonic_time(at(5), || {
+                assert!(!app.status.expire(), "the newer status keeps its time");
+                assert_eq!(app.status.text(), Some("Imported calendar items"));
+            });
+            with_monotonic_time(at(5), || app.publish_status());
+            assert_eq!(
+                ui::window_toolbar::notice().map(|notice| notice.text),
+                Some("Imported calendar items".to_owned()),
+                "the window bar says the status"
+            );
+            with_monotonic_time(at(7), || app.publish_status());
+            assert!(!app.status.is_shown());
+            assert_eq!(app.status.deadline(), None, "nothing left to wake for");
+            assert_eq!(
+                ui::window_toolbar::notice(),
+                None,
+                "the gone status leaves the window bar"
+            );
+        }
+
+        phase syncing_stays_while_the_sync_runs;
+        {
+            use ui::time::testing::with_monotonic_time;
+            let mut app = CalendarApp::new_detached();
+            let start = ui::time::now();
+            let at = |seconds: u64| start + std::time::Duration::from_secs(seconds);
+            let draw = |app: &mut CalendarApp| {
+                app.publish_status();
+                ui::window_toolbar::notice().map(|notice| notice.text)
+            };
+            with_monotonic_time(start, || app.shots_set_sync_state("syncing"));
+            for second in [3, 6, 9] {
+                with_monotonic_time(at(second), || {
+                    assert_eq!(
+                        draw(&mut app).as_deref(),
+                        Some("Syncing calendars…"),
+                        "still syncing at {second}s"
+                    );
+                });
+            }
+            assert_eq!(
+                app.status.deadline(),
+                Some(at(9) + ui::widget::toast::NOTICE_LIFETIME),
+                "the app wakes to look again"
+            );
+            app.state().syncing = false;
+            with_monotonic_time(at(10), || {
+                assert_eq!(draw(&mut app), None, "the sync is over");
             });
         }
-        assert_eq!(
-            app.status.deadline(),
-            Some(at(9) + ui::widget::toast::NOTICE_LIFETIME),
-            "the app wakes to look again"
-        );
-        app.state().syncing = false;
-        with_monotonic_time(at(10), || {
-            assert_eq!(draw(&mut app), None, "the sync is over");
-        });
     }
 
     type Window = ui::framework::testing::TestApp<crate::resource::CalendarShell>;

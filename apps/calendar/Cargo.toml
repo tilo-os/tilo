@@ -95,6 +95,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["ch
 tempfile.workspace = true
 mail = { path = "../mail" }
 test-http = { path = "../../crates/dev/test-http" }
+# `scenario!`: one test function holds the cases of one subject.
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

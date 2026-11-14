@@ -216,87 +216,92 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn berlin_dst_gap_and_fold_resolve_and_invalid_zone_is_refused() {
-        let wall = at((2026, 3, 29), 2, 30);
-        let (normalized, resolution) = normalize_wall("Europe/Berlin", wall).unwrap();
-        assert_eq!(normalized, at((2026, 3, 29), 3, 0));
-        assert_eq!(resolution, Resolution::ShiftedForward { minutes: 30 });
+    tilo_test_env::scenario! {
+        /// Time zones: the wall times a clock change skips or repeats, and the names Windows gives.
+        fn zones_resolve_through_gaps_folds_and_windows_names;
 
-        let wall = at((2026, 10, 25), 2, 30);
-        let (instant, resolution) = wall_to_utc("Europe/Berlin", wall).unwrap();
-        assert_eq!(instant.naive_utc(), at((2026, 10, 25), 0, 30));
-        assert_eq!(resolution, Resolution::AmbiguousEarlier);
+        phase berlin_dst_gap_and_fold_resolve_and_invalid_zone_is_refused;
+        {
+            let wall = at((2026, 3, 29), 2, 30);
+            let (normalized, resolution) = normalize_wall("Europe/Berlin", wall).unwrap();
+            assert_eq!(normalized, at((2026, 3, 29), 3, 0));
+            assert_eq!(resolution, Resolution::ShiftedForward { minutes: 30 });
 
-        assert_eq!(canonical_zone("Mars/Olympus"), None);
-        assert_eq!(wall_to_utc("Mars/Olympus", at((2026, 1, 1), 12, 0)), None);
-    }
+            let wall = at((2026, 10, 25), 2, 30);
+            let (instant, resolution) = wall_to_utc("Europe/Berlin", wall).unwrap();
+            assert_eq!(instant.naive_utc(), at((2026, 10, 25), 0, 30));
+            assert_eq!(resolution, Resolution::AmbiguousEarlier);
 
-    #[test]
-    fn a_span_through_the_fold_ends_on_the_pass_it_names() {
-        // 02:30 comes twice in Berlin that night: at 00:30 and at 01:30 UTC.
-        let (start, end) = (at((2026, 10, 25), 2, 45), at((2026, 10, 25), 2, 30));
-        let resolved =
-            |later| endpoint_utc("Europe/Berlin", end, later).map(|instant| instant.naive_utc());
-        assert_eq!(resolved(false), Some(at((2026, 10, 25), 0, 30)));
-        assert_eq!(resolved(true), Some(at((2026, 10, 25), 1, 30)));
-        // An end the clock shows before the start comes after it only on the second pass.
-        assert!(valid_span("Europe/Berlin", start, end, true));
-        assert!(!valid_span("Europe/Berlin", start, end, false));
-
-        // Outside a fold there is one pass, whichever is asked for.
-        let noon = at((2026, 6, 15), 12, 0);
-        let summer =
-            |later| endpoint_utc("Europe/Berlin", noon, later).map(|instant| instant.naive_utc());
-        assert_eq!(summer(false), Some(at((2026, 6, 15), 10, 0)));
-        assert_eq!(summer(true), summer(false));
-        assert!(valid_span("Europe/Berlin", noon, noon, false));
-        assert!(!valid_span(
-            "Europe/Berlin",
-            noon,
-            noon - Duration::minutes(1),
-            false
-        ));
-
-        // A floating time has no second pass, and no zone nobody knows has a span.
-        assert!(valid_span("floating", noon, noon, false));
-        assert!(!valid_span("floating", noon, noon, true));
-        assert!(!valid_span("floating", start, end, false));
-        assert!(!valid_span("Mars/Olympus", noon, noon, false));
-        assert_eq!(endpoint_utc("Mars/Olympus", noon, true), None);
-    }
-
-    #[test]
-    fn windows_names_are_sorted_and_resolve() {
-        let table = windows_zones::WINDOWS_ZONES;
-        let folded = |name: &str| name.to_ascii_lowercase();
-        assert!(
-            table
-                .windows(2)
-                .all(|pair| folded(pair[0].0) < folded(pair[1].0))
-        );
-        for (windows, iana) in table {
-            assert!(canonical_zone(iana).is_some(), "{windows} maps to {iana}");
-            assert_eq!(windows_zone(windows), Some(*iana));
+            assert_eq!(canonical_zone("Mars/Olympus"), None);
+            assert_eq!(wall_to_utc("Mars/Olympus", at((2026, 1, 1), 12, 0)), None);
         }
-        assert_eq!(
-            zone_from_tzid("W. Europe Standard Time").as_deref(),
-            Some("Europe/Berlin")
-        );
-        assert_eq!(
-            zone_from_tzid("w. europe standard time").as_deref(),
-            Some("Europe/Berlin")
-        );
-        assert_eq!(
-            zone_from_tzid("\"Tokyo Standard Time\"").as_deref(),
-            Some("Asia/Tokyo")
-        );
-        assert_eq!(zone_from_tzid("UTC").as_deref(), Some("UTC"));
-        assert_eq!(
-            zone_from_tzid("/mozilla.org/20050126_1/America/New_York").as_deref(),
-            Some("America/New_York")
-        );
-        assert_eq!(zone_from_tzid("Customized Time Zone"), None);
-        assert_eq!(zone_from_tzid("floating"), None);
+
+        phase a_span_through_the_fold_ends_on_the_pass_it_names;
+        {
+            // 02:30 comes twice in Berlin that night: at 00:30 and at 01:30 UTC.
+            let (start, end) = (at((2026, 10, 25), 2, 45), at((2026, 10, 25), 2, 30));
+            let resolved =
+                |later| endpoint_utc("Europe/Berlin", end, later).map(|instant| instant.naive_utc());
+            assert_eq!(resolved(false), Some(at((2026, 10, 25), 0, 30)));
+            assert_eq!(resolved(true), Some(at((2026, 10, 25), 1, 30)));
+            // An end the clock shows before the start comes after it only on the second pass.
+            assert!(valid_span("Europe/Berlin", start, end, true));
+            assert!(!valid_span("Europe/Berlin", start, end, false));
+
+            // Outside a fold there is one pass, whichever is asked for.
+            let noon = at((2026, 6, 15), 12, 0);
+            let summer =
+                |later| endpoint_utc("Europe/Berlin", noon, later).map(|instant| instant.naive_utc());
+            assert_eq!(summer(false), Some(at((2026, 6, 15), 10, 0)));
+            assert_eq!(summer(true), summer(false));
+            assert!(valid_span("Europe/Berlin", noon, noon, false));
+            assert!(!valid_span(
+                "Europe/Berlin",
+                noon,
+                noon - Duration::minutes(1),
+                false
+            ));
+
+            // A floating time has no second pass, and no zone nobody knows has a span.
+            assert!(valid_span("floating", noon, noon, false));
+            assert!(!valid_span("floating", noon, noon, true));
+            assert!(!valid_span("floating", start, end, false));
+            assert!(!valid_span("Mars/Olympus", noon, noon, false));
+            assert_eq!(endpoint_utc("Mars/Olympus", noon, true), None);
+        }
+
+        phase windows_names_are_sorted_and_resolve;
+        {
+            let table = windows_zones::WINDOWS_ZONES;
+            let folded = |name: &str| name.to_ascii_lowercase();
+            assert!(
+                table
+                    .windows(2)
+                    .all(|pair| folded(pair[0].0) < folded(pair[1].0))
+            );
+            for (windows, iana) in table {
+                assert!(canonical_zone(iana).is_some(), "{windows} maps to {iana}");
+                assert_eq!(windows_zone(windows), Some(*iana));
+            }
+            assert_eq!(
+                zone_from_tzid("W. Europe Standard Time").as_deref(),
+                Some("Europe/Berlin")
+            );
+            assert_eq!(
+                zone_from_tzid("w. europe standard time").as_deref(),
+                Some("Europe/Berlin")
+            );
+            assert_eq!(
+                zone_from_tzid("\"Tokyo Standard Time\"").as_deref(),
+                Some("Asia/Tokyo")
+            );
+            assert_eq!(zone_from_tzid("UTC").as_deref(), Some("UTC"));
+            assert_eq!(
+                zone_from_tzid("/mozilla.org/20050126_1/America/New_York").as_deref(),
+                Some("America/New_York")
+            );
+            assert_eq!(zone_from_tzid("Customized Time Zone"), None);
+            assert_eq!(zone_from_tzid("floating"), None);
+        }
     }
 }

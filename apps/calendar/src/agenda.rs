@@ -469,140 +469,145 @@ mod tests {
         }
     }
 
-    #[test]
-    fn content_extent_and_visible_events_respect_hidden_and_selected_calendars() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
+    tilo_test_env::scenario! {
+        /// The agenda list: what it holds, in which order and how tall.
+        fn the_agenda_lists_what_is_visible_in_order_and_grows_with_the_text;
+
+        phase content_extent_and_visible_events_respect_hidden_and_selected_calendars;
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            {
+                let anchor = date(1);
+                let one = Calendar {
+                    events: vec![event(1, None)].into(),
+                    ..Calendar::default()
+                };
+                let two = Calendar {
+                    events: vec![event(1, None)].into(),
+                    tasks: vec![Task {
+                        id: Uuid::new_v4(),
+                        title: "Task".into(),
+                        done: false,
+                        due: Some(anchor),
+                        priority: Priority::None,
+                        project: None,
+                        parent: None,
+                    }]
+                    .into(),
+                    ..Calendar::default()
+                };
+                let hidden = HashSet::new();
+                let h1 = content_height(&source(&one, anchor, &hidden), &mut text, &theme);
+                let h2 = content_height(&source(&two, anchor, &hidden), &mut text, &theme);
+                assert!(h1 > 0.0);
+                assert!(h2 > h1, "a second row grows the list");
+            }
+            {
+                let anchor = date(1);
+                let model = Calendar {
+                    events: vec![event(1, Some("hidden"))].into(),
+                    ..Calendar::default()
+                };
+                let hidden = HashSet::from(["hidden".to_string()]);
+                assert_eq!(
+                    content_height(&source(&model, anchor, &hidden), &mut text, &theme),
+                    0.0
+                );
+                assert!(
+                    content_height(&source(&model, anchor, &HashSet::new()), &mut text, &theme) > 0.0
+                );
+            }
+            {
+                let anchor = date(1);
+                let model = Calendar {
+                    events: vec![
+                        event(1, None),
+                        event(1, Some("work")),
+                        event(1, Some("home")),
+                    ]
+                    .into(),
+                    ..Calendar::default()
+                };
+                assert_eq!(
+                    visible_events_on(&model, anchor, &HashSet::new(), Some("work")).len(),
+                    1
+                );
+                assert!(
+                    visible_events_on(
+                        &model,
+                        anchor,
+                        &HashSet::from(["work".to_string()]),
+                        Some("work")
+                    )
+                    .is_empty()
+                );
+                assert_eq!(
+                    visible_events_on(&model, anchor, &HashSet::new(), Some("local")).len(),
+                    1
+                );
+            }
+        }
+
+        phase a_days_tasks_list_by_priority_whatever_order_the_document_holds;
         {
             let anchor = date(1);
-            let one = Calendar {
-                events: vec![event(1, None)].into(),
-                ..Calendar::default()
+            let task = |title: &str, priority: Priority| Task {
+                id: Uuid::new_v4(),
+                title: title.into(),
+                done: false,
+                due: Some(anchor),
+                priority,
+                project: None,
+                parent: None,
             };
-            let two = Calendar {
+            let tasks = vec![
+                task("Drink water", Priority::None),
+                task("Send meeting notes", Priority::Medium),
+                task("Prepare quarterly report", Priority::High),
+                task("Book a table", Priority::None),
+            ];
+            let hidden = HashSet::new();
+            let mut reversed = tasks.clone();
+            reversed.reverse();
+            for tasks in [tasks, reversed] {
+                let model = Calendar {
+                    tasks: tasks.into(),
+                    ..Calendar::default()
+                };
+                let titles: Vec<&str> = source(&model, anchor, &hidden)
+                    .tasks_on(anchor)
+                    .iter()
+                    .map(|task| task.title.as_str())
+                    .collect();
+                assert_eq!(
+                    titles,
+                    [
+                        "Prepare quarterly report",
+                        "Send meeting notes",
+                        "Book a table",
+                        "Drink water"
+                    ]
+                );
+            }
+        }
+
+        phase larger_text_grows_the_list;
+        {
+            let anchor = date(1);
+            let model = Calendar {
                 events: vec![event(1, None)].into(),
-                tasks: vec![Task {
-                    id: Uuid::new_v4(),
-                    title: "Task".into(),
-                    done: false,
-                    due: Some(anchor),
-                    priority: Priority::None,
-                    project: None,
-                    parent: None,
-                }]
-                .into(),
                 ..Calendar::default()
             };
             let hidden = HashSet::new();
-            let h1 = content_height(&source(&one, anchor, &hidden), &mut text, &theme);
-            let h2 = content_height(&source(&two, anchor, &hidden), &mut text, &theme);
-            assert!(h1 > 0.0);
-            assert!(h2 > h1, "a second row grows the list");
+            let mut text = TextRenderer::new();
+            let one = content_height(&source(&model, anchor, &hidden), &mut text, &Theme::dark());
+            let two = content_height(
+                &source(&model, anchor, &hidden),
+                &mut text,
+                &Theme::dark().with_text_scale(2.0),
+            );
+            assert!(two > one);
         }
-        {
-            let anchor = date(1);
-            let model = Calendar {
-                events: vec![event(1, Some("hidden"))].into(),
-                ..Calendar::default()
-            };
-            let hidden = HashSet::from(["hidden".to_string()]);
-            assert_eq!(
-                content_height(&source(&model, anchor, &hidden), &mut text, &theme),
-                0.0
-            );
-            assert!(
-                content_height(&source(&model, anchor, &HashSet::new()), &mut text, &theme) > 0.0
-            );
-        }
-        {
-            let anchor = date(1);
-            let model = Calendar {
-                events: vec![
-                    event(1, None),
-                    event(1, Some("work")),
-                    event(1, Some("home")),
-                ]
-                .into(),
-                ..Calendar::default()
-            };
-            assert_eq!(
-                visible_events_on(&model, anchor, &HashSet::new(), Some("work")).len(),
-                1
-            );
-            assert!(
-                visible_events_on(
-                    &model,
-                    anchor,
-                    &HashSet::from(["work".to_string()]),
-                    Some("work")
-                )
-                .is_empty()
-            );
-            assert_eq!(
-                visible_events_on(&model, anchor, &HashSet::new(), Some("local")).len(),
-                1
-            );
-        }
-    }
-
-    #[test]
-    fn a_days_tasks_list_by_priority_whatever_order_the_document_holds() {
-        let anchor = date(1);
-        let task = |title: &str, priority: Priority| Task {
-            id: Uuid::new_v4(),
-            title: title.into(),
-            done: false,
-            due: Some(anchor),
-            priority,
-            project: None,
-            parent: None,
-        };
-        let tasks = vec![
-            task("Drink water", Priority::None),
-            task("Send meeting notes", Priority::Medium),
-            task("Prepare quarterly report", Priority::High),
-            task("Book a table", Priority::None),
-        ];
-        let hidden = HashSet::new();
-        let mut reversed = tasks.clone();
-        reversed.reverse();
-        for tasks in [tasks, reversed] {
-            let model = Calendar {
-                tasks: tasks.into(),
-                ..Calendar::default()
-            };
-            let titles: Vec<&str> = source(&model, anchor, &hidden)
-                .tasks_on(anchor)
-                .iter()
-                .map(|task| task.title.as_str())
-                .collect();
-            assert_eq!(
-                titles,
-                [
-                    "Prepare quarterly report",
-                    "Send meeting notes",
-                    "Book a table",
-                    "Drink water"
-                ]
-            );
-        }
-    }
-
-    #[test]
-    fn larger_text_grows_the_list() {
-        let anchor = date(1);
-        let model = Calendar {
-            events: vec![event(1, None)].into(),
-            ..Calendar::default()
-        };
-        let hidden = HashSet::new();
-        let mut text = TextRenderer::new();
-        let one = content_height(&source(&model, anchor, &hidden), &mut text, &Theme::dark());
-        let two = content_height(
-            &source(&model, anchor, &hidden),
-            &mut text,
-            &Theme::dark().with_text_scale(2.0),
-        );
-        assert!(two > one);
     }
 }

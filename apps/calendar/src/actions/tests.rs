@@ -98,545 +98,560 @@ ui::action_contract_tests! {
     ],
 }
 
-#[test]
-fn the_calendar_publishes_its_items_and_resolves_each_by_id() {
-    let doc = seeded_doc();
-    let resources = resources_for(&doc);
-    let root = &resources[0];
-    assert_eq!(root.kind, "calendar.calendar");
-    let ids: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
-    for verb in [
-        "new-event",
-        "new-task",
-        "new-project",
-        "import-items",
-        "field-edit",
-    ] {
-        assert!(ids.contains(&verb), "{verb} in {ids:?}");
+tilo_test_env::scenario! {
+    /// The calendar resource as its actions leave it.
+    fn the_calendars_actions_publish_refuse_converge_and_round_trip;
+
+    phase the_calendar_publishes_its_items_and_resolves_each_by_id;
+    {
+        let doc = seeded_doc();
+        let resources = resources_for(&doc);
+        let root = &resources[0];
+        assert_eq!(root.kind, "calendar.calendar");
+        let ids: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
+        for verb in [
+            "new-event",
+            "new-task",
+            "new-project",
+            "import-items",
+            "field-edit",
+        ] {
+            assert!(ids.contains(&verb), "{verb} in {ids:?}");
+        }
+        let state = read(&doc);
+        for (item, verbs) in [
+            (
+                event_resource_id(state.events[0].id),
+                &["delete-event", "reschedule", "move-to-calendar", "invite"][..],
+            ),
+            (task_resource_id(state.tasks[0].id), &["delete-task"][..]),
+            (
+                project_resource_id(state.projects[0].id),
+                &["delete-project"][..],
+            ),
+        ] {
+            let resource = Calendar::child(&state, &item).unwrap_or_else(|| panic!("{item} resolves"));
+            for verb in verbs {
+                assert!(
+                    resource.actions.iter().any(|action| action.id == *verb),
+                    "{item} offers {verb}"
+                );
+            }
+        }
+
+        let mut calendar = Replica::<Calendar>::from_doc(doc);
+        let late = Uuid::new_v4();
+        calendar
+            .apply(Calendar::NEW_EVENT.with(calendar::NewEvent {
+                event: EventData {
+                    id: late.to_string(),
+                    ..event_data("Late", "2026-12-24T18:00", "2026-12-24T22:00")
+                },
+            }))
+            .unwrap();
+        let state = calendar.state().unwrap();
+        assert!(Calendar::child(&state, &event_resource_id(late)).is_some());
+        calendar
+            .apply(Calendar::DELETE_EVENT.with(key(late)))
+            .unwrap();
+        assert!(
+            Calendar::child(&calendar.state().unwrap(), &event_resource_id(late)).is_none(),
+            "a deleted id is refused rather than redirected"
+        );
     }
-    let state = read(&doc);
-    for (item, verbs) in [
-        (
-            event_resource_id(state.events[0].id),
-            &["delete-event", "reschedule", "move-to-calendar", "invite"][..],
-        ),
-        (task_resource_id(state.tasks[0].id), &["delete-task"][..]),
-        (
-            project_resource_id(state.projects[0].id),
-            &["delete-project"][..],
-        ),
-    ] {
-        let resource = Calendar::child(&state, &item).unwrap_or_else(|| panic!("{item} resolves"));
-        for verb in verbs {
-            assert!(
-                resource.actions.iter().any(|action| action.id == *verb),
-                "{item} offers {verb}"
+
+    phase invalid_and_hostile_changes_are_refused_atomically;
+    {
+        let mut calendar = seeded();
+        let before = calendar.heads();
+        let event = calendar.state().unwrap().events[0].clone();
+
+        let mut stray = event_data("Stray", "2026-09-06T09:00", "2026-09-06T10:00");
+        stray.project = Uuid::new_v4().to_string();
+        assert!(
+            calendar
+                .apply(Calendar::NEW_EVENT.with(calendar::NewEvent { event: stray }))
+                .is_err()
+        );
+        assert!(
+            calendar
+                .apply(Calendar::RESCHEDULE.with((
+                    key(event.id),
+                    event.start,
+                    event.start - chrono::Duration::minutes(1),
+                )))
+                .is_err()
+        );
+        assert!(
+            calendar
+                .apply(Invoke::from(
+                    Calendar::paths()
+                        .events
+                        .item(&key(event.id))
+                        .end
+                        .set(event.start - chrono::Duration::minutes(1)),
+                ))
+                .is_err()
+        );
+        let project = calendar.state().unwrap().projects[0].id;
+        assert!(
+            calendar
+                .apply(Invoke::from(
+                    Calendar::paths()
+                        .projects
+                        .item(&key(project))
+                        .name
+                        .set("   ".into()),
+                ))
+                .is_err()
+        );
+        assert!(
+            calendar
+                .apply(Calendar::INVITE.with((
+                    key(event.id),
+                    "not an address".to_owned(),
+                    String::new()
+                )))
+                .is_err()
+        );
+        assert!(
+            calendar
+                .apply(Invoke::from(
+                    Calendar::paths()
+                        .remote
+                        .key(event.id.to_string())
+                        .holds
+                        .set("forged".into()),
+                ))
+                .is_err(),
+            "what a server confirmed is written only by the server's own records"
+        );
+        let (mut events, tasks) = import_payload(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:batch-event\r\n\
+         SUMMARY:Valid batch event\r\nDTSTART:20260919T090000\r\nDTEND:20260919T100000\r\n\
+         END:VEVENT\r\nBEGIN:VTODO\r\nUID:batch-task\r\nSUMMARY:Valid batch task\r\n\
+         END:VTODO\r\nEND:VCALENDAR\r\n",
+        )
+        .expect("a mixed import");
+        events.push(EventData {
+            end: "not-a-date".into(),
+            ..event_data("Broken", "2026-09-19T09:00", "2026-09-19T10:00")
+        });
+        assert!(
+            calendar
+                .apply(Calendar::IMPORT_ITEMS.with(calendar::ImportItems { events, tasks }))
+                .is_err()
+        );
+        assert_eq!(calendar.heads(), before, "nothing was written");
+    }
+
+    phase replicated_edits_of_one_event_converge;
+    {
+        let mut first = seeded();
+        let event = first.state().unwrap().events[0].id;
+        first
+            .apply(Calendar::INVITE.with((key(event), "sam@example.com".to_owned(), "Sam".to_owned())))
+            .unwrap();
+        let attendee = first.state().unwrap().event(event).unwrap().attendees[0].id;
+        let mut second = first.fork();
+        let fields = Calendar::paths().events.item(&key(event));
+        first
+            .apply(Invoke::from(
+                fields
+                    .attendees
+                    .item(&key(attendee))
+                    .status
+                    .set(InviteStatus::Accepted),
+            ))
+            .unwrap();
+        for edit in [
+            fields.timezone.set("Europe/Berlin".into()),
+            fields.recurrence_interval.set(2),
+            fields.recurrence_count.set(Some(7)),
+            fields
+                .recurrence_exdates
+                .insert(&NaiveDate::from_ymd_opt(2026, 6, 17).unwrap()),
+        ] {
+            second.apply(Invoke::from(edit)).unwrap();
+        }
+        first.sync_with(&mut second).unwrap();
+        let left = first.state().unwrap().event(event).cloned().unwrap();
+        let right = second.state().unwrap().event(event).cloned().unwrap();
+        assert_eq!(left, right);
+        assert_eq!(left.timezone, "Europe/Berlin");
+        assert_eq!(left.recurrence_interval, 2);
+        assert_eq!(left.recurrence_count, Some(7));
+        assert_eq!(left.recurrence_exdates.len(), 1);
+        assert_eq!(left.attendees[0].status, InviteStatus::Accepted);
+
+        let mut stale = first.fork();
+        first
+            .apply_confirmed(Invoke::from(fields.attendees.remove(&key(attendee))))
+            .unwrap();
+        stale
+            .apply(Invoke::from(
+                fields
+                    .attendees
+                    .item(&key(attendee))
+                    .status
+                    .set(InviteStatus::Declined),
+            ))
+            .unwrap();
+        first.sync_with(&mut stale).unwrap();
+        assert!(
+            first
+                .state()
+                .unwrap()
+                .event(event)
+                .unwrap()
+                .attendees
+                .is_empty()
+        );
+    }
+
+    phase json_forms_round_trip_events_and_tasks;
+    {
+        let state = read(&seeded_doc());
+        for event in &state.events {
+            let data = EventData::from_event(event);
+            let mut back = data.to_event().expect("the form reads back");
+            back.reminder_min = event
+                .reminder_min
+                .filter(|m| crate::model::REMINDERS.contains(m));
+            assert_eq!(&back, event);
+        }
+        for task in &state.tasks {
+            assert_eq!(&TaskData::from_task(task).to_task().unwrap(), task);
+        }
+        let blank: EventData = serde_json::from_value(serde_json::json!({
+            "title": "Coffee", "start": "2026-09-06T09:00", "end": "2026-09-06T09:30"
+        }))
+        .expect("an event names what it needs, the rest defaults");
+        let coffee = EventData {
+            id: Uuid::new_v4().to_string(),
+            ..blank
+        }
+        .to_event()
+        .expect("a whole event");
+        assert_eq!(coffee.timezone, "floating");
+        assert_eq!(coffee.recurrence, Recurrence::None);
+        assert_eq!(coffee.reminder_min, None);
+    }
+}
+
+tilo_test_env::scenario! {
+    /// The import action, through the autumn fold and again over what it imported before.
+    fn imports_keep_instants_wall_schedules_and_local_edits;
+
+    phase importing_a_duration_through_the_autumn_fold_keeps_actual_instants;
+    {
+        for (duration, expected_end) in [("PT30M", "01:15"), ("PT60M", "01:45"), ("PT65M", "01:50")] {
+            let source = format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:fold-visit@example.com\r\nSUMMARY:Visit\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:{duration}\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:other-visit@example.com\r\nSUMMARY:Other\r\nDTSTART:20261026T090000\r\nDTEND:20261026T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            let mut calendar = Replica::<Calendar>::new();
+            calendar
+                .apply(crate::resource::import(&source).unwrap())
+                .unwrap();
+            let state = calendar.state().unwrap();
+            assert_eq!(state.events.len(), 2);
+            let event = state
+                .events
+                .iter()
+                .find(|event| event.title == "Visit")
+                .unwrap();
+            let start = crate::timezone::wall_to_utc(&event.timezone, event.start)
+                .unwrap()
+                .0;
+            assert_eq!(event.timezone, "Europe/Berlin");
+            assert!(event.end_later_fold);
+            let end = event.end_instant().unwrap();
+            assert_eq!(start.to_rfc3339(), "2026-10-25T00:45:00+00:00");
+            assert_eq!(
+                end.to_rfc3339(),
+                format!("2026-10-25T{expected_end}:00+00:00")
+            );
+            let exported = crate::ics::export(&state);
+            let mut copy = Replica::<Calendar>::new();
+            copy.apply(crate::resource::import(&exported).unwrap())
+                .unwrap();
+            let copy_state = copy.state().unwrap();
+            let copied = copy_state
+                .events
+                .iter()
+                .find(|event| event.title == "Visit")
+                .unwrap();
+            assert_eq!(
+                (
+                    copied.start,
+                    copied.end,
+                    &copied.timezone,
+                    copied.end_later_fold
+                ),
+                (
+                    event.start,
+                    event.end,
+                    &event.timezone,
+                    event.end_later_fold
+                )
             );
         }
     }
 
-    let mut calendar = Replica::<Calendar>::from_doc(doc);
-    let late = Uuid::new_v4();
-    calendar
-        .apply(Calendar::NEW_EVENT.with(calendar::NewEvent {
-            event: EventData {
-                id: late.to_string(),
-                ..event_data("Late", "2026-12-24T18:00", "2026-12-24T22:00")
-            },
-        }))
-        .unwrap();
-    let state = calendar.state().unwrap();
-    assert!(Calendar::child(&state, &event_resource_id(late)).is_some());
-    calendar
-        .apply(Calendar::DELETE_EVENT.with(key(late)))
-        .unwrap();
-    assert!(
-        Calendar::child(&calendar.state().unwrap(), &event_resource_id(late)).is_none(),
-        "a deleted id is refused rather than redirected"
-    );
-}
-
-#[test]
-fn invalid_and_hostile_changes_are_refused_atomically() {
-    let mut calendar = seeded();
-    let before = calendar.heads();
-    let event = calendar.state().unwrap().events[0].clone();
-
-    let mut stray = event_data("Stray", "2026-09-06T09:00", "2026-09-06T10:00");
-    stray.project = Uuid::new_v4().to_string();
-    assert!(
-        calendar
-            .apply(Calendar::NEW_EVENT.with(calendar::NewEvent { event: stray }))
-            .is_err()
-    );
-    assert!(
-        calendar
-            .apply(Calendar::RESCHEDULE.with((
-                key(event.id),
-                event.start,
-                event.start - chrono::Duration::minutes(1),
-            )))
-            .is_err()
-    );
-    assert!(
-        calendar
-            .apply(Invoke::from(
-                Calendar::paths()
-                    .events
-                    .item(&key(event.id))
-                    .end
-                    .set(event.start - chrono::Duration::minutes(1)),
-            ))
-            .is_err()
-    );
-    let project = calendar.state().unwrap().projects[0].id;
-    assert!(
-        calendar
-            .apply(Invoke::from(
-                Calendar::paths()
-                    .projects
-                    .item(&key(project))
-                    .name
-                    .set("   ".into()),
-            ))
-            .is_err()
-    );
-    assert!(
-        calendar
-            .apply(Calendar::INVITE.with((
-                key(event.id),
-                "not an address".to_owned(),
-                String::new()
-            )))
-            .is_err()
-    );
-    assert!(
-        calendar
-            .apply(Invoke::from(
-                Calendar::paths()
-                    .remote
-                    .key(event.id.to_string())
-                    .holds
-                    .set("forged".into()),
-            ))
-            .is_err(),
-        "what a server confirmed is written only by the server's own records"
-    );
-    let (mut events, tasks) = import_payload(
-        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:batch-event\r\n\
-         SUMMARY:Valid batch event\r\nDTSTART:20260919T090000\r\nDTEND:20260919T100000\r\n\
-         END:VEVENT\r\nBEGIN:VTODO\r\nUID:batch-task\r\nSUMMARY:Valid batch task\r\n\
-         END:VTODO\r\nEND:VCALENDAR\r\n",
-    )
-    .expect("a mixed import");
-    events.push(EventData {
-        end: "not-a-date".into(),
-        ..event_data("Broken", "2026-09-19T09:00", "2026-09-19T10:00")
-    });
-    assert!(
-        calendar
-            .apply(Calendar::IMPORT_ITEMS.with(calendar::ImportItems { events, tasks }))
-            .is_err()
-    );
-    assert_eq!(calendar.heads(), before, "nothing was written");
-}
-
-#[test]
-fn replicated_edits_of_one_event_converge() {
-    let mut first = seeded();
-    let event = first.state().unwrap().events[0].id;
-    first
-        .apply(Calendar::INVITE.with((key(event), "sam@example.com".to_owned(), "Sam".to_owned())))
-        .unwrap();
-    let attendee = first.state().unwrap().event(event).unwrap().attendees[0].id;
-    let mut second = first.fork();
-    let fields = Calendar::paths().events.item(&key(event));
-    first
-        .apply(Invoke::from(
-            fields
-                .attendees
-                .item(&key(attendee))
-                .status
-                .set(InviteStatus::Accepted),
-        ))
-        .unwrap();
-    for edit in [
-        fields.timezone.set("Europe/Berlin".into()),
-        fields.recurrence_interval.set(2),
-        fields.recurrence_count.set(Some(7)),
-        fields
-            .recurrence_exdates
-            .insert(&NaiveDate::from_ymd_opt(2026, 6, 17).unwrap()),
-    ] {
-        second.apply(Invoke::from(edit)).unwrap();
+    phase recurring_fold_duration_preserves_wall_schedule_and_detached_overrides;
+    {
+        let detached = "BEGIN:VEVENT\r\nUID:fold-series@example.com\r\nRECURRENCE-ID;TZID=Europe/Berlin:20261101T024500\r\nDTSTART;TZID=Europe/Berlin:20261102T041500\r\nDTEND;TZID=Europe/Berlin:20261102T052000\r\nSUMMARY:Moved\r\nEND:VEVENT\r\n";
+        for overrides in ["", detached] {
+            let source = format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:fold-series@example.com\r\nSUMMARY:Weekly fold\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\n{overrides}END:VCALENDAR\r\n"
+            );
+            let mut calendar = Replica::<Calendar>::new();
+            calendar
+                .apply(crate::resource::import(&source).unwrap())
+                .unwrap();
+            let original = calendar.state().unwrap();
+            let event = &original.events[0];
+            assert_eq!(event.timezone, "Europe/Berlin");
+            assert_eq!(event.start.to_string(), "2026-10-25 02:45:00");
+            assert_eq!(event.end.to_string(), "2026-10-25 02:50:00");
+            assert_eq!(event.elapsed_duration(), chrono::Duration::minutes(65));
+            assert_eq!(event.hours(), 65.0 / 60.0);
+            let next = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+            let start = next.and_time(event.start.time());
+            assert_eq!(start.to_string(), "2026-11-01 02:45:00");
+            assert_eq!(
+                event.occurrence_end(start).to_string(),
+                "2026-11-01 03:50:00"
+            );
+            assert_eq!(
+                crate::timezone::wall_to_utc(&event.timezone, start)
+                    .unwrap()
+                    .0
+                    .to_rfc3339(),
+                "2026-11-01T01:45:00+00:00"
+            );
+            assert_eq!(
+                event.occurrences_in(next, next).is_empty(),
+                !overrides.is_empty()
+            );
+            let exported = crate::ics::export(&original);
+            assert!(exported.contains("DTSTART;TZID=Europe/Berlin:20261025T024500"));
+            assert!(exported.contains("DURATION:PT3900S"));
+            let mut copy = Replica::<Calendar>::new();
+            copy.apply(crate::resource::import(&exported).unwrap())
+                .unwrap();
+            let copied = copy.state().unwrap();
+            assert_eq!(&copied.events[0], event);
+            if !overrides.is_empty() {
+                let edit = &copied.events[0].occurrence_overrides[0];
+                assert_eq!(edit.original_date, next);
+                assert_eq!(edit.original_time, Some(event.start.time()));
+                assert_eq!(edit.start.unwrap().to_string(), "2026-11-02 04:15:00");
+                assert_eq!(edit.end.unwrap().to_string(), "2026-11-02 05:20:00");
+            }
+        }
     }
-    first.sync_with(&mut second).unwrap();
-    let left = first.state().unwrap().event(event).cloned().unwrap();
-    let right = second.state().unwrap().event(event).cloned().unwrap();
-    assert_eq!(left, right);
-    assert_eq!(left.timezone, "Europe/Berlin");
-    assert_eq!(left.recurrence_interval, 2);
-    assert_eq!(left.recurrence_count, Some(7));
-    assert_eq!(left.recurrence_exdates.len(), 1);
-    assert_eq!(left.attendees[0].status, InviteStatus::Accepted);
 
-    let mut stale = first.fork();
-    first
-        .apply_confirmed(Invoke::from(fields.attendees.remove(&key(attendee))))
-        .unwrap();
-    stale
-        .apply(Invoke::from(
-            fields
-                .attendees
-                .item(&key(attendee))
-                .status
-                .set(InviteStatus::Declined),
-        ))
-        .unwrap();
-    first.sync_with(&mut stale).unwrap();
-    assert!(
-        first
-            .state()
-            .unwrap()
-            .event(event)
-            .unwrap()
-            .attendees
-            .is_empty()
-    );
-}
-
-#[test]
-fn importing_a_duration_through_the_autumn_fold_keeps_actual_instants() {
-    for (duration, expected_end) in [("PT30M", "01:15"), ("PT60M", "01:45"), ("PT65M", "01:50")] {
-        let source = format!(
-            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:fold-visit@example.com\r\nSUMMARY:Visit\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:{duration}\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:other-visit@example.com\r\nSUMMARY:Other\r\nDTSTART:20261026T090000\r\nDTEND:20261026T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
-        );
+    phase detached_fold_endpoint_round_trips_with_its_parent_timezone;
+    {
+        let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:detached-fold@example.com\r\nSUMMARY:Weekly\r\nDTSTART;TZID=Europe/Berlin:20261018T024500\r\nDTEND;TZID=Europe/Berlin:20261018T034500\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:detached-fold@example.com\r\nRECURRENCE-ID;TZID=Europe/Berlin:20261025T024500\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT30M\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         let mut calendar = Replica::<Calendar>::new();
         calendar
-            .apply(crate::resource::import(&source).unwrap())
+            .apply(crate::resource::import(source).unwrap())
             .unwrap();
         let state = calendar.state().unwrap();
-        assert_eq!(state.events.len(), 2);
-        let event = state
-            .events
-            .iter()
-            .find(|event| event.title == "Visit")
-            .unwrap();
-        let start = crate::timezone::wall_to_utc(&event.timezone, event.start)
-            .unwrap()
-            .0;
-        assert_eq!(event.timezone, "Europe/Berlin");
-        assert!(event.end_later_fold);
-        let end = event.end_instant().unwrap();
-        assert_eq!(start.to_rfc3339(), "2026-10-25T00:45:00+00:00");
+        let event = &state.events[0];
+        let edit = &event.occurrence_overrides[0];
+        assert!(edit.end_later_fold);
+        assert_eq!(edit.end.unwrap().to_string(), "2026-10-25 02:15:00");
         assert_eq!(
-            end.to_rfc3339(),
-            format!("2026-10-25T{expected_end}:00+00:00")
+            crate::timezone::endpoint_utc(&event.timezone, edit.end.unwrap(), edit.end_later_fold)
+                .unwrap()
+                .to_rfc3339(),
+            "2026-10-25T01:15:00+00:00"
         );
         let exported = crate::ics::export(&state);
         let mut copy = Replica::<Calendar>::new();
         copy.apply(crate::resource::import(&exported).unwrap())
             .unwrap();
-        let copy_state = copy.state().unwrap();
-        let copied = copy_state
-            .events
-            .iter()
-            .find(|event| event.title == "Visit")
-            .unwrap();
-        assert_eq!(
-            (
-                copied.start,
-                copied.end,
-                &copied.timezone,
-                copied.end_later_fold
-            ),
-            (
-                event.start,
-                event.end,
-                &event.timezone,
-                event.end_later_fold
-            )
-        );
+        assert_eq!(copy.state().unwrap().events[0], *event);
     }
-}
 
-#[test]
-fn recurring_fold_duration_preserves_wall_schedule_and_detached_overrides() {
-    let detached = "BEGIN:VEVENT\r\nUID:fold-series@example.com\r\nRECURRENCE-ID;TZID=Europe/Berlin:20261101T024500\r\nDTSTART;TZID=Europe/Berlin:20261102T041500\r\nDTEND;TZID=Europe/Berlin:20261102T052000\r\nSUMMARY:Moved\r\nEND:VEVENT\r\n";
-    for overrides in ["", detached] {
-        let source = format!(
-            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:fold-series@example.com\r\nSUMMARY:Weekly fold\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT65M\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\n{overrides}END:VCALENDAR\r\n"
-        );
+    phase reimporting_a_source_uid_preserves_local_edits_and_detached_occurrences;
+    {
+        let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nSUMMARY:Meeting\r\nDTSTART:20260615T090000\r\nDTEND:20260615T100000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nRECURRENCE-ID:20260622T090000\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         let mut calendar = Replica::<Calendar>::new();
         calendar
-            .apply(crate::resource::import(&source).unwrap())
+            .apply(crate::resource::import(source).unwrap())
             .unwrap();
-        let original = calendar.state().unwrap();
-        let event = &original.events[0];
-        assert_eq!(event.timezone, "Europe/Berlin");
-        assert_eq!(event.start.to_string(), "2026-10-25 02:45:00");
-        assert_eq!(event.end.to_string(), "2026-10-25 02:50:00");
-        assert_eq!(event.elapsed_duration(), chrono::Duration::minutes(65));
-        assert_eq!(event.hours(), 65.0 / 60.0);
-        let next = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
-        let start = next.and_time(event.start.time());
-        assert_eq!(start.to_string(), "2026-11-01 02:45:00");
-        assert_eq!(
-            event.occurrence_end(start).to_string(),
-            "2026-11-01 03:50:00"
-        );
-        assert_eq!(
-            crate::timezone::wall_to_utc(&event.timezone, start)
-                .unwrap()
-                .0
-                .to_rfc3339(),
-            "2026-11-01T01:45:00+00:00"
-        );
-        assert_eq!(
-            event.occurrences_in(next, next).is_empty(),
-            !overrides.is_empty()
-        );
-        let exported = crate::ics::export(&original);
-        assert!(exported.contains("DTSTART;TZID=Europe/Berlin:20261025T024500"));
-        assert!(exported.contains("DURATION:PT3900S"));
-        let mut copy = Replica::<Calendar>::new();
-        copy.apply(crate::resource::import(&exported).unwrap())
+        let imported = calendar.state().unwrap().events[0].clone();
+        assert_eq!(imported.recurrence, Recurrence::Weekly);
+        assert_eq!(imported.occurrence_overrides.len(), 1);
+        assert!(imported.occurrence_overrides[0].cancelled);
+        let fields = Calendar::paths().events.item(&key(imported.id));
+        calendar
+            .apply(Invoke::from(fields.title.set("Local title".into())))
             .unwrap();
-        let copied = copy.state().unwrap();
-        assert_eq!(&copied.events[0], event);
-        if !overrides.is_empty() {
-            let edit = &copied.events[0].occurrence_overrides[0];
-            assert_eq!(edit.original_date, next);
-            assert_eq!(edit.original_time, Some(event.start.time()));
-            assert_eq!(edit.start.unwrap().to_string(), "2026-11-02 04:15:00");
-            assert_eq!(edit.end.unwrap().to_string(), "2026-11-02 05:20:00");
-        }
+        calendar
+            .apply(crate::resource::import(source).unwrap())
+            .unwrap();
+        let state = calendar.state().unwrap();
+        assert_eq!(state.events.len(), 1);
+        let held = state.event(imported.id).unwrap();
+        assert_eq!(held.title, "Local title");
+        assert_eq!(held.occurrence_overrides, imported.occurrence_overrides);
+        let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
+        assert_eq!(held.occurrences_in(from, to).len(), 2);
+
+        let mut copy = EventData::from_event(held);
+        copy.id.clear();
+        calendar
+            .apply(Calendar::NEW_EVENT.with(calendar::NewEvent { event: copy }))
+            .unwrap();
+        let state = calendar.state().unwrap();
+        assert_eq!(state.events.len(), 2);
+        assert_ne!(state.events[0].id, state.events[1].id);
+    }
+
+    phase an_import_replays_as_one_deterministic_action;
+    {
+        let mut a = seeded();
+        let mut b = a.fork();
+        let event = event_data("Imported planning", "2026-09-06T09:00", "2026-09-06T10:00");
+        a.apply(Calendar::IMPORT_ITEMS.with(calendar::ImportItems {
+            events: vec![event.clone()],
+            tasks: Vec::new(),
+        }))
+        .unwrap();
+        let envelope = a.log().last().expect("the import's envelope").clone();
+        b.replay(&envelope).unwrap();
+        assert_eq!(a.state().unwrap(), b.state().unwrap());
+        let landed = a
+            .state()
+            .unwrap()
+            .events
+            .iter()
+            .find(|candidate| candidate.id.to_string() == event.id)
+            .cloned()
+            .expect("the imported event landed");
+        assert_eq!(read(a.doc()).notes_text(landed.id), "Imported from .ics");
     }
 }
 
-#[test]
-fn detached_fold_endpoint_round_trips_with_its_parent_timezone() {
-    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:detached-fold@example.com\r\nSUMMARY:Weekly\r\nDTSTART;TZID=Europe/Berlin:20261018T024500\r\nDTEND;TZID=Europe/Berlin:20261018T034500\r\nRRULE:FREQ=WEEKLY;COUNT=2\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:detached-fold@example.com\r\nRECURRENCE-ID;TZID=Europe/Berlin:20261025T024500\r\nDTSTART;TZID=Europe/Berlin:20261025T024500\r\nDURATION:PT30M\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-    let mut calendar = Replica::<Calendar>::new();
-    calendar
-        .apply(crate::resource::import(source).unwrap())
-        .unwrap();
-    let state = calendar.state().unwrap();
-    let event = &state.events[0];
-    let edit = &event.occurrence_overrides[0];
-    assert!(edit.end_later_fold);
-    assert_eq!(edit.end.unwrap().to_string(), "2026-10-25 02:15:00");
-    assert_eq!(
-        crate::timezone::endpoint_utc(&event.timezone, edit.end.unwrap(), edit.end_later_fold)
-            .unwrap()
-            .to_rfc3339(),
-        "2026-10-25T01:15:00+00:00"
-    );
-    let exported = crate::ics::export(&state);
-    let mut copy = Replica::<Calendar>::new();
-    copy.apply(crate::resource::import(&exported).unwrap())
-        .unwrap();
-    assert_eq!(copy.state().unwrap().events[0], *event);
-}
+tilo_test_env::scenario! {
+    /// What the outbox owes the server after a pull and after an undone delete.
+    fn a_remote_copy_is_adopted_without_an_upload_and_uploaded_again_after_undo;
 
-#[test]
-fn reimporting_a_source_uid_preserves_local_edits_and_detached_occurrences() {
-    let source = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nSUMMARY:Meeting\r\nDTSTART:20260615T090000\r\nDTEND:20260615T100000\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:weekly-meeting@example.com\r\nRECURRENCE-ID:20260622T090000\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-    let mut calendar = Replica::<Calendar>::new();
-    calendar
-        .apply(crate::resource::import(source).unwrap())
-        .unwrap();
-    let imported = calendar.state().unwrap().events[0].clone();
-    assert_eq!(imported.recurrence, Recurrence::Weekly);
-    assert_eq!(imported.occurrence_overrides.len(), 1);
-    assert!(imported.occurrence_overrides[0].cancelled);
-    let fields = Calendar::paths().events.item(&key(imported.id));
-    calendar
-        .apply(Invoke::from(fields.title.set("Local title".into())))
-        .unwrap();
-    calendar
-        .apply(crate::resource::import(source).unwrap())
-        .unwrap();
-    let state = calendar.state().unwrap();
-    assert_eq!(state.events.len(), 1);
-    let held = state.event(imported.id).unwrap();
-    assert_eq!(held.title, "Local title");
-    assert_eq!(held.occurrence_overrides, imported.occurrence_overrides);
-    let from = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
-    let to = NaiveDate::from_ymd_opt(2026, 6, 29).unwrap();
-    assert_eq!(held.occurrences_in(from, to).len(), 2);
-
-    let mut copy = EventData::from_event(held);
-    copy.id.clear();
-    calendar
-        .apply(Calendar::NEW_EVENT.with(calendar::NewEvent { event: copy }))
-        .unwrap();
-    let state = calendar.state().unwrap();
-    assert_eq!(state.events.len(), 2);
-    assert_ne!(state.events[0].id, state.events[1].id);
-}
-
-#[test]
-fn an_import_replays_as_one_deterministic_action() {
-    let mut a = seeded();
-    let mut b = a.fork();
-    let event = event_data("Imported planning", "2026-09-06T09:00", "2026-09-06T10:00");
-    a.apply(Calendar::IMPORT_ITEMS.with(calendar::ImportItems {
-        events: vec![event.clone()],
-        tasks: Vec::new(),
-    }))
-    .unwrap();
-    let envelope = a.log().last().expect("the import's envelope").clone();
-    b.replay(&envelope).unwrap();
-    assert_eq!(a.state().unwrap(), b.state().unwrap());
-    let landed = a
-        .state()
-        .unwrap()
-        .events
-        .iter()
-        .find(|candidate| candidate.id.to_string() == event.id)
-        .cloned()
-        .expect("the imported event landed");
-    assert_eq!(read(a.doc()).notes_text(landed.id), "Imported from .ics");
-}
-
-#[test]
-fn a_pulled_event_is_adopted_without_an_upload() {
-    let accounts = crate::AccountStore::sample();
-    let remote = accounts
-        .all_calendars()
-        .next()
-        .map(|(_, calendar)| calendar.id.clone())
-        .unwrap();
-    let mut calendar = Replica::<Calendar>::new();
-    let event = EventData {
-        calendar_id: remote.clone(),
-        ..event_data("Standup", "2026-09-19T09:00", "2026-09-19T10:00")
-    };
-    let id: Id = event.id.parse().unwrap();
-    let at = RemoteAt {
-        calendar: remote.clone(),
-        href: "/calendars/work/standup.ics".into(),
-        etag: Some("\"v1\"".into()),
-    };
-    calendar
-        .apply(
-            Calendar::ADOPT_REMOTE_EVENT.with(calendar::AdoptRemoteEvent {
-                event: event.clone(),
-                at: at.clone(),
-            }),
-        )
-        .unwrap();
-    let state = calendar.state().unwrap();
-    assert_eq!(
-        state.event(id).map(|e| e.title.clone()),
-        Some("Standup".into())
-    );
-    assert!(
-        uploads(&state, &accounts).is_empty(),
-        "no upload of a pulled event"
-    );
-    let copy = &state.remote[&id.to_string()];
-    assert_eq!(copy.href, at.href);
-    assert_eq!(copy.holds, fingerprint(&event.to_event().unwrap()));
-    assert!(
+    phase a_pulled_event_is_adopted_without_an_upload;
+    {
+        let accounts = crate::AccountStore::sample();
+        let remote = accounts
+            .all_calendars()
+            .next()
+            .map(|(_, calendar)| calendar.id.clone())
+            .unwrap();
+        let mut calendar = Replica::<Calendar>::new();
+        let event = EventData {
+            calendar_id: remote.clone(),
+            ..event_data("Standup", "2026-09-19T09:00", "2026-09-19T10:00")
+        };
+        let id: Id = event.id.parse().unwrap();
+        let at = RemoteAt {
+            calendar: remote.clone(),
+            href: "/calendars/work/standup.ics".into(),
+            etag: Some("\"v1\"".into()),
+        };
         calendar
             .apply(
                 Calendar::ADOPT_REMOTE_EVENT.with(calendar::AdoptRemoteEvent {
-                    event,
-                    at: RemoteAt {
-                        calendar: String::new(),
-                        ..at
-                    },
-                })
+                    event: event.clone(),
+                    at: at.clone(),
+                }),
             )
-            .is_err(),
-        "a server address names its calendar"
-    );
+            .unwrap();
+        let state = calendar.state().unwrap();
+        assert_eq!(
+            state.event(id).map(|e| e.title.clone()),
+            Some("Standup".into())
+        );
+        assert!(
+            uploads(&state, &accounts).is_empty(),
+            "no upload of a pulled event"
+        );
+        let copy = &state.remote[&id.to_string()];
+        assert_eq!(copy.href, at.href);
+        assert_eq!(copy.holds, fingerprint(&event.to_event().unwrap()));
+        assert!(
+            calendar
+                .apply(
+                    Calendar::ADOPT_REMOTE_EVENT.with(calendar::AdoptRemoteEvent {
+                        event,
+                        at: RemoteAt {
+                            calendar: String::new(),
+                            ..at
+                        },
+                    })
+                )
+                .is_err(),
+            "a server address names its calendar"
+        );
 
-    calendar
-        .apply(Calendar::DROP_REMOTE_ITEM.with(calendar::DropRemoteItem { item: id }))
-        .unwrap();
-    let state = calendar.state().unwrap();
-    assert!(state.event(id).is_none());
-    assert!(state.remote.is_empty());
-    assert!(
-        deletes(&state, &accounts).is_empty(),
-        "the server already removed it"
-    );
+        calendar
+            .apply(Calendar::DROP_REMOTE_ITEM.with(calendar::DropRemoteItem { item: id }))
+            .unwrap();
+        let state = calendar.state().unwrap();
+        assert!(state.event(id).is_none());
+        assert!(state.remote.is_empty());
+        assert!(
+            deletes(&state, &accounts).is_empty(),
+            "the server already removed it"
+        );
 
-    calendar
-        .apply(Calendar::PULLED.with(calendar::Pulled {
-            calendar: remote.clone(),
-            token: "sync-1".into(),
-        }))
-        .unwrap();
-    assert_eq!(calendar.state().unwrap().sync_tokens[&remote], "sync-1");
-}
-
-#[test]
-fn undoing_a_delete_the_server_took_uploads_the_event_again() {
-    let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
-    let accounts = crate::AccountStore::sample();
-    let remote = accounts
-        .all_calendars()
-        .next()
-        .map(|(_, calendar)| calendar.id.clone())
-        .unwrap();
-    let event = EventData {
-        calendar_id: remote.clone(),
-        ..event_data("Standup", "2026-09-19T09:00", "2026-09-19T10:00")
-    };
-    let id: Id = event.id.parse().unwrap();
-    app.invoke(
-        Calendar::ADOPT_REMOTE_EVENT.with(calendar::AdoptRemoteEvent {
-            event,
-            at: RemoteAt {
-                calendar: remote,
-                href: "/calendars/work/standup.ics".into(),
-                etag: None,
-            },
-        }),
-    )
-    .unwrap();
-    app.invoke(Calendar::DELETE_EVENT.with(key(id))).unwrap();
-    let state = app.read_document(read);
-    assert_eq!(deletes(&state, &accounts).len(), 1);
-    app.invoke(Calendar::SERVER_REMOVED.with(calendar::ServerRemoved { item: id }))
-        .unwrap();
-    assert!(app.undo(), "the delete is undone");
-    let state = app.read_document(read);
-    assert!(state.event(id).is_some());
-    let jobs = uploads(&state, &accounts);
-    assert_eq!(jobs.len(), 1, "the restored event is uploaded again");
-    assert_eq!(jobs[0].1.href, None, "as a new item there");
-}
-
-#[test]
-fn json_forms_round_trip_events_and_tasks() {
-    let state = read(&seeded_doc());
-    for event in &state.events {
-        let data = EventData::from_event(event);
-        let mut back = data.to_event().expect("the form reads back");
-        back.reminder_min = event
-            .reminder_min
-            .filter(|m| crate::model::REMINDERS.contains(m));
-        assert_eq!(&back, event);
+        calendar
+            .apply(Calendar::PULLED.with(calendar::Pulled {
+                calendar: remote.clone(),
+                token: "sync-1".into(),
+            }))
+            .unwrap();
+        assert_eq!(calendar.state().unwrap().sync_tokens[&remote], "sync-1");
     }
-    for task in &state.tasks {
-        assert_eq!(&TaskData::from_task(task).to_task().unwrap(), task);
+
+    phase undoing_a_delete_the_server_took_uploads_the_event_again;
+    {
+        let mut app = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::new().unwrap();
+        let accounts = crate::AccountStore::sample();
+        let remote = accounts
+            .all_calendars()
+            .next()
+            .map(|(_, calendar)| calendar.id.clone())
+            .unwrap();
+        let event = EventData {
+            calendar_id: remote.clone(),
+            ..event_data("Standup", "2026-09-19T09:00", "2026-09-19T10:00")
+        };
+        let id: Id = event.id.parse().unwrap();
+        app.invoke(
+            Calendar::ADOPT_REMOTE_EVENT.with(calendar::AdoptRemoteEvent {
+                event,
+                at: RemoteAt {
+                    calendar: remote,
+                    href: "/calendars/work/standup.ics".into(),
+                    etag: None,
+                },
+            }),
+        )
+        .unwrap();
+        app.invoke(Calendar::DELETE_EVENT.with(key(id))).unwrap();
+        let state = app.read_document(read);
+        assert_eq!(deletes(&state, &accounts).len(), 1);
+        app.invoke(Calendar::SERVER_REMOVED.with(calendar::ServerRemoved { item: id }))
+            .unwrap();
+        assert!(app.undo(), "the delete is undone");
+        let state = app.read_document(read);
+        assert!(state.event(id).is_some());
+        let jobs = uploads(&state, &accounts);
+        assert_eq!(jobs.len(), 1, "the restored event is uploaded again");
+        assert_eq!(jobs[0].1.href, None, "as a new item there");
     }
-    let blank: EventData = serde_json::from_value(serde_json::json!({
-        "title": "Coffee", "start": "2026-09-06T09:00", "end": "2026-09-06T09:30"
-    }))
-    .expect("an event names what it needs, the rest defaults");
-    let coffee = EventData {
-        id: Uuid::new_v4().to_string(),
-        ..blank
-    }
-    .to_event()
-    .expect("a whole event");
-    assert_eq!(coffee.timezone, "floating");
-    assert_eq!(coffee.recurrence, Recurrence::None);
-    assert_eq!(coffee.reminder_min, None);
 }

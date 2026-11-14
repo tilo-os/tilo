@@ -134,250 +134,255 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn caldav_reconciliation_keeps_stable_resources_by_href() {
+tilo_test_env::scenario! {
+    /// What a finished sync does to the document.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn a_sync_reconciles_by_href_and_leaves_an_unread_calendar_alone;
+
+    phase caldav_reconciliation_keeps_stable_resources_by_href;
+    {
+        {
+            let mut app = CalendarApp::new_demo();
+            let mut doc = demo_document(&app);
+            let start = NaiveDate::from_ymd_opt(2026, 8, 3)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap();
+            let remote_event = |title: &str| Event {
+                id: Uuid::new_v4(),
+                title: title.into(),
+                start,
+                end: start + Duration::hours(1),
+                color: Palette::Blue,
+                calendar_id: Some("work/default".into()),
+                ..Event::default()
+            };
+            app.apply_sync_result(
+                caldav::SyncResult {
+                    resources: vec![caldav::RemoteResource {
+                        calendar_id: "work/default".into(),
+                        href: "/dav/work/meeting.ics".into(),
+                        etag: Some("\"one\"".into()),
+                        events: vec![remote_event("First title")],
+                        tasks: Vec::new(),
+                    }],
+                    checkpoints: vec![caldav::CollectionCheckpoint {
+                        calendar_id: "work/default".into(),
+                        token: "token-1".into(),
+                        full: true,
+                        seen_hrefs: vec!["/dav/work/meeting.ics".into()],
+                    }],
+                    ..caldav::SyncResult::default()
+                },
+                &SyncOutcome::Synced {
+                    calendars: 1,
+                    events: 1,
+                },
+                &mut Edits::lend(&mut doc),
+            )
+            .expect("the calendar reads");
+            let id = remote_at(&doc, "work/default", "/dav/work/meeting.ics")
+                .expect("what the server keeps there is known");
+            app.apply_sync_result(
+                caldav::SyncResult {
+                    resources: vec![caldav::RemoteResource {
+                        calendar_id: "work/default".into(),
+                        href: "/dav/work/meeting.ics".into(),
+                        etag: Some("\"two\"".into()),
+                        events: vec![remote_event("Server-edited title")],
+                        tasks: Vec::new(),
+                    }],
+                    checkpoints: vec![caldav::CollectionCheckpoint {
+                        calendar_id: "work/default".into(),
+                        token: "token-2".into(),
+                        full: false,
+                        seen_hrefs: vec!["/dav/work/meeting.ics".into()],
+                    }],
+                    ..caldav::SyncResult::default()
+                },
+                &SyncOutcome::Synced {
+                    calendars: 1,
+                    events: 1,
+                },
+                &mut Edits::lend(&mut doc),
+            )
+            .expect("the calendar reads");
+            assert_eq!(app.model.event(id).unwrap().title, "Server-edited title");
+            assert_eq!(remote_etag(&doc, id).as_deref(), Some("\"two\""));
+            app.apply_sync_result(
+                caldav::SyncResult {
+                    deletions: vec![caldav::RemoteDeletion {
+                        calendar_id: "work/default".into(),
+                        href: "/dav/work/meeting.ics".into(),
+                    }],
+                    checkpoints: vec![caldav::CollectionCheckpoint {
+                        calendar_id: "work/default".into(),
+                        token: "token-3".into(),
+                        full: false,
+                        seen_hrefs: Vec::new(),
+                    }],
+                    ..caldav::SyncResult::default()
+                },
+                &SyncOutcome::Synced {
+                    calendars: 1,
+                    events: 0,
+                },
+                &mut Edits::lend(&mut doc),
+            )
+            .expect("the calendar reads");
+            assert!(app.model.event(id).is_none());
+            assert!(
+                !crate::resource::read_doc(&doc)
+                    .remote
+                    .contains_key(&id.to_string())
+            );
+            assert_eq!(
+                crate::resource::read_doc(&doc).sync_tokens["work/default"],
+                "token-3"
+            );
+        }
+        {
+            let uid = Uuid::new_v4();
+            let remote_task = |done| crate::model::Task {
+                id: uid,
+                title: "Server task".into(),
+                done,
+                due: NaiveDate::from_ymd_opt(2026, 8, 3),
+                priority: Priority::High,
+                project: None,
+                parent: None,
+            };
+            let parsed_task = |done| {
+                let (_, tasks) = crate::ics::parse(&crate::ics::export(&Calendar {
+                    events: ui::tilo_resource::Keyed::default(),
+                    tasks: vec![remote_task(done)].into(),
+                    projects: ui::tilo_resource::Keyed::default(),
+                    ..Calendar::default()
+                }));
+                tasks.into_iter().next().expect("one VTODO parses")
+            };
+            let mut app = CalendarApp::new_detached();
+            let mut doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
+            let apply =
+                |app: &mut CalendarApp, doc: &mut AutoCommit, task: crate::model::Task, etag: &str| {
+                    app.apply_sync_result(
+                        caldav::SyncResult {
+                            resources: vec![caldav::RemoteResource {
+                                calendar_id: "work/default".into(),
+                                href: "/dav/work/tasks.ics".into(),
+                                etag: Some(etag.into()),
+                                events: Vec::new(),
+                                tasks: vec![task],
+                            }],
+                            ..caldav::SyncResult::default()
+                        },
+                        &SyncOutcome::Synced {
+                            calendars: 1,
+                            events: 0,
+                        },
+                        &mut Edits::lend(doc),
+                    )
+                    .expect("the calendar reads");
+                };
+
+            apply(&mut app, &mut doc, parsed_task(false), "\"one\"");
+            let id = remote_at(&doc, "work/default", "/dav/work/tasks.ics#tilo-task-0")
+                .expect("the VTODO is known at its server address");
+            apply(&mut app, &mut doc, parsed_task(true), "\"two\"");
+
+            assert_eq!(
+                app.model.tasks.iter().filter(|task| task.id == id).count(),
+                1
+            );
+            assert!(app.model.task(id).is_some_and(|task| task.done));
+            assert_eq!(remote_etag(&doc, id).as_deref(), Some("\"two\""));
+        }
+    }
+
+    phase a_calendar_that_does_not_read_is_neither_emptied_nor_synchronized;
     {
         let mut app = CalendarApp::new_demo();
-        let mut doc = demo_document(&app);
-        let start = NaiveDate::from_ymd_opt(2026, 8, 3)
-            .unwrap()
-            .and_hms_opt(9, 0, 0)
-            .unwrap();
-        let remote_event = |title: &str| Event {
-            id: Uuid::new_v4(),
-            title: title.into(),
-            start,
-            end: start + Duration::hours(1),
-            color: Palette::Blue,
-            calendar_id: Some("work/default".into()),
-            ..Event::default()
-        };
-        app.apply_sync_result(
+        let mut state = demo_document(&app);
+        present(&mut app, &mut state, &ROOT);
+        let shown: Vec<Id> = app.model.events.iter().map(|event| event.id).collect();
+        assert!(!shown.is_empty(), "the demo calendar has events");
+
+        corrupt_events(&mut state);
+        assert!(Calendar::read_whole(&state).is_err());
+        present(&mut app, &mut state, &ROOT);
+        assert_eq!(
+            app.model
+                .events
+                .iter()
+                .map(|event| event.id)
+                .collect::<Vec<_>>(),
+            shown,
+            "the calendar that last read whole stays, not an empty one"
+        );
+
+        app.sample_accounts = false;
+        app.accounts = AccountStore::sample();
+        let refusal = app
+            .start_sync(&mut Edits::lend(&mut state))
+            .expect_err("no pull starts from a calendar that does not read");
+        assert!(refusal.starts_with("Sync unavailable"), "{refusal:?}");
+        assert!(app.sync_rx.is_none() && !app.state().syncing);
+        assert_eq!(app.status.text(), Some(refusal.as_str()));
+
+        let start = app
+            .today
+            .and_time(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send((
             caldav::SyncResult {
                 resources: vec![caldav::RemoteResource {
                     calendar_id: "work/default".into(),
                     href: "/dav/work/meeting.ics".into(),
                     etag: Some("\"one\"".into()),
-                    events: vec![remote_event("First title")],
+                    events: vec![crate::model::Event {
+                        id: Uuid::new_v4(),
+                        title: "Pulled into a broken calendar".into(),
+                        start,
+                        end: start + Duration::hours(1),
+                        ..crate::model::Event::default()
+                    }],
                     tasks: Vec::new(),
-                }],
-                checkpoints: vec![caldav::CollectionCheckpoint {
-                    calendar_id: "work/default".into(),
-                    token: "token-1".into(),
-                    full: true,
-                    seen_hrefs: vec!["/dav/work/meeting.ics".into()],
                 }],
                 ..caldav::SyncResult::default()
             },
-            &SyncOutcome::Synced {
+            SyncOutcome::Synced {
                 calendars: 1,
                 events: 1,
             },
-            &mut Edits::lend(&mut doc),
-        )
-        .expect("the calendar reads");
-        let id = remote_at(&doc, "work/default", "/dav/work/meeting.ics")
-            .expect("what the server keeps there is known");
-        app.apply_sync_result(
-            caldav::SyncResult {
-                resources: vec![caldav::RemoteResource {
-                    calendar_id: "work/default".into(),
-                    href: "/dav/work/meeting.ics".into(),
-                    etag: Some("\"two\"".into()),
-                    events: vec![remote_event("Server-edited title")],
-                    tasks: Vec::new(),
-                }],
-                checkpoints: vec![caldav::CollectionCheckpoint {
-                    calendar_id: "work/default".into(),
-                    token: "token-2".into(),
-                    full: false,
-                    seen_hrefs: vec!["/dav/work/meeting.ics".into()],
-                }],
-                ..caldav::SyncResult::default()
-            },
-            &SyncOutcome::Synced {
-                calendars: 1,
-                events: 1,
-            },
-            &mut Edits::lend(&mut doc),
-        )
-        .expect("the calendar reads");
-        assert_eq!(app.model.event(id).unwrap().title, "Server-edited title");
-        assert_eq!(remote_etag(&doc, id).as_deref(), Some("\"two\""));
-        app.apply_sync_result(
-            caldav::SyncResult {
-                deletions: vec![caldav::RemoteDeletion {
-                    calendar_id: "work/default".into(),
-                    href: "/dav/work/meeting.ics".into(),
-                }],
-                checkpoints: vec![caldav::CollectionCheckpoint {
-                    calendar_id: "work/default".into(),
-                    token: "token-3".into(),
-                    full: false,
-                    seen_hrefs: Vec::new(),
-                }],
-                ..caldav::SyncResult::default()
-            },
-            &SyncOutcome::Synced {
-                calendars: 1,
-                events: 0,
-            },
-            &mut Edits::lend(&mut doc),
-        )
-        .expect("the calendar reads");
-        assert!(app.model.event(id).is_none());
+        ))
+        .unwrap();
+        app.sync_rx = Some(rx);
+        app.state().syncing = true;
+        app.poll_sync(&mut Edits::lend(&mut state));
+        assert!(!app.state().syncing, "the drain clears the in-flight flag");
         assert!(
-            !crate::resource::read_doc(&doc)
-                .remote
-                .contains_key(&id.to_string())
+            app.status
+                .text()
+                .is_some_and(|text| text.starts_with("Sync unavailable")),
+            "the bar says the pull was not folded in, not that it synced: {:?}",
+            app.status.text()
         );
         assert_eq!(
-            crate::resource::read_doc(&doc).sync_tokens["work/default"],
-            "token-3"
+            app.model
+                .events
+                .iter()
+                .map(|event| event.id)
+                .collect::<Vec<_>>(),
+            shown,
+            "nothing was reconciled into a calendar that does not read"
         );
-    }
-    {
-        let uid = Uuid::new_v4();
-        let remote_task = |done| crate::model::Task {
-            id: uid,
-            title: "Server task".into(),
-            done,
-            due: NaiveDate::from_ymd_opt(2026, 8, 3),
-            priority: Priority::High,
-            project: None,
-            parent: None,
-        };
-        let parsed_task = |done| {
-            let (_, tasks) = crate::ics::parse(&crate::ics::export(&Calendar {
-                events: ui::tilo_resource::Keyed::default(),
-                tasks: vec![remote_task(done)].into(),
-                projects: ui::tilo_resource::Keyed::default(),
-                ..Calendar::default()
-            }));
-            tasks.into_iter().next().expect("one VTODO parses")
-        };
-        let mut app = CalendarApp::new_detached();
-        let mut doc = ui::tilo_resource::Replica::<Calendar>::new().doc().clone();
-        let apply =
-            |app: &mut CalendarApp, doc: &mut AutoCommit, task: crate::model::Task, etag: &str| {
-                app.apply_sync_result(
-                    caldav::SyncResult {
-                        resources: vec![caldav::RemoteResource {
-                            calendar_id: "work/default".into(),
-                            href: "/dav/work/tasks.ics".into(),
-                            etag: Some(etag.into()),
-                            events: Vec::new(),
-                            tasks: vec![task],
-                        }],
-                        ..caldav::SyncResult::default()
-                    },
-                    &SyncOutcome::Synced {
-                        calendars: 1,
-                        events: 0,
-                    },
-                    &mut Edits::lend(doc),
-                )
-                .expect("the calendar reads");
-            };
-
-        apply(&mut app, &mut doc, parsed_task(false), "\"one\"");
-        let id = remote_at(&doc, "work/default", "/dav/work/tasks.ics#tilo-task-0")
-            .expect("the VTODO is known at its server address");
-        apply(&mut app, &mut doc, parsed_task(true), "\"two\"");
-
-        assert_eq!(
-            app.model.tasks.iter().filter(|task| task.id == id).count(),
-            1
-        );
-        assert!(app.model.task(id).is_some_and(|task| task.done));
-        assert_eq!(remote_etag(&doc, id).as_deref(), Some("\"two\""));
     }
 }
 
 fn corrupt_events(doc: &mut AutoCommit) {
     automerge::transaction::Transactable::put(doc, ROOT, "events", "not a keyed collection")
         .expect("the field is written");
-}
-
-#[test]
-fn a_calendar_that_does_not_read_is_neither_emptied_nor_synchronized() {
-    let mut app = CalendarApp::new_demo();
-    let mut state = demo_document(&app);
-    present(&mut app, &mut state, &ROOT);
-    let shown: Vec<Id> = app.model.events.iter().map(|event| event.id).collect();
-    assert!(!shown.is_empty(), "the demo calendar has events");
-
-    corrupt_events(&mut state);
-    assert!(Calendar::read_whole(&state).is_err());
-    present(&mut app, &mut state, &ROOT);
-    assert_eq!(
-        app.model
-            .events
-            .iter()
-            .map(|event| event.id)
-            .collect::<Vec<_>>(),
-        shown,
-        "the calendar that last read whole stays, not an empty one"
-    );
-
-    app.sample_accounts = false;
-    app.accounts = AccountStore::sample();
-    let refusal = app
-        .start_sync(&mut Edits::lend(&mut state))
-        .expect_err("no pull starts from a calendar that does not read");
-    assert!(refusal.starts_with("Sync unavailable"), "{refusal:?}");
-    assert!(app.sync_rx.is_none() && !app.state().syncing);
-    assert_eq!(app.status.text(), Some(refusal.as_str()));
-
-    let start = app
-        .today
-        .and_time(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap());
-    let (tx, rx) = std::sync::mpsc::channel();
-    tx.send((
-        caldav::SyncResult {
-            resources: vec![caldav::RemoteResource {
-                calendar_id: "work/default".into(),
-                href: "/dav/work/meeting.ics".into(),
-                etag: Some("\"one\"".into()),
-                events: vec![crate::model::Event {
-                    id: Uuid::new_v4(),
-                    title: "Pulled into a broken calendar".into(),
-                    start,
-                    end: start + Duration::hours(1),
-                    ..crate::model::Event::default()
-                }],
-                tasks: Vec::new(),
-            }],
-            ..caldav::SyncResult::default()
-        },
-        SyncOutcome::Synced {
-            calendars: 1,
-            events: 1,
-        },
-    ))
-    .unwrap();
-    app.sync_rx = Some(rx);
-    app.state().syncing = true;
-    app.poll_sync(&mut Edits::lend(&mut state));
-    assert!(!app.state().syncing, "the drain clears the in-flight flag");
-    assert!(
-        app.status
-            .text()
-            .is_some_and(|text| text.starts_with("Sync unavailable")),
-        "the bar says the pull was not folded in, not that it synced: {:?}",
-        app.status.text()
-    );
-    assert_eq!(
-        app.model
-            .events
-            .iter()
-            .map(|event| event.id)
-            .collect::<Vec<_>>(),
-        shown,
-        "nothing was reconciled into a calendar that does not read"
-    );
 }

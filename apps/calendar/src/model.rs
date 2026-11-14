@@ -1198,61 +1198,168 @@ mod tests {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()
     }
 
-    #[test]
-    fn recurrence_expands_rules_limits_zones_and_round_trips_rrule() {
+    tilo_test_env::scenario! {
+        /// Recurrence expansion against its rule.
+        fn recurrence_expands_as_its_rule_says_within_its_window;
+
+        phase recurrence_expands_rules_limits_zones_and_round_trips_rrule;
         {
-            let mut e = sample_event(date(2026, 6, 15)); // Monday
-            e.recurrence = Recurrence::Weekly;
-            let occ = e.occurrences_in(date(2026, 6, 1), date(2026, 6, 30));
-            assert_eq!(
-                occ,
-                vec![date(2026, 6, 15), date(2026, 6, 22), date(2026, 6, 29)]
-            );
+            {
+                let mut e = sample_event(date(2026, 6, 15)); // Monday
+                e.recurrence = Recurrence::Weekly;
+                let occ = e.occurrences_in(date(2026, 6, 1), date(2026, 6, 30));
+                assert_eq!(
+                    occ,
+                    vec![date(2026, 6, 15), date(2026, 6, 22), date(2026, 6, 29)]
+                );
+            }
+            {
+                let mut e = sample_event(date(2026, 6, 15));
+                e.recurrence = Recurrence::Weekdays;
+                let occ = e.occurrences_in(date(2026, 6, 15), date(2026, 6, 21));
+                // Mon..Fri only.
+                assert_eq!(occ.len(), 5);
+                assert!(occ.iter().all(|d| d.weekday().num_days_from_monday() < 5));
+            }
+            {
+                let mut event = sample_event(date(2026, 6, 1));
+                event.recurrence = Recurrence::Daily;
+                event.recurrence_interval = 2;
+                event.recurrence_count = Some(4);
+                event.recurrence_exdates.insert(date(2026, 6, 3));
+                event.occurrence_overrides.push(OccurrenceOverride {
+                    original_date: date(2026, 6, 5),
+                    original_time: None,
+                    cancelled: false,
+                    start: Some(date(2026, 6, 6).and_hms_opt(9, 0, 0).unwrap()),
+                    end: Some(date(2026, 6, 6).and_hms_opt(10, 0, 0).unwrap()),
+                    end_later_fold: false,
+                    title: Some("Moved instance".into()),
+                    location: None,
+                });
+                assert_eq!(
+                    event.occurrences_in(date(2026, 6, 1), date(2026, 6, 10)),
+                    vec![date(2026, 6, 1), date(2026, 6, 6), date(2026, 6, 7)]
+                );
+            }
+            {
+                let e = sample_event(date(2026, 6, 15));
+                assert!(e.occurs_on(date(2026, 6, 15)));
+                assert!(!e.occurs_on(date(2026, 6, 16)));
+            }
+            {
+                for r in [
+                    Recurrence::Daily,
+                    Recurrence::Weekdays,
+                    Recurrence::Weekly,
+                    Recurrence::Monthly,
+                    Recurrence::Yearly,
+                ] {
+                    assert_eq!(Recurrence::from_rrule(&r.to_rrule()), r);
+                }
+            }
         }
+
+        phase expansion_matches_the_exported_rrule;
         {
-            let mut e = sample_event(date(2026, 6, 15));
-            e.recurrence = Recurrence::Weekdays;
-            let occ = e.occurrences_in(date(2026, 6, 15), date(2026, 6, 21));
-            // Mon..Fri only.
-            assert_eq!(occ.len(), 5);
-            assert!(occ.iter().all(|d| d.weekday().num_days_from_monday() < 5));
-        }
-        {
-            let mut event = sample_event(date(2026, 6, 1));
-            event.recurrence = Recurrence::Daily;
-            event.recurrence_interval = 2;
-            event.recurrence_count = Some(4);
-            event.recurrence_exdates.insert(date(2026, 6, 3));
-            event.occurrence_overrides.push(OccurrenceOverride {
-                original_date: date(2026, 6, 5),
-                original_time: None,
-                cancelled: false,
-                start: Some(date(2026, 6, 6).and_hms_opt(9, 0, 0).unwrap()),
-                end: Some(date(2026, 6, 6).and_hms_opt(10, 0, 0).unwrap()),
-                end_later_fold: false,
-                title: Some("Moved instance".into()),
-                location: None,
-            });
-            assert_eq!(
-                event.occurrences_in(date(2026, 6, 1), date(2026, 6, 10)),
-                vec![date(2026, 6, 1), date(2026, 6, 6), date(2026, 6, 7)]
-            );
-        }
-        {
-            let e = sample_event(date(2026, 6, 15));
-            assert!(e.occurs_on(date(2026, 6, 15)));
-            assert!(!e.occurs_on(date(2026, 6, 16)));
-        }
-        {
-            for r in [
+            use std::fmt::Write as _;
+            let seeds = [
+                date(2024, 1, 31),
+                date(2024, 2, 29),
+                date(2026, 6, 15),
+                date(2026, 6, 17),
+                date(2026, 6, 20),
+            ];
+            let rules = [
                 Recurrence::Daily,
                 Recurrence::Weekdays,
                 Recurrence::Weekly,
                 Recurrence::Monthly,
                 Recurrence::Yearly,
-            ] {
-                assert_eq!(Recurrence::from_rrule(&r.to_rrule()), r);
+            ];
+            let (from, to) = (date(2023, 12, 1), date(2028, 6, 30));
+            for seed in seeds {
+                for recurrence in rules {
+                    for interval in 1..=3 {
+                        for (count, until) in [
+                            (None, None),
+                            (Some(7), None),
+                            (None, Some(seed + Duration::days(400))),
+                        ] {
+                            let mut event = sample_event(seed);
+                            event.recurrence = recurrence;
+                            event.recurrence_interval = interval;
+                            event.recurrence_count = count;
+                            event.recurrence_until = until;
+                            let mut rule = format!("{};INTERVAL={interval}", recurrence.to_rrule());
+                            if let Some(count) = count {
+                                let _ = write!(rule, ";COUNT={count}");
+                            }
+                            if let Some(until) = until {
+                                let _ = write!(rule, ";UNTIL={}T235959Z", until.format("%Y%m%d"));
+                            }
+                            let rfc = |exdate: Option<NaiveDate>| -> Vec<NaiveDate> {
+                                let mut text =
+                                    format!("DTSTART:{}T000000Z\nRRULE:{rule}", seed.format("%Y%m%d"));
+                                if let Some(exdate) = exdate {
+                                    let _ =
+                                        write!(text, "\nEXDATE:{}T000000Z", exdate.format("%Y%m%d"));
+                                }
+                                let set: rrule::RRuleSet = text.parse().expect("valid rule");
+                                let end = to
+                                    .and_hms_opt(23, 59, 59)
+                                    .unwrap()
+                                    .and_utc()
+                                    .with_timezone(&rrule::Tz::UTC);
+                                set.before(end)
+                                    .all(u16::MAX)
+                                    .dates
+                                    .into_iter()
+                                    .map(|at| at.date_naive())
+                                    .filter(|day| *day >= from)
+                                    .collect()
+                            };
+                            let expected = rfc(None);
+                            let label = format!("{rule} from {seed}");
+                            assert_eq!(event.occurrences_in(from, to), expected, "{label}");
+                            let Some(excluded) = expected.get(2).copied() else {
+                                continue;
+                            };
+                            event.recurrence_exdates.insert(excluded);
+                            assert_eq!(
+                                event.occurrences_in(from, to),
+                                rfc(Some(excluded)),
+                                "{label} without {excluded}"
+                            );
+                        }
+                    }
+                }
             }
+        }
+
+        phase a_counted_series_shows_its_window_not_its_age;
+        {
+            let grid: Vec<NaiveDate> = (0..42)
+                .map(|day| date(2026, 9, 28) + Duration::days(day))
+                .collect();
+            let shown = |event: &Event| {
+                grid.iter()
+                    .copied()
+                    .filter(|day| event.occurs_on(*day))
+                    .collect::<Vec<_>>()
+            };
+            let weekly = |seed: NaiveDate, count| {
+                let mut event = sample_event(seed);
+                event.recurrence = Recurrence::Weekly;
+                event.recurrence_count = Some(count);
+                event
+            };
+            let young = shown(&weekly(date(2026, 6, 1), 10_000));
+            let old = shown(&weekly(date(1996, 6, 3), 10_000));
+            assert_eq!(young.len(), 6);
+            assert_eq!(old, young);
+            let ended = shown(&weekly(date(1996, 6, 3), 1584));
+            assert_eq!(ended, vec![date(2026, 9, 28), date(2026, 10, 5)]);
         }
     }
 
@@ -1360,83 +1467,6 @@ mod tests {
     }
 
     #[test]
-    fn expansion_matches_the_exported_rrule() {
-        use std::fmt::Write as _;
-        let seeds = [
-            date(2024, 1, 31),
-            date(2024, 2, 29),
-            date(2026, 6, 15),
-            date(2026, 6, 17),
-            date(2026, 6, 20),
-        ];
-        let rules = [
-            Recurrence::Daily,
-            Recurrence::Weekdays,
-            Recurrence::Weekly,
-            Recurrence::Monthly,
-            Recurrence::Yearly,
-        ];
-        let (from, to) = (date(2023, 12, 1), date(2028, 6, 30));
-        for seed in seeds {
-            for recurrence in rules {
-                for interval in 1..=3 {
-                    for (count, until) in [
-                        (None, None),
-                        (Some(7), None),
-                        (None, Some(seed + Duration::days(400))),
-                    ] {
-                        let mut event = sample_event(seed);
-                        event.recurrence = recurrence;
-                        event.recurrence_interval = interval;
-                        event.recurrence_count = count;
-                        event.recurrence_until = until;
-                        let mut rule = format!("{};INTERVAL={interval}", recurrence.to_rrule());
-                        if let Some(count) = count {
-                            let _ = write!(rule, ";COUNT={count}");
-                        }
-                        if let Some(until) = until {
-                            let _ = write!(rule, ";UNTIL={}T235959Z", until.format("%Y%m%d"));
-                        }
-                        let rfc = |exdate: Option<NaiveDate>| -> Vec<NaiveDate> {
-                            let mut text =
-                                format!("DTSTART:{}T000000Z\nRRULE:{rule}", seed.format("%Y%m%d"));
-                            if let Some(exdate) = exdate {
-                                let _ =
-                                    write!(text, "\nEXDATE:{}T000000Z", exdate.format("%Y%m%d"));
-                            }
-                            let set: rrule::RRuleSet = text.parse().expect("valid rule");
-                            let end = to
-                                .and_hms_opt(23, 59, 59)
-                                .unwrap()
-                                .and_utc()
-                                .with_timezone(&rrule::Tz::UTC);
-                            set.before(end)
-                                .all(u16::MAX)
-                                .dates
-                                .into_iter()
-                                .map(|at| at.date_naive())
-                                .filter(|day| *day >= from)
-                                .collect()
-                        };
-                        let expected = rfc(None);
-                        let label = format!("{rule} from {seed}");
-                        assert_eq!(event.occurrences_in(from, to), expected, "{label}");
-                        let Some(excluded) = expected.get(2).copied() else {
-                            continue;
-                        };
-                        event.recurrence_exdates.insert(excluded);
-                        assert_eq!(
-                            event.occurrences_in(from, to),
-                            rfc(Some(excluded)),
-                            "{label} without {excluded}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
     fn occurrences_before_counts_what_the_rule_matches() {
         let seeds = [
             date(2024, 1, 31),
@@ -1481,30 +1511,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn a_counted_series_shows_its_window_not_its_age() {
-        let grid: Vec<NaiveDate> = (0..42)
-            .map(|day| date(2026, 9, 28) + Duration::days(day))
-            .collect();
-        let shown = |event: &Event| {
-            grid.iter()
-                .copied()
-                .filter(|day| event.occurs_on(*day))
-                .collect::<Vec<_>>()
-        };
-        let weekly = |seed: NaiveDate, count| {
-            let mut event = sample_event(seed);
-            event.recurrence = Recurrence::Weekly;
-            event.recurrence_count = Some(count);
-            event
-        };
-        let young = shown(&weekly(date(2026, 6, 1), 10_000));
-        let old = shown(&weekly(date(1996, 6, 3), 10_000));
-        assert_eq!(young.len(), 6);
-        assert_eq!(old, young);
-        let ended = shown(&weekly(date(1996, 6, 3), 1584));
-        assert_eq!(ended, vec![date(2026, 9, 28), date(2026, 10, 5)]);
     }
 }

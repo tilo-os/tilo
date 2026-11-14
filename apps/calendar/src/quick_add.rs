@@ -361,211 +361,216 @@ mod tests {
         date.and_hms_opt(hour, minute, 0).unwrap()
     }
 
-    #[test]
-    fn a_weekday_and_a_time_are_read_and_the_words_are_the_title() {
-        let event = parse_now("Lunch with Sam friday 1pm");
-        assert_eq!(event.title, "Lunch with Sam");
-        assert_eq!(
-            event.start,
-            at(NaiveDate::from_ymd_opt(2026, 10, 30).unwrap(), 13, 0)
-        );
-        assert_eq!(event.end, event.start + Duration::hours(1));
-        assert_eq!(
-            event.read,
-            Read {
-                day: true,
-                time: true,
-                length: false
-            }
-        );
-    }
+    tilo_test_env::scenario! {
+        /// One line of text read as an event: its day, its hours, its length and its title.
+        fn quick_add_reads_a_line_as_an_event;
 
-    /// The quarter hour a new event starts on is a quarter hour on the clock,
-    /// not the quarter hour plus the seconds and the fraction that happened to
-    /// show when the person pressed the key: a document keeps events to the
-    /// minute, and a start with a stray second in it never reads back as the
-    /// one just written.
-    #[test]
-    fn a_new_event_starts_on_the_quarter_hour_itself() {
-        let at_14_07_31 = NaiveDate::from_ymd_opt(2026, 10, 28)
-            .unwrap()
-            .and_hms_nano_opt(14, 7, 31, 978_144_743)
-            .unwrap();
-        assert_eq!(
-            next_quarter_hour(at_14_07_31),
-            NaiveTime::from_hms_opt(14, 15, 0).unwrap()
-        );
-        let at_14_59_59 = NaiveDate::from_ymd_opt(2026, 10, 28)
-            .unwrap()
-            .and_hms_opt(14, 59, 59)
-            .unwrap();
-        assert_eq!(
-            next_quarter_hour(at_14_59_59),
-            NaiveTime::from_hms_opt(15, 0, 0).unwrap()
-        );
-    }
+        phase a_weekday_and_a_time_are_read_and_the_words_are_the_title;
+        {
+            let event = parse_now("Lunch with Sam friday 1pm");
+            assert_eq!(event.title, "Lunch with Sam");
+            assert_eq!(
+                event.start,
+                at(NaiveDate::from_ymd_opt(2026, 10, 30).unwrap(), 13, 0)
+            );
+            assert_eq!(event.end, event.start + Duration::hours(1));
+            assert_eq!(
+                event.read,
+                Read {
+                    day: true,
+                    time: true,
+                    length: false
+                }
+            );
+        }
 
-    #[test]
-    fn a_line_with_no_day_or_time_lands_on_the_next_quarter_hour() {
-        let event = parse_now("Call the plumber");
-        assert_eq!(event.title, "Call the plumber");
-        assert_eq!(event.start, at(now().date(), 14, 15));
-        assert_eq!(event.read, Read::default());
-    }
+        phase a_new_event_starts_on_the_quarter_hour_itself;
+        // The quarter hour a new event starts on is a quarter hour on the clock,
+        // not the quarter hour plus the seconds and the fraction that happened to
+        // show when the person pressed the key: a document keeps events to the
+        // minute, and a start with a stray second in it never reads back as the
+        // one just written.
+        {
+            let at_14_07_31 = NaiveDate::from_ymd_opt(2026, 10, 28)
+                .unwrap()
+                .and_hms_nano_opt(14, 7, 31, 978_144_743)
+                .unwrap();
+            assert_eq!(
+                next_quarter_hour(at_14_07_31),
+                NaiveTime::from_hms_opt(14, 15, 0).unwrap()
+            );
+            let at_14_59_59 = NaiveDate::from_ymd_opt(2026, 10, 28)
+                .unwrap()
+                .and_hms_opt(14, 59, 59)
+                .unwrap();
+            assert_eq!(
+                next_quarter_hour(at_14_59_59),
+                NaiveTime::from_hms_opt(15, 0, 0).unwrap()
+            );
+        }
 
-    #[test]
-    fn the_day_being_looked_at_is_the_default_day() {
-        let friday = NaiveDate::from_ymd_opt(2026, 10, 30).unwrap();
-        let event = parse("Standup 9:30", now(), friday);
-        assert_eq!(event.start, at(friday, 9, 30));
-    }
+        phase a_line_with_no_day_or_time_lands_on_the_next_quarter_hour;
+        {
+            let event = parse_now("Call the plumber");
+            assert_eq!(event.title, "Call the plumber");
+            assert_eq!(event.start, at(now().date(), 14, 15));
+            assert_eq!(event.read, Read::default());
+        }
 
-    #[test]
-    fn today_and_tonight_and_tomorrow() {
-        assert_eq!(parse_now("Coffee today 9am").start, at(now().date(), 9, 0));
-        assert_eq!(parse_now("Dinner tonight").start, at(now().date(), 20, 0));
-        assert_eq!(
-            parse_now("Review tomorrow 15:00").start,
-            at(now().date() + Duration::days(1), 15, 0)
-        );
-    }
+        phase the_day_being_looked_at_is_the_default_day;
+        {
+            let friday = NaiveDate::from_ymd_opt(2026, 10, 30).unwrap();
+            let event = parse("Standup 9:30", now(), friday);
+            assert_eq!(event.start, at(friday, 9, 30));
+        }
 
-    #[test]
-    fn next_weekday_is_the_one_after_this_week() {
-        assert_eq!(
-            parse_now("Sync next friday 10am").start,
-            at(NaiveDate::from_ymd_opt(2026, 11, 6).unwrap(), 10, 0)
-        );
-        assert_eq!(
-            parse_now("Lunch wednesday 12:30").start,
-            at(now().date(), 12, 30)
-        );
-    }
+        phase today_and_tonight_and_tomorrow;
+        {
+            assert_eq!(parse_now("Coffee today 9am").start, at(now().date(), 9, 0));
+            assert_eq!(parse_now("Dinner tonight").start, at(now().date(), 20, 0));
+            assert_eq!(
+                parse_now("Review tomorrow 15:00").start,
+                at(now().date() + Duration::days(1), 15, 0)
+            );
+        }
 
-    #[test]
-    fn an_iso_date_is_read_however_it_is_introduced() {
-        assert_eq!(
-            parse_now("Trip on 2026-11-03 at 8:00").start,
-            at(NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(), 8, 0)
-        );
-        assert_eq!(parse_now("Trip 2026-11-03").title, "Trip");
-    }
+        phase next_weekday_is_the_one_after_this_week;
+        {
+            assert_eq!(
+                parse_now("Sync next friday 10am").start,
+                at(NaiveDate::from_ymd_opt(2026, 11, 6).unwrap(), 10, 0)
+            );
+            assert_eq!(
+                parse_now("Lunch wednesday 12:30").start,
+                at(now().date(), 12, 30)
+            );
+        }
 
-    #[test]
-    fn a_length_sets_the_end_and_leaves_the_hours_alone() {
-        let event = parse_now("Workshop tomorrow at 10 for 90 min");
-        assert_eq!(event.start, at(now().date() + Duration::days(1), 10, 0));
-        assert_eq!(event.end, event.start + Duration::minutes(90));
-        assert_eq!(event.title, "Workshop");
-        assert!(event.read.length);
-        assert_eq!(
-            parse_now("Yoga at 7 for half an hour").end,
-            parse_now("Yoga at 7 for half an hour").start + Duration::minutes(30)
-        );
-        assert_eq!(
-            parse_now("Deep work for 2h").end,
-            parse_now("Deep work for 2h").start + Duration::hours(2)
-        );
-    }
+        phase an_iso_date_is_read_however_it_is_introduced;
+        {
+            assert_eq!(
+                parse_now("Trip on 2026-11-03 at 8:00").start,
+                at(NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(), 8, 0)
+            );
+            assert_eq!(parse_now("Trip 2026-11-03").title, "Trip");
+        }
 
-    #[test]
-    fn clocks_are_read_the_way_people_write_them() {
-        assert_eq!(
-            parse_now("Call at 3pm").start.time(),
-            NaiveTime::from_hms_opt(15, 0, 0).unwrap()
-        );
-        assert_eq!(
-            parse_now("Call at 3:30pm").start.time(),
-            NaiveTime::from_hms_opt(15, 30, 0).unwrap()
-        );
-        assert_eq!(
-            parse_now("Call at 15:30").start.time(),
-            NaiveTime::from_hms_opt(15, 30, 0).unwrap()
-        );
-        assert_eq!(
-            parse_now("Call at 12am").start.time(),
-            NaiveTime::from_hms_opt(0, 0, 0).unwrap()
-        );
-        assert_eq!(
-            parse_now("Call at noon").start.time(),
-            NaiveTime::from_hms_opt(12, 0, 0).unwrap()
-        );
-        assert_eq!(
-            parse_now("Call at midnight").start.time(),
-            NaiveTime::from_hms_opt(0, 0, 0).unwrap()
-        );
-        assert_eq!(
-            parse_now("Call at 7").start.time(),
-            NaiveTime::from_hms_opt(7, 0, 0).unwrap()
-        );
-        assert_eq!(
-            parse_now("Call at 3").start.time(),
-            NaiveTime::from_hms_opt(15, 0, 0).unwrap()
-        );
-        assert_eq!(
-            parse_now("Call at 21").start.time(),
-            NaiveTime::from_hms_opt(21, 0, 0).unwrap()
-        );
-        assert_eq!(
-            parse_now("Call at 16").start.time(),
-            NaiveTime::from_hms_opt(16, 0, 0).unwrap()
-        );
-    }
+        phase a_length_sets_the_end_and_leaves_the_hours_alone;
+        {
+            let event = parse_now("Workshop tomorrow at 10 for 90 min");
+            assert_eq!(event.start, at(now().date() + Duration::days(1), 10, 0));
+            assert_eq!(event.end, event.start + Duration::minutes(90));
+            assert_eq!(event.title, "Workshop");
+            assert!(event.read.length);
+            assert_eq!(
+                parse_now("Yoga at 7 for half an hour").end,
+                parse_now("Yoga at 7 for half an hour").start + Duration::minutes(30)
+            );
+            assert_eq!(
+                parse_now("Deep work for 2h").end,
+                parse_now("Deep work for 2h").start + Duration::hours(2)
+            );
+        }
 
-    #[test]
-    fn words_that_are_not_understood_are_kept_as_the_title() {
-        let event = parse_now("Dinner at Joe's at 7pm");
-        assert_eq!(event.title, "Dinner at Joe's");
-        assert_eq!(
-            event.start.time(),
-            NaiveTime::from_hms_opt(19, 0, 0).unwrap()
-        );
-        let event = parse_now("1:1 with Sam about 5 things");
-        assert_eq!(event.title, "1:1 with Sam about 5 things");
-    }
+        phase clocks_are_read_the_way_people_write_them;
+        {
+            assert_eq!(
+                parse_now("Call at 3pm").start.time(),
+                NaiveTime::from_hms_opt(15, 0, 0).unwrap()
+            );
+            assert_eq!(
+                parse_now("Call at 3:30pm").start.time(),
+                NaiveTime::from_hms_opt(15, 30, 0).unwrap()
+            );
+            assert_eq!(
+                parse_now("Call at 15:30").start.time(),
+                NaiveTime::from_hms_opt(15, 30, 0).unwrap()
+            );
+            assert_eq!(
+                parse_now("Call at 12am").start.time(),
+                NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+            );
+            assert_eq!(
+                parse_now("Call at noon").start.time(),
+                NaiveTime::from_hms_opt(12, 0, 0).unwrap()
+            );
+            assert_eq!(
+                parse_now("Call at midnight").start.time(),
+                NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+            );
+            assert_eq!(
+                parse_now("Call at 7").start.time(),
+                NaiveTime::from_hms_opt(7, 0, 0).unwrap()
+            );
+            assert_eq!(
+                parse_now("Call at 3").start.time(),
+                NaiveTime::from_hms_opt(15, 0, 0).unwrap()
+            );
+            assert_eq!(
+                parse_now("Call at 21").start.time(),
+                NaiveTime::from_hms_opt(21, 0, 0).unwrap()
+            );
+            assert_eq!(
+                parse_now("Call at 16").start.time(),
+                NaiveTime::from_hms_opt(16, 0, 0).unwrap()
+            );
+        }
 
-    #[test]
-    fn an_impossible_time_is_left_in_the_title_rather_than_guessed() {
-        let event = parse_now("Party at 25:99");
-        assert_eq!(event.title, "Party at 25:99");
-        assert_eq!(
-            event.start.time(),
-            NaiveTime::from_hms_opt(14, 15, 0).unwrap()
-        );
-        assert!(!event.read.time);
-    }
+        phase words_that_are_not_understood_are_kept_as_the_title;
+        {
+            let event = parse_now("Dinner at Joe's at 7pm");
+            assert_eq!(event.title, "Dinner at Joe's");
+            assert_eq!(
+                event.start.time(),
+                NaiveTime::from_hms_opt(19, 0, 0).unwrap()
+            );
+            let event = parse_now("1:1 with Sam about 5 things");
+            assert_eq!(event.title, "1:1 with Sam about 5 things");
+        }
 
-    #[test]
-    fn the_summary_says_what_will_be_written_and_names_another_day() {
-        let event = parse_now("Lunch with Sam friday 1pm");
-        let summary = event.summary(now().date());
-        assert!(summary.starts_with("Lunch with Sam, "), "{summary}");
-        assert!(
-            summary.contains(&crate::date::fmt_time(&event.start)),
-            "the hours are named: {summary}"
-        );
-        assert!(
-            summary.contains(&crate::date::weekday_short(event.start.date()))
-                || summary.contains(&crate::date::fmt_day_long(event.start.date())),
-            "another day is named: {summary}"
-        );
-        let today = parse_now("Coffee today 9am").summary(now().date());
-        assert!(
-            today.contains("Coffee, Today"),
-            "the day being looked at needs no date: {today}"
-        );
-    }
+        phase an_impossible_time_is_left_in_the_title_rather_than_guessed;
+        {
+            let event = parse_now("Party at 25:99");
+            assert_eq!(event.title, "Party at 25:99");
+            assert_eq!(
+                event.start.time(),
+                NaiveTime::from_hms_opt(14, 15, 0).unwrap()
+            );
+            assert!(!event.read.time);
+        }
 
-    #[test]
-    fn an_empty_line_names_no_title_but_still_names_a_time() {
-        let event = parse_now("");
-        assert_eq!(event.title, "");
-        assert!(
-            event
-                .summary(now().date())
-                .contains(&crate::date::fmt_time(&event.start)),
-            "{}",
-            event.summary(now().date())
-        );
+        phase the_summary_says_what_will_be_written_and_names_another_day;
+        {
+            let event = parse_now("Lunch with Sam friday 1pm");
+            let summary = event.summary(now().date());
+            assert!(summary.starts_with("Lunch with Sam, "), "{summary}");
+            assert!(
+                summary.contains(&crate::date::fmt_time(&event.start)),
+                "the hours are named: {summary}"
+            );
+            assert!(
+                summary.contains(&crate::date::weekday_short(event.start.date()))
+                    || summary.contains(&crate::date::fmt_day_long(event.start.date())),
+                "another day is named: {summary}"
+            );
+            let today = parse_now("Coffee today 9am").summary(now().date());
+            assert!(
+                today.contains("Coffee, Today"),
+                "the day being looked at needs no date: {today}"
+            );
+        }
+
+        phase an_empty_line_names_no_title_but_still_names_a_time;
+        {
+            let event = parse_now("");
+            assert_eq!(event.title, "");
+            assert!(
+                event
+                    .summary(now().date())
+                    .contains(&crate::date::fmt_time(&event.start)),
+                "{}",
+                event.summary(now().date())
+            );
+        }
     }
 }

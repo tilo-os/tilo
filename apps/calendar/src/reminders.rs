@@ -153,102 +153,107 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reminders_ring_before_each_occurrence_at_its_instant() {
-        let berlin = Viewer::named("Europe/Berlin");
-        let now = Utc.with_ymd_and_hms(2026, 6, 30, 6, 0, 0).unwrap();
-        let mut standup = event("Standup", "Europe/Berlin", at(2026, 6, 29, 9, 30), Some(10));
-        standup.recurrence = crate::model::Recurrence::Weekdays;
-        let ny = event(
-            "New York call",
-            "America/New_York",
-            at(2026, 6, 30, 9, 0),
-            Some(30),
-        );
-        let silent = event("No reminder", "Europe/Berlin", at(2026, 6, 30, 12, 0), None);
-        let past = event("Earlier", "Europe/Berlin", at(2026, 6, 30, 7, 0), Some(10));
-        let model = Calendar {
-            events: vec![standup, ny, silent, past].into(),
-            ..Calendar::default()
-        };
-        let due = due(&model, berlin, now, &HashSet::new());
-        let first: Vec<(&str, DateTime<Utc>)> = due
-            .iter()
-            .take(2)
-            .map(|reminder| (reminder.title.as_str(), reminder.at))
-            .collect();
-        assert_eq!(
-            first,
-            vec![
-                (
-                    "Standup",
-                    Utc.with_ymd_and_hms(2026, 6, 30, 7, 20, 0).unwrap()
-                ),
-                (
-                    "New York call",
-                    Utc.with_ymd_and_hms(2026, 6, 30, 12, 30, 0).unwrap()
-                ),
-            ]
-        );
-        assert_eq!(due[1].body, "3:00 PM–3:45 PM — Meet");
-        assert!(due.iter().all(|reminder| reminder.title != "No reminder"));
-        assert!(
-            due.iter().all(|reminder| reminder.title != "Earlier"),
-            "past ones never ring"
-        );
-        let standups = due.iter().filter(|reminder| reminder.title == "Standup");
-        assert_eq!(standups.clone().count(), 6);
-        let tags: HashSet<_> = standups.map(|reminder| reminder.tag.clone()).collect();
-        assert_eq!(tags.len(), 6);
-        assert!(due.iter().all(|reminder| reminder.tag.len() == 15));
-        assert!(
-            due[0]
-                .activation
-                .starts_with("tilo-calendar:open/calendar.calendar/events/")
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Reminders: when they ring, for which calendars, and what a change reschedules.
+        fn reminders_ring_for_what_is_shown_and_follow_what_changed;
 
-    #[test]
-    fn a_hidden_calendar_rings_nothing() {
-        let berlin = Viewer::named("Europe/Berlin");
-        let now = Utc.with_ymd_and_hms(2026, 6, 30, 6, 0, 0).unwrap();
-        let mut synced = event("Synced", "Europe/Berlin", at(2026, 6, 30, 12, 0), Some(10));
-        synced.calendar_id = Some("work/team".into());
-        let model = Calendar {
-            events: vec![synced].into(),
-            ..Calendar::default()
-        };
-        assert_eq!(due(&model, berlin, now, &HashSet::new()).len(), 1);
-        let hidden = HashSet::from(["work/team".to_owned()]);
-        assert!(due(&model, berlin, now, &hidden).is_empty());
-    }
+        phase reminders_ring_before_each_occurrence_at_its_instant;
+        {
+            let berlin = Viewer::named("Europe/Berlin");
+            let now = Utc.with_ymd_and_hms(2026, 6, 30, 6, 0, 0).unwrap();
+            let mut standup = event("Standup", "Europe/Berlin", at(2026, 6, 29, 9, 30), Some(10));
+            standup.recurrence = crate::model::Recurrence::Weekdays;
+            let ny = event(
+                "New York call",
+                "America/New_York",
+                at(2026, 6, 30, 9, 0),
+                Some(30),
+            );
+            let silent = event("No reminder", "Europe/Berlin", at(2026, 6, 30, 12, 0), None);
+            let past = event("Earlier", "Europe/Berlin", at(2026, 6, 30, 7, 0), Some(10));
+            let model = Calendar {
+                events: vec![standup, ny, silent, past].into(),
+                ..Calendar::default()
+            };
+            let due = due(&model, berlin, now, &HashSet::new());
+            let first: Vec<(&str, DateTime<Utc>)> = due
+                .iter()
+                .take(2)
+                .map(|reminder| (reminder.title.as_str(), reminder.at))
+                .collect();
+            assert_eq!(
+                first,
+                vec![
+                    (
+                        "Standup",
+                        Utc.with_ymd_and_hms(2026, 6, 30, 7, 20, 0).unwrap()
+                    ),
+                    (
+                        "New York call",
+                        Utc.with_ymd_and_hms(2026, 6, 30, 12, 30, 0).unwrap()
+                    ),
+                ]
+            );
+            assert_eq!(due[1].body, "3:00 PM–3:45 PM — Meet");
+            assert!(due.iter().all(|reminder| reminder.title != "No reminder"));
+            assert!(
+                due.iter().all(|reminder| reminder.title != "Earlier"),
+                "past ones never ring"
+            );
+            let standups = due.iter().filter(|reminder| reminder.title == "Standup");
+            assert_eq!(standups.clone().count(), 6);
+            let tags: HashSet<_> = standups.map(|reminder| reminder.tag.clone()).collect();
+            assert_eq!(tags.len(), 6);
+            assert!(due.iter().all(|reminder| reminder.tag.len() == 15));
+            assert!(
+                due[0]
+                    .activation
+                    .starts_with("tilo-calendar:open/calendar.calendar/events/")
+            );
+        }
 
-    #[test]
-    fn reconciling_cancels_the_gone_and_schedules_the_new_and_moved() {
-        let notifier = Recording::default();
-        let reminder = |tag: &str, minute: u32| Reminder {
-            tag: tag.into(),
-            at: Utc.with_ymd_and_hms(2026, 6, 30, 7, minute, 0).unwrap(),
-            title: "Standup".into(),
-            body: "09:30–09:45".into(),
-            activation: "tilo-calendar:open/x".into(),
-        };
-        reconcile(&notifier, &[reminder("ca", 20), reminder("cb", 30)]).unwrap();
-        assert_eq!(notifier.scheduled().unwrap().len(), 2);
-        reconcile(&notifier, &[reminder("ca", 25), reminder("cc", 40)]).unwrap();
-        let mut held: Vec<(String, ui::time::SystemTime)> = notifier
-            .scheduled()
-            .unwrap()
-            .into_iter()
-            .map(|scheduled| (scheduled.tag, scheduled.at))
-            .collect();
-        held.sort();
-        assert_eq!(
-            held,
-            vec![
-                ("ca".to_owned(), system_time(reminder("ca", 25).at)),
-                ("cc".to_owned(), system_time(reminder("cc", 40).at)),
-            ]
-        );
+        phase a_hidden_calendar_rings_nothing;
+        {
+            let berlin = Viewer::named("Europe/Berlin");
+            let now = Utc.with_ymd_and_hms(2026, 6, 30, 6, 0, 0).unwrap();
+            let mut synced = event("Synced", "Europe/Berlin", at(2026, 6, 30, 12, 0), Some(10));
+            synced.calendar_id = Some("work/team".into());
+            let model = Calendar {
+                events: vec![synced].into(),
+                ..Calendar::default()
+            };
+            assert_eq!(due(&model, berlin, now, &HashSet::new()).len(), 1);
+            let hidden = HashSet::from(["work/team".to_owned()]);
+            assert!(due(&model, berlin, now, &hidden).is_empty());
+        }
+
+        phase reconciling_cancels_the_gone_and_schedules_the_new_and_moved;
+        {
+            let notifier = Recording::default();
+            let reminder = |tag: &str, minute: u32| Reminder {
+                tag: tag.into(),
+                at: Utc.with_ymd_and_hms(2026, 6, 30, 7, minute, 0).unwrap(),
+                title: "Standup".into(),
+                body: "09:30–09:45".into(),
+                activation: "tilo-calendar:open/x".into(),
+            };
+            reconcile(&notifier, &[reminder("ca", 20), reminder("cb", 30)]).unwrap();
+            assert_eq!(notifier.scheduled().unwrap().len(), 2);
+            reconcile(&notifier, &[reminder("ca", 25), reminder("cc", 40)]).unwrap();
+            let mut held: Vec<(String, ui::time::SystemTime)> = notifier
+                .scheduled()
+                .unwrap()
+                .into_iter()
+                .map(|scheduled| (scheduled.tag, scheduled.at))
+                .collect();
+            held.sort();
+            assert_eq!(
+                held,
+                vec![
+                    ("ca".to_owned(), system_time(reminder("ca", 25).at)),
+                    ("cc".to_owned(), system_time(reminder("cc", 40).at)),
+                ]
+            );
+        }
     }
 }

@@ -321,78 +321,83 @@ mod tests {
         }
     }
 
-    #[test]
-    fn all_future_events_split_the_series_at_the_occurrence() {
-        let before = weekly();
-        let new_id = Uuid::new_v4();
-        let (old, new) = split_series(
-            &before,
-            date(6, 22),
-            (at(6, 23, 11), at(6, 23, 12), false),
-            new_id,
-        );
-        let new = new.expect("a later occurrence starts a new series");
+    tilo_test_env::scenario! {
+        /// A change to this and all future occurrences of a series.
+        fn all_future_events_splits_or_moves_a_series_and_keeps_its_end;
 
-        assert_eq!(old.id, before.id);
-        assert_eq!(old.recurrence_until, Some(date(6, 21)));
-        assert_eq!(old.recurrence_count, None);
-        assert_eq!(old.start, before.start);
-        assert_eq!(
-            old.occurrences_in(date(6, 1), date(12, 31)),
-            vec![date(6, 1), date(6, 8), date(6, 15)]
-        );
-        assert!(old.recurrence_exdates.is_empty());
+        phase all_future_events_split_the_series_at_the_occurrence;
+        {
+            let before = weekly();
+            let new_id = Uuid::new_v4();
+            let (old, new) = split_series(
+                &before,
+                date(6, 22),
+                (at(6, 23, 11), at(6, 23, 12), false),
+                new_id,
+            );
+            let new = new.expect("a later occurrence starts a new series");
 
-        assert_eq!(new.id, new_id);
-        assert_eq!((new.start, new.end), (at(6, 23, 11), at(6, 23, 12)));
-        assert_eq!(new.recurrence, Recurrence::Weekly);
-        assert_eq!(new.recurrence_count, Some(7));
-        assert!(new.recurrence_exdates.contains(&date(6, 30)));
-        let carried: Vec<_> = new.occurrence_overrides.iter().collect();
-        assert_eq!(carried.len(), 1);
-        assert_eq!(carried[0].original_date, date(7, 7));
-        assert_eq!(carried[0].original_time, Some(at(6, 23, 11).time()));
-        assert_eq!(
-            carried[0].start,
-            Some(date(7, 6).and_hms_opt(10, 0, 0).unwrap())
-        );
-        let shown = new.occurrences_in(date(6, 1), date(12, 31));
-        assert_eq!(shown.len(), 6, "seven left, one skipped: {shown:?}");
-        assert_eq!(shown[0], date(6, 23));
-        assert!(!shown.contains(&date(6, 30)));
-    }
+            assert_eq!(old.id, before.id);
+            assert_eq!(old.recurrence_until, Some(date(6, 21)));
+            assert_eq!(old.recurrence_count, None);
+            assert_eq!(old.start, before.start);
+            assert_eq!(
+                old.occurrences_in(date(6, 1), date(12, 31)),
+                vec![date(6, 1), date(6, 8), date(6, 15)]
+            );
+            assert!(old.recurrence_exdates.is_empty());
 
-    #[test]
-    fn all_future_events_from_the_first_move_the_whole_series() {
-        let before = weekly();
-        let (whole, new) = split_series(
-            &before,
-            date(6, 1),
-            (at(6, 1, 13), at(6, 1, 14), false),
-            Uuid::new_v4(),
-        );
-        assert!(new.is_none());
-        assert_eq!(whole.id, before.id);
-        assert_eq!((whole.start, whole.end), (at(6, 1, 13), at(6, 1, 14)));
-        assert_eq!(whole.recurrence_count, Some(10));
-        assert!(whole.recurrence_exdates.contains(&date(6, 29)));
-        assert_eq!(whole.occurrence_overrides.len(), 2);
-    }
+            assert_eq!(new.id, new_id);
+            assert_eq!((new.start, new.end), (at(6, 23, 11), at(6, 23, 12)));
+            assert_eq!(new.recurrence, Recurrence::Weekly);
+            assert_eq!(new.recurrence_count, Some(7));
+            assert!(new.recurrence_exdates.contains(&date(6, 30)));
+            let carried: Vec<_> = new.occurrence_overrides.iter().collect();
+            assert_eq!(carried.len(), 1);
+            assert_eq!(carried[0].original_date, date(7, 7));
+            assert_eq!(carried[0].original_time, Some(at(6, 23, 11).time()));
+            assert_eq!(
+                carried[0].start,
+                Some(date(7, 6).and_hms_opt(10, 0, 0).unwrap())
+            );
+            let shown = new.occurrences_in(date(6, 1), date(12, 31));
+            assert_eq!(shown.len(), 6, "seven left, one skipped: {shown:?}");
+            assert_eq!(shown[0], date(6, 23));
+            assert!(!shown.contains(&date(6, 30)));
+        }
 
-    #[test]
-    fn an_until_bounded_series_keeps_its_end() {
-        let mut before = weekly();
-        before.recurrence_count = None;
-        before.recurrence_until = Some(date(8, 31));
-        let (old, new) = split_series(
-            &before,
-            date(7, 13),
-            (at(7, 13, 9), at(7, 13, 10), false),
-            Uuid::new_v4(),
-        );
-        let new = new.unwrap();
-        assert_eq!(old.recurrence_until, Some(date(7, 12)));
-        assert_eq!(new.recurrence_until, Some(date(8, 31)));
-        assert_eq!(new.recurrence_count, None);
+        phase all_future_events_from_the_first_move_the_whole_series;
+        {
+            let before = weekly();
+            let (whole, new) = split_series(
+                &before,
+                date(6, 1),
+                (at(6, 1, 13), at(6, 1, 14), false),
+                Uuid::new_v4(),
+            );
+            assert!(new.is_none());
+            assert_eq!(whole.id, before.id);
+            assert_eq!((whole.start, whole.end), (at(6, 1, 13), at(6, 1, 14)));
+            assert_eq!(whole.recurrence_count, Some(10));
+            assert!(whole.recurrence_exdates.contains(&date(6, 29)));
+            assert_eq!(whole.occurrence_overrides.len(), 2);
+        }
+
+        phase an_until_bounded_series_keeps_its_end;
+        {
+            let mut before = weekly();
+            before.recurrence_count = None;
+            before.recurrence_until = Some(date(8, 31));
+            let (old, new) = split_series(
+                &before,
+                date(7, 13),
+                (at(7, 13, 9), at(7, 13, 10), false),
+                Uuid::new_v4(),
+            );
+            let new = new.unwrap();
+            assert_eq!(old.recurrence_until, Some(date(7, 12)));
+            assert_eq!(new.recurrence_until, Some(date(8, 31)));
+            assert_eq!(new.recurrence_count, None);
+        }
     }
 }

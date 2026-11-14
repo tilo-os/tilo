@@ -1857,6 +1857,7 @@ dependencies = [
  "tilo-files",
  "tilo-recurrence",
  "tilo-rich-text",
+ "tilo-test-env",
  "tilo-timezone-engine",
  "tilo-vello",
  "tilo-winit",

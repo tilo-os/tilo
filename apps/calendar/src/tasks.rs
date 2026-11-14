@@ -389,87 +389,92 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rows_nest_subtasks_under_their_parent_and_place_new_tasks_in_the_list() {
-        let project = Uuid::new_v4();
-        let parent = task("Plan trip", None, Some(project));
-        let child = task("Book flights", Some(parent.id), Some(project));
-        let grandchild = task("Compare prices", Some(child.id), Some(project));
-        let other = task("Groceries", None, None);
-        let model = Calendar {
-            tasks: [other, grandchild, child, parent].into_iter().collect(),
-            ..Calendar::default()
-        };
-        let list = ListSel::Project(project);
-        let source = TasksSource {
-            model: &model,
-            list: &list,
-            today: day(1),
-        };
-        let rows: Vec<_> = source
-            .rows()
-            .iter()
-            .map(|row| (row.task.title.as_str(), row.depth))
-            .collect();
-        assert_eq!(
-            rows,
-            vec![("Plan trip", 0), ("Book flights", 1), ("Compare prices", 2)]
-        );
-        assert_eq!(source.placement(), (Some(project), None));
+    tilo_test_env::scenario! {
+        /// The task list's rows and regions.
+        fn the_task_list_nests_its_rows_and_stacks_its_regions;
 
-        for (list, placement, accepts) in [
-            (ListSel::Inbox, (None, None), true),
-            (ListSel::Today, (None, Some(day(1))), true),
-            (ListSel::Upcoming, (None, Some(day(2))), true),
-            (ListSel::Completed, (None, None), false),
-        ] {
+        phase rows_nest_subtasks_under_their_parent_and_place_new_tasks_in_the_list;
+        {
+            let project = Uuid::new_v4();
+            let parent = task("Plan trip", None, Some(project));
+            let child = task("Book flights", Some(parent.id), Some(project));
+            let grandchild = task("Compare prices", Some(child.id), Some(project));
+            let other = task("Groceries", None, None);
+            let model = Calendar {
+                tasks: [other, grandchild, child, parent].into_iter().collect(),
+                ..Calendar::default()
+            };
+            let list = ListSel::Project(project);
             let source = TasksSource {
                 model: &model,
                 list: &list,
                 today: day(1),
             };
-            assert_eq!(source.placement(), placement, "{list:?}");
-            assert_eq!(source.accepts_new(), accepts, "{list:?}");
-        }
-    }
+            let rows: Vec<_> = source
+                .rows()
+                .iter()
+                .map(|row| (row.task.title.as_str(), row.depth))
+                .collect();
+            assert_eq!(
+                rows,
+                vec![("Plan trip", 0), ("Book flights", 1), ("Compare prices", 2)]
+            );
+            assert_eq!(source.placement(), (Some(project), None));
 
-    #[test]
-    fn regions_stack_entry_and_rows_and_drop_the_entry_for_completed() {
-        let theme = Theme::default();
-        let area = Rect::new(0.0, 60.0, 800.0, 700.0);
-        let model = Calendar::default();
-        let mut view = TasksView::new();
-        view.layout(
-            area,
-            &TasksSource {
-                model: &model,
-                list: &ListSel::Inbox,
-                today: day(1),
-            },
-            &theme,
-        );
-        let with_entry = view.regions;
-        let entry = with_entry.entry.expect("an entry field");
-        assert_eq!(
-            entry.y0,
-            area.y0 + f64::from(theme.tokens.spacing.s6),
-            "the entry stands first: the list's name is the window's location"
-        );
-        assert!(entry.y1 < with_entry.list.y0);
-        assert_eq!(entry.height(), ControlSize::Regular.height(&theme));
-        assert_eq!(with_entry.list.y1, area.y1);
-        view.set_entry_focus(true);
-        view.layout(
-            area,
-            &TasksSource {
-                model: &model,
-                list: &ListSel::Completed,
-                today: day(1),
-            },
-            &theme,
-        );
-        assert!(view.entry_rect().is_none());
-        assert!(!view.entry_focused());
-        assert!(view.list_rect().y0 < with_entry.list.y0);
+            for (list, placement, accepts) in [
+                (ListSel::Inbox, (None, None), true),
+                (ListSel::Today, (None, Some(day(1))), true),
+                (ListSel::Upcoming, (None, Some(day(2))), true),
+                (ListSel::Completed, (None, None), false),
+            ] {
+                let source = TasksSource {
+                    model: &model,
+                    list: &list,
+                    today: day(1),
+                };
+                assert_eq!(source.placement(), placement, "{list:?}");
+                assert_eq!(source.accepts_new(), accepts, "{list:?}");
+            }
+        }
+
+        phase regions_stack_entry_and_rows_and_drop_the_entry_for_completed;
+        {
+            let theme = Theme::default();
+            let area = Rect::new(0.0, 60.0, 800.0, 700.0);
+            let model = Calendar::default();
+            let mut view = TasksView::new();
+            view.layout(
+                area,
+                &TasksSource {
+                    model: &model,
+                    list: &ListSel::Inbox,
+                    today: day(1),
+                },
+                &theme,
+            );
+            let with_entry = view.regions;
+            let entry = with_entry.entry.expect("an entry field");
+            assert_eq!(
+                entry.y0,
+                area.y0 + f64::from(theme.tokens.spacing.s6),
+                "the entry stands first: the list's name is the window's location"
+            );
+            assert!(entry.y1 < with_entry.list.y0);
+            assert_eq!(entry.height(), ControlSize::Regular.height(&theme));
+            assert_eq!(with_entry.list.y1, area.y1);
+            view.set_entry_focus(true);
+            view.layout(
+                area,
+                &TasksSource {
+                    model: &model,
+                    list: &ListSel::Completed,
+                    today: day(1),
+                },
+                &theme,
+            );
+            assert!(view.entry_rect().is_none());
+            assert!(!view.entry_focused());
+            assert!(view.list_rect().y0 < with_entry.list.y0);
+        }
     }
 }
