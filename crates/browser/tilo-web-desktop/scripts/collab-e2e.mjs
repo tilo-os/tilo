@@ -275,7 +275,7 @@ async function startNative(name) {
   if (!await until(async () => /collaboration broker: bound/.test(read(daemon.stderr)), 300000, 250)) {
     throw new Error(`the runtime daemon did not start: ${read(daemon.stderr).slice(-600)}`);
   }
-  const workspace = await until(async () => JSON.parse(read(join(profile, 'workspace.json')) || 'null')?.workspaces?.[0]?.workspace, 60000, 250);
+  const workspace = await until(async () => JSON.parse(read(join(profile, 'workspace.json')) || 'null')?.workspaces?.[0]?.id, 60000, 250);
   if (!workspace) throw new Error('the native profile has no workspace');
   log(`[${name}] native daemon up; workspace ${workspace}`);
   return {daemon, profile, workspace};
