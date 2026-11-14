@@ -434,15 +434,6 @@ impl super::App {
         changed
     }
 
-    /// Whether a state pass outside a frame has work to do: a model update
-    /// anything asked for, a sync the tree owes, or a control invocation
-    /// settled state left queued for the sync to submit.
-    #[cfg(all(feature = "native", test))]
-    pub(super) fn state_tick_pending(&self) -> bool {
-        self.needs_sync
-            || crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref())
-    }
-
     #[cfg(feature = "native")]
     pub(super) fn service_native_idle_model(&mut self) -> IdleModelProgress {
         let mut changed = self.service_idle_model().changed;

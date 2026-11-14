@@ -90,6 +90,55 @@ impl RenderRetryState {
         self.occlusions > 0 && !self.allows(now)
     }
 }
+/// How often a window that takes no frame runs the passes a frame would: idle enough to cost
+/// nothing, prompt enough to answer work queued while no frame comes.
+#[cfg(feature = "native")]
+pub(crate) const UNDRAWN_TICK_INTERVAL: Duration = Duration::from_millis(50);
+
+/// When a window that takes no frame runs its state passes ([`crate::App::run_state_tick`]): one
+/// that is occluded, or one whose last frame's callback has not come, as a hidden surface hears
+/// none. State never waits on presentation: an invocation the session or an agent sent is
+/// answered whether or not anyone sees the window.
+#[derive(Default)]
+#[cfg(feature = "native")]
+pub(crate) struct UndrawnTicks {
+    frame_owed: bool,
+    at: Option<Instant>,
+}
+
+#[cfg(feature = "native")]
+impl UndrawnTicks {
+    /// A frame went out, and the windowing system holds the next one back until its callback.
+    pub(crate) fn presented(&mut self) {
+        self.frame_owed = true;
+    }
+
+    /// The window took a frame.
+    pub(crate) fn drew(&mut self) {
+        self.frame_owed = false;
+    }
+
+    /// Whether the passes run now, for a window that is `occluded` or owed a frame with state
+    /// `pending`. The first runs an interval after the window stopped taking frames, so a frame
+    /// that comes in time runs them as it always does.
+    pub(crate) fn due(&mut self, occluded: bool, pending: bool, now: Instant) -> bool {
+        if !(pending && (occluded || self.frame_owed)) {
+            self.at = None;
+            return false;
+        }
+        let due = self.at.is_some_and(|at| at <= now);
+        if due || self.at.is_none() {
+            self.at = Some(now.checked_add(UNDRAWN_TICK_INTERVAL).unwrap_or(now));
+        }
+        due
+    }
+
+    /// When the loop wakes for the next pass.
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.at
+    }
+}
+
 /// An idle redraw whose tree, layout, and damage did not change must not present.
 #[cfg(feature = "native")]
 pub(crate) fn submit_redraw_frame(full_redraw: bool, has_damage: bool) -> bool {

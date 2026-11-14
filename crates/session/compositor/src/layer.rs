@@ -425,17 +425,6 @@ impl State {
         after: Option<u64>,
     ) {
         if self.layers.shown(namespace) == Some(shown) {
-            // Shown and still held back: it now waits for a frame after `after` instead, by the
-            // same deadline.
-            if let (true, Some(after)) = (shown, after)
-                && let Some((_, waits_for)) = self.layers.settling.get_mut(namespace)
-            {
-                *waits_for = after;
-                if self.layer_drew_after(namespace, after) {
-                    self.layers.settling.remove(namespace);
-                    self.mark_redraw_all();
-                }
-            }
             return;
         }
         self.layers.visibility.insert(namespace.to_owned(), shown);

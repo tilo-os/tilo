@@ -55,10 +55,6 @@ fn create_accessibility_adapter(
     }
 }
 
-/// How often an occluded window runs passes nobody asks it to draw: idle enough to cost nothing,
-/// prompt enough to answer work queued behind the occlusion.
-const OCCLUDED_TICK_INTERVAL: Duration = Duration::from_millis(50);
-
 /// wgpu's context, surface and vello renderer live on a dedicated worker thread
 /// ([`crate::render_thread`]); this struct keeps only the channel ends that ship frames and recycle
 /// scene buffers.
@@ -74,9 +70,8 @@ struct AppHandler {
     /// A frame held for a local read ([`crate::arriving`]): drawn when the
     /// read answers, or at this instant when its frame budget runs out.
     held_frame: Option<crate::time::Instant>,
-    /// When the next state pass of an occluded window is due (see
-    /// [`App::run_state_tick`]); `None` while nothing is pending.
-    occluded_tick_at: Option<crate::time::Instant>,
+    /// The state passes of the window while it takes no frame.
+    undrawn: crate::render_thread::retry::UndrawnTicks,
     /// Debug check that animation frames move something.
     still_animation: animation_schedule::StillAnimation,
     native_scenario: Option<crate::native_scenario::Scenario>,
@@ -874,7 +869,11 @@ fn window_surface(
     window: Arc<Window>,
     transparent: bool,
 ) -> Result<vello::util::RenderSurface<'static>, String> {
+    use winit::raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
     let size = window.inner_size();
+    let wayland = window
+        .window_handle()
+        .is_ok_and(|handle| matches!(handle.as_raw(), RawWindowHandle::Wayland(_)));
     let mut surface = pollster::block_on(render_cx.create_surface_unconfigured(
         window,
         size.width.max(1),
@@ -892,6 +891,27 @@ fn window_surface(
         .devices
         .get(surface.dev_id)
         .ok_or_else(|| "render device index out of range".to_string())?;
+    if wayland {
+        // A FIFO swap waits for the last frame's callback by reading the app's Wayland
+        // connection on the render thread. A hidden surface hears no callback, so that read never
+        // ends, and the event loop, reading the same connection, waits on it before it handles
+        // anything. Mailbox presents without waiting and without tearing, as the compositor
+        // composes every frame; frames are paced by their callbacks instead
+        // (`tilo_presentation::present`).
+        let modes = surface
+            .surface
+            .get_capabilities(&device_handle.adapter)
+            .present_modes;
+        if let Some(mode) = [
+            vello::wgpu::PresentMode::Mailbox,
+            vello::wgpu::PresentMode::Immediate,
+        ]
+        .into_iter()
+        .find(|mode| modes.contains(mode))
+        {
+            surface.config.present_mode = mode;
+        }
+    }
     // The sRGB suffix would panic on a mismatch with the format `create_surface` chose, and
     // `configure` returns no `Result`: guard it like the worker's reconfigures do, or an
     // already-lost surface hits wgpu's panicking default handler.
@@ -1113,13 +1133,6 @@ fn begin_window_render_init(
         })
         .map_err(|error| format!("could not start floating renderer setup: {error}"))?;
     Ok(result_rx)
-}
-
-/// The render thread presents while this one reads on, so tell the compositor the frame is coming;
-/// a host waiting on this window (an agent's screenshot) then waits for the frame, not for a quiet
-/// event loop.
-fn announce_frame(window: &Window) {
-    window.announce_frame();
 }
 
 impl AppHandler {
@@ -1548,7 +1561,6 @@ impl AppHandler {
         if !drawn {
             return false;
         }
-        announce_frame(&audience.window);
         if render
             .render_tx
             .send(RenderRequest::Frame {
@@ -2177,7 +2189,6 @@ impl AppHandler {
             render.buffers.unprepare((scene, damage_regions));
             return true;
         }
-        announce_frame(&surface.window);
         if render
             .render_tx
             .send(RenderRequest::Frame {
@@ -2315,6 +2326,7 @@ impl AppHandler {
             }
         };
         mark_first_frame("first-frame-redraw-start");
+        self.undrawn.drew();
         let _entry = self.app.enter_wake_scope();
         if self.surface_suspended {
             return;
@@ -3119,7 +3131,10 @@ impl AppHandler {
                 RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
                 RenderRequest::Shutdown { .. } => None,
             };
-            announce_frame(window);
+            // A surface this process draws asks for the frame's callback as
+            // its render thread commits it (`tilo_presentation::present`),
+            // and its next `RedrawRequested` waits for that callback.
+            self.undrawn.presented();
             frame_demand::submitted(full_redraw_required.then_some(repaint_why));
             let (send_result, send_bounds) = crate::render_thread::timing::around(
                 crate::render_thread::timing::enabled(),
@@ -4138,23 +4153,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.poll_model_invocations() {
             request_primary_redraw();
         }
-        // Occlusion is not permission to stall. Once the surface has told us
-        // it is not being drawn, keep running the state passes on the loop's
-        // own pace while anything is pending: a frame may never come, and
-        // the work an agent or the engine is waiting on is theirs, not the
-        // pixels'. Nothing is marked dirty for paint that nobody asks for.
-        if self.primary_retry.known_occluded() && app.needs_sync {
-            let tick_due = self
-                .occluded_tick_at
-                .is_none_or(|at| at <= crate::time::now());
-            if tick_due {
-                app.run_state_tick();
-                self.occluded_tick_at = crate::time::now()
-                    .checked_add(OCCLUDED_TICK_INTERVAL)
-                    .filter(|_| app.needs_sync);
-            }
-        } else {
-            self.occluded_tick_at = None;
+        // Not being drawn is not permission to stall. While the window takes
+        // no frame (occluded, or a hidden surface that hears no frame
+        // callbacks), the state passes run on the loop's own pace while
+        // anything is pending: a frame may never come, and the work an agent,
+        // the session or the engine is waiting on is theirs, not the pixels'.
+        // Nothing is marked dirty for paint that nobody asks for.
+        if self.undrawn.due(
+            self.primary_retry.known_occluded(),
+            app.needs_sync,
+            crate::time::now(),
+        ) {
+            app.run_state_tick();
         }
         // Reveal requests must not wait on rendering an occluded/minimized
         // window: consume them as soon as its admitted actions are polled.
@@ -4483,7 +4493,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .busy()
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
-            .chain(self.occluded_tick_at)
+            .chain(self.undrawn.deadline())
             .chain(
                 self.input_backlog
                     .wake_at(self.animation_schedule.interval()),
@@ -5253,7 +5263,7 @@ impl App {
             mark_bounds: crate::scene_parts::DrawBounds::default(),
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
-            occluded_tick_at: None,
+            undrawn: crate::render_thread::retry::UndrawnTicks::default(),
             floating_source_clear_frames: std::collections::HashMap::new(),
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),

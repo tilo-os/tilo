@@ -74,12 +74,15 @@ pub fn crops_frames(window: &Window) -> bool {
 
 /// Present a frame of `size` pixels that `present` commits, at the size it was drawn for, and
 /// report its presentation to `observer` when one is given. Returns whether it is observed.
+/// The window's next redraw waits for this frame's callback: frames are paced by the display,
+/// whichever thread commits them.
 pub fn present(
     window: &Window,
     size: (u32, u32),
     observer: Option<Box<dyn FnOnce(Feedback) + Send>>,
     present: impl FnOnce(),
 ) -> bool {
+    window.pre_present_notify();
     #[cfg(target_os = "linux")]
     {
         use winit::platform::wayland::{WaylandPresentation, WindowExtWayland};

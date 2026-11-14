@@ -2433,8 +2433,7 @@ impl Compositor {
 
     /// Show the session's layer surface `namespace` once its app has drawn a frame after the
     /// `after`th it committed: the page the session asked it for, at the size it asked, rather
-    /// than the one the app was left on. Held back, it hears its frames as a shown surface does;
-    /// asked again while still held back, it waits for a frame after the new `after` instead.
+    /// than the one the app was left on.
     pub fn show_layer_after(&mut self, namespace: &str, after: u64) {
         self.data
             .state
