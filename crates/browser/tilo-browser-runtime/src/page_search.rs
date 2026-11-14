@@ -33,13 +33,16 @@ use tilo_session::search::{AppActions, SearchOptions, SessionSearch};
 struct PageActions {
     handle: DesktopHandle,
     reveals: crate::browser::Reveals,
+    /// The content the page holds, which a workspace's files are by hash.
+    content: tilo_content::ContentStore,
 }
 
 impl AppActions for PageActions {
     /// The page arranges its own windows: every other row is the desk's, which launches, focuses
-    /// and opens addresses where this page does.
+    /// and opens addresses where this page does. A workspace's file by its content is the page's:
+    /// only it holds the bytes that say which app opens the file.
     fn performs(&self, target: &Target) -> bool {
-        matches!(target, Target::Invoke(_))
+        matches!(target, Target::Invoke(_) | Target::Content { .. })
     }
 
     /// What apps publish through an action host: on the page each app publishes into the desk it
@@ -84,6 +87,40 @@ impl AppActions for PageActions {
             action: target.address.action,
             arguments,
         });
+        Ok(())
+    }
+
+    /// Open the workspace's content whose hash is `hash` in the app its bytes say opens it: read
+    /// where the page keeps the workspace's content, and asked of the workspace when it is not
+    /// here yet.
+    fn open_content(&self, hash: &str, name: &str) -> Result<(), DoorError> {
+        let Some(bytes) = self.content.read(hash) else {
+            return Err(DoorError::Unavailable {
+                code: "content_on_its_way".into(),
+                reason: format!("{name} is still coming from the workspace"),
+            });
+        };
+        let head = bytes
+            .get(..bytes.len().min(tilo_content_types::HEAD_BYTES))
+            .unwrap_or(&bytes);
+        let Some(landing) = tilo_content_types::landing(head, name) else {
+            return Err(DoorError::Unavailable {
+                code: "no_app".into(),
+                reason: format!("No app here opens {name}"),
+            });
+        };
+        let app = format!("so.tilo.{}", landing.app);
+        self.handle
+            .dispatch(ChromeEffect::OpenApp {
+                app: tilo_desktop_surface::session::content_launch(&app, hash),
+                beside: None,
+                background: None,
+                float: None,
+            })
+            .map_err(|reason| DoorError::Unavailable {
+                code: "application_unavailable".into(),
+                reason,
+            })?;
         Ok(())
     }
 
@@ -138,6 +175,8 @@ pub(crate) fn mount(
     handle: &DesktopHandle,
     person: &str,
     store: tilo_session::platform::Store,
+    content: tilo_content::ContentStore,
+    files: Option<tilo_desktop_search::Held>,
     wake: Arc<dyn Fn() + Send + Sync>,
     reveals: crate::browser::Reveals,
 ) -> Rc<SessionSearch> {
@@ -148,6 +187,7 @@ pub(crate) fn mount(
                 store,
                 crate::replicated::changes(),
             )),
+            workspace_files: files,
             ..SearchOptions::default()
         },
         Some(Arc::new(crate::page_apps::PageApps) as Arc<dyn Apps>),
@@ -155,6 +195,7 @@ pub(crate) fn mount(
         Some(Rc::new(PageActions {
             handle: handle.clone(),
             reveals,
+            content,
         }) as Rc<dyn AppActions>),
         Some(wake),
         Some(Arc::new(PageGateway) as Arc<dyn tilo_session::platform::Models>),

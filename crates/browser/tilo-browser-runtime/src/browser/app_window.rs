@@ -166,6 +166,7 @@ impl AppPage {
         Ok(Presentation {
             root: Root::Component(Box::new(component)),
             stores: Rc::clone(&self.stores),
+            files: None,
             checkout: Some(checkout),
             images: loaders,
             image_owners,
@@ -186,6 +187,7 @@ impl AppPage {
         Presentation {
             root: Root::Arriving(Box::new(shown)),
             stores: Rc::clone(&self.stores),
+            files: None,
             checkout: None,
             images: Rc::default(),
             image_owners: crate::page_content::ImageOwners::default(),
@@ -223,6 +225,7 @@ fn present_private_feedback(config: &Config) -> Result<Presentation, JsValue> {
     Ok(Presentation {
         root: Root::Component(Box::new(component)),
         stores: Rc::default(),
+        files: None,
         checkout: None,
         images: Rc::default(),
         image_owners: crate::page_content::ImageOwners::default(),

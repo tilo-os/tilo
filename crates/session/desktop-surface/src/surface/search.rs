@@ -1491,6 +1491,9 @@ impl DesktopSurface {
             // running them, a desktop lists no host-published actions or jobs.
             Target::Action(_)
             | Target::Invoke(_)
+            // A file a workspace holds opens as the app its bytes name launches, which only the
+            // host holding that content knows (`SearchHost::performs`): this desk opens nothing.
+            | Target::Content { .. }
             | Target::Cancel { .. }
             | Target::Prefer { .. } => None,
         };

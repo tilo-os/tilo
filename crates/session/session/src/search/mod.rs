@@ -113,6 +113,19 @@ pub trait AppActions {
     /// # Errors
     /// It did not start.
     fn start_host_app(&self, desktop_id: &str) -> Result<(), DoorError>;
+
+    /// Open the content whose hash is `hash`, called `name`, in the app its bytes say opens it: a
+    /// file of a workspace's tree, which a host that holds the workspace's content carries out. A
+    /// host with no such content refuses the row.
+    ///
+    /// # Errors
+    /// It does not hold the content, or the app did not open.
+    fn open_content(&self, _hash: &str, _name: &str) -> Result<(), DoorError> {
+        Err(DoorError::Unavailable {
+            code: "no_content".into(),
+            reason: "This host holds no workspace content to open".into(),
+        })
+    }
     /// Open the application `app` in `workspace`, where the person asked it:
     /// a window of its own beside theirs when `place` says so, else the
     /// window the app has there. A host that starts no windows arranges
@@ -147,6 +160,10 @@ pub struct SearchOptions {
     /// The records the workspaces on this device hold: what search finds by name across them, and
     /// where a record brought here is named.
     pub records: Option<Records>,
+    /// The files of the workspace in front, as a host that holds them without a disk keeps them
+    /// ([`tilo_desktop_search::providers::tree`]): a page's Files are the workspace's own tree, so
+    /// the page hands search that tree rather than an index of a disk it does not have.
+    pub workspace_files: Option<Held>,
     /// Sources a test mounts beside the session's own, asked exactly as the host's are: an index
     /// that answers slowly stands here to prove the loop never waits for one. No production host
     /// sets it, and a search over no extra source is the one the device's own sources answer.
@@ -206,6 +223,8 @@ pub struct SessionSearch {
     apps: Option<Rc<dyn AppActions>>,
     /// The records the workspaces on this device hold.
     records: Option<Records>,
+    /// The files of the workspace in front, where the host holds them without a disk.
+    workspace_files: Option<Held>,
     /// Sources a test mounts beside the session's own, asked as the host's are ([`SearchOptions::extra_sources`]).
     extra_sources: Vec<Held>,
     /// What the session itself publishes, as of the last frame: the desk cannot read its own tree
@@ -331,6 +350,7 @@ impl SessionSearch {
             preferences,
             places,
             records,
+            workspace_files,
             extra_sources,
         } = options;
         let reading = lists.as_ref().map(|lists| lists.reading());
@@ -361,6 +381,7 @@ impl SessionSearch {
             indexes: indexed,
             apps,
             records,
+            workspace_files,
             extra_sources,
             own: RefCell::default(),
             own_types: RefCell::default(),
@@ -530,6 +551,7 @@ impl SessionSearch {
         }
         sources.extend(kept.content.clone());
         sources.extend(kept.files.clone());
+        sources.extend(self.workspace_files.clone());
         if let Some(records) = &self.records {
             sources.push(Held::new(record_rows::Records::new(
                 workspace,
@@ -1062,6 +1084,11 @@ impl SessionSearch {
                     .to_owned();
                 apps.open_beside(target, invoke.arguments, &item)
             }),
+            // The content a page's files are, opened in the app its bytes say reads it: a host
+            // that keeps no content itself refuses the row.
+            Target::Content { hash, name } => {
+                self.with_apps(|apps| apps.open_content(&hash, &name))
+            }
             Target::Launch { app, place } => self.with_apps(|apps| {
                 // A record this workspace holds opens as a link to it does: its app's `open` on
                 // the record, which brings the window on it forward or opens its app there.
@@ -1247,6 +1274,7 @@ impl SearchHost for SessionSearch {
             // The desk's own actions are the session's to run, by address.
             Target::Invoke(invoke) if invoke.app == DESKTOP_APP => true,
             Target::Invoke(_)
+            | Target::Content { .. }
             | Target::Launch { .. }
             | Target::Cancel { .. }
             | Target::Open { .. } => self.apps.as_ref().is_some_and(|apps| apps.performs(target)),
@@ -1450,6 +1478,7 @@ fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
         // open, a job to stop) is not a resource of an app's that a path names: it is left out, as
         // the palette's own rows are for a caller that places what it finds.
         Target::Launch { .. }
+        | Target::Content { .. }
         | Target::Window { .. }
         | Target::Command { .. }
         | Target::Copy { .. }

@@ -106,6 +106,11 @@ pub enum Target {
     Command { id: String },
     /// Put `text` on the clipboard: a worked-out answer.
     Copy { text: String },
+    /// Open the workspace's content whose hash is `hash`, called `name`, in
+    /// the app its bytes say opens it: a file of a workspace's tree, which a
+    /// page shows without a disk (a desktop whose host keeps content carries
+    /// it out, and one that does not refuses the row).
+    Content { hash: String, name: String },
     /// Open `uri`, a web address, where the host opens addresses: the
     /// native desktop's browser, a new tab of the browser the web desktop
     /// runs in. Where nothing takes `uri`'s scheme (`web+search:`, an app's
@@ -469,7 +474,8 @@ impl Hit {
                 Some(app) => Thing::App(app_identity(app)),
                 None => Thing::Row(self.provider.clone(), self.id.clone()),
             },
-            Target::Copy { .. }
+            Target::Content { .. }
+            | Target::Copy { .. }
             | Target::Cancel { .. }
             | Target::Prefer { .. }
             | Target::Launch { .. }

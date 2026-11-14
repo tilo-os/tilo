@@ -91,6 +91,7 @@ search-source-host-apps = Apps on this device
 search-host-app-flatpak = Flatpak
 search-host-app-system = System
 search-source-files = Files
+search-source-workspace-files = Workspace files
 search-source-records = Records
 search-source-jobs = Running tasks
 search-continue-in-workspace = in { $workspace }

@@ -464,6 +464,8 @@ pub(crate) struct Mount {
     stores: Rc<RefCell<Vec<RecordStore>>>,
     /// The single application's record; `None` for the desktop.
     checkout: Option<RecordCheckout>,
+    /// The workspace's files, as the page's search reads them.
+    files_of_the_workspace: Option<Rc<crate::page_files::WorkspaceFiles>>,
     /// The single application's package id; `None` for the desktop.
     app: Option<String>,
     /// The page showing one application whose record the workspace still
@@ -1303,6 +1305,8 @@ fn definition(
 struct Presentation {
     root: Root,
     stores: Rc<RefCell<Vec<RecordStore>>>,
+    /// The workspace's files, as the page's search reads them.
+    files: Option<Rc<crate::page_files::WorkspaceFiles>>,
     checkout: Option<RecordCheckout>,
     images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     image_owners: crate::page_content::ImageOwners,
@@ -1321,6 +1325,55 @@ enum Root {
     Arriving(Box<dyn ui::widget::Widget>),
 }
 
+/// The session's search over this page's desk, with the workspace's files among its sources.
+fn mount_search(
+    id: u64,
+    config: &Config,
+    handle: &tilo_desktop_surface::DesktopHandle,
+    (records_store, content_store): (
+        Rc<dyn durable_store::DurableStore>,
+        tilo_content::ContentStore,
+    ),
+    files: Option<&Rc<crate::page_files::WorkspaceFiles>>,
+    reveals: crate::browser::Reveals,
+) -> Result<Rc<tilo_session::search::SessionSearch>, JsValue> {
+    let wake = proxy()?;
+    Ok(crate::page_search::mount(
+        handle,
+        &config.author(),
+        records_store,
+        content_store,
+        files.map(|files| crate::page_files::WorkspaceFiles::source(files)),
+        Arc::new(move || {
+            let _ = wake.send_event(id);
+        }),
+        reveals,
+    ))
+}
+
+/// The workspace's files, as the palette finds them: the tree the workspace holds, read in the
+/// store its own records are in, from the content the page keeps.
+fn files_of_the_workspace(
+    config: &Config,
+    owners: &ui::record::RecordOwners,
+    shared: &crate::desktop::Shared,
+    content: &tilo_content::ContentStore,
+) -> Option<Rc<crate::page_files::WorkspaceFiles>> {
+    config.peer?;
+    let records = crate::workspace_records::in_page(
+        owners,
+        &shared.stores,
+        &config.workspace,
+        config.author(),
+        true,
+    );
+    Some(Rc::new(crate::page_files::WorkspaceFiles::new(
+        &config.workspace,
+        records,
+        content.clone(),
+    )))
+}
+
 fn present_desktop(
     id: u64,
     config: &Config,
@@ -1329,11 +1382,11 @@ fn present_desktop(
 ) -> Result<Presentation, JsValue> {
     let opening_permissions = permissions.clone();
     let dyn_history_store = Rc::clone(&dyn_store);
-    // What the person's mentions are told by, kept where their settings are.
     let mentions_store = Rc::clone(&dyn_store);
-    // What the palette finds the workspace's records in: the indexes the page took in.
-    let records_store = Rc::clone(&dyn_store);
+    // What the palette reads the workspace's records and files in, and the content those files are.
+    let (records_store, content_store) = (Rc::clone(&dyn_store), content(config));
     let wake = proxy()?;
+    let owners = desktop_inputs(config, &dyn_store, permissions.clone())?.owners;
     let (mut surface, handle, shared, persistence) = crate::desktop::mount(
         desktop_inputs(config, &dyn_store, permissions)?,
         dyn_store,
@@ -1368,7 +1421,6 @@ fn present_desktop(
         &persistence,
         (&here, &session),
     )?;
-    // What the session asks the page for its windows, and the workspace's peer in it.
     let asks = session_asks::Asks::new(config.peer);
     let mentions = mention_notices::over(
         mentions_store,
@@ -1378,19 +1430,19 @@ fn present_desktop(
         &here,
         &shared.woken,
     );
-    let search_wake = proxy()?;
-    let search = crate::page_search::mount(
+    let files = files_of_the_workspace(config, &owners, &shared, &content_store);
+    let search = mount_search(
+        id,
+        config,
         &handle,
-        &config.author(),
-        records_store,
-        Arc::new(move || {
-            let _ = search_wake.send_event(id);
-        }),
+        (records_store, content_store),
+        files.as_ref(),
         asks.reveals(),
-    );
+    )?;
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
         stores: Rc::clone(&shared.stores),
+        files,
         checkout: None,
         images: Rc::clone(&shared.images),
         image_owners: Rc::clone(&shared.image_owners),
@@ -1518,6 +1570,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let Presentation {
         root,
         stores,
+        files: files_of_the_workspace,
         checkout,
         images,
         image_owners,
@@ -1683,6 +1736,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         store,
         stores,
         checkout,
+        files_of_the_workspace,
         app: definition.map(|definition| definition.app_id().to_owned()),
         waiting,
         presence: presence::Presence::default(),
@@ -2264,6 +2318,11 @@ impl Mount {
     }
 
     fn draw(&mut self) -> Result<(), String> {
+        // The workspace's files as the palette will find them: what moved
+        // since the last frame, and the words of content that arrived.
+        if let Some(files) = &self.files_of_the_workspace {
+            files.refresh();
+        }
         let start = self.metric_start();
         let before = self.frames;
         // The canvas keeps what it presented and moves it: a scroll in a
@@ -3256,7 +3315,7 @@ mod uploads;
 use crate::first_frame::{self, GpuStep};
 pub(crate) use frame_loop::sleep_ms;
 use frame_loop::watch_first_frame;
-use prepare::{desktop_inputs, host_offers, serve_history, serve_session};
+use prepare::{content, desktop_inputs, host_offers, serve_history, serve_session};
 use publication::{FrameChange, SemanticPresentationTarget, emit_text};
 use scene::scene_within_limits;
 pub(crate) use session_asks::Reveals;

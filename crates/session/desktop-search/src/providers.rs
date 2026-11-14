@@ -17,6 +17,7 @@ pub mod places;
 pub mod records;
 #[cfg(feature = "settings")]
 pub mod settings;
+pub mod tree;
 pub mod waiting;
 
 use std::collections::BTreeMap;

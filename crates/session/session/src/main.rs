@@ -1267,6 +1267,8 @@ fn search_options(
         indexes: Some(std::sync::Arc::new(
             tilo_session::platform::indexes::SessionIndexes::new(content, files),
         )),
+        // A desktop's files are its disk's, which the indexes above read.
+        workspace_files: None,
         preferences: tilo_desktop_search::SearchPreferences::from_values(
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),

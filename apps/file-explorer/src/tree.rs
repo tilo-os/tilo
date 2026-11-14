@@ -562,16 +562,13 @@ mod tests {
             .unwrap();
         doc.put(&entry, AUTHOR_KEY, "ada".to_owned()).unwrap();
         doc.put(&entry, MTIME_KEY, 1_767_225_600_000_u64).unwrap();
-        match file {
-            Some((hash, size)) => {
-                doc.put(&entry, KIND_KEY, "file").unwrap();
-                doc.put(&entry, HASH_KEY, hash).unwrap();
-                doc.put(&entry, SIZE_KEY, size).unwrap();
-            }
-            None => {
-                doc.put(&entry, KIND_KEY, "dir").unwrap();
-                doc.put(&entry, SIZE_KEY, 0_u64).unwrap();
-            }
+        if let Some((hash, size)) = file {
+            doc.put(&entry, KIND_KEY, "file").unwrap();
+            doc.put(&entry, HASH_KEY, hash).unwrap();
+            doc.put(&entry, SIZE_KEY, size).unwrap();
+        } else {
+            doc.put(&entry, KIND_KEY, "dir").unwrap();
+            doc.put(&entry, SIZE_KEY, 0_u64).unwrap();
         }
     }
 
@@ -579,12 +576,12 @@ mod tests {
     /// `notes.txt` beside it, written by Ada.
     fn workspace() -> Tree {
         let mut doc = AutoCommit::new();
-        let nodes = doc.put_object(&ROOT, NODES_KEY, ObjType::Map).unwrap();
-        node(&mut doc, &nodes, "docs", ROOT_ID, "docs", None);
+        let map = doc.put_object(&ROOT, NODES_KEY, ObjType::Map).unwrap();
+        node(&mut doc, &map, "docs", ROOT_ID, "docs", None);
         let (plan, scan, notes) = ("ab".repeat(32), "cd".repeat(32), "ef".repeat(32));
         node(
             &mut doc,
-            &nodes,
+            &map,
             "plan",
             "docs",
             "plan.md",
@@ -592,7 +589,7 @@ mod tests {
         );
         node(
             &mut doc,
-            &nodes,
+            &map,
             "scan",
             "docs",
             "scan.pdf",
@@ -600,7 +597,7 @@ mod tests {
         );
         node(
             &mut doc,
-            &nodes,
+            &map,
             "notes",
             ROOT_ID,
             "notes.txt",

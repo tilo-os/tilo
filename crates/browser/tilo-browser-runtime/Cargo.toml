@@ -20,6 +20,14 @@ accounts = { version = "0.1.0", path = "../../system/accounts", features = ["per
 # broker transport is linked.
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+# The workspace's files, which a page shows without a disk: the tree record they are.
+fs-protocol = { path = "../../system/fs-protocol" }
+# Reading a PDF's words for search, through the portable engine the viewer draws with.
+tilo-pdf = { path = "../../platform/tilo-pdf" }
+# Which app opens what a file's bytes are, as a workspace lands a file.
+tilo-content-types = { path = "../../system/content-types" }
+# Reading the tree record as the resource it is, to list and search it.
+tilo-resource = { path = "../../sdk/tilo-resource" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-automerge.workspace = true
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
