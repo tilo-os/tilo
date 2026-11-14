@@ -438,6 +438,26 @@ fn reached(
                 .as_deref()
                 .is_some_and(|target| target.starts_with("notes.image-edit:"))
         }),
+        // A page a migration brought is a note of its own: shown under its title, its links
+        // read as the notes they name, its checklist still a checklist, and its picture drawn.
+        Some("migrated") => {
+            driver
+                .expect(&SemanticExpectation::named("note_title").value("Onboarding checklist"))
+                .is_ok()
+                && blocks.first().is_some_and(|block| {
+                    matches!(block.kind, BlockKind::Paragraph)
+                        && block.text() == "Read Welcome first, then work through the list."
+                })
+                && blocks
+                    .iter()
+                    .filter(|block| matches!(block.kind, BlockKind::Checklist { done: false, .. }))
+                    .count()
+                    == 3
+                && observed(driver, |node| {
+                    node.role == ui::a11y::Role::Image
+                        && node.name.as_deref() == Some("Settings, the way your desk starts")
+                })
+        }
         Some("scrolled") => blocks.len() > 20,
         Some("drawer") => {
             // The retained shell publishes its real toggle rather than the
