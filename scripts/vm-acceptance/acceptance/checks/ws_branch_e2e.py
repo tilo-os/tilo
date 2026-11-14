@@ -494,10 +494,12 @@ class Problems(list):
                      "and a checkout in it, windows on its desk, a few hundred MB of data")
 def set_up(ctx, res):
     ctx.facts["wsb:why"] = "WB01 failed"
-    # The session restarts first, so what the run keeps of the desk is the restarted session's.
-    since = debug_session(ctx)
-    ctx.facts["wsb:since"] = since
     ctx.reset()
+    # A restart here left the environment's files unfound (rdb278da293): the session keeps
+    # running, and what it said is read since the machine booted.
+    watch_drawing_threads(ctx)
+    since = 0
+    ctx.facts["wsb:since"] = since
     run = uuid.uuid4().hex[:8]
     ws = ae.create_workspace(ctx, f"{SOURCE} {run}")
     ws["name"] = f"{SOURCE} {run}"
@@ -590,9 +592,9 @@ fi
         problems.append(str(exc))
     # No app's drawing thread crashed since the session started (Mesa's device-select layer, at
     # a session's start on a machine without 3D).
-    crashed = ctx.vm.root_exec(f"journalctl -k --since @{since} --no-pager 2>/dev/null "
+    crashed = ctx.vm.root_exec("journalctl -k -b --no-pager 2>/dev/null "
                                "| grep -a 'native-render-p.*segfault' | tail -n 6", timeout=60, check=False).strip()
-    problems.want(not crashed, f"drawing threads crashed since the session started: {crashed[-1500:]}; "
+    problems.want(not crashed, f"drawing threads crashed since the machine started: {crashed[-1500:]}; "
                                f"their processes: {crashed_threads(ctx)}")
     problems.judge()
 
@@ -884,6 +886,7 @@ def post_chat(ctx, ws: dict, text: str) -> None:
         # The launcher drops an app's own output: keep it from the session's next start on (WB05
         # restarts it), so Chat says itself why it shows nothing.
         evidence = chat_evidence(ctx, ctx.facts.get("wsb:since", 0))
+        evidence += "\n== keeping Chat's output from the session's next start\n" + keep_debug_output(ctx)[-1200:]
         # The report prints a data file's last 4 KiB: the evidence goes last.
         said = crash + "\n" + running + "\n" + said + "\n" + evidence
         ctx.write("WB01-chat-said.txt", said)
@@ -961,20 +964,19 @@ def debug_dropin(ctx) -> str:
     return f"/etc/systemd/system/tilo-vm-session@{ctx.vm.slot}.service.d/90-e2e-ws-branch.conf"
 
 
-def debug_session(ctx) -> int:
-    """Restart the slot session with its launchers keeping each app's own stdout and stderr in the
-    app's data home (`launcher-debug-output.log`, `TILO_LAUNCHER_DEBUG_STDERR`), watching every
-    drawing thread from before it starts. The time it was restarted, for what it said since."""
+def keep_debug_output(ctx) -> str:
+    """From the slot session's next start on (WB05 restarts it), its launchers keep each app's own
+    stdout and stderr in the app's data home (`launcher-debug-output.log`,
+    `TILO_LAUNCHER_DEBUG_STDERR`): an instance drop-in, as e2e-branch sets its sessions' log
+    level. Says what it wrote, or why it could not."""
     dropin = debug_dropin(ctx)
-    ctx.vm.root_exec(f"mkdir -p \"$(dirname {dropin})\" && "
-                     f"printf '[Service]\\nEnvironment=TILO_LAUNCHER_DEBUG_STDERR=1\\n' > {dropin} && "
-                     "systemctl daemon-reload", timeout=60, check=False)
-    watch_drawing_threads(ctx)
-    since = int((ctx.vm.root_exec("date +%s", timeout=30, check=False) or "0").strip() or 0)
-    ctx.vm.restart_session()
-    # A fresh session publishes its catalogue of apps a few seconds after it answers.
-    ctx.vm.wait_catalogue(120)
-    return since
+    said = ctx.vm.root_exec(
+        f"id -un; mkdir -p \"$(dirname {dropin})\" && "
+        f"printf '[Service]\\nEnvironment=TILO_LAUNCHER_DEBUG_STDERR=1\\n' > {dropin} && "
+        f"systemctl daemon-reload && systemctl show -p Environment,DropInPaths {shlex.quote(dropin.split('/')[-2][:-2])} "
+        "2>&1 | cut -c1-600; ls -la \"$(dirname " + dropin + ")\" 2>&1", timeout=60, check=False)
+    ctx.facts["wsb:debug-output"] = said
+    return said
 
 
 def session_said(ctx, pattern: str, lines: int = 40, since: int = 0) -> str:
@@ -997,8 +999,9 @@ def chat_evidence(ctx, since: int) -> str:
         return f"== {title}\n{(text or '(nothing)').strip()[-keep:]}"
     return "\n".join([
         part("the session's debug switch", ctx.vm.root_exec(
-            f"cat {debug_dropin(ctx)} 2>&1 | tail -n 3; p=$(pgrep -o '^tilo-session'); echo \"session $p\"; "
-            "tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null | grep -a TILO_LAUNCHER_DEBUG_STDERR",
+            f"cat {debug_dropin(ctx)} 2>&1 | tail -n 3; for p in $(pgrep '^tilo-session'); do "
+            "echo \"$p $(cat /proc/$p/comm) $(tr '\\0' '\\n' < /proc/$p/environ 2>/dev/null "
+            "| grep -c TILO_LAUNCHER_DEBUG_STDERR)\"; done",
             timeout=60, check=False), 400),
         part("Chat's own output", ctx.vm.root_exec(
             "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
@@ -1021,9 +1024,9 @@ def app_output(ctx, ws: dict, app: str) -> str:
     except (CheckFailed, Unobservable, VmError) as exc:
         return f"(it did not open: {exc})"
     time.sleep(60)
-    return ctx.vm.root_exec(
-        "p=$(pgrep -o '^tilo-session'); echo \"session pid $p: $(tr '\\0' '\\n' < /proc/$p/environ "
-        "| grep -c TILO_LAUNCHER_DEBUG_STDERR) debug switch\"; "
+    return "kept: " + ctx.facts.get("wsb:debug-output", "(not asked)")[-600:] + "\n" + ctx.vm.root_exec(
+        "for p in $(pgrep '^tilo-session'); do echo \"session $p $(cat /proc/$p/comm): $(tr '\\0' '\\n' "
+        "< /proc/$p/environ | grep -c TILO_LAUNCHER_DEBUG_STDERR) debug switch\"; done; "
         f"grep -c TILO_LAUNCHER_DEBUG_STDERR {debug_dropin(ctx)} 2>&1; "
         "find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name launcher-debug-output.log "
         f"-path '*{app}*' -print 2>/dev/null | head -n 3 | while read -r f; do echo \"== $f\"; "
