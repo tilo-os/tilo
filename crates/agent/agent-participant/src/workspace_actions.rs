@@ -58,6 +58,7 @@ mod keys;
 mod ledger;
 mod link;
 mod listing;
+mod member;
 mod opened;
 mod opened_file;
 mod placed;
@@ -71,13 +72,13 @@ pub use link::{FeedbackReviewer, HostDevice, ViewDocument, ViewReadPolicy, Works
 pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::engine::RecordReading;
-use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
+use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
@@ -103,8 +104,6 @@ use tilo_actions::{
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_client::{MemoryPeerStore, PeerConfig};
-use tilo_user_identity::RevocationList;
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
 /// How long a comment the host files for someone may take to be saved
@@ -250,6 +249,8 @@ struct Shared {
     jobs: Mutex<Option<mpsc::Sender<(Instant, Job)>>>,
     /// How the service joins workspaces, once its thread runs.
     host_device: OnceLock<HostDevice>,
+    /// The host device's one session, in every workspace the service joined.
+    member: OnceLock<Arc<member::Member>>,
     /// Every workspace a request named, by id: joined as the request
     /// arrives, while the service's one thread still answers others, so the
     /// first requests of many fresh workspaces join side by side instead of
@@ -282,6 +283,7 @@ impl WorkspaceActions {
                 link: OnceLock::new(),
                 jobs: Mutex::new(None),
                 host_device: OnceLock::new(),
+                member: OnceLock::new(),
                 joins: Mutex::default(),
                 stores: Mutex::default(),
                 puts: tilo_actions::remote::HostedContentPuts::default(),
@@ -895,13 +897,12 @@ fn sealed_for(
         .collect()
 }
 
-/// The service's membership of one workspace.
+/// The service's membership of one workspace, on the host device's one
+/// session ([`member`]); it leaves the workspace when dropped.
 struct Workspace {
+    id: WorkspaceId,
     peer: Link,
-    events: Events,
-    /// Set while requests wait for this workspace: its next change hands the
-    /// service's thread [`Job::Joined`], which looks at what waited again.
-    awaited: Arc<AtomicBool>,
+    member: Arc<member::Member>,
     ready: bool,
     /// The workspace sends its records only when a device opens them (its
     /// `Ready`): what this member does not hold is a record it may still
@@ -930,47 +931,32 @@ struct Workspace {
     changes: ui::history_source::feed::ChangeLog,
 }
 
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        self.member.leave(self.id);
+    }
+}
+
 impl Workspace {
     fn join(
         host_device: &HostDevice,
         workspace_id: WorkspaceId,
         shared: &Arc<Shared>,
     ) -> Result<Self, String> {
-        let _runtime = host_device.runtime.enter();
-        let peer = tilo_session_client::start_session(
-            PeerConfig {
-                host: host_device.endpoint.host.clone(),
-                cert: host_device.endpoint.host_cert.clone(),
-                host_cert: host_device.endpoint.host_cert.clone(),
-                revocations: RevocationList::new(),
-                entering: None,
-            },
-            Arc::new(host_device.key.clone()),
-            Arc::new(MemoryPeerStore::default()),
+        let member = Arc::clone(
+            shared
+                .member
+                .get_or_init(|| member::Member::start(host_device, shared)),
         );
-        let events = peer.events();
-        let awaited = Arc::new(AtomicBool::new(false));
-        let (waiting, service) = (Arc::clone(&awaited), Arc::downgrade(shared));
-        peer.on_change(Arc::new(move || {
-            // Only the change that arrives while a request waits is worth the
-            // thread's turn: the workspace's other changes still reach it as
-            // documents.
-            if waiting.swap(false, Ordering::SeqCst)
-                && let Some(shared) = service.upgrade()
-                && let Some(jobs) = shared.jobs.lock_recover().as_ref()
-            {
-                let _ = jobs.send((Instant::now(), Job::Joined(workspace_id)));
-            }
-        }));
-        peer.send(Cmd::Join(workspace_id))?;
+        member.join(workspace_id)?;
         Ok(Self {
             runs: run_voice::Runs::new(
                 workspace_id,
                 host_device.endpoint.host_cert.device_public_key,
             ),
-            peer,
-            events,
-            awaited,
+            id: workspace_id,
+            peer: member.peer().clone(),
+            member,
             ready: false,
             when_opened: false,
             asked: HashSet::new(),
@@ -984,7 +970,7 @@ impl Workspace {
     }
 
     fn pump(&mut self, workspace_id: WorkspaceId) {
-        for event in self.events.drain() {
+        for event in self.member.take(workspace_id) {
             match event {
                 Event::HostReady {
                     ws: ready,
@@ -1530,7 +1516,7 @@ impl Worker {
     /// stop asking once nothing waits for it.
     fn awaiting(&self, workspace_id: WorkspaceId, waiting: bool) {
         if let Some(workspace) = self.workspaces.get(&workspace_id) {
-            workspace.awaited.store(waiting, Ordering::SeqCst);
+            workspace.member.await_change(workspace_id, waiting);
         }
     }
 
