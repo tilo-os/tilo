@@ -445,156 +445,160 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(bytes)
     }
 
-    #[test]
-    fn engine_pcm_reaches_the_governed_output_as_48k_stereo() {
-        {
-            let (mixer, sink) = mixer(IDLE_CLOSE);
-            let id = mixer.attach(48_000, 1);
-            mixer.push(id, &[1, 2, 3]);
-            tilo_test_env::wait_until("the packet is written", || written(&sink).len() == 6);
-            assert_eq!(written(&sink), [1, 1, 2, 2, 3, 3]);
-            mixer.shutdown();
-        }
-        {
-            let (mixer, sink) = mixer(IDLE_CLOSE);
-            let id = mixer.attach(24_000, 2);
-            let tone: Vec<i16> = (0..2400).flat_map(|n| [n as i16, -(n as i16)]).collect();
-            mixer.push(id, &tone);
-            tilo_test_env::wait_until("the resampled PCM is written", || {
-                written(&sink).len() >= 2 * 4790
-            });
-            let samples = written(&sink);
-            let frames = samples.len() / 2;
-            assert!((4790..=4802).contains(&frames), "{frames} frames");
-            assert!(samples.chunks(2).all(|f| f[0] == -f[1]));
-            assert!(samples.chunks(2).map(|f| f[0]).is_sorted());
-            mixer.shutdown();
-        }
-        {
-            let (mixer, sink) = mixer(IDLE_CLOSE);
-            let id = mixer.attach(48_000, 2);
-            mixer.push(id, &vec![7; 4800 * 2]);
-            tilo_test_env::wait_until("all PCM is written", || written(&sink).len() == 9600);
-            assert!(
-                sink.writes
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .all(|packet| packet.len() <= MAX_SAMPLES && packet.len() % 2 == 0)
-            );
-            mixer.shutdown();
-        }
-    }
+    tilo_test_env::scenario! {
+        fn page_audio_is_mixed_into_one_governed_output;
 
-    #[test]
-    fn streams_are_summed_and_a_stall_never_adds_delay() {
+        phase engine_pcm_reaches_the_governed_output_as_48k_stereo;
         {
-            let mut state = State::default();
-            for (id, level) in [(1, 20_000_i16), (2, 20_000), (3, -100)] {
-                let mut stream = Stream {
-                    converter: Converter::new(48_000, 2),
-                    pcm: VecDeque::new(),
-                    ended: false,
-                };
-                stream.pcm.extend([level; 4]);
-                state.streams.insert(id, stream);
+            {
+                let (mixer, sink) = mixer(IDLE_CLOSE);
+                let id = mixer.attach(48_000, 1);
+                mixer.push(id, &[1, 2, 3]);
+                tilo_test_env::wait_until("the packet is written", || written(&sink).len() == 6);
+                assert_eq!(written(&sink), [1, 1, 2, 2, 3, 3]);
+                mixer.shutdown();
             }
-            state.streams.get_mut(&3).unwrap().ended = true;
+            {
+                let (mixer, sink) = mixer(IDLE_CLOSE);
+                let id = mixer.attach(24_000, 2);
+                let tone: Vec<i16> = (0..2400).flat_map(|n| [n as i16, -(n as i16)]).collect();
+                mixer.push(id, &tone);
+                tilo_test_env::wait_until("the resampled PCM is written", || {
+                    written(&sink).len() >= 2 * 4790
+                });
+                let samples = written(&sink);
+                let frames = samples.len() / 2;
+                assert!((4790..=4802).contains(&frames), "{frames} frames");
+                assert!(samples.chunks(2).all(|f| f[0] == -f[1]));
+                assert!(samples.chunks(2).map(|f| f[0]).is_sorted());
+                mixer.shutdown();
+            }
+            {
+                let (mixer, sink) = mixer(IDLE_CLOSE);
+                let id = mixer.attach(48_000, 2);
+                mixer.push(id, &vec![7; 4800 * 2]);
+                tilo_test_env::wait_until("all PCM is written", || written(&sink).len() == 9600);
+                assert!(
+                    sink.writes
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|packet| packet.len() <= MAX_SAMPLES && packet.len() % 2 == 0)
+                );
+                mixer.shutdown();
+            }
+        }
+
+        phase streams_are_summed_and_a_stall_never_adds_delay;
+        {
+            {
+                let mut state = State::default();
+                for (id, level) in [(1, 20_000_i16), (2, 20_000), (3, -100)] {
+                    let mut stream = Stream {
+                        converter: Converter::new(48_000, 2),
+                        pcm: VecDeque::new(),
+                        ended: false,
+                    };
+                    stream.pcm.extend([level; 4]);
+                    state.streams.insert(id, stream);
+                }
+                state.streams.get_mut(&3).unwrap().ended = true;
+                assert_eq!(
+                    state.take_mix().unwrap(),
+                    [i16::MAX, i16::MAX, i16::MAX, i16::MAX]
+                );
+                assert!(
+                    !state.streams.contains_key(&3),
+                    "an ended, drained tab leaves"
+                );
+                assert!(state.take_mix().is_none());
+            }
+            {
+                let gate = Arc::new(Mutex::new(()));
+                let held = gate.lock().unwrap();
+                let waiting = gate.clone();
+                let mixer = Mixer::new(
+                    Arc::new(move || {
+                        drop(waiting.lock().unwrap());
+                        Err("device gone".into())
+                    }),
+                    IDLE_CLOSE,
+                );
+                let id = mixer.attach(48_000, 2);
+                for round in 0..50_i16 {
+                    mixer.push(id, &vec![round; 4800 * 2]);
+                }
+                let state = mixer.lock();
+                let pcm = &state.streams[&id].pcm;
+                assert!(
+                    pcm.len() <= MAX_BUFFERED_FRAMES * 2,
+                    "{} samples",
+                    pcm.len()
+                );
+                assert_eq!(pcm.back(), Some(&49), "the newest PCM is what stays");
+                drop(state);
+                drop(held);
+                mixer.shutdown();
+            }
+        }
+
+        phase the_output_opens_with_the_first_sound_and_closes_when_all_is_quiet;
+        {
+            let (mixer, sink) = mixer(Duration::from_millis(30));
             assert_eq!(
-                state.take_mix().unwrap(),
-                [i16::MAX, i16::MAX, i16::MAX, i16::MAX]
-            );
-            assert!(
-                !state.streams.contains_key(&3),
-                "an ended, drained tab leaves"
-            );
-            assert!(state.take_mix().is_none());
-        }
-        {
-            let gate = Arc::new(Mutex::new(()));
-            let held = gate.lock().unwrap();
-            let waiting = gate.clone();
-            let mixer = Mixer::new(
-                Arc::new(move || {
-                    drop(waiting.lock().unwrap());
-                    Err("device gone".into())
-                }),
-                IDLE_CLOSE,
+                sink.opens.load(Ordering::SeqCst),
+                0,
+                "nothing plays, nothing opens"
             );
             let id = mixer.attach(48_000, 2);
-            for round in 0..50_i16 {
-                mixer.push(id, &vec![round; 4800 * 2]);
-            }
-            let state = mixer.lock();
-            let pcm = &state.streams[&id].pcm;
-            assert!(
-                pcm.len() <= MAX_BUFFERED_FRAMES * 2,
-                "{} samples",
-                pcm.len()
-            );
-            assert_eq!(pcm.back(), Some(&49), "the newest PCM is what stays");
-            drop(state);
-            drop(held);
+            mixer.push(id, &[5, 5]);
+            mixer.detach(id);
+            tilo_test_env::wait_until("the output closes", || {
+                sink.closes.load(Ordering::SeqCst) == 1
+            });
+            assert_eq!(sink.opens.load(Ordering::SeqCst), 1);
+            let id = mixer.attach(48_000, 2);
+            mixer.push(id, &[6, 6]);
+            tilo_test_env::wait_until("the output reopens", || {
+                sink.opens.load(Ordering::SeqCst) == 2
+            });
             mixer.shutdown();
         }
-    }
 
-    #[test]
-    fn the_output_opens_with_the_first_sound_and_closes_when_all_is_quiet() {
-        let (mixer, sink) = mixer(Duration::from_millis(30));
-        assert_eq!(
-            sink.opens.load(Ordering::SeqCst),
-            0,
-            "nothing plays, nothing opens"
-        );
-        let id = mixer.attach(48_000, 2);
-        mixer.push(id, &[5, 5]);
-        mixer.detach(id);
-        tilo_test_env::wait_until("the output closes", || {
-            sink.closes.load(Ordering::SeqCst) == 1
-        });
-        assert_eq!(sink.opens.load(Ordering::SeqCst), 1);
-        let id = mixer.attach(48_000, 2);
-        mixer.push(id, &[6, 6]);
-        tilo_test_env::wait_until("the output reopens", || {
-            sink.opens.load(Ordering::SeqCst) == 2
-        });
-        mixer.shutdown();
-    }
-
-    #[test]
-    fn host_events_drive_a_tabs_stream() {
-        let (mixer, sink) = mixer(IDLE_CLOSE);
-        let leaked: &'static Arc<Mixer> = Box::leak(Box::new(mixer.clone()));
-        let tab = PageAudio::default();
-        let send = |name: &str, value: Value| tab.event_on(|| leaked, name, &value);
-        send("audio", json!({"pcm": encode(&[9, 9])}));
-        send("audio_start", json!({"rate": 48000, "channels": 2}));
-        send("audio", json!({"pcm": encode(&[1, -1, 2, -2])}));
-        tilo_test_env::wait_until("the packet plays", || written(&sink) == [1, -1, 2, -2]);
-        send("audio", json!({"pcm": "!!!"}));
-        send("audio", json!({"pcm": encode(&[1, 2, 3])}));
-        send("audio", json!({"pcm": ""}));
-        send("audio_stop", json!({}));
-        send("audio", json!({"pcm": encode(&[4, 4])}));
-        send("audio_start", json!({"rate": 48000, "channels": 2}));
-        send("audio", json!({"pcm": encode(&[7, 7])}));
-        tilo_test_env::wait_until("the next stream's packet plays", || {
-            written(&sink).len() >= 6
-        });
-        assert_eq!(written(&sink), [1, -1, 2, -2, 7, 7]);
-        assert!(!valid_event(
-            "audio_start",
-            &json!({"rate": 0, "channels": 2})
-        ));
-        assert!(!valid_event(
-            "audio_start",
-            &json!({"rate": 48000, "channels": 9})
-        ));
-        assert!(valid_event(
-            "audio_start",
-            &json!({"rate": 44100, "channels": 2})
-        ));
-        mixer.shutdown();
+        phase host_events_drive_a_tabs_stream;
+        {
+            let (mixer, sink) = mixer(IDLE_CLOSE);
+            let leaked: &'static Arc<Mixer> = Box::leak(Box::new(mixer.clone()));
+            let tab = PageAudio::default();
+            let send = |name: &str, value: Value| tab.event_on(|| leaked, name, &value);
+            send("audio", json!({"pcm": encode(&[9, 9])}));
+            send("audio_start", json!({"rate": 48000, "channels": 2}));
+            send("audio", json!({"pcm": encode(&[1, -1, 2, -2])}));
+            tilo_test_env::wait_until("the packet plays", || written(&sink) == [1, -1, 2, -2]);
+            send("audio", json!({"pcm": "!!!"}));
+            send("audio", json!({"pcm": encode(&[1, 2, 3])}));
+            send("audio", json!({"pcm": ""}));
+            send("audio_stop", json!({}));
+            send("audio", json!({"pcm": encode(&[4, 4])}));
+            send("audio_start", json!({"rate": 48000, "channels": 2}));
+            send("audio", json!({"pcm": encode(&[7, 7])}));
+            tilo_test_env::wait_until("the next stream's packet plays", || {
+                written(&sink).len() >= 6
+            });
+            assert_eq!(written(&sink), [1, -1, 2, -2, 7, 7]);
+            assert!(!valid_event(
+                "audio_start",
+                &json!({"rate": 0, "channels": 2})
+            ));
+            assert!(!valid_event(
+                "audio_start",
+                &json!({"rate": 48000, "channels": 9})
+            ));
+            assert!(valid_event(
+                "audio_start",
+                &json!({"rate": 44100, "channels": 2})
+            ));
+            mixer.shutdown();
+        }
     }
 }

@@ -271,9 +271,10 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    #[test]
-    fn packets_and_frames_are_pinned_bounded_and_validated() {
-        // phase: json_packet_round_trip_and_eof
+    tilo_test_env::scenario! {
+        fn packets_and_frames_are_pinned_bounded_and_validated;
+
+        phase json_packet_round_trip_and_eof;
         {
             let mut bytes = Vec::new();
             write_json(
@@ -288,7 +289,8 @@ mod tests {
             assert_eq!(value["url"], "https://tilo.so");
             assert!(read_packet(&mut reader).unwrap().is_none());
         }
-        // phase: packet_wire_bytes_are_pinned
+
+        phase packet_wire_bytes_are_pinned;
         // The helper's packets: a little-endian `u32` length that counts the
         // kind byte, the kind, then the body.
         {
@@ -300,7 +302,8 @@ mod tests {
             };
             assert_eq!(value["a"], 1);
         }
-        // phase: malformed_packets_are_rejected_before_allocation
+
+        phase malformed_packets_are_rejected_before_allocation;
         {
             for bytes in [
                 vec![1, 0],
@@ -312,7 +315,8 @@ mod tests {
                 assert!(read_packet(&mut Cursor::new(bytes)).is_err());
             }
         }
-        // phase: bgra_frame_is_validated_and_converted
+
+        phase bgra_frame_is_validated_and_converted;
         {
             let mut bytes = 13u32.to_le_bytes().to_vec();
             bytes.push(2);
@@ -329,7 +333,8 @@ mod tests {
             bytes[5..9].copy_from_slice(&8193u32.to_le_bytes());
             assert!(read_packet(&mut Cursor::new(bytes)).is_err());
         }
-        // phase: frame_notice_is_pinned_and_validated
+
+        phase frame_notice_is_pinned_and_validated;
         {
             let notice = SharedFrame {
                 tab: 7,
@@ -374,7 +379,8 @@ mod tests {
             long.push(0);
             assert!(read_packet(&mut Cursor::new(long)).is_err());
         }
-        // phase: a_copied_frame_is_converted_like_one_swapped_in_place
+
+        phase a_copied_frame_is_converted_like_one_swapped_in_place;
         {
             let bgra: Vec<u8> = (0..44).collect();
             let mut swapped = bgra.clone();
@@ -382,7 +388,8 @@ mod tests {
             assert_eq!(rgba_from_bgra(&bgra), swapped);
             assert_eq!(rgba_from_bgra(&bgra[..12]), swapped[..12]);
         }
-        // phase: every_pixel_of_an_odd_width_frame_is_converted
+
+        phase every_pixel_of_an_odd_width_frame_is_converted;
         {
             let frame = WireFrame {
                 width: 3,
