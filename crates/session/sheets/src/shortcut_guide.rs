@@ -1330,58 +1330,93 @@ mod tests {
             .expect("the guide names this essential")
     }
 
-    #[test]
-    fn the_guide_shows_the_chord_the_table_holds_now() {
-        let table = ShortcutConfig::default();
-        let search = t("shortcut-name-search");
-        assert_eq!(
-            essential(&keyboard_guide(&table), &search),
-            vec![KeyboardBinding::new(
-                [KeyboardModifier::System],
-                KeyLegend::from_name("space")
-            )]
-        );
+    tilo_test_env::scenario! {
+        /// `keyboard_guide`: the guide built from the table of shortcuts.
+        fn the_keyboard_guide_reads_its_rows_from_the_shortcut_table;
 
-        let mut rebound = table;
-        rebound
-            .set(
-                ShortcutAction::Search,
-                KeyChord::parse("Ctrl+Alt+J").expect("a free chord"),
-            )
-            .expect("no other shortcut holds it");
-        let guide = keyboard_guide(&rebound);
-        assert_eq!(
-            essential(&guide, &search),
-            vec![KeyboardBinding::new(
-                [KeyboardModifier::Control, KeyboardModifier::Alt],
-                KeyLegend::from_name("j")
-            )]
-        );
-        // What can be changed is the navigation pairs, and only a changed one
-        // offers to go back.
-        assert_eq!(guide.pairs.len(), NAVIGATION_ROWS.len());
-        assert!(guide.pairs.iter().all(|pair| !pair.changed));
-        assert_eq!(guide.modality, Modality::Keys);
-        assert_eq!(guide.listening, None);
-        assert_eq!(guide.message, None);
-    }
+        phase the_guide_shows_the_chord_the_table_holds_now;
+        {
+            let table = ShortcutConfig::default();
+            let search = t("shortcut-name-search");
+            assert_eq!(
+                essential(&keyboard_guide(&table), &search),
+                vec![KeyboardBinding::new(
+                    [KeyboardModifier::System],
+                    KeyLegend::from_name("space")
+                )]
+            );
 
-    #[test]
-    fn a_pair_whose_shortcut_holds_no_chord_reads_as_unassigned() {
-        let mut table = ShortcutConfig::default();
-        table.bindings.remove(&ShortcutAction::PreviousTab);
-        let guide = keyboard_guide(&table);
-        let pair = guide
-            .pairs
-            .iter()
-            .find(|pair| pair.previous.action == "previous-tab")
-            .expect("tabs are a navigation pair");
-        assert_eq!(pair.previous.keys, unassigned());
-        assert!(pair.changed, "no chord is not the default chord");
-        assert_eq!(
-            pair.next.keys,
-            keycaps(&table.bindings[&ShortcutAction::NextTab])
-        );
+            let mut rebound = table;
+            rebound
+                .set(
+                    ShortcutAction::Search,
+                    KeyChord::parse("Ctrl+Alt+J").expect("a free chord"),
+                )
+                .expect("no other shortcut holds it");
+            let guide = keyboard_guide(&rebound);
+            assert_eq!(
+                essential(&guide, &search),
+                vec![KeyboardBinding::new(
+                    [KeyboardModifier::Control, KeyboardModifier::Alt],
+                    KeyLegend::from_name("j")
+                )]
+            );
+            // What can be changed is the navigation pairs, and only a changed one
+            // offers to go back.
+            assert_eq!(guide.pairs.len(), NAVIGATION_ROWS.len());
+            assert!(guide.pairs.iter().all(|pair| !pair.changed));
+            assert_eq!(guide.modality, Modality::Keys);
+            assert_eq!(guide.listening, None);
+            assert_eq!(guide.message, None);
+        }
+
+        phase a_pair_whose_shortcut_holds_no_chord_reads_as_unassigned;
+        {
+            let mut table = ShortcutConfig::default();
+            table.bindings.remove(&ShortcutAction::PreviousTab);
+            let guide = keyboard_guide(&table);
+            let pair = guide
+                .pairs
+                .iter()
+                .find(|pair| pair.previous.action == "previous-tab")
+                .expect("tabs are a navigation pair");
+            assert_eq!(pair.previous.keys, unassigned());
+            assert!(pair.changed, "no chord is not the default chord");
+            assert_eq!(
+                pair.next.keys,
+                keycaps(&table.bindings[&ShortcutAction::NextTab])
+            );
+        }
+
+        phase a_published_action_is_a_row_of_its_name_and_its_chord;
+        // A published action is a row of its own: its name, and the chord beside
+        // it, laid out as key hints rather than joined into one string.
+        {
+            let mut table = ShortcutConfig::default();
+            assert_eq!(keyboard_guide(&table).essentials.len(), ESSENTIALS.len());
+            table.actions.push(settings_store::hardware::ActionChord {
+                chord: KeyChord::parse("Ctrl+Alt+D").expect("a free chord"),
+                target: settings_store::hardware::ActionChordTarget {
+                    provider: "actions".to_owned(),
+                    resource: "deploy".to_owned(),
+                    action: "run".to_owned(),
+                },
+                label: "Deploy".to_owned(),
+            });
+            let guide = keyboard_guide(&table);
+            let published = guide.essentials.last().expect("the published group");
+            assert_eq!(published.len(), 1);
+            assert_eq!(published[0].0, "Deploy");
+            assert_eq!(published[0].1.len(), 1);
+            assert_eq!(
+                published[0].1[0],
+                keycaps(&KeyChord::parse("Ctrl+Alt+D").unwrap())
+            );
+            assert!(
+                guide.notes.iter().all(|note| !note.contains("Deploy")),
+                "no note joins the published chord onto other copy"
+            );
+        }
     }
 
     /// The peek row called `label`, wherever it stands.
@@ -1398,118 +1433,93 @@ mod tests {
         tabs: 2,
     };
 
-    /// The peek reads the table the guide explains: a rebound shortcut reads rebound, and one a
-    /// held Super cannot reach is not offered.
-    #[test]
-    fn the_peek_names_the_keys_after_super_from_the_table() {
-        let search = t("shortcut-name-search");
-        let mut table = ShortcutConfig::default();
-        assert_eq!(
-            peek_row(&peek(&table, DESK), &search).map(|hint| hint.keys),
-            Some(vec![ui::keycaps::active().key("space")]),
-            "Super is held already: the row names only the key after it"
-        );
-        table
-            .set(
-                ShortcutAction::Search,
-                KeyChord::parse("Super+Shift+J").expect("a free chord"),
-            )
-            .expect("no other shortcut holds it");
-        assert_eq!(
-            peek_row(&peek(&table, DESK), &search).map(|hint| hint.keys),
-            Some(KeyHint::new(["Shift", "j"], "").keys)
-        );
-        table
-            .set(
-                ShortcutAction::Search,
-                KeyChord::parse("Ctrl+Alt+J").expect("a free chord"),
-            )
-            .expect("no other shortcut holds it");
-        assert_eq!(
-            peek_row(&peek(&table, DESK), &search),
-            None,
-            "a chord without Super is out of a held Super's reach"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// `peek`: the rows shown while Super is held.
+        fn the_peek_offers_what_a_held_super_reaches_on_this_desk;
 
-    /// The peek names what does something where the person works: a window of one tab has no
-    /// tab to go to, and a desk with no window nothing to arrange.
-    #[test]
-    fn the_peek_leaves_out_what_the_desk_gives_nothing_to_do() {
-        let table = ShortcutConfig::default();
-        let tabs = t("guide-row-tabs");
-        let windows = t("guide-row-windows");
-        let both = peek(&table, DESK);
-        assert!(peek_row(&both, &tabs).is_some());
-        let titles: Vec<&str> = both.iter().map(|(title, _)| title.as_str()).collect();
-        assert_eq!(
-            titles,
-            [
-                windows.as_str(),
-                tabs.as_str(),
-                t("peek-apps").as_str(),
-                t("peek-agent-search").as_str()
-            ]
-        );
+        phase the_peek_names_the_keys_after_super_from_the_table;
+        // The peek reads the table the guide explains: a rebound shortcut reads rebound, and one a
+        // held Super cannot reach is not offered.
+        {
+            let search = t("shortcut-name-search");
+            let mut table = ShortcutConfig::default();
+            assert_eq!(
+                peek_row(&peek(&table, DESK), &search).map(|hint| hint.keys),
+                Some(vec![ui::keycaps::active().key("space")]),
+                "Super is held already: the row names only the key after it"
+            );
+            table
+                .set(
+                    ShortcutAction::Search,
+                    KeyChord::parse("Super+Shift+J").expect("a free chord"),
+                )
+                .expect("no other shortcut holds it");
+            assert_eq!(
+                peek_row(&peek(&table, DESK), &search).map(|hint| hint.keys),
+                Some(KeyHint::new(["Shift", "j"], "").keys)
+            );
+            table
+                .set(
+                    ShortcutAction::Search,
+                    KeyChord::parse("Ctrl+Alt+J").expect("a free chord"),
+                )
+                .expect("no other shortcut holds it");
+            assert_eq!(
+                peek_row(&peek(&table, DESK), &search),
+                None,
+                "a chord without Super is out of a held Super's reach"
+            );
+        }
 
-        let one_tab = peek(
-            &table,
-            PeekDesk {
-                windows: 2,
-                tabs: 1,
-            },
-        );
-        assert_eq!(
-            peek_row(&one_tab, &tabs),
-            None,
-            "one tab: nothing to switch to"
-        );
-        assert!(
-            peek_row(&one_tab, &t("shortcut-name-reopen-closed-tab")).is_some(),
-            "a closed tab still comes back"
-        );
+        phase the_peek_leaves_out_what_the_desk_gives_nothing_to_do;
+        // The peek names what does something where the person works: a window of one tab has no
+        // tab to go to, and a desk with no window nothing to arrange.
+        {
+            let table = ShortcutConfig::default();
+            let tabs = t("guide-row-tabs");
+            let windows = t("guide-row-windows");
+            let both = peek(&table, DESK);
+            assert!(peek_row(&both, &tabs).is_some());
+            let titles: Vec<&str> = both.iter().map(|(title, _)| title.as_str()).collect();
+            assert_eq!(
+                titles,
+                [
+                    windows.as_str(),
+                    tabs.as_str(),
+                    t("peek-apps").as_str(),
+                    t("peek-agent-search").as_str()
+                ]
+            );
 
-        let empty = peek(&table, PeekDesk::default());
-        assert_eq!(peek_row(&empty, &t("guide-row-move-focus")), None);
-        assert_eq!(
-            peek_row(&empty, &t("guide-row-maximize")),
-            None,
-            "no window: nothing to arrange"
-        );
-        assert_eq!(
-            peek_row(&empty, &t("guide-row-strips")).map(|hint| hint.keys),
-            Some(vec!["1–9".to_owned()]),
-            "the strips are there to go to, the first and last of the run in one key"
-        );
-    }
+            let one_tab = peek(
+                &table,
+                PeekDesk {
+                    windows: 2,
+                    tabs: 1,
+                },
+            );
+            assert_eq!(
+                peek_row(&one_tab, &tabs),
+                None,
+                "one tab: nothing to switch to"
+            );
+            assert!(
+                peek_row(&one_tab, &t("shortcut-name-reopen-closed-tab")).is_some(),
+                "a closed tab still comes back"
+            );
 
-    /// A published action is a row of its own: its name, and the chord beside
-    /// it, laid out as key hints rather than joined into one string.
-    #[test]
-    fn a_published_action_is_a_row_of_its_name_and_its_chord() {
-        let mut table = ShortcutConfig::default();
-        assert_eq!(keyboard_guide(&table).essentials.len(), ESSENTIALS.len());
-        table.actions.push(settings_store::hardware::ActionChord {
-            chord: KeyChord::parse("Ctrl+Alt+D").expect("a free chord"),
-            target: settings_store::hardware::ActionChordTarget {
-                provider: "actions".to_owned(),
-                resource: "deploy".to_owned(),
-                action: "run".to_owned(),
-            },
-            label: "Deploy".to_owned(),
-        });
-        let guide = keyboard_guide(&table);
-        let published = guide.essentials.last().expect("the published group");
-        assert_eq!(published.len(), 1);
-        assert_eq!(published[0].0, "Deploy");
-        assert_eq!(published[0].1.len(), 1);
-        assert_eq!(
-            published[0].1[0],
-            keycaps(&KeyChord::parse("Ctrl+Alt+D").unwrap())
-        );
-        assert!(
-            guide.notes.iter().all(|note| !note.contains("Deploy")),
-            "no note joins the published chord onto other copy"
-        );
+            let empty = peek(&table, PeekDesk::default());
+            assert_eq!(peek_row(&empty, &t("guide-row-move-focus")), None);
+            assert_eq!(
+                peek_row(&empty, &t("guide-row-maximize")),
+                None,
+                "no window: nothing to arrange"
+            );
+            assert_eq!(
+                peek_row(&empty, &t("guide-row-strips")).map(|hint| hint.keys),
+                Some(vec!["1–9".to_owned()]),
+                "the strips are there to go to, the first and last of the run in one key"
+            );
+        }
     }
 }

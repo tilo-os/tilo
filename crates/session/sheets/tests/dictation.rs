@@ -91,328 +91,370 @@ fn seated(prompt: Prompt) -> (HeadlessApp<DictationApp>, DictationSeat) {
     (app, seat)
 }
 
-#[test]
-fn every_stage_says_what_happens() {
-    let mut app = staged("asking");
-    let said = told(&mut app);
-    assert!(said.contains("Dictate into this field?"), "{said}");
-    assert!(
-        said.contains("Nothing is recorded before you allow it"),
-        "{said}"
-    );
-    assert!(said.contains("the field you were in"), "{said}");
-    let labels: Vec<String> = buttons(&mut app)
-        .into_iter()
-        .map(|(label, _)| label)
-        .collect();
-    assert_eq!(labels, ["Allow", "Not now"]);
+tilo_test_env::scenario! {
+    /// What the dictation card shows and publishes at each stage; no phase here sends it any input.
+    fn the_dictation_card_says_its_stage_and_publishes_no_answer;
 
-    let mut app = staged("listening");
-    let said = told(&mut app);
-    assert!(said.contains("Dictation"), "{said}");
-    assert!(said.contains("café by the market"), "{said}");
-    let labels: Vec<String> = buttons(&mut app)
-        .into_iter()
-        .map(|(label, _)| label)
-        .collect();
-    assert_eq!(labels, ["Insert", "Cancel"]);
+    phase every_stage_says_what_happens;
+    {
+        let mut app = staged("asking");
+        let said = told(&mut app);
+        assert!(said.contains("Dictate into this field?"), "{said}");
+        assert!(
+            said.contains("Nothing is recorded before you allow it"),
+            "{said}"
+        );
+        assert!(said.contains("the field you were in"), "{said}");
+        let labels: Vec<String> = buttons(&mut app)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, ["Allow", "Not now"]);
 
-    let mut app = staged("finishing");
-    let said = told(&mut app);
-    assert!(said.contains("Finishing your text"), "{said}");
-    let labels: Vec<String> = buttons(&mut app)
-        .into_iter()
-        .map(|(label, _)| label)
-        .collect();
-    assert_eq!(labels, ["Cancel"]);
+        let mut app = staged("listening");
+        let said = told(&mut app);
+        assert!(said.contains("Dictation"), "{said}");
+        assert!(said.contains("café by the market"), "{said}");
+        let labels: Vec<String> = buttons(&mut app)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, ["Insert", "Cancel"]);
 
-    let mut app = staged("recovery-too-long");
-    let said = told(&mut app);
-    assert!(said.contains("The field took no words"), "{said}");
-    assert!(said.contains("too long to insert in one step"), "{said}");
-    assert!(
-        said.contains("Kept privately for 10 minutes"),
-        "the card says where the words are: {said}"
-    );
-    assert!(!said.contains("Copied"), "nothing was copied yet: {said}");
-    let labels: Vec<String> = buttons(&mut app)
-        .into_iter()
-        .map(|(label, _)| label)
-        .collect();
-    assert_eq!(labels, ["Copy", "Discard"]);
+        let mut app = staged("finishing");
+        let said = told(&mut app);
+        assert!(said.contains("Finishing your text"), "{said}");
+        let labels: Vec<String> = buttons(&mut app)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, ["Cancel"]);
 
-    let mut app = staged("recovery-copied");
-    let said = told(&mut app);
-    assert!(said.contains("Copied."), "{said}");
+        let mut app = staged("recovery-too-long");
+        let said = told(&mut app);
+        assert!(said.contains("The field took no words"), "{said}");
+        assert!(said.contains("too long to insert in one step"), "{said}");
+        assert!(
+            said.contains("Kept privately for 10 minutes"),
+            "the card says where the words are: {said}"
+        );
+        assert!(!said.contains("Copied"), "nothing was copied yet: {said}");
+        let labels: Vec<String> = buttons(&mut app)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, ["Copy", "Discard"]);
 
-    let mut app = staged("model-required");
-    let said = told(&mut app);
-    assert!(
-        said.contains("Install an approved local speech model"),
-        "{said}"
-    );
-    let labels: Vec<String> = buttons(&mut app)
-        .into_iter()
-        .map(|(label, _)| label)
-        .collect();
-    assert_eq!(
-        labels,
-        ["Set up", "Close"],
-        "a missing model offers the way to install one first"
-    );
+        let mut app = staged("recovery-copied");
+        let said = told(&mut app);
+        assert!(said.contains("Copied."), "{said}");
 
-    let mut app = staged("unavailable");
-    let said = told(&mut app);
-    assert!(said.contains("Dictation isn't available"), "{said}");
-    assert!(said.contains("Microphone access is unavailable"), "{said}");
-    let labels: Vec<String> = buttons(&mut app)
-        .into_iter()
-        .map(|(label, _)| label)
-        .collect();
-    assert_eq!(labels, ["Close"]);
-}
+        let mut app = staged("model-required");
+        let said = told(&mut app);
+        assert!(
+            said.contains("Install an approved local speech model"),
+            "{said}"
+        );
+        let labels: Vec<String> = buttons(&mut app)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(
+            labels,
+            ["Set up", "Close"],
+            "a missing model offers the way to install one first"
+        );
 
-#[test]
-fn enter_allows_the_microphone_once_for_the_prompt_shown() {
-    let (mut app, seat) = seated(asking(7));
-    app.harness().key("Enter");
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::Allow(7)]);
-    assert_eq!(
-        seat.take_answers(),
-        [],
-        "an answer is taken once, not read twice"
-    );
-}
+        let mut app = staged("unavailable");
+        let said = told(&mut app);
+        assert!(said.contains("Dictation isn't available"), "{said}");
+        assert!(said.contains("Microphone access is unavailable"), "{said}");
+        let labels: Vec<String> = buttons(&mut app)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, ["Close"]);
+    }
 
-#[test]
-fn a_press_on_not_now_refuses_the_microphone() {
-    let (mut app, seat) = seated(asking(7));
-    let deny = buttons(&mut app)
-        .into_iter()
-        .find(|(label, _)| label == "Not now")
-        .unwrap()
-        .1;
-    app.harness().click_at(deny.center().x, deny.center().y);
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::Deny(7)]);
-}
-
-#[test]
-fn escape_says_no_and_keeps_nothing_of_a_transcript() {
-    let (mut app, seat) = seated(asking(7));
-    app.harness().key("Escape");
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::Deny(7)]);
-
-    seat.show(Some(recovery(8)));
-    app.settle();
-    app.harness().key("Escape");
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::Discard(8)]);
-}
-
-#[test]
-fn escape_cancels_while_the_dictation_runs_or_cannot_run() {
-    let stages = [
-        (20, Stage::Preparing),
-        (21, Stage::Loading),
-        (22, Stage::Listening),
-        (23, Stage::StoppingMicrophone),
-        (24, Stage::Finishing),
-        (25, Stage::Stopping),
-    ];
-    for (id, stage) in stages {
+    phase the_draft_follows_the_session_without_reopening_the_sheet;
+    {
         let (mut app, seat) = seated(Prompt {
-            id,
-            stage,
+            id: 3,
+            stage: Stage::Listening,
             draft: String::new(),
             failure: None,
             recovery: None,
             copied: false,
             copy_failed: false,
         });
+        assert!(
+            told(&mut app).contains("Microphone on. Speak, then finish to insert."),
+            "nothing heard yet"
+        );
+        seat.show(Some(Prompt {
+            id: 3,
+            stage: Stage::Listening,
+            draft: "the first few words".to_owned(),
+            failure: None,
+            recovery: None,
+            copied: false,
+            copy_failed: false,
+        }));
+        app.settle();
+        assert!(told(&mut app).contains("the first few words"));
+    }
+
+    phase nothing_is_shown_once_the_dictation_is_gone;
+    {
+        let (mut app, seat) = seated(asking(1));
+        assert!(!buttons(&mut app).is_empty());
+        seat.show(None);
+        app.settle();
+        assert!(buttons(&mut app).is_empty(), "no answer is left to give");
+        let dialogs = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.role() == ui::accesskit::Role::Dialog)
+            .count();
+        assert_eq!(dialogs, 0, "and nothing left to announce");
+    }
+
+    phase a_screen_reader_meets_a_modal_dialog_naming_the_stage;
+    {
+        let mut app = staged("asking");
+        let nodes = app.harness().a11y_nodes();
+        let dialog = nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| node.role() == ui::accesskit::Role::Dialog)
+            .expect("the card is a dialog");
+        assert_eq!(dialog.label(), Some("Dictate into this field?"));
+        assert!(dialog.is_modal());
+        assert!(
+            dialog
+                .description()
+                .is_some_and(|text| text.contains("The microphone listens once, only until you stop")),
+            "{:?}",
+            dialog.description()
+        );
+    }
+
+    phase the_sheet_publishes_no_action_that_could_answer_it;
+    {
+        let (mut app, _seat) = seated(asking(7));
+        let published = dictation_resource(&app.harness().resources()).expect("the sheet is published");
+        // The framework's own verbs stand beside every resource; the sheet adds
+        // none. An effect is what the session's action door invokes, and a remote
+        // action is not consent, so the vocabulary is empty.
+        let effects: Vec<&str> = published
+            .actions
+            .iter()
+            .filter(|action| action.kind == OperationKind::Effect)
+            // The framework offers the record's own link beside every resource; it answers no prompt.
+            .filter(|action| !ui::tilo_resource::share::is_share_verb(&action.id))
+            .map(|action| action.id.as_str())
+            .collect();
+        assert!(
+            effects.is_empty(),
+            "an effect would let anything that can reach the door answer the microphone: {effects:?}"
+        );
+        let answers = ["allow", "deny", "finish", "cancel", "copy", "discard"];
+        let named: Vec<&str> = published
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .filter(|id| answers.iter().any(|verb| id.contains(verb)))
+            .collect();
+        assert!(
+            named.is_empty(),
+            "no verb is one of the card's answers: {named:?}"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    /// The answers the dictation card gives the session, by key, by press and by an assistive press.
+    fn a_key_or_a_press_on_the_card_answers_the_session;
+
+    phase enter_allows_the_microphone_once_for_the_prompt_shown;
+    {
+        let (mut app, seat) = seated(asking(7));
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::Allow(7)]);
+        assert_eq!(
+            seat.take_answers(),
+            [],
+            "an answer is taken once, not read twice"
+        );
+    }
+
+    phase a_press_on_not_now_refuses_the_microphone;
+    {
+        let (mut app, seat) = seated(asking(7));
+        let deny = buttons(&mut app)
+            .into_iter()
+            .find(|(label, _)| label == "Not now")
+            .unwrap()
+            .1;
+        app.harness().click_at(deny.center().x, deny.center().y);
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::Deny(7)]);
+    }
+
+    phase escape_says_no_and_keeps_nothing_of_a_transcript;
+    {
+        let (mut app, seat) = seated(asking(7));
         app.harness().key("Escape");
         app.settle();
-        assert_eq!(seat.take_answers(), [Answer::Cancel(id)], "{stage:?}");
+        assert_eq!(seat.take_answers(), [Answer::Deny(7)]);
+
+        seat.show(Some(recovery(8)));
+        app.settle();
+        app.harness().key("Escape");
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::Discard(8)]);
     }
-    let (mut app, seat) = seated(Prompt {
-        id: 30,
-        stage: Stage::Unavailable,
-        draft: String::new(),
-        failure: Some(Failure::MicrophoneUnavailable),
-        recovery: None,
-        copied: false,
-        copy_failed: false,
-    });
-    assert!(
-        told(&mut app).contains("Microphone access is unavailable"),
-        "the card says why the microphone is not heard"
-    );
-    app.harness().key("Enter");
-    app.settle();
-    assert_eq!(
-        seat.take_answers(),
-        [Answer::Cancel(30)],
-        "Close is the primary"
-    );
-    app.harness().key("Escape");
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::Cancel(30)]);
-}
 
-#[test]
-fn a_missing_model_takes_the_person_to_its_setup() {
-    let (mut app, seat) = seated(Prompt {
-        id: 31,
-        stage: Stage::Unavailable,
-        draft: String::new(),
-        failure: Some(Failure::ModelRequired),
-        recovery: None,
-        copied: false,
-        copy_failed: false,
-    });
-    let setup = buttons(&mut app)
-        .into_iter()
-        .find(|(label, _)| label == "Set up")
-        .expect("the card that needs a model says where to get one")
-        .1;
-    app.harness().click_at(setup.center().x, setup.center().y);
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::SetUp(31)]);
+    phase escape_cancels_while_the_dictation_runs_or_cannot_run;
+    {
+        let stages = [
+            (20, Stage::Preparing),
+            (21, Stage::Loading),
+            (22, Stage::Listening),
+            (23, Stage::StoppingMicrophone),
+            (24, Stage::Finishing),
+            (25, Stage::Stopping),
+        ];
+        for (id, stage) in stages {
+            let (mut app, seat) = seated(Prompt {
+                id,
+                stage,
+                draft: String::new(),
+                failure: None,
+                recovery: None,
+                copied: false,
+                copy_failed: false,
+            });
+            app.harness().key("Escape");
+            app.settle();
+            assert_eq!(seat.take_answers(), [Answer::Cancel(id)], "{stage:?}");
+        }
+        let (mut app, seat) = seated(Prompt {
+            id: 30,
+            stage: Stage::Unavailable,
+            draft: String::new(),
+            failure: Some(Failure::MicrophoneUnavailable),
+            recovery: None,
+            copied: false,
+            copy_failed: false,
+        });
+        assert!(
+            told(&mut app).contains("Microphone access is unavailable"),
+            "the card says why the microphone is not heard"
+        );
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(
+            seat.take_answers(),
+            [Answer::Cancel(30)],
+            "Close is the primary"
+        );
+        app.harness().key("Escape");
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::Cancel(30)]);
+    }
 
-    // Enter gives the primary answer, which is the way there while no model
-    // is set up; Escape still gives the dictation up.
-    app.harness().key("Enter");
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::SetUp(31)]);
-    app.harness().key("Escape");
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::Cancel(31)]);
-}
+    phase a_missing_model_takes_the_person_to_its_setup;
+    {
+        let (mut app, seat) = seated(Prompt {
+            id: 31,
+            stage: Stage::Unavailable,
+            draft: String::new(),
+            failure: Some(Failure::ModelRequired),
+            recovery: None,
+            copied: false,
+            copy_failed: false,
+        });
+        let setup = buttons(&mut app)
+            .into_iter()
+            .find(|(label, _)| label == "Set up")
+            .expect("the card that needs a model says where to get one")
+            .1;
+        app.harness().click_at(setup.center().x, setup.center().y);
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::SetUp(31)]);
 
-#[test]
-fn while_listening_enter_inserts_and_copy_is_the_cards_own_word() {
-    let (mut app, seat) = seated(Prompt {
-        id: 4,
-        stage: Stage::Listening,
-        draft: "Hello".to_owned(),
-        failure: None,
-        recovery: None,
-        copied: false,
-        copy_failed: false,
-    });
-    app.harness().key("Enter");
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::Finish(4)]);
+        // Enter gives the primary answer, which is the way there while no model
+        // is set up; Escape still gives the dictation up.
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::SetUp(31)]);
+        app.harness().key("Escape");
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::Cancel(31)]);
+    }
 
-    seat.show(Some(recovery(5)));
-    app.settle();
-    let copy = buttons(&mut app)
-        .into_iter()
-        .find(|(label, _)| label == "Copy")
-        .unwrap()
-        .1;
-    app.harness().click_at(copy.center().x, copy.center().y);
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::Copy(5)]);
-    assert!(
-        !told(&mut app).contains("Copied."),
-        "the card does not claim a copy the session has not made"
-    );
-    seat.show(Some(Prompt {
-        copied: true,
-        ..recovery(5)
-    }));
-    app.settle();
-    assert!(
-        told(&mut app).contains("Copied."),
-        "the card says the transcript is on the clipboard once it is"
-    );
-}
+    phase while_listening_enter_inserts_and_copy_is_the_cards_own_word;
+    {
+        let (mut app, seat) = seated(Prompt {
+            id: 4,
+            stage: Stage::Listening,
+            draft: "Hello".to_owned(),
+            failure: None,
+            recovery: None,
+            copied: false,
+            copy_failed: false,
+        });
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::Finish(4)]);
 
-#[test]
-fn the_draft_follows_the_session_without_reopening_the_sheet() {
-    let (mut app, seat) = seated(Prompt {
-        id: 3,
-        stage: Stage::Listening,
-        draft: String::new(),
-        failure: None,
-        recovery: None,
-        copied: false,
-        copy_failed: false,
-    });
-    assert!(
-        told(&mut app).contains("Microphone on. Speak, then finish to insert."),
-        "nothing heard yet"
-    );
-    seat.show(Some(Prompt {
-        id: 3,
-        stage: Stage::Listening,
-        draft: "the first few words".to_owned(),
-        failure: None,
-        recovery: None,
-        copied: false,
-        copy_failed: false,
-    }));
-    app.settle();
-    assert!(told(&mut app).contains("the first few words"));
-}
+        seat.show(Some(recovery(5)));
+        app.settle();
+        let copy = buttons(&mut app)
+            .into_iter()
+            .find(|(label, _)| label == "Copy")
+            .unwrap()
+            .1;
+        app.harness().click_at(copy.center().x, copy.center().y);
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::Copy(5)]);
+        assert!(
+            !told(&mut app).contains("Copied."),
+            "the card does not claim a copy the session has not made"
+        );
+        seat.show(Some(Prompt {
+            copied: true,
+            ..recovery(5)
+        }));
+        app.settle();
+        assert!(
+            told(&mut app).contains("Copied."),
+            "the card says the transcript is on the clipboard once it is"
+        );
+    }
 
-#[test]
-fn nothing_is_shown_once_the_dictation_is_gone() {
-    let (mut app, seat) = seated(asking(1));
-    assert!(!buttons(&mut app).is_empty());
-    seat.show(None);
-    app.settle();
-    assert!(buttons(&mut app).is_empty(), "no answer is left to give");
-    let dialogs = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .filter(|(_, node)| node.role() == ui::accesskit::Role::Dialog)
-        .count();
-    assert_eq!(dialogs, 0, "and nothing left to announce");
-}
+    phase an_assistive_press_is_the_persons_own_answer;
+    {
+        let (mut app, seat) = seated(asking(7));
+        app.harness()
+            .perform_named("dictation-allow", &A11yAction::Activate)
+            .ok();
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::Allow(7)]);
+    }
 
-#[test]
-fn a_screen_reader_meets_a_modal_dialog_naming_the_stage() {
-    let mut app = staged("asking");
-    let nodes = app.harness().a11y_nodes();
-    let dialog = nodes
-        .iter()
-        .map(|(_, node)| node)
-        .find(|node| node.role() == ui::accesskit::Role::Dialog)
-        .expect("the card is a dialog");
-    assert_eq!(dialog.label(), Some("Dictate into this field?"));
-    assert!(dialog.is_modal());
-    assert!(
-        dialog
-            .description()
-            .is_some_and(|text| text.contains("The microphone listens once, only until you stop")),
-        "{:?}",
-        dialog.description()
-    );
-}
-
-#[test]
-fn an_assistive_press_is_the_persons_own_answer() {
-    let (mut app, seat) = seated(asking(7));
-    app.harness()
-        .perform_named("dictation-allow", &A11yAction::Activate)
-        .ok();
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::Allow(7)]);
-}
-
-#[test]
-fn tab_walks_the_answers_and_enter_gives_the_one_reached() {
-    let (mut app, seat) = seated(asking(7));
-    app.harness().key("Tab");
-    app.settle();
-    app.harness().key("Enter");
-    app.settle();
-    assert_eq!(seat.take_answers(), [Answer::Deny(7)]);
+    phase tab_walks_the_answers_and_enter_gives_the_one_reached;
+    {
+        let (mut app, seat) = seated(asking(7));
+        app.harness().key("Tab");
+        app.settle();
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(seat.take_answers(), [Answer::Deny(7)]);
+    }
 }
 
 /// The resource the sheet shows, wherever it stands in the published tree.
@@ -424,36 +466,4 @@ fn dictation_resource(specs: &[ResourceSpec]) -> Option<ResourceSpec> {
             dictation_resource(&spec.children)
         }
     })
-}
-
-#[test]
-fn the_sheet_publishes_no_action_that_could_answer_it() {
-    let (mut app, _seat) = seated(asking(7));
-    let published = dictation_resource(&app.harness().resources()).expect("the sheet is published");
-    // The framework's own verbs stand beside every resource; the sheet adds
-    // none. An effect is what the session's action door invokes, and a remote
-    // action is not consent, so the vocabulary is empty.
-    let effects: Vec<&str> = published
-        .actions
-        .iter()
-        .filter(|action| action.kind == OperationKind::Effect)
-        // The framework offers the record's own link beside every resource; it answers no prompt.
-        .filter(|action| !ui::tilo_resource::share::is_share_verb(&action.id))
-        .map(|action| action.id.as_str())
-        .collect();
-    assert!(
-        effects.is_empty(),
-        "an effect would let anything that can reach the door answer the microphone: {effects:?}"
-    );
-    let answers = ["allow", "deny", "finish", "cancel", "copy", "discard"];
-    let named: Vec<&str> = published
-        .actions
-        .iter()
-        .map(|action| action.id.as_str())
-        .filter(|id| answers.iter().any(|verb| id.contains(verb)))
-        .collect();
-    assert!(
-        named.is_empty(),
-        "no verb is one of the card's answers: {named:?}"
-    );
 }
