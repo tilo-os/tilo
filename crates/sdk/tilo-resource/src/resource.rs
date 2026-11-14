@@ -535,7 +535,7 @@ pub(crate) fn edit_schema(vocabulary: &Vocabulary) -> serde_json::Value {
             return described_edit(&alternatives, &ops);
         }
     }
-    generic_edit_schema(&ops)
+    generic_edit_schema(&ops, |_| true)
 }
 
 /// The schema a field edit is checked against, with every editable path
@@ -546,7 +546,16 @@ fn described_edit(
     alternatives: &[serde_json::Value],
     ops: &[(String, serde_json::Value)],
 ) -> serde_json::Value {
-    let mut schema = generic_edit_schema(ops);
+    // The operations some path of the record takes: the schema names only
+    // those, and only their arguments.
+    let taken: Vec<String> = alternatives
+        .iter()
+        .filter_map(|alternative| alternative.pointer("/properties/op/enum")?.as_array())
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let mut schema = generic_edit_schema(ops, |op| taken.iter().any(|taken| taken == op));
     let mut lines = vec![
         "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:".to_owned(),
     ];
@@ -676,10 +685,14 @@ fn value_kind(schema: &serde_json::Value) -> Option<String> {
 
 /// The generic field-edit schema, with the vocabularies of the record's
 /// fields' own operations named for `rich`.
-fn generic_edit_schema(ops: &[(String, serde_json::Value)]) -> serde_json::Value {
+fn generic_edit_schema(
+    ops: &[(String, serde_json::Value)],
+    takes: impl Fn(&str) -> bool,
+) -> serde_json::Value {
     let ops = ops.to_vec();
-    let mut schema = <Edit<()> as crate::JsonSchema>::json_schema();
+    let mut schema = crate::path::edit_schema_taking(&takes);
     if !ops.is_empty()
+        && takes("rich")
         && let Some(properties) = schema
             .get_mut("properties")
             .and_then(serde_json::Value::as_object_mut)
@@ -721,6 +734,10 @@ fn step_schema(kind: &str, value: serde_json::Value) -> serde_json::Value {
 /// type: a text stored whole (`#[model(atom)]`) is only ever set.
 fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
     let ty = field.ty;
+    // Who reacted with what: each invoker adds and takes back their own.
+    if ty.rsplit("::").next() == Some("Reactions") {
+        return vec!["react", "unreact"];
+    }
     match field.shape {
         crate::Shape::Collection(_) | crate::Shape::Keyed(_) => {
             vec![

@@ -220,7 +220,7 @@
             },
             "at": {
               "type": "integer",
-              "description": "When the action was authored, in milliseconds since the Unix epoch"
+              "description": "When the action was authored, in milliseconds since the Unix epoch: set by the host that applies it, which replaces a value given here. When content was first written elsewhere, the action that writes it takes that as its `origin`"
             }
           },
           "additionalProperties": false
@@ -2068,7 +2068,7 @@
         "description": "The path of the field from the record's root, and the operation",
         "schema": {
           "type": "object",
-          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `title`: set, splice, replace — Title (string)\n- `width`: set — Width (number)\n- `height`: set — Height (number)\n- `ground`: set — Ground; set one field of it: `texture`, `colour`\n- `layers`: upsert-item, insert-item, remove-item, move-to, set — Bottom to top; removing an item asks nothing; Undo takes it back\n- `layers.*`: set — Bottom to top; one item, by its id\n- `layers.*.name`: set, splice, replace — Name (string)\n- `layers.*.group`: set — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `layers.*.medium`: set — The medium preset that paints this layer's marks, or empty for plain (string)\n- `layers.*.opacity`: set — Opacity (number)\n- `layers.*.visible`: set — Visible (boolean)\n- `layers.*.texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `layers.*.locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `layers.*.adjust`: set — Colour and tone adjustments of everything on the layer (object or null); set one field of it: `exposure`, `contrast`, `highlights`, `shadows`, `saturation`, `vibrance`, `hue`, `temperature`, `tint`, `curve`, `grayscale`, `invert`, `blur`, `sharpen`, `vignette`\n- `layers.*.base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `layers.*.invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `layers.*.clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `layers.*.unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)\n- `marks`: upsert-item, insert-item, remove-item, move-to, set — Bottom to top within each layer, layers bottom to top (see; removing an item asks nothing; Undo takes it back\n- `marks.*`: set — Bottom to top within each layer, layers bottom to top (see; one item, by its id\n- `marks.*.layer`: set — Layer (string)\n- `marks.*.name`: set, splice, replace — Name (string)\n- `marks.*.shape`: set — Shape\n- `marks.*.style`: set — Style; set one field of it: `pixelated`, `fill`, `gradient`, `stroke`, `stroke_width`, `opacity`, `brush`, `brush_size`, `angle`, `wet`, `dash`, `cap`, `join`, `blend`, `shadow`, `inner_shadow`, `grain`, `feather`\n- `marks.*.style.params`: set, remove-key — On a painted layer: overrides of the medium's parameters for this\n- `marks.*.style.params.*`: set, splice, replace, add, insert, remove — On a painted layer: overrides of the medium's parameters for this; an entry, by its key, and what is inside it\n- `marks.*.style.adjust`: set — Colour and tone adjustments: a picture's pixels, a shape's colours (object or null); set one field of it: `exposure`, `contrast`, `highlights`, `shadows`, `saturation`, `vibrance`, `hue`, `temperature`, `tint`, `curve`, `grayscale`, `invert`, `blur`, `sharpen`, `vignette`\n- `marks.*.transform`: set — An affine transform `[a, b, c, d, e, f]` applied to the geometry (array or null)\n- `marks.*.group`: set — The group the mark belongs to, or empty (string)\n- `marks.*.clip`: set — The mark whose shape this mark is cut to, or empty (string)\n- `media`: set, remove-key — Media presets saved in this artwork, by id\n- `media.*`: set, splice, replace, add, insert, remove — Media presets saved in this artwork, by id; an entry, by its key, and what is inside it\n- `reference`: set — Reference\n- `selection`: set — Selection",
+          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `title`: set, splice {at, delete, insert}, replace {text} — Title (string)\n- `width`: set — Width (number)\n- `height`: set — Height (number)\n- `ground`: set — Ground; set one field of it: `texture`, `colour`\n- `layers`: upsert-item {match, value, id?}, insert-item {value, id?, at?}, remove-item {id}, move-to {id, at?}, set — Bottom to top; removing an item asks nothing; Undo takes it back\n- `layers.*`: set — Bottom to top; one item, by its id\n- `layers.*.name`: set, splice {at, delete, insert}, replace {text} — Name (string)\n- `layers.*.group`: set — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `layers.*.medium`: set — The medium preset that paints this layer's marks, or empty for plain (string)\n- `layers.*.opacity`: set — Opacity (number)\n- `layers.*.visible`: set — Visible (boolean)\n- `layers.*.texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `layers.*.locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `layers.*.adjust`: set — Colour and tone adjustments of everything on the layer (object or null); set one field of it: `exposure`, `contrast`, `highlights`, `shadows`, `saturation`, `vibrance`, `hue`, `temperature`, `tint`, `curve`, `grayscale`, `invert`, `blur`, `sharpen`, `vignette`\n- `layers.*.base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `layers.*.invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `layers.*.clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `layers.*.unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)\n- `marks`: upsert-item {match, value, id?}, insert-item {value, id?, at?}, remove-item {id}, move-to {id, at?}, set — Bottom to top within each layer, layers bottom to top (see; removing an item asks nothing; Undo takes it back\n- `marks.*`: set — Bottom to top within each layer, layers bottom to top (see; one item, by its id\n- `marks.*.layer`: set — Layer (string)\n- `marks.*.name`: set, splice {at, delete, insert}, replace {text} — Name (string)\n- `marks.*.shape`: set — Shape\n- `marks.*.style`: set — Style; set one field of it: `pixelated`, `fill`, `gradient`, `stroke`, `stroke_width`, `opacity`, `brush`, `brush_size`, `angle`, `wet`, `dash`, `cap`, `join`, `blend`, `shadow`, `inner_shadow`, `grain`, `feather`\n- `marks.*.style.params`: set, remove-key {key} — On a painted layer: overrides of the medium's parameters for this\n- `marks.*.style.params.*`: set, splice {at, delete, insert}, replace {text}, add {by}, insert, remove — On a painted layer: overrides of the medium's parameters for this; an entry, by its key, and what is inside it\n- `marks.*.style.adjust`: set — Colour and tone adjustments: a picture's pixels, a shape's colours (object or null); set one field of it: `exposure`, `contrast`, `highlights`, `shadows`, `saturation`, `vibrance`, `hue`, `temperature`, `tint`, `curve`, `grayscale`, `invert`, `blur`, `sharpen`, `vignette`\n- `marks.*.transform`: set — An affine transform `[a, b, c, d, e, f]` applied to the geometry (array or null)\n- `marks.*.group`: set — The group the mark belongs to, or empty (string)\n- `marks.*.clip`: set — The mark whose shape this mark is cut to, or empty (string)\n- `media`: set, remove-key {key} — Media presets saved in this artwork, by id\n- `media.*`: set, splice {at, delete, insert}, replace {text}, add {by}, insert, remove — Media presets saved in this artwork, by id; an entry, by its key, and what is inside it\n- `reference`: set — Reference\n- `selection`: set — Selection",
           "properties": {
             "path": {
               "type": "array",
@@ -2089,22 +2089,214 @@
                 "upsert-item",
                 "remove-item",
                 "move-to",
-                "remove-key",
-                "set-cell",
-                "insert-row",
-                "insert-column",
-                "remove-row",
-                "remove-column",
-                "settle",
-                "react",
-                "unreact",
-                "rich"
+                "remove-key"
               ]
+            },
+            "value": {},
+            "at": {
+              "description": "insert-item, move-to: \"end\" (the default), {\"after\": id} or {\"before\": id}; splice: the character the replaced text starts at; insert-row, insert-column: the position it goes at",
+              "oneOf": [
+                {
+                  "const": "end"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "after": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "after"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "before": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "before"
+                  ]
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              ]
+            },
+            "delete": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "splice: how many characters it replaces"
+            },
+            "insert": {
+              "type": "string",
+              "description": "splice: the text it puts there"
+            },
+            "text": {
+              "type": "string",
+              "description": "replace: the whole new text; rich text takes markdown"
+            },
+            "by": {
+              "type": "integer",
+              "description": "add: how much"
+            },
+            "id": {
+              "type": "string",
+              "description": "remove-item, move-to, remove-row, remove-column, settle, forget: the item's id; insert-item, upsert-item, insert-row, insert-column: the new item's id, minted without"
+            },
+            "match": {
+              "type": "object",
+              "description": "upsert-item: the fields that identify the item, e.g. {\"name\": \"Ana\"}; it updates the one item holding them with `value`'s fields, else appends `value` as a new item"
+            },
+            "key": {
+              "type": "string",
+              "description": "remove-key: the entry's key"
             }
           },
           "required": [
             "path",
             "op"
+          ],
+          "oneOf": [
+            {
+              "properties": {
+                "op": {
+                  "const": "set"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "splice"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "at",
+                "delete",
+                "insert"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "replace"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "text"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "add"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "by"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "insert"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "remove"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "insert-item"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "upsert-item"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "match",
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "remove-item"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "id"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "move-to"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "id"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "remove-key"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "key"
+              ]
+            }
           ],
           "examples": [
             {
@@ -2432,15 +2624,346 @@
                               "remove-row",
                               "remove-column",
                               "settle",
+                              "forget",
                               "react",
                               "unreact",
                               "rich"
                             ]
+                          },
+                          "value": {},
+                          "at": {
+                            "oneOf": [
+                              {
+                                "const": "end"
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "after": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "after"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "before": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "before"
+                                ]
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            ]
+                          },
+                          "delete": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "insert": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "by": {
+                            "type": "integer"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "match": {
+                            "type": "object"
+                          },
+                          "key": {
+                            "type": "string"
+                          },
+                          "row": {
+                            "type": "string"
+                          },
+                          "column": {
+                            "type": "string"
+                          },
+                          "outcome": {
+                            "type": "object"
+                          },
+                          "emoji": {
+                            "type": "string"
+                          },
+                          "rich": {
+                            "type": "object"
                           }
                         },
                         "required": [
                           "path",
                           "op"
+                        ],
+                        "oneOf": [
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "set"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "value"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "splice"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "at",
+                              "delete",
+                              "insert"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "replace"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "text"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "add"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "by"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "insert"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "value"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "remove"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "value"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "insert-item"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "value"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "upsert-item"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "match",
+                              "value"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "remove-item"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "move-to"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "remove-key"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "key"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "set-cell"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "row",
+                              "column"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "insert-row"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "at"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "insert-column"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "at"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "remove-row"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "remove-column"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "settle"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id",
+                              "outcome"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "forget"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "react"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "emoji"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "unreact"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "emoji"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "rich"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "rich"
+                            ]
+                          }
                         ]
                       }
                     },
@@ -4040,7 +4563,7 @@
         "description": "The path of the field from the item, and the operation",
         "schema": {
           "type": "object",
-          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `name`: set, splice, replace — Name (string)\n- `group`: set — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `medium`: set — The medium preset that paints this layer's marks, or empty for plain (string)\n- `opacity`: set — Opacity (number)\n- `visible`: set — Visible (boolean)\n- `texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `adjust`: set — Colour and tone adjustments of everything on the layer (object or null); set one field of it: `exposure`, `contrast`, `highlights`, `shadows`, `saturation`, `vibrance`, `hue`, `temperature`, `tint`, `curve`, `grayscale`, `invert`, `blur`, `sharpen`, `vignette`\n- `base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)",
+          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `name`: set, splice {at, delete, insert}, replace {text} — Name (string)\n- `group`: set — Organisational folder; empty for an ungrouped layer. It does not (string)\n- `medium`: set — The medium preset that paints this layer's marks, or empty for plain (string)\n- `opacity`: set — Opacity (number)\n- `visible`: set — Visible (boolean)\n- `texture`: set — `0..=1`: how much of the ground's tooth shows through the layer's (number)\n- `locked`: set — Held still: the pointer passes through its marks to those beneath (boolean)\n- `adjust`: set — Colour and tone adjustments of everything on the layer (object or null); set one field of it: `exposure`, `contrast`, `highlights`, `shadows`, `saturation`, `vibrance`, `hue`, `temperature`, `tint`, `curve`, `grayscale`, `invert`, `blur`, `sharpen`, `vignette`\n- `base`: set — A mask's grey before any mark, `0..=1`: 1 shows all of its layer, (number)\n- `invert`: set — A mask that hides where it is light and shows where it is dark (boolean)\n- `clip`: set — Clipped to the layer below: it shows only where that layer has paint (boolean)\n- `unlinked`: set — A mask that stays put when its layer's marks move. Linked, it moves (boolean)",
           "properties": {
             "path": {
               "type": "array",
@@ -4053,30 +4576,101 @@
               "enum": [
                 "set",
                 "splice",
-                "replace",
-                "add",
-                "insert",
-                "remove",
-                "insert-item",
-                "upsert-item",
-                "remove-item",
-                "move-to",
-                "remove-key",
-                "set-cell",
-                "insert-row",
-                "insert-column",
-                "remove-row",
-                "remove-column",
-                "settle",
-                "react",
-                "unreact",
-                "rich"
+                "replace"
               ]
+            },
+            "value": {},
+            "at": {
+              "description": "insert-item, move-to: \"end\" (the default), {\"after\": id} or {\"before\": id}; splice: the character the replaced text starts at; insert-row, insert-column: the position it goes at",
+              "oneOf": [
+                {
+                  "const": "end"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "after": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "after"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "before": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "before"
+                  ]
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              ]
+            },
+            "delete": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "splice: how many characters it replaces"
+            },
+            "insert": {
+              "type": "string",
+              "description": "splice: the text it puts there"
+            },
+            "text": {
+              "type": "string",
+              "description": "replace: the whole new text; rich text takes markdown"
             }
           },
           "required": [
             "path",
             "op"
+          ],
+          "oneOf": [
+            {
+              "properties": {
+                "op": {
+                  "const": "set"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "splice"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "at",
+                "delete",
+                "insert"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "replace"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "text"
+              ]
+            }
           ],
           "examples": [
             {
@@ -4199,7 +4793,7 @@
             },
             "at": {
               "type": "integer",
-              "description": "When the action was authored, in milliseconds since the Unix epoch"
+              "description": "When the action was authored, in milliseconds since the Unix epoch: set by the host that applies it, which replaces a value given here. When content was first written elsewhere, the action that writes it takes that as its `origin`"
             }
           },
           "additionalProperties": false
@@ -4222,7 +4816,7 @@
         "description": "The path of the field from the record's root, and the operation",
         "schema": {
           "type": "object",
-          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `devices`: set, remove-key — Devices\n- `devices.*`: set, splice, replace, add, insert, remove — Devices; an entry, by its key, and what is inside it",
+          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `devices`: set, remove-key {key} — Devices\n- `devices.*`: set, splice {at, delete, insert}, replace {text}, add {by}, insert, remove — Devices; an entry, by its key, and what is inside it",
           "properties": {
             "path": {
               "type": "array",
@@ -4239,26 +4833,157 @@
                 "add",
                 "insert",
                 "remove",
-                "insert-item",
-                "upsert-item",
-                "remove-item",
-                "move-to",
-                "remove-key",
-                "set-cell",
-                "insert-row",
-                "insert-column",
-                "remove-row",
-                "remove-column",
-                "settle",
-                "react",
-                "unreact",
-                "rich"
+                "remove-key"
               ]
+            },
+            "value": {},
+            "at": {
+              "description": "insert-item, move-to: \"end\" (the default), {\"after\": id} or {\"before\": id}; splice: the character the replaced text starts at; insert-row, insert-column: the position it goes at",
+              "oneOf": [
+                {
+                  "const": "end"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "after": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "after"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "before": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "before"
+                  ]
+                },
+                {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              ]
+            },
+            "delete": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "splice: how many characters it replaces"
+            },
+            "insert": {
+              "type": "string",
+              "description": "splice: the text it puts there"
+            },
+            "text": {
+              "type": "string",
+              "description": "replace: the whole new text; rich text takes markdown"
+            },
+            "by": {
+              "type": "integer",
+              "description": "add: how much"
+            },
+            "key": {
+              "type": "string",
+              "description": "remove-key: the entry's key"
             }
           },
           "required": [
             "path",
             "op"
+          ],
+          "oneOf": [
+            {
+              "properties": {
+                "op": {
+                  "const": "set"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "splice"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "at",
+                "delete",
+                "insert"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "replace"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "text"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "add"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "by"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "insert"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "remove"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "value"
+              ]
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "remove-key"
+                }
+              },
+              "required": [
+                "path",
+                "op",
+                "key"
+              ]
+            }
           ],
           "examples": [
             {
@@ -4400,15 +5125,346 @@
                               "remove-row",
                               "remove-column",
                               "settle",
+                              "forget",
                               "react",
                               "unreact",
                               "rich"
                             ]
+                          },
+                          "value": {},
+                          "at": {
+                            "oneOf": [
+                              {
+                                "const": "end"
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "after": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "after"
+                                ]
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "before": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "before"
+                                ]
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            ]
+                          },
+                          "delete": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "insert": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "by": {
+                            "type": "integer"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "match": {
+                            "type": "object"
+                          },
+                          "key": {
+                            "type": "string"
+                          },
+                          "row": {
+                            "type": "string"
+                          },
+                          "column": {
+                            "type": "string"
+                          },
+                          "outcome": {
+                            "type": "object"
+                          },
+                          "emoji": {
+                            "type": "string"
+                          },
+                          "rich": {
+                            "type": "object"
                           }
                         },
                         "required": [
                           "path",
                           "op"
+                        ],
+                        "oneOf": [
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "set"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "value"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "splice"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "at",
+                              "delete",
+                              "insert"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "replace"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "text"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "add"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "by"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "insert"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "value"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "remove"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "value"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "insert-item"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "value"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "upsert-item"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "match",
+                              "value"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "remove-item"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "move-to"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "remove-key"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "key"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "set-cell"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "row",
+                              "column"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "insert-row"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "at"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "insert-column"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "at"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "remove-row"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "remove-column"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "settle"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id",
+                              "outcome"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "forget"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "id"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "react"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "emoji"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "unreact"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "emoji"
+                            ]
+                          },
+                          {
+                            "properties": {
+                              "op": {
+                                "const": "rich"
+                              }
+                            },
+                            "required": [
+                              "path",
+                              "op",
+                              "rich"
+                            ]
+                          }
                         ]
                       }
                     },

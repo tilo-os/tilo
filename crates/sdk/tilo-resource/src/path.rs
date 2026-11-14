@@ -1506,9 +1506,18 @@ impl<R> crate::JsonSchema for Edit<R> {
     }
 }
 
-#[inline(never)]
 fn edit_schema() -> serde_json::Value {
-    let ops: Vec<&str> = OP_ARGUMENTS.iter().map(|(op, ..)| *op).collect();
+    edit_schema_taking(|_| true)
+}
+
+/// The field-edit schema with only the operations `takes` names, and only the
+/// arguments those take: what a record whose fields take just those publishes,
+/// so an agent reads none of the operations no path of it takes.
+#[inline(never)]
+pub(crate) fn edit_schema_taking(takes: impl Fn(&str) -> bool) -> serde_json::Value {
+    let offered: Vec<&(&str, &[&str], &[&str])> =
+        OP_ARGUMENTS.iter().filter(|(op, ..)| takes(op)).collect();
+    let ops: Vec<&str> = offered.iter().map(|(op, ..)| *op).collect();
     let mut properties = serde_json::Map::new();
     properties.insert(
         "path".into(),
@@ -1519,7 +1528,7 @@ fn edit_schema() -> serde_json::Value {
         serde_json::json!({ "type": "string", "enum": ops }),
     );
     let mut needs = Vec::new();
-    for (op, required, optional) in OP_ARGUMENTS {
+    for (op, required, optional) in offered {
         for argument in required.iter().chain(optional.iter()) {
             if !properties.contains_key(*argument) {
                 properties.insert((*argument).to_owned(), op_argument_schema(op, argument));

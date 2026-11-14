@@ -22,8 +22,10 @@ use ui::prelude::TestApp;
 /// `restore-reviewed` (exact-item restore, #4581), and from 68 KiB when the
 /// recent artworks became a record of their own beside the artwork, and
 /// from 72 KiB when the brush, colour and pigment choices became view
-/// effects an agent can make.
-const BUDGET: usize = 76 * 1024;
+/// effects an agent can make, and from 76 KiB when a field edit's schema
+/// began naming the arguments of each operation the record's paths take, so
+/// an agent's call no longer fails on an argument the schema never mentioned.
+const BUDGET: usize = 85 * 1024;
 
 #[test]
 fn the_agent_surface_matches_its_golden_file_and_budget() {
