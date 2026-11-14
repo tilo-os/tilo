@@ -21,7 +21,6 @@ runtime  = "tilo-runtime/2026.07"
 # without it.
 optional-runtimes = ["tilo-runtime/2026.10.23-chromium"]
 platforms = ["linux", "macos", "web"]
-platform-reason = "On the web the page reads the mail its workspace holds and leaves reaching the mail servers to a device that holds the account."
 
 [package.isa]
 x86_64 = "v3"
