@@ -285,10 +285,6 @@ struct GovernedWorkspace {
     /// ([`Workspaces::join_soon`]).
     #[cfg(any(feature = "agents", feature = "web"))]
     asking: std::collections::BTreeSet<(String, String)>,
-    /// The workspace's document started over from a base at an admission, and
-    /// what the relay retains of it from before is still to be archived,
-    /// ahead of the base's publication ([`Workspaces::settle`]).
-    rebased: bool,
     /// Whether something the workspace published since its document last
     /// started over overwrote or deleted a value ([`withdraws`]): a shared
     /// window closed, a member removed, a name changed. A newcomer replayed
@@ -424,7 +420,6 @@ impl GovernedWorkspace {
             keeping: false,
             #[cfg(any(feature = "agents", feature = "web"))]
             asking: std::collections::BTreeSet::new(),
-            rebased: false,
             since_base: SinceBase::Withdrew,
             answered: HashMap::new(),
         };
@@ -522,7 +517,6 @@ impl GovernedWorkspace {
             keeping: false,
             #[cfg(any(feature = "agents", feature = "web"))]
             asking: std::collections::BTreeSet::new(),
-            rebased: false,
             since_base: SinceBase::Withdrew,
             answered: HashMap::new(),
         })
@@ -669,12 +663,10 @@ impl GovernedWorkspace {
         crate::timing::window("workspace.commit.record", copying);
         // A member admitted from now on is given the workspace as it stands,
         // not what was withdrawn before they joined.
-        let started_over = change == Change::StartOver
-            || starts_over(&record.outgoing)
+        let started_over = starts_over(&record.outgoing)
             || (self.since_base == SinceBase::Withdrew
                 && !member_roots(&candidate, now).is_subset(&member_roots(replica, now)));
         let mut since_base = self.since_base;
-        let mut rebased = false;
         if started_over {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
@@ -691,11 +683,7 @@ impl GovernedWorkspace {
                     .collect::<std::collections::BTreeSet<_>>();
             // The workspace's document starts over from a base holding its
             // state as it stands, with none of the history that led there.
-            rebased = if change == Change::StartOver {
-                candidate.start_governance_over()?
-            } else {
-                candidate.rebase_workspace()?
-            };
+            candidate.rebase_workspace()?;
             since_base = SinceBase::Added;
             record.outgoing = candidate
                 .publication_mut()
@@ -738,7 +726,6 @@ impl GovernedWorkspace {
             return Err(error);
         }
         *replica = candidate;
-        self.rebased |= rebased;
         self.since_base = since_base;
         crate::timing::event(
             "workspace.governance_commit",
@@ -746,35 +733,6 @@ impl GovernedWorkspace {
             self.record.outgoing.len() as u64,
         );
         Ok(generation)
-    }
-
-    /// Publish the workspace anew when its governance was brought up from an
-    /// earlier stored layout as it opened: its document starts over from a
-    /// base newer than any a member's device brought up for itself, and what
-    /// the relay retains of the earlier layout is archived as it settles.
-    /// Whether a membership a 0.1 release kept was carried into this layout:
-    /// that workspace's records were written by such a release too.
-    fn publish_brought_up(&mut self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
-        let brought_up = self.peer().governance_brought_up();
-        let shared = self.peer.shared();
-        let mut replica = shared.lock();
-        let mut candidate = replica.clone();
-        // A membership log a 0.1 release kept is written anew in this
-        // layout's by this host, the device that governs the workspace, before
-        // the governance is published.
-        let carried = candidate.carry_earlier_membership(key, now)?;
-        if !brought_up && !carried {
-            return Ok(false);
-        }
-        let committed = self.commit_held(
-            &mut replica,
-            candidate,
-            (key, now),
-            Change::StartOver,
-            |record, _| Ok(record.collaboration.clone()),
-        );
-        drop(replica);
-        committed.map(|_| carried)
     }
 
     /// The people the workspace's governance admits, without the person whose
@@ -1316,22 +1274,8 @@ impl Workspaces {
         &self,
         workspaces: Vec<Arc<AsyncMutex<GovernedWorkspace>>>,
     ) -> Result<(), String> {
-        #[cfg(feature = "agents")]
-        let mut carried = Vec::new();
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
-            let from_a_release = workspace
-                .publish_brought_up(&self.inner.host.key, tilo_clock::wall())
-                .map_err(|e| format!("{}: brought up: {e}", workspace.workspace()))?;
-            // Its records are founded again once every workspace is served
-            // ([`Self::refound_earlier_records`]); a build without agents
-            // writes no record and leaves them as they are.
-            #[cfg(feature = "agents")]
-            if from_a_release {
-                carried.push(workspace.workspace().to_owned());
-            }
-            #[cfg(not(feature = "agents"))]
-            let _: bool = from_a_release;
             self.bind(&workspace)
                 .await
                 .map_err(|e| format!("bind: {e}"))?;
@@ -1357,10 +1301,6 @@ impl Workspaces {
             tracing::info!("desktop record ready");
             // What the relay's log revoked while the workspace was closed.
             self.carry_revocations(&mut workspace, &[]).await?;
-        }
-        #[cfg(feature = "agents")]
-        for workspace in carried {
-            self.refound_earlier_records(&workspace).await;
         }
         Ok(())
     }
@@ -2810,11 +2750,6 @@ impl Workspaces {
         crate::timing::event("workspace.settle.standings", standing, 0);
         let publishing = crate::timing::start();
         let publisher = Arc::clone(&workspace.publisher);
-        if workspace.rebased {
-            publisher.flushed().await;
-            self.archive_workspace_history(workspace).await?;
-            workspace.rebased = false;
-        }
         let epoch = publisher.reconcile(&mut workspace.record.published);
         let workspace_id = workspace.workspace_id();
         let (publications, unreadable) = workspace.unpublished(&host.records);
@@ -2886,29 +2821,6 @@ impl Workspaces {
             sink.settled(&name, workspace.peer().clone());
         }
         let _ = self.inner.changes.send(name);
-    }
-
-    /// Archive what the relay retains of `workspace`'s document, once every
-    /// governance change published before is retained: the workspace starts over
-    /// from the base its next publication carries.
-    async fn archive_workspace_history(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
-        let host = &self.inner.host;
-        let workspace_id = workspace.workspace_id();
-        let identity = workspace.workspace().to_owned();
-        host.records.settled(workspace_id).await;
-        let Some((channel, _)) =
-            neighbour_wire::retention(&workspace.peer().workspace_message(), true)
-        else {
-            return Err("the workspace's document has no retention channel".into());
-        };
-        let hosted = host.workspaces.lock().await.get(&workspace_id).cloned();
-        let workspace = hosted.ok_or("the workspace is not hosted here")?;
-        let archived =
-            crate::compaction::owner_run(&workspace, move |store| store.archive_channel(&channel))
-                .await?;
-        drop(workspace);
-        tracing::info!(workspace = %identity, archived, "the workspace's history before an admission is archived");
-        Ok(())
     }
 
     fn revocations(&self) -> RevocationList {

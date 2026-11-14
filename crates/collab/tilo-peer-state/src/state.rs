@@ -94,10 +94,7 @@ mod authority;
 mod construction;
 mod durable;
 #[cfg(test)]
-pub(crate) use durable::{
-    DURABLE_BASE_VERSION, Durable, DurableV4, DurableV5, DurableV6, GOVERNANCE_LAYOUT_BEFORE,
-    durable_base_version,
-};
+pub(crate) use durable::{DURABLE_BASE_VERSION, Durable, DurableV4, DurableV5, DurableV6};
 mod receiving;
 mod records;
 mod sealing;
@@ -314,10 +311,6 @@ pub struct StatePeer {
     /// Whether this is a workspace host's copy of the workspace
     /// ([`Self::write_as_workspace_host`]). Set by the host, never persisted.
     workspace_host: bool,
-    /// Whether [`Self::restore`] brought the governance up from an earlier
-    /// stored layout ([`workspace::layout`]): a device that governs the
-    /// workspace then publishes it anew ([`Self::governance_brought_up`]).
-    brought_up: bool,
     /// The digests of the durable parts [`Self::durable_hash`] last took,
     /// shared by the copies of this replica. Never persisted.
     durable_digests: durable::PartDigests,
@@ -478,10 +471,9 @@ pub(crate) fn supersedes(held: &DeviceCert, incoming: &DeviceCert) -> bool {
 }
 
 pub use governed_rows::RowError;
-pub(crate) use governed_rows::WorkspaceDelegation;
-#[cfg(test)]
-pub(crate) use governed_rows::WorkspaceDelegationPermissions;
 pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
+#[cfg(test)]
+pub(crate) use governed_rows::{WorkspaceDelegation, WorkspaceDelegationPermissions};
 pub(crate) use invitation_ledger::LedgerReceipt;
 
 /// The map at `key` of a governed workspace document.
@@ -524,9 +516,6 @@ pub(crate) mod invitation_ledger;
 #[cfg(test)]
 #[path = "state/joined_tests.rs"]
 mod joined_tests;
-#[cfg(test)]
-#[path = "state/layout_restore_tests.rs"]
-mod layout_restore_tests;
 mod rebase;
 #[cfg(test)]
 #[path = "state/roster_beside_governance_tests.rs"]

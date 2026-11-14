@@ -2,7 +2,6 @@
 mod admit;
 mod adopt;
 pub mod base;
-pub(crate) mod layout;
 pub mod media;
 pub mod membership;
 pub(crate) mod policy;

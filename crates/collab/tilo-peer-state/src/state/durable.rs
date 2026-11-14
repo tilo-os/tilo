@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     AcceptedCheckpoint, CachedDocument, DecodedCheckpoint, DeviceCert, Document, Ed25519PublicKey,
     ExactAdmissions, InboundState, PeerCore, RevocationList, Route, Shared, StatePeer, SystemTime,
-    backend, check_governed_snapshot, err, held, now_ns, process_default, workspace,
+    backend, check_governed_snapshot, err, held, now_ns, process_default,
 };
 use super::{DurableDocument, SealedHistory};
 use crate::NeighbourMsg;
@@ -15,14 +15,7 @@ use crate::NeighbourMsg;
 #[cfg(test)]
 use automerge::{ReadDoc as _, transaction::Transactable as _};
 
-/// The base whose governance holds device rows as JSON and each receipt
-/// with its whole invitation: the same fields as [`DURABLE_BASE_VERSION`],
-/// its governance brought up as it is read ([`crate::workspace::layout`]).
-pub const GOVERNANCE_LAYOUT_BEFORE: u32 = 4;
-
-/// The durable base layout. Version 5 keeps the governance's device rows
-/// and receipts compact ([`crate::workspace::layout`]); version 4 is the same
-/// base around the earlier governance layout.
+/// The one durable base layout this build writes and reads.
 pub const DURABLE_BASE_VERSION: u32 = 5;
 
 #[derive(Serialize, Deserialize)]
@@ -502,7 +495,7 @@ impl StatePeer {
         let layout = |envelope: u32, error: postcard::Error| {
             format!("durable state version {envelope}, base version {base}: {error}")
         };
-        if base != DURABLE_BASE_VERSION && base != GOVERNANCE_LAYOUT_BEFORE {
+        if base != DURABLE_BASE_VERSION {
             return Err(format!("unsupported durable base version {base}"));
         }
         let (durable, pending, pending_bytes, exact, sealed) = match version {
@@ -554,7 +547,7 @@ impl StatePeer {
             _ => return Err("unsupported durable admission version".into()),
         };
         exact_admissions = exact;
-        if (durable.version != DURABLE_BASE_VERSION && durable.version != GOVERNANCE_LAYOUT_BEFORE)
+        if durable.version != DURABLE_BASE_VERSION
             || durable.workspace != workspace
             || durable.owner != owner_device.user_public_key
         {
@@ -589,7 +582,6 @@ impl StatePeer {
             missed: held::Missed::default(),
             gathering: super::compaction_set::Gathering::default(),
             workspace_host: false,
-            brought_up: false,
             durable_digests: PartDigests::default(),
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
@@ -611,16 +603,6 @@ impl StatePeer {
                     .and_then(|doc| doc.stored_as(&bytes))
             })
             .transpose()?;
-        // A governance a build before this layout wrote is brought up once,
-        // here, and is never read in the layout it was written in.
-        if base != DURABLE_BASE_VERSION
-            && let Some(held) = peer.core.workspace_doc.as_deref()
-        {
-            let actor = peer.workspace_actor_for(&peer.core.owner);
-            let brought = workspace::layout::bring_up(held, actor)?;
-            peer.core.workspace_doc = Some(CachedDocument::from(brought));
-            peer.brought_up = true;
-        }
         for document in durable.documents {
             check_governed_snapshot(
                 peer.core.workspace_doc.as_deref(),

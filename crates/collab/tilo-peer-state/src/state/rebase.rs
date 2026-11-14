@@ -2,154 +2,16 @@
 use super::{StatePeer, err, workspace};
 
 impl StatePeer {
-    /// Whether [`Self::restore`] brought this peer's governance up from the
-    /// layout a build before this one stored ([`workspace::layout`]). What a
-    /// device that governs the workspace published before is in that layout:
-    /// it starts the workspace's document over and publishes it anew.
-    #[must_use]
-    pub const fn governance_brought_up(&self) -> bool {
-        self.brought_up
-    }
-
-    /// The membership a 0.1 release kept in this workspace's document, read
-    /// into this layout ([`crate::members::earlier::membership`]); `None` when
-    /// the document holds none, or this layout's log already took it over.
-    #[must_use]
-    pub fn earlier_membership(&self) -> Option<crate::members::earlier::Earlier> {
-        let held = self.core.workspace_doc.as_deref()?;
-        crate::members::earlier::membership(held, &self.core.workspace)
-    }
-
-    /// Bring the membership log a 0.1 release kept up into this layout's, as
-    /// the device that governs the workspace, the owner's, with `key`
-    /// ([`crate::members::earlier`]). Whether it did: a document with no
-    /// earlier log, or one this layout's log already holds, is left as it is.
-    /// Brought up, the governance is published anew like any other brought up
-    /// ([`Self::governance_brought_up`]), and the earlier log is in no
-    /// history its base keeps.
-    ///
-    /// # Errors
-    ///
-    /// `key`'s device holds no certificate here, an operation cannot be
-    /// written, or the log written does not give the earlier one's people at
-    /// their roles; the document is then unchanged.
-    pub fn carry_earlier_membership(
-        &mut self,
-        key: &dyn collab_types::signer::DeviceSigner,
-        now: super::SystemTime,
-    ) -> Result<bool, String> {
-        use crate::members::earlier::{self, LeftOut};
-        use automerge::transaction::Transactable as _;
-        let Some(held) = self.core.workspace_doc.as_deref() else {
-            return Ok(false);
-        };
-        if !earlier::holds_earlier_log(held) {
-            return Ok(false);
-        }
-        let workspace = self.core.workspace.clone();
-        let Some(earlier::Earlier {
-            policy: membership,
-            left_out,
-        }) = earlier::membership(held, &workspace)
-        else {
-            return Ok(false);
-        };
-        let device = self
-            .certificate(&key.device_public_key(), now)
-            .map_err(|error| error.to_string())?
-            .clone();
-        let mut doc = held.clone();
-        doc.set_actor(self.workspace_actor_of(key));
-        let written = earlier::found(
-            &mut doc,
-            &workspace,
-            &membership,
-            (&device, key),
-            super::now_ns(now),
-        )?;
-        let founded = crate::members::replay(&doc, &workspace);
-        if earlier::roles(&founded) != earlier::roles(&membership) {
-            return Err(format!(
-                "the membership log the workspace kept before reads as {:?}, and the one written \
-                 for it as {:?}",
-                earlier::roles(&membership),
-                earlier::roles(&founded)
-            ));
-        }
-        for key in earlier::earlier_keys(&doc) {
-            doc.delete(automerge::ROOT, key.as_str())
-                .map_err(|error| error.to_string())?;
-        }
-        // A 0.1 release gave each channel a group of its own and named no
-        // device to found the workspace's one group: the device that governs
-        // the workspace founds it, so its records have keys again.
-        if automerge::ReadDoc::get(&doc, automerge::ROOT, super::seed::FOUNDER)
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            doc.put(
-                automerge::ROOT,
-                super::seed::FOUNDER,
-                hex::encode(device.device_public_key),
-            )
-            .map_err(|error| error.to_string())?;
-        }
-        doc.commit();
-        // Every grant the earlier rows held and this layout holds none for is
-        // named with why: one whose use this layout gives without a grant, or
-        // one it keeps nothing of.
-        for LeftOut { grant, why } in &left_out {
-            if why.carried() {
-                tracing::info!(
-                    workspace = %workspace,
-                    %grant,
-                    "an earlier release's grant needs no grant here: {why}"
-                );
-            } else {
-                tracing::warn!(
-                    workspace = %workspace,
-                    %grant,
-                    "an earlier release's grant is not kept: {why}"
-                );
-            }
-        }
-        tracing::info!(
-            workspace = %workspace,
-            people = founded.members.len(),
-            operations = written,
-            grants_needing_none = left_out.iter().filter(|left| left.why.carried()).count(),
-            grants_not_kept = left_out.iter().filter(|left| !left.why.carried()).count(),
-            "the membership log an earlier release kept is brought up"
-        );
-        self.core.workspace_doc = Some(super::CachedDocument::from(doc));
-        self.brought_up = true;
-        Ok(true)
-    }
-
     /// Start the workspace's document over from a base, as its authority
     /// does when the workspace admits someone new. Returns whether it did: a
     /// document holding nothing past its base stays as it is.
     pub fn rebase_workspace(&mut self) -> Result<bool, String> {
-        self.rebase_workspace_when(false)
-    }
-
-    /// [`Self::rebase_workspace`], even when the document is a base already:
-    /// a governance brought up from an earlier layout is a base each device
-    /// wrote for itself ([`Self::governance_brought_up`]), and the base its
-    /// governing device publishes must be newer than any of them.
-    pub fn start_governance_over(&mut self) -> Result<bool, String> {
-        self.rebase_workspace_when(true)
-    }
-
-    fn rebase_workspace_when(&mut self, even_a_base: bool) -> Result<bool, String> {
         let Some(held) = self.core.workspace_doc.as_deref() else {
             return Ok(false);
         };
         let mut doc = held.clone();
         let heads = doc.get_heads();
-        if heads.is_empty()
-            || (!even_a_base && workspace::base::root(&mut doc).is_some_and(|root| heads == [root]))
-        {
+        if heads.is_empty() || workspace::base::root(&mut doc).is_some_and(|root| heads == [root]) {
             return Ok(false);
         }
         let actor = self.workspace_actor_for(&self.core.owner);

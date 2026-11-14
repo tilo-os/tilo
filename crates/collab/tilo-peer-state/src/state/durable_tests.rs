@@ -14,11 +14,6 @@ const KEPT_WORKSPACE: &str = "302d59e0-f586-42e1-a59e-3aa613f0f866";
 /// [`kept_state`] as `postcard` wrote it.
 const KEPT: &str = "04052433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c";
 
-/// [`KEPT`] as a build before the compact governance layout wrote it:
-/// base version 4, read as this build's base with its governance brought up
-/// ([`crate::workspace::layout`]).
-const KEPT_LAYOUT_BEFORE: &str = "04042433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c";
-
 /// The durable state this build writes with an exact index and a sealed
 /// history, hex, kept so the layout cannot change under the version devices
 /// already hold. It is [`kept_v6`] as `postcard` wrote it.
@@ -146,21 +141,4 @@ fn the_state_kept_here_reads_and_writes_as_it_is() {
         },
         || postcard::to_stdvec(&kept_state()).unwrap(),
     );
-}
-
-/// A state a build before the compact governance layout wrote names that
-/// base, and reads in this build's base fields: the restore path brings
-/// its governance up.
-#[test]
-fn the_state_kept_before_the_compact_governance_reads_as_this_base() {
-    let bytes = kept(KEPT_LAYOUT_BEFORE);
-    assert_eq!(
-        durable_base_version(&bytes).unwrap(),
-        GOVERNANCE_LAYOUT_BEFORE
-    );
-    let (value, tail): (DurableV4, _) = postcard::take_from_bytes(&bytes).unwrap();
-    assert!(tail.is_empty());
-    assert_eq!(value.base.version, GOVERNANCE_LAYOUT_BEFORE);
-    assert_eq!(value.base.workspace, KEPT_WORKSPACE);
-    assert_eq!(value.pending_bytes, 12);
 }
