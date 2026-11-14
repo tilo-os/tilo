@@ -377,7 +377,7 @@ impl AccountsModel {
         ));
     }
 
-    fn account_list(&self, cx: &ViewCx<Settings>) -> Element {
+    fn account_list(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let mut items = Vec::new();
         for account in &self.accounts {
             let status = if account.has_secret {
