@@ -346,126 +346,131 @@ fn dirs_data_dir() -> PathBuf {
 mod tests {
     use super::*;
 
-    #[test]
-    fn device_profile_round_trips_locally_and_forces_paused_resume() {
-        let dir = std::env::temp_dir().join(format!("tilo-music-profile-{}", std::process::id()));
-        let path = dir.join("device-profile.json");
-        let mut profile = DeviceProfile {
-            spotify_catalogue: true,
-            ..DeviceProfile::default()
-        };
-        profile.playback.current = Some("tk_g1".into());
-        profile.playback.queue = vec!["tk_g1".into()];
-        profile.playback.playing = true;
-        profile.playback.position_ms = 12_345;
-        profile.playback.volume = 37;
-        save_device_profile_to(&path, &profile).expect("save local profile");
+    tilo_test_env::scenario! {
+        /// What this device keeps on disk: the profile and the media cache.
+        fn device_storage_round_trips_and_survives_failure_and_corruption;
 
-        let loaded = load_device_profile_from(&path);
-        assert!(loaded.spotify_catalogue);
-        assert_eq!(loaded.playback.current, profile.playback.current);
-        assert_eq!(loaded.playback.position_ms, 12_345);
-        assert_eq!(loaded.playback.volume, 37);
-        assert!(!loaded.playback.playing, "restart never autoplays");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn failed_offline_removal_preserves_the_cached_audio() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let mut cache = MediaCache::default();
-        cache
-            .install_bytes(root, "track", b"saved audio", 1024)
-            .unwrap();
-        let before = cache.clone();
-        let manifest = media_manifest_path(root);
-        let saved_manifest = crate::files::read(&manifest).unwrap();
-        std::fs::remove_file(&manifest).unwrap();
-        std::fs::create_dir(&manifest).unwrap();
-
-        assert!(cache.remove(root, "track").is_err());
-        assert_eq!(cache, before);
-        let object = cache.object_path(root, "track").unwrap();
-        assert_eq!(crate::files::read(&object).unwrap(), b"saved audio");
-
-        std::fs::remove_dir(&manifest).unwrap();
-        crate::files::write(&manifest, &saved_manifest).unwrap();
-        assert_eq!(load_media_cache_from(root), before);
-        cache.remove(root, "track").unwrap();
-        assert!(!object.exists());
-        assert!(load_media_cache_from(root).entries.is_empty());
-    }
-
-    #[test]
-    fn media_cache_is_atomic_bounded_and_rejects_corruption() {
+        phase device_profile_round_trips_locally_and_forces_paused_resume;
         {
-            let root =
-                std::env::temp_dir().join(format!("tilo-music-media-{}", std::process::id()));
-            let mut cache = MediaCache::default();
-            cache
-                .install_bytes(&root, "track-a", b"real media bytes", 1024)
-                .expect("install");
-            let path = cache.object_path(&root, "track-a").expect("byte object");
-            assert_eq!(
-                path.extension().and_then(|value| value.to_str()),
-                Some("media")
-            );
-            assert_eq!(
-                std::fs::read(&path).expect("read object"),
-                b"real media bytes"
-            );
-            let reloaded = load_media_cache_from(&root);
-            assert_eq!(reloaded.entries, cache.entries);
-            let _ = std::fs::remove_dir_all(root);
+            let dir = std::env::temp_dir().join(format!("tilo-music-profile-{}", std::process::id()));
+            let path = dir.join("device-profile.json");
+            let mut profile = DeviceProfile {
+                spotify_catalogue: true,
+                ..DeviceProfile::default()
+            };
+            profile.playback.current = Some("tk_g1".into());
+            profile.playback.queue = vec!["tk_g1".into()];
+            profile.playback.playing = true;
+            profile.playback.position_ms = 12_345;
+            profile.playback.volume = 37;
+            save_device_profile_to(&path, &profile).expect("save local profile");
+
+            let loaded = load_device_profile_from(&path);
+            assert!(loaded.spotify_catalogue);
+            assert_eq!(loaded.playback.current, profile.playback.current);
+            assert_eq!(loaded.playback.position_ms, 12_345);
+            assert_eq!(loaded.playback.volume, 37);
+            assert!(!loaded.playback.playing, "restart never autoplays");
+            let _ = std::fs::remove_dir_all(&dir);
         }
 
+        phase failed_offline_removal_preserves_the_cached_audio;
         {
-            let root =
-                std::env::temp_dir().join(format!("tilo-music-media-evict-{}", std::process::id()));
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
             let mut cache = MediaCache::default();
             cache
-                .install_bytes(&root, "old", b"1234", 6)
-                .expect("first");
-            cache
-                .entries
-                .get_mut("old")
-                .expect("old entry")
-                .last_access_ms = 0;
-            cache
-                .install_bytes(&root, "new", b"5678", 6)
-                .expect("second evicts first");
-            assert!(cache.object_path(&root, "old").is_none());
-            assert!(cache.object_path(&root, "new").is_some());
-            let _ = std::fs::remove_dir_all(root);
+                .install_bytes(root, "track", b"saved audio", 1024)
+                .unwrap();
+            let before = cache.clone();
+            let manifest = media_manifest_path(root);
+            let saved_manifest = crate::files::read(&manifest).unwrap();
+            std::fs::remove_file(&manifest).unwrap();
+            std::fs::create_dir(&manifest).unwrap();
+
+            assert!(cache.remove(root, "track").is_err());
+            assert_eq!(cache, before);
+            let object = cache.object_path(root, "track").unwrap();
+            assert_eq!(crate::files::read(&object).unwrap(), b"saved audio");
+
+            std::fs::remove_dir(&manifest).unwrap();
+            crate::files::write(&manifest, &saved_manifest).unwrap();
+            assert_eq!(load_media_cache_from(root), before);
+            cache.remove(root, "track").unwrap();
+            assert!(!object.exists());
+            assert!(load_media_cache_from(root).entries.is_empty());
         }
 
+        phase media_cache_is_atomic_bounded_and_rejects_corruption;
         {
-            let root = std::env::temp_dir()
-                .join(format!("tilo-music-media-same-size-{}", std::process::id()));
-            let mut cache = MediaCache::default();
-            cache
-                .install_bytes(&root, "track-a", b"real media bytes", 1024)
-                .expect("install");
-            let path = cache.object_path(&root, "track-a").expect("object");
-            std::fs::write(&path, b"forgededia bytes").expect("same-sized corruption");
-            assert!(cache.object_path(&root, "track-a").is_none());
-            assert!(cache.touch(&root, "track-a").expect("touch").is_none());
-            let _ = std::fs::remove_dir_all(root);
-        }
+            {
+                let root =
+                    std::env::temp_dir().join(format!("tilo-music-media-{}", std::process::id()));
+                let mut cache = MediaCache::default();
+                cache
+                    .install_bytes(&root, "track-a", b"real media bytes", 1024)
+                    .expect("install");
+                let path = cache.object_path(&root, "track-a").expect("byte object");
+                assert_eq!(
+                    path.extension().and_then(|value| value.to_str()),
+                    Some("media")
+                );
+                assert_eq!(
+                    std::fs::read(&path).expect("read object"),
+                    b"real media bytes"
+                );
+                let reloaded = load_media_cache_from(&root);
+                assert_eq!(reloaded.entries, cache.entries);
+                let _ = std::fs::remove_dir_all(root);
+            }
 
-        {
-            let root = std::env::temp_dir()
-                .join(format!("tilo-music-media-malicious-{}", std::process::id()));
-            std::fs::create_dir_all(&root).expect("root");
-            let manifest = serde_json::json!({
-                "entries": {
-                    "track-a": { "content_id": "../../outside", "bytes": 9, "last_access_ms": 0 }
-                }
-            });
-            std::fs::write(media_manifest_path(&root), manifest.to_string()).expect("manifest");
-            assert!(load_media_cache_from(&root).entries.is_empty());
-            let _ = std::fs::remove_dir_all(root);
+            {
+                let root =
+                    std::env::temp_dir().join(format!("tilo-music-media-evict-{}", std::process::id()));
+                let mut cache = MediaCache::default();
+                cache
+                    .install_bytes(&root, "old", b"1234", 6)
+                    .expect("first");
+                cache
+                    .entries
+                    .get_mut("old")
+                    .expect("old entry")
+                    .last_access_ms = 0;
+                cache
+                    .install_bytes(&root, "new", b"5678", 6)
+                    .expect("second evicts first");
+                assert!(cache.object_path(&root, "old").is_none());
+                assert!(cache.object_path(&root, "new").is_some());
+                let _ = std::fs::remove_dir_all(root);
+            }
+
+            {
+                let root = std::env::temp_dir()
+                    .join(format!("tilo-music-media-same-size-{}", std::process::id()));
+                let mut cache = MediaCache::default();
+                cache
+                    .install_bytes(&root, "track-a", b"real media bytes", 1024)
+                    .expect("install");
+                let path = cache.object_path(&root, "track-a").expect("object");
+                std::fs::write(&path, b"forgededia bytes").expect("same-sized corruption");
+                assert!(cache.object_path(&root, "track-a").is_none());
+                assert!(cache.touch(&root, "track-a").expect("touch").is_none());
+                let _ = std::fs::remove_dir_all(root);
+            }
+
+            {
+                let root = std::env::temp_dir()
+                    .join(format!("tilo-music-media-malicious-{}", std::process::id()));
+                std::fs::create_dir_all(&root).expect("root");
+                let manifest = serde_json::json!({
+                    "entries": {
+                        "track-a": { "content_id": "../../outside", "bytes": 9, "last_access_ms": 0 }
+                    }
+                });
+                std::fs::write(media_manifest_path(&root), manifest.to_string()).expect("manifest");
+                assert!(load_media_cache_from(&root).entries.is_empty());
+                let _ = std::fs::remove_dir_all(root);
+            }
         }
     }
 }

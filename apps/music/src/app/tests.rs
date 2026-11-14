@@ -16,64 +16,200 @@ fn app_with_doc() -> (Music, AutoCommit) {
     (app, doc)
 }
 
-#[test]
-fn transport_effects_preserve_the_existing_shuffle_history() {
-    use crate::actions::MusicEffect;
+tilo_test_env::scenario! {
+    /// Edits of this device's queue through the player's reducers: the playing song, its source
+    /// and the shuffle history stay.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn queue_edits_keep_the_playing_song_and_what_was_already_heard;
 
-    for effect in [
-        MusicEffect::SetVolume { volume: 37 },
-        MusicEffect::Seek { position_ms: 1_000 },
-    ] {
-        let (mut app, _) = app_with_doc();
-        app.disconnect();
-        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()];
-        app.pb.current = Some("tk_g3".into());
-        app.pb.queue_index = 2;
-        app.pb.shuffle = true;
-        app.pb.playing = false;
-        app.shuffle_order = vec![0, 2, 1];
-        app.begin_effect(tilo_actions::InvocationId::new(), effect)
-            .unwrap();
-        assert_eq!(app.shuffle_order, [0, 2, 1]);
-        app.advance(false);
-        assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
-        app.advance(false);
-        assert!(!app.pb.playing, "already played tracks must not reappear");
+    phase transport_effects_preserve_the_existing_shuffle_history;
+    {
+        use crate::actions::MusicEffect;
+
+        for effect in [
+            MusicEffect::SetVolume { volume: 37 },
+            MusicEffect::Seek { position_ms: 1_000 },
+        ] {
+            let (mut app, _) = app_with_doc();
+            app.disconnect();
+            app.pb.queue = vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()];
+            app.pb.current = Some("tk_g3".into());
+            app.pb.queue_index = 2;
+            app.pb.shuffle = true;
+            app.pb.playing = false;
+            app.shuffle_order = vec![0, 2, 1];
+            app.begin_effect(tilo_actions::InvocationId::new(), effect)
+                .unwrap();
+            assert_eq!(app.shuffle_order, [0, 2, 1]);
+            app.advance(false);
+            assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
+            app.advance(false);
+            assert!(!app.pb.playing, "already played tracks must not reappear");
+        }
     }
-}
 
-#[test]
-fn play_next_of_current_song_does_not_restart_its_source() {
-    for playing in [false, true] {
-        let (mut app, mut doc) = app_with_doc();
-        app.disconnect();
-        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
-        app.pb.current = Some("tk_g1".into());
-        app.pb.playing = playing;
-        app.pb.position_ms = 12_000;
-        app.playhead_ms = 12_000.0;
-        app.active_resolve_request = Some(7);
-        app.next_request_id = 7;
-        app.resolve_in_flight = 1;
-        let heads = doc.get_heads();
+    phase play_next_of_current_song_does_not_restart_its_source;
+    {
+        for playing in [false, true] {
+            let (mut app, mut doc) = app_with_doc();
+            app.disconnect();
+            app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+            app.pb.current = Some("tk_g1".into());
+            app.pb.playing = playing;
+            app.pb.position_ms = 12_000;
+            app.playhead_ms = 12_000.0;
+            app.active_resolve_request = Some(7);
+            app.next_request_id = 7;
+            app.resolve_in_flight = 1;
+            let heads = doc.get_heads();
 
-        app.dispatch(
-            Action::PlayNext("tk_g1".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+            app.dispatch(
+                Action::PlayNext("tk_g1".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
 
-        assert_eq!(app.pb.queue, ["tk_g1", "tk_g1", "tk_g2"]);
-        assert_eq!(app.pb.queue_index, 0);
-        assert_eq!(app.pb.playing, playing);
-        assert_eq!(app.pb.position_ms, 12_000);
-        assert_eq!(app.playhead_ms, 12_000.0);
-        assert_eq!(
-            app.next_request_id, 7,
-            "no replacement source was requested"
-        );
-        assert_eq!(app.active_resolve_request, Some(7));
-        assert_eq!(app.resolve_in_flight, 1);
-        assert_eq!(doc.get_heads(), heads);
+            assert_eq!(app.pb.queue, ["tk_g1", "tk_g1", "tk_g2"]);
+            assert_eq!(app.pb.queue_index, 0);
+            assert_eq!(app.pb.playing, playing);
+            assert_eq!(app.pb.position_ms, 12_000);
+            assert_eq!(app.playhead_ms, 12_000.0);
+            assert_eq!(
+                app.next_request_id, 7,
+                "no replacement source was requested"
+            );
+            assert_eq!(app.active_resolve_request, Some(7));
+            assert_eq!(app.resolve_in_flight, 1);
+            assert_eq!(doc.get_heads(), heads);
+        }
+    }
+
+    phase queue_reordering_preserves_the_current_duplicate_occurrence;
+    {
+        // The two copies of g1 are distinct queue occurrences even though their
+        // metadata is identical. Moving any row must preserve the selected copy.
+        for (from, to, expected) in [(2, 1, 1), (1, 0, 2), (0, 2, 1), (2, 0, 0)] {
+            let (mut app, mut doc) = app_with_doc();
+            app.disconnect();
+            app.pb.queue = vec!["tk_g1".into(), "tk_g2".into(), "tk_g1".into()];
+            app.pb.queue_index = 2;
+            app.pb.current = Some("tk_g1".into());
+            app.pb.position_ms = 12_000;
+            app.playhead_ms = 12_000.0;
+            let heads = doc.get_heads();
+
+            app.dispatch(
+                Action::MoveQueueItem { from, to },
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+
+            assert_eq!(app.pb.queue_index, expected, "move {from} to {to}");
+            assert_eq!(app.pb.queue[expected], "tk_g1");
+            assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
+            assert_eq!(app.pb.position_ms, 12_000);
+            assert_eq!(app.playhead_ms, 12_000.0);
+            assert_eq!(doc.get_heads(), heads, "queue edits stay device-local");
+        }
+    }
+
+    phase queue_edits_insert_remove_reorder_and_refuse_stale_rows;
+    {
+        {
+            let (mut app, mut doc) = app_with_doc();
+            app.dispatch(
+                Action::Play {
+                    queue: vec!["a".into(), "b".into(), "c".into()].into(),
+                    index: 0,
+                },
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            assert_eq!(app.pb.queue_index, 0);
+            app.dispatch(
+                Action::PlayNext("x".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            assert_eq!(
+                app.pb.queue,
+                vec!["a", "x", "b", "c"],
+                "play-next sits right after current"
+            );
+        }
+
+        {
+            let (mut app, mut doc) = app_with_doc();
+            app.dispatch(
+                Action::Play {
+                    queue: vec!["a".into(), "b".into(), "c".into()].into(),
+                    index: 1,
+                },
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            app.dispatch(
+                Action::RemoveFromQueue(0),
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            assert_eq!(app.pb.queue, vec!["b", "c"]);
+            assert_eq!(app.pb.current.as_deref(), Some("b"));
+            assert_eq!(app.pb.queue_index, 0);
+        }
+
+        {
+            let (mut app, mut doc) = app_with_doc();
+            app.dispatch(
+                Action::Play {
+                    queue: vec!["a".into(), "b".into(), "c".into()].into(),
+                    index: 0,
+                },
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            app.dispatch(
+                Action::MoveQueueItem { from: 2, to: 1 },
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            assert_eq!(app.pb.queue, vec!["a", "c", "b"]);
+            assert_eq!(
+                app.pb.current.as_deref(),
+                Some("a"),
+                "current track unchanged by a reorder below it"
+            );
+        }
+
+        {
+            let (mut app, doc) = app_with_doc();
+            app.pb.queue = vec!["tk_g1".into(), "tk_g1".into(), "tk_g2".into()];
+            app.pb.queue_index = 0;
+            app.pb.current = Some("tk_g1".into());
+            let resources = app.palette_tree(&doc);
+            let queue = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == crate::actions::QUEUE_RESOURCE_ID)
+                .expect("the local queue is published canonically");
+            assert_eq!(queue.children.len(), 3);
+            let duplicate = &queue.children[1];
+            let remove = duplicate
+                .actions
+                .iter()
+                .find(|action| action.id == "remove")
+                .expect("second duplicate has its own remove operation");
+            let payload = remove
+                .build_json(&serde_json::Map::new())
+                .expect("queue removal takes no arguments")
+                .payload;
+            assert!(matches!(
+                app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
+                    .expect("the observed queue row is removable"),
+                ui::framework::Effected::Done(_)
+            ));
+            assert_eq!(app.pb.queue, vec!["tk_g1", "tk_g2"]);
+            assert!(
+                app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
+                    .is_err(),
+                "the old second-occurrence operation cannot remove a recycled row"
+            );
+        }
     }
 }
 
@@ -91,34 +227,6 @@ fn play_next_still_starts_an_empty_queue() {
     assert!(app.pb.playing);
     assert!(app.active_resolve_request.is_some());
     assert_eq!(app.resolve_in_flight, 1);
-}
-
-#[test]
-fn queue_reordering_preserves_the_current_duplicate_occurrence() {
-    // The two copies of g1 are distinct queue occurrences even though their
-    // metadata is identical. Moving any row must preserve the selected copy.
-    for (from, to, expected) in [(2, 1, 1), (1, 0, 2), (0, 2, 1), (2, 0, 0)] {
-        let (mut app, mut doc) = app_with_doc();
-        app.disconnect();
-        app.pb.queue = vec!["tk_g1".into(), "tk_g2".into(), "tk_g1".into()];
-        app.pb.queue_index = 2;
-        app.pb.current = Some("tk_g1".into());
-        app.pb.position_ms = 12_000;
-        app.playhead_ms = 12_000.0;
-        let heads = doc.get_heads();
-
-        app.dispatch(
-            Action::MoveQueueItem { from, to },
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-
-        assert_eq!(app.pb.queue_index, expected, "move {from} to {to}");
-        assert_eq!(app.pb.queue[expected], "tk_g1");
-        assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
-        assert_eq!(app.pb.position_ms, 12_000);
-        assert_eq!(app.playhead_ms, 12_000.0);
-        assert_eq!(doc.get_heads(), heads, "queue edits stay device-local");
-    }
 }
 
 #[cfg(feature = "audio")]
@@ -1463,21 +1571,68 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
     }
 }
 
-#[test]
-fn navigation_walks_the_view_stack() {
-    let (mut app, mut doc) = app_with_doc();
-    app.dispatch(
-        Action::Nav(View::Albums),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    assert_eq!(app.view, View::Albums);
-    app.dispatch(
-        Action::Nav(View::Album("al_glasslight".into())),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    assert_eq!(app.view, View::Album("al_glasslight".into()));
-    app.dispatch(Action::Back, &mut ui::widget::Edits::lend(&mut doc));
-    assert_eq!(app.view, View::Albums);
+tilo_test_env::scenario! {
+    /// Where the window is: the trail of pages, a fresh one from a sidebar section, and the
+    /// page or song a launch link names.
+    fn navigation_keeps_a_trail_of_pages_and_a_launch_link_opens_one;
+
+    phase navigation_walks_the_view_stack;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.dispatch(
+            Action::Nav(View::Albums),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(app.view, View::Albums);
+        app.dispatch(
+            Action::Nav(View::Album("al_glasslight".into())),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(app.view, View::Album("al_glasslight".into()));
+        app.dispatch(Action::Back, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(app.view, View::Albums);
+    }
+
+    phase a_launch_link_plays_from_the_start_or_opens_its_page;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        let arguments = [crate::search_type::SearchHit::track_link("tk_g2")];
+        app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
+        assert_eq!(app.pb.position_ms, 0);
+        assert!(!app.pb.playing);
+
+        let (mut app, _doc) = app_with_doc();
+        let arguments = [crate::search_type::SearchHit::album_link("al_glasslight")];
+        app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
+        assert_eq!(app.view, View::Album("al_glasslight".into()));
+        assert!(app.pb.current.is_none(), "opening a page plays nothing");
+    }
+
+    phase a_sidebar_section_starts_a_fresh_trail;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.dispatch(
+            Action::Nav(View::Albums),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        app.dispatch(
+            Action::Nav(View::Album("al_glasslight".into())),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert!(app.nav.can_go_back(), "a detail page can go back");
+        app.dispatch(
+            Action::Nav(View::Browse),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert!(
+            !app.nav.can_go_back(),
+            "Browse is a top-level section, so it shows no back button"
+        );
+    }
 }
 
 fn widget_rect(root: &dyn Widget, id: &str) -> Option<Rect> {
@@ -2117,108 +2272,6 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         assert!(
             !app.lib.is_artist_followed(&artist),
             "toggling again unfollows"
-        );
-    }
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.dispatch(
-            Action::Play {
-                queue: vec!["a".into(), "b".into(), "c".into()].into(),
-                index: 0,
-            },
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(app.pb.queue_index, 0);
-        app.dispatch(
-            Action::PlayNext("x".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(
-            app.pb.queue,
-            vec!["a", "x", "b", "c"],
-            "play-next sits right after current"
-        );
-    }
-
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.dispatch(
-            Action::Play {
-                queue: vec!["a".into(), "b".into(), "c".into()].into(),
-                index: 1,
-            },
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.dispatch(
-            Action::RemoveFromQueue(0),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(app.pb.queue, vec!["b", "c"]);
-        assert_eq!(app.pb.current.as_deref(), Some("b"));
-        assert_eq!(app.pb.queue_index, 0);
-    }
-
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.dispatch(
-            Action::Play {
-                queue: vec!["a".into(), "b".into(), "c".into()].into(),
-                index: 0,
-            },
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.dispatch(
-            Action::MoveQueueItem { from: 2, to: 1 },
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(app.pb.queue, vec!["a", "c", "b"]);
-        assert_eq!(
-            app.pb.current.as_deref(),
-            Some("a"),
-            "current track unchanged by a reorder below it"
-        );
-    }
-
-    {
-        let (mut app, doc) = app_with_doc();
-        app.pb.queue = vec!["tk_g1".into(), "tk_g1".into(), "tk_g2".into()];
-        app.pb.queue_index = 0;
-        app.pb.current = Some("tk_g1".into());
-        let resources = app.palette_tree(&doc);
-        let queue = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == crate::actions::QUEUE_RESOURCE_ID)
-            .expect("the local queue is published canonically");
-        assert_eq!(queue.children.len(), 3);
-        let duplicate = &queue.children[1];
-        let remove = duplicate
-            .actions
-            .iter()
-            .find(|action| action.id == "remove")
-            .expect("second duplicate has its own remove operation");
-        let payload = remove
-            .build_json(&serde_json::Map::new())
-            .expect("queue removal takes no arguments")
-            .payload;
-        assert!(matches!(
-            app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
-                .expect("the observed queue row is removable"),
-            ui::framework::Effected::Done(_)
-        ));
-        assert_eq!(app.pb.queue, vec!["tk_g1", "tk_g2"]);
-        assert!(
-            app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
-                .is_err(),
-            "the old second-occurrence operation cannot remove a recycled row"
         );
     }
 }
@@ -4106,25 +4159,6 @@ fn artist_and_album_pages_navigate_and_play() {
 }
 
 #[test]
-fn a_launch_link_plays_from_the_start_or_opens_its_page() {
-    let (mut app, mut doc) = app_with_doc();
-    let arguments = [crate::search_type::SearchHit::track_link("tk_g2")];
-    app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
-    app.sync(&doc, &automerge::ROOT);
-    app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-    app.sync(&doc, &automerge::ROOT);
-    assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
-    assert_eq!(app.pb.position_ms, 0);
-    assert!(!app.pb.playing);
-
-    let (mut app, _doc) = app_with_doc();
-    let arguments = [crate::search_type::SearchHit::album_link("al_glasslight")];
-    app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
-    assert_eq!(app.view, View::Album("al_glasslight".into()));
-    assert!(app.pb.current.is_none(), "opening a page plays nothing");
-}
-
-#[test]
 fn live_album_tracks_are_discoverable_and_queue_through_the_resource_door() {
     let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
     let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
@@ -4317,28 +4351,6 @@ fn rendered_frames_without_decoder_confirmation_do_not_settle_play() {
         "PCM observations alone must not acknowledge confirmed playback"
     );
     assert_eq!(app.resource_stream_invocation.unwrap().0, invocation);
-}
-
-#[test]
-fn a_sidebar_section_starts_a_fresh_trail() {
-    let (mut app, mut doc) = app_with_doc();
-    app.dispatch(
-        Action::Nav(View::Albums),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    app.dispatch(
-        Action::Nav(View::Album("al_glasslight".into())),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    assert!(app.nav.can_go_back(), "a detail page can go back");
-    app.dispatch(
-        Action::Nav(View::Browse),
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    assert!(
-        !app.nav.can_go_back(),
-        "Browse is a top-level section, so it shows no back button"
-    );
 }
 
 #[test]

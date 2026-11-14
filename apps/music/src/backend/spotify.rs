@@ -718,50 +718,115 @@ mod tests {
         (backend, root)
     }
 
-    #[test]
-    #[cfg(feature = "spotify-native")]
-    fn spotify_streaming_identity_must_match_the_catalogue_account() {
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(200).body(br#"{"id":"catalogue","product":"premium"}"#.to_vec()),
-            Reply::status(200).body(br#"{"id":"different"}"#.to_vec()),
-            Reply::status(200).body(br#"{"id":"catalogue","product":"premium"}"#.to_vec()),
-            Reply::status(200).body(br#"{"id":"catalogue"}"#.to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        backend
-            .custody
-            .seal_oauth(
-                &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
-                &account_custody::TokenSet {
-                    access_token: "stream-test".into(),
-                    refresh_token: "refresh-test".into(),
-                    expires_in: 3600,
-                    ..Default::default()
-                }
-                .stamp_now(),
-            )
-            .unwrap();
-        assert!(
+    tilo_test_env::scenario! {
+        /// Native streaming starts only for the paid account the catalogue grant belongs to.
+        #[cfg(feature = "spotify-native")]
+        fn spotify_streaming_needs_the_catalogue_accounts_own_paid_identity;
+
+        phase spotify_streaming_identity_must_match_the_catalogue_account;
+        {
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![
+                Reply::status(200).body(br#"{"id":"catalogue","product":"premium"}"#.to_vec()),
+                Reply::status(200).body(br#"{"id":"different"}"#.to_vec()),
+                Reply::status(200).body(br#"{"id":"catalogue","product":"premium"}"#.to_vec()),
+                Reply::status(200).body(br#"{"id":"catalogue"}"#.to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
             backend
-                .playback_account(false)
-                .unwrap_err()
-                .to_string()
-                .contains("different Spotify accounts")
-        );
-        assert_eq!(backend.playback_account(false).unwrap(), "catalogue");
-        assert_eq!(
-            api.next_request().header("Authorization"),
-            Some("Bearer initial-test")
-        );
-        assert_eq!(
-            api.next_request().header("Authorization"),
-            Some("Bearer stream-test")
-        );
-        api.next_request();
-        api.next_request();
-        assert_eq!(oauth.refreshes(), 0);
+                .custody
+                .seal_oauth(
+                    &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
+                    &account_custody::TokenSet {
+                        access_token: "stream-test".into(),
+                        refresh_token: "refresh-test".into(),
+                        expires_in: 3600,
+                        ..Default::default()
+                    }
+                    .stamp_now(),
+                )
+                .unwrap();
+            assert!(
+                backend
+                    .playback_account(false)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("different Spotify accounts")
+            );
+            assert_eq!(backend.playback_account(false).unwrap(), "catalogue");
+            assert_eq!(
+                api.next_request().header("Authorization"),
+                Some("Bearer initial-test")
+            );
+            assert_eq!(
+                api.next_request().header("Authorization"),
+                Some("Bearer stream-test")
+            );
+            api.next_request();
+            api.next_request();
+            assert_eq!(oauth.refreshes(), 0);
+        }
+
+        phase spotify_explicit_streaming_profile_free_is_refused_before_audio;
+        {
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![
+                Reply::status(200).body(br#"{"id":"catalogue"}"#.to_vec()),
+                Reply::status(200).body(br#"{"id":"catalogue","product":"free"}"#.to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            seal_test_streaming_grant(&backend);
+            assert!(
+                backend
+                    .playback_account(false)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Premium")
+            );
+            for _ in 0..2 {
+                assert_eq!(api.next_request().target, "/me");
+            }
+            api.assert_untouched();
+            assert_eq!(oauth.refreshes(), 0);
+        }
+
+        phase spotify_stable_account_identity_must_match_even_when_usernames_match;
+        {
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![
+                Reply::status(200)
+                    .body(br#"{"id":"same","account_id":"first","product":"premium"}"#.to_vec()),
+                Reply::status(200).body(br#"{"id":"same","account_id":"second"}"#.to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            backend
+                .custody
+                .seal_oauth(
+                    &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
+                    &account_custody::TokenSet {
+                        access_token: "stream-test".into(),
+                        refresh_token: "refresh-test".into(),
+                        expires_in: 3600,
+                        ..Default::default()
+                    }
+                    .stamp_now(),
+                )
+                .unwrap();
+            assert!(
+                backend
+                    .playback_account(false)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("different Spotify accounts")
+            );
+            for _ in 0..2 {
+                assert_eq!(api.next_request().target, "/me");
+            }
+            api.assert_untouched();
+        }
     }
 
     fn account_status_fixture(
@@ -799,489 +864,594 @@ mod tests {
         (backend, root)
     }
 
-    #[test]
-    fn spotify_account_status_reads_both_existing_grants_without_profile_leakage() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        use ui::tilo_resource::Effect as _;
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        for (catalogue, streaming, expected) in [
-            (
-                serde_json::json!({"id":"private-account", "account_id":"private-stable", "product":"premium", "email":"private-email", "display_name":"private-name"}),
-                serde_json::json!({"id":"private-account", "account_id":"private-stable", "product":"premium"}),
-                serde_json::json!({"catalogue_product":"premium","streaming_product":"premium","account_match":true}),
-            ),
-            (
-                serde_json::json!({"id":"private-account", "product":"free"}),
-                serde_json::json!({"id":"other-private-account", "product":"open"}),
-                serde_json::json!({"catalogue_product":"free","streaming_product":"open","account_match":false}),
-            ),
-            (
-                serde_json::json!({"id":"private-account"}),
-                serde_json::json!({"id":"private-account", "product":"private-unrecognized-product"}),
-                serde_json::json!({"catalogue_product":"unknown","streaming_product":"unknown","account_match":true}),
-            ),
-            (
-                serde_json::json!({"id":"private-account", "account_id":"private-stable", "product":"premium"}),
-                serde_json::json!({"id":"private-account", "account_id":"other-private-stable", "product":"premium"}),
-                serde_json::json!({"catalogue_product":"premium","streaming_product":"premium","account_match":false}),
-            ),
-            (
-                serde_json::json!({"product":"premium"}),
-                serde_json::json!({"product":"premium"}),
-                serde_json::json!({"catalogue_product":"premium","streaming_product":"premium","account_match":false}),
-            ),
-        ] {
+    tilo_test_env::scenario! {
+        /// The account status read: what the two grants allow, without the profile, the provider's
+        /// words or a sign-in.
+        fn spotify_account_status_reports_grants_and_never_starts_sign_in;
+
+        phase spotify_account_status_reads_both_existing_grants_without_profile_leakage;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            use ui::tilo_resource::Effect as _;
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            for (catalogue, streaming, expected) in [
+                (
+                    serde_json::json!({"id":"private-account", "account_id":"private-stable", "product":"premium", "email":"private-email", "display_name":"private-name"}),
+                    serde_json::json!({"id":"private-account", "account_id":"private-stable", "product":"premium"}),
+                    serde_json::json!({"catalogue_product":"premium","streaming_product":"premium","account_match":true}),
+                ),
+                (
+                    serde_json::json!({"id":"private-account", "product":"free"}),
+                    serde_json::json!({"id":"other-private-account", "product":"open"}),
+                    serde_json::json!({"catalogue_product":"free","streaming_product":"open","account_match":false}),
+                ),
+                (
+                    serde_json::json!({"id":"private-account"}),
+                    serde_json::json!({"id":"private-account", "product":"private-unrecognized-product"}),
+                    serde_json::json!({"catalogue_product":"unknown","streaming_product":"unknown","account_match":true}),
+                ),
+                (
+                    serde_json::json!({"id":"private-account", "account_id":"private-stable", "product":"premium"}),
+                    serde_json::json!({"id":"private-account", "account_id":"other-private-stable", "product":"premium"}),
+                    serde_json::json!({"catalogue_product":"premium","streaming_product":"premium","account_match":false}),
+                ),
+                (
+                    serde_json::json!({"product":"premium"}),
+                    serde_json::json!({"product":"premium"}),
+                    serde_json::json!({"catalogue_product":"premium","streaming_product":"premium","account_match":false}),
+                ),
+            ] {
+                let api = Responder::start(vec![
+                    Reply::status(200).body(serde_json::to_vec(&catalogue).unwrap()),
+                    Reply::status(200).body(serde_json::to_vec(&streaming).unwrap()),
+                ]);
+                let (backend, _root) = account_status_fixture(&api.url(), &oauth);
+                let reply = backend.operation(&SpotifyOperation::AccountStatus).unwrap();
+                assert_eq!(reply.state, expected);
+                assert!(reply.devices.is_empty());
+                crate::actions::MusicEffect::SpotifyAccountStatus
+                    .bound()
+                    .contract
+                    .result
+                    .validate(&tilo_actions::ActionOutput {
+                        value: Some(reply.state.clone()),
+                        resources: Vec::new(),
+                    })
+                    .expect("the real provider result must satisfy the published diagnostic contract");
+                let text = reply.state.to_string();
+                for forbidden in [
+                    "private-account",
+                    "private-stable",
+                    "private-email",
+                    "private-name",
+                    "private-unrecognized-product",
+                    "initial-test",
+                    "stream-test",
+                    "refresh-test",
+                ] {
+                    assert!(!text.contains(forbidden));
+                }
+                for bearer in ["Bearer initial-test", "Bearer stream-test"] {
+                    let request = api.next_request();
+                    assert_eq!(request.method, "GET");
+                    assert_eq!(request.target, "/me");
+                    assert!(request.body.is_empty());
+                    assert_eq!(request.header("Authorization"), Some(bearer));
+                }
+            }
+            assert_eq!(oauth.refreshes(), 0);
+            assert!(oauth.requests().is_empty());
+        }
+
+        phase spotify_account_status_refusal_never_exposes_provider_body_or_retries;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
             let api = Responder::start(vec![
-                Reply::status(200).body(serde_json::to_vec(&catalogue).unwrap()),
-                Reply::status(200).body(serde_json::to_vec(&streaming).unwrap()),
+                Reply::status(200).body(br#"{"id":"private-account","product":"premium"}"#.to_vec()),
+                Reply::status(403)
+                    .body(br#"{"error":"private-secret-refusal","email":"private-email"}"#.to_vec()),
             ]);
             let (backend, _root) = account_status_fixture(&api.url(), &oauth);
-            let reply = backend.operation(&SpotifyOperation::AccountStatus).unwrap();
-            assert_eq!(reply.state, expected);
-            assert!(reply.devices.is_empty());
-            crate::actions::MusicEffect::SpotifyAccountStatus
-                .bound()
-                .contract
-                .result
-                .validate(&tilo_actions::ActionOutput {
-                    value: Some(reply.state.clone()),
-                    resources: Vec::new(),
-                })
-                .expect("the real provider result must satisfy the published diagnostic contract");
-            let text = reply.state.to_string();
+            let error = backend
+                .operation(&SpotifyOperation::AccountStatus)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("denied"));
             for forbidden in [
-                "private-account",
-                "private-stable",
+                "private-secret",
                 "private-email",
-                "private-name",
-                "private-unrecognized-product",
+                "private-account",
                 "initial-test",
                 "stream-test",
                 "refresh-test",
             ] {
-                assert!(!text.contains(forbidden));
+                assert!(!error.contains(forbidden));
             }
             for bearer in ["Bearer initial-test", "Bearer stream-test"] {
                 let request = api.next_request();
                 assert_eq!(request.method, "GET");
                 assert_eq!(request.target, "/me");
-                assert!(request.body.is_empty());
                 assert_eq!(request.header("Authorization"), Some(bearer));
             }
+            assert_eq!(oauth.refreshes(), 0);
+            assert!(oauth.requests().is_empty());
         }
-        assert_eq!(oauth.refreshes(), 0);
-        assert!(oauth.requests().is_empty());
-    }
 
-    #[test]
-    fn spotify_account_status_refusal_never_exposes_provider_body_or_retries() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(200).body(br#"{"id":"private-account","product":"premium"}"#.to_vec()),
-            Reply::status(403)
-                .body(br#"{"error":"private-secret-refusal","email":"private-email"}"#.to_vec()),
-        ]);
-        let (backend, _root) = account_status_fixture(&api.url(), &oauth);
-        let error = backend
-            .operation(&SpotifyOperation::AccountStatus)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("denied"));
-        for forbidden in [
-            "private-secret",
-            "private-email",
-            "private-account",
-            "initial-test",
-            "stream-test",
-            "refresh-test",
-        ] {
-            assert!(!error.contains(forbidden));
-        }
-        for bearer in ["Bearer initial-test", "Bearer stream-test"] {
-            let request = api.next_request();
-            assert_eq!(request.method, "GET");
-            assert_eq!(request.target, "/me");
-            assert_eq!(request.header("Authorization"), Some(bearer));
-        }
-        assert_eq!(oauth.refreshes(), 0);
-        assert!(oauth.requests().is_empty());
-    }
-
-    #[test]
-    fn spotify_account_status_missing_grant_or_scope_never_starts_sign_in() {
-        use crate::backend::SpotifyOperation;
-        use test_http::Responder;
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(Vec::new());
-        let (backend, _root) = account_status_fixture(&api.url(), &oauth);
-        backend
-            .custody
-            .forget_oauth(&AccountId::from(
-                tilo_spotify::STREAMING_ACCOUNT.to_string(),
-            ))
-            .unwrap();
-        assert_eq!(
-            backend
-                .operation(&SpotifyOperation::AccountStatus)
-                .unwrap_err()
-                .to_string(),
-            "Spotify account diagnostic authorization is unavailable"
-        );
-        for scope in [None, Some("user-read-private".into())] {
+        phase spotify_account_status_missing_grant_or_scope_never_starts_sign_in;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::Responder;
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(Vec::new());
+            let (backend, _root) = account_status_fixture(&api.url(), &oauth);
             backend
                 .custody
-                .seal_oauth(
-                    &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
-                    &account_custody::TokenSet {
-                        access_token: "stream-test".into(),
-                        refresh_token: "refresh-test".into(),
-                        expires_in: 3600,
-                        scope,
-                        ..Default::default()
-                    }
-                    .stamp_now(),
-                )
+                .forget_oauth(&AccountId::from(
+                    tilo_spotify::STREAMING_ACCOUNT.to_string(),
+                ))
                 .unwrap();
-            let error = backend
-                .operation(&SpotifyOperation::AccountStatus)
-                .unwrap_err()
-                .to_string();
-            assert!(error.starts_with("Spotify account diagnostic permissions"));
-            assert!(!error.contains("stream-test"));
-        }
-        assert_eq!(oauth.refreshes(), 0);
-        assert!(oauth.requests().is_empty());
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_connect_confirms_provider_state_and_rejects_acknowledgement_only() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let devices = br#"{"devices":[{"id":"bedroom","name":"Bedroom","is_active":false,"is_restricted":false}]}"#;
-        let api = Responder::start(vec![
-            Reply::status(200).body(br#"{"product":"premium"}"#.to_vec()),
-            Reply::status(200).body(devices.to_vec()),
-            Reply::status(204),
-            Reply::status(200).body(br#"{"device":{"id":"other"},"is_playing":true}"#.to_vec()),
-            Reply::status(200).body(br#"{"product":"premium"}"#.to_vec()),
-            Reply::status(200).body(devices.to_vec()),
-            Reply::status(204),
-            Reply::status(200).body(br#"{"device":{"id":"bedroom"},"is_playing":false}"#.to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        assert!(
-            backend
-                .operation(&SpotifyOperation::Transfer {
-                    device: "bedroom".into()
-                })
-                .unwrap_err()
-                .to_string()
-                .contains("not confirmed")
-        );
-        api.next_request();
-        api.next_request();
-        let transfer = api.next_request();
-        assert_eq!(transfer.method, "PUT");
-        assert_eq!(transfer.target, "/me/player");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&transfer.body).unwrap(),
-            serde_json::json!({"device_ids":["bedroom"],"play":false})
-        );
-        api.next_request();
-        let reply = backend
-            .operation(&SpotifyOperation::Transfer {
-                device: "bedroom".into(),
-            })
-            .unwrap();
-        assert_eq!(reply.state["device"]["id"], "bedroom");
-        for _ in 0..4 {
-            api.next_request();
-        }
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_connect_unknown_metadata_requires_confirmed_provider_capability() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let track = "spotify:track:1234567890123456789012";
-        for profile in [
-            serde_json::json!({"id":"account"}),
-            serde_json::json!({"id":"account","product":null}),
-        ] {
-            for operation in [
-                SpotifyOperation::Transfer {
-                    device: "bedroom".into(),
-                },
-                SpotifyOperation::RemotePlay {
-                    device: "bedroom".into(),
-                    track: track.into(),
-                },
-                SpotifyOperation::RemotePause {
-                    device: "bedroom".into(),
-                },
-            ] {
-                let playing = matches!(operation, SpotifyOperation::RemotePlay { .. });
-                let state = serde_json::json!({"device":{"id":"bedroom"},"is_playing":playing,"item":{"uri":track}});
-                let api = Responder::start(vec![
-                    Reply::status(200).body(serde_json::to_vec(&profile).unwrap()),
-                    Reply::status(200).body(
-                        br#"{"devices":[{"id":"bedroom","name":"Bedroom","is_restricted":false}]}"#
-                            .to_vec(),
-                    ),
-                    Reply::status(204),
-                    Reply::status(200).body(serde_json::to_vec(&state).unwrap()),
-                ]);
-                let (backend, _root) = fixture(&api.url(), &oauth);
-                let reply = backend.operation(&operation).unwrap();
-                assert_eq!(reply.state, state);
-                assert!(
-                    reply.state.get("product").is_none(),
-                    "no Premium tier is invented"
-                );
-                assert_eq!(api.next_request().target, "/me");
-                assert_eq!(api.next_request().target, "/me/player/devices");
-                let command = api.next_request();
-                assert_eq!(command.method, "PUT");
-                assert!(command.target.starts_with("/me/player"));
-                assert_eq!(api.next_request().target, "/me/player");
-                api.assert_untouched();
-            }
-        }
-    }
-
-    #[test]
-    fn spotify_connect_unknown_metadata_rejects_restricted_devices_before_a_command() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(200).body(br#"{"id":"account"}"#.to_vec()),
-            Reply::status(200).body(
-                br#"{"devices":[{"id":"restricted","name":"Unavailable","is_restricted":true}]}"#
-                    .to_vec(),
-            ),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        assert!(
-            backend
-                .operation(&SpotifyOperation::Transfer {
-                    device: "restricted".into()
-                })
-                .unwrap_err()
-                .to_string()
-                .contains("does not permit remote controls")
-        );
-        assert_eq!(api.next_request().target, "/me");
-        assert_eq!(api.next_request().target, "/me/player/devices");
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_connect_unknown_metadata_does_not_turn_denial_or_acknowledgement_into_success() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        for status in [403, 500, 204] {
-            let mut replies = vec![
-                Reply::status(200).body(br#"{"id":"account"}"#.to_vec()),
-                Reply::status(200).body(
-                    br#"{"devices":[{"id":"bedroom","name":"Bedroom","is_restricted":false}]}"#
-                        .to_vec(),
-                ),
-                Reply::status(status),
-            ];
-            if status == 204 {
-                replies.push(
-                    Reply::status(200)
-                        .body(br#"{"device":{"id":"other"},"is_playing":true}"#.to_vec()),
-                );
-            }
-            let api = Responder::start(replies);
-            let (backend, _root) = fixture(&api.url(), &oauth);
-            let error = backend
-                .operation(&SpotifyOperation::RemotePlay {
-                    device: "bedroom".into(),
-                    track: "spotify:track:1234567890123456789012".into(),
-                })
-                .unwrap_err()
-                .to_string();
-            assert!(
-                !error.contains("require Premium"),
-                "missing metadata is not a Free verdict"
+            assert_eq!(
+                backend
+                    .operation(&SpotifyOperation::AccountStatus)
+                    .unwrap_err()
+                    .to_string(),
+                "Spotify account diagnostic authorization is unavailable"
             );
-            assert!(if status == 403 {
-                error.contains("denied access")
-            } else if status == 204 {
-                error.contains("not confirmed")
-            } else {
-                error.contains("Spotify")
-            });
-            for _ in 0..if status == 204 { 4 } else { 3 } {
-                api.next_request();
+            for scope in [None, Some("user-read-private".into())] {
+                backend
+                    .custody
+                    .seal_oauth(
+                        &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
+                        &account_custody::TokenSet {
+                            access_token: "stream-test".into(),
+                            refresh_token: "refresh-test".into(),
+                            expires_in: 3600,
+                            scope,
+                            ..Default::default()
+                        }
+                        .stamp_now(),
+                    )
+                    .unwrap();
+                let error = backend
+                    .operation(&SpotifyOperation::AccountStatus)
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.starts_with("Spotify account diagnostic permissions"));
+                assert!(!error.contains("stream-test"));
             }
+            assert_eq!(oauth.refreshes(), 0);
+            assert!(oauth.requests().is_empty());
             api.assert_untouched();
         }
     }
 
-    #[test]
-    fn spotify_free_accounts_cannot_start_streaming_or_connect_commands() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(200).body(br#"{"product":"free"}"#.to_vec()),
-            Reply::status(200).body(br#"{"product":"free"}"#.to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        assert!(
-            backend
-                .playback_account(true)
-                .unwrap_err()
-                .to_string()
-                .contains("Premium")
-        );
-        assert!(
-            backend
-                .operation(&SpotifyOperation::Transfer {
-                    device: "bedroom".into()
-                })
-                .unwrap_err()
-                .to_string()
-                .contains("Premium")
-        );
-        api.next_request();
-        api.next_request();
-        api.assert_untouched();
-        assert_eq!(oauth.refreshes(), 0);
-    }
+    tilo_test_env::scenario! {
+        /// A Connect command counts only once the provider confirms it, on a device and an account
+        /// that may take it.
+        fn spotify_connect_needs_confirmed_state_and_a_capable_account;
 
-    #[test]
-    fn spotify_library_edits_confirm_saves_and_playlist_revisions() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(200),
-            Reply::status(200).body(b"[true]".to_vec()),
-            Reply::status(200),
-            Reply::status(200).body(b"[false]".to_vec()),
-            Reply::status(200).body(br#"{"id":"owner"}"#.to_vec()),
-            Reply::status(200).body(br#"{"owner":{"id":"owner"}}"#.to_vec()),
-            Reply::status(201).body(br#"{"snapshot_id":"revision-a"}"#.to_vec()),
-            Reply::status(200).body(br#"{"id":"owner"}"#.to_vec()),
-            Reply::status(200).body(br#"{"owner":{"id":"owner"}}"#.to_vec()),
-            Reply::status(200).body(br#"{"snapshot_id":"revision-b"}"#.to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        let track = "spotify:track:1234567890123456789012";
-        let playlist = "spotify:playlist:1234567890123456789012";
-        assert!(
-            backend
-                .operation(&SpotifyOperation::Save {
-                    uri: "spotify:track:../bad".into(),
-                    saved: true
-                })
-                .is_err()
-        );
-        assert!(api.drain_requests().is_empty());
-        assert_eq!(
-            backend
-                .operation(&SpotifyOperation::Save {
-                    uri: track.into(),
-                    saved: true
-                })
-                .unwrap()
-                .state["saved"],
-            true
-        );
-        let save = api.next_request();
-        assert_eq!(save.method, "PUT");
-        assert!(
-            save.target
-                .starts_with("/me/library?uris=spotify%3Atrack%3A")
-        );
-        api.next_request();
-        assert_eq!(
-            backend
-                .operation(&SpotifyOperation::Save {
-                    uri: track.into(),
-                    saved: false
-                })
-                .unwrap()
-                .state["saved"],
-            false
-        );
-        assert_eq!(api.next_request().method, "DELETE");
-        api.next_request();
-        backend
-            .operation(&SpotifyOperation::PlaylistAdd {
-                playlist: playlist.into(),
-                track: track.into(),
-            })
-            .unwrap();
-        assert_eq!(api.next_request().target, "/me");
-        assert_eq!(api.next_request().method, "GET");
-        let added = api.next_request();
-        assert_eq!(added.method, "POST");
-        assert_eq!(added.target, "/playlists/1234567890123456789012/items");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&added.body).unwrap(),
-            serde_json::json!({"uris":[track]})
-        );
-        backend
-            .operation(&SpotifyOperation::PlaylistRemove {
-                playlist: playlist.into(),
-                track: track.into(),
-            })
-            .unwrap();
-        assert_eq!(api.next_request().target, "/me");
-        assert_eq!(api.next_request().method, "GET");
-        let removed = api.next_request();
-        assert_eq!(removed.method, "DELETE");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&removed.body).unwrap(),
-            serde_json::json!({"items":[{"uri":track}]})
-        );
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_identity_without_subscription_metadata_does_not_claim_premium() {
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let profiles = if cfg!(feature = "spotify-native") {
-            vec![
-                Reply::status(200).body(br#"{"id":"catalogue","account_id":"matched"}"#.to_vec()),
-                Reply::status(200).body(br#"{"id":"catalogue","account_id":"matched"}"#.to_vec()),
-            ]
-        } else {
-            vec![Reply::status(200).body(br#"{"id":"catalogue"}"#.to_vec())]
-        };
-        let api = Responder::start(profiles);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        #[cfg(feature = "spotify-native")]
+        phase spotify_connect_confirms_provider_state_and_rejects_acknowledgement_only;
         {
-            seal_test_streaming_grant(&backend);
-            assert_eq!(backend.playback_account(false).unwrap(), "catalogue");
-            assert_eq!(api.next_request().target, "/me");
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let devices = br#"{"devices":[{"id":"bedroom","name":"Bedroom","is_active":false,"is_restricted":false}]}"#;
+            let api = Responder::start(vec![
+                Reply::status(200).body(br#"{"product":"premium"}"#.to_vec()),
+                Reply::status(200).body(devices.to_vec()),
+                Reply::status(204),
+                Reply::status(200).body(br#"{"device":{"id":"other"},"is_playing":true}"#.to_vec()),
+                Reply::status(200).body(br#"{"product":"premium"}"#.to_vec()),
+                Reply::status(200).body(devices.to_vec()),
+                Reply::status(204),
+                Reply::status(200).body(br#"{"device":{"id":"bedroom"},"is_playing":false}"#.to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::Transfer {
+                        device: "bedroom".into()
+                    })
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not confirmed")
+            );
+            api.next_request();
+            api.next_request();
+            let transfer = api.next_request();
+            assert_eq!(transfer.method, "PUT");
+            assert_eq!(transfer.target, "/me/player");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&transfer.body).unwrap(),
+                serde_json::json!({"device_ids":["bedroom"],"play":false})
+            );
+            api.next_request();
+            let reply = backend
+                .operation(&SpotifyOperation::Transfer {
+                    device: "bedroom".into(),
+                })
+                .unwrap();
+            assert_eq!(reply.state["device"]["id"], "bedroom");
+            for _ in 0..4 {
+                api.next_request();
+            }
+            api.assert_untouched();
         }
-        #[cfg(not(feature = "spotify-native"))]
-        assert!(
+
+        phase spotify_connect_unknown_metadata_requires_confirmed_provider_capability;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let track = "spotify:track:1234567890123456789012";
+            for profile in [
+                serde_json::json!({"id":"account"}),
+                serde_json::json!({"id":"account","product":null}),
+            ] {
+                for operation in [
+                    SpotifyOperation::Transfer {
+                        device: "bedroom".into(),
+                    },
+                    SpotifyOperation::RemotePlay {
+                        device: "bedroom".into(),
+                        track: track.into(),
+                    },
+                    SpotifyOperation::RemotePause {
+                        device: "bedroom".into(),
+                    },
+                ] {
+                    let playing = matches!(operation, SpotifyOperation::RemotePlay { .. });
+                    let state = serde_json::json!({"device":{"id":"bedroom"},"is_playing":playing,"item":{"uri":track}});
+                    let api = Responder::start(vec![
+                        Reply::status(200).body(serde_json::to_vec(&profile).unwrap()),
+                        Reply::status(200).body(
+                            br#"{"devices":[{"id":"bedroom","name":"Bedroom","is_restricted":false}]}"#
+                                .to_vec(),
+                        ),
+                        Reply::status(204),
+                        Reply::status(200).body(serde_json::to_vec(&state).unwrap()),
+                    ]);
+                    let (backend, _root) = fixture(&api.url(), &oauth);
+                    let reply = backend.operation(&operation).unwrap();
+                    assert_eq!(reply.state, state);
+                    assert!(
+                        reply.state.get("product").is_none(),
+                        "no Premium tier is invented"
+                    );
+                    assert_eq!(api.next_request().target, "/me");
+                    assert_eq!(api.next_request().target, "/me/player/devices");
+                    let command = api.next_request();
+                    assert_eq!(command.method, "PUT");
+                    assert!(command.target.starts_with("/me/player"));
+                    assert_eq!(api.next_request().target, "/me/player");
+                    api.assert_untouched();
+                }
+            }
+        }
+
+        phase spotify_connect_unknown_metadata_rejects_restricted_devices_before_a_command;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![
+                Reply::status(200).body(br#"{"id":"account"}"#.to_vec()),
+                Reply::status(200).body(
+                    br#"{"devices":[{"id":"restricted","name":"Unavailable","is_restricted":true}]}"#
+                        .to_vec(),
+                ),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::Transfer {
+                        device: "restricted".into()
+                    })
+                    .unwrap_err()
+                    .to_string()
+                    .contains("does not permit remote controls")
+            );
+            assert_eq!(api.next_request().target, "/me");
+            assert_eq!(api.next_request().target, "/me/player/devices");
+            api.assert_untouched();
+        }
+
+        phase spotify_connect_unknown_metadata_does_not_turn_denial_or_acknowledgement_into_success;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            for status in [403, 500, 204] {
+                let mut replies = vec![
+                    Reply::status(200).body(br#"{"id":"account"}"#.to_vec()),
+                    Reply::status(200).body(
+                        br#"{"devices":[{"id":"bedroom","name":"Bedroom","is_restricted":false}]}"#
+                            .to_vec(),
+                    ),
+                    Reply::status(status),
+                ];
+                if status == 204 {
+                    replies.push(
+                        Reply::status(200)
+                            .body(br#"{"device":{"id":"other"},"is_playing":true}"#.to_vec()),
+                    );
+                }
+                let api = Responder::start(replies);
+                let (backend, _root) = fixture(&api.url(), &oauth);
+                let error = backend
+                    .operation(&SpotifyOperation::RemotePlay {
+                        device: "bedroom".into(),
+                        track: "spotify:track:1234567890123456789012".into(),
+                    })
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    !error.contains("require Premium"),
+                    "missing metadata is not a Free verdict"
+                );
+                assert!(if status == 403 {
+                    error.contains("denied access")
+                } else if status == 204 {
+                    error.contains("not confirmed")
+                } else {
+                    error.contains("Spotify")
+                });
+                for _ in 0..if status == 204 { 4 } else { 3 } {
+                    api.next_request();
+                }
+                api.assert_untouched();
+            }
+        }
+
+        phase spotify_free_accounts_cannot_start_streaming_or_connect_commands;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![
+                Reply::status(200).body(br#"{"product":"free"}"#.to_vec()),
+                Reply::status(200).body(br#"{"product":"free"}"#.to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            assert!(
+                backend
+                    .playback_account(true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Premium")
+            );
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::Transfer {
+                        device: "bedroom".into()
+                    })
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Premium")
+            );
+            api.next_request();
+            api.next_request();
+            api.assert_untouched();
+            assert_eq!(oauth.refreshes(), 0);
+        }
+
+        phase spotify_identity_without_subscription_metadata_does_not_claim_premium;
+        {
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let profiles = if cfg!(feature = "spotify-native") {
+                vec![
+                    Reply::status(200).body(br#"{"id":"catalogue","account_id":"matched"}"#.to_vec()),
+                    Reply::status(200).body(br#"{"id":"catalogue","account_id":"matched"}"#.to_vec()),
+                ]
+            } else {
+                vec![Reply::status(200).body(br#"{"id":"catalogue"}"#.to_vec())]
+            };
+            let api = Responder::start(profiles);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            #[cfg(feature = "spotify-native")]
+            {
+                seal_test_streaming_grant(&backend);
+                assert_eq!(backend.playback_account(false).unwrap(), "catalogue");
+                assert_eq!(api.next_request().target, "/me");
+            }
+            #[cfg(not(feature = "spotify-native"))]
+            assert!(
+                backend
+                    .playback_account(false)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("does not include native")
+            );
+            assert_eq!(api.next_request().target, "/me");
+            api.assert_untouched();
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// Saves and playlist edits: each is confirmed by the provider's own state, and refused
+        /// where the account may not write.
+        fn spotify_library_writes_are_confirmed_by_reading_back;
+
+        phase spotify_library_edits_confirm_saves_and_playlist_revisions;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![
+                Reply::status(200),
+                Reply::status(200).body(b"[true]".to_vec()),
+                Reply::status(200),
+                Reply::status(200).body(b"[false]".to_vec()),
+                Reply::status(200).body(br#"{"id":"owner"}"#.to_vec()),
+                Reply::status(200).body(br#"{"owner":{"id":"owner"}}"#.to_vec()),
+                Reply::status(201).body(br#"{"snapshot_id":"revision-a"}"#.to_vec()),
+                Reply::status(200).body(br#"{"id":"owner"}"#.to_vec()),
+                Reply::status(200).body(br#"{"owner":{"id":"owner"}}"#.to_vec()),
+                Reply::status(200).body(br#"{"snapshot_id":"revision-b"}"#.to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            let track = "spotify:track:1234567890123456789012";
+            let playlist = "spotify:playlist:1234567890123456789012";
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::Save {
+                        uri: "spotify:track:../bad".into(),
+                        saved: true
+                    })
+                    .is_err()
+            );
+            assert!(api.drain_requests().is_empty());
+            assert_eq!(
+                backend
+                    .operation(&SpotifyOperation::Save {
+                        uri: track.into(),
+                        saved: true
+                    })
+                    .unwrap()
+                    .state["saved"],
+                true
+            );
+            let save = api.next_request();
+            assert_eq!(save.method, "PUT");
+            assert!(
+                save.target
+                    .starts_with("/me/library?uris=spotify%3Atrack%3A")
+            );
+            api.next_request();
+            assert_eq!(
+                backend
+                    .operation(&SpotifyOperation::Save {
+                        uri: track.into(),
+                        saved: false
+                    })
+                    .unwrap()
+                    .state["saved"],
+                false
+            );
+            assert_eq!(api.next_request().method, "DELETE");
+            api.next_request();
             backend
-                .playback_account(false)
-                .unwrap_err()
-                .to_string()
-                .contains("does not include native")
-        );
-        assert_eq!(api.next_request().target, "/me");
-        api.assert_untouched();
+                .operation(&SpotifyOperation::PlaylistAdd {
+                    playlist: playlist.into(),
+                    track: track.into(),
+                })
+                .unwrap();
+            assert_eq!(api.next_request().target, "/me");
+            assert_eq!(api.next_request().method, "GET");
+            let added = api.next_request();
+            assert_eq!(added.method, "POST");
+            assert_eq!(added.target, "/playlists/1234567890123456789012/items");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&added.body).unwrap(),
+                serde_json::json!({"uris":[track]})
+            );
+            backend
+                .operation(&SpotifyOperation::PlaylistRemove {
+                    playlist: playlist.into(),
+                    track: track.into(),
+                })
+                .unwrap();
+            assert_eq!(api.next_request().target, "/me");
+            assert_eq!(api.next_request().method, "GET");
+            let removed = api.next_request();
+            assert_eq!(removed.method, "DELETE");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&removed.body).unwrap(),
+                serde_json::json!({"items":[{"uri":track}]})
+            );
+            api.assert_untouched();
+        }
+
+        phase spotify_private_playlist_creation_validates_name_and_readback;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![
+                Reply::status(201)
+                    .body(br#"{"uri":"spotify:playlist:1234567890123456789012"}"#.to_vec()),
+                Reply::status(200).body(br#"{"name":"Evening","public":false}"#.to_vec()),
+                Reply::status(201)
+                    .body(br#"{"uri":"spotify:playlist:1234567890123456789012"}"#.to_vec()),
+                Reply::status(503),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::CreatePlaylist { name: " ".into() })
+                    .is_err()
+            );
+            assert!(api.drain_requests().is_empty());
+            let created = backend
+                .operation(&SpotifyOperation::CreatePlaylist {
+                    name: "Evening".into(),
+                })
+                .unwrap();
+            assert_eq!(created.state["created"], true);
+            let request = api.next_request();
+            assert_eq!(request.method, "POST");
+            assert_eq!(request.target, "/me/playlists");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&request.body).unwrap(),
+                serde_json::json!({"name":"Evening","public":false})
+            );
+            assert_eq!(api.next_request().method, "GET");
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::CreatePlaylist {
+                        name: "Uncertain".into()
+                    })
+                    .is_err()
+            );
+            assert_eq!(api.next_request().method, "POST");
+            assert_eq!(api.next_request().method, "GET");
+            api.assert_untouched();
+        }
+
+        phase spotify_nonowners_cannot_rename_or_edit_saved_playlists;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![
+                Reply::status(200).body(br#"{"id":"me"}"#.to_vec()),
+                Reply::status(200).body(
+                    br#"{"owner":{"id":"other"},"collaborative":true,"items":{"items":[]}}"#.to_vec(),
+                ),
+                Reply::status(200).body(br#"{"id":"me"}"#.to_vec()),
+                Reply::status(200).body(br#"{"owner":{"id":"other"},"collaborative":false}"#.to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            let playlist = "spotify:playlist:1234567890123456789012";
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::RenamePlaylist {
+                        playlist: playlist.into(),
+                        name: "Mine".into()
+                    })
+                    .unwrap_err()
+                    .to_string()
+                    .contains("owner")
+            );
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::PlaylistAdd {
+                        playlist: playlist.into(),
+                        track: "spotify:track:1234567890123456789012".into()
+                    })
+                    .unwrap_err()
+                    .to_string()
+                    .contains("collaborator")
+            );
+            for _ in 0..4 {
+                assert_eq!(api.next_request().method, "GET");
+            }
+            api.assert_untouched();
+        }
     }
 
     #[cfg(feature = "spotify-native")]
@@ -1301,494 +1471,363 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    #[cfg(feature = "spotify-native")]
-    fn spotify_explicit_streaming_profile_free_is_refused_before_audio() {
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(200).body(br#"{"id":"catalogue"}"#.to_vec()),
-            Reply::status(200).body(br#"{"id":"catalogue","product":"free"}"#.to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        seal_test_streaming_grant(&backend);
-        assert!(
-            backend
-                .playback_account(false)
-                .unwrap_err()
-                .to_string()
-                .contains("Premium")
-        );
-        for _ in 0..2 {
-            assert_eq!(api.next_request().target, "/me");
-        }
-        api.assert_untouched();
-        assert_eq!(oauth.refreshes(), 0);
-    }
+    tilo_test_env::scenario! {
+        /// Reading the library: only the collections the grant covers, in bounded pages that are
+        /// whole or refused.
+        fn spotify_library_reads_page_within_bounds_and_granted_collections;
 
-    #[test]
-    #[cfg(feature = "spotify-native")]
-    fn spotify_stable_account_identity_must_match_even_when_usernames_match() {
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(200)
-                .body(br#"{"id":"same","account_id":"first","product":"premium"}"#.to_vec()),
-            Reply::status(200).body(br#"{"id":"same","account_id":"second"}"#.to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        backend
-            .custody
-            .seal_oauth(
-                &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
-                &account_custody::TokenSet {
-                    access_token: "stream-test".into(),
-                    refresh_token: "refresh-test".into(),
-                    expires_in: 3600,
-                    ..Default::default()
-                }
-                .stamp_now(),
-            )
-            .unwrap();
-        assert!(
-            backend
-                .playback_account(false)
-                .unwrap_err()
-                .to_string()
-                .contains("different Spotify accounts")
-        );
-        for _ in 0..2 {
-            assert_eq!(api.next_request().target, "/me");
-        }
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_private_playlist_creation_validates_name_and_readback() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(201)
-                .body(br#"{"uri":"spotify:playlist:1234567890123456789012"}"#.to_vec()),
-            Reply::status(200).body(br#"{"name":"Evening","public":false}"#.to_vec()),
-            Reply::status(201)
-                .body(br#"{"uri":"spotify:playlist:1234567890123456789012"}"#.to_vec()),
-            Reply::status(503),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        assert!(
-            backend
-                .operation(&SpotifyOperation::CreatePlaylist { name: " ".into() })
-                .is_err()
-        );
-        assert!(api.drain_requests().is_empty());
-        let created = backend
-            .operation(&SpotifyOperation::CreatePlaylist {
-                name: "Evening".into(),
-            })
-            .unwrap();
-        assert_eq!(created.state["created"], true);
-        let request = api.next_request();
-        assert_eq!(request.method, "POST");
-        assert_eq!(request.target, "/me/playlists");
-        assert_eq!(
-            serde_json::from_slice::<Value>(&request.body).unwrap(),
-            serde_json::json!({"name":"Evening","public":false})
-        );
-        assert_eq!(api.next_request().method, "GET");
-        assert!(
-            backend
-                .operation(&SpotifyOperation::CreatePlaylist {
-                    name: "Uncertain".into()
-                })
-                .is_err()
-        );
-        assert_eq!(api.next_request().method, "POST");
-        assert_eq!(api.next_request().method, "GET");
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_nonowners_cannot_rename_or_edit_saved_playlists() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(200).body(br#"{"id":"me"}"#.to_vec()),
-            Reply::status(200).body(
-                br#"{"owner":{"id":"other"},"collaborative":true,"items":{"items":[]}}"#.to_vec(),
-            ),
-            Reply::status(200).body(br#"{"id":"me"}"#.to_vec()),
-            Reply::status(200).body(br#"{"owner":{"id":"other"},"collaborative":false}"#.to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        let playlist = "spotify:playlist:1234567890123456789012";
-        assert!(
-            backend
-                .operation(&SpotifyOperation::RenamePlaylist {
-                    playlist: playlist.into(),
-                    name: "Mine".into()
-                })
-                .unwrap_err()
-                .to_string()
-                .contains("owner")
-        );
-        assert!(
-            backend
-                .operation(&SpotifyOperation::PlaylistAdd {
-                    playlist: playlist.into(),
-                    track: "spotify:track:1234567890123456789012".into()
-                })
-                .unwrap_err()
-                .to_string()
-                .contains("collaborator")
-        );
-        for _ in 0..4 {
-            assert_eq!(api.next_request().method, "GET");
-        }
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_read_only_library_only_requests_granted_collections() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        backend
-            .custody
-            .seal_oauth(
-                &AccountId::from(ACCOUNT.to_string()),
-                &account_custody::TokenSet {
-                    access_token: "initial-test".into(),
-                    refresh_token: "refresh-test".into(),
-                    scope: Some("user-read-private user-library-read".into()),
-                    expires_in: 3600,
-                    ..Default::default()
-                }
-                .stamp_now(),
-            )
-            .unwrap();
-        let reply = backend
-            .operation(&SpotifyOperation::LibraryPage {
-                offset: 0,
-                artists_after: None,
-            })
-            .unwrap();
-        assert_eq!(reply.state["has_more"], false);
-        let home: HomeContent = serde_json::from_value(reply.state["home_page"].clone()).unwrap();
-        assert!(home.sections[3].items.is_empty());
-        assert!(api.next_request().target.starts_with("/me/albums?"));
-        assert!(home.sections[2].items.is_empty());
-        assert!(
-            backend
-                .operation(&SpotifyOperation::Save {
-                    uri: "spotify:track:1234567890123456789012".into(),
-                    saved: true,
-                })
-                .unwrap_err()
-                .to_string()
-                .contains("has not granted")
-        );
-        assert!(
-            backend
-                .operation(&SpotifyOperation::Devices)
-                .unwrap_err()
-                .to_string()
-                .contains("has not granted")
-        );
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_library_pages_and_remote_queue_keep_bounded_independent_requests() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let albums: Vec<_> = (0..50).map(|index| serde_json::json!({"album":{"id":format!("{index:022}"),"name":format!("Album {index}")}})).collect();
-        let api = Responder::start(vec![
-            Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"items":albums,"next":"https://attacker.invalid/?token"})).unwrap()),
-            Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
-            Reply::status(200).body(br#"{"artists":{"items":[],"next":null}}"#.to_vec()),
-            Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"currently_playing":null,"queue":vec![serde_json::json!({"name":"Remote episode","type":"episode"});70]})).unwrap()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        assert!(
-            backend
-                .operation(&SpotifyOperation::LibraryPage {
-                    offset: 2000,
-                    artists_after: None
-                })
-                .is_err()
-        );
-        assert!(api.drain_requests().is_empty());
-        let reply = backend
-            .operation(&SpotifyOperation::LibraryPage {
-                offset: 50,
-                artists_after: None,
-            })
-            .unwrap();
-        let home: HomeContent = serde_json::from_value(reply.state["home_page"].clone()).unwrap();
-        assert_eq!(home.sections[1].items.len(), 50);
-        assert_eq!(reply.state["has_more"], true);
-        for _ in 0..2 {
-            assert!(api.next_request().target.contains("offset=50"));
-        }
-        assert!(api.next_request().target.starts_with("/me/following?"));
-        let queue = backend.operation(&SpotifyOperation::Queue).unwrap();
-        assert_eq!(
-            queue.state["remote_queue"]["queue"]
-                .as_array()
-                .unwrap()
-                .len(),
-            50
-        );
-        assert_eq!(queue.state["truncated"], true);
-        let request = api.next_request();
-        assert_eq!(request.target, "/me/player/queue");
-        assert_eq!(request.method, "GET");
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_followed_artists_use_cursor_and_confirm_follow_changes() {
-        use crate::backend::SpotifyOperation;
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let id = "1234567890123456789012";
-        let uri = format!("spotify:artist:{id}");
-        let previous = "0000000000000000000001";
-        let api = Responder::start(vec![
-            Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
-            Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
-            Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"artists":{"items":[{"id":id,"name":"Artist","images":[{"url":"https://example.invalid/art.jpg"}]}],"next":"https://attacker.invalid/","cursors":{"after":id}}})).unwrap()),
-            Reply::status(204), Reply::status(200).body(b"[true]".to_vec()),
-            Reply::status(204), Reply::status(200).body(b"[true]".to_vec()),
-            Reply::status(204), Reply::status(200).body(b"[false]".to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        let silent = Responder::silent();
-        let (rejected, _rejected_root) = fixture(&silent.url(), &oauth);
-        assert!(
-            rejected
-                .operation(&SpotifyOperation::LibraryPage {
-                    offset: 50,
-                    artists_after: Some("bad/identity".into())
-                })
-                .is_err()
-        );
-        silent.assert_untouched();
-        let result = backend
-            .operation(&SpotifyOperation::LibraryPage {
-                offset: 50,
-                artists_after: Some(previous.into()),
-            })
-            .unwrap();
-        let home: HomeContent = serde_json::from_value(result.state["home_page"].clone()).unwrap();
-        assert_eq!(home.sections[3].items[0].id, uri);
-        assert_eq!(home.sections[3].items[0].kind, HomeItemKind::Artist);
-        assert_eq!(result.state["has_more"], true);
-        for _ in 0..2 {
-            assert!(api.next_request().target.contains("offset=50"));
-        }
-        let cursor = api.next_request();
-        assert!(cursor.target.starts_with("/me/following?"));
-        assert!(cursor.target.contains(&format!("after={previous}")));
-        let saved = backend
-            .operation(&SpotifyOperation::Save {
-                uri: uri.clone(),
-                saved: true,
-            })
-            .unwrap();
-        assert_eq!(saved.state["saved"], true);
-        assert_eq!(api.next_request().method, "PUT");
-        assert!(
-            api.next_request()
-                .target
-                .starts_with("/me/library/contains?")
-        );
-        assert!(
-            backend
-                .operation(&SpotifyOperation::Save {
-                    uri: uri.clone(),
-                    saved: false
-                })
-                .is_err(),
-            "an unconfirmed unfollow is never reported as successful"
-        );
-        assert_eq!(api.next_request().method, "DELETE");
-        assert_eq!(api.next_request().method, "GET");
-        assert_eq!(
-            backend
-                .operation(&SpotifyOperation::Save { uri, saved: false })
-                .unwrap()
-                .state["saved"],
-            false
-        );
-        assert_eq!(api.next_request().method, "DELETE");
-        assert_eq!(api.next_request().method, "GET");
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_artist_page_requires_a_provider_follow_status() {
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let id = "1234567890123456789012";
-        let uri = format!("spotify:artist:{id}");
-        let api = Responder::start(vec![
-            Reply::status(200)
-                .body(serde_json::to_vec(&serde_json::json!({"id":id,"name":"Artist"})).unwrap()),
-            Reply::status(200).body(b"[true]".to_vec()),
-            Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
-            Reply::status(200)
-                .body(serde_json::to_vec(&serde_json::json!({"id":id,"name":"Artist"})).unwrap()),
-            Reply::status(200).body(b"[]".to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        assert_eq!(backend.artist(&uri).unwrap().provider_followed, Some(true));
-        assert!(
-            api.next_request()
-                .target
-                .starts_with(&format!("/artists/{id}"))
-        );
-        assert!(
-            api.next_request()
-                .target
-                .starts_with("/me/library/contains?")
-        );
-        assert!(
-            api.next_request()
-                .target
-                .starts_with(&format!("/artists/{id}/albums?"))
-        );
-        assert!(
-            backend
-                .artist(&uri)
-                .unwrap_err()
-                .to_string()
-                .contains("did not confirm")
-        );
-        assert_eq!(api.next_request().method, "GET");
-        assert_eq!(api.next_request().method, "GET");
-        api.assert_untouched();
-    }
-
-    #[test]
-    fn spotify_followed_artist_pages_refuse_missing_stalled_or_malformed_cursors() {
-        use crate::backend::SpotifyOperation;
-        use serde_json::json;
-        use test_http::{Reply, Responder};
-        let id = "1234567890123456789012";
-        for artists in [
-            json!({"items":[],"next":"https://attacker.invalid","cursors":{"after":id}}),
-            json!({"items":[{"id":id,"name":"Artist"}],"next":"https://attacker.invalid"}),
-            json!({"items":[{"id":id,"name":"Artist"}],"next":"https://attacker.invalid","cursors":{"after":id}}),
-            json!({"items":[{"id":"bad/artist","name":"Artist"}],"next":null}),
-        ] {
+        phase spotify_read_only_library_only_requests_granted_collections;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
             let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
             let api = Responder::start(vec![
                 Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            backend
+                .custody
+                .seal_oauth(
+                    &AccountId::from(ACCOUNT.to_string()),
+                    &account_custody::TokenSet {
+                        access_token: "initial-test".into(),
+                        refresh_token: "refresh-test".into(),
+                        scope: Some("user-read-private user-library-read".into()),
+                        expires_in: 3600,
+                        ..Default::default()
+                    }
+                    .stamp_now(),
+                )
+                .unwrap();
+            let reply = backend
+                .operation(&SpotifyOperation::LibraryPage {
+                    offset: 0,
+                    artists_after: None,
+                })
+                .unwrap();
+            assert_eq!(reply.state["has_more"], false);
+            let home: HomeContent = serde_json::from_value(reply.state["home_page"].clone()).unwrap();
+            assert!(home.sections[3].items.is_empty());
+            assert!(api.next_request().target.starts_with("/me/albums?"));
+            assert!(home.sections[2].items.is_empty());
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::Save {
+                        uri: "spotify:track:1234567890123456789012".into(),
+                        saved: true,
+                    })
+                    .unwrap_err()
+                    .to_string()
+                    .contains("has not granted")
+            );
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::Devices)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("has not granted")
+            );
+            api.assert_untouched();
+        }
+
+        phase spotify_library_pages_and_remote_queue_keep_bounded_independent_requests;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let albums: Vec<_> = (0..50).map(|index| serde_json::json!({"album":{"id":format!("{index:022}"),"name":format!("Album {index}")}})).collect();
+            let api = Responder::start(vec![
+                Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"items":albums,"next":"https://attacker.invalid/?token"})).unwrap()),
                 Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
-                Reply::status(200).body(serde_json::to_vec(&json!({"artists":artists})).unwrap()),
+                Reply::status(200).body(br#"{"artists":{"items":[],"next":null}}"#.to_vec()),
+                Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"currently_playing":null,"queue":vec![serde_json::json!({"name":"Remote episode","type":"episode"});70]})).unwrap()),
             ]);
             let (backend, _root) = fixture(&api.url(), &oauth);
             assert!(
                 backend
                     .operation(&SpotifyOperation::LibraryPage {
-                        offset: 50,
-                        artists_after: Some(id.into())
+                        offset: 2000,
+                        artists_after: None
                     })
                     .is_err()
             );
-            for _ in 0..3 {
-                assert_eq!(api.next_request().method, "GET");
+            assert!(api.drain_requests().is_empty());
+            let reply = backend
+                .operation(&SpotifyOperation::LibraryPage {
+                    offset: 50,
+                    artists_after: None,
+                })
+                .unwrap();
+            let home: HomeContent = serde_json::from_value(reply.state["home_page"].clone()).unwrap();
+            assert_eq!(home.sections[1].items.len(), 50);
+            assert_eq!(reply.state["has_more"], true);
+            for _ in 0..2 {
+                assert!(api.next_request().target.contains("offset=50"));
             }
+            assert!(api.next_request().target.starts_with("/me/following?"));
+            let queue = backend.operation(&SpotifyOperation::Queue).unwrap();
+            assert_eq!(
+                queue.state["remote_queue"]["queue"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                50
+            );
+            assert_eq!(queue.state["truncated"], true);
+            let request = api.next_request();
+            assert_eq!(request.target, "/me/player/queue");
+            assert_eq!(request.method, "GET");
+            api.assert_untouched();
+        }
+
+        phase spotify_pages_use_bounded_offsets_and_refuse_incomplete_collections;
+        {
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![
+                Reply::status(200).body(
+                    br#"{"items":[{"name":"first"}],"next":"https://attacker.invalid/token"}"#.to_vec(),
+                ),
+                Reply::status(200).body(br#"{"items":[{"name":"second"}],"next":null}"#.to_vec()),
+                Reply::status(200).body(br#"{"items":null}"#.to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            let entries = backend.pages("me/albums").unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(text(&entries[0], "name"), "first");
+            assert_eq!(text(&entries[1], "name"), "second");
+            assert!(api.next_request().target.contains("offset=0"));
+            assert!(api.next_request().target.contains("offset=50"));
+            assert!(backend.pages("me/albums").is_err());
+            api.next_request();
             api.assert_untouched();
         }
     }
 
-    #[test]
-    fn spotify_refreshes_once_and_rate_limit_blocks_repeat_requests() {
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        oauth.issue_access_token("renewed-test");
-        let api = Responder::start(vec![
-            Reply::status(401),
-            Reply::status(200).body(br#"{"tracks":{"items":[]}}"#.to_vec()),
-            Reply::status(429).header("Retry-After", "300"),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        assert!(backend.search_tracks("test & artist").unwrap().is_empty());
-        let first = api.next_request();
-        assert_eq!(first.header("Authorization"), Some("Bearer initial-test"));
-        assert!(first.target.contains("q=test+%26+artist"));
-        assert_eq!(
-            api.next_request().header("Authorization"),
-            Some("Bearer renewed-test")
-        );
-        assert_eq!(oauth.refreshes(), 1);
-        assert!(
-            backend
-                .search_tracks("limited")
-                .unwrap_err()
-                .to_string()
-                .contains("rate limited")
-        );
-        api.next_request();
-        assert!(
-            backend
-                .search_tracks("repeat")
-                .unwrap_err()
-                .to_string()
-                .contains("rate limited")
-        );
-        assert_eq!(oauth.refreshes(), 1);
-        api.assert_untouched();
+    tilo_test_env::scenario! {
+        /// Followed artists: paged by cursor, a follow confirmed by the provider, a page without
+        /// its follow status refused.
+        fn spotify_followed_artists_page_by_cursor_and_confirm_changes;
+
+        phase spotify_followed_artists_use_cursor_and_confirm_follow_changes;
+        {
+            use crate::backend::SpotifyOperation;
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let id = "1234567890123456789012";
+            let uri = format!("spotify:artist:{id}");
+            let previous = "0000000000000000000001";
+            let api = Responder::start(vec![
+                Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+                Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+                Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"artists":{"items":[{"id":id,"name":"Artist","images":[{"url":"https://example.invalid/art.jpg"}]}],"next":"https://attacker.invalid/","cursors":{"after":id}}})).unwrap()),
+                Reply::status(204), Reply::status(200).body(b"[true]".to_vec()),
+                Reply::status(204), Reply::status(200).body(b"[true]".to_vec()),
+                Reply::status(204), Reply::status(200).body(b"[false]".to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            let silent = Responder::silent();
+            let (rejected, _rejected_root) = fixture(&silent.url(), &oauth);
+            assert!(
+                rejected
+                    .operation(&SpotifyOperation::LibraryPage {
+                        offset: 50,
+                        artists_after: Some("bad/identity".into())
+                    })
+                    .is_err()
+            );
+            silent.assert_untouched();
+            let result = backend
+                .operation(&SpotifyOperation::LibraryPage {
+                    offset: 50,
+                    artists_after: Some(previous.into()),
+                })
+                .unwrap();
+            let home: HomeContent = serde_json::from_value(result.state["home_page"].clone()).unwrap();
+            assert_eq!(home.sections[3].items[0].id, uri);
+            assert_eq!(home.sections[3].items[0].kind, HomeItemKind::Artist);
+            assert_eq!(result.state["has_more"], true);
+            for _ in 0..2 {
+                assert!(api.next_request().target.contains("offset=50"));
+            }
+            let cursor = api.next_request();
+            assert!(cursor.target.starts_with("/me/following?"));
+            assert!(cursor.target.contains(&format!("after={previous}")));
+            let saved = backend
+                .operation(&SpotifyOperation::Save {
+                    uri: uri.clone(),
+                    saved: true,
+                })
+                .unwrap();
+            assert_eq!(saved.state["saved"], true);
+            assert_eq!(api.next_request().method, "PUT");
+            assert!(
+                api.next_request()
+                    .target
+                    .starts_with("/me/library/contains?")
+            );
+            assert!(
+                backend
+                    .operation(&SpotifyOperation::Save {
+                        uri: uri.clone(),
+                        saved: false
+                    })
+                    .is_err(),
+                "an unconfirmed unfollow is never reported as successful"
+            );
+            assert_eq!(api.next_request().method, "DELETE");
+            assert_eq!(api.next_request().method, "GET");
+            assert_eq!(
+                backend
+                    .operation(&SpotifyOperation::Save { uri, saved: false })
+                    .unwrap()
+                    .state["saved"],
+                false
+            );
+            assert_eq!(api.next_request().method, "DELETE");
+            assert_eq!(api.next_request().method, "GET");
+            api.assert_untouched();
+        }
+
+        phase spotify_artist_page_requires_a_provider_follow_status;
+        {
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let id = "1234567890123456789012";
+            let uri = format!("spotify:artist:{id}");
+            let api = Responder::start(vec![
+                Reply::status(200)
+                    .body(serde_json::to_vec(&serde_json::json!({"id":id,"name":"Artist"})).unwrap()),
+                Reply::status(200).body(b"[true]".to_vec()),
+                Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+                Reply::status(200)
+                    .body(serde_json::to_vec(&serde_json::json!({"id":id,"name":"Artist"})).unwrap()),
+                Reply::status(200).body(b"[]".to_vec()),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            assert_eq!(backend.artist(&uri).unwrap().provider_followed, Some(true));
+            assert!(
+                api.next_request()
+                    .target
+                    .starts_with(&format!("/artists/{id}"))
+            );
+            assert!(
+                api.next_request()
+                    .target
+                    .starts_with("/me/library/contains?")
+            );
+            assert!(
+                api.next_request()
+                    .target
+                    .starts_with(&format!("/artists/{id}/albums?"))
+            );
+            assert!(
+                backend
+                    .artist(&uri)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("did not confirm")
+            );
+            assert_eq!(api.next_request().method, "GET");
+            assert_eq!(api.next_request().method, "GET");
+            api.assert_untouched();
+        }
+
+        phase spotify_followed_artist_pages_refuse_missing_stalled_or_malformed_cursors;
+        {
+            use crate::backend::SpotifyOperation;
+            use serde_json::json;
+            use test_http::{Reply, Responder};
+            let id = "1234567890123456789012";
+            for artists in [
+                json!({"items":[],"next":"https://attacker.invalid","cursors":{"after":id}}),
+                json!({"items":[{"id":id,"name":"Artist"}],"next":"https://attacker.invalid"}),
+                json!({"items":[{"id":id,"name":"Artist"}],"next":"https://attacker.invalid","cursors":{"after":id}}),
+                json!({"items":[{"id":"bad/artist","name":"Artist"}],"next":null}),
+            ] {
+                let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+                let api = Responder::start(vec![
+                    Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+                    Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+                    Reply::status(200).body(serde_json::to_vec(&json!({"artists":artists})).unwrap()),
+                ]);
+                let (backend, _root) = fixture(&api.url(), &oauth);
+                assert!(
+                    backend
+                        .operation(&SpotifyOperation::LibraryPage {
+                            offset: 50,
+                            artists_after: Some(id.into())
+                        })
+                        .is_err()
+                );
+                for _ in 0..3 {
+                    assert_eq!(api.next_request().method, "GET");
+                }
+                api.assert_untouched();
+            }
+        }
     }
 
-    #[test]
-    fn spotify_revocation_and_disconnect_never_retry_with_a_dead_grant() {
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![Reply::status(401)]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        oauth.revoke_all_refresh_tokens();
-        assert!(backend.search_tracks("revoked").is_err());
-        api.next_request();
-        assert!(backend.search_tracks("again").is_err());
-        api.assert_untouched();
-        backend.disconnect().unwrap();
-        backend.disconnect().unwrap();
-        assert!(backend.check_connected().is_err());
-        api.assert_untouched();
-    }
+    tilo_test_env::scenario! {
+        /// The grant under the requests: one refresh, a rate limit that holds, and no retry once
+        /// the grant is revoked.
+        fn spotify_grants_refresh_once_and_a_dead_one_is_never_retried;
 
-    #[test]
-    fn spotify_pages_use_bounded_offsets_and_refuse_incomplete_collections() {
-        use test_http::{Reply, Responder};
-        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
-        let api = Responder::start(vec![
-            Reply::status(200).body(
-                br#"{"items":[{"name":"first"}],"next":"https://attacker.invalid/token"}"#.to_vec(),
-            ),
-            Reply::status(200).body(br#"{"items":[{"name":"second"}],"next":null}"#.to_vec()),
-            Reply::status(200).body(br#"{"items":null}"#.to_vec()),
-        ]);
-        let (backend, _root) = fixture(&api.url(), &oauth);
-        let entries = backend.pages("me/albums").unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(text(&entries[0], "name"), "first");
-        assert_eq!(text(&entries[1], "name"), "second");
-        assert!(api.next_request().target.contains("offset=0"));
-        assert!(api.next_request().target.contains("offset=50"));
-        assert!(backend.pages("me/albums").is_err());
-        api.next_request();
-        api.assert_untouched();
+        phase spotify_refreshes_once_and_rate_limit_blocks_repeat_requests;
+        {
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            oauth.issue_access_token("renewed-test");
+            let api = Responder::start(vec![
+                Reply::status(401),
+                Reply::status(200).body(br#"{"tracks":{"items":[]}}"#.to_vec()),
+                Reply::status(429).header("Retry-After", "300"),
+            ]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            assert!(backend.search_tracks("test & artist").unwrap().is_empty());
+            let first = api.next_request();
+            assert_eq!(first.header("Authorization"), Some("Bearer initial-test"));
+            assert!(first.target.contains("q=test+%26+artist"));
+            assert_eq!(
+                api.next_request().header("Authorization"),
+                Some("Bearer renewed-test")
+            );
+            assert_eq!(oauth.refreshes(), 1);
+            assert!(
+                backend
+                    .search_tracks("limited")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("rate limited")
+            );
+            api.next_request();
+            assert!(
+                backend
+                    .search_tracks("repeat")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("rate limited")
+            );
+            assert_eq!(oauth.refreshes(), 1);
+            api.assert_untouched();
+        }
+
+        phase spotify_revocation_and_disconnect_never_retry_with_a_dead_grant;
+        {
+            use test_http::{Reply, Responder};
+            let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+            let api = Responder::start(vec![Reply::status(401)]);
+            let (backend, _root) = fixture(&api.url(), &oauth);
+            oauth.revoke_all_refresh_tokens();
+            assert!(backend.search_tracks("revoked").is_err());
+            api.next_request();
+            assert!(backend.search_tracks("again").is_err());
+            api.assert_untouched();
+            backend.disconnect().unwrap();
+            backend.disconnect().unwrap();
+            assert!(backend.check_connected().is_err());
+            api.assert_untouched();
+        }
     }
 
     #[test]

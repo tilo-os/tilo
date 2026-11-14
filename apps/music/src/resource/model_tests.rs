@@ -33,118 +33,123 @@ fn create(library: &mut Replica<Library>, name: &str) -> String {
         .expect("the new playlist")
 }
 
-/// A playlist is made, filled, ordered, renamed and deleted; what the
-/// library refers to must be in it.
-#[test]
-fn playlists_and_likes_change_through_verbs_and_field_edits() {
-    let mut library = sample();
-    let mix = create(&mut library, "  Road mix ");
-    let state = library.state().unwrap();
-    for track in ["tk_g1", "tk_g2", "tk_a1"] {
-        let add = library
-            .state()
-            .unwrap()
-            .add_to_playlist(&mix, track)
-            .unwrap();
-        edit(&mut library, &add).unwrap();
-    }
-    assert_eq!(
-        library.state().unwrap().playlist(&mix).unwrap().track_ids(),
-        ["tk_g1", "tk_g2", "tk_a1"]
-    );
-    let again = library
-        .state()
-        .unwrap()
-        .add_to_playlist(&mix, "tk_g1")
-        .unwrap();
-    assert!(
-        edit(&mut library, &again).is_err(),
-        "a song is in a playlist once"
-    );
-    edit(&mut library, &Library::move_in_playlist(&mix, "tk_a1", 0)).unwrap();
-    edit(&mut library, &Library::remove_from_playlist(&mix, "tk_g2")).unwrap();
-    edit(
-        &mut library,
-        &Library::playlist_paths(&mix).name.replace("Night mix"),
-    )
-    .unwrap();
-    let playlist = library.state().unwrap().playlist(&mix).cloned().unwrap();
-    assert_eq!(playlist.name, "Night mix");
-    assert_eq!(playlist.track_ids(), ["tk_a1", "tk_g1"]);
+tilo_test_env::scenario! {
+    /// The library record: its verbs and field edits, on one replica and merged from two.
+    fn the_library_changes_through_its_verbs_and_two_replicas_converge;
 
-    edit(&mut library, &Library::like("tk_v2", true)).unwrap();
-    edit(&mut library, &Library::save_album("al_strata", true)).unwrap();
-    edit(&mut library, &Library::follow_artist("ar_kavi", true)).unwrap();
-    let now = library.state().unwrap();
-    assert!(now.is_liked("tk_v2") && now.is_album_saved("al_strata"));
-    assert!(now.is_artist_followed("ar_kavi"));
-    for refused in [
-        Library::like("tk_gone", true),
-        Library::save_album("al_gone", true),
-        Library::follow_artist("ar_gone", true),
-        Library::follow_artist("spotify:artist:1234567890123456789012", true),
-    ] {
-        assert!(edit(&mut library, &refused).is_err(), "{refused:?}");
-    }
-    assert!(
-        edit(
-            &mut library,
-            &Library::paths()
-                .tracks
-                .key("tk_g1")
-                .title
-                .replace("Renamed")
-        )
-        .is_err(),
-        "catalogue content only arrives by importing"
-    );
-
-    library
-        .apply(Library::DELETE_PLAYLIST.with(Id::from_raw(mix.as_str())))
-        .expect("an undoable delete asks nothing");
-    assert!(library.state().unwrap().playlist(&mix).is_none());
-    assert_eq!(
-        state.playlists.len(),
-        library.state().unwrap().playlists.len() + 1
-    );
-}
-
-#[test]
-fn concurrent_edits_converge() {
-    let mut laptop = sample();
-    let mix = create(&mut laptop, "Shared");
-    let mut phone = laptop.fork();
-
-    for (device, tracks) in [
-        (&mut laptop, ["tk_g1", "tk_a1"]),
-        (&mut phone, ["tk_g1", "tk_h1"]),
-    ] {
-        for track in tracks {
-            let add = device
+    phase playlists_and_likes_change_through_verbs_and_field_edits;
+    // A playlist is made, filled, ordered, renamed and deleted; what the
+    // library refers to must be in it.
+    {
+        let mut library = sample();
+        let mix = create(&mut library, "  Road mix ");
+        let state = library.state().unwrap();
+        for track in ["tk_g1", "tk_g2", "tk_a1"] {
+            let add = library
                 .state()
                 .unwrap()
                 .add_to_playlist(&mix, track)
                 .unwrap();
-            edit(device, &add).unwrap();
+            edit(&mut library, &add).unwrap();
         }
-    }
-    edit(&mut laptop, &Library::like("tk_v2", true)).unwrap();
-    edit(
-        &mut phone,
-        &Library::playlist_paths(&mix).name.replace("Shared mix"),
-    )
-    .unwrap();
-    laptop.sync_with(&mut phone).unwrap();
+        assert_eq!(
+            library.state().unwrap().playlist(&mix).unwrap().track_ids(),
+            ["tk_g1", "tk_g2", "tk_a1"]
+        );
+        let again = library
+            .state()
+            .unwrap()
+            .add_to_playlist(&mix, "tk_g1")
+            .unwrap();
+        assert!(
+            edit(&mut library, &again).is_err(),
+            "a song is in a playlist once"
+        );
+        edit(&mut library, &Library::move_in_playlist(&mix, "tk_a1", 0)).unwrap();
+        edit(&mut library, &Library::remove_from_playlist(&mix, "tk_g2")).unwrap();
+        edit(
+            &mut library,
+            &Library::playlist_paths(&mix).name.replace("Night mix"),
+        )
+        .unwrap();
+        let playlist = library.state().unwrap().playlist(&mix).cloned().unwrap();
+        assert_eq!(playlist.name, "Night mix");
+        assert_eq!(playlist.track_ids(), ["tk_a1", "tk_g1"]);
 
-    let merged = laptop.state().unwrap();
-    assert_eq!(merged, phone.state().unwrap());
-    let tracks = merged.playlist(&mix).unwrap().track_ids();
-    assert_eq!(tracks.len(), 3, "{tracks:?}");
-    for track in ["tk_g1", "tk_a1", "tk_h1"] {
-        assert_eq!(tracks.iter().filter(|id| *id == track).count(), 1);
+        edit(&mut library, &Library::like("tk_v2", true)).unwrap();
+        edit(&mut library, &Library::save_album("al_strata", true)).unwrap();
+        edit(&mut library, &Library::follow_artist("ar_kavi", true)).unwrap();
+        let now = library.state().unwrap();
+        assert!(now.is_liked("tk_v2") && now.is_album_saved("al_strata"));
+        assert!(now.is_artist_followed("ar_kavi"));
+        for refused in [
+            Library::like("tk_gone", true),
+            Library::save_album("al_gone", true),
+            Library::follow_artist("ar_gone", true),
+            Library::follow_artist("spotify:artist:1234567890123456789012", true),
+        ] {
+            assert!(edit(&mut library, &refused).is_err(), "{refused:?}");
+        }
+        assert!(
+            edit(
+                &mut library,
+                &Library::paths()
+                    .tracks
+                    .key("tk_g1")
+                    .title
+                    .replace("Renamed")
+            )
+            .is_err(),
+            "catalogue content only arrives by importing"
+        );
+
+        library
+            .apply(Library::DELETE_PLAYLIST.with(Id::from_raw(mix.as_str())))
+            .expect("an undoable delete asks nothing");
+        assert!(library.state().unwrap().playlist(&mix).is_none());
+        assert_eq!(
+            state.playlists.len(),
+            library.state().unwrap().playlists.len() + 1
+        );
     }
-    assert!(merged.is_liked("tk_v2"));
-    assert_eq!(merged.playlist(&mix).unwrap().name, "Shared mix");
+
+    phase concurrent_edits_converge;
+    {
+        let mut laptop = sample();
+        let mix = create(&mut laptop, "Shared");
+        let mut phone = laptop.fork();
+
+        for (device, tracks) in [
+            (&mut laptop, ["tk_g1", "tk_a1"]),
+            (&mut phone, ["tk_g1", "tk_h1"]),
+        ] {
+            for track in tracks {
+                let add = device
+                    .state()
+                    .unwrap()
+                    .add_to_playlist(&mix, track)
+                    .unwrap();
+                edit(device, &add).unwrap();
+            }
+        }
+        edit(&mut laptop, &Library::like("tk_v2", true)).unwrap();
+        edit(
+            &mut phone,
+            &Library::playlist_paths(&mix).name.replace("Shared mix"),
+        )
+        .unwrap();
+        laptop.sync_with(&mut phone).unwrap();
+
+        let merged = laptop.state().unwrap();
+        assert_eq!(merged, phone.state().unwrap());
+        let tracks = merged.playlist(&mix).unwrap().track_ids();
+        assert_eq!(tracks.len(), 3, "{tracks:?}");
+        for track in ["tk_g1", "tk_a1", "tk_h1"] {
+            assert_eq!(tracks.iter().filter(|id| *id == track).count(), 1);
+        }
+        assert!(merged.is_liked("tk_v2"));
+        assert_eq!(merged.playlist(&mix).unwrap().name, "Shared mix");
+    }
 }
 
 #[test]

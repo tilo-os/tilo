@@ -965,162 +965,545 @@ mod tests {
     use ui::tilo_resource::Effect as _;
     use ui::widget::controls::ActionControls as _;
 
-    #[test]
-    fn spotify_status_and_provider_page_titles_are_accessible_without_shared_metadata() {
-        let mut app = Music::without_profile();
-        app.snap_spotify("spotify-home");
-        app.source_error = Some("Reconnect Spotify to grant library access".into());
-        let tree = app.accessibility().unwrap();
-        let page = &tree.children[1];
-        assert!(page.children.iter().any(|node| node.name.as_deref()
-            == Some(app.source_status().as_str())
-            && node.description.as_deref() == app.source_error.as_deref()));
-        assert!(
-            !page
-                .children
-                .iter()
-                .any(|node| node.name.as_deref() == Some("Empty music library")),
-            "remote collections do not announce an empty library"
-        );
-        let id = "spotify:artist:1234567890123456789012";
-        app.artist_pages.insert(
-            id.into(),
-            crate::backend::ArtistPage {
-                id: id.into(),
-                name: "Provider artist".into(),
-                provider_followed: Some(true),
-                ..Default::default()
-            },
-        );
-        app.view = super::super::View::Artist(id.into());
-        assert_eq!(
-            app.accessibility().unwrap().children[1].name.as_deref(),
-            Some("Provider artist")
-        );
-        assert!(
-            app.device_row(&crate::actions::artist_resource_id(id))
-                .is_some()
-        );
-        let album = "spotify:album:1234567890123456789012";
-        app.album_pages.insert(
-            album.into(),
-            crate::backend::AlbumPage {
-                id: album.into(),
-                title: "Provider album".into(),
-                ..Default::default()
-            },
-        );
-        app.view = super::super::View::Album(album.into());
-        assert_eq!(
-            app.accessibility().unwrap().children[1].name.as_deref(),
-            Some("Provider album")
-        );
-        let playlist = "spotify:playlist:1234567890123456789012";
-        app.playlist_pages.insert(
-            playlist.into(),
-            crate::backend::PlaylistPage {
-                id: playlist.into(),
-                title: "Provider playlist".into(),
-                ..Default::default()
-            },
-        );
-        app.view = super::super::View::Playlist(playlist.into());
-        assert_eq!(
-            app.accessibility().unwrap().children[1].name.as_deref(),
-            Some("Provider playlist")
-        );
+    tilo_test_env::scenario! {
+        /// What Spotify answers: named pages, merged library pages, read-only rows, reachable
+        /// resources and jobs that settle once.
+        fn spotify_answers_become_pages_rows_and_settled_jobs;
+
+        phase spotify_status_and_provider_page_titles_are_accessible_without_shared_metadata;
+        {
+            let mut app = Music::without_profile();
+            app.snap_spotify("spotify-home");
+            app.source_error = Some("Reconnect Spotify to grant library access".into());
+            let tree = app.accessibility().unwrap();
+            let page = &tree.children[1];
+            assert!(page.children.iter().any(|node| node.name.as_deref()
+                == Some(app.source_status().as_str())
+                && node.description.as_deref() == app.source_error.as_deref()));
+            assert!(
+                !page
+                    .children
+                    .iter()
+                    .any(|node| node.name.as_deref() == Some("Empty music library")),
+                "remote collections do not announce an empty library"
+            );
+            let id = "spotify:artist:1234567890123456789012";
+            app.artist_pages.insert(
+                id.into(),
+                crate::backend::ArtistPage {
+                    id: id.into(),
+                    name: "Provider artist".into(),
+                    provider_followed: Some(true),
+                    ..Default::default()
+                },
+            );
+            app.view = super::super::View::Artist(id.into());
+            assert_eq!(
+                app.accessibility().unwrap().children[1].name.as_deref(),
+                Some("Provider artist")
+            );
+            assert!(
+                app.device_row(&crate::actions::artist_resource_id(id))
+                    .is_some()
+            );
+            let album = "spotify:album:1234567890123456789012";
+            app.album_pages.insert(
+                album.into(),
+                crate::backend::AlbumPage {
+                    id: album.into(),
+                    title: "Provider album".into(),
+                    ..Default::default()
+                },
+            );
+            app.view = super::super::View::Album(album.into());
+            assert_eq!(
+                app.accessibility().unwrap().children[1].name.as_deref(),
+                Some("Provider album")
+            );
+            let playlist = "spotify:playlist:1234567890123456789012";
+            app.playlist_pages.insert(
+                playlist.into(),
+                crate::backend::PlaylistPage {
+                    id: playlist.into(),
+                    title: "Provider playlist".into(),
+                    ..Default::default()
+                },
+            );
+            app.view = super::super::View::Playlist(playlist.into());
+            assert_eq!(
+                app.accessibility().unwrap().children[1].name.as_deref(),
+                Some("Provider playlist")
+            );
+        }
+
+        phase spotify_library_page_replay_and_bad_page_preserve_visible_state;
+        {
+            let mut app = Music::without_profile();
+            app.snap_spotify("spotify-home");
+            let mut page = app.home.clone().unwrap();
+            page.sections[0]
+                .items
+                .retain(|item| item.id.starts_with("spotify:playlist:"));
+            let state = serde_json::json!({"library_page":50,"has_more":false,"home_page":page});
+            app.merge_spotify_library_page(50, &state).unwrap();
+            app.refresh_spotify_control_flags();
+            app.open_sources_menu();
+            assert!(
+                app.menu_actions.iter().all(|action| !matches!(
+                    action,
+                    super::super::Action::SpotifyEffect(MusicEffect::SpotifyLibraryMore)
+                )),
+                "an exhausted provider page is absent from the source menu"
+            );
+            assert_eq!(
+                app.home.as_ref().unwrap().sections[0].items.len(),
+                3,
+                "repeated IDs are merged once"
+            );
+            assert_eq!(app.spotify_library_offset, 100);
+            assert!(!app.spotify_library_more);
+            assert!(
+                app.merge_spotify_library_page(50, &state).is_err(),
+                "stale offset is refused"
+            );
+            let bad = serde_json::json!({"library_page":100,"has_more":true,"home_page":null});
+            assert!(app.merge_spotify_library_page(100, &bad).is_err());
+            assert_eq!(app.spotify_library_offset, 100);
+            assert_eq!(app.home.as_ref().unwrap().sections[0].items.len(), 3);
+        }
+
+        phase spotify_remote_refresh_publishes_readonly_rows_without_replacing_local_queue;
+        {
+            let mut app = Music::without_profile();
+            app.snap_spotify("spotify-home");
+            app.pb.queue = vec!["local-song".into()];
+            let invocation = tilo_actions::InvocationId::new();
+            app.spotify_jobs.insert(
+                1,
+                PendingJob {
+                    invocation,
+                    started: ui::time::now(),
+                    remote_play: false,
+                    library_page: None,
+                },
+            );
+            app.finish_spotify_operation(1, Ok(SpotifyReply { devices: Vec::new(), state: serde_json::json!({"remote_queue":{"currently_playing":null,"queue":[{"name":"Remote song","artists":[{"name":"Artist"}]}]},"truncated":false}) }));
+            assert_eq!(app.pb.queue, ["local-song"]);
+            assert!(
+                app.home.is_some(),
+                "remote refresh keeps library paging state"
+            );
+            let row = app
+                .device_row("music.spotify-remote:0")
+                .expect("accessible remote snapshot item")
+                .into_resource();
+            assert!(row.label.contains("Remote song"));
+            assert!(
+                row.actions.is_empty(),
+                "remote rows do not offer local queue edits"
+            );
+            let Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+                app.take_effect_result(invocation)
+            else {
+                panic!("the real remote refresh must settle its pending job");
+            };
+            assert_eq!(
+                output.value.as_ref().unwrap()["remote_queue"]["queue"][0]["name"],
+                "Remote song"
+            );
+            MusicEffect::SpotifyQueue
+                .bound()
+                .contract
+                .result
+                .validate(&output)
+                .expect("provider snapshot completion must match its declared result");
+            app.finish_spotify_operation(1, Err("late reply".into()));
+            assert!(app.take_effect_result(invocation).is_none());
+            assert!(
+                app.source_error.is_none(),
+                "duplicate completion is ignored"
+            );
+            assert_eq!(app.spotify_remote_rows().len(), 1);
+        }
+
+        phase spotify_artist_release_beyond_the_published_page_remains_reachable_by_resource;
+        {
+            let mut app = Music::without_profile();
+            let albums: Vec<_> = (0..25)
+                .map(|number| crate::backend::ArtistAlbum {
+                    id: format!("spotify:album:{number:022}"),
+                    title: format!("Release {number}"),
+                    year: 2026,
+                    kind: crate::backend::AlbumKind::Album,
+                    cover_url: String::new(),
+                })
+                .collect();
+            let last = albums.last().unwrap().id.clone();
+            app.artist_pages.insert(
+                "spotify:artist:abcdefghijklmnopqrstuv".into(),
+                crate::backend::ArtistPage {
+                    id: "spotify:artist:abcdefghijklmnopqrstuv".into(),
+                    name: "Artist".into(),
+                    albums,
+                    ..Default::default()
+                },
+            );
+            let address = crate::actions::album_resource_id(&last);
+            assert!(!app.device_rows().iter().any(|row| row.id() == address));
+            assert!(
+                app.device_row(&address).is_some(),
+                "canonical lookup is not capped by the presentation page"
+            );
+            assert!(matches!(
+                app.begin_effect(
+                    tilo_actions::InvocationId::new(),
+                    MusicEffect::Open {
+                        place: crate::actions::Place::Album(last.clone()),
+                    }
+                )
+                .unwrap(),
+                ui::framework::Effected::Done(_)
+            ));
+            assert!(matches!(&app.view, super::super::View::Album(id) if id == &last));
+        }
+
+        phase spotify_jobs_expire_without_accepting_late_success_or_retrying_a_write;
+        {
+            let mut app = Music::without_profile();
+            let invocation = tilo_actions::InvocationId::new();
+            app.spotify_jobs.insert(
+                7,
+                PendingJob {
+                    invocation,
+                    started: ui::time::now()
+                        .checked_sub(ui::time::Duration::from_secs(121))
+                        .expect("expired deadline fixture"),
+                    remote_play: false,
+                    library_page: None,
+                },
+            );
+            app.tick();
+            assert!(app.spotify_jobs.is_empty());
+            assert!(matches!(app.take_effect_result(invocation),
+                Some(tilo_actions::InvocationUpdate::Failed { error, .. })
+                    if error.code == "music.spotify_timeout" && !error.retryable));
+            app.finish_spotify_operation(
+                7,
+                Ok(SpotifyReply {
+                    devices: Vec::new(),
+                    state: serde_json::json!({"snapshot":"late"}),
+                }),
+            );
+            assert!(app.take_effect_result(invocation).is_none());
+        }
     }
 
-    #[test]
-    fn spotify_artist_follow_is_a_host_effect_and_provider_confirmation_only() {
-        use ui::tilo_resource::Effect as _;
-        let mut app = Music::without_profile();
-        let id = "spotify:artist:1234567890123456789012";
-        let page = crate::backend::ArtistPage {
-            id: id.into(),
-            name: "Artist".into(),
-            provider_followed: Some(true),
-            ..Default::default()
-        };
-        app.absorb_artist(&page);
-        app.artist_pages.insert(id.into(), page);
-        let mut doc = automerge::AutoCommit::new();
-        let before = doc.get_heads();
-        let mut library = ui::tilo_resource::Replica::<crate::model::Library>::new();
-        let refused = library
-            .apply(
-                ui::tilo_resource::Invoke::edit(&crate::model::Library::follow_artist(id, true))
-                    .unwrap(),
-            )
-            .unwrap_err();
-        assert!(refused.to_string().contains("provider-authorized"));
-        app.on_toggle_follow(id, &mut ui::widget::Edits::lend(&mut doc));
-        let invocation = app
-            .take_control_invocation()
-            .expect("follow uses the host control channel");
-        assert_eq!(invocation.address.resource, "music.library");
-        let spec = MusicEffect::specs()
-            .into_iter()
-            .find(|spec| spec.id == invocation.address.action)
-            .unwrap();
-        let encoded = spec.build_json(&invocation.arguments).unwrap();
-        assert!(
-            matches!(MusicEffect::from_payload(&encoded.payload).unwrap(), MusicEffect::SpotifyUnsave {uri} if uri == id)
-        );
-        assert!(
-            app.artist_followed(id),
-            "the intent does not claim a provider write succeeded"
-        );
-        let resource = app
-            .device_row(&crate::actions::artist_resource_id(id))
-            .unwrap()
-            .into_resource();
-        assert!(
-            resource
+    tilo_test_env::scenario! {
+        /// What the person does to a Spotify account leaves the app as one host intent; the
+        /// document and the provider's state stay as they were.
+        fn spotify_edits_leave_as_host_intents_and_never_as_document_edits;
+
+        phase spotify_artist_follow_is_a_host_effect_and_provider_confirmation_only;
+        {
+            use ui::tilo_resource::Effect as _;
+            let mut app = Music::without_profile();
+            let id = "spotify:artist:1234567890123456789012";
+            let page = crate::backend::ArtistPage {
+                id: id.into(),
+                name: "Artist".into(),
+                provider_followed: Some(true),
+                ..Default::default()
+            };
+            app.absorb_artist(&page);
+            app.artist_pages.insert(id.into(), page);
+            let mut doc = automerge::AutoCommit::new();
+            let before = doc.get_heads();
+            let mut library = ui::tilo_resource::Replica::<crate::model::Library>::new();
+            let refused = library
+                .apply(
+                    ui::tilo_resource::Invoke::edit(&crate::model::Library::follow_artist(id, true))
+                        .unwrap(),
+                )
+                .unwrap_err();
+            assert!(refused.to_string().contains("provider-authorized"));
+            app.on_toggle_follow(id, &mut ui::widget::Edits::lend(&mut doc));
+            let invocation = app
+                .take_control_invocation()
+                .expect("follow uses the host control channel");
+            assert_eq!(invocation.address.resource, "music.library");
+            let spec = MusicEffect::specs()
+                .into_iter()
+                .find(|spec| spec.id == invocation.address.action)
+                .unwrap();
+            let encoded = spec.build_json(&invocation.arguments).unwrap();
+            assert!(
+                matches!(MusicEffect::from_payload(&encoded.payload).unwrap(), MusicEffect::SpotifyUnsave {uri} if uri == id)
+            );
+            assert!(
+                app.artist_followed(id),
+                "the intent does not claim a provider write succeeded"
+            );
+            let resource = app
+                .device_row(&crate::actions::artist_resource_id(id))
+                .unwrap()
+                .into_resource();
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == MusicEffect::SpotifySave { uri: id.into() }.id())
+            );
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == MusicEffect::SpotifyUnsave { uri: id.into() }.id())
+            );
+            app.spotify_jobs.insert(
+                45,
+                PendingJob {
+                    invocation: tilo_actions::InvocationId::new(),
+                    started: ui::time::now(),
+                    remote_play: false,
+                    library_page: None,
+                },
+            );
+            app.finish_spotify_operation(45, Err("Not confirmed".into()));
+            assert!(app.artist_followed(id));
+            app.spotify_jobs.insert(
+                46,
+                PendingJob {
+                    invocation: tilo_actions::InvocationId::new(),
+                    started: ui::time::now(),
+                    remote_play: false,
+                    library_page: None,
+                },
+            );
+            app.finish_spotify_operation(
+                46,
+                Ok(SpotifyReply {
+                    devices: vec![],
+                    state: serde_json::json!({"uri":id,"saved":false}),
+                }),
+            );
+            assert!(!app.artist_followed(id));
+            assert_eq!(
+                doc.get_heads(),
+                before,
+                "Spotify following is not a collaborative document edit"
+            );
+            assert!(app.take_control_invocation().is_none());
+        }
+
+        phase source_picker_only_emits_sign_in_when_a_choice_is_activated;
+        {
+            use ui::tilo_resource::Effect as _;
+            let mut app = Music::without_profile();
+            let effect = MusicEffect::Sources;
+            app.begin_effect(tilo_actions::InvocationId::new(), effect)
+                .unwrap();
+            assert!(
+                app.take_control_invocation().is_none(),
+                "opening the picker never initiates consent"
+            );
+            assert!(app.source_invocation.is_none());
+            assert_eq!(app.menu_actions.len(), 2);
+            assert!(matches!(
+                app.menu_actions[0],
+                super::super::Action::SpotifyEffect(MusicEffect::ConnectSpotify)
+            ));
+            assert!(
+                app.menu_actions.iter().all(|action| !matches!(
+                    action,
+                    super::super::Action::SpotifyEffect(
+                        MusicEffect::ConnectSpotifyPlayback | MusicEffect::DisconnectSpotify
+                    )
+                )),
+                "an unconnected source offers no playback grant or disconnect operation"
+            );
+            app.queue_spotify_effect_control(&MusicEffect::ConnectSpotify);
+            let intent = app
+                .take_control_invocation()
+                .expect("choice uses the host action door");
+            assert_eq!(intent.address.action, MusicEffect::ConnectSpotify.id());
+            assert!(app.take_control_invocation().is_none());
+            app.spotify_catalogue = true;
+            app.open_sources_menu();
+            assert!(app.menu_actions.iter().any(|action| matches!(
+                action,
+                super::super::Action::SpotifyEffect(MusicEffect::ConnectSpotifyLibrary)
+            )));
+            assert!(
+                app.take_control_invocation().is_none(),
+                "opening editing choice never grants extra permissions"
+            );
+        }
+
+        phase spotify_creation_prompt_cancel_and_reopen_emit_one_host_intent;
+        {
+            use ui::tilo_resource::Effect as _;
+            let mut app = Music::without_profile();
+            app.snap_spotify("spotify-home");
+            let mut doc = automerge::AutoCommit::new();
+            let before = doc.get_heads();
+            app.dispatch(
+                super::super::Action::BeginNewSpotifyPlaylist,
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            app.ensure_name_dialog();
+            assert!(app.name_dialog.is_some(), "shared dialog is used");
+            app.on_close_name_prompt();
+            assert!(
+                app.take_control_invocation().is_none(),
+                "cancel does not create"
+            );
+            app.dispatch(
+                super::super::Action::BeginNewSpotifyPlaylist,
+                &mut ui::widget::Edits::lend(&mut doc),
+            );
+            app.name_input = "Evening".into();
+            app.ensure_name_dialog();
+            app.submit_name_prompt(&mut ui::widget::Edits::lend(&mut doc));
+            let invocation = app
+                .take_control_invocation()
+                .expect("host-admitted creation intent");
+            let spec = MusicEffect::specs()
+                .into_iter()
+                .find(|spec| spec.id == invocation.address.action)
+                .unwrap();
+            let encoded = spec.build_json(&invocation.arguments).unwrap();
+            assert!(
+                matches!(MusicEffect::from_payload(&encoded.payload).unwrap(), MusicEffect::SpotifyCreatePlaylist { name } if name == "Evening")
+            );
+            assert!(app.name_prompt.is_none());
+            assert!(app.take_control_invocation().is_none());
+            assert_eq!(doc.get_heads(), before);
+        }
+
+        phase spotify_playlist_picker_emits_provider_edit_without_document_edits;
+        {
+            use ui::tilo_resource::Effect as _;
+            let mut app = Music::without_profile();
+            app.snap_spotify("spotify-home");
+            let track = "spotify:track:2234567890123456789012";
+            let playlist = "spotify:playlist:1234567890123456789012";
+            app.open_add_to_playlist_menu(track);
+            let action = app.menu_actions.iter().find(|action| matches!(action,
+                super::super::Action::SpotifyEffect(MusicEffect::SpotifyPlaylistAdd { playlist: target, track: song })
+                    if target == playlist && song == track
+            )).expect("provider playlist is selectable").clone();
+            let mut doc = automerge::AutoCommit::new();
+            let before = doc.get_heads();
+            app.dispatch(action, &mut ui::widget::Edits::lend(&mut doc));
+            let invocation = app.take_control_invocation().expect("host-bound edit");
+            assert_eq!(invocation.address.resource, "music.library");
+            let spec = MusicEffect::specs()
+                .into_iter()
+                .find(|spec| spec.id == invocation.address.action)
+                .expect("root publishes effect");
+            let encoded = spec
+                .build_json(&invocation.arguments)
+                .expect("validated arguments");
+            let effect = MusicEffect::from_payload(&encoded.payload).expect("typed effect");
+            assert!(
+                matches!(effect, MusicEffect::SpotifyPlaylistAdd { playlist: target, track: song }
+                if target == playlist && song == track)
+            );
+            assert_eq!(doc.get_heads(), before);
+        }
+
+        phase spotify_playlist_rename_dialog_emits_provider_name_without_local_mutation;
+        {
+            use ui::tilo_resource::Effect as _;
+            let mut app = Music::without_profile();
+            app.snap_spotify("spotify-home");
+            let playlist = "spotify:playlist:1234567890123456789012";
+            app.open_spotify_playlist_menu(playlist);
+            let action = app
+                .menu_actions
+                .iter()
+                .find(|action| {
+                    matches!(action,
+                        super::super::Action::BeginRenamePlaylist(target) if target == playlist
+                    )
+                })
+                .expect("rename is visible")
+                .clone();
+            let mut doc = automerge::AutoCommit::new();
+            let before = doc.get_heads();
+            app.dispatch(action, &mut ui::widget::Edits::lend(&mut doc));
+            assert_eq!(app.name_input, "After hours");
+            app.name_input = "  Evening music  ".into();
+            app.on_commit_rename(playlist, &mut ui::widget::Edits::lend(&mut doc));
+            let invocation = app.take_control_invocation().expect("host-bound rename");
+            assert_eq!(invocation.address.resource, "music.library");
+            let spec = MusicEffect::specs()
+                .into_iter()
+                .find(|spec| spec.id == invocation.address.action)
+                .expect("root publishes effect");
+            let encoded = spec
+                .build_json(&invocation.arguments)
+                .expect("validated arguments");
+            let effect = MusicEffect::from_payload(&encoded.payload).expect("typed effect");
+            assert!(
+                matches!(effect, MusicEffect::SpotifyRenamePlaylist { playlist: target, name }
+                if target == playlist && name == "Evening music")
+            );
+            assert!(app.name_prompt.is_none());
+            assert_eq!(doc.get_heads(), before);
+        }
+
+        phase spotify_track_menu_queues_the_published_host_action_without_document_edits;
+        {
+            let mut app = Music::without_profile();
+            let track = "spotify:track:1234567890123456789012";
+            app.absorb_tracks(&[crate::backend::TrackHit {
+                video_id: track.into(),
+                title: "A song".into(),
+                artist: "An artist".into(),
+                artist_id: None,
+                album: None,
+                album_id: None,
+                duration_s: 180,
+                cover_url: String::new(),
+            }]);
+            app.open_track_menu(track.into(), None, None);
+            let action = app
+                .menu_actions
+                .iter()
+                .find(|action| {
+                    matches!(
+                        action,
+                        super::super::Action::SpotifyLibrary { save: true, .. }
+                    )
+                })
+                .expect("Spotify save is visible")
+                .clone();
+            let mut doc = automerge::AutoCommit::new();
+            let before = doc.get_heads();
+            app.dispatch(action, &mut ui::widget::Edits::lend(&mut doc));
+            let invocation = app.take_control_invocation().expect("host-bound control");
+            assert_eq!(
+                invocation.address.resource,
+                crate::actions::track_resource_id(track)
+            );
+            let resource = app
+                .publish_resource(&invocation.address.resource)
+                .expect("canonical track");
+            let action = resource
                 .actions
                 .iter()
-                .any(|action| action.id == MusicEffect::SpotifySave { uri: id.into() }.id())
-        );
-        assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == MusicEffect::SpotifyUnsave { uri: id.into() }.id())
-        );
-        app.spotify_jobs.insert(
-            45,
-            PendingJob {
-                invocation: tilo_actions::InvocationId::new(),
-                started: ui::time::now(),
-                remote_play: false,
-                library_page: None,
-            },
-        );
-        app.finish_spotify_operation(45, Err("Not confirmed".into()));
-        assert!(app.artist_followed(id));
-        app.spotify_jobs.insert(
-            46,
-            PendingJob {
-                invocation: tilo_actions::InvocationId::new(),
-                started: ui::time::now(),
-                remote_play: false,
-                library_page: None,
-            },
-        );
-        app.finish_spotify_operation(
-            46,
-            Ok(SpotifyReply {
-                devices: vec![],
-                state: serde_json::json!({"uri":id,"saved":false}),
-            }),
-        );
-        assert!(!app.artist_followed(id));
-        assert_eq!(
-            doc.get_heads(),
-            before,
-            "Spotify following is not a collaborative document edit"
-        );
-        assert!(app.take_control_invocation().is_none());
+                .find(|action| action.id == invocation.address.action)
+                .expect("published action");
+            let encoded = action
+                .build_json(&invocation.arguments)
+                .expect("valid bound arguments");
+            let effect = <MusicEffect as ui::tilo_resource::Effect>::from_payload(&encoded.payload)
+                .expect("Spotify effect");
+            assert!(matches!(effect, MusicEffect::SpotifySave { uri } if uri == track));
+            assert_eq!(doc.get_heads(), before);
+            assert!(app.take_control_invocation().is_none());
+        }
     }
 
     #[test]
@@ -1173,50 +1556,6 @@ mod tests {
     }
 
     #[test]
-    fn source_picker_only_emits_sign_in_when_a_choice_is_activated() {
-        use ui::tilo_resource::Effect as _;
-        let mut app = Music::without_profile();
-        let effect = MusicEffect::Sources;
-        app.begin_effect(tilo_actions::InvocationId::new(), effect)
-            .unwrap();
-        assert!(
-            app.take_control_invocation().is_none(),
-            "opening the picker never initiates consent"
-        );
-        assert!(app.source_invocation.is_none());
-        assert_eq!(app.menu_actions.len(), 2);
-        assert!(matches!(
-            app.menu_actions[0],
-            super::super::Action::SpotifyEffect(MusicEffect::ConnectSpotify)
-        ));
-        assert!(
-            app.menu_actions.iter().all(|action| !matches!(
-                action,
-                super::super::Action::SpotifyEffect(
-                    MusicEffect::ConnectSpotifyPlayback | MusicEffect::DisconnectSpotify
-                )
-            )),
-            "an unconnected source offers no playback grant or disconnect operation"
-        );
-        app.queue_spotify_effect_control(&MusicEffect::ConnectSpotify);
-        let intent = app
-            .take_control_invocation()
-            .expect("choice uses the host action door");
-        assert_eq!(intent.address.action, MusicEffect::ConnectSpotify.id());
-        assert!(app.take_control_invocation().is_none());
-        app.spotify_catalogue = true;
-        app.open_sources_menu();
-        assert!(app.menu_actions.iter().any(|action| matches!(
-            action,
-            super::super::Action::SpotifyEffect(MusicEffect::ConnectSpotifyLibrary)
-        )));
-        assert!(
-            app.take_control_invocation().is_none(),
-            "opening editing choice never grants extra permissions"
-        );
-    }
-
-    #[test]
     fn source_picker_labels_fit_a_narrow_window_at_double_text_size() {
         let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
@@ -1240,137 +1579,6 @@ mod tests {
         }
         assert!(app.source_invocation.is_none());
         assert!(app.spotify_jobs.is_empty());
-    }
-
-    #[test]
-    fn spotify_creation_prompt_cancel_and_reopen_emit_one_host_intent() {
-        use ui::tilo_resource::Effect as _;
-        let mut app = Music::without_profile();
-        app.snap_spotify("spotify-home");
-        let mut doc = automerge::AutoCommit::new();
-        let before = doc.get_heads();
-        app.dispatch(
-            super::super::Action::BeginNewSpotifyPlaylist,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.ensure_name_dialog();
-        assert!(app.name_dialog.is_some(), "shared dialog is used");
-        app.on_close_name_prompt();
-        assert!(
-            app.take_control_invocation().is_none(),
-            "cancel does not create"
-        );
-        app.dispatch(
-            super::super::Action::BeginNewSpotifyPlaylist,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.name_input = "Evening".into();
-        app.ensure_name_dialog();
-        app.submit_name_prompt(&mut ui::widget::Edits::lend(&mut doc));
-        let invocation = app
-            .take_control_invocation()
-            .expect("host-admitted creation intent");
-        let spec = MusicEffect::specs()
-            .into_iter()
-            .find(|spec| spec.id == invocation.address.action)
-            .unwrap();
-        let encoded = spec.build_json(&invocation.arguments).unwrap();
-        assert!(
-            matches!(MusicEffect::from_payload(&encoded.payload).unwrap(), MusicEffect::SpotifyCreatePlaylist { name } if name == "Evening")
-        );
-        assert!(app.name_prompt.is_none());
-        assert!(app.take_control_invocation().is_none());
-        assert_eq!(doc.get_heads(), before);
-    }
-
-    #[test]
-    fn spotify_library_page_replay_and_bad_page_preserve_visible_state() {
-        let mut app = Music::without_profile();
-        app.snap_spotify("spotify-home");
-        let mut page = app.home.clone().unwrap();
-        page.sections[0]
-            .items
-            .retain(|item| item.id.starts_with("spotify:playlist:"));
-        let state = serde_json::json!({"library_page":50,"has_more":false,"home_page":page});
-        app.merge_spotify_library_page(50, &state).unwrap();
-        app.refresh_spotify_control_flags();
-        app.open_sources_menu();
-        assert!(
-            app.menu_actions.iter().all(|action| !matches!(
-                action,
-                super::super::Action::SpotifyEffect(MusicEffect::SpotifyLibraryMore)
-            )),
-            "an exhausted provider page is absent from the source menu"
-        );
-        assert_eq!(
-            app.home.as_ref().unwrap().sections[0].items.len(),
-            3,
-            "repeated IDs are merged once"
-        );
-        assert_eq!(app.spotify_library_offset, 100);
-        assert!(!app.spotify_library_more);
-        assert!(
-            app.merge_spotify_library_page(50, &state).is_err(),
-            "stale offset is refused"
-        );
-        let bad = serde_json::json!({"library_page":100,"has_more":true,"home_page":null});
-        assert!(app.merge_spotify_library_page(100, &bad).is_err());
-        assert_eq!(app.spotify_library_offset, 100);
-        assert_eq!(app.home.as_ref().unwrap().sections[0].items.len(), 3);
-    }
-
-    #[test]
-    fn spotify_remote_refresh_publishes_readonly_rows_without_replacing_local_queue() {
-        let mut app = Music::without_profile();
-        app.snap_spotify("spotify-home");
-        app.pb.queue = vec!["local-song".into()];
-        let invocation = tilo_actions::InvocationId::new();
-        app.spotify_jobs.insert(
-            1,
-            PendingJob {
-                invocation,
-                started: ui::time::now(),
-                remote_play: false,
-                library_page: None,
-            },
-        );
-        app.finish_spotify_operation(1, Ok(SpotifyReply { devices: Vec::new(), state: serde_json::json!({"remote_queue":{"currently_playing":null,"queue":[{"name":"Remote song","artists":[{"name":"Artist"}]}]},"truncated":false}) }));
-        assert_eq!(app.pb.queue, ["local-song"]);
-        assert!(
-            app.home.is_some(),
-            "remote refresh keeps library paging state"
-        );
-        let row = app
-            .device_row("music.spotify-remote:0")
-            .expect("accessible remote snapshot item")
-            .into_resource();
-        assert!(row.label.contains("Remote song"));
-        assert!(
-            row.actions.is_empty(),
-            "remote rows do not offer local queue edits"
-        );
-        let Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
-            app.take_effect_result(invocation)
-        else {
-            panic!("the real remote refresh must settle its pending job");
-        };
-        assert_eq!(
-            output.value.as_ref().unwrap()["remote_queue"]["queue"][0]["name"],
-            "Remote song"
-        );
-        MusicEffect::SpotifyQueue
-            .bound()
-            .contract
-            .result
-            .validate(&output)
-            .expect("provider snapshot completion must match its declared result");
-        app.finish_spotify_operation(1, Err("late reply".into()));
-        assert!(app.take_effect_result(invocation).is_none());
-        assert!(
-            app.source_error.is_none(),
-            "duplicate completion is ignored"
-        );
-        assert_eq!(app.spotify_remote_rows().len(), 1);
     }
 
     #[test]
@@ -1416,77 +1624,6 @@ mod tests {
     }
 
     #[test]
-    fn spotify_artist_release_beyond_the_published_page_remains_reachable_by_resource() {
-        let mut app = Music::without_profile();
-        let albums: Vec<_> = (0..25)
-            .map(|number| crate::backend::ArtistAlbum {
-                id: format!("spotify:album:{number:022}"),
-                title: format!("Release {number}"),
-                year: 2026,
-                kind: crate::backend::AlbumKind::Album,
-                cover_url: String::new(),
-            })
-            .collect();
-        let last = albums.last().unwrap().id.clone();
-        app.artist_pages.insert(
-            "spotify:artist:abcdefghijklmnopqrstuv".into(),
-            crate::backend::ArtistPage {
-                id: "spotify:artist:abcdefghijklmnopqrstuv".into(),
-                name: "Artist".into(),
-                albums,
-                ..Default::default()
-            },
-        );
-        let address = crate::actions::album_resource_id(&last);
-        assert!(!app.device_rows().iter().any(|row| row.id() == address));
-        assert!(
-            app.device_row(&address).is_some(),
-            "canonical lookup is not capped by the presentation page"
-        );
-        assert!(matches!(
-            app.begin_effect(
-                tilo_actions::InvocationId::new(),
-                MusicEffect::Open {
-                    place: crate::actions::Place::Album(last.clone()),
-                }
-            )
-            .unwrap(),
-            ui::framework::Effected::Done(_)
-        ));
-        assert!(matches!(&app.view, super::super::View::Album(id) if id == &last));
-    }
-
-    #[test]
-    fn spotify_jobs_expire_without_accepting_late_success_or_retrying_a_write() {
-        let mut app = Music::without_profile();
-        let invocation = tilo_actions::InvocationId::new();
-        app.spotify_jobs.insert(
-            7,
-            PendingJob {
-                invocation,
-                started: ui::time::now()
-                    .checked_sub(ui::time::Duration::from_secs(121))
-                    .expect("expired deadline fixture"),
-                remote_play: false,
-                library_page: None,
-            },
-        );
-        app.tick();
-        assert!(app.spotify_jobs.is_empty());
-        assert!(matches!(app.take_effect_result(invocation),
-            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
-                if error.code == "music.spotify_timeout" && !error.retryable));
-        app.finish_spotify_operation(
-            7,
-            Ok(SpotifyReply {
-                devices: Vec::new(),
-                state: serde_json::json!({"snapshot":"late"}),
-            }),
-        );
-        assert!(app.take_effect_result(invocation).is_none());
-    }
-
-    #[test]
     fn spotify_home_playlist_has_a_painted_hit_and_opens_the_provider_collection() {
         let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
@@ -1517,130 +1654,5 @@ mod tests {
             matches!(&app.view, super::super::View::Playlist(id) if id == "spotify:collection:liked")
         );
         assert!(doc.get_heads().is_empty());
-    }
-
-    #[test]
-    fn spotify_playlist_picker_emits_provider_edit_without_document_edits() {
-        use ui::tilo_resource::Effect as _;
-        let mut app = Music::without_profile();
-        app.snap_spotify("spotify-home");
-        let track = "spotify:track:2234567890123456789012";
-        let playlist = "spotify:playlist:1234567890123456789012";
-        app.open_add_to_playlist_menu(track);
-        let action = app.menu_actions.iter().find(|action| matches!(action,
-            super::super::Action::SpotifyEffect(MusicEffect::SpotifyPlaylistAdd { playlist: target, track: song })
-                if target == playlist && song == track
-        )).expect("provider playlist is selectable").clone();
-        let mut doc = automerge::AutoCommit::new();
-        let before = doc.get_heads();
-        app.dispatch(action, &mut ui::widget::Edits::lend(&mut doc));
-        let invocation = app.take_control_invocation().expect("host-bound edit");
-        assert_eq!(invocation.address.resource, "music.library");
-        let spec = MusicEffect::specs()
-            .into_iter()
-            .find(|spec| spec.id == invocation.address.action)
-            .expect("root publishes effect");
-        let encoded = spec
-            .build_json(&invocation.arguments)
-            .expect("validated arguments");
-        let effect = MusicEffect::from_payload(&encoded.payload).expect("typed effect");
-        assert!(
-            matches!(effect, MusicEffect::SpotifyPlaylistAdd { playlist: target, track: song }
-            if target == playlist && song == track)
-        );
-        assert_eq!(doc.get_heads(), before);
-    }
-
-    #[test]
-    fn spotify_playlist_rename_dialog_emits_provider_name_without_local_mutation() {
-        use ui::tilo_resource::Effect as _;
-        let mut app = Music::without_profile();
-        app.snap_spotify("spotify-home");
-        let playlist = "spotify:playlist:1234567890123456789012";
-        app.open_spotify_playlist_menu(playlist);
-        let action = app
-            .menu_actions
-            .iter()
-            .find(|action| {
-                matches!(action,
-                    super::super::Action::BeginRenamePlaylist(target) if target == playlist
-                )
-            })
-            .expect("rename is visible")
-            .clone();
-        let mut doc = automerge::AutoCommit::new();
-        let before = doc.get_heads();
-        app.dispatch(action, &mut ui::widget::Edits::lend(&mut doc));
-        assert_eq!(app.name_input, "After hours");
-        app.name_input = "  Evening music  ".into();
-        app.on_commit_rename(playlist, &mut ui::widget::Edits::lend(&mut doc));
-        let invocation = app.take_control_invocation().expect("host-bound rename");
-        assert_eq!(invocation.address.resource, "music.library");
-        let spec = MusicEffect::specs()
-            .into_iter()
-            .find(|spec| spec.id == invocation.address.action)
-            .expect("root publishes effect");
-        let encoded = spec
-            .build_json(&invocation.arguments)
-            .expect("validated arguments");
-        let effect = MusicEffect::from_payload(&encoded.payload).expect("typed effect");
-        assert!(
-            matches!(effect, MusicEffect::SpotifyRenamePlaylist { playlist: target, name }
-            if target == playlist && name == "Evening music")
-        );
-        assert!(app.name_prompt.is_none());
-        assert_eq!(doc.get_heads(), before);
-    }
-
-    #[test]
-    fn spotify_track_menu_queues_the_published_host_action_without_document_edits() {
-        let mut app = Music::without_profile();
-        let track = "spotify:track:1234567890123456789012";
-        app.absorb_tracks(&[crate::backend::TrackHit {
-            video_id: track.into(),
-            title: "A song".into(),
-            artist: "An artist".into(),
-            artist_id: None,
-            album: None,
-            album_id: None,
-            duration_s: 180,
-            cover_url: String::new(),
-        }]);
-        app.open_track_menu(track.into(), None, None);
-        let action = app
-            .menu_actions
-            .iter()
-            .find(|action| {
-                matches!(
-                    action,
-                    super::super::Action::SpotifyLibrary { save: true, .. }
-                )
-            })
-            .expect("Spotify save is visible")
-            .clone();
-        let mut doc = automerge::AutoCommit::new();
-        let before = doc.get_heads();
-        app.dispatch(action, &mut ui::widget::Edits::lend(&mut doc));
-        let invocation = app.take_control_invocation().expect("host-bound control");
-        assert_eq!(
-            invocation.address.resource,
-            crate::actions::track_resource_id(track)
-        );
-        let resource = app
-            .publish_resource(&invocation.address.resource)
-            .expect("canonical track");
-        let action = resource
-            .actions
-            .iter()
-            .find(|action| action.id == invocation.address.action)
-            .expect("published action");
-        let encoded = action
-            .build_json(&invocation.arguments)
-            .expect("valid bound arguments");
-        let effect = <MusicEffect as ui::tilo_resource::Effect>::from_payload(&encoded.payload)
-            .expect("Spotify effect");
-        assert!(matches!(effect, MusicEffect::SpotifySave { uri } if uri == track));
-        assert_eq!(doc.get_heads(), before);
-        assert!(app.take_control_invocation().is_none());
     }
 }

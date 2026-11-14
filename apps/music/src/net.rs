@@ -18,27 +18,33 @@ pub fn connection_is_stable() -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn unknown_status_withholds_speculative_prefetch() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_MUSIC_METERED");
-        env.set(
-            "DBUS_SESSION_BUS_ADDRESS",
-            "unix:path=/nonexistent/tilo-network-test.sock",
-        );
-        assert_eq!(tilo_net::status::current().metered, None);
-        assert!(is_metered());
-        assert!(!connection_is_stable());
-    }
+    tilo_test_env::scenario! {
+        /// Whether speculative downloads wait: an unknown connection counts as metered, and the
+        /// override decides.
+        fn speculative_prefetch_waits_unless_the_connection_is_known_unmetered;
 
-    #[test]
-    fn env_override_forces_metered_state() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_MUSIC_METERED", "1");
-        assert!(is_metered());
-        assert!(!connection_is_stable());
-        env.set("TILO_MUSIC_METERED", "0");
-        assert!(!is_metered());
-        assert!(connection_is_stable());
+        phase unknown_status_withholds_speculative_prefetch;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("TILO_MUSIC_METERED");
+            env.set(
+                "DBUS_SESSION_BUS_ADDRESS",
+                "unix:path=/nonexistent/tilo-network-test.sock",
+            );
+            assert_eq!(tilo_net::status::current().metered, None);
+            assert!(is_metered());
+            assert!(!connection_is_stable());
+        }
+
+        phase env_override_forces_metered_state;
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_MUSIC_METERED", "1");
+            assert!(is_metered());
+            assert!(!connection_is_stable());
+            env.set("TILO_MUSIC_METERED", "0");
+            assert!(!is_metered());
+            assert!(connection_is_stable());
+        }
     }
 }
