@@ -1584,7 +1584,8 @@ impl Session {
             desktops: crate::shared_desktop::SharedDesktops::new(
                 std::sync::Arc::clone(&notes),
                 options.wake.clone(),
-            ),
+            )
+            .hosting(crate::apps::runs_on_its_device),
             notes,
             membership_fed: std::cell::RefCell::new(None),
             landings,

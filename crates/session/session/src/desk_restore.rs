@@ -425,4 +425,89 @@ mod tests {
         let asked: Vec<u64> = restore.waiting.iter().map(|saved| saved.tab).collect();
         assert_eq!(asked, [6]);
     }
+
+    /// A window whose app says it runs only on the device that opened it (a Browser's page lives
+    /// in its engine there) reaches another desk as that device's window. Nothing is asked to
+    /// open it here, so its tab never says an app could not open. A window that shows a record,
+    /// written beside it, is asked for as before.
+    #[test]
+    fn a_window_bound_to_the_device_that_opened_it_is_not_asked_for_on_another() {
+        use tilo_desktop_model::shared_record::device;
+
+        const NOTES: u64 = 4001;
+        const BROWSER: u64 = 4002;
+        let laptop = "ab".repeat(32);
+        let foreign = |app: &str, surface_id| TileContent::Foreign {
+            app_id: app.into(),
+            surface_id,
+        };
+        // The laptop's desk, with both windows live, as its session writes it into the
+        // workspace's layout.
+        let opened = desk(vec![
+            window(NOTES, foreign("so.tilo.notes", 1)),
+            window(BROWSER, foreign("so.tilo.browser", 2)),
+        ]);
+        let room = opened.workspaces[0].id();
+        let published = device::published(
+            opened.workspaces[0].clone(),
+            &device::Host {
+                device: &laptop,
+                name: "Laptop",
+                runs_here: &|app| app == "so.tilo.browser",
+            },
+            &|_| true,
+        );
+        let mut layout = automerge::AutoCommit::new();
+        device::write(
+            &mut layout,
+            room,
+            &published,
+            &device::Writer {
+                person: Some("ada"),
+                mine: &|_| true,
+                retained: &|_| false,
+                carried: device::Writer::NOTHING_CARRIED,
+                records: device::Writer::NOTHING_NOTED,
+            },
+        )
+        .unwrap();
+        layout.commit();
+
+        // Another device of the workspace lays that layout into its own desk.
+        let mut before = desk(Vec::new());
+        before.workspaces[0].strips.clear();
+        let mut after = before.clone();
+        assert!(device::fold(
+            &layout,
+            &mut after.workspaces[0],
+            &"cd".repeat(32),
+            &device::Kept::NOTHING,
+        ));
+        let mut restore = Restore::default();
+        restore.arrived(&before, &after);
+        let asked: Vec<(u64, &str)> = restore
+            .waiting
+            .iter()
+            .map(|saved| (saved.tab, saved.app.as_str()))
+            .collect();
+        assert_eq!(
+            asked,
+            [(NOTES, "so.tilo.notes")],
+            "only the window that shows a record opens here"
+        );
+        let browser = after.workspaces[0]
+            .tabs()
+            .find(|tab| tab.id == BROWSER)
+            .expect("the desk lists the other device's window");
+        assert_eq!(
+            browser.tile,
+            TileContent::HostedWindow {
+                app_id: "so.tilo.browser".into(),
+                label: "Notes".into(),
+                host: laptop,
+                host_label: "Laptop".into(),
+            },
+            "as the window that runs on the device that opened it"
+        );
+    }
 }

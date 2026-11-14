@@ -2056,21 +2056,31 @@ pub(crate) fn launch_of(app: &str) -> Option<Launch> {
 
 /// The package id `app` is installed under: the id itself, or the package whose short name it is.
 fn installed_package(app: &str) -> Option<String> {
+    installed(app).map(|package| package.app_id.to_string())
+}
+
+/// The package `app` is installed as: the one under that id, or the one whose short name it is.
+fn installed(app: &str) -> Option<app_catalogue::apps::InstalledApp> {
     if let Ok(Some(installed)) = app_catalogue::apps::read_one_from_env(app) {
-        return Some(installed.app_id.to_string());
+        return Some(installed);
     }
     if app.contains('.') {
         return None;
     }
     let installed = app_catalogue::apps::read_from_env().ok()?;
-    installed
-        .into_iter()
-        .find(|package| {
-            tilo_app_launch::package_identities(&package.app_id)
-                .iter()
-                .any(|identity| identity.eq_ignore_ascii_case(app))
-        })
-        .map(|package| package.app_id.to_string())
+    installed.into_iter().find(|package| {
+        tilo_app_launch::package_identities(&package.app_id)
+            .iter()
+            .any(|identity| identity.eq_ignore_ascii_case(app))
+    })
+}
+
+/// Whether a window of `app` runs only on the device that opened it, as the app's installed
+/// package says of its windows (`[entrypoint] window = "device"`): what it shows lives in its
+/// process here, so the workspace's other devices hold it as this device's window and open no
+/// instance of the app for it. An app this machine holds no package of says nothing.
+pub(crate) fn runs_on_its_device(app: &str) -> bool {
+    installed(app).is_some_and(|package| package.manifest.window_runs_on_its_device())
 }
 
 /// Why an action an app publishes cannot be run here: the action host an app's resources arrive on

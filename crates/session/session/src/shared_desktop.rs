@@ -185,6 +185,9 @@ struct Save {
     own: u64,
     notes: Vec<(u64, String)>,
     sealed: Sealing,
+    /// Whether a window of an app runs only on the device that opened it, as the app says
+    /// ([`SharedDesktops::hosting`]).
+    runs_here: Option<fn(&str) -> bool>,
 }
 
 impl Save {
@@ -208,6 +211,7 @@ impl Save {
             own,
             notes,
             sealed,
+            runs_here,
         } = self;
         let here = windows_of(&workspace);
         let base = base_of(room, kept, reached);
@@ -231,10 +235,12 @@ impl Save {
                 &automerge::ActorId::from(engine.identity().device_cert.device_public_key.to_vec()),
             ),
         ));
+        let here = hex::encode(engine.identity().device_cert.device_public_key);
+        let name = &engine.identity().device_cert.device_label;
+        let laid_out = hosted_here(laid_out, (&here, name), local, runs_here);
         // A window that runs on another device is that device's to add to the record, whoever
         // minted the tab it stands in here: the tab this desk pictures a shared window in, beside
         // its own view of that window, is this desk's alone.
-        let here = hex::encode(engine.identity().device_cert.device_public_key);
         let elsewhere: BTreeSet<u64> = laid_out
             .tabs()
             .filter(|tab| {
@@ -329,6 +335,9 @@ pub(crate) struct SharedDesktops {
     person: RefCell<Option<String>>,
     /// Every record of every workspace this device reads and writes.
     held: RefCell<HashMap<Key, Held>>,
+    /// Whether a window of an app runs only on the device that opened it, as the app says: a
+    /// session that knows its apps' declarations says so ([`Self::hosting`]).
+    runs_here: Option<fn(&str) -> bool>,
 }
 
 impl SharedDesktops {
@@ -343,6 +352,15 @@ impl SharedDesktops {
             wake,
             ..Self::default()
         }
+    }
+
+    /// These records, of a session that hosts the windows that run only on this device:
+    /// `runs_here` says whether a window of an app is one, as the app declares. Each is written
+    /// into its workspace's layout as this device's window, which no other device opens.
+    #[must_use]
+    pub(crate) fn hosting(mut self, runs_here: fn(&str) -> bool) -> Self {
+        self.runs_here = Some(runs_here);
+        self
     }
 
     /// What this device holds of `key`, changed by `edit`.
@@ -617,6 +635,7 @@ impl SharedDesktops {
                 own: tree.external_revision,
                 notes: self.notes.of_workspace(room),
                 sealed,
+                runs_here: self.runs_here,
             },
         );
     }
@@ -1028,6 +1047,55 @@ fn laid_into(
         },
     );
     laid_out
+}
+
+/// `desk`, this device's desk, as it publishes it into the workspace's layout. A window it minted
+/// (under `local`) whose app says it runs only on the device that opened it is written as this
+/// device's window, `host` being its key and what its certificate calls it: the others hold it as
+/// that, and open no instance of the app for it.
+fn hosted_here(
+    desk: Workspace,
+    host: (&str, &str),
+    local: u16,
+    runs_here: Option<fn(&str) -> bool>,
+) -> Workspace {
+    let bound = bound_apps(&desk, local, runs_here);
+    device::published(
+        desk,
+        &device::Host {
+            device: host.0,
+            name: host.1,
+            runs_here: &|app| bound.contains(app),
+        },
+        &|id| peer_salt_of(id) == local,
+    )
+}
+
+/// The apps among the windows of `desk` this device minted (under `local`) whose windows run only
+/// on the device that opened them, each asked of `runs_here` once: what an app declares is read
+/// from its package.
+fn bound_apps(
+    desk: &Workspace,
+    local: u16,
+    runs_here: Option<fn(&str) -> bool>,
+) -> BTreeSet<String> {
+    let Some(runs_here) = runs_here else {
+        return BTreeSet::new();
+    };
+    let apps: BTreeSet<&str> = desk
+        .tabs()
+        .filter(|tab| peer_salt_of(tab.id) == local)
+        .filter_map(|tab| match &tab.tile {
+            TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
+                Some(app_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    apps.into_iter()
+        .filter(|app| runs_here(app))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The view to write into `key`'s record now, if any: what a look writes only once it rests, and
