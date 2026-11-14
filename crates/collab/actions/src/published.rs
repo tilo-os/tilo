@@ -75,6 +75,9 @@ pub struct PublishedAction {
     /// The other words people use for the action, published with its label.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+    /// What the action did, said after who did it, published with its label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
     /// The action's own picture, by its Lucide name, published with its label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
@@ -119,6 +122,7 @@ impl PublishedAction {
             resource_label: self.resource_label.clone(),
             action_label: self.action_label.clone(),
             keywords: self.keywords.clone(),
+            did: self.did.clone(),
             icon: self.icon.clone(),
             description: self.description.clone(),
             state: self.state.clone(),
@@ -142,6 +146,7 @@ impl From<&ActionDescriptor> for PublishedAction {
             resource_label: descriptor.resource_label.clone(),
             action_label: descriptor.action_label.clone(),
             keywords: descriptor.keywords.clone(),
+            did: descriptor.did.clone(),
             icon: descriptor.icon.clone(),
             description: descriptor.description.clone(),
             state: descriptor.state.clone(),

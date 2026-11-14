@@ -43,6 +43,7 @@ fn descriptor(route: &DocumentRoute) -> ActionDescriptor {
     };
     let app = &route.app_id;
     ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: address(route),

@@ -396,6 +396,7 @@ impl Notes {
             },
             action: action.map(
                 |(name, title, params, operation)| tilo_actions::ActionDescriptor {
+                    did: None,
                     state: tilo_actions::ActionState::default(),
                     semantic_identity: (key != NOTEBOOK)
                         .then(|| ResourceSemanticIdentity::new(kind, key))
@@ -446,6 +447,7 @@ impl Notes {
                     presentation: None,
                 },
                 action: Some(tilo_actions::ActionDescriptor {
+                    did: None,
                     state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
                     address: tilo_actions::ActionAddress::new(format!("app.{app}"), "open"),

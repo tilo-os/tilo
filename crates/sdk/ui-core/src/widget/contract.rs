@@ -207,6 +207,12 @@ pub trait Widget {
     }
 
     /// Adjust this node's style using its allocated size, before final geometry is applied.
+    ///
+    /// Decide from the `taffy` it is handed what to set there, never from
+    /// what this widget set last: one widget is adjusted in more than one tree
+    /// (a manual region measures its children in a copy of the window's tree
+    /// before it places them), and a widget that remembered having set a style
+    /// in the copy leaves the window's own tree without it.
     fn adjust_layout_style(
         &mut self,
         _taffy: &mut TaffyTree<()>,

@@ -20,11 +20,11 @@ use tilo_session_core::door::{Look, Published};
 
 pub use tilo_session_core::arrangement::{
     Answer, AnswerRef, Arrangement, ArrangementAction, ArrangementQueryReading,
-    ArrangementRefReading, Ask, AskOrigin, Busy, Catalog, Find, FindDone, Found, Item, OPERATION,
-    PLACE_KIND, PlaceReading, QUERY_KIND, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading,
-    STRIP_KIND, StripReading, Surface, Target, Words, WorkspaceReading, canvas_find_within,
-    found_resource, place_kind_resource, placed, resources, row_kind_resource, strip_kind_resource,
-    tab_app,
+    ArrangementRefReading, Ask, AskOrigin, Asked, Busy, Catalog, Find, FindDone, FindTurn, Found,
+    Item, OPERATION, PLACE_KIND, PlaceReading, Posted, QUERY_KIND, RECORD_RESOURCE, RESOURCE,
+    ROW_KIND, Reading, RowReading, STRIP_KIND, StripReading, Surface, TURN_VIEW, Target, Words,
+    WorkspaceReading, canvas_find_within, found_resource, place_kind_resource, placed, resources,
+    row_kind_resource, strip_kind_resource, tab_app, turn_key,
 };
 
 /// What this session calls what the arrangement publishes, in the person's language: its own

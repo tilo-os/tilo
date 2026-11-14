@@ -27,11 +27,8 @@ use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
 use crate::common::{
-    CANVAS_ENTRY, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for,
+    CANVAS, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for,
 };
-
-/// Enter.
-const KEY_ENTER: u32 = 28;
 
 /// A headless session with the shell as the whole screen and the apps a development session seeds,
 /// the framed canvas in front.
@@ -40,7 +37,7 @@ fn session(root: &std::path::Path) -> Session {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
-        services: vec![Box::new(crate::common::seeded_apps())],
+        services: crate::common::seeded_apps(),
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.join("plane.sock")),
         agent_door: Some(root.join("agent.sock")),
@@ -48,25 +45,16 @@ fn session(root: &std::path::Path) -> Session {
     });
     show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     session
 }
 
-/// Type `text` on the canvas entry and press Enter.
+/// Point at the canvas's free ground and say `text` there: the person finding or asking where
+/// they pointed.
 fn enter_text(session: &mut Session, text: &str) {
-    crate::common::press(session, CANVAS_ENTRY);
-    crate::common::type_text(session, text);
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(tilo_compositor::InputEvent::Key {
-                keycode: KEY_ENTER,
-                pressed,
-            })
-            .expect("a key");
-        session.step(Duration::from_millis(1)).expect("a frame");
-    }
+    let (x, y, w, h) = wait_for(session, "the canvas", |session| on_screen(session, CANVAS));
+    crate::common::point_and_say(session, (x + w * 0.5, y + h * 0.3), text);
 }
 
 /// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)`, as the desk

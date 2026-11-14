@@ -686,7 +686,11 @@ d-fniigjed = Einstellungen der Sicht
 d-gapwwnqc = Stil zeigen~present
 
 d-s7yqm7cb = Fläche
-    .w-find-something-or-ask = Finde etwas oder frag
+    .w-click-anywhere-and-say-what-you = Klicke irgendwo hin und sag, was du willst
+    .w-caret = Schreibmarke
+    .w-find-or-ask = Finden oder fragen
+
+d-kzhftbrb = Platz auf der Fläche
 
 d-t3cux3yd = Gerahmter Platz
 
@@ -1070,6 +1074,14 @@ d-cejnvssb-filter-settings_open = Einstellungen offen
 d-cejnvssb-filter-strips_tabs = Reihen-Tabs
 
 d-cejnvssb-filter-frames_snap = Rahmen einrasten
+d-cejnvssb-filter-canvas_asked = Auf der Fläche gefragt
+
+d-2e7aappl = Größe ändern
+    .doc = Gibt dem Platz `key` die Größe, auf die das Ziehen an seinem Rand oder seiner Ecke ihn gebracht hat, `size` seine Breite und Höhe in Pixeln der Fläche: ein Schritt des Anordnens der Person, seine Ecke bleibt, wo sie stand.
+
+d-2e7aappl-key = Schlüssel
+
+d-2e7aappl-size = Größe
 
 d-nljxfsom = Hierher verschieben
     .doc = Legt eine auf die Arbeitsfläche gezogene Ressource dort ab, wo sie losgelassen wurde.
@@ -1195,3 +1207,24 @@ d-st426t4p = Ein vorderer Arbeitsbereich
     .doc = Fügt `a` den vorderen Arbeitsbereich mit seiner vorderen Zeile hinzu und gibt den Schlüssel der Zeile zurück.
 
 d-st426t4p-name = Name
+
+d-6bamt22e = Auf der Fläche gefragt
+    .doc = Die Fläche: ob die Person auf ihr schon gefragt hat.
+
+d-ukun4zmh = Auf der Fläche gefragt
+    .doc = Die Person hat auf der Fläche gefragt: der Hinweis, den die leere Fläche bis dahin sagt, ist gesagt (`Shell.canvas_asked`) und bleibt von nun an fort.
+
+d-dgtjjxex = Menü der Person
+    .w-you = Du
+    .w-desk-style-and-workspaces = { $me }: Schreibtischstil und Arbeitsbereiche
+    .w-settings-for = Einstellungen für { $style_title }
+    .w-new-workspace = Neuer Arbeitsbereich
+    .w-workspaces = Arbeitsbereiche
+    .w-join-a-workspace = Einem Arbeitsbereich beitreten
+    .w-workspace-settings = Einstellungen des Arbeitsbereichs
+    .w-overview = Übersicht
+
+d-nyhuwvbj = Fläche schmiegt sich an
+    .doc = Ob `canvas_height` das Höchste ist, was er nimmt: was er zeigt, ist so hoch wie das, was es hält, bis dahin (etwas, das gefunden wurde, wo die Person geklickt hat).
+
+d-vn23musu-filter-canvas_hugs = Fläche schmiegt sich an

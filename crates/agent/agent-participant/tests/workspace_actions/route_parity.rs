@@ -254,6 +254,7 @@ fn settled(
 /// `descriptor`, as an app publishes it to the broker.
 fn published(descriptor: &tilo_actions::ActionDescriptor) -> PublishedAction {
     PublishedAction {
+        did: descriptor.did.clone(),
         resource: descriptor.address.resource.clone(),
         semantic_identity: descriptor.semantic_identity.clone(),
         action: descriptor.address.action.clone(),

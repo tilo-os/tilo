@@ -882,6 +882,11 @@ fn execution_failure(
         Ok(Err(ProviderError::Request(_))) => neutral::ErrorKind::InvalidRequest,
         _ => neutral::ErrorKind::InvalidResponse,
     });
+    // What the adapter itself found wrong ("client left", "provider changed
+    // or repeated a tool"), so the record names it rather than only its kind.
+    if let Ok(Err(ProviderError::Response(found))) = other {
+        failure.why = format!("{} ({found})", failure.why);
+    }
     if matches!(other, Ok(Err(rig_core::error::ProviderError::Request(_)))) {
         failure.outcome_unknown = false;
         failure.why = "provider transport failed".into();
@@ -1229,6 +1234,9 @@ pub(super) async fn complete(
         unary_body: Arc::default(),
         profile_headers: Vec::new(),
     };
+    // Why the answer was not used, for the timing line: the person reads
+    // the error's kind, whoever debugs the run reads this.
+    let mut why = String::new();
     let result = execute(
         transport,
         secret.as_ref().map(|secret| secret.as_str()),
@@ -1236,11 +1244,19 @@ pub(super) async fn complete(
         call.stream.then_some((emit, &mut timing, true)),
     )
     .await
-    .map_err(|failure| failure.model_error)
+    .map_err(|failure| {
+        why.clone_from(&failure.why);
+        failure.model_error
+    })
     .and_then(|response| {
         timing.status = Some(200);
         timing.observe_body(&response.raw.to_string());
-        let mut answer = neutral_response(response)?;
+        let mut answer = neutral_response(response).inspect_err(|error| {
+            why = format!(
+                "the provider's answer is no model response: {}",
+                error.message
+            );
+        })?;
         // What this answer costs, priced here so every caller spends against
         // one figure: the gateway's, at its price table's list prices.
         answer.cost_micros = crate::pricing::cost_micros(call.model_id, &answer.usage);
@@ -1248,10 +1264,12 @@ pub(super) async fn complete(
             .map_err(|_| ModelError::new(neutral::ErrorKind::InvalidResponse))
     });
     secret.zeroize();
-    timing.log(
-        call,
-        result.as_ref().map(|_| ()).map_err(|error| &error.message),
-    );
+    if why.is_empty()
+        && let Err(error) = &result
+    {
+        why.clone_from(&error.message);
+    }
+    timing.log(call, result.as_ref().map(|_| ()).map_err(|_| &why));
     result
 }
 

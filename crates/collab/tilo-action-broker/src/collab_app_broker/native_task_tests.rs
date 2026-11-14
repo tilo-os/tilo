@@ -688,6 +688,7 @@ async fn report(
 /// The Notes app's published append action, the agent's target.
 fn notes_append() -> runtime_collab::ExportedAction {
     runtime_collab::ExportedAction {
+        did: None,
         semantic_identity: None,
         resource: "notes:release".into(),
         action: "append".into(),
@@ -1718,6 +1719,7 @@ impl crate::services::HostStepServices for TurnSteps {
     }
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new("shell:arrangement", "place"),

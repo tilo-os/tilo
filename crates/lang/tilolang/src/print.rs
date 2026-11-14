@@ -1030,6 +1030,11 @@ impl Printer<'_> {
                 d.view.name,
                 print_type(&d.ty)
             )),
+            Item::PlaceView(d) => self.line(&format!(
+                "place view {} for {}",
+                d.view.name,
+                print_type(&d.ty)
+            )),
             Item::Views(d) => {
                 let views = d
                     .views
@@ -1347,7 +1352,7 @@ impl Printer<'_> {
                     Some(ty) => format!("{}: {}", p.name.name, print_type(ty)),
                     None => p.name.name.clone(),
                 };
-                let carried = match (param, at) {
+                let carried = match (param, at.as_ref()) {
                     (Some(p), Some(at)) => format!("({}, {})", named(p), named(at)),
                     (Some(p), None) => format!("({})", named(p)),
                     _ => String::new(),

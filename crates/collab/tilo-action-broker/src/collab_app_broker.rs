@@ -4652,11 +4652,13 @@ impl AppBrokerState {
             .into_iter()
             .filter(|app| !live_apps.contains(&app.package_id))
             .collect::<Vec<_>>();
-        // A step marked for turns (the session's own actions, a task's programs) is a turn's
-        // step: a task agent's through its issue's run, offered to the agent working a turn; a
-        // session step's listed to every caller the grants allow, as an app action is, and
+        // A step marked for tasks (a task's programs) is an agent's step in one of its runs: a
+        // task agent's through its issue's run, and the workspace's kept agent's through the run
+        // of each turn it answers — whose catalogue is its connection's, not one turn's. Listed
+        // to every agent, as a run's steps; taken only inside a run, which admits it. A session
+        // step (for turns) is listed to every caller the grants allow, as an app action is, and
         // admitted by the turn when an agent takes it.
-        let by_turn = actor.turn().is_some() || actor.issue().is_some();
+        let by_turn = actor.is_agent() || actor.turn().is_some() || actor.issue().is_some();
         let task_steps = self
             .services
             .host_steps
@@ -4780,6 +4782,7 @@ impl AppBrokerState {
                 record_id: String::new(),
                 live: true,
                 actions: vec![PublishedAction {
+                    did: None,
                     state: tilo_actions::ActionState::default(),
                     resource: format!("app.{package_id}"),
                     semantic_identity: None,
@@ -11741,6 +11744,7 @@ pub mod tests {
         fn row(&self) -> runtime_collab::ActionDirectoryRow {
             let contract = self.contract();
             let descriptor = runtime_collab::ExportedAction {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 resource: "workspace:atlas".into(),
@@ -14080,6 +14084,7 @@ pub mod tests {
             app_id: "so.tilo.files".into(),
             route: CrdtRoute::record("so.tilo.files", cluster, format!("record-{peer_id}")),
             actions: vec![PublishedAction {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 resource: resource.into(),
@@ -14466,6 +14471,7 @@ pub mod tests {
                 route,
                 actions: vec![
                     PublishedAction {
+                        did: None,
                         state: tilo_actions::ActionState::default(),
                         semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
@@ -14483,6 +14489,7 @@ pub mod tests {
                         input: PublishedInput::None,
                     },
                     PublishedAction {
+                        did: None,
                         state: tilo_actions::ActionState::default(),
                         semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
@@ -14504,6 +14511,7 @@ pub mod tests {
                         input: PublishedInput::None,
                     },
                     PublishedAction {
+                        did: None,
                         state: tilo_actions::ActionState::default(),
                         semantic_identity: None,
                         resource: "files.entry:/tmp/report".into(),
@@ -14723,6 +14731,7 @@ pub mod tests {
                     .clone(),
             ),
             actions: vec![PublishedAction {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 resource: "files.app".into(),

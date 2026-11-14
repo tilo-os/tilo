@@ -163,6 +163,7 @@ mod invitation_request_tests {
 
         fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
             vec![tilo_actions::ActionDescriptor {
+                did: None,
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: tilo_actions::ActionAddress::new(

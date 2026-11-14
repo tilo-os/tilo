@@ -591,6 +591,7 @@ impl<'a> Parser<'a> {
             || self.at_root_decl()
             || self.at_default_view()
             || self.at_row_view()
+            || self.at_place_view()
             || self.at_template_view()
             || self.at_scenario()
             || self.at_action_role().is_some()
@@ -598,6 +599,12 @@ impl<'a> Parser<'a> {
 
     fn at_row_view(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "row")
+            && matches!(self.peek_at(1), Tok::Kw("view"))
+    }
+
+    /// `place view v for T` at the start of an item.
+    fn at_place_view(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "place")
             && matches!(self.peek_at(1), Tok::Kw("view"))
     }
 
@@ -893,6 +900,20 @@ impl<'a> Parser<'a> {
             self.expect_kw("for")?;
             let ty = self.type_expr()?;
             return Ok(Item::RowView(DefaultViewDecl {
+                node,
+                view,
+                ty,
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            }));
+        }
+        if self.at_place_view() {
+            self.bump();
+            self.bump();
+            let node = self.node();
+            let view = self.ident("the name of the place view")?;
+            self.expect_kw("for")?;
+            let ty = self.type_expr()?;
+            return Ok(Item::PlaceView(DefaultViewDecl {
                 node,
                 view,
                 ty,
@@ -1762,6 +1783,17 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let name = self.ident("a variable name")?;
                 let ty = if self.eat(&Tok::Colon) {
+                    // `let n := x`, as other languages bind: the `:` starts a type here.
+                    if self.is(&Tok::Assign) {
+                        let at = self.span();
+                        return self.fail(
+                            at,
+                            format!(
+                                "`let` binds with `=`: `let {} = …` (a `:` starts the variable's type, `let n: Int = 0`)",
+                                name.name
+                            ),
+                        );
+                    }
                     Some(self.type_expr()?)
                 } else {
                     None

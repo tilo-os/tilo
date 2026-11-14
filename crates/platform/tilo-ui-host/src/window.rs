@@ -888,6 +888,9 @@ impl AppWindow {
         // The field keeps what the person typed into it while a press was running, while it still
         // shows the resource they typed into.
         let shows = self.target(lane);
+        // The app sent it before it took every splice the window sent of the field: it is the
+        // field as it was before some of the person's typing, which the app still applies after it.
+        let before_our_splices = self.seqs.get(&key).is_some_and(|sent| *sent > acked);
         if let Some(typed) = self.typed.iter_mut().find(|typed| {
             typed.key.as_deref() == Some(key.as_str())
                 && typed.target.is_some()
@@ -895,11 +898,17 @@ impl AppWindow {
         }) {
             // What the app sent for the field: the typing goes against it when the app ran the
             // press. The field keeps showing what the person typed into it, which the app has not
-            // taken: a value it held before is no reason to take their words away.
-            typed.sent = Some(value);
+            // taken: a value it held before is no reason to take their words away. A value sent
+            // before the app took the splices typed ahead of the held typing is no place to put
+            // it: placed against that, the held typing would land before letters typed earlier
+            // ("Q3 summari" sent, "se" held: "Q3se summari"). The held typing then goes against what the
+            // field showed when it was typed, which is what the app holds once it took them.
+            if !before_our_splices {
+                typed.sent = Some(value);
+            }
             return;
         }
-        if self.seqs.get(&key).is_some_and(|sent| *sent > acked) {
+        if before_our_splices {
             return;
         }
         if let Value::Text(text) = &value {
@@ -2004,6 +2013,10 @@ impl AppWindow {
             }
             (Value::Text(before), _) => {
                 let text = splice_text(before, (show_at, show_at.saturating_add(delete)), &insert);
+                // Nothing of what they typed is left to make: the field shows it already.
+                if text == *before {
+                    return;
+                }
                 if let Some(message) = self.splice(key, before, text) {
                     self.out.push(message);
                 }
@@ -2043,7 +2056,9 @@ impl AppWindow {
         while !shown.is_char_boundary(start) {
             start = start.saturating_sub(1);
         }
-        // The field may show less than the person replaced: they replace what is left of it.
+        // What they deleted that the field no longer shows is gone already: the app took it out
+        // meanwhile (an entry it emptied once what was typed in it was made). Only what is still
+        // there is deleted.
         let mut end = start.saturating_add(delete).min(shown.len());
         while !shown.is_char_boundary(end) {
             end = end.saturating_sub(1);

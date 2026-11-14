@@ -113,11 +113,7 @@ impl HostStepServices for SessionActions {
         // a place it opens stands beside that conversation
         // (`docs/designs/app-language/one-app-model.md` §3). The person's own step stands beside
         // the place in front.
-        let beside = request
-            .actor
-            .turn()
-            .map(|turn| turn.conversation.clone())
-            .unwrap_or_default();
+        let beside = crate::agent_door::service_steps::turn_beside(request.actor.turn());
         self.doors.invoke_step(
             request.actor.id().to_owned(),
             request.address.clone(),

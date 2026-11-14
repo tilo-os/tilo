@@ -79,6 +79,8 @@ impl Session {
         self.read_controls();
         self.shared.feed_agents();
         self.shared.follow_recipients();
+        // The apps' records the services run over are the workspace's, once the session holds it.
+        self.shared.keep_app_records();
         let mut services = self.shared.services.borrow_mut();
         // What the records the services keep themselves reference: each record's content, kept in
         // the store of the workspace it stands in and offered on its route, so a device of the
@@ -275,7 +277,10 @@ impl Session {
             self.compositor.render()?;
         }
         self.first_frame_presented();
-        self.serve_drawn_frame();
+        // What the session does once the frame is out, the control socket's answer aside (its own
+        // `testctl_us`): the turn's `after_us`.
+        let after = Instant::now();
+        let answering = self.serve_drawn_frame();
         self.follow_desk_over_frame()?;
         // What search and the session's steps read of what the desk publishes is read once the
         // frame is out: a key's turn draws what it opens before anything is read, and the reading
@@ -286,6 +291,8 @@ impl Session {
             self.follow_session_actions();
             self.follow_settings_steps();
         }
+        self.compositor
+            .mark_after(after.elapsed().saturating_sub(answering));
         self.compositor.end_tick();
         Ok(())
     }
@@ -337,14 +344,16 @@ impl Session {
     }
 
     /// What the frame just drawn asked of the session: the control socket's answer, what assistive
-    /// technology reads of it, a live projection and a call it is shared to.
-    fn serve_drawn_frame(&mut self) {
+    /// technology reads of it, a live projection and a call it is shared to. Answers how long the
+    /// control socket's answer took.
+    fn serve_drawn_frame(&mut self) -> Duration {
         let answering = Instant::now();
         // What `tilo-control` asks of the frame just drawn.
         let desk = desk(&self.shared, &self.compositor);
         self.control.serve(&mut self.compositor, &desk);
+        let answered = answering.elapsed();
         self.compositor
-            .mark_testctl(answering.elapsed().saturating_add(self.tool_input));
+            .mark_testctl(answered.saturating_add(self.tool_input));
         // What assistive technology reads of the frame just drawn, and what it asked of it.
         self.a11y.step(&self.shared.doors);
         // A live projection is sent the desktop as the pass just drew it.
@@ -354,6 +363,7 @@ impl Session {
         // A call shares the same pass: it takes the frame when it wants one,
         // and a locked desktop hands it nothing.
         crate::calls::share_screen(&mut self.compositor);
+        answered
     }
 
     /// What the desk reads of the frame just drawn: the shell and the slots laid out again, what
@@ -509,6 +519,11 @@ impl Session {
             self.step(timeout)?;
         }
         self.shared.keep_desk_now();
+        // The shell's own record, written out whole and waited on: the next session starts from
+        // exactly the desk choices this one left.
+        if let Some(shell) = &self.shell {
+            shell.flush_record();
+        }
         // Nothing of this session outlives it: an ordered end publishes the lock state the next one
         // recovers, and one that ends any other way keeps the armed record, which recovers locked.
         if let Some(recovery) = self.recovery.take()

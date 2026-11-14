@@ -33,7 +33,7 @@ use ui::search::system::MAX_PROVIDER_SCORE;
 
 use tilo_session::{ActionPlane, Options, SearchOptions, Session};
 
-use crate::common::{CANVAS_ENTRY, PERSON, Repl, on_screen, private_home, until};
+use crate::common::{CANVAS, PERSON, Repl, on_screen, private_home, until};
 
 /// The title a slow source answers with, and the needle that asks for it.
 const SLOW_TITLE: &str = "Quarterlyreport ledger";
@@ -104,7 +104,7 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
             person: PERSON.to_owned(),
             shell: true,
             collab: false,
-            services: vec![Box::new(crate::common::seeded_apps())],
+            services: crate::common::seeded_apps(),
             questions: Some(Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
             agent_door: Some(root.join("agent.sock")),
@@ -124,7 +124,7 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
     .expect("session");
     crate::common::show_preset(&mut session, "so.tilo.shell:frames");
     until(&mut session, "the canvas", |session| {
-        on_screen(session, CANVAS_ENTRY).is_some()
+        on_screen(session, CANVAS).is_some()
     });
     let mut repl = Repl::connect(&root.join("agent.sock"));
     repl.opened(&mut session);

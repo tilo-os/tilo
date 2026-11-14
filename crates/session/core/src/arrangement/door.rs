@@ -8,14 +8,22 @@ use serde_json::Value as Json;
 use tilo_actions::ResourceSpec;
 
 use super::{
-    Arrangement, ArrangementAction, Ask, AskOrigin, Busy, Find, Found, RECORD_RESOURCE, RESOURCE,
+    Arrangement, ArrangementAction, Ask, AskOrigin, Busy, CanvasRect, Find, Found, Pointed,
+    RECORD_RESOURCE, RESOURCE,
 };
+
+/// The answer an arranging action that asks the record gives: complete, with nothing for the
+/// caller to read back. A place that stands on a later pass is complete when it is asked, never
+/// left pending (`Accepted` would be, and nothing completes it).
+fn completed() -> ui::host_operation::ResourceOperationStart {
+    ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+}
 
 /// The arrangement's published side: the one door the palette, a script, an agent and the host's
 /// own calls reach its actions through, beside the desktop's own.
 #[derive(Clone)]
 pub struct Door {
-    arrangement: Rc<RefCell<Arrangement>>,
+    pub(super) arrangement: Rc<RefCell<Arrangement>>,
     /// How the host says whether the person is mid-gesture or typing, as it last saw it.
     busy: Rc<dyn Fn() -> Busy>,
     /// The system's `find` , as the palette and an agent's `tilo` tool run it: what text typed on
@@ -105,15 +113,28 @@ impl Door {
             ArrangementAction::decode(&encoded.type_id, &encoded.payload).ok_or_else(|| {
                 tilo_actions::DoorError::UnregisteredType("tilo.shell.arranging".to_owned())
             })?;
-        if address.action == "place" {
-            self.place_at_surface(arguments, &mut action)?;
-        }
         // An action that names no one is the person's own input: theirs to take back, and never
         // made to wait for themselves.
         let asked = match actor.filter(|actor| !actor.is_empty()) {
             Some(actor) => actor.to_owned(),
             None => self.person(),
         };
+        // What a `place` or a `show` names no view of stands as content, through the view its app
+        // declares for a place of it, wherever it ends up standing: beside a turn it was aimed at
+        // too.
+        self.place_as_content(&mut action);
+        if self.kept_turn(&asked, arguments, &action)? {
+            return Ok(self.shown(&action));
+        }
+        if address.action == "place" {
+            if self.placed_beside(&asked, arguments, &action)? {
+                return Ok(self.shown(&action));
+            }
+            self.place_at_surface(arguments, &mut action)?;
+        }
+        if let ArrangementAction::Position { place, x, y } = &mut action {
+            self.position_beside(arguments, *place, x, y)?;
+        }
         // The person's own change is what their gesture is making; only anyone else's waits for
         // them to finish.
         let busy = if asked == self.person() {
@@ -134,12 +155,93 @@ impl Door {
         }
         self.arrangement
             .borrow_mut()
-            .ask(&asked, action, busy)
+            .ask(&asked, action.clone(), busy)
             .map(drop)
             .map_err(tilo_actions::DoorError::Failed)?;
-        Ok(ui::host_operation::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        ))
+        Ok(self.shown(&action))
+    }
+
+    /// What an arranging action that shows a resource answers once it ran: the title of the place
+    /// showing it, as every surface captions it ("All inboxes", canvas.md §7 "Captions name the
+    /// thing"), so whoever asked says what it showed by that name (an agent's step line). Any
+    /// other action, or one whose place does not stand yet (it waits for the person's gesture),
+    /// answers nothing.
+    fn shown(&self, action: &ArrangementAction) -> ui::host_operation::ResourceOperationStart {
+        let (own, resource) = match action {
+            ArrangementAction::Place {
+                place, resource, ..
+            } => (Some(*place), resource),
+            ArrangementAction::Open { resource, .. } | ArrangementAction::Show { resource, .. } => {
+                (None, resource)
+            }
+            _ => return completed(),
+        };
+        let arrangement = self.arrangement.borrow();
+        let places = arrangement.reading().places;
+        let title = own
+            .into_iter()
+            .chain(arrangement.anchor_of(resource))
+            .find_map(|place| {
+                let key = place.to_string();
+                places.iter().find(|held| held.key == key)
+            })
+            .map(|held| {
+                if held.title.trim().is_empty() {
+                    held.name.trim().to_owned()
+                } else {
+                    held.title.trim().to_owned()
+                }
+            })
+            .filter(|title| !title.is_empty());
+        let Some(title) = title else {
+            return completed();
+        };
+        ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({ "title": title })),
+            resources: Vec::new(),
+        })
+    }
+
+    /// Search for the text a place found by text names, and stand what it finds beside where the
+    /// person typed: `find` answers the hits on whatever thread it needs, and `place_found` makes
+    /// the place on a later pass, as the person's own step.
+    fn find_and_place_found(
+        &self,
+        asked: &str,
+        text: &str,
+        view: &str,
+        strip: Option<u64>,
+        (at, size, seen): Pointed,
+        busy: Busy,
+    ) {
+        let find = Rc::clone(&self.find);
+        let ask = Rc::clone(&self.ask);
+        let ask_origin = Rc::clone(&self.ask_origin);
+        let door = self.clone();
+        let needle = text.trim().to_owned();
+        let (asked, text, view) = (asked.to_owned(), text.to_owned(), view.to_owned());
+        find(
+            &needle,
+            Box::new(move |hits| {
+                if let Err(why) = door.arrangement.borrow_mut().place_found(Found {
+                    asked: &asked,
+                    text: &text,
+                    view: &view,
+                    strip,
+                    at,
+                    size,
+                    seen,
+                    hits: &hits,
+                    ask: &*ask,
+                    ask_origin: &*ask_origin,
+                    busy,
+                }) {
+                    // The text named nothing a place can show, and nothing answered it: the
+                    // person sees no place, so the log says why.
+                    tracing::warn!(%why, %text, "what the text found is not placed");
+                }
+            }),
+        );
     }
 
     /// A place found by text is resolved where the search and what is published now are: the
@@ -159,45 +261,30 @@ impl Door {
             strip,
             x,
             y,
+            width,
+            height,
+            seen_x,
+            seen_y,
+            seen_width,
+            seen_height,
         } = action
         else {
             return None;
         };
-        let spot = (*x, *y);
-        let find = Rc::clone(&self.find);
-        let ask = Rc::clone(&self.ask);
-        let ask_origin = Rc::clone(&self.ask_origin);
-        let door = self.clone();
-        let needle = text.trim().to_owned();
-        let (text, view, strip) = (text.clone(), view.clone(), *strip);
-        let asked = asked.to_owned();
-        find(
-            &needle,
-            Box::new(move |hits| {
-                if let Err(why) = door.arrangement.borrow_mut().place_found(Found {
-                    asked: &asked,
-                    text: &text,
-                    view: &view,
-                    strip,
-                    at: spot,
-                    hits: &hits,
-                    ask: &*ask,
-                    ask_origin: &*ask_origin,
-                    busy,
-                }) {
-                    // The text named nothing a place can show, and nothing answered it: the
-                    // person sees no place, so the log says why.
-                    tracing::warn!(%why, %text, "what the text found is not placed");
-                }
-            }),
-        );
+        // A rectangle the person dragged is its size; a click names none.
+        let size = (*width > 0 && *height > 0).then_some((*width, *height));
+        let seen = (*seen_width > 0 && *seen_height > 0).then_some(CanvasRect {
+            x: *seen_x,
+            y: *seen_y,
+            width: *seen_width,
+            height: *seen_height,
+        });
+        self.find_and_place_found(asked, text, view, *strip, ((*x, *y), size, seen), busy);
         // The search is under way and the place stands on a later pass: the door answers as it
         // always did for an arranging action, which is complete when the ask is taken. Nothing of
         // the place is left for the caller to read back, so it is not a pending invocation
         // (`Accepted` would be, and nothing completes it).
-        Some(Ok(ui::host_operation::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Some(Ok(completed()))
     }
 
     /// The system's `open` is resolved here, where the desk's ids and its places are: it becomes
@@ -221,9 +308,7 @@ impl Door {
             .borrow_mut()
             .open_place(asked, resource, view, beside);
         Some(match opened {
-            Ok(_) => Ok(ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )),
+            Ok(_) => Ok(self.shown(action)),
             Err(why) => Err(tilo_actions::DoorError::Unavailable {
                 code: "nowhere_to_open".to_owned(),
                 reason: why,
@@ -250,9 +335,7 @@ impl Door {
             .borrow_mut()
             .retry_query(asked, *place, &*ask_origin, busy);
         Some(match retried {
-            Ok(()) => Ok(ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )),
+            Ok(()) => Ok(completed()),
             Err(why) => Err(tilo_actions::DoorError::Unavailable {
                 code: "nothing_to_place".to_owned(),
                 reason: why,
@@ -272,6 +355,30 @@ impl Door {
         arguments: &serde_json::Map<String, Json>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         self.invoke_by(Some(actor), address, arguments)
+    }
+
+    /// A `place` or a `show` that names no view stands its resource as content, through the view its app
+    /// declares for a place of it (`place view`), never through the app's whole window: an agent,
+    /// the REPL and a reference's activation place the thing, as text typed on the canvas does
+    /// (canvas.md §7, "The thing, never the app"). The app's window is `open-app`'s, or the view a
+    /// caller names.
+    fn place_as_content(&self, action: &mut ArrangementAction) {
+        let (ArrangementAction::Place { resource, view, .. }
+        | ArrangementAction::Show { resource, view, .. }) = action
+        else {
+            return;
+        };
+        if !view.trim().is_empty() {
+            return;
+        }
+        let targets = self.arrangement.borrow().targets();
+        let place_view = targets
+            .borrow()
+            .get(resource.trim())
+            .and_then(|target| target.place_view.clone());
+        if let Some(place_view) = place_view {
+            *view = place_view;
+        }
     }
 
     /// A `place` that names no workspace, row, strip or id of its own stands on the
@@ -343,9 +450,7 @@ impl Door {
                 reason: "the arrangement has no step left".to_owned(),
             });
         }
-        Ok(ui::host_operation::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        ))
+        Ok(completed())
     }
 
     /// The person whose arrangement it is.

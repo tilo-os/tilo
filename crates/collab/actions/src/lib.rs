@@ -245,10 +245,59 @@ pub use tilo_action_policy as policy;
 pub use tilo_action_policy::roles::{COMMENTS_FIELD, MODERATION_FIELD};
 pub use tilo_action_policy::{Acting, Actor, MemberId};
 
+/// The stable address (`kind:id`) of the item an item resource id names: `<kind>.<field>:<item>`
+/// for `<kind>/<field>/<item>` — the address an action's resource parameter takes. An app that
+/// publishes an item under its stable address resolves a link written in the older item form
+/// through this; `None` for an id naming no item of a top-level collection.
+#[must_use]
+pub fn stable_item_address(resource_id: &str) -> Option<String> {
+    let (collection, item) = resource_id.rsplit_once('/')?;
+    let (kind, field) = collection.split_once('/')?;
+    (!kind.is_empty()
+        && !field.is_empty()
+        && !field.contains('/')
+        && !item.is_empty()
+        && !resource_id.contains(':'))
+    .then(|| format!("{kind}.{field}:{item}"))
+}
+
+/// The item form (`<kind>/<field>/<item>`) of an item's stable address (`<kind>.<field>:<item>`):
+/// what an app that publishes its items in the item form publishes the item a stable link names
+/// under. `None` for an address that names no item of a collection (`tl:app:root-x`).
+#[must_use]
+pub fn item_form_of(address: &str) -> Option<String> {
+    let (kind_field, item) = address.split_once(':')?;
+    let (kind, field) = kind_field.rsplit_once('.')?;
+    (!kind.is_empty()
+        && !field.is_empty()
+        && !item.is_empty()
+        && !item.contains(':')
+        && !address.contains('/'))
+    .then(|| format!("{kind}/{field}/{item}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
+
+    /// An item's older form names the same item at its stable address; anything else names none.
+    #[test]
+    fn an_items_older_form_names_its_stable_address() {
+        assert_eq!(
+            stable_item_address("chat.workspace/channels/c1").as_deref(),
+            Some("chat.workspace.channels:c1")
+        );
+        assert_eq!(stable_item_address("chat.workspace.channels:c1"), None);
+        assert_eq!(stable_item_address("tl:so.tilo.lang.notes:root-x"), None);
+        assert_eq!(stable_item_address("notes/pages/p1/blocks/b2"), None);
+        assert_eq!(
+            item_form_of("chat.workspace.messages:m1").as_deref(),
+            Some("chat.workspace/messages/m1"),
+            "a stable address names the item an app publishes in the item form"
+        );
+        assert_eq!(item_form_of("tl:so.tilo.lang.notes:root-x"), None);
+    }
     use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
     use serde::{Deserialize, Serialize};
     use tilo_automerge::ApplyIncoming;

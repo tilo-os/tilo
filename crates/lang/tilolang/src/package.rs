@@ -553,6 +553,7 @@ fn build_meta(
     };
     meta.default_views = views_meta(&env.default_views);
     meta.row_views = views_meta(&env.row_views);
+    meta.place_views = views_meta(&env.place_views);
     meta.triggers = env
         .triggers
         .iter()
@@ -619,6 +620,7 @@ fn build_meta(
             | Item::Root(_)
             | Item::DefaultView(_)
             | Item::RowView(_)
+            | Item::PlaceView(_)
             | Item::Views(_)
             | Item::Trigger(_) => {}
             Item::Alias(a) => {

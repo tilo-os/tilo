@@ -188,6 +188,22 @@ pub fn wake_notice(event: &crate::platform::fabric::wake::WakeEvent) -> Option<N
     Some(Notice::new(t("device-wake-app-name"), 1, title, body))
 }
 
+/// Tell the person the shell's own record this device kept could not be opened: the desk draws the
+/// shell's defaults this session, and their own desk choices stay on disk untouched, never written
+/// over.
+pub(crate) fn record_not_opened_notice(reason: &str) -> Notice {
+    Notice::new(
+        t("desk-record-not-opened-app-name"),
+        2,
+        t("desk-record-not-opened-title"),
+        t_args(
+            "desk-record-not-opened-detail",
+            &[("reason", reason.into())],
+        ),
+    )
+    .staying(Some(Duration::ZERO))
+}
+
 /// Tell the person the desk style they chose did not load or failed, as `shell.md` §6 has it: the
 /// desk draws the built-in strips while their choice stays as it was.
 pub(crate) fn desk_style_failed_notice(style: &str, reason: &str) -> Notice {

@@ -42,10 +42,9 @@ fn part() -> (ShellPart, Rc<SessionLink>) {
     part_with(reading())
 }
 
-/// The canvas's entry, as assistive technology names it: the field is bound to a view state,
-/// whose name in the code (`typed`) is no word a person says, so it is announced by its own
-/// words.
-const CANVAS_ENTRY: &str = "Find something, or ask";
+/// The canvas, as assistive technology names it: the map the framed desk style stands its places
+/// on, whose free ground a press puts the caret on.
+const CANVAS: &str = "Canvas";
 /// The launcher's field, announced the same way: the view's own words for it, not the state's
 /// name in the code (`query`).
 const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
@@ -642,7 +641,7 @@ fn a_part_steps_aside_only_for_a_window_fullscreen_on_its_own_display() {
 fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
     // The compositor routes a key to the topmost surface that wants the keyboard. A part that
     // never says it wants it never hears a key, however the field is focused: the canvas's
-    // entry (and every field the shell draws) stays empty.
+    // caret (and every field the shell draws) stays empty.
     let _settled = ui::motion::testing::settled();
     let (mut part, _link) = part();
     for _ in 0..6 {
@@ -655,14 +654,14 @@ fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
     );
     click(&mut part, "Showing Strips");
     click(&mut part, "Frames");
-    click(&mut part, CANVAS_ENTRY);
+    click(&mut part, CANVAS);
     assert!(
         SurfaceHost::text_input(&part).is_some(),
-        "the press put the caret in the canvas's entry"
+        "the press on the canvas's free ground put the caret there"
     );
     assert!(
         SurfaceHost::wants_keyboard(&part),
-        "the entry has the caret: what is typed goes to the part"
+        "the caret takes the keys: what is typed goes to the part"
     );
     type_into(&mut part, "groceries");
     assert!(
@@ -846,7 +845,7 @@ fn the_screen_shows_the_arrangement_and_a_canvas_pan_carries_each_windows_well()
     assert!(
         !named.is_empty()
             && window_menu(&mut part, "Terminal").is_none()
-            && labels.iter().any(|label| label == CANVAS_ENTRY),
+            && labels.iter().any(|label| label == CANVAS),
         "the canvas shows: {labels:?}; Terminal names {named:?}; refused {:?}",
         part.refusals()
     );

@@ -37,10 +37,19 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
 use tilolang_tilo::runtime::Principal;
 
-/// The canvas's entry, as assistive technology names it: a field bound to a view's state takes the
-/// name the view gives it for a person to read, its own words, rather than the state's name in the
-/// code (`typed`).
-pub const CANVAS_ENTRY: &str = "Find something, or ask";
+/// The canvas, as assistive technology names it: the map the framed desk style draws its places
+/// on. What a test waits for to know the canvas is up, since nothing else stands on an empty one.
+pub const CANVAS: &str = "Canvas";
+/// The framed desk style, the canvas, by its id: what a fixture asks the desk to show, whatever
+/// the person's language calls it.
+pub const FRAMES: &str = "so.tilo.shell:frames";
+/// The caret pointing puts on the canvas (canvas.md §1), as assistive technology names it: the
+/// field's own words for a person to read.
+pub const CANVAS_CARET: &str = "Find or ask";
+/// The Enter key, as the compositor's keyboard reads it.
+pub const KEY_ENTER: u32 = 28;
+/// The Escape key.
+pub const KEY_ESCAPE: u32 = 1;
 /// The launcher's field, announced the same way: the view's own words for it, not the state's name
 /// in the code (`query`).
 pub const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
@@ -335,6 +344,91 @@ pub fn press_where(
     }
 }
 
+/// Move the pointer to the screen point `at`.
+pub fn point_to(session: &mut Session, at: (f64, f64)) {
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: at.0, y: at.1 })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+}
+
+/// Press or let go of the left button where the pointer is.
+fn left(session: &mut Session, pressed: bool) {
+    session
+        .compositor()
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed,
+        })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+}
+
+/// Click the screen point `at`, as the person does.
+pub fn click(session: &mut Session, at: (f64, f64)) {
+    point_to(session, at);
+    left(session, true);
+    left(session, false);
+}
+
+/// Drag from the screen point `from` to `to` with the left button, in steps, as a hand does.
+pub fn drag(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
+    point_to(session, from);
+    left(session, true);
+    for step in 1..=8 {
+        let t = f64::from(step) / 8.0;
+        point_to(
+            session,
+            (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t),
+        );
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    left(session, false);
+}
+
+/// Press and let go of the key `keycode`.
+pub fn key(session: &mut Session, keycode: u32) {
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::Key { keycode, pressed })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+}
+
+/// A screen point on the canvas's free ground: in its lower right, where no place stands until
+/// something is put there.
+pub fn free_point(session: &mut Session) -> (f64, f64) {
+    let (x, y, w, h) = wait_for(session, "the canvas", |session| on_screen(session, CANVAS));
+    (x + w * 0.7, y + h * 0.75)
+}
+
+/// Point at the screen point `at` on the canvas's free ground and say `text` there: the click puts
+/// the caret there, the keys type into it and Enter sends it (canvas.md §1). The one way every
+/// test asks or finds on the canvas.
+pub fn point_and_say(session: &mut Session, at: (f64, f64), text: &str) {
+    click(session, at);
+    say(session, text);
+}
+
+/// Drag a rectangle on the canvas's free ground from `from` to `to` and say `text` in it: the
+/// caret stands inside the rectangle, and what the words find fills it (canvas.md §1).
+pub fn frame_and_say(session: &mut Session, from: (f64, f64), to: (f64, f64), text: &str) {
+    drag(session, from, to);
+    say(session, text);
+}
+
+/// Say `text` at the caret pointing put on the canvas: type it, then Enter.
+pub fn say(session: &mut Session, text: &str) {
+    until(session, "the caret where the person pointed", |session| {
+        on_screen(session, CANVAS_CARET).is_some()
+    });
+    type_text(session, text);
+    key(session, KEY_ENTER);
+}
+
 /// Type `text` on the keyboard, a key at a time, as the person does: each character's key on the
 /// seat's layout, with the modifiers it needs, pressed and let go before the next frame. A key held
 /// across a frame would repeat whenever that frame outlasts the repeat delay, as one on a loaded
@@ -350,13 +444,33 @@ pub fn type_text(session: &mut Session, text: &str) {
 }
 
 /// The desk's preset switch on screen: the bar's menu, named by the preset the desk shows ("Showing
-/// Strips", "Showing Frames", …). Which one it names depends on the desk a test starts from, so a
-/// test asks for the menu rather than for a name.
+/// Strips", "Showing Desktop", …). Which one it names depends on the desk a test starts from, so a
+/// test asks for the menu rather than for a name. The canvas keeps no switch on its bar
+/// (`canvas.md` §7): there the presets are in the person's own menu, their face on the bar.
 pub fn preset_menu(session: &Session) -> Option<String> {
     session
         .accessible_labels()
         .into_iter()
         .find(|label| label.starts_with("Showing ") && on_screen(session, label).is_some())
+        .or_else(|| person_menu(session))
+}
+
+/// The person's own menu on the bar, their face, named for what it holds: on the canvas it holds
+/// the desk styles and the workspaces.
+pub fn person_menu(session: &Session) -> Option<String> {
+    session.accessible_labels().into_iter().find(|label| {
+        label.ends_with(": desk style and workspaces") && on_screen(session, label).is_some()
+    })
+}
+
+/// Whether the desk shows the Frames canvas: its canvas stands, and its bar carries no preset
+/// switch.
+pub fn canvas_shown(session: &Session) -> bool {
+    on_screen(session, CANVAS).is_some()
+        && !session
+            .accessible_labels()
+            .iter()
+            .any(|label| label.starts_with("Showing ") && on_screen(session, label).is_some())
 }
 
 /// The words the desk lists the style `style` (`so.tilo.shell:frames`) under: its doc line, or its
@@ -396,13 +510,18 @@ pub fn show_preset(session: &mut Session, style: &str) {
     });
     // A desk already showing it says so, and refuses to show it again in the person's language:
     // what the switch names decides it.
-    if !switch_says(session, &label) {
+    // The canvas keeps no switch on its bar (`canvas.md` §7): it says it shows the canvas by the
+    // canvas standing under a bar that names no style.
+    let shows = |session: &Session| {
+        switch_says(session, &label) || (style == FRAMES && canvas_shown(session))
+    };
+    if !shows(session) {
         session
             .run_shell_action("show_style", vec![Value::from(style)])
             .unwrap_or_else(|why| panic!("the desk shows {style}: {why}"));
     }
     wait_for(session, format!("the desk to show {style}"), |session| {
-        switch_says(session, &label).then_some(())
+        shows(session).then_some(())
     });
 }
 
@@ -640,11 +759,12 @@ pub fn app_store() -> &'static Path {
 }
 
 /// The records of the tilolang apps installed in [`app_store`], each filled by its first
-/// scenario, published for [`PERSON`]: what a development session seeds.
+/// scenario, published for [`PERSON`]: what a development session seeds, each app's record a
+/// service of its own, as the session runs them.
 ///
 /// # Panics
 /// The apps do not load.
-pub fn seeded_apps() -> RecordService {
+pub fn seeded_apps() -> Vec<Box<dyn tilo_service::Service>> {
     seeded_apps_in(app_store())
 }
 
@@ -653,9 +773,21 @@ pub fn seeded_apps() -> RecordService {
 ///
 /// # Panics
 /// The apps do not load.
-pub fn seeded_apps_in(store: &Path) -> RecordService {
+pub fn seeded_apps_in(store: &Path) -> Vec<Box<dyn tilo_service::Service>> {
     let catalog = package_store::Catalog::at(store, None);
-    tilo_session::seeded_apps::seeded(PERSON, &catalog).expect("the seeded apps")
+    tilo_session::seeded_apps::seeded(PERSON, &catalog)
+        .expect("the seeded apps")
+        .into_iter()
+        .map(|app| Box::new(app) as Box<dyn tilo_service::Service>)
+        .collect()
+}
+
+/// Every resource `services` publish, as the session's catalogue lists them.
+pub fn published(services: &[Box<dyn tilo_service::Service>]) -> Vec<tilo_actions::ResourceSpec> {
+    services
+        .iter()
+        .flat_map(|service| service.resources())
+        .collect()
 }
 
 /// Build the tilolang apps a development session runs into the store `store`, from this tree's
@@ -680,14 +812,13 @@ pub fn seeded_session_at(
     admit_repl: Vec<std::path::PathBuf>,
     apps: Option<Rc<dyn tilo_session::AppActions>>,
 ) -> Session {
-    let seeded = seeded_apps();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
             shell: true,
             collab: false,
-            services: vec![Box::new(seeded)],
+            services: seeded_apps(),
             questions: Some(Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
             agent_door: Some(root.join("agent.sock")),
@@ -699,9 +830,12 @@ pub fn seeded_session_at(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    // The desk shows the Frames canvas once its switch says so: what the canvas's own controls
-    // are called is the person's language's, so a fixture reads the style, not their words.
-    show_preset(&mut session, "so.tilo.shell:frames");
+    // The desk shows the Frames canvas once it says so: what the canvas's own controls are called
+    // is the person's language's, so a fixture reads the style, not their words.
+    show_preset(&mut session, FRAMES);
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, CANVAS).is_some()
+    });
     session
 }
 

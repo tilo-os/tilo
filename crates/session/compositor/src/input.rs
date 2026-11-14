@@ -433,5 +433,6 @@ fn scroll_amount<B: InputBackend>(event: &B::PointerAxisEvent, axis: Axis) -> f6
     }
 }
 
-/// Logical pixels one wheel notch scrolls.
-const WHEEL_STEP: f64 = 15.0;
+/// Logical pixels one wheel notch scrolls: what a wheel turned by notches is said in to a client,
+/// whether a device turned it or a test did.
+pub const WHEEL_STEP: f64 = 15.0;

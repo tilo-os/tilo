@@ -64,8 +64,10 @@ use pictures::MOST_PICTURES;
 mod program_steps;
 mod resume;
 
+mod answer;
 mod compaction;
 mod failure;
+use answer::SAY_WHAT_YOU_DID;
 pub(crate) use failure::Failure;
 mod progress;
 
@@ -114,15 +116,21 @@ pub(super) const DEPRECATED_TAG: &str = "tilo.deprecated:";
 /// model that corrects itself takes one of them; one that keeps calling the
 /// same way ends the task rather than looping.
 const MOST_MALFORMED_TURNS: usize = 2;
+/// How many times one task asks the model again after a turn whose answer
+/// could not be used — one that arrived unreadable, or that the provider failed
+/// while writing — before the run ends with the reason. None of such a turn's
+/// calls ran, so asking again repeats nothing.
+const MOST_UNUSABLE_TURNS: usize = 2;
+/// What the model reads before the reason its last answer was not used.
+const UNUSABLE_ANSWER: &str = "Your last answer did not arrive in a form that could be used";
+/// What the model reads after that reason: nothing of that answer ran.
+const ANSWER_AGAIN: &str = "None of its calls ran. Answer again from here, keeping \
+     the answer short: call the tools you need, or `plan` with your reply.";
 /// How many finishes in a row a run answers with "nothing was done and nothing
 /// was said" before it ends with the clean failure row. A finish that carries
 /// neither a completed step nor words for the person is not an answer, whatever
 /// it says of itself; one that keeps making it ends the task as it began.
 const MOST_SILENT_FINISHES: usize = 2;
-/// What the model is told when it finished with work done and nothing written
-/// for the person: its own words are the reply, never a line it never wrote.
-const SAY_WHAT_YOU_DID: &str = "You finished without telling the person what you did. Call `plan` again with your reply: \
-     one or two sentences, in their words, saying what you did. Do not repeat any step.";
 /// How many times in a row a turn cut off at the model's output limit is
 /// continued from where it stopped before the run fails. Reasoning models
 /// spend part of their answer's budget thinking; an answer that keeps being
@@ -173,6 +181,19 @@ or changed in an application, do it there; never put that content in your reply 
 does it say) is answered in your reply: read what you need with read operations, then call \
 `plan` alone with the whole answer in `reply`. List no parts for a question, and write nothing \
 into an application unless the request asks for that too. A remark is answered the same way.
+- Set your reply to be read at a glance: lead with the answer in one sentence, then short \
+paragraphs. When it names several items (tasks, mails, notes, dates), put them in a Markdown \
+bulleted list, one item per line (`- Book a haircut — 29 Jun`), never a run-on sentence of \
+commas; group them under a short line when they fall into groups. Plain Markdown only: no \
+tables, no headings for a short answer.
+- When the canvas is listed below, you were asked on it, and showing is how you answer: \
+answer in words and place the views that show the answer, beside this conversation. Read what \
+you need (a `tilo` program finds and reads the apps' records), then in the same or the next turn `invoke` the \
+canvas' place for each resource that shows it, with your answer in `reply` on the last one. A \
+listing or a program that answered what was asked is enough: do not open the application to \
+check it. To show something, place it; to arrange, use the places' own steps (close, position, \
+activate, move, pin) and the canvas' style switch. Open an application in a window of its own \
+only when the person asks for that application.
 - A result too long for one observation shows its first page and a `continues`; read on with \
 `read_result`, only as far as the request needs. A result read long ago may come back put \
 aside, as its `result` handle and a summary; `read_result` reads it again from `from` 0.
@@ -329,6 +350,27 @@ fn is_output_limit(body: &str) -> bool {
 
 /// The longest prefix of `text` within `max` bytes, cut on a character
 /// boundary.
+/// The day the person asks on, as the model reads it: a program reads no clock, so a request
+/// about "this week" or "overdue" is answered from this, never found out by reading change times.
+fn today_line(today: ui::format::NaiveDate) -> String {
+    let week = today.week(ui::format::Weekday::Mon);
+    format!(
+        "Today is {} where the person is ({today}); this week runs from Monday {} to Sunday {}.",
+        ui::format::day_heading(today, true),
+        week.first_day(),
+        week.last_day()
+    )
+}
+
+/// The input tokens the provider counted for the request a turn's `body`
+/// answers, when it said.
+fn input_tokens(body: &str) -> Option<u64> {
+    serde_json::from_str::<agent_provider_config::protocol::ModelResponse>(body)
+        .ok()
+        .map(|response| response.usage.input_tokens)
+        .filter(|tokens| *tokens > 0)
+}
+
 fn head(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
@@ -425,6 +467,10 @@ pub(super) struct LoopState {
     /// bounded, so a model that keeps calling the same way ends the task
     /// rather than looping.
     malformed_turns: usize,
+    /// Turns asked again after an answer that could not be used (one that
+    /// arrived unreadable, or that the provider failed while writing):
+    /// bounded, so a provider that keeps failing ends the task.
+    unusable_turns: usize,
     /// Continuations asked so far of answers the model cut off at its output
     /// limit, in a row: a turn cut off is continued from where it stopped,
     /// a bounded number of times, before the run fails with the clean
@@ -442,6 +488,9 @@ pub(super) struct LoopState {
     /// Whether the model was asked, once, to say what it did when it finished
     /// with work done and no words.
     asked_for_words: bool,
+    /// The last turn's request as compaction estimated it, and the input
+    /// tokens the provider counted for it, when it said.
+    counted: Option<(usize, u64)>,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -632,7 +681,9 @@ impl LoopState {
             pictures: Vec::new(),
             programs: program_steps::ProgramWorld::default(),
             malformed_turns: 0,
+            unusable_turns: 0,
             continuations: 0,
+            counted: None,
             reply: None,
             silent_finishes: 0,
             asked_for_words: false,
@@ -672,65 +723,6 @@ impl LoopState {
                 })
             })
             .collect()
-    }
-
-    /// A model turn that failed after every listed part of the request
-    /// already has a successful operation ends the task as finished: the
-    /// work is done, only the model's closing turn was lost (e.g. it ran
-    /// into its token limit). The reply is the last words the model wrote for
-    /// the person, on whatever call carried them and whether or not that call
-    /// succeeded — never a line the run writes in its place. When the model
-    /// wrote nothing, it is asked once for the words; still none, the run ends
-    /// without a reply rather than with one nobody said.
-    fn finished_despite_failed_plan(
-        &mut self,
-        conversation: &mut Conversation,
-        error: &str,
-    ) -> Option<LoopEnd> {
-        if self.completed == 0 || self.parts.is_empty() || !self.undone_parts().is_empty() {
-            return None;
-        }
-        if self.reply.is_none() && !self.asked_for_words {
-            self.asked_for_words = true;
-            tracing::info!(
-                error,
-                completed = self.completed,
-                "closing model turn failed after every part was done; asking for the words"
-            );
-            conversation.push_user(SAY_WHAT_YOU_DID);
-            return None;
-        }
-        tracing::info!(
-            error,
-            completed = self.completed,
-            said = self.reply.is_some(),
-            "closing model turn failed after every part was done; finishing"
-        );
-        Some(LoopEnd::Finished(
-            tools::Finish {
-                reply: self.reply.clone(),
-                done: true,
-                view: None,
-            },
-            self.completed,
-        ))
-    }
-
-    /// A turn that failed after the model was asked for the words, and left
-    /// none: the run ends with the clean failure row, since the person gets no
-    /// answer the model said. `None` when the turn failed for another reason
-    /// (a model that never reached this point, a part still undone).
-    fn failed_after_asking_for_words(&self, error: &str) -> Option<LoopEnd> {
-        if !self.asked_for_words || self.reply.is_some() {
-            return None;
-        }
-        if self.completed == 0 || self.parts.is_empty() || !self.undone_parts().is_empty() {
-            return None;
-        }
-        Some(LoopEnd::Failed(Failure::spoken(
-            &crate::i18n::t("agent-failure-no-answer"),
-            error,
-        )))
     }
 
     /// Record `parts`/`unable` a call carried; the first listing wins.
@@ -969,6 +961,10 @@ impl Session {
                 (offer.broker_peer_id.is_some() || offer.broker_provider.is_some())
                     // The agent's own AI transforms are not task steps.
                     && !crate::transform::is_transform_kind(&offer.descriptor.resource_kind)
+                    // A host program's open is no step of a task: its window
+                    // publishes nothing to work with. The session's `open-app`
+                    // still opens an app the person names.
+                    && !tools::canvas::is_host_app(offer)
                     // An operation needing confirmation is offered too: the
                     // step pauses until the person answers it.
                     // An operation its application marks deprecated names
@@ -1125,49 +1121,13 @@ impl Session {
         // limit is not made to overflow by its answer.
         let mut context = compaction::Context::of_context(
             self.chooser.context_tokens(),
-            self.chooser.output_tokens(),
+            self.chooser.declared_output_tokens(),
         );
         let began = ui::time::now();
         self.chooser.begin_trace();
         let catalogue = self.task_catalogue();
-        // "ping/tell/notify … in Chat" requires a successful Chat operation,
-        // whatever the model later claims.
-        // A question is answered in the reply: nothing is implied of it.
-        // Only the person's own words imply anything: the selection quoted
-        // as context and earlier answers in the conversation do not.
-        let request = run.request().to_lowercase();
-        let question = asks_question(&request);
-        if !question
-            && request.contains("chat")
-            && asks_for_message(&request)
-            && let Some(chat) = catalogue
-                .offers
-                .iter()
-                .map(|offer| offer.app.as_str())
-                .find(|app| app.to_lowercase().contains("chat"))
-        {
-            state.parts.push(tools::Part {
-                text: "(implied) the message in Chat the request asks for".into(),
-                app: chat.to_owned(),
-            });
-        }
-        // An application the request names (by the title it publishes, e.g.
-        // "Writer") requires a successful operation in it — opening it is
-        // not enough — whatever parts the model later lists.
-        for (app, title) in tools::named_applications(&catalogue, &request)
-            .into_iter()
-            .filter(|_| !question)
-        {
-            if !state.parts.iter().any(|part| app_matches(&part.app, app)) {
-                state.parts.push(tools::Part {
-                    text: format!("(implied) what the request asks for in {title}"),
-                    app: app.to_owned(),
-                });
-            }
-        }
-        let summary =
-            tools::catalogue_summary(&catalogue, &mut state.revealed, tools::MOST_SUMMARISED);
-        // Stable first, volatile last. System and tools are the same bytes on
+        Self::note_implied_parts(run, &catalogue, state);
+        let summary = Self::operations_summary(run, &catalogue, state); // Stable first, volatile last. System and tools are the same bytes on
         // every turn of every task; this catalogue changes only when the
         // applications republish, so it opens the first turn in a block of
         // its own and the earlier conversation and the request follow it.
@@ -1178,6 +1138,9 @@ impl Session {
         // the operations named for it included, so a run that acted at the
         // wrong place can be told apart from one that was never told where.
         tracing::info!(task_id = %run.task_id, %request, "task request");
+        // The operations the first turn shows, as the model reads them: a run that wandered can
+        // be told apart from one that was never shown the step it needed.
+        tracing::info!(operations = %head(&summary, 12_000), "task operations");
         let resumed = match self.resume_paused_step(run, state)? {
             resume::Resumed::Fresh => String::new(),
             resume::Resumed::Told(told) => format!("\n\n{told}"),
@@ -1187,7 +1150,10 @@ impl Session {
         let place = program_steps::where_section(run, &state.programs, state.turns);
         let first = FirstTurn {
             operations: format!("Operations published right now:\n\n{summary}\n"),
-            task: format!("{place}\nThe request:\n\n{request}{resumed}"),
+            task: format!(
+                "{place}\n{}\n\nThe request:\n\n{request}{resumed}",
+                today_line(ui::clock::today())
+            ),
         };
         let mut conversation = if self.chooser.uses_neutral_protocol() {
             Conversation::neutral_first(LOOP_SYSTEM, &first)
@@ -1220,9 +1186,77 @@ impl Session {
             }
             // What the next turn is sent stays within the model's context:
             // results read long ago give way to their handles.
+            if let Some((sent, input_tokens)) = state.counted.take() {
+                context.counted(sent, input_tokens);
+            }
             context.compact(&mut conversation, &mut state.pages);
             turn += 1;
         }
+    }
+
+    /// What the request implies of the run, whatever the model later claims: a Chat operation when
+    /// it asks for a message to be sent, and an operation in each application it names by the title
+    /// it publishes. A question implies nothing of itself — it is answered in the reply — and only
+    /// the person's own words imply anything: the selection quoted as context and earlier answers
+    /// in the conversation do not.
+    fn note_implied_parts(
+        run: &runtime_collab::TaskRunEnvelope,
+        catalogue: &surface::Catalogue,
+        state: &mut LoopState,
+    ) {
+        let request = run.request().to_lowercase();
+        let question = asks_question(&request);
+        if !question
+            && request.contains("chat")
+            && asks_for_message(&request)
+            && let Some(chat) = catalogue
+                .offers
+                .iter()
+                .map(|offer| offer.app.as_str())
+                .find(|app| app.to_lowercase().contains("chat"))
+        {
+            state.parts.push(tools::Part {
+                text: "(implied) the message in Chat the request asks for".into(),
+                app: chat.to_owned(),
+            });
+        }
+        for (app, title) in tools::named_applications(catalogue, &request)
+            .into_iter()
+            .filter(|_| !question)
+        {
+            if !state.parts.iter().any(|part| app_matches(&part.app, app)) {
+                state.parts.push(tools::Part {
+                    text: format!("(implied) what the request asks for in {title}"),
+                    app: app.to_owned(),
+                });
+            }
+        }
+    }
+
+    /// The operations the first turn shows, as the model reads them. Asked on the canvas, the
+    /// canvas' own steps come first, whole: showing what answers the question beside the
+    /// conversation is the answer's normal shape, and the applications' operations are summarised
+    /// after them.
+    fn operations_summary(
+        run: &runtime_collab::TaskRunEnvelope,
+        catalogue: &surface::Catalogue,
+        state: &mut LoopState,
+    ) -> String {
+        let canvas = tools::canvas::canvas_section(
+            catalogue,
+            &mut state.revealed,
+            tools::canvas::conversation_of(&run.task_id),
+        );
+        if canvas.is_empty() {
+            return tools::catalogue_summary(
+                catalogue,
+                &mut state.revealed,
+                tools::MOST_SUMMARISED,
+            );
+        }
+        let rest = tools::canvas::without_canvas(catalogue);
+        let summary = tools::catalogue_summary(&rest, &mut state.revealed, tools::MOST_SUMMARISED);
+        format!("{canvas}Applications:\n\n{summary}")
     }
 
     /// Publish only provider-exposed presentation, never argument previews or
@@ -1387,6 +1421,7 @@ impl Session {
         }
         self.incorporate_native_directions(run, conversation)?;
         let body = conversation.body(&tools::typed_loop_definitions());
+        let sent = compaction::Context::tokens_of(&body);
         // The model starts first. The cancellation poll is a round trip to
         // the host and is not waited for: its answer is read while the model
         // thinks, and before any step of this turn reaches the host.
@@ -1467,6 +1502,12 @@ impl Session {
             if !validated && let Some(active) = &mut self.turn {
                 active.ready.clear();
                 active.refused = None;
+                // A call id the provider reused from an earlier turn is the
+                // new call's own from here on: the answer is read, not
+                // thrown away for its provider's numbering.
+                if let Some(Ok(body)) = &mut active.finished {
+                    *body = conversation.with_own_call_ids(body);
+                }
                 if let Some(Ok(body)) = &active.finished {
                     if is_output_limit(body) {
                         // A cut-off turn runs no call of its own: the loop
@@ -1499,11 +1540,10 @@ impl Session {
                         // missing operation"): those are the record kept beside
                         // it, for whoever debugs the run.
                         Err(error) => {
-                            let failure = Failure::spoken(
-                                &crate::i18n::t("agent-failure-invalid-response"),
-                                &error,
-                            )
-                            .retained(&active.presentation.text, &active.presentation.reasoning);
+                            let failure = Failure::unusable(&error).retained(
+                                &active.presentation.text,
+                                &active.presentation.reasoning,
+                            );
                             active.refused = Some((body.clone(), failure.clone()));
                             active.finished = Some(Err(failure));
                         }
@@ -1588,30 +1628,78 @@ impl Session {
                 // Answer its calls with what was wrong as tool error results
                 // and take another turn, bounded, so one that keeps calling
                 // the same way ends the task instead of looping.
-                if let Some((raw, _)) = &refused_turn
-                    && let Some(refused) = malformed_turn(conversation, raw)
+                let malformed = refused_turn
+                    .as_ref()
+                    .and_then(|(raw, _)| Some((raw, malformed_turn(conversation, raw)?)));
+                if let Some((raw, refused)) = &malformed
                     && state.malformed_turns < MOST_MALFORMED_TURNS
                 {
                     state.malformed_turns += 1;
+                    // What the model sent, as it sent it: the record of a refused call is the
+                    // call, not only the parser's reason.
+                    let sent = conversation
+                        .read_calls(raw)
+                        .map(|calls| {
+                            calls
+                                .iter()
+                                .map(|call| {
+                                    format!("{}({})", call.name, head(&call.input.to_string(), 600))
+                                })
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        })
+                        .unwrap_or_default();
                     tracing::info!(
                         turn,
                         %error,
                         calls = refused.len(),
+                        %sent,
                         "the model's calls were refused; answering them with what was wrong"
                     );
                     conversation
-                        .refuse(raw, &refused)
+                        .refuse(raw, refused)
                         .map_err(anyhow::Error::msg)?;
                     // Nothing of this turn ran; the run takes another turn,
                     // as after any turn that dispatched no finish.
                     return Ok(None);
                 }
+                // An answer that arrived and could not be read, or one the
+                // provider failed while writing (a stream that ended in an
+                // error, a model that spent its whole output on nothing), ran
+                // none of its calls: a batch runs only once the whole answer
+                // is in and read. The model is asked again from the history
+                // the run committed, told why its last answer was not used,
+                // a bounded number of times, before the run ends on it. Calls
+                // refused for their shape were answered with what was wrong
+                // already (above): a model that keeps making them has had its
+                // turns, and is not asked once more.
+                if malformed.is_none()
+                    && error.asks_again()
+                    && state.unusable_turns < MOST_UNUSABLE_TURNS
+                {
+                    state.unusable_turns += 1;
+                    tracing::info!(
+                        turn,
+                        %error,
+                        again = state.unusable_turns,
+                        "the model's answer could not be used; asking again"
+                    );
+                    conversation.push_user(&format!(
+                        "{UNUSABLE_ANSWER} ({}). {ANSWER_AGAIN}",
+                        head(error.detail().lines().next().unwrap_or_default(), 300)
+                    ));
+                    return Ok(None);
+                }
+                tracing::info!(turn, %error, "the model's turn failed; ending the run");
                 // `error` is the failure's record: its sentence is what a
                 // person reads, and what the turn kept goes beside it.
                 return Ok(Some(LoopEnd::Failed(error)));
             }
         };
         self.charge_turn(run, &body)?;
+        if let Some(input_tokens) = input_tokens(&body) {
+            state.counted = Some((sent, input_tokens));
+        }
         // A turn the model cut off at its output limit is not a failed plan:
         // it is an answer that stopped early. Its text — what it wrote of the
         // answer or of its calls — is kept, and the model is asked to go on
@@ -1787,7 +1875,7 @@ impl Session {
         // ends the run with the clean failure row, never a success.
         let silent = finish.as_ref().is_some_and(|Finishing { said, .. }| {
             !failed && said.done && said.reply.is_none() && state.completed == 0
-        }) && words.trim().is_empty();
+        }) && tools::says_nothing(&words);
         if silent {
             let id = finish.as_ref().map(|finishing| finishing.id.clone());
             state.silent_finishes += 1;
@@ -1821,7 +1909,11 @@ impl Session {
                         .unwrap_or_else(|| "Not handled.".into()),
                 )
             })
-            .collect();
+            .collect::<Vec<(String, String)>>();
+        // Debug capture beside "agent tool call": what each call answered, truncated.
+        for (id, result) in &ordered {
+            tracing::info!(turn, %id, result = %head(result, 600), "agent tool result");
+        }
         conversation
             .push(assistant, ordered)
             .map_err(anyhow::Error::msg)?;
@@ -1833,21 +1925,27 @@ impl Session {
             && let Some(reply) = &said.reply
         {
             state.reply = Some(reply.clone());
-        } else if !words.trim().is_empty() {
-            state.reply = Some(tools::bound_reply(&words));
+        } else if let Some(spoken) = tools::spoken_reply(&words) {
+            state.reply = Some(spoken);
         }
         // A turn that called nothing and answered in words is the model's
         // answer: a chat-style model ends a turn that way, so its words are the
         // turn's reply. Every step the turn started has settled by now
         // (`settle_turn`), so nothing the answer could describe is still
-        // running. A model that ends with `plan` keeps that finish.
+        // running. A model that ends with `plan` keeps that finish. Words that
+        // say nothing ("…", "placeholder") are no answer: asked once more, then
+        // the readable failure.
         if calls.is_empty() && !failed {
-            let answer = tools::bound_reply(&words);
+            let Some(answer) = tools::spoken_reply(&words) else {
+                self.chooser
+                    .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
+                return Ok(state.unanswered(conversation, &words));
+            };
             self.chooser
                 .mark(tilo_model_client::TraceEvent::PlanReady, turn);
             return Ok(Some(LoopEnd::Finished(
                 tools::Finish {
-                    reply: (!answer.is_empty()).then_some(answer),
+                    reply: Some(answer),
                     done: true,
                     view: None,
                 },
@@ -1858,11 +1956,12 @@ impl Session {
         // model that wrote its answer in the turn's text said it, and no line
         // stands in for what it said. A finish that left the person without
         // words, with steps done, is asked once for them; a model that does not
-        // give them ends the run with what it did say earlier, if anything.
+        // give them ends the run with what it did say earlier, and with none,
+        // the readable failure: an empty answer never passes as one.
         match finish {
             Some(Finishing { mut said, .. }) if !failed => {
-                if said.reply.is_none() && !words.is_empty() {
-                    said.reply = Some(tools::bound_reply(&words));
+                if said.reply.is_none() {
+                    said.reply = tools::spoken_reply(&words);
                 }
                 if said.reply.is_none() && state.completed > 0 && !state.asked_for_words {
                     state.asked_for_words = true;
@@ -1874,6 +1973,11 @@ impl Session {
                 }
                 if said.reply.is_none() {
                     said.reply.clone_from(&state.reply);
+                }
+                if said.done && said.reply.is_none() {
+                    self.chooser
+                        .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
+                    return Ok(state.unanswered(conversation, &words));
                 }
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanReady, turn);
@@ -2162,6 +2266,17 @@ impl Session {
             let catalogue = self.task_catalogue();
             if let Some(offer) = surface::find(&catalogue.offers, operation) {
                 *state.done_apps.entry(offer.app.clone()).or_default() += 1;
+                // Showing or arranging an app's thing on the canvas is what a
+                // request naming that app asked of it there.
+                if tools::canvas::is_canvas_step(offer) {
+                    let parameters = call
+                        .input
+                        .get(tools::INVOKE_PARAMETERS)
+                        .unwrap_or(&Value::Null);
+                    for app in tools::canvas::apps_shown(&catalogue, offer, parameters) {
+                        *state.done_apps.entry(app).or_default() += 1;
+                    }
+                }
             }
         }
         let mut report = report;
@@ -2200,7 +2315,7 @@ impl Session {
             .get(tools::INVOKE_REPLY)
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|reply| !reply.is_empty());
+            .filter(|reply| !tools::says_nothing(reply));
         if navigation && reply.is_some() && report.succeeded {
             report.note = Some(
                 report
@@ -2359,7 +2474,7 @@ impl Session {
         let index = state.completed;
         let settled = self.run_task_step(run, index, &action, &arguments)?;
         state.step_index += 1;
-        self.record_action(run, &action.resource_kind, &action.label, settled.as_ref())?;
+        self.record_action(run, &action, settled.as_ref())?;
         match settled {
             Ok(outcome) => {
                 let succeeded = Succeeded {
@@ -2507,12 +2622,7 @@ impl Session {
             }
             Err(stop) => {
                 self.step_settled();
-                self.record_action(
-                    run,
-                    &prepared.offer.descriptor.resource_kind,
-                    &prepared.offer.descriptor.action_label,
-                    Err(&stop),
-                )?;
+                self.record_action(run, &prepared.action, Err(&stop))?;
                 Ok(match stop {
                     TaskActionStop::Failed(message) => {
                         Started::Refused(Box::new(refused_report(message)))
@@ -2551,13 +2661,9 @@ impl Session {
         let mut cancelled = None;
         for ((call, offer, before, index), following) in started.into_iter().zip(followed) {
             self.step_settled();
+            let action = following.action.clone();
             let settled = following.into_outcome();
-            self.record_action(
-                run,
-                &offer.descriptor.resource_kind,
-                &offer.descriptor.action_label,
-                settled.as_ref(),
-            )?;
+            self.record_action(run, &action, settled.as_ref())?;
             let report = match settled {
                 Ok(outcome) => {
                     let succeeded = Succeeded {
@@ -2843,3 +2949,20 @@ fn newly_available(
 #[path = "agent_loop_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod today_tests {
+    /// The model is told the day and the week it is in, so "this week" needs no step.
+    #[test]
+    fn the_request_names_today_and_its_week() {
+        let friday = ui::format::NaiveDate::from_ymd_opt(2026, 11, 13).unwrap();
+        assert_eq!(
+            super::today_line(friday),
+            format!(
+                "Today is {} where the person is (2026-11-13); this week runs from Monday \
+                 2026-11-09 to Sunday 2026-11-15.",
+                ui::format::day_heading(friday, true)
+            )
+        );
+    }
+}

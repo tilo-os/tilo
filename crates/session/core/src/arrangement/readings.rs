@@ -31,6 +31,10 @@ pub struct ArrangementRowReading {
 
 /// A strip of the desk, as the person's arrangement names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a reading of the record's own fields, each a fact of the strip a view reads by name"
+)]
 pub struct ArrangementStripReading {
     pub key: String,
     pub workspace: String,
@@ -44,6 +48,9 @@ pub struct ArrangementStripReading {
     pub canvas_y: i64,
     pub canvas_width: i64,
     pub canvas_height: i64,
+    /// Whether `canvas_height` is the most it takes: what it shows hugs what it holds up to it.
+    #[serde(default)]
+    pub canvas_hugs: bool,
     /// Whether the strip's window floats above the workspace's windows,
     /// rather than standing among them in its row.
     #[serde(default)]
@@ -174,7 +181,15 @@ impl Catalog {
     /// The resource `id` as it is published, if it is.
     #[must_use]
     pub fn get(&self, id: &str) -> Option<&Target> {
-        self.by_id.get(id)
+        self.by_id.get(id).or_else(|| {
+            // A place recorded before its app published the item under its stable address
+            // (`chat.workspace/channels/c1` for `chat.workspace.channels:c1`) shows the same
+            // resource: the record keeps what it holds, and the link keeps opening.
+            // And the other way: a stable link to an item its app publishes in the item form.
+            let other =
+                tilo_actions::stable_item_address(id).or_else(|| tilo_actions::item_form_of(id))?;
+            self.by_id.get(&other)
+        })
     }
 
     /// Put `target` under `id` , as the resource is published: a place made from a resource the
@@ -201,9 +216,22 @@ fn collect_targets(resource: &ResourceSpec, out: &mut BTreeMap<String, Target>) 
             resource.id.as_str().to_owned(),
             Target {
                 app: app.to_owned(),
+                place_view: views
+                    .iter()
+                    .find(|view| view.place)
+                    .map(|view| view.id.clone()),
+                place_title: views
+                    .iter()
+                    .find(|view| view.place)
+                    .map_or_else(String::new, |view| view.label.clone()),
                 views: views.into_iter().map(|view| view.id.clone()).collect(),
                 title: resource.label.clone(),
                 kind: resource.kind.clone(),
+                app_title: resource
+                    .resource_type
+                    .as_ref()
+                    .map(|named| named.app.one.clone())
+                    .unwrap_or_default(),
             },
         );
     }
@@ -264,6 +292,7 @@ pub(super) fn reading_of(
                     canvas_y: canvas.map_or(0, |held| i64::from(held.y)),
                     canvas_width: canvas.map_or(0, |held| i64::from(held.width)),
                     canvas_height: canvas.map_or(0, |held| i64::from(held.height)),
+                    canvas_hugs: canvas.is_some_and(|held| held.hugs),
                     floating: float.is_some(),
                     float_corner: float
                         .map_or_else(String::new, |float| float.corner.as_str().to_owned()),

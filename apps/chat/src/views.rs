@@ -168,6 +168,11 @@ pub struct Work {
     /// Shown only behind a disclosure, never as the row's own words.
     #[serde(default)]
     pub failure_detail: String,
+    /// What the agent did, one line per operation it dispatched, in the order it dispatched them:
+    /// the operation in its app's own words. Read from the trace the run wrote as it dispatched,
+    /// never from what the model said it would do.
+    #[serde(default)]
+    pub steps: Vec<String>,
 }
 
 impl Work {
@@ -268,6 +273,24 @@ pub struct Attachment {
     pub detail: String,
 }
 
+/// The address a conversation is published under: its stable `kind:id`,
+/// `chat.workspace.channels:<id>`, which a place, an open and an action's resource parameter take.
+#[must_use]
+pub fn channel_address(id: &str) -> String {
+    format!("{}:{id}", <Channel as ViewResource>::KIND)
+}
+
+/// The conversation an address names, by its id: its stable address
+/// ([`channel_address`]), and the item form older links and records carry
+/// (`chat.workspace/channels/<id>`), which keep opening the same conversation.
+#[must_use]
+pub fn channel_of(address: &str) -> Option<&str> {
+    address
+        .strip_prefix("chat.workspace.channels:")
+        .or_else(|| address.strip_prefix("chat.workspace/channels/"))
+        .filter(|id| !id.is_empty() && !id.contains('/') && !id.contains(':'))
+}
+
 impl Channel {
     /// The resource a place names for this channel, by the id it is published under:
     /// `chat.workspace.channels:<id>` as a development session publishes it, and
@@ -299,8 +322,10 @@ impl Channel {
     /// message with no id (a quote of one from an earlier part of the chat).
     #[must_use]
     pub fn message_resource(id: &str) -> Option<ResourceRef> {
+        // Its stable address, which an open's resource takes; the item form Chat's window
+        // publishes it under resolves from it.
         (!id.is_empty()).then(|| ResourceRef {
-            id: format!("{MESSAGES_KIND}/messages/{id}"),
+            id: format!("{MESSAGES_KIND}.messages:{id}"),
             ty: format!("{MESSAGES_KIND}.messages"),
         })
     }
@@ -517,6 +542,8 @@ fn work_of(work: &crate::model::AgentWork) -> Work {
         state,
         detail,
         failure_detail: work.failure_detail.clone().unwrap_or_default(),
+        // The projection keeps the trace in dispatch order already.
+        steps: work.trace.iter().map(|step| step.label.clone()).collect(),
     }
 }
 
@@ -652,6 +679,10 @@ impl ViewResource for Channel {
     const KIND: &'static str = "chat.workspace.channels";
     const APP: &'static str = "chat";
 }
+
+#[path = "views_turn.rs"]
+mod turn;
+pub use turn::{TURN_KIND, Turn};
 
 /// The kind of the chat's messages record, as its own items are published under it: a message's
 /// row and a reply's quote open `chat.workspace/messages/<id>`.
@@ -1340,7 +1371,7 @@ mod tests {
         )
     }
 
-    fn view_cx(channel: &Channel) -> ViewCx {
+    pub(super) fn view_cx(channel: &Channel) -> ViewCx {
         ViewCx::new(
             channel.resource(),
             "page",
@@ -1353,7 +1384,7 @@ mod tests {
     }
 
     /// Every text a tree shows, in its props.
-    fn texts(node: &Node) -> Vec<String> {
+    pub(super) fn texts(node: &Node) -> Vec<String> {
         let mut out: Vec<String> = node
             .props
             .values()
@@ -1368,8 +1399,25 @@ mod tests {
         out
     }
 
+    /// The paragraphs a tree's rich text shows, as read: what a reader sees of a reply.
+    pub(super) fn rich_texts(node: &Node) -> Vec<String> {
+        let mut out: Vec<String> = node
+            .props
+            .values()
+            .filter_map(|value| match value {
+                Value::Rich(rich) => Some(rich.blocks.iter().map(|block| block.text.clone())),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        for child in &node.children {
+            out.extend(rich_texts(child));
+        }
+        out
+    }
+
     /// Every node of the tree, in order.
-    fn walk(node: &Node) -> Vec<&Node> {
+    pub(super) fn walk(node: &Node) -> Vec<&Node> {
         let mut out = vec![node];
         for child in &node.children {
             out.extend(walk(child));
@@ -1378,12 +1426,12 @@ mod tests {
     }
 
     /// Whether the tree holds a node of `kind`.
-    fn has_kind(node: &Node, kind: &str) -> bool {
+    pub(super) fn has_kind(node: &Node, kind: &str) -> bool {
         node.kind == kind || node.children.iter().any(|child| has_kind(child, kind))
     }
 
     /// Whether every node passes the catalogue check the host applies.
-    fn passes(tree: &Node) {
+    pub(super) fn passes(tree: &Node) {
         let validator = tilo_view::patch::validate::Validator::new(
             tilo_view::node::catalogue(),
             tilo_view::patch::validate::PatchLimits::default(),
@@ -1403,7 +1451,7 @@ mod tests {
     }
 
     /// Every node of the tree whose key holds `suffix` and whose kind is `kind`.
-    fn keyed<'a>(tree: &'a Node, kind: &str, suffix: &str) -> Vec<&'a Node> {
+    pub(super) fn keyed<'a>(tree: &'a Node, kind: &str, suffix: &str) -> Vec<&'a Node> {
         walk(tree)
             .into_iter()
             .filter(|node| node.kind == kind && node.key.contains(suffix))
@@ -2130,6 +2178,7 @@ mod tests {
                 state: state.to_owned(),
                 detail: String::new(),
                 failure_detail: String::new(),
+                steps: Vec::new(),
             }),
             ..Message::default()
         });
@@ -2194,6 +2243,7 @@ mod tests {
                         state: state.to_owned(),
                         detail: "The provider connection closed".to_owned(),
                         failure_detail: String::new(),
+                        steps: Vec::new(),
                     });
                 }
                 let cx = view_cx(&channel);
@@ -2262,6 +2312,7 @@ mod tests {
                                  do not replay completed actions. Provider-exposed summary: \
                                  Let me read r4, r9.."
                         .to_owned(),
+                    steps: Vec::new(),
                 });
             }
             let cx = view_cx(&channel);
@@ -2330,6 +2381,7 @@ mod tests {
                     state: "provider_complete".to_owned(),
                     detail: String::new(),
                     failure_detail: String::new(),
+                    steps: Vec::new(),
                 }),
                 ..Message::default()
             });
@@ -2406,6 +2458,7 @@ mod tests {
                     state: "provider_failed".to_owned(),
                     detail: "The model connection closed".to_owned(),
                     failure_detail: String::new(),
+                    steps: Vec::new(),
                 }),
                 "the page projects the record's failed end and its reason"
             );
@@ -2775,5 +2828,92 @@ mod tests {
                 "no time yet"
             );
         }
+    }
+
+    /// A turn is the question and the agent's messages after it until a person speaks again: the
+    /// next question is a turn of its own, and what the agent did is folded under its reply.
+    #[test]
+    fn a_turn_is_the_question_and_the_replies_until_a_person_speaks_again() {
+        let message = |id: &str, author: &str, text: &str| Message {
+            id: id.to_owned(),
+            author: author.to_owned(),
+            text: text.to_owned(),
+            ..Message::default()
+        };
+        let mut reply = message("r1", "agent:assistant", "Two tasks are due.");
+        reply.work = Some(Work {
+            state: "done".to_owned(),
+            steps: vec!["Open Tasks".to_owned()],
+            ..Work::default()
+        });
+        let channel = Channel {
+            id: "c1".to_owned(),
+            people: vec![
+                Person {
+                    id: MemberId::person("pat"),
+                    name: "Pat".to_owned(),
+                },
+                Person {
+                    id: MemberId::agent("assistant"),
+                    name: "Assistant".to_owned(),
+                },
+            ],
+            messages: vec![
+                message("q1", "pat", "what is due?"),
+                reply,
+                message("q2", "pat", "and tomorrow?"),
+                message("r2", "agent:assistant", "Nothing."),
+            ],
+            ..Channel::default()
+        };
+        let turn_of_q1 = Turn::of(&channel, "q1").expect("the turn");
+        assert_eq!(turn_of_q1.question.text, "what is due?");
+        assert_eq!(
+            turn_of_q1
+                .replies
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["r1"],
+            "the turn ends where the person spoke again"
+        );
+        assert_eq!(turn_of_q1.conversation().id, "chat.workspace.channels:c1");
+        assert_eq!(channel_of("chat.workspace.channels:c1"), Some("c1"));
+        assert_eq!(
+            channel_of("chat.workspace/channels/c1"),
+            Some("c1"),
+            "an older link names the same conversation"
+        );
+        assert_eq!(channel_of("chat.workspace/channels/c1/messages/m"), None);
+        assert_eq!(
+            Turn::of(&channel, "q2").map(|next| next.replies.len()),
+            Some(1)
+        );
+        assert!(Turn::of(&channel, "missing").is_none());
+        let tree = turn::turn(&turn_of_q1, &view_cx(&channel));
+        // The card stands in a scroll, so a long answer scrolls inside it rather than growing
+        // past what the canvas shows (`views_turn_tests`).
+        let card = tree.children.first().expect("the card in its scroll");
+        assert!(
+            card.kind == "stack"
+                && card.props.get("padding") == Some(&Value::text("section"))
+                && !card.props.contains_key("fill"),
+            "the turn is a card keeping its padding at its sides and hugging its words, never a \
+             page that takes its pane's height: {} {:?}",
+            card.kind,
+            card.props
+        );
+        let said = texts(&tree);
+        assert!(
+            !said.iter().any(|text| text == "what is due?")
+                && rich_texts(&tree) == ["Two tasks are due."]
+                && said.iter().any(|text| text == "Open Tasks"),
+            "the card says the reply and its one folded step; the question is its place's caption, \
+             never said twice: {said:?}"
+        );
+        assert!(
+            !said.iter().any(|text| text == "Whole conversation") && !has_kind(&tree, "ui.Button"),
+            "the card holds no button: the whole conversation is reached from its handle: {said:?}"
+        );
     }
 }

@@ -44,9 +44,11 @@ use crate::engine::Engine;
 
 mod gesture_input;
 mod state;
+mod wheel_input;
 
 use gesture_input::asked_of_gestures;
 use state::{presence_stamp, shown, state_dump, window_rows, within};
+use wheel_input::wheel;
 
 /// The variable `tilo-control` reads the test-control socket's path from: what a development
 /// session binds the socket at when its command line names none and the default is not wanted,
@@ -1076,6 +1078,9 @@ fn loop_answer(
     if let Some(answer) = asked_of_desk(ctx, op, request, compositor, desk) {
         return answer;
     }
+    if op == Op::Scroll {
+        return wheel(request, compositor, held);
+    }
     if let Some(answer) = asked_of_pointer(op, request, compositor) {
         return answer;
     }
@@ -1278,16 +1283,6 @@ fn asked_of_pointer(op: Op, request: &Json, compositor: &mut Compositor) -> Opti
                 Ok(()) => json!({"ok": {}}),
                 Err(error) => refusal("input_failed", &error),
             }
-        }
-        Op::Scroll => {
-            let dx = number(request, "dx").unwrap_or(0.0);
-            let dy = number(request, "dy").unwrap_or(0.0);
-            // A notch up is the old wire's positive `dy` ; the compositor speaks the protocol's
-            // axis, which counts down as positive.
-            answer(compositor.input(InputEvent::PointerAxis {
-                horizontal: -dx,
-                vertical: -dy,
-            }))
         }
         _ => return None,
     })

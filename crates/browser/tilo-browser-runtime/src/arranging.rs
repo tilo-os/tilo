@@ -38,7 +38,7 @@ impl Arranging {
         // place made by text is the page's palette's to open, never a second index of its own. The
         // empty find answers at once with nothing, as a search over no source would.
         let find: Find = Rc::new(|_: &str, done: FindDone| done(Vec::new()));
-        let ask: Ask = Rc::new(|_: &str| false);
+        let ask: Ask = Rc::new(|_: &str| None);
         // No app's search is asked from the page either: a text naming an app's type places nothing.
         let ask_origin: AskOrigin = Rc::new(|_: &str| None);
         let door = Door::new(
