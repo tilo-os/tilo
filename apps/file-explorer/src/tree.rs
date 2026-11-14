@@ -84,6 +84,9 @@ impl ResourceApp for FilesTreeShell {
 /// The bytes of content the window holds, by hash. Reading content the page
 /// lacks is what asks the workspace for it.
 type Reads = Rc<dyn Fn(&str) -> Option<Vec<u8>>>;
+/// Keeps bytes in the content the window reads, answering their hash: a text
+/// document's file, which the tree holds as a document rather than by hash.
+type Keeps = Rc<dyn Fn(&[u8]) -> Option<String>>;
 
 /// A file the person asked to open, waiting for the bytes that say which app
 /// opens it.
@@ -117,6 +120,7 @@ pub struct TreeBrowser {
     /// The window's own record, which the open folder is set in.
     dispatch: Dispatcher<FilesWindow>,
     read: Option<Reads>,
+    keep: Option<Keeps>,
     body: Column,
     shown: Option<Shown>,
     structure_dirty: bool,
@@ -140,6 +144,9 @@ impl TreeBrowser {
                 })
             }) as Rc<dyn Fn(&str) -> Option<Vec<u8>>>
         });
+        let keep: Option<Keeps> = cx
+            .content()
+            .map(|content| Rc::new(move |bytes: &[u8]| content.put(bytes).ok()) as Keeps);
         let mut browser = Self {
             live: cx.live().clone(),
             tree: cx.shared_record::<fs_protocol::tree::FilesTree>(
@@ -149,6 +156,7 @@ impl TreeBrowser {
             people: cx.people(),
             dispatch: cx.dispatcher(),
             read,
+            keep,
             body: Column::new(),
             shown: None,
             structure_dirty: true,
@@ -298,7 +306,7 @@ impl TreeBrowser {
             }));
         }
         let Some(hash) = node.hash.clone() else {
-            return Box::new(row);
+            return Box::new(self.document_row(row, id, node, name));
         };
         let asked = Rc::clone(&self.asked);
         let read = self.read.clone();
@@ -313,6 +321,31 @@ impl TreeBrowser {
                 name: name.clone(),
             });
         }))
+    }
+
+    /// A text document's row (a `.md`, an `.odt`): its content is the tree's
+    /// own, so choosing it writes the file from the tree and opens that, as a
+    /// computer's folder reads it.
+    fn document_row(&self, row: ListRow, id: &str, node: &TreeEntry, name: String) -> ListRow {
+        let (Some(tree), Some(keep)) = (self.tree.clone(), self.keep.clone()) else {
+            return row;
+        };
+        if node.codec.is_none() {
+            return row;
+        }
+        let asked = Rc::clone(&self.asked);
+        let id = id.to_owned();
+        row.on_view(move || {
+            let file = tree
+                .read(|doc| fs_protocol::tree::document_file(doc, &id, &tilo_content::NoContent))
+                .flatten();
+            if let Some(hash) = file.as_deref().and_then(|file| keep(file)) {
+                asked.borrow_mut().push(Asked {
+                    hash,
+                    name: name.clone(),
+                });
+            }
+        })
     }
 
     /// What carrying the entry `id` out of the workspace takes: the file
@@ -526,6 +559,7 @@ mod tests {
             mtime: 1_767_225_600_000,
             author: Some("ada".to_owned()),
             record_id: None,
+            codec: None,
         };
         (id.to_owned(), entry)
     }

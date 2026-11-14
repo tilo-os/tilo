@@ -89,9 +89,13 @@ impl TreeFiles {
 
     /// The row for `file`, found by `score`.
     fn hit(&self, file: &TreeFile, score: i32) -> Hit {
-        let (kind, target) = match &file.hash {
+        let (kind, target) = match file.hash.as_ref().filter(|_| !file.folder) {
             None => (
-                ResourceKind::Folder,
+                if file.folder {
+                    ResourceKind::Folder
+                } else {
+                    ResourceKind::File
+                },
                 Target::Launch {
                     app: FILES_APP.to_owned(),
                     place: crate::LaunchPlace::Focus,
@@ -232,6 +236,18 @@ mod tests {
         assert_eq!(in_pdf[0].title, "scan.pdf");
 
         assert!(files.query("harbour").is_empty());
+    }
+
+    #[test]
+    fn a_file_whose_content_is_not_named_yet_is_still_a_file() {
+        let files = TreeFiles::new("Lounge");
+        files.set_files(vec![TreeFile {
+            folder: false,
+            ..file("handbook", "handbook.md", None)
+        }]);
+        let found = files.query("handbook");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, ResourceKind::File, "never a folder");
     }
 
     #[test]

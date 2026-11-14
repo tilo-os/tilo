@@ -5030,6 +5030,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-cloud-files",
+ "tilo-content",
  "tilo-content-types",
  "tilo-copy-lint",
  "tilo-files",

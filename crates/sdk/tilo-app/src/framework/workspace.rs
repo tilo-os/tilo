@@ -358,6 +358,13 @@ impl<P: Resource> WorkspaceRecord<P> {
         self.shared.live.clone()
     }
 
+    /// Read the record's document as it is now: what a reader needs beyond
+    /// the resource's state, such as a text document's file, which a
+    /// workspace's tree holds as a document of its own.
+    pub fn read<T>(&self, read: impl FnOnce(&ui_core::automerge::AutoCommit) -> T) -> Option<T> {
+        self.shared.record.read(read)
+    }
+
     /// The current state.
     pub fn get(&self) -> Rc<P::State> {
         self.shared.refresh();

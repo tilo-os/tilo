@@ -101,13 +101,14 @@ impl WorkspaceFiles {
     /// Walk the tree again when it moved, and read the words of each file
     /// whose content arrived since.
     pub(crate) fn refresh(&self) {
-        let Some((record, tree)) = self.tree() else {
+        let Some((record, mut tree)) = self.tree() else {
             return;
         };
         let heads = record.heads();
         let mut read = self.read.borrow_mut();
         if read.heads != heads {
             read.heads = heads;
+            self.keep_documents(&record, &mut tree);
             self.source.set_files(files_of(&tree));
         }
         for node in tree.nodes.values() {
@@ -140,6 +141,32 @@ impl WorkspaceFiles {
                 }
                 // Read again once the code that reads it is here.
                 Words::Coming => {}
+            }
+        }
+    }
+}
+
+impl WorkspaceFiles {
+    /// Name each text document of `tree` (a `.md`, an `.odt`, whose content
+    /// the tree holds as a document of its own) by its file's hash: the file is
+    /// written from the record into the page's content, so a search reads its
+    /// words and opens it as it does any other file.
+    fn keep_documents(&self, record: &StoredRecord, tree: &mut Tree) {
+        let documents: Vec<String> = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.hash.is_none() && node.codec.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in documents {
+            let file = record
+                .read(|doc| fs_protocol::tree::document_file(doc, &id, &self.content))
+                .flatten();
+            let Some(hash) = file.and_then(|file| self.content.put(&file).ok()) else {
+                continue;
+            };
+            if let Some(node) = tree.nodes.get_mut(&id) {
+                node.hash = Some(hash);
             }
         }
     }
