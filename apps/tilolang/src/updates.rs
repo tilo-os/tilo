@@ -7,25 +7,16 @@
 //! protocol of `tilo_app_module`: the directory is named in `TILO_APP_MODULE_UPDATES`. Without
 //! one, nothing here runs.
 //!
-//! A thread watches the directory and reads each new generation as a [`Bundle`]: the latest
-//! is what [`latest`] answers.
+//! A thread watches the directory and reads each new generation as a [`Bundle`], which it
+//! hands over ([`hand_over`]): [`Builds`] is how a window's instance follows them.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use tilo_app_module::CURRENT_FILE;
+use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
-
-/// A later build, read.
-#[derive(Clone)]
-pub struct Update {
-    /// Counts the builds taken since launch, from 1.
-    pub generation: u64,
-    pub bundle: Arc<Bundle>,
-    /// When the build was read: what the time a window takes to show it is counted from.
-    pub read_at: Instant,
-}
+use tilolang_tilo::instance::Update;
 
 #[derive(Default)]
 struct Shared {
@@ -33,7 +24,8 @@ struct Shared {
     /// The generation of the directory's build that `latest` is, so a read
     /// that finds the same one again takes nothing.
     taken: Option<u64>,
-    wakes: Vec<ui::wake::WakeHandle>,
+    /// What each following instance is woken by, while it lives.
+    wakes: Vec<Weak<dyn Fn() + Send + Sync>>,
 }
 
 fn shared() -> &'static Mutex<Shared> {
@@ -47,23 +39,40 @@ fn lock() -> std::sync::MutexGuard<'static, Shared> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The latest later build, once there is one.
-#[must_use]
-pub fn latest() -> Option<Update> {
-    lock().latest.clone()
+/// The later builds this process took, as a window's instance follows them.
+pub struct Builds;
+
+#[cfg(target_os = "linux")]
+impl tilolang_host::hosted::LaterBuilds for Builds {
+    fn latest(&self) -> Option<Update> {
+        lock().latest.clone()
+    }
+
+    fn follow(&self, wake: &Waker) {
+        let mut shared = lock();
+        shared.wakes.retain(|wake| wake.strong_count() > 0);
+        shared.wakes.push(Arc::downgrade(wake));
+    }
 }
 
-/// Wake `wake` whenever a later build arrives.
-pub fn subscribe(wake: ui::wake::WakeHandle) {
+/// Hand `bundle` over as the latest later build, and wake every instance that follows them:
+/// what the watch does with each build it reads.
+pub fn hand_over(bundle: Bundle) {
     let mut shared = lock();
-    shared.wakes.retain(ui::wake::WakeHandle::is_active);
-    shared.wakes.push(wake);
-}
-
-/// Whether this process follows later builds: it was started with an updates directory.
-#[must_use]
-pub fn followed() -> bool {
-    updates_dir().is_some()
+    let generation = shared
+        .latest
+        .as_ref()
+        .map_or(1, |update| update.generation.saturating_add(1));
+    shared.latest = Some(Update {
+        generation,
+        bundle: Arc::new(bundle),
+    });
+    shared.wakes.retain(|wake| wake.strong_count() > 0);
+    let wakes: Vec<Waker> = shared.wakes.iter().filter_map(Weak::upgrade).collect();
+    drop(shared);
+    for wake in wakes {
+        wake();
+    }
 }
 
 fn updates_dir() -> Option<PathBuf> {
@@ -159,9 +168,8 @@ fn started_generation(dir: &Path) -> Option<u64> {
     }
 }
 
-/// Read the build the directory published as `published` and hand it to the windows.
+/// Read the build the directory published as `published` and hand it over.
 fn take(dir: &Path, published: u64, app: &str) {
-    let read_at = Instant::now();
     let bundle = match Bundle::read(&dir.join(published.to_string())) {
         Ok(bundle) => bundle,
         Err(error) => {
@@ -176,19 +184,6 @@ fn take(dir: &Path, published: u64, app: &str) {
         );
         return;
     }
-    let mut shared = lock();
-    let generation = shared
-        .latest
-        .as_ref()
-        .map_or(1, |update| update.generation.saturating_add(1));
-    shared.taken = Some(published);
-    shared.latest = Some(Update {
-        generation,
-        bundle: Arc::new(bundle),
-        read_at,
-    });
-    shared.wakes.retain(ui::wake::WakeHandle::is_active);
-    for wake in &shared.wakes {
-        wake.wake();
-    }
+    lock().taken = Some(published);
+    hand_over(bundle);
 }

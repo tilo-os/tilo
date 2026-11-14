@@ -31,6 +31,25 @@ pub(super) fn package(dir: &'static str) -> Arc<Bundle> {
     }))
 }
 
+/// A later build of the package in `dir`, compiled again with `edit` applied to its source
+/// against its ids lock: what `tilolang dev` hands a running window when the source is saved.
+pub(super) fn later(dir: &'static str, edit: impl Fn(&str) -> String) -> Bundle {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
+    let dirs = tilolang::source::dependency_order(&path, &[]).expect("the packages resolve");
+    let (dir, used) = dirs.split_last().expect("the package is built last");
+    let mut entropy = tilolang::OsEntropy::default();
+    let used = tilolang::source::compile_dirs(used, &[], &mut entropy).expect("they compile");
+    let mut source = tilolang::PackageSource::read_dir(dir).expect("the package reads");
+    for file in &mut source.files {
+        file.text = edit(&file.text);
+    }
+    let imports: Vec<_> = used.iter().map(|used| used.compiled.meta.clone()).collect();
+    let ids = tilolang::source::read_ids(dir).expect("the ids lock reads");
+    let compiled = tilolang::compile_package_source_with(&source, &ids, &imports, &mut entropy)
+        .unwrap_or_else(|diagnostics| panic!("the edit compiles: {diagnostics:?}"));
+    Bundle::new(&compiled, used.iter().map(|used| &used.compiled))
+}
+
 /// Where the package of the app `app` is, from this crate's: the apps the tests open are
 /// shipped with it, and the rich body is their `tests/` one.
 pub(super) fn package_of(app: &str) -> &'static str {

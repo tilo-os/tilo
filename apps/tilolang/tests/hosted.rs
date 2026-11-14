@@ -76,6 +76,8 @@ mod door;
 mod history;
 #[path = "hosted/history_undo.rs"]
 mod history_undo;
+#[path = "hosted/later_builds.rs"]
+mod later_builds;
 #[path = "hosted/marks.rs"]
 mod marks;
 #[path = "hosted/narrow.rs"]

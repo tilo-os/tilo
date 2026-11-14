@@ -231,7 +231,8 @@ impl Woken {
 /// `record` opens where the host keeps the app's data, its words read by `phrases`, woken by
 /// `wake`; the host keeps what it keeps under `storage` (in memory without). Answers the host
 /// and the window's end of the instance's patch connection: what a window shows it through
-/// ([`HostedWindow::over`]). The host is the one a session runs, and turns as it does.
+/// ([`HostedWindow::over`]). The host is the one a session runs, and turns as it does; its
+/// instance takes over the later builds of the package this process takes ([`crate::updates`]).
 ///
 /// # Errors
 /// The app's data cannot be kept, its record does not open, or the patch connection cannot be
@@ -249,7 +250,7 @@ pub fn start(
     let record = record(&kept)?;
     let (ours, theirs) = Channel::pair()?;
     let watched = ours.as_fd().try_clone_to_owned()?;
-    let hosted = Hosted::with_record(
+    let mut hosted = Hosted::with_record(
         spec,
         record,
         bundle,
@@ -259,6 +260,7 @@ pub fn start(
         host.formats(),
         wake,
     );
+    hosted.follow_builds(Rc::new(crate::updates::Builds));
     host.add(hosted, Some(watched));
     Ok((host, theirs))
 }

@@ -43,7 +43,7 @@ use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::record::{InstanceRecord, ReadRecord, RecordError};
-use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication};
+use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication, Update};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
@@ -436,6 +436,18 @@ fn with_app_actions(resource: ResourceSpec, activate: &tilo_actions::ActionSpec)
 
 type SurfaceSlot = Rc<RefCell<Option<Rc<Surface>>>>;
 
+/// Later builds of the package an instance runs, while it runs: the builds `tilolang dev`
+/// publishes for a window without a session. The instance takes each over as it arrives.
+pub trait LaterBuilds {
+    /// The latest later build, once there is one.
+    fn latest(&self) -> Option<Update>;
+
+    /// Call `wake` whenever a later build arrives, for as long as it lives.
+    fn follow(&self, wake: &Waker);
+}
+
+type BuildsSlot = Rc<RefCell<Option<Rc<dyn LaterBuilds>>>>;
+
 /// The person's formats, as the session handed them over the host's door: shared by every
 /// instance the host runs, so a change in Settings reaches them together.
 pub type Formats = Rc<Cell<tilo_formats::RegionFormats>>;
@@ -455,16 +467,50 @@ struct HostPlatform {
     formats: Formats,
     wake: Waker,
     surface: SurfaceSlot,
+    /// The later builds the instance follows ([`Hosted::follow_builds`]).
+    builds: BuildsSlot,
 }
 
 impl Platform for HostPlatform {
+    /// The latest later build when there is one that loads, else the package the instance was
+    /// started with.
     fn load(&self, host: &Host) -> u64 {
-        if let Err(error) =
-            host.load_bundle_using(&self.bundle, |app| self.installed.contains_key(app))
-        {
+        let installed = |app: &str| self.installed.contains_key(app);
+        if let Some(update) = self.latest() {
+            match host.load_bundle_using(&update.bundle, installed) {
+                Ok(_) => return update.generation,
+                Err(error) => {
+                    tracing::error!(app = update.bundle.meta.app, %error, "the later build did not load");
+                }
+            }
+        }
+        if let Err(error) = host.load_bundle_using(&self.bundle, installed) {
             tracing::error!(app = self.bundle.meta.app, %error, "the package did not load");
         }
         0
+    }
+
+    fn latest(&self) -> Option<Update> {
+        self.builds.borrow().as_ref()?.latest()
+    }
+
+    fn follow_updates(&self) {
+        if let Some(builds) = self.builds.borrow().as_ref() {
+            builds.follow(&self.wake);
+        }
+    }
+
+    fn follows_updates(&self) -> bool {
+        self.builds.borrow().is_some()
+    }
+
+    /// Receivers decide each change against the surface of the build that runs now.
+    fn surface_changed(&self, app: &str, bundle: &Bundle) {
+        match bundle.surface() {
+            Ok(surface) => collaboration::app_surface::register_package(app, &surface),
+            // The surface registered before stays: receivers keep deciding against it.
+            Err(error) => tracing::error!(app, %error, "the later build's surface is unusable"),
+        }
     }
 
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
@@ -755,6 +801,7 @@ pub struct Hosted {
     phrases: Rc<Phrases>,
     record: InstanceRecord,
     surface: SurfaceSlot,
+    builds: BuildsSlot,
     /// What the broker holds of the instance's surface, and the descriptors it was built from.
     published: Option<(Vec<ActionDescriptor>, SurfacePublication)>,
     /// The directory the instance answers its connection's directory requests from: what it
@@ -865,6 +912,7 @@ impl Hosted {
         wake: Waker,
     ) -> Self {
         let surface: SurfaceSlot = Rc::default();
+        let builds: BuildsSlot = Rc::default();
         let resource = (
             package_resource_id(&bundle.meta.app),
             bundle.meta.package_kind(),
@@ -893,6 +941,7 @@ impl Hosted {
             formats: Rc::clone(formats),
             wake: Arc::clone(&wake),
             surface: Rc::clone(&surface),
+            builds: Rc::clone(&builds),
         };
         let mut instance = Instance::new(
             Config {
@@ -932,6 +981,7 @@ impl Hosted {
             phrases,
             record,
             surface,
+            builds,
             published: None,
             directory: PublishedDirectory::default(),
             directory_behind: false,
@@ -956,6 +1006,12 @@ impl Hosted {
             standing,
             presence,
         }
+    }
+
+    /// Take over each later build `builds` hands over, from the first turn on: before it, as the
+    /// instance loads its package.
+    pub fn follow_builds(&mut self, builds: Rc<dyn LaterBuilds>) {
+        *self.builds.borrow_mut() = Some(builds);
     }
 
     /// Show `anchor` in the window, as a search hit or an agent's `open` of it does.
