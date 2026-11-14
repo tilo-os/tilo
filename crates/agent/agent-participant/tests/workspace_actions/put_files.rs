@@ -34,6 +34,13 @@ async fn tree_of(hosted: &crate::harness::hosted::Hosted, workspace: &str) -> Tr
     Tree::of_record(&record).expect("the tree reads as one")
 }
 
+/// What a tree names a file of `bytes` by: the BLAKE3 address of its content
+/// manifest, whose chunks the workspace keeps beside it.
+fn manifest_of(bytes: &[u8]) -> String {
+    let (manifest, _) = fs_content::build(bytes, None);
+    blake3::hash(&manifest.encode()).to_hex().to_string()
+}
+
 /// The file at `dir/name` in `tree`, as its node; `None` when it is not there.
 fn file_at<'a>(tree: &'a Tree, dir: &str, name: &str) -> Option<&'a fs_protocol::tree::TreeEntry> {
     let mut parent = ROOT_ID;
@@ -111,8 +118,8 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
     assert_eq!(node.kind, FileNodeKind::File);
     assert_eq!(
         node.hash.as_deref(),
-        Some(hash.as_str()),
-        "the node names its content"
+        Some(manifest_of(&form).as_str()),
+        "the node names its content, as a mounted computer names a file"
     );
     assert_eq!(node.size, form.len() as u64);
     assert_eq!(
@@ -125,9 +132,6 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
     // mounted copy shows as `forms/2026/permit.pdf`.
     let permit = form_pdf("Application for Residence Permit");
     let permit_content = content_in(&put(&server, &permit).await);
-    let permit_hash = permit_content
-        .trim_start_matches("tilo.content:")
-        .to_owned();
     tool(
         &server,
         "tilo_do",
@@ -137,7 +141,7 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
     .await;
     let tree = tree_of(&hosted, WORKSPACE).await;
     let node = file_at(&tree, "forms/2026", "permit.pdf").expect("the file is in its folder");
-    assert_eq!(node.hash.as_deref(), Some(permit_hash.as_str()));
+    assert_eq!(node.hash.as_deref(), Some(manifest_of(&permit).as_str()));
     assert!(
         file_at(&tree, "", "permit.pdf").is_none(),
         "it is not at the root"
@@ -147,7 +151,6 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
     // does, rather than making a second node beside it.
     let cover = form_pdf("Cover letter");
     let cover_content = content_in(&put(&server, &cover).await);
-    let cover_hash = cover_content.trim_start_matches("tilo.content:").to_owned();
     tool(
         &server,
         "tilo_do",
@@ -159,7 +162,7 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
     let node = file_at(&tree, "", "visa.pdf").expect("still one file of that name");
     assert_eq!(
         node.hash.as_deref(),
-        Some(cover_hash.as_str()),
+        Some(manifest_of(&cover).as_str()),
         "the content is the new one"
     );
     let roots = tree
@@ -239,7 +242,7 @@ async fn a_resumed_upload_of_a_large_file_lands_once_and_whole() {
 
     let tree = tree_of(&hosted, WORKSPACE).await;
     let node = file_at(&tree, "scans", "scan.pdf").expect("the large file is in the tree");
-    assert_eq!(node.hash.as_deref(), Some(hash.as_str()));
+    assert_eq!(node.hash.as_deref(), Some(manifest_of(&bytes).as_str()));
     assert_eq!(node.size, bytes.len() as u64);
     assert_eq!(
         content_bytes(&server, &hash).await,

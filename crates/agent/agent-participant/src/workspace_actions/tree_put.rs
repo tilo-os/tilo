@@ -163,6 +163,9 @@ impl Worker {
                 }
             },
         };
+        // A file of the tree is named by its content manifest, as a mounted
+        // computer names one, so every member reads it the same way.
+        let manifest = manifest_of(&store, &putting.hash).map_err(refused)?;
         let record = tree_record();
         let route = Self::tree_route(named);
         // The tree of a governed workspace is sealed: its keys are what
@@ -190,7 +193,7 @@ impl Worker {
         };
         let mtime = tilo_clock::unix_now_ns() / 1_000_000;
         let put = tree
-            .put_file(&putting.dir, &putting.name, &putting.hash, size, mtime)
+            .put_file(&putting.dir, &putting.name, &manifest, size, mtime)
             .map_err(refused)?;
         let mutation = if existing.is_some() {
             DocumentMutation::Incremental(put.change)
@@ -212,4 +215,38 @@ impl Worker {
             None,
         ))
     }
+}
+
+/// Keep the content `hash` names as a file of the tree is kept: chunked, each
+/// chunk and the manifest listing them under their own BLAKE3 address in
+/// `store`, the manifest's address answered. A mounted computer, a page and
+/// the workspace's host read a file of the tree from its manifest's chunks.
+///
+/// # Errors
+/// The content is not in `store`, or what was kept is not at the address the
+/// manifest names.
+fn manifest_of(store: &tilo_content::ContentStore, hash: &str) -> Result<String, String> {
+    let bytes = store
+        .read(hash)
+        .ok_or_else(|| format!("this workspace holds no tilo.content:{hash}"))?;
+    let (manifest, _) = fs_content::build(&bytes, None);
+    let mut at = 0_usize;
+    for chunk in manifest.chunks() {
+        let len = usize::try_from(chunk.len).unwrap_or(usize::MAX);
+        let piece = bytes
+            .get(at..at.saturating_add(len))
+            .ok_or("the file's chunks run past its end")?;
+        at = at.saturating_add(len);
+        let address = hex::encode(chunk.hash);
+        if store.has(&address) {
+            continue;
+        }
+        let kept = store.put_public(piece).map_err(|error| error.to_string())?;
+        if kept != address {
+            return Err(format!("a chunk was kept at {kept}, not at {address}"));
+        }
+    }
+    store
+        .put_public(&manifest.encode())
+        .map_err(|error| error.to_string())
 }
