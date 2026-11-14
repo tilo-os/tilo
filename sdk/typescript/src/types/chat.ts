@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@e1508f1a7fdf402f";
+export const SURFACE = "so.tilo.chat@940e4716f60772d4";
 
 export interface Category {
   name: string;
@@ -72,7 +72,7 @@ export interface Decision {
 }
 
 export interface Destination {
-  room: string;
+  workspace: string;
   provider: string;
   channel: string;
 }
@@ -124,7 +124,6 @@ export interface Person {
   initials: string;
   color: number;
   status: Presence;
-  agent: boolean;
 }
 
 /** One of "online", "idle", "dnd", "offline". */
@@ -309,8 +308,18 @@ export interface Message {
   work: Work | null;
   appearance: ShownAs | null;
   acting: unknown | null;
+  origin: Origin | null;
   share: WindowShare | null;
   attempts: number;
+}
+
+export interface Origin {
+  author: string;
+  handle: string | null;
+  source: string;
+  url: string | null;
+  created_ms: number | null;
+  updated_ms: number | null;
 }
 
 export interface ProviderStream {
@@ -410,6 +419,7 @@ export interface Agent {
   colour: number | null;
   keeper: string;
   model: string | null;
+  mcp_client: string | null;
   bound: Bound[];
   spend_limit_micros: number | null;
   spent: Spent | null;
@@ -566,10 +576,12 @@ export interface Messages extends tilo.Resource {
     channel: string;
     text: string;
     parent?: string;
+    quoted?: unknown;
     body?: unknown[];
     attachments?: unknown[];
     mentions?: unknown[];
     written?: number;
+    origin?: unknown;
   }): Promise<tilo.Run | void>;
   postFile(args: {
     channel: string;
@@ -692,6 +704,7 @@ export interface ChatAgent extends tilo.Resource {
     id?: string;
     model?: string;
     colour?: number;
+    mcp_client?: string;
   }): Promise<tilo.Run | void>;
   setAgentSpendLimit(args: {
     agent: string;

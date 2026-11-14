@@ -7489,20 +7489,12 @@
                 "type": "string"
               },
               "outcome": {
-                "oneOf": [
-                  {
-                    "const": "no-action",
-                    "type": "string"
-                  },
-                  {
-                    "const": "restrict",
-                    "type": "string"
-                  },
-                  {
-                    "const": "ban",
-                    "type": "string"
-                  }
-                ]
+                "enum": [
+                  "no-action",
+                  "restrict",
+                  "ban"
+                ],
+                "type": "string"
               },
               "reasoning": {
                 "type": "string"
@@ -7666,6 +7658,31 @@
           "parent": {
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "quoted": {
+            "additionalProperties": false,
+            "properties": {
+              "end": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "start": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "start",
+              "end"
+            ],
+            "type": [
+              "object",
               "null"
             ]
           },
@@ -8101,6 +8118,49 @@
           "written": {
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "origin": {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "created_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "updated_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "author",
+              "source"
+            ],
+            "type": [
+              "object",
               "null"
             ]
           }
@@ -9152,6 +9212,12 @@
             "minimum": 0,
             "type": [
               "integer",
+              "null"
+            ]
+          },
+          "mcp_client": {
+            "type": [
+              "string",
               "null"
             ]
           }
@@ -12661,7 +12727,7 @@
           "event": {},
           "chat": {},
           "context": {},
-          "workspace": {},
+          "room": {},
           "emoji": {}
         },
         "required": [

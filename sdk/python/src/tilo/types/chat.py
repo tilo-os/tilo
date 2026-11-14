@@ -64,6 +64,7 @@ __all__ = [
     "MarkValue",
     "Mention",
     "Message",
+    "Origin",
     "ProviderStream",
     "Quote",
     "ResourceAt",
@@ -132,7 +133,7 @@ class Decision(TypedDict):
     overturned_at_ms: int | None
 
 class Destination(TypedDict):
-    room: str
+    workspace: str
     provider: str
     channel: str
 
@@ -175,7 +176,6 @@ class Person(TypedDict):
     initials: str
     color: int
     status: Presence
-    agent: bool
 
 Presence = Literal["online", "idle", "dnd", "offline"]
 
@@ -338,8 +338,17 @@ class Message(TypedDict):
     work: Work | None
     appearance: ShownAs | None
     acting: Any | None
+    origin: Origin | None
     share: WindowShare | None
     attempts: int
+
+class Origin(TypedDict):
+    author: str
+    handle: str | None
+    source: str
+    url: str | None
+    created_ms: int | None
+    updated_ms: int | None
 
 class ProviderStream(TypedDict):
     run: str
@@ -424,6 +433,7 @@ class Agent(TypedDict):
     colour: int | None
     keeper: str
     model: str | None
+    mcp_client: str | None
     bound: list[Bound]
     spend_limit_micros: int | None
     spent: Spent | None
@@ -443,7 +453,7 @@ class Spent(TypedDict):
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@e1508f1a7fdf402f"
+    __surface__ = "so.tilo.chat@940e4716f60772d4"
     @property
     def categories(self) -> list[Category]:
         """Read only."""
@@ -696,7 +706,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@e1508f1a7fdf402f"
+    __surface__ = "so.tilo.chat@940e4716f60772d4"
     @property
     def messages(self) -> list[Message]:
         """Read only."""
@@ -711,10 +721,12 @@ class Messages(Resource):
         channel: str,
         text: str,
         parent: str | None = None,
+        quoted: Any | None = None,
         body: list[Any] | None = None,
         attachments: list[Any] | None = None,
         mentions: list[Any] | None = None,
         written: int | None = None,
+        origin: Any | None = None,
     ) -> Run | None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -722,6 +734,8 @@ class Messages(Resource):
         args["text"] = text
         if parent is not None:
             args["parent"] = parent
+        if quoted is not None:
+            args["quoted"] = quoted
         if body is not None:
             args["body"] = body
         if attachments is not None:
@@ -730,6 +744,8 @@ class Messages(Resource):
             args["mentions"] = mentions
         if written is not None:
             args["written"] = written
+        if origin is not None:
+            args["origin"] = origin
         return self.action("post", **args)
 
     def post_file(self,
@@ -905,7 +921,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@e1508f1a7fdf402f"
+    __surface__ = "so.tilo.chat@940e4716f60772d4"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> Run | None:
@@ -915,7 +931,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@e1508f1a7fdf402f"
+    __surface__ = "so.tilo.chat@940e4716f60772d4"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -937,7 +953,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@e1508f1a7fdf402f"
+    __surface__ = "so.tilo.chat@940e4716f60772d4"
     agents: list[Agent]
 
     def create_agent(self,
@@ -947,6 +963,7 @@ class ChatAgent(Resource):
         id: str | None = None,
         model: str | None = None,
         colour: int | None = None,
+        mcp_client: str | None = None,
     ) -> Run | None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -959,6 +976,8 @@ class ChatAgent(Resource):
             args["model"] = model
         if colour is not None:
             args["colour"] = colour
+        if mcp_client is not None:
+            args["mcp_client"] = mcp_client
         return self.action("create-agent", **args)
 
     def set_agent_spend_limit(self,
