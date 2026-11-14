@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{ActionHost as _, ActionHostError, InvokeRequest, ReceiptStatus};
 use tilo_relay_session::workspaces::{
     CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, KEEP_PERSONAL,
-    LIST_PERSONAL, PersonalList,
+    LIST_PERSONAL, PersonalList, WorkspaceLabels,
 };
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -502,14 +502,14 @@ async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
     workspaces.keep_issued_device(&laptop);
 
     workspaces.session_opened_at(&laptop, 1_000);
-    let listed = workspaces.personal(&laptop, &[]);
+    let listed = workspaces.personal(&laptop, &[], &WorkspaceLabels::new());
     let device = listed_device(&listed, &laptop);
     assert!(device.online, "a session of the key is open here now");
     assert_eq!(device.last_active_ms, Some(1_000));
     assert_eq!(device.agent, None);
 
     workspaces.session_ended_at(&laptop, 5_000);
-    let listed = workspaces.personal(&laptop, &[]);
+    let listed = workspaces.personal(&laptop, &[], &WorkspaceLabels::new());
     let device = listed_device(&listed, &laptop);
     assert!(!device.online, "no session of the key is open");
     assert_eq!(device.last_active_ms, Some(5_000));
@@ -518,7 +518,9 @@ async fn a_keys_sessions_say_when_it_was_here_and_whether_it_is_now() {
     // here last.
     relay.shutdown().await;
     let relay = test_host(dir.path(), &key, &owner).await;
-    let listed = relay.workspaces().personal(&laptop, &[]);
+    let listed = relay
+        .workspaces()
+        .personal(&laptop, &[], &WorkspaceLabels::new());
     assert_eq!(listed_device(&listed, &laptop).last_active_ms, Some(5_000));
     relay.shutdown().await;
 }
@@ -556,7 +558,7 @@ async fn an_opening_is_written_once_a_minute_and_an_ending_always() {
     );
     assert_eq!(
         workspaces
-            .personal(&laptop, &[])
+            .personal(&laptop, &[], &WorkspaceLabels::new())
             .devices
             .iter()
             .find(|device| device.cert.device_public_key == laptop.device_public_key)
@@ -567,7 +569,7 @@ async fn an_opening_is_written_once_a_minute_and_an_ending_always() {
     workspaces.session_ended_at(&laptop, 31_000);
     assert_eq!(
         workspaces
-            .personal(&laptop, &[])
+            .personal(&laptop, &[], &WorkspaceLabels::new())
             .devices
             .iter()
             .find(|device| device.cert.device_public_key == laptop.device_public_key)
@@ -601,7 +603,7 @@ async fn a_keys_session_says_which_agent_it_runs() {
     let stop = std::sync::Arc::new(tokio::sync::Notify::new());
 
     workspaces.note_agent(&computer, "Claude Code", &stop);
-    let listed = workspaces.personal(&computer, &[]);
+    let listed = workspaces.personal(&computer, &[], &WorkspaceLabels::new());
     let device = listed_device(&listed, &computer);
     assert_eq!(device.agent.as_deref(), Some("Claude Code"));
     assert!(!device.online, "an agent's name is no session open now");
@@ -610,7 +612,7 @@ async fn a_keys_session_says_which_agent_it_runs() {
     let phone = key_of(&root, "phone", DeviceCapabilities::member());
     workspaces.keep_issued_device(&phone);
     workspaces.note_agent(&computer, "Claude Code", &stop);
-    let listed = workspaces.personal(&phone, &[]);
+    let listed = workspaces.personal(&phone, &[], &WorkspaceLabels::new());
     assert_eq!(
         listed_device(&listed, &computer).agent.as_deref(),
         Some("Claude Code")
@@ -645,7 +647,13 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
     };
     sign_device_cert(&mut laptop, &root).unwrap();
     workspaces.keep_issued_device(&laptop);
-    let online = || listed_device(&workspaces.personal(&laptop, &[]), &laptop).online;
+    let online = || {
+        listed_device(
+            &workspaces.personal(&laptop, &[], &WorkspaceLabels::new()),
+            &laptop,
+        )
+        .online
+    };
     assert!(!online(), "no session of the key is open yet");
 
     let hello = crate::auth::Hello::new(laptop.clone(), [2; 32]);
@@ -696,9 +704,12 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
     .await
     .expect("the session says in the record that the key is here");
     assert!(
-        listed_device(&workspaces.personal(&laptop, &[]), &laptop)
-            .last_active_ms
-            .is_some(),
+        listed_device(
+            &workspaces.personal(&laptop, &[], &WorkspaceLabels::new()),
+            &laptop
+        )
+        .last_active_ms
+        .is_some(),
         "and when it was here"
     );
 

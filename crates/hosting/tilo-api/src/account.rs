@@ -683,7 +683,7 @@ impl Server {
         key: &Connection,
         labels: &WorkspaceLabels,
     ) -> Outcome {
-        match self.relay.workspaces(key).await {
+        match self.relay.labelled(key, labels).await {
             Ok(mut workspaces) => Outcome::Ok({
                 workspaces.retain(|workspace| labelled(workspace, labels));
                 json!({

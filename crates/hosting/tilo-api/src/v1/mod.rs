@@ -426,7 +426,7 @@ impl<'a> Caller<'a> {
                 let mut listed = self
                     .server
                     .relay
-                    .workspaces(self.session.connection())
+                    .labelled(self.session.connection(), &labels)
                     .await
                     .map_err(ApiError::from)?;
                 listed.retain(|workspace| crate::account::labelled(workspace, &labels));

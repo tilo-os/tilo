@@ -26,7 +26,7 @@ use tilo_relay_session::workspaces::{
     DETACH_HOST, ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM,
     HOST_ROOMS_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS,
     LIST_ROOMS, NOT_YOUR_OWN, PersonalList, UNHOST_ROOM, WorkspaceLabels, WorkspaceListing,
-    check_labels,
+    check_labels, labelled,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -105,7 +105,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
             label: "List your workspaces, wherever they are hosted",
             gate: LIST_PERSONAL,
             kind: ActionKind::Read,
-            params: Vec::new,
+            params: list_personal_params,
         },
         HostOperation::ReadPersonalList,
     ),
@@ -186,6 +186,14 @@ fn workspace_params() -> Vec<ActionParam> {
         "room",
         ParamType::Text,
         "The workspace, as listing workspaces names it.",
+    )]
+}
+
+fn list_personal_params() -> Vec<ActionParam> {
+    vec![ActionParam::optional(
+        "labels",
+        ParamType::Object,
+        "Only the workspaces of yours labelled with every one of these (names to values).",
     )]
 }
 
@@ -434,7 +442,7 @@ impl Workspaces {
             HostOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
-                answer(&self.listed(device).await)
+                answer(&self.listed(device, &WorkspaceLabels::new()).await)
             }
             HostOperation::DeleteOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -513,8 +521,12 @@ impl Workspaces {
             if let Ok(Some(browser)) = args.object("browser") {
                 self.note_browser(device, browser);
             }
-            let here = self.listed(device).await;
-            return answer(&self.personal(device, &here));
+            // A backend finds its customer's workspace by its labels: only
+            // the workspaces labelled so are read, however many it has.
+            let labels: WorkspaceLabels = args.object("labels")?.unwrap_or_default();
+            check_labels(&labels).map_err(invalid)?;
+            let here = self.listed(device, &labels).await;
+            return answer(&self.personal(device, &here, &labels));
         }
         let list: PersonalList = args
             .object("list")?
@@ -586,14 +598,19 @@ impl Workspaces {
     /// person takes in it: the host's person every one, anyone else the ones
     /// of their own and the ones they were invited into, found by their person
     /// so a host with many workspaces answers a person with a few of them in
-    /// the time those few take.
-    async fn listed(&self, device: &DeviceCert) -> Vec<WorkspaceListing> {
+    /// the time those few take. With `labels`, only their own workspaces
+    /// labelled with every one of them, the others never read.
+    async fn listed(&self, device: &DeviceCert, labels: &WorkspaceLabels) -> Vec<WorkspaceListing> {
         let person = device.user_public_key;
         if person != self.inner.host.cert.user_public_key {
             let own = self.own().map(|own| own.of(&person)).unwrap_or_default();
             let mut listed: Vec<WorkspaceListing> = Vec::new();
             for workspace in &own {
-                if !self.lists_to(device, workspace) {
+                if !self.lists_to(device, workspace)
+                    || !self
+                        .own()
+                        .is_some_and(|own| labelled(&own.labels_of(workspace), labels))
+                {
                     continue;
                 }
                 if let Ok(mut one) = self.listing_of(workspace).await {
@@ -605,7 +622,13 @@ impl Workspaces {
                 }
             }
             let now = tilo_clock::unix_now_ns();
-            for workspace in self.inner.memberships.of(&person) {
+            // A workspace they were invited into carries none of their labels.
+            let invited = if labels.is_empty() {
+                self.inner.memberships.of(&person)
+            } else {
+                Vec::new()
+            };
+            for workspace in invited {
                 if own.contains(&workspace) || !self.lists_to(device, &workspace) {
                     continue;
                 }
@@ -630,8 +653,13 @@ impl Workspaces {
             .filter(|summary| self.lists_to(device, &summary.workspace))
             .map(|summary| WorkspaceListing {
                 role: Some(OWNER_ROLE.to_owned()),
+                labels: self
+                    .own()
+                    .map(|own| own.labels_of(&summary.workspace))
+                    .unwrap_or_default(),
                 ..listing(summary)
             })
+            .filter(|listed| labelled(&listed.labels, labels))
             .collect()
     }
 

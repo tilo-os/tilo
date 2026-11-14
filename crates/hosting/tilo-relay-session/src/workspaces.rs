@@ -433,6 +433,15 @@ pub struct WorkspaceListing {
 /// not in the workspace, so nobody invited into it sees them.
 pub type WorkspaceLabels = std::collections::BTreeMap<String, String>;
 
+/// Whether a workspace labelled `labels` carries every one of `wanted`: any
+/// workspace does for none.
+#[must_use]
+pub fn labelled(labels: &WorkspaceLabels, wanted: &WorkspaceLabels) -> bool {
+    wanted
+        .iter()
+        .all(|(name, value)| labels.get(name) == Some(value))
+}
+
 /// The most labels one workspace keeps.
 pub const MAX_WORKSPACE_LABELS: usize = 16;
 /// The longest a label's name is, in bytes.

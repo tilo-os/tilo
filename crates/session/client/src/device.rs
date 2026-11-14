@@ -15,7 +15,7 @@ use tilo_relay_client::login::{Door, SignIn};
 use tilo_relay_client::{CertifyError, DeviceSigner};
 use tilo_relay_session::workspaces::{
     CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, KEEP_PERSONAL,
-    LIST_PERSONAL, PersonalList, WorkspaceListing,
+    LIST_PERSONAL, PersonalList, WorkspaceLabels, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 use web_time::Duration as Wait;
@@ -391,13 +391,25 @@ impl Device {
 
     /// The person's workspace list as the host keeps it: every
     /// workspace of theirs their devices said, wherever it is hosted, with the workspaces this host
-    /// keeps for them, each naming its host. A key for one workspace reads that one alone.
+    /// keeps for them, each naming its host. A key for one workspace reads that one alone. With
+    /// `labels`, only the workspaces labelled with every one of them: the host reads no other.
     ///
     /// # Errors
     /// The host did not answer, refused, or answered something else.
-    pub async fn personal_list(&self) -> Result<PersonalList, HostRefusal> {
+    pub async fn personal_list(
+        &self,
+        labels: &WorkspaceLabels,
+    ) -> Result<PersonalList, HostRefusal> {
+        let mut arguments = Map::new();
+        if !labels.is_empty() {
+            arguments.insert(
+                "labels".to_owned(),
+                serde_json::to_value(labels)
+                    .map_err(|error| HostRefusal::malformed(error.to_string()))?,
+            );
+        }
         let listed = self
-            .host_action(LIST_PERSONAL, Map::new(), &self.label)
+            .host_action(LIST_PERSONAL, arguments, &self.label)
             .await?;
         serde_json::from_value(listed).map_err(|error| {
             HostRefusal::malformed(format!("The host answered no workspace list: {error}"))

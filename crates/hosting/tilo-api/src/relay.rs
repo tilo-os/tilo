@@ -172,9 +172,23 @@ impl Relay {
     /// # Errors
     /// The relay was not reached or refused.
     pub async fn workspaces(&self, connection: &Connection) -> Result<Vec<Workspace>, RelayError> {
+        self.labelled(connection, &WorkspaceLabels::new()).await
+    }
+
+    /// The workspaces `connection`'s grant reaches that are labelled with
+    /// every one of `labels`: the relay reads only those, however many the
+    /// person has.
+    ///
+    /// # Errors
+    /// The relay was not reached or refused.
+    pub async fn labelled(
+        &self,
+        connection: &Connection,
+        labels: &WorkspaceLabels,
+    ) -> Result<Vec<Workspace>, RelayError> {
         let listed = connection
             .device
-            .personal_list()
+            .personal_list(labels)
             .await
             .map_err(RelayError::from)?;
         Ok(listed

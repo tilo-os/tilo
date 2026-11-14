@@ -349,6 +349,7 @@ impl Workspaces {
         &self,
         device: &DeviceCert,
         here: &[tilo_relay_session::workspaces::WorkspaceListing],
+        labels: &tilo_relay_session::workspaces::WorkspaceLabels,
     ) -> PersonalList {
         let name = self.host_name();
         let mut local: Vec<PersonalWorkspace> = Vec::new();
@@ -373,6 +374,10 @@ impl Workspaces {
                 .agent
                 .is_none_or(|scope| scope.reaches(workspace))
         };
+        // Only those labelled so, when asked by labels.
+        let wanted = |kept: &PersonalWorkspace| {
+            tilo_relay_session::workspaces::labelled(&kept.labels, labels)
+        };
         let Record {
             list,
             devices: certs,
@@ -383,6 +388,7 @@ impl Workspaces {
         let mut workspaces: Vec<PersonalWorkspace> = Vec::new();
         for kept in list.workspaces {
             if !reaches(&kept.workspace)
+                || !wanted(&kept)
                 || workspaces
                     .iter()
                     .any(|known| known.workspace == kept.workspace)
