@@ -887,21 +887,52 @@ mod tests {
 
     #[test]
     fn a_launch_opens_only_the_web_pages_the_browser_claims() {
+        const LONGEST: usize = 8 * 1024;
         let uri = "HTTPS://example.test/a --still-data";
         assert_eq!(launch_target(&[uri.into()]).as_deref(), Some(uri));
+        assert_eq!(launch_target(&[]), None, "a launch that names nothing");
+        let padded = |length: usize| {
+            let page = "https://example.test/";
+            format!("{page}{}", "a".repeat(length - page.len()))
+        };
+        let (longest, too_long) = (padded(LONGEST), padded(LONGEST + 1));
+        assert_eq!(longest.len(), LONGEST);
+        assert_eq!(
+            launch_target(std::slice::from_ref(&longest)).as_ref(),
+            Some(&longest),
+            "the longest address a launch may name"
+        );
         for value in [
             "javascript:alert(1)",
             "data:text/plain,x",
             "mailto:a@b",
             "file:///tmp/portal-bypass.html",
             "/tmp/portal-bypass.html",
+            "",
+            "https:example.test",
+            "ftp://example.test/",
+            "https://example.test/\u{7}",
+            "https://example.test/\n",
+            too_long.as_str(),
         ] {
-            assert_eq!(launch_target(&[value.into()]), None);
+            assert_eq!(launch_target(&[value.into()]), None, "{value:?}");
         }
+        assert_eq!(
+            launch_target(&[
+                "--flag".into(),
+                "file:///tmp/portal-bypass.html".into(),
+                "http://first.test/".into(),
+                "https://second.test/".into(),
+            ])
+            .as_deref(),
+            Some("http://first.test/"),
+            "the first web page among what a launch names"
+        );
     }
 
     #[test]
     fn a_web_search_launch_names_its_query_and_nothing_else() {
+        const LONGEST: usize = 8 * 1024;
         assert_eq!(
             launch_search(&["web+search:cats%20%26%20dogs".into()]).as_deref(),
             Some("cats & dogs")
@@ -910,14 +941,49 @@ mod tests {
             launch_search(&["WEB+SEARCH:wetter+k%C3%B6ln".into()]).as_deref(),
             Some("wetter köln")
         );
+        for (value, query) in [
+            ("web+search:%20cats%20", "cats"),
+            ("web+search:100%", "100%"),
+        ] {
+            assert_eq!(
+                launch_search(&[value.into()]).as_deref(),
+                Some(query),
+                "{value}"
+            );
+        }
+        assert_eq!(launch_search(&[]), None, "a launch that names nothing");
+        let padded = |length: usize| {
+            let scheme = "web+search:";
+            format!("{scheme}{}", "a".repeat(length - scheme.len()))
+        };
+        let (longest, too_long) = (padded(LONGEST), padded(LONGEST + 1));
+        assert_eq!(
+            launch_search(std::slice::from_ref(&longest)).as_deref(),
+            longest.strip_prefix("web+search:"),
+            "the longest search a launch may name"
+        );
         for value in [
             "web+search:",
             "web+search:%20",
             "https://example.test/",
             "cats",
+            "",
+            "web+search:cats%0Adogs",
+            too_long.as_str(),
         ] {
-            assert_eq!(launch_search(&[value.into()]), None, "{value}");
+            assert_eq!(launch_search(&[value.into()]), None, "{value:?}");
         }
+        assert_eq!(
+            launch_search(&[
+                "--flag".into(),
+                "https://example.test/".into(),
+                "web+search:first".into(),
+                "web+search:second".into(),
+            ])
+            .as_deref(),
+            Some("first"),
+            "the first search among what a launch names"
+        );
     }
 
     #[test]
