@@ -16,57 +16,16 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
+use collaboration::{CollabRequest, CollaborationManager, RouteSpec};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_render_protocol::patch::{self, Lane, ToUi, Transport as _};
 use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
+use tilolang_host::testing::Broker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
-
-/// A broker that admits the route it is asked for and says nothing else.
-struct Admitting {
-    route: RouteSpec,
-    joined: Option<RouteSpec>,
-}
-
-impl PeerTransport for Admitting {
-    fn is_connected(&self) -> bool {
-        true
-    }
-
-    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        if matches!(request, CollabRequest::Hello { .. }) {
-            self.joined = Some(self.route.clone());
-        }
-        Ok(())
-    }
-
-    fn poll(&mut self) -> Vec<CollabEvent> {
-        Vec::new()
-    }
-
-    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
-        self.joined.take().map(Ok)
-    }
-
-    /// The records every app of the workspace opens beside its own (each person's own state)
-    /// are joined and sent on routes of their own: the broker takes them. A broker that refused
-    /// the join would close the instance's whole connection.
-    fn join_route(
-        &mut self,
-        _: RouteSpec,
-        _: collaboration::record::RecordKind,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn send_to_route(&mut self, _: RouteSpec, _: CollabRequest) -> Result<(), String> {
-        Ok(())
-    }
-}
 
 fn print(node: &patch::Node) {
     let label = ["label", "title", "text"]
@@ -94,10 +53,7 @@ fn main() {
     let bundle = Bundle::new(&compiled, Vec::new());
     let app = bundle.meta.app.clone();
     let route = RouteSpec::app(app.clone(), uuid::Uuid::new_v4());
-    let mut manager = CollaborationManager::with_peer_transport(Admitting {
-        route: route.clone(),
-        joined: None,
-    });
+    let mut manager = CollaborationManager::with_peer_transport(Broker::new(route.clone()));
     manager.send(CollabRequest::Hello {
         app_id: app.clone(),
         cluster_id: route.cluster_id,

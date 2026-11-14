@@ -5,6 +5,7 @@
 use super::*;
 
 use super::cost::{number_of, own, seeded_tasks};
+use tilolang_host::testing::delivered;
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
 
 /// Tasks enough to fill the first chunk the list's run is kept in and spill into a second.
@@ -153,35 +154,13 @@ fn a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again(
     session
         .inbox()
         .borrow_mut()
-        .push_back(delivered(&chunk_route, "bea", &snapshot));
+        .push_back(delivered(&chunk_route, "bea", &snapshot).expect("the change encodes"));
     session.settle();
     assert!(
         session.index_whole(),
         "the chunk that arrived is read: the store holds the whole workspace"
     );
     lists_every_task_in_order(&mut session, n);
-}
-
-/// `mutation`, sent by `me` on `route`, as the document envelope the broker delivers to the
-/// route's other replicas.
-pub(super) fn delivered(route: &RouteSpec, me: &str, mutation: &DocumentMutation) -> CollabEvent {
-    let record = route.record.as_deref().unwrap_or("");
-    let workspace = route.cluster_id.to_string();
-    let mut envelope = collab_types::SignedOp::new_unsigned(
-        mutation.encode().expect("the change encodes"),
-        collab_types::document_artifact_id(&route.app_id, &workspace, record),
-        collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-        collab_types::document_attestation_id(&route.app_id, &workspace, record),
-        collab_types::OpKind::Change,
-        std::time::SystemTime::UNIX_EPOCH,
-        0,
-    );
-    envelope.signature = collab_types::Signature::from_bytes([0; 64]);
-    CollabEvent::Document {
-        envelope: Box::new(envelope),
-        from_user_id: me.to_owned(),
-        decrypted_payload: None,
-    }
 }
 
 /// The workspace whose tasks span two chunks is seeded once for both windows: the one handed
@@ -226,7 +205,7 @@ fn a_chunk_that_arrives_after_the_live_window_opened_is_caught_up_off_its_frame(
     session
         .inbox()
         .borrow_mut()
-        .push_back(delivered(&chunk_route, "bea", &snapshot));
+        .push_back(delivered(&chunk_route, "bea", &snapshot).expect("the change encodes"));
     session.settle();
     assert!(
         session.catch_ups() > 0,

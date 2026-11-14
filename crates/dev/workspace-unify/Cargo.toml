@@ -1373,7 +1373,7 @@ doc = false
 "tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
 "tilolang-app" = { path = "../../../apps/tilolang", default-features = false, features = [] }
 "tilolang-cli" = { path = "../../../crates/lang/tilolang-cli", default-features = false, features = [] }
-"tilolang-host" = { path = "../../../crates/platform/tilolang-host", default-features = false, features = [] }
+"tilolang-host" = { path = "../../../crates/platform/tilolang-host", default-features = false, features = ["test-support"] }
 "tilolang-lex" = { path = "../../../crates/lang/tilolang-lex", default-features = false, features = [] }
 "tilolang-mail" = { path = "../../../crates/platform/tilolang-mail", default-features = false, features = ["default", "engine"] }
 "tilolang-runtime" = { path = "../../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
@@ -4089,7 +4089,7 @@ doc = false
 "tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
 "tilolang-app" = { path = "../../../apps/tilolang", default-features = false, features = [] }
 "tilolang-cli" = { path = "../../../crates/lang/tilolang-cli", default-features = false, features = [] }
-"tilolang-host" = { path = "../../../crates/platform/tilolang-host", default-features = false, features = [] }
+"tilolang-host" = { path = "../../../crates/platform/tilolang-host", default-features = false, features = ["test-support"] }
 "tilolang-lex" = { path = "../../../crates/lang/tilolang-lex", default-features = false, features = [] }
 "tilolang-mail" = { path = "../../../crates/platform/tilolang-mail", default-features = false, features = ["default", "engine"] }
 "tilolang-runtime" = { path = "../../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }

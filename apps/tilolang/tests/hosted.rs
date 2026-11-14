@@ -19,15 +19,13 @@
               comparison itself"
 )]
 
-use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use collaboration::{
-    CollabEvent, CollabRequest, CollabTransport, CollaborationManager, DocumentMutation,
-    PeerTransport, RouteSpec, TransportCommand, TransportError, TransportStatus,
+    CollabEvent, CollabRequest, CollabTransport, CollaborationManager, DocumentMutation, RouteSpec,
+    TransportCommand, TransportError, TransportStatus,
 };
 use tilo_automerge::ApplyIncoming as _;
 use tilo_render_protocol::channel::Channel;
@@ -36,6 +34,7 @@ use tilolang_app::hosted::HostedWindow;
 use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
+use tilolang_host::testing::{Broker, Inbox, Routed, Sent};
 use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::FrameHarness;
@@ -102,58 +101,6 @@ const VIEWPORT: (u32, u32) = (1280, 800);
 /// The longest a cost measurement waits for the host to be woken by the work it has off its
 /// frames.
 const WAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
-
-type Sent = Rc<RefCell<Vec<CollabRequest>>>;
-type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
-/// What the connection sent on a route other than its own.
-type Routed = Rc<RefCell<Vec<(RouteSpec, CollabRequest)>>>;
-
-/// The broker's end of the instance's connection.
-struct Broker {
-    route: RouteSpec,
-    sent: Sent,
-    inbox: Inbox,
-    routed: Routed,
-    joined: Option<RouteSpec>,
-}
-
-impl PeerTransport for Broker {
-    fn is_connected(&self) -> bool {
-        true
-    }
-
-    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        if matches!(request, CollabRequest::Hello { .. }) {
-            self.joined = Some(self.route.clone());
-        }
-        self.sent.borrow_mut().push(request);
-        Ok(())
-    }
-
-    fn poll(&mut self) -> Vec<CollabEvent> {
-        self.inbox.borrow_mut().drain(..).collect()
-    }
-
-    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
-        self.joined.take().map(Ok)
-    }
-
-    /// The record's chunks travel on routes of their own, each joined as the replica reaches
-    /// into it: the broker takes them all, and the changes they carry.
-    fn join_route(
-        &mut self,
-        _route: RouteSpec,
-        _kind: collaboration::record::RecordKind,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn send_to_route(&mut self, route: RouteSpec, request: CollabRequest) -> Result<(), String> {
-        self.routed.borrow_mut().push((route, request.clone()));
-        self.sent.borrow_mut().push(request);
-        Ok(())
-    }
-}
 
 /// The broker's end of a connection whose queue fills up: while `busy`, it takes no change of
 /// the record (`TransportError::Busy`, as the broker transport's queue says under fast typing);
@@ -596,14 +543,9 @@ impl Session {
         storage: Option<std::path::PathBuf>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
-        let (sent, inbox, routed) = (Sent::default(), Inbox::default(), Routed::default());
-        let manager = CollaborationManager::with_peer_transport(Broker {
-            route: route.clone(),
-            sent: Rc::clone(&sent),
-            inbox: Rc::clone(&inbox),
-            routed: Rc::clone(&routed),
-            joined: None,
-        });
+        let broker = Broker::new(route.clone());
+        let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
+        let manager = CollaborationManager::with_peer_transport(broker);
         let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
         Self::launch(manager, route, spec, chunks, storage, wire, window)
     }

@@ -15,6 +15,11 @@ path = "src/lib.rs"
 name = "tilolang-host"
 path = "src/main.rs"
 
+[features]
+# The fake broker a test or example runs an instance against, in place of the
+# session's: the tests of this crate and of the apps it hosts, and its examples.
+test-support = []
+
 [dependencies]
 tilolang-tilo = { path = "../tilolang-tilo", features = ["record"] }
 # Each instance's connection to its workspace, opened by the session for that app's launch.
@@ -64,6 +69,9 @@ tilo-content-device = { version = "0.1.0", path = "../../system/content-device" 
 tilo-dialogs = { version = "0.1.0", path = "../tilo-dialogs" }
 
 [dev-dependencies]
+# The fake broker these tests and examples run instances against, as the apps'
+# tests do (`src/testing.rs`).
+tilolang-host = { path = ".", features = ["test-support"] }
 # The person's clock held at a moment, and the zone the test's process reads: a day is only
 # today's or tomorrow's against a clock and a zone a test says.
 tilo-clock = { version = "0.1.0", path = "../tilo-clock", features = ["test-support"] }

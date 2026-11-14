@@ -12,17 +12,16 @@
     reason = "a test: a failure is a panic"
 )]
 
-use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
+use collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted as HostedInstance, Spec};
 use tilolang_host::phrases::Phrases;
+use tilolang_host::testing::{Broker, Inbox, Sent};
 use tilolang_tilo::DynValue;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
@@ -285,53 +284,12 @@ impl Window for InProcess {
     }
 }
 
-// ----- a tilolang host -----------------------------------------------------------------------
-
-/// The broker's end of the instance's connection: what the test delivers, and what the
-/// instance answers.
-struct Broker {
-    route: RouteSpec,
-    sent: Rc<RefCell<Vec<CollabRequest>>>,
-    inbox: Rc<RefCell<VecDeque<CollabEvent>>>,
-}
-
-impl PeerTransport for Broker {
-    fn is_connected(&self) -> bool {
-        true
-    }
-    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        self.sent.borrow_mut().push(request);
-        Ok(())
-    }
-    fn poll(&mut self) -> Vec<CollabEvent> {
-        self.inbox.borrow_mut().drain(..).collect()
-    }
-    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
-        Some(Ok(self.route.clone()))
-    }
-
-    /// The records every app of the workspace opens beside its own (each person's own state)
-    /// are joined and sent on routes of their own: the broker takes them. A broker that refused
-    /// the join would close the instance's whole connection.
-    fn join_route(
-        &mut self,
-        _: RouteSpec,
-        _: collaboration::record::RecordKind,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn send_to_route(&mut self, _: RouteSpec, _: CollabRequest) -> Result<(), String> {
-        Ok(())
-    }
-}
-
 /// Ada at the Tasks window whose instance a tilolang host runs, reached over the broker.
 struct Hosted {
     host: TilolangHost,
     window: FrameHarness,
-    sent: Rc<RefCell<Vec<CollabRequest>>>,
-    inbox: Rc<RefCell<VecDeque<CollabEvent>>>,
+    sent: Sent,
+    inbox: Inbox,
     /// What wakes the host when its work off the frame is ready to be taken in.
     woken: Arc<Woken>,
     next: u64,
@@ -341,13 +299,9 @@ impl Hosted {
     fn open() -> Self {
         let bundle = tasks();
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-        let sent: Rc<RefCell<Vec<CollabRequest>>> = Rc::default();
-        let inbox: Rc<RefCell<VecDeque<CollabEvent>>> = Rc::default();
-        let mut manager = CollaborationManager::with_peer_transport(Broker {
-            route: route.clone(),
-            sent: Rc::clone(&sent),
-            inbox: Rc::clone(&inbox),
-        });
+        let broker = Broker::new(route.clone());
+        let (sent, inbox) = (broker.sent(), broker.inbox());
+        let mut manager = CollaborationManager::with_peer_transport(broker);
         assert!(manager.send(CollabRequest::Hello {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,

@@ -2,9 +2,9 @@
 //! mark seen are kept in the workspace's record of each person's own state, so they are still
 //! theirs after the window opens again and reach the person's other devices.
 
-use super::chunks::delivered;
 use super::{Session, place_at};
 use collaboration::{CollabRequest, RouteSpec};
+use tilolang_host::testing::delivered;
 use tilolang_tilo::personal;
 
 /// The places the sidebar shows picked, each once: its row is said in more than one layer of
@@ -116,7 +116,7 @@ fn the_place_a_person_picks_reaches_their_other_device() {
         phone
             .inbox()
             .borrow_mut()
-            .push_back(delivered(&to, "ada", &mutation));
+            .push_back(delivered(&to, "ada", &mutation).expect("the change encodes"));
     }
     assert!(
         relayed > 0,

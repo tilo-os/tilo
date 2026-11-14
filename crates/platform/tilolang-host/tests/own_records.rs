@@ -11,19 +11,18 @@
     reason = "a test: a failure is a panic"
 )]
 
-use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
+use collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_render_protocol::patch::{self, Lane, ToUi, Transport as _};
 use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
+use tilolang_host::testing::{Broker, Bus, Inbox, Sent};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
 
@@ -57,93 +56,6 @@ fn mail() -> Bundle {
         include_str!("../../../../apps/tl/mail/app.tl"),
         include_str!("../../../../apps/tl/mail/app.ids"),
     )
-}
-
-type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
-type Sent = Rc<RefCell<Vec<CollabRequest>>>;
-
-/// The broker, as far as this test needs it: each connection joined one route, and a change
-/// sent on a route reaches every other connection joined on that same route, as the record's
-/// channel carries it.
-#[derive(Default)]
-struct Bus {
-    joined: RefCell<Vec<(RouteSpec, String, Inbox)>>,
-}
-
-struct Connection {
-    bus: Rc<Bus>,
-    route: RouteSpec,
-    me: String,
-    inbox: Inbox,
-    sent: Sent,
-    joined: Option<RouteSpec>,
-}
-
-impl PeerTransport for Connection {
-    fn is_connected(&self) -> bool {
-        true
-    }
-
-    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        match &request {
-            CollabRequest::Hello { .. } => {
-                self.joined = Some(self.route.clone());
-                self.bus.joined.borrow_mut().push((
-                    self.route.clone(),
-                    self.me.clone(),
-                    Rc::clone(&self.inbox),
-                ));
-            }
-            CollabRequest::Document { mutation, .. } => {
-                let record = self.route.record.as_deref().unwrap_or("");
-                let workspace = self.route.cluster_id.to_string();
-                let mut envelope = collab_types::SignedOp::new_unsigned(
-                    mutation.encode().map_err(|error| error.to_string())?,
-                    collab_types::document_artifact_id(&self.route.app_id, &workspace, record),
-                    collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-                    collab_types::document_attestation_id(&self.route.app_id, &workspace, record),
-                    collab_types::OpKind::Change,
-                    std::time::SystemTime::UNIX_EPOCH,
-                    0,
-                );
-                envelope.signature = collab_types::Signature::from_bytes([0; 64]);
-                for (route, who, inbox) in self.bus.joined.borrow().iter() {
-                    if *route == self.route && *who != self.me {
-                        inbox.borrow_mut().push_back(CollabEvent::Document {
-                            envelope: Box::new(envelope.clone()),
-                            from_user_id: self.me.clone(),
-                            decrypted_payload: None,
-                        });
-                    }
-                }
-            }
-            _ => {}
-        }
-        self.sent.borrow_mut().push(request);
-        Ok(())
-    }
-
-    fn poll(&mut self) -> Vec<CollabEvent> {
-        self.inbox.borrow_mut().drain(..).collect()
-    }
-
-    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
-        self.joined.take().map(Ok)
-    }
-
-    /// The records every app of the workspace opens beside its own (each person's own state)
-    /// are joined and sent on routes of their own, which this bus does not relay.
-    fn join_route(
-        &mut self,
-        _: RouteSpec,
-        _: collaboration::record::RecordKind,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn send_to_route(&mut self, _: RouteSpec, _: CollabRequest) -> Result<(), String> {
-        Ok(())
-    }
 }
 
 /// The window, from the far end of the patch connection: the root's tree as the instance sent
@@ -202,15 +114,9 @@ fn wake() -> tilolang_tilo::background::Waker {
 
 fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundle>) -> Member {
     let route = tilolang_host::route_of(&bundle.meta, workspace, person);
-    let (inbox, sent): (Inbox, Sent) = (Rc::default(), Rc::default());
-    let mut manager = CollaborationManager::with_peer_transport(Connection {
-        bus: Rc::clone(bus),
-        route: route.clone(),
-        me: person.to_owned(),
-        inbox: Rc::clone(&inbox),
-        sent: Rc::clone(&sent),
-        joined: None,
-    });
+    let broker = Broker::on(bus, route.clone(), person);
+    let (inbox, sent) = (broker.inbox(), broker.sent());
+    let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,

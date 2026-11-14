@@ -508,17 +508,9 @@ fn joined_instance(
     route: &RouteSpec,
 ) -> (Window, Sent, Inbox, Rc<RefCell<Vec<RouteSpec>>>) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
-    let routes: Rc<RefCell<Vec<RouteSpec>>> = Rc::default();
-    let mut manager = CollaborationManager::with_peer_transport(Broker {
-        route: route.clone(),
-        sent: Rc::clone(&sent),
-        inbox: Rc::clone(&inbox),
-        joined: None,
-        directory: Rc::default(),
-        actions: Rc::default(),
-        routes: Rc::clone(&routes),
-    });
+    let broker = Broker::new(route.clone());
+    let (sent, inbox, routes) = (broker.sent(), broker.inbox(), broker.routes());
+    let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,

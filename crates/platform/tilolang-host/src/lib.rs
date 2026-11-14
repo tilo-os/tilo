@@ -26,6 +26,8 @@ pub mod personal;
 pub mod phrases;
 pub mod stop;
 pub mod task;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod wait;
 pub mod web;
 

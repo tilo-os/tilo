@@ -12,14 +12,13 @@
 )]
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use collaboration::action_directory::{
     ActionDirectoryPage, ActionDirectoryQuery, ActionDirectoryResolution,
 };
-use collaboration::commit_log::CommitHistory;
 use collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PeerTransport,
     RouteSpec, WorkspaceCommit,
@@ -30,6 +29,7 @@ use tilo_render_protocol::patch::{self, Lane, ToApp, ToUi, Transport as _};
 use tilolang_host::TilolangHost;
 use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
+use tilolang_host::testing::{Actions, Broker, Directory, Inbox, Sent};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::runtime::Value;
@@ -57,87 +57,6 @@ fn counter() -> Bundle {
     )
     .unwrap_or_else(|_| panic!("the counter compiles"));
     Bundle::new(&compiled, [])
-}
-
-type Sent = Rc<RefCell<Vec<CollabRequest>>>;
-type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
-/// The actions a broker learned, as its log keeps them.
-type Actions = Rc<RefCell<Vec<CommitHistory>>>;
-
-/// The instance's action directory as the broker holds it: the apps it was offered under, and
-/// what the test asks of it.
-#[derive(Default)]
-struct Directory {
-    offered: Vec<String>,
-    asked: Vec<ActionDirectoryRequest>,
-}
-
-/// The broker's end of the instance's connection: what the instance sent, and what the test
-/// delivers.
-struct Broker {
-    route: RouteSpec,
-    sent: Sent,
-    inbox: Inbox,
-    joined: Option<RouteSpec>,
-    directory: Rc<RefCell<Directory>>,
-    /// The actions the broker learned, as a peer's log keeps them: what one undo takes back
-    /// across the workspace.
-    actions: Actions,
-    /// The other routes the connection joined.
-    routes: Rc<RefCell<Vec<RouteSpec>>>,
-}
-
-impl PeerTransport for Broker {
-    fn is_connected(&self) -> bool {
-        true
-    }
-
-    fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        if matches!(request, CollabRequest::Hello { .. }) {
-            self.joined = Some(self.route.clone());
-        }
-        if let CollabRequest::Document {
-            commit: Some(commit),
-            ..
-        } = &request
-        {
-            self.actions.borrow_mut().push(CommitHistory::of(commit));
-        }
-        self.sent.borrow_mut().push(request);
-        Ok(())
-    }
-
-    fn poll(&mut self) -> Vec<CollabEvent> {
-        self.inbox.borrow_mut().drain(..).collect()
-    }
-
-    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
-        self.joined.take().map(Ok)
-    }
-
-    fn publish_action_directory(&mut self, app_id: String) -> Result<(), String> {
-        self.directory.borrow_mut().offered.push(app_id);
-        Ok(())
-    }
-
-    fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
-        std::mem::take(&mut self.directory.borrow_mut().asked)
-    }
-
-    fn join_route(
-        &mut self,
-        route: RouteSpec,
-        _: collaboration::record::RecordKind,
-    ) -> Result<(), String> {
-        self.routes.borrow_mut().push(route);
-        Ok(())
-    }
-
-    /// A record beside the app's (the workspace's record of each person's own state) is sent on
-    /// a route of its own: the broker takes it.
-    fn send_to_route(&mut self, _: RouteSpec, _: CollabRequest) -> Result<(), String> {
-        Ok(())
-    }
 }
 
 /// The window, as the test drives it from the far end of the patch connection.
@@ -363,16 +282,11 @@ fn instance_keeping(
     content: tilo_content::ContentStore,
 ) -> (Window, Sent, Inbox) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
-    let mut manager = CollaborationManager::with_peer_transport(Broker {
-        route: route.clone(),
-        sent: Rc::clone(&sent),
-        inbox: Rc::clone(&inbox),
-        joined: None,
-        directory,
-        actions,
-        routes: Rc::default(),
-    });
+    let broker = Broker::new(route.clone())
+        .with_directory(directory)
+        .with_actions(actions);
+    let (sent, inbox) = (broker.sent(), broker.inbox());
+    let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
@@ -471,16 +385,9 @@ fn opened_from_own_copy_in(
     route: RouteSpec,
 ) -> (TilolangHost, Window, Sent, RouteSpec) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    let sent: Sent = Rc::default();
-    let mut manager = CollaborationManager::with_peer_transport(Broker {
-        route: route.clone(),
-        sent: Rc::clone(&sent),
-        inbox: Rc::default(),
-        joined: None,
-        directory: Rc::default(),
-        actions: Rc::default(),
-        routes: Rc::default(),
-    });
+    let broker = Broker::new(route.clone());
+    let sent = broker.sent();
+    let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
@@ -2127,16 +2034,9 @@ fn applier_of(
 ) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(app, uuid::Uuid::new_v4());
-    let sent: Sent = Rc::default();
-    let mut manager = CollaborationManager::with_peer_transport(Broker {
-        route: route.clone(),
-        sent: Rc::clone(&sent),
-        inbox: Rc::default(),
-        joined: None,
-        directory: Rc::default(),
-        actions: Rc::default(),
-        routes: Rc::default(),
-    });
+    let broker = Broker::new(route.clone());
+    let sent = broker.sent();
+    let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,

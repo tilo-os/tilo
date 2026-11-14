@@ -63,8 +63,9 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 # The test IMAP and SMTP servers the mail origin's tests run against.
 mail = { path = "../mail", features = ["fake-servers"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-# A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`).
-tilolang-host = { path = "../../crates/platform/tilolang-host" }
+# A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`),
+# whose tests play the broker over the host's own fake (`testing`).
+tilolang-host = { path = "../../crates/platform/tilolang-host", features = ["test-support"] }
 collaboration = { version = "0.1.0", path = "../../crates/collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 collab-types = { version = "0.1.0", path = "../../crates/collab/collab-types" }
 automerge.workspace = true
