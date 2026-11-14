@@ -44,6 +44,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::SigningKey;
 use thiserror::Error;
+use tilo_files::native::migration::Format;
 use zeroize::Zeroizing;
 
 use crate::CanonicalError;
@@ -1198,9 +1199,25 @@ pub fn adopt_device_key(
 /// `DeviceCert`.
 pub fn read_device_cert(path: &Path) -> Result<DeviceCert, PersistError> {
     let bytes = read_regular_bounded(path, MAX_DEVICE_CERT_BYTES)?;
+    let stored = crate::cert::binary_layout_of(&bytes)?;
+    let bytes = DEVICE_CERT
+        .bring_up(path, bytes, stored)
+        .map_err(|error| PersistError::Io(io::Error::other(error.to_string())))?;
     let cert: DeviceCert = crate::canonical::from_canonical_bytes(&bytes)?;
     Ok(cert)
 }
+
+/// A device certificate file (`device/cert.bin`, `device/certs/*`): the
+/// certificate's canonical binary encoding, whose layout names its version
+/// ([`crate::cert::binary_layout_of`]). A later layout brings the files of
+/// this one up through a step here, and the old file stays beside it. The
+/// bytes each version wrote are kept in `golden/device-certificate/`.
+pub const DEVICE_CERT: Format = Format {
+    name: "device certificate",
+    version: crate::cert::BINARY_LAYOUT,
+    oldest: 1,
+    steps: &[],
+};
 
 /// Write a signed device cert to disk. Public metadata, with
 /// [`PUBLIC_FILE_MODE`].
@@ -1479,6 +1496,63 @@ mod tests {
     }
     use ed25519_dalek::Signer;
     use std::sync::{Arc, Barrier};
+
+    /// `device/cert.bin` as `tilo login --new-identity` wrote it before the
+    /// host and read-all grants were retired: a member certificate whose
+    /// retired flags are clear. Every version's bytes are kept beside this
+    /// crate and never change; a layout change gives the format a new
+    /// version, its own kept bytes and the step that brings these up.
+    fn kept_v1() -> Vec<u8> {
+        let text = include_str!("../golden/device-certificate/v1.hex");
+        hex::decode(text.split_whitespace().collect::<String>()).unwrap()
+    }
+
+    #[test]
+    fn a_device_certificate_an_older_build_wrote_reads_verifies_and_writes_as_it_was() {
+        let kept = kept_v1();
+        assert_eq!(crate::cert::binary_layout_of(&kept).unwrap(), 1);
+        let dir = identity_tempdir();
+        let paths = IdentityPaths::under(dir.path());
+        paths.ensure_directories().unwrap();
+        let read = std::cell::RefCell::new(None);
+        tilo_files::native::migration::assert_golden_bytes(
+            DEVICE_CERT.name,
+            &kept,
+            |bytes| {
+                fs::write(&paths.device_cert, bytes).unwrap();
+                let cert = read_device_cert(&paths.device_cert).unwrap();
+                verify_device_cert(&cert).unwrap();
+                assert_eq!(cert.device_label, "tilo on laptop");
+                assert_eq!(cert.capabilities, DeviceCapabilities::member());
+                assert_eq!(cert.expires_at_ns, None);
+                assert_eq!(
+                    fs::read(&paths.device_cert).unwrap(),
+                    bytes,
+                    "a current file is read as it is"
+                );
+                *read.borrow_mut() = Some(cert);
+            },
+            || {
+                let written = dir.path().join("written.bin");
+                write_device_cert(&written, read.borrow().as_ref().unwrap()).unwrap();
+                fs::read(written).unwrap()
+            },
+        );
+    }
+
+    /// A file in a layout later than this build's is refused and left as it
+    /// is, not read as if it were this one.
+    #[test]
+    fn a_device_certificate_in_a_later_layout_is_refused_and_left_alone() {
+        let dir = identity_tempdir();
+        let path = dir.path().join("cert.bin");
+        let mut later = kept_v1();
+        later[32 + 32 + 1 + "tilo on laptop".len()] = 9;
+        fs::write(&path, &later).unwrap();
+        let refused = read_device_cert(&path).unwrap_err().to_string();
+        assert!(refused.contains("newer build"), "{refused}");
+        assert_eq!(fs::read(&path).unwrap(), later);
+    }
 
     #[cfg(not(windows))]
     #[test]

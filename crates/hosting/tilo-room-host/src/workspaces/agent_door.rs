@@ -249,6 +249,7 @@ mod tests {
                 stand_in: false,
                 server_key,
                 browser_pages,
+                retired: tilo_user_identity::RetiredFlags::default(),
             },
             issued_at_ns: 5_000_000_000,
             expires_at_ns: Some(9_000_000_000),

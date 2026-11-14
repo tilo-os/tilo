@@ -22,7 +22,7 @@ the file they came from stays readable by the build that wrote it.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `single-file.owner.json.hex` | 17324 | `49efe25f34c1725333b14a6fb29e95937e37fd600fcc56462addd11426178b31` |
+| `single-file.owner.json.hex` | 18015 | `97769029cec09af1ff8e19d7b9d20e8e8e5ccfa33ecc11e26787338e2f924b4c` |
 
 Persisted byte fixtures are stored as `.hex` files: two lowercase hexadecimal
 digits per byte, separated by spaces, with 16 bytes per LF line. The decoded

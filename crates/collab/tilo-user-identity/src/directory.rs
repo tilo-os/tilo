@@ -822,6 +822,10 @@ mod tests {
     /// Workspaces are added and listed, member hosts pin and unpin, concurrent adds merge, and the
     /// directory saves and loads.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario: its phases read top to bottom"
+    )]
     fn the_workspace_directory_merges_and_persists_membership() {
         // Phase: add_and_list_workspaces.
         {

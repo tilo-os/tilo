@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 44
+version = 45
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -163,6 +163,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DeviceCapabilities.can_admit_devices" = "#1 bool"
 "DeviceCapabilities.can_own_workspaces" = "#0 bool"
 "DeviceCapabilities.foreign" = "#2 bool"
+"DeviceCapabilities.retired" = "#8 RetiredFlags"
 "DeviceCapabilities.server_key" = "#6 bool"
 "DeviceCapabilities.stand_in" = "#5 bool"
 "DeviceCert" = "struct"
@@ -727,6 +728,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "RefusalReason::NotCertified" = "#2 unit"
 "RefusalReason::Other" = "#8 unit"
 "RefusalReason::Revoked" = "#0 unit"
+"RetiredFlags" = "struct"
+"RetiredFlags.act_as_host" = "#0 bool"
+"RetiredFlags.read_all_workspaces" = "#1 bool"
 "RevocationEntry" = "struct deny_unknown_fields"
 "RevocationEntry.reason" = "#3 RevocationReason"
 "RevocationEntry.revoked_at_ns" = "#2 u64"
