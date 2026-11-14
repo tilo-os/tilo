@@ -120,9 +120,10 @@ fn active_personal_transfer(generation: u64) -> ActivePersonalTransfer {
     }
 }
 
-#[test]
-fn personal_bindings_are_exact_generation_and_membership_scoped() {
-    // Phase `personal_transfer_generation_is_exact_and_stale_completion_cannot_remove_replacement`.
+tilo_test_env::scenario! {
+    fn personal_bindings_are_exact_generation_and_membership_scoped;
+
+    phase personal_transfer_generation_is_exact_and_stale_completion_cannot_remove_replacement;
     {
         let first = iroh::SecretKey::from_bytes(&[0xB1; 32]).public();
         let sibling = iroh::SecretKey::from_bytes(&[0xB2; 32]).public();
@@ -146,7 +147,8 @@ fn personal_bindings_are_exact_generation_and_membership_scoped() {
         assert!(take_personal_transfer_generation(&mut active, key, 12).is_some());
         assert!(active.contains_key(&sibling_key));
     }
-    // Phase `nearby_transfer_frame_round_trips_exact_binding_and_bounded_chunk`.
+
+    phase nearby_transfer_frame_round_trips_exact_binding_and_bounded_chunk;
     {
         let wire = PersonalFabricWireFrame {
             user_public_key: [3; 32],

@@ -141,9 +141,10 @@ mod tests {
     use super::*;
     use media::StreamCodec;
 
-    #[test]
-    fn media_capability_adverts_replace_the_h264_default() {
-        // Phase `an_unknown_peer_is_h264_only_and_an_advert_replaces_that`.
+    tilo_test_env::scenario! {
+        fn media_capability_adverts_replace_the_h264_default;
+
+        phase an_unknown_peer_is_h264_only_and_an_advert_replaces_that;
         {
             const PEER: PeerId = 0x5eed_0001;
             assert_eq!(capabilities(PEER), CodecCapabilities::legacy_peer());
@@ -163,7 +164,9 @@ mod tests {
             record(PEER, &["av1".into()], &["h264".into()], &[], &[]);
             assert_eq!(generation(), after, "an unchanged advert is not a change");
         }
-        // Phase `an_advert_holds_until_its_peer_departs`. Nothing restates
+
+        phase an_advert_holds_until_its_peer_departs;
+        // Nothing restates
         // it, so it does not go stale with time; departure forgets it.
         {
             const PEER: PeerId = 0x5eed_0002;
@@ -181,9 +184,13 @@ mod tests {
             forget(PEER);
             assert_eq!(generation(), after, "forgetting nobody changes nothing");
         }
-        match local_advert(7) {
-            NeighbourMsg::MediaCapabilities { peer, .. } => assert_eq!(peer, 7),
-            other => panic!("expected a capabilities advert, got {other:?}"),
+
+        phase the_local_advert_names_this_peer;
+        {
+            match local_advert(7) {
+                NeighbourMsg::MediaCapabilities { peer, .. } => assert_eq!(peer, 7),
+                other => panic!("expected a capabilities advert, got {other:?}"),
+            }
         }
     }
 }

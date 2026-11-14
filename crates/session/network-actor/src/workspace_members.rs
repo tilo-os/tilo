@@ -253,133 +253,140 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_workspace_members_frame_is_taken_and_a_non_members_dropped() {
-        let (here, member, outsider) = (device(1), device(2), device(3));
-        let mut members = WorkspaceMembers::default();
-        let mut mint = minting();
-        members.set_roster(WORKSPACE, here, lasting(&[here, member]), &mut mint, true);
+    tilo_test_env::scenario! {
+        /// Whose frames a workspace takes: a device on its roster, over the connection its
+        /// membership started on, until its certificate expires. Each phase was a test of its own
+        /// and builds its own roster.
+        fn a_workspaces_roster_decides_whose_frames_are_taken;
 
-        assert!(
-            admitted(&mut members, WORKSPACE, member, 1).is_some(),
-            "a member's frame is taken"
-        );
-        assert_eq!(
-            admitted(&mut members, WORKSPACE, outsider, 1),
-            None,
-            "a non-member's is dropped"
-        );
-        assert_eq!(
-            admitted(&mut members, WorkspaceId::from_u128(8), member, 1),
-            None,
-            "membership of one workspace is no membership of another"
-        );
-        assert!(
-            members.member(WORKSPACE, member, NOW).is_some(),
-            "this device reaches members only"
-        );
-    }
+        phase a_workspace_members_frame_is_taken_and_a_non_members_dropped;
+        {
+            let (here, member, outsider) = (device(1), device(2), device(3));
+            let mut members = WorkspaceMembers::default();
+            let mut mint = minting();
+            members.set_roster(WORKSPACE, here, lasting(&[here, member]), &mut mint, true);
 
-    #[test]
-    fn a_connection_stays_bound_to_the_membership_it_started_in() {
-        let (here, member) = (device(1), device(2));
-        let mut members = WorkspaceMembers::default();
-        let mut mint = minting();
-        members.set_roster(WORKSPACE, here, lasting(&[member]), &mut mint, true);
-        let first = admitted(&mut members, WORKSPACE, member, 1).expect("a member");
+            assert!(
+                admitted(&mut members, WORKSPACE, member, 1).is_some(),
+                "a member's frame is taken"
+            );
+            assert_eq!(
+                admitted(&mut members, WORKSPACE, outsider, 1),
+                None,
+                "a non-member's is dropped"
+            );
+            assert_eq!(
+                admitted(&mut members, WorkspaceId::from_u128(8), member, 1),
+                None,
+                "membership of one workspace is no membership of another"
+            );
+            assert!(
+                members.member(WORKSPACE, member, NOW).is_some(),
+                "this device reaches members only"
+            );
+        }
 
-        // Removed: its frames stop counting, and the device leaves.
-        let removed = members.set_roster(WORKSPACE, here, lasting(&[]), &mut mint, true);
-        assert_eq!(removed.devices, vec![member]);
-        assert_eq!(admitted(&mut members, WORKSPACE, member, 1), None);
+        phase a_connection_stays_bound_to_the_membership_it_started_in;
+        {
+            let (here, member) = (device(1), device(2));
+            let mut members = WorkspaceMembers::default();
+            let mut mint = minting();
+            members.set_roster(WORKSPACE, here, lasting(&[member]), &mut mint, true);
+            let first = admitted(&mut members, WORKSPACE, member, 1).expect("a member");
 
-        // Admitted again: a new membership, which the old connection never
-        // carries; a new connection does.
-        members.set_roster(WORKSPACE, here, lasting(&[member]), &mut mint, true);
-        assert_eq!(admitted(&mut members, WORKSPACE, member, 1), None);
-        let again = admitted(&mut members, WORKSPACE, member, 2).expect("a new connection");
-        assert_ne!(first, again);
-    }
+            // Removed: its frames stop counting, and the device leaves.
+            let removed = members.set_roster(WORKSPACE, here, lasting(&[]), &mut mint, true);
+            assert_eq!(removed.devices, vec![member]);
+            assert_eq!(admitted(&mut members, WORKSPACE, member, 1), None);
 
-    #[test]
-    fn a_roster_change_keeps_the_devices_that_stay() {
-        let (here, stays, leaves) = (device(1), device(2), device(3));
-        let mut members = WorkspaceMembers::default();
-        let mut mint = minting();
-        members.set_roster(WORKSPACE, here, lasting(&[stays, leaves]), &mut mint, true);
-        let before = admitted(&mut members, WORKSPACE, stays, 1);
-        members.set_roster(WORKSPACE, here, lasting(&[stays]), &mut mint, true);
-        assert_eq!(
-            admitted(&mut members, WORKSPACE, stays, 1),
-            before,
-            "its connection still counts"
-        );
-        assert_eq!(members.member(WORKSPACE, leaves, NOW), None);
-    }
+            // Admitted again: a new membership, which the old connection never
+            // carries; a new connection does.
+            members.set_roster(WORKSPACE, here, lasting(&[member]), &mut mint, true);
+            assert_eq!(admitted(&mut members, WORKSPACE, member, 1), None);
+            let again = admitted(&mut members, WORKSPACE, member, 2).expect("a new connection");
+            assert_ne!(first, again);
+        }
 
-    #[test]
-    fn a_frame_from_a_device_whose_certificate_expired_is_dropped_and_its_connection_tombstoned() {
-        let (here, lapsing, lasting_member) = (device(1), device(2), device(3));
-        let mut members = WorkspaceMembers::default();
-        let mut mint = minting();
-        members.set_roster(
-            WORKSPACE,
-            here,
-            [(lapsing, Some(NOW + 10)), (lasting_member, None)],
-            &mut mint,
-            true,
-        );
-        assert!(
-            matches!(
-                members.admit(WORKSPACE, lapsing, 1, NOW),
+        phase a_roster_change_keeps_the_devices_that_stay;
+        {
+            let (here, stays, leaves) = (device(1), device(2), device(3));
+            let mut members = WorkspaceMembers::default();
+            let mut mint = minting();
+            members.set_roster(WORKSPACE, here, lasting(&[stays, leaves]), &mut mint, true);
+            let before = admitted(&mut members, WORKSPACE, stays, 1);
+            members.set_roster(WORKSPACE, here, lasting(&[stays]), &mut mint, true);
+            assert_eq!(
+                admitted(&mut members, WORKSPACE, stays, 1),
+                before,
+                "its connection still counts"
+            );
+            assert_eq!(members.member(WORKSPACE, leaves, NOW), None);
+        }
+
+        phase a_frame_from_a_device_whose_certificate_expired_is_dropped_and_its_connection_tombstoned;
+        {
+            let (here, lapsing, lasting_member) = (device(1), device(2), device(3));
+            let mut members = WorkspaceMembers::default();
+            let mut mint = minting();
+            members.set_roster(
+                WORKSPACE,
+                here,
+                [(lapsing, Some(NOW + 10)), (lasting_member, None)],
+                &mut mint,
+                true,
+            );
+            assert!(
+                matches!(
+                    members.admit(WORKSPACE, lapsing, 1, NOW),
+                    Admission::Member(_)
+                ),
+                "before its expiry the device's frame is taken"
+            );
+
+            let Admission::Expired(removed) = members.admit(WORKSPACE, lapsing, 1, NOW + 10) else {
+                panic!("a frame at the certificate's expiry is dropped");
+            };
+            assert_eq!(
+                removed.devices,
+                vec![lapsing],
+                "no workspace holds the device any more"
+            );
+            assert!(
+                matches!(
+                    members.admit(WORKSPACE, lapsing, 1, NOW + 10),
+                    Admission::Refused
+                ),
+                "the device is off the roster"
+            );
+            assert!(
+                matches!(
+                    members.admit(WORKSPACE, lapsing, 2, NOW + 10),
+                    Admission::Refused
+                ),
+                "a new connection does not bring it back"
+            );
+            assert!(
+                members.ingress[&(lapsing, 1)].bound[&WORKSPACE].is_none(),
+                "the connection it came on is tombstoned for the workspace"
+            );
+            assert!(
+                members
+                    .member(WORKSPACE, lasting_member, NOW + 10)
+                    .is_some()
+            );
+            assert!(matches!(
+                members.admit(WORKSPACE, lasting_member, 1, NOW + 10),
                 Admission::Member(_)
-            ),
-            "before its expiry the device's frame is taken"
-        );
+            ));
+        }
 
-        let Admission::Expired(removed) = members.admit(WORKSPACE, lapsing, 1, NOW + 10) else {
-            panic!("a frame at the certificate's expiry is dropped");
-        };
-        assert_eq!(
-            removed.devices,
-            vec![lapsing],
-            "no workspace holds the device any more"
-        );
-        assert!(
-            matches!(
-                members.admit(WORKSPACE, lapsing, 1, NOW + 10),
-                Admission::Refused
-            ),
-            "the device is off the roster"
-        );
-        assert!(
-            matches!(
-                members.admit(WORKSPACE, lapsing, 2, NOW + 10),
-                Admission::Refused
-            ),
-            "a new connection does not bring it back"
-        );
-        assert!(
-            members.ingress[&(lapsing, 1)].bound[&WORKSPACE].is_none(),
-            "the connection it came on is tombstoned for the workspace"
-        );
-        assert!(
-            members
-                .member(WORKSPACE, lasting_member, NOW + 10)
-                .is_some()
-        );
-        assert!(matches!(
-            members.admit(WORKSPACE, lasting_member, 1, NOW + 10),
-            Admission::Member(_)
-        ));
-    }
-
-    #[test]
-    fn a_device_past_its_certificate_expiry_is_streamed_to_no_more() {
-        let (here, lapsing) = (device(1), device(2));
-        let mut members = WorkspaceMembers::default();
-        members.set_roster(WORKSPACE, here, [(lapsing, Some(NOW))], minting(), true);
-        assert!(members.member(WORKSPACE, lapsing, NOW - 1).is_some());
-        assert_eq!(members.member(WORKSPACE, lapsing, NOW), None);
+        phase a_device_past_its_certificate_expiry_is_streamed_to_no_more;
+        {
+            let (here, lapsing) = (device(1), device(2));
+            let mut members = WorkspaceMembers::default();
+            members.set_roster(WORKSPACE, here, [(lapsing, Some(NOW))], minting(), true);
+            assert!(members.member(WORKSPACE, lapsing, NOW - 1).is_some());
+            assert_eq!(members.member(WORKSPACE, lapsing, NOW), None);
+        }
     }
 }
