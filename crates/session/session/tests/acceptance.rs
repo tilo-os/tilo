@@ -144,17 +144,21 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
             .any(|line| line.starts_with("session.overview(open: Option<Bool> = .none)")),
         "the overview's action, as it is typed: {chrome}"
     );
-    let (arranging, failed) = repl.call(
+    let layout_key = tilo_actions::remote::session_actions::LAYOUT_RESOURCE
+        .rsplit(':')
+        .next()
+        .expect("a resource key");
+    let (placing, failed) = repl.call(
         &mut session,
         "tilo_ls",
-        &json!({"path": "session/layout"}),
+        &json!({"path": format!("session/{layout_key}")}),
     );
-    assert!(!failed, "{arranging}");
+    assert!(!failed, "{placing}");
     assert!(
-        arranging
+        placing
             .lines()
             .any(|line| line.starts_with("session.place(")),
-        "placing, as it is typed: {arranging}"
+        "placing, as it is typed: {placing}"
     );
 }
 

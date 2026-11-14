@@ -11,7 +11,7 @@ use tilo_actions::{
 use tilo_desktop_model::{FloatCorner, FloatPlace, WorkspaceId};
 
 use super::{
-    LayoutAction, DEFAULT_HEIGHT, DEFAULT_WIDTH, FLOAT_HEIGHT, FLOAT_INSET, FLOAT_WIDTH, Item,
+    DEFAULT_HEIGHT, DEFAULT_WIDTH, FLOAT_HEIGHT, FLOAT_INSET, FLOAT_WIDTH, Item, LayoutAction,
     OPERATION, PLACE_KIND, PlaceReading, RECORD_RESOURCE, RESOURCE, ROW_KIND, RowReading,
     STRIP_KIND, StripReading, Words,
 };

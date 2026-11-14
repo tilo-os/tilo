@@ -76,12 +76,11 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         apps.lines().any(|line| line.starts_with("session")),
         "the session's own resources are listed: {apps}"
     );
-    let (shell, failed) = repl.call(session, "tilo_ls", &json!({"path": "session"}));
-    assert!(!failed, "{shell}");
-    assert!(
-        shell.lines().any(|line| line.starts_with("Layout/")),
-        "the layout is among the session's resources: {shell}"
-    );
+    // The layout is found by its resource id, never by the label the person reads.
+    let layout_key = tilo_actions::remote::session_actions::LAYOUT_RESOURCE
+        .rsplit(':')
+        .next()
+        .expect("a resource key");
 
     // `ls` lists each action as a program calls it, what it may go without included. The chrome by
     // its key: a window's control reads under the window's name, and the shell's window is another
@@ -102,13 +101,16 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         overview, "session.overview(open: Option<Bool> = .none)",
         "as it is typed: {chrome}"
     );
-    let (arranging, failed) =
-        repl.call(session, "tilo_ls", &json!({"path": "session/layout"}));
-    assert!(!failed, "{arranging}");
-    let place = arranging
+    let (placing, failed) = repl.call(
+        session,
+        "tilo_ls",
+        &json!({"path": format!("session/{layout_key}")}),
+    );
+    assert!(!failed, "{placing}");
+    let place = placing
         .lines()
         .find(|line| line.starts_with("session.place("))
-        .unwrap_or_else(|| panic!("`place`, as it is typed: {arranging}"));
+        .unwrap_or_else(|| panic!("`place`, as it is typed: {placing}"));
     assert!(
         place.contains("resource: host.Resource") && place.contains("x: Option<Int> = .none"),
         "it takes the resource as a value, and may go without the rest: {place}"
