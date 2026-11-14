@@ -103,7 +103,7 @@ tilo_test_env::scenario! {
         let path = temp.path().join("schedules.json");
         std::fs::write(
             &path,
-            r#"[{"room":"studio","app":"so.tilo.clocks","tag":"alarm","title":"Alarm",
+            r#"[{"workspace":"studio","app":"so.tilo.clocks","tag":"alarm","title":"Alarm",
              "body":"Wake up","activation":"tilo-clocks:alarms","original_at_ms":1000,
              "next_at_ms":1000,"calendar":null,"last_rung":null,
              "token":"0123456789abcdef0123456789abcdef"}]"#,
@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
         let due = at("2026-04-14T12:00:00+00:00");
         let (_ledger, occurrence) = rung(due, 127, None);
         let written = serde_json::to_value(&occurrence).expect("its data");
-        assert_eq!(written["room"], "studio", "the key apps already read");
+        assert_eq!(written["workspace"], "studio");
         assert!(written.get("workspace").is_none());
     }
 

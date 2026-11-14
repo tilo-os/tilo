@@ -214,7 +214,7 @@ pub(super) async fn join_route(
         .await
     {
         if snapshot.app_id == spec.app_id
-            && snapshot.room == spec.cluster_id.to_string()
+            && snapshot.workspace == spec.cluster_id.to_string()
             && snapshot.document == spec.record.as_deref().unwrap_or("")
         {
             inbound_tx

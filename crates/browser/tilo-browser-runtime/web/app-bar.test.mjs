@@ -79,7 +79,7 @@ test('the bar draws a few faces and counts the rest, and hides when nobody else 
 });
 
 test('“Open in Tilo” opens the same place on the desktop, a document of its own as its app', () => {
-  const scope = {kind: 'workspace', host: 'https://rooms.example', workspace: 'w'};
+  const scope = {kind: 'workspace', host: 'https://workspaces.example', workspace: 'w'};
   const primary = {scope, app: 'so.tilo.chat', record: '', resource: {kind: 'chat.message', id: 'chat.message:1'}};
   assert.deepEqual(desktopRoute(primary), {mode: 'desktop', target: primary});
   assert.deepEqual(desktopRoute({scope, app: 'so.tilo.word-processor', record: 'uuid:1', view: 'outline'}),

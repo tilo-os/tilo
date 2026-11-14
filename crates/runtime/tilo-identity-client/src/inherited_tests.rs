@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
         let identity = inherited::connect_service(app.as_fd()).unwrap();
         worker.join().unwrap();
         for _ in 0..2 {
-            assert!(identity.sign_collaboration_join("room").is_err());
+            assert!(identity.sign_collaboration_join("workspace").is_err());
             let reacquired = inherited::connect_service(app.as_fd()).unwrap();
             assert!(Arc::ptr_eq(&identity, &reacquired));
             assert_eq!(reacquired.metadata().signing_public_key(), [5; 32]);

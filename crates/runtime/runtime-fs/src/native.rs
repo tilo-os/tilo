@@ -1275,7 +1275,7 @@ mod tests {
             snapshot_entries: 3,
         });
         let owner = FsOwner {
-            workspace: "test-room".into(),
+            workspace: "test-workspace".into(),
             app_id: "so.tilo.file-explorer".into(),
         };
         let root = authority

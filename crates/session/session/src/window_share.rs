@@ -2764,11 +2764,10 @@ fn tab_argument() -> ActionParam {
     ActionParam::required_owned("tab", ParamType::Text, t("session-window-share-param-tab"))
 }
 
-/// The workspace argument: the workspace a window is shared with or watched in. It is named `room`
-/// on the wire, the key the actions have always taken.
+/// The workspace argument: the workspace a window is shared with or watched in.
 fn workspace_argument() -> ActionParam {
     ActionParam::required_owned(
-        "room",
+        "workspace",
         ParamType::Text,
         t("session-window-share-param-workspace"),
     )
@@ -2809,7 +2808,7 @@ fn share_action() -> ActionSpec {
                 t("session-window-share-param-app"),
             ),
             ActionParam::optional_owned(
-                "room",
+                "workspace",
                 ParamType::Text,
                 t("session-window-share-param-share-workspace"),
             ),
@@ -2818,7 +2817,7 @@ fn share_action() -> ActionSpec {
             window: text_of(args, "window"),
             tab: tab_of(args),
             app_id: text_of(args, "app_id"),
-            workspace: text_of(args, "room"),
+            workspace: text_of(args, "workspace"),
         },
     )
 }
@@ -2861,7 +2860,7 @@ fn watch_action() -> ActionSpec {
         vec![tab_argument(), workspace_argument()],
         |args| ShareCommand::Watch {
             tab: tab_of(args),
-            workspace: text_of(args, "room"),
+            workspace: text_of(args, "workspace"),
         },
     )
 }
@@ -2874,7 +2873,7 @@ fn unwatch_action() -> ActionSpec {
         vec![tab_argument(), workspace_argument()],
         |args| ShareCommand::Unwatch {
             tab: tab_of(args),
-            workspace: text_of(args, "room"),
+            workspace: text_of(args, "workspace"),
         },
     )
 }

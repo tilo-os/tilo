@@ -9,9 +9,8 @@ use ui::record::RecordCheckout;
 use ui::widget::{AppWidget, TileHost};
 
 pub struct TileRequest<'a> {
-    /// The workspace the tile is resolved in. The field keeps its name: hosts outside this crate
-    /// (the apps and the session) build requests by it.
-    pub room: WorkspaceId,
+    /// The workspace the tile is resolved in.
+    pub workspace: WorkspaceId,
     pub tab: &'a Tab,
 }
 #[expect(

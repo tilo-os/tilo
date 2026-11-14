@@ -2,7 +2,7 @@
  * The entry pages' wiring: the real page host and admission doors behind
  * `entry.mjs`, and the few controls a link needs (an invitation to accept,
  * an account to choose, the other mode). Diagnostic query switches stay
- * readable (`?workspace=`, `?workspace=`, `?invite`), since they say nothing
+ * readable (`?workspace=`, `?workspaceName=`, `?invite`), since they say nothing
  * about what the link opens.
  *
  * `?embed=1` is the page inside another site (the homepage's live
@@ -916,7 +916,7 @@ export async function startEntryPage({mode}) {
   /** The picture the person chose (a `data:` URL), once their profile is read. */
   let ownPhoto = null;
   /** The workspace this page is getting into, by name, once it knows it. */
-  let workspaceName = query.get('workspace') || null;
+  let workspaceName = query.get('workspaceName') || null;
   /** The workspace the link names and the entry it is served under, once read (`deps.onScope`). */
   let admitting = null;
   /** The name the host signed into an invitation this page redeemed. */
@@ -961,7 +961,7 @@ export async function startEntryPage({mode}) {
     // Where the person's agents connect over MCP, which their MCP server shows.
     mcp: MCP_URL,
     ...(query.get('workspace') ? {workspace: query.get('workspace')} : {}),
-    ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),
+    ...(query.get('workspaceName') ? {workspaceName: query.get('workspaceName')} : {}),
     // The directory sheet's Join: the page enters the workspace through its
     // door on the session, then shows it.
     onJoinGranted: joined => { void openGrantedWorkspace(joined); },

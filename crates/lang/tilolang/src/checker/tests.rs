@@ -802,7 +802,7 @@ tilo_test_env::scenario! {
     phase workspace_members_and_members_of_a_resource_are_principals_with_kind_and_role;
     {
         let (m, _) = lower(
-            "type Room {\n    topic: Text\n}\nfn agents(r: Room) -> Int {\n    members(r).count(p -> p.kind() == .agent)\n}\nfn roles() -> List<Text> {\n    workspace.members.map(p -> p.role() ?? p.name())\n}\nview room(r: Room) {\n    stack {\n        for p in workspace.members {\n            avatar(p)\n        }\n        text(\"{agents(r)}\")\n    }\n}\nview mine(r: Room) {\n    text(\"{workspace.me.name()}\")\n}",
+            "type Topic {\n    topic: Text\n}\nfn agents(r: Topic) -> Int {\n    members(r).count(p -> p.kind() == .agent)\n}\nfn roles() -> List<Text> {\n    workspace.members.map(p -> p.role() ?? p.name())\n}\nview topic(r: Topic) {\n    stack {\n        for p in workspace.members {\n            avatar(p)\n        }\n        text(\"{agents(r)}\")\n    }\n}\nview mine(r: Topic) {\n    text(\"{workspace.me.name()}\")\n}",
         );
         let agents = host_imports(func(&m, "agents"));
         for want in [Imp::Members, Imp::PrincipalKind] {
@@ -816,7 +816,7 @@ tilo_test_env::scenario! {
         ] {
             assert!(roles.contains(&want), "{want:?} in {roles:?}");
         }
-        assert!(host_imports(func(&m, "room")).contains(&Imp::WorkspaceMembers));
+        assert!(host_imports(func(&m, "topic")).contains(&Imp::WorkspaceMembers));
         let mine = host_imports(func(&m, "mine"));
         assert!(
             mine.contains(&Imp::Viewer),

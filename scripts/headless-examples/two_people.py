@@ -87,14 +87,14 @@ def invitation(host: Session) -> str:
     return link
 
 
-def stand_in(session: Session, room: str) -> None:
-    """Put the desk in `room`, as a person switching to the workspace does, and wait for it: a
+def stand_in(session: Session, workspace: str) -> None:
+    """Put the desk in `workspace`, as a person switching to the workspace does, and wait for it: a
     session says where its person is only in the workspace it is in front of."""
     front = front_workspace(session)
-    if front is None or front["id"] != room:
-        session.invoke(DESK, f"{WORKSPACE_COMMANDS}\u001fswitch-workspace", {"workspace": room})
+    if front is None or front["id"] != workspace:
+        session.invoke(DESK, f"{WORKSPACE_COMMANDS}\u001fswitch-workspace", {"workspace": workspace})
     until(f"the desk on {session.tag} to stand in the workspace",
-          lambda: (now["id"] if (now := front_workspace(session)) and now["id"] == room
+          lambda: (now["id"] if (now := front_workspace(session)) and now["id"] == workspace
                    else None), 60, 0.25)
 
 
@@ -153,11 +153,11 @@ def joined(
         invitation_path.write_text(link)
         peer.start(apps=apps, fresh=True, out=out, tag="peer", tapps=installed,
                    env={JOIN_INVITATION: str(invitation_path)})
-        room = until("the peer to hold the host's workspace",
+        workspace = until("the peer to hold the host's workspace",
                      lambda: (workspace["id"] if workspace["id"] in workspaces(peer) else None),
                      JOINING_BOUND, 0.5)
         for session in (host, peer):
-            stand_in(session, room)
+            stand_in(session, workspace)
         yield host, peer, workspace, link
     finally:
         for session in (peer, host):

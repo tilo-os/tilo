@@ -3,10 +3,10 @@
 //!
 //! Also the one switch a launch hands a window it opens: [`VISITOR_WINDOW_FLAG`].
 //!
-//! One process serves every window of an app in a room. The shell hands each
+//! One process serves every window of an app in a workspace. The shell hands each
 //! app it starts one end of a socket pair, through the launcher, as
 //! `TILO_SVC_WINDOWS_FD`, and keeps the other. When the person opens another
-//! window of the app in that room, the shell does not start a second
+//! window of the app in that workspace, the shell does not start a second
 //! process: it writes the window's request on its end, with the window's own
 //! connections to the session attached, and the app opens the window itself.
 //!

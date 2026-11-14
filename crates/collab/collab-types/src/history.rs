@@ -33,7 +33,7 @@ impl HistoryEntryId {
     }
 }
 
-/// A delegated agent on a room's roster, as the session verified it: its
+/// A delegated agent on a workspace's roster, as the session verified it: its
 /// own device key, the person whose root signed its delegation for exactly
 /// that device, and how it is shown. Only the session produces these, after
 /// checking that delegation; history uses them to name who wrote and never
@@ -44,7 +44,7 @@ pub struct RosterAgent {
     pub device: [u8; 32],
     /// The root key of the person it acts for.
     pub person: [u8; 32],
-    /// That person's name as the room's governance records it.
+    /// That person's name as the workspace's governance records it.
     pub person_name: String,
     /// The delegation's stable agent id.
     pub agent_id: String,

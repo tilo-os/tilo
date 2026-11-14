@@ -199,9 +199,9 @@ impl TestTree {
                 .and_then(|(value, _)| value.as_str().map(str::to_owned))
         };
         let mut wrote = false;
-        let room = workspace.id().to_string();
-        if text(doc, WORKSPACE_ID_KEY).as_deref() != Some(room.as_str()) {
-            wrote = doc.put(automerge::ROOT, WORKSPACE_ID_KEY, room).is_ok();
+        let id = workspace.id().to_string();
+        if text(doc, WORKSPACE_ID_KEY).as_deref() != Some(id.as_str()) {
+            wrote = doc.put(automerge::ROOT, WORKSPACE_ID_KEY, id).is_ok();
         }
         if text(doc, WORKSPACE_NAME_KEY).as_deref() != Some(workspace.name.as_str()) {
             wrote = doc

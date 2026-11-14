@@ -8,16 +8,15 @@ pub struct ConnectionSnapshot {
     pub device: [u8; 32],
     pub agent: Option<String>,
     pub app_id: String,
-    /// This workspace's id. Its JSON name, and the name every other crate
-    /// that builds or reads a snapshot uses, is `room`: kept as it was.
-    pub room: String,
+    /// This workspace's id.
+    pub workspace: String,
     pub document: String,
 }
 impl ConnectionSnapshot {
     pub fn valid(&self) -> bool {
         self.root != [0; 32]
             && self.device != [0; 32]
-            && [&self.app_id, &self.room]
+            && [&self.app_id, &self.workspace]
                 .into_iter()
                 .all(|s| !s.is_empty() && valid_snapshot_text(s))
             && valid_snapshot_text(&self.document)
@@ -289,7 +288,7 @@ mod tests {
                 device: [2; 32],
                 agent: Some("agent".into()),
                 app_id: "notes".into(),
-                room: "workspace".into(),
+                workspace: "workspace".into(),
                 document: "document".into(),
             };
             let reply = Reply::ConnectionSnapshot(snapshot.clone());
@@ -301,7 +300,7 @@ mod tests {
                     1 => invalid.device = [0; 32],
                     2 => invalid.agent = Some(String::new()),
                     3 => invalid.document = "x".repeat(4097),
-                    _ => invalid.room = "bad\nworkspace".into(),
+                    _ => invalid.workspace = "bad\nworkspace".into(),
                 }
                 assert!(Reply::ConnectionSnapshot(invalid).encode().is_err());
             }

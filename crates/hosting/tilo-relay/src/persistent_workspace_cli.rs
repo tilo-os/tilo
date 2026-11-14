@@ -509,9 +509,7 @@ fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> anyhow::Result<()>
         .with_context(|| format!("write {}", path.display()))
 }
 
-/// The workspace id kept in `id_file`; a state kept before this layout named
-/// its workspace keeps it in `room-id` beside it, which is read and left where
-/// it is (a rollback starts the release's relay on it).
+/// The workspace id kept in `id_file`.
 fn read_workspace_id(id_file: &Path) -> anyhow::Result<Option<String>> {
     fn read(path: &Path) -> anyhow::Result<Option<String>> {
         match std::fs::read_to_string(path) {
@@ -520,10 +518,7 @@ fn read_workspace_id(id_file: &Path) -> anyhow::Result<Option<String>> {
             Err(error) => Err(error).with_context(|| format!("read {}", path.display())),
         }
     }
-    match read(id_file)? {
-        Some(workspace) => Ok(Some(workspace)),
-        None => read(&id_file.with_file_name("room-id")),
-    }
+    read(id_file)
 }
 
 /// The governed workspace: the one named in `workspace_id_file`, else the only workspace
@@ -1977,22 +1972,14 @@ mod tests {
         }
     }
 
-    /// A workspace id kept under the earlier layout's file name is read, and
-    /// the file this layout writes wins once it is there.
     #[test]
-    fn a_workspace_id_kept_as_room_id_is_read() {
+    fn a_workspace_id_kept_in_its_file_is_read() {
         let dir = tempfile::tempdir().unwrap();
         let id = "1ceb1ba6-9190-4b17-8208-5a71662ceb84";
         let named = dir.path().join("workspace-id");
-        std::fs::write(dir.path().join("room-id"), format!("{id}\n")).unwrap();
+        assert_eq!(read_workspace_id(&named).unwrap(), None);
+        std::fs::write(&named, format!("{id}\n")).unwrap();
         assert_eq!(read_workspace_id(&named).unwrap().as_deref(), Some(id));
-        std::fs::write(&named, id).unwrap();
-        std::fs::write(dir.path().join("room-id"), "another").unwrap();
-        assert_eq!(
-            read_workspace_id(&named).unwrap().as_deref(),
-            Some(id),
-            "the file this layout writes is the one it reads"
-        );
     }
 
     #[test]

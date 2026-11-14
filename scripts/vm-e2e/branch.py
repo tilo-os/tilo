@@ -876,24 +876,24 @@ def make_workspace(vm: TiloVm) -> dict:
     return {"id": made["id"]}
 
 
-def find_workspace(state: dict, room: str) -> dict | None:
-    return next((w for w in workspaces(state) if w.get("id") == room), None)
+def find_workspace(state: dict, id: str) -> dict | None:
+    return next((w for w in workspaces(state) if w.get("id") == id), None)
 
 
-def select_workspace(vm: TiloVm, room: str) -> None:
+def select_workspace(vm: TiloVm, id: str) -> None:
     state = vm.state()
-    ws = find_workspace(state, room)
-    expect(ws, f"{vm.vm} has no workspace {room} on its desk: "
+    ws = find_workspace(state, id)
+    expect(ws, f"{vm.vm} has no workspace {id} on its desk: "
                f"{[(w.get('id'), w.get('name')) for w in workspaces(state)]}")
     if (state.get("workspace_tree") or {}).get("active") != ws["id"]:
         act(vm, "so.tilo.session", CHROME + "switch-workspace", {"workspace": str(ws["id"])},
             wait=True)
         expect(wait_until(lambda: (vm.state().get("workspace_tree") or {}).get("active") == ws["id"],
-                          15, interval=0.5), f"{vm.vm} did not show workspace {room}")
+                          15, interval=0.5), f"{vm.vm} did not show workspace {id}")
 
 
-def groups_in(state: dict, room: str) -> list[dict]:
-    ws = find_workspace(state, room)
+def groups_in(state: dict, id: str) -> list[dict]:
+    ws = find_workspace(state, id)
     return [g for s in (ws or {}).get("strips") or [] for g in s.get("window_groups") or []]
 
 
@@ -1005,9 +1005,9 @@ def session_excerpt(vm: TiloVm) -> str:
     return "\n".join((kept or lines)[-150:]) or f"(journalctl said nothing: {text[-300:]!r})"
 
 
-def tabs_in(state: dict, room: str) -> dict:
+def tabs_in(state: dict, id: str) -> dict:
     """The workspace's windows on this desk: group id to its tabs' titles."""
-    return {g["id"]: [t.get("title") for t in g.get("tabs") or []] for g in groups_in(state, room)}
+    return {g["id"]: [t.get("title") for t in g.get("tabs") or []] for g in groups_in(state, id)}
 
 
 def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, timeout: float = 300) -> dict:

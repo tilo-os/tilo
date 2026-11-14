@@ -319,7 +319,7 @@ pub struct TappArtifact {
 }
 
 /// A bot program: a Shortcut's canonical JSON, stored by the registry as a
-/// content-addressed blob, so what a room installs is exactly what was signed.
+/// content-addressed blob, so what a workspace installs is exactly what was signed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotArtifact {
     /// `<registry>/blobs/<program_blake3_hex>`; see [`bot_program_url`].

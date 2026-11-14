@@ -21,7 +21,7 @@ pub(super) enum RouteAccess {
 /// one of the workspace's records
 /// ([`collab_types::WORKSPACE_RECORDS`]); or, read-only, a record of another app whose kinds its surface declares it
 /// reads, when the person may read that record (`reads_record`). In the
-/// person's own room only the records of theirs its surface declares
+/// person's own workspace only the records of theirs its surface declares
 /// ([`person_record_join`]). Anything else is refused: no app writes on
 /// another app's route.
 pub(super) fn attested_route_access(
@@ -93,7 +93,7 @@ mod tests {
         }
     }
 
-    /// A route to `record` of `app` in the person's own room.
+    /// A route to `record` of `app` in the person's own workspace.
     fn person_route(app: &str, record: &str) -> CrdtRoute {
         CrdtRoute {
             app_id: app.into(),

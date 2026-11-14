@@ -61,7 +61,7 @@ pub struct Spent {
 /// its three parts cross between the two.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Bound {
-    /// The node: `room:<workspace>/app:<app>/kind:<kind>/…`, `*` for an open
+    /// The node: `workspace:<id>/app:<app>/kind:<kind>/…`, `*` for an open
     /// level and `**` for any depth.
     pub node: String,
     /// The action kinds: `read`, `undoable`, `outside`.

@@ -24,7 +24,7 @@ fn name(value: &str) -> EntryName {
 }
 fn owner() -> FsOwner {
     FsOwner {
-        workspace: "test-room".into(),
+        workspace: "test-workspace".into(),
         app_id: "so.tilo.file-explorer".into(),
     }
 }
@@ -328,7 +328,7 @@ tilo_test_env::scenario! {
     {
         let f = Fixture::new(true);
         let other = FsOwner {
-            workspace: "test-room".into(),
+            workspace: "test-workspace".into(),
             app_id: "other".into(),
         };
         let meta = tempfile::Builder::new()

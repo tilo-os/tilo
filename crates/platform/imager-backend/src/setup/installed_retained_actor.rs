@@ -43,7 +43,7 @@ fn launch_binding(
         operation_id: request.operation_id().to_owned(),
         app_id: request.app_id().to_owned(),
         package_sha256: request.package_sha256().to_owned(),
-        room: request.room().to_owned(),
+        workspace: request.workspace().to_owned(),
         resource_record: request.resource_record().to_owned(),
         target_uid: peer.uid(),
         target_pid: peer.pid(),
@@ -228,7 +228,7 @@ impl ReviewedInstalledRetainedLaunch {
         let person = manifest.identity_public_key;
         // B's initial retained group route is exclusively the canonical personal workspace. Reject
         // shared-workspace context BEFORE opening any RW source.
-        if request.room() != runtime_collab::retained_person::personal_cluster(&person) {
+        if request.workspace() != runtime_collab::retained_person::personal_cluster(&person) {
             return Err(refused());
         }
         let mut proof = ProofClient::connect(stream, &request, cancel)?;
@@ -631,7 +631,7 @@ mod tests {
     fn request() -> serde_json::Value {
         serde_json::json!({"schema":1,"operation_id":"11111111-1111-4111-8111-111111111111",
             "app_id":"so.tilo.files","package_sha256":"a".repeat(64),
-            "room":"22222222-2222-4222-8222-222222222222","resource_record":"home",
+            "workspace":"22222222-2222-4222-8222-222222222222","resource_record":"home",
             "context_sha256":"b".repeat(64)})
     }
     #[test]
@@ -654,7 +654,7 @@ mod tests {
         for (name, invalid) in [
             ("schema", serde_json::json!(2)),
             ("operation_id", serde_json::json!("../request")),
-            ("room", serde_json::json!("not-a-room")),
+            ("workspace", serde_json::json!("not-a-workspace")),
             ("package_sha256", serde_json::json!("old-or-unobserved")),
             ("context_sha256", serde_json::json!("a".repeat(65))),
             ("app_id", serde_json::json!("")),

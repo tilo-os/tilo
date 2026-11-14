@@ -182,7 +182,7 @@ impl WindowShares {
                 };
                 json!({
                     "tab": hosted.tab.to_string(),
-                    "room": hosted.workspace,
+                    "workspace": hosted.workspace,
                     "host": hosted.host,
                     "standing": if shown { "shown" } else { word(&hosted.standing) },
                     "waiting_for": waiting_for,

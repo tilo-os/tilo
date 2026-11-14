@@ -84,11 +84,11 @@ pub const MAX_MODULE: u64 = 64 << 20;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceRequest {
     pub app: String,
-    pub room: String,
+    pub workspace: String,
     pub instance: u64,
     pub person: String,
     pub module_len: u64,
-    /// The id whose room record the instance opens, when it is not the app's own: an app renamed
+    /// The id whose workspace record the instance opens, when it is not the app's own: an app renamed
     /// keeps using the record of its earliest id, as the installed catalogue believes the same
     /// publisher signed it. The broker admits the instance's connection to that record only on
     /// the same belief.
@@ -153,7 +153,7 @@ pub struct Change {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskRequest {
     pub task: String,
-    pub room: String,
+    pub workspace: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person: Option<String>,
     pub apps_len: u64,
@@ -612,8 +612,8 @@ pub fn send_exiting(door: &Descriptor, reason: &str) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        let room = MAX_MESSAGE.saturating_sub(EXITING_VERB.len().saturating_add(1));
-        let end = (0..=reason.len().min(room))
+        let fit = MAX_MESSAGE.saturating_sub(EXITING_VERB.len().saturating_add(1));
+        let end = (0..=reason.len().min(fit))
             .rev()
             .find(|end| reason.is_char_boundary(*end))
             .unwrap_or(0);
@@ -693,7 +693,7 @@ mod tests {
             let (shell, host) = pair().unwrap();
             let request = InstanceRequest {
                 app: "so.tilo.lang.notes".into(),
-                room: "7a110d00-0000-4000-8000-000000000001".into(),
+                workspace: "7a110d00-0000-4000-8000-000000000001".into(),
                 instance: 7,
                 person: "ada".into(),
                 module_len: 12,
@@ -817,7 +817,7 @@ mod tests {
         {
             use std::os::fd::AsFd as _;
             let (shell, host) = pair().unwrap();
-            let request = br#"{"app":"a","room":"r","instance":1,"person":"p","module_len":1}"#;
+            let request = br#"{"app":"a","workspace":"r","instance":1,"person":"p","module_len":1}"#;
             let one = connection();
             crate::door::send(shell.as_fd(), &[INSTANCE_VERB, request], &[one.as_fd()]).unwrap();
             assert!(receive(&host).is_err());
@@ -830,7 +830,7 @@ mod tests {
             let (shell, host) = pair().unwrap();
             let request = TaskRequest {
                 task: "door:1".into(),
-                room: "7a110d00-0000-4000-8000-000000000001".into(),
+                workspace: "7a110d00-0000-4000-8000-000000000001".into(),
                 person: Some("ada".into()),
                 apps_len: 3,
                 records_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),

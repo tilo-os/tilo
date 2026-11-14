@@ -35,12 +35,12 @@ test('a click brings the page forward and hands over what the notification opens
   const activated=[];
   setActivationListener(uri=>activated.push(uri));
   const env={Notification:FakeNotification,focus:()=>{focused+=1;}};
-  showNotification('mention','Ada mentioned you','see you at six','tilo-mention:chat/room',env);
+  showNotification('mention','Ada mentioned you','see you at six','tilo-mention:chat/workspace',env);
   showNotification('plain','Saved','nothing to open',null,env);
   live[0].dispatchEvent(new Event('click'));
   live[1].dispatchEvent(new Event('click'));
   assert.equal(focused,2);
-  assert.deepEqual(activated,['tilo-mention:chat/room']);
+  assert.deepEqual(activated,['tilo-mention:chat/workspace']);
   assert.deepEqual(live.map(n=>n.closed),[true,true]);
   setActivationListener(null);
 });

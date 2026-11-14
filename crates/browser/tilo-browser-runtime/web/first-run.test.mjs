@@ -561,9 +561,9 @@ test('only a browser new here, opening the site itself, sees the first screen', 
   assert.equal(shows('https://tilo.example/', {stored: {'tilo-host-memberships': '{}'}}), false, 'a host let it in before');
   assert.equal(shows('https://tilo.example/', {stored: {'tilo-entered-workspaces': '[]'}}), false);
   assert.equal(shows('https://tilo.example/', {secrets: {invite: 'x'}}), false, 'an invitation opens as it did');
-  assert.equal(shows('https://tilo.example/#/@rooms.example/w/abc'), false, 'a link to a workspace');
+  assert.equal(shows('https://tilo.example/#/@workspaces.example/w/abc'), false, 'a link to a workspace');
   assert.equal(shows('https://tilo.example/?embed=1'), false, 'inside another site');
-  assert.equal(shows('https://tilo.example/?workspace=Lounge'), false);
+  assert.equal(shows('https://tilo.example/?workspaceName=Lounge'), false);
   assert.equal(shows('https://tilo.example/', {storage: false}), false, 'no storage: as it always opened');
 });
 
@@ -574,12 +574,12 @@ test('a newcomer by invitation joins first, and is set up later: on the site its
   assert.equal(JSON.parse(stored[SETUP]).step, 'later', 'their own setup is kept for later');
   // Joining let the page in: it keeps the host and the workspace now.
   Object.assign(stored, {'tilo-host-memberships': '{"x":{}}', 'tilo-entered-workspaces': '[{}]'});
-  assert.equal(shows('https://tilo.example/#/@rooms.example/w/team', {stored}), false,
+  assert.equal(shows('https://tilo.example/#/@workspaces.example/w/team', {stored}), false,
     'back at the workspace they were invited to: the workspace, not the setup');
   assert.equal(JSON.parse(stored[SETUP]).step, 'later');
   assert.equal(shows('https://tilo.example/', {stored, step: true}), '', 'opening the site itself: the setup shows');
   assert.equal(JSON.parse(stored[SETUP]).step, 'later', 'and is still for later, until they take it up');
-  assert.equal(shows('https://tilo.example/#/@rooms.example/w/team', {stored}), false,
+  assert.equal(shows('https://tilo.example/#/@workspaces.example/w/team', {stored}), false,
     'so the workspace’s address still opens the workspace');
   assert.equal(setupLater({getItem: () => JSON.stringify({step: 'later'})}), true);
   assert.equal(setupLater({getItem: () => JSON.stringify({step: 'done'})}), false);
@@ -591,7 +591,7 @@ test('a newcomer by invitation joins first, and is set up later: on the site its
   shows('https://tilo.example/i/abcdefghijklmnop', {stored: known, secrets: {invite: 'x'}});
   assert.equal(known[SETUP], undefined, 'a browser a host let in before is no newcomer');
   const paired = {};
-  shows('https://tilo.example/#/@rooms.example/w/team', {stored: paired, secrets: {pair: 'x'}});
+  shows('https://tilo.example/#/@workspaces.example/w/team', {stored: paired, secrets: {pair: 'x'}});
   assert.equal(paired[SETUP], undefined, 'a device paired to a person has its person set up already');
 });
 
@@ -611,9 +611,9 @@ test('the kept setup alone decides the step a bare entry opens on, whatever the 
   assert.equal(shows('https://tilo.example/', {stored: kept({step: 'connected'}), step: true}), 'connected');
   assert.equal(shows('https://tilo.example/', {stored: kept({step: 'opening'}), step: true}), 'connected', 'opening shows the same screen');
   assert.equal(shows('https://tilo.example/', {stored: {...lounge, ...kept({step: 'done'})}, step: true}), null, 'done: where the page opens');
-  assert.equal(shows('https://tilo.example/#/@rooms.example/w/lounge', {stored: {...lounge, ...kept({step: 'waiting', code})}, step: true}), 'waiting',
+  assert.equal(shows('https://tilo.example/#/@workspaces.example/w/lounge', {stored: {...lounge, ...kept({step: 'waiting', code})}, step: true}), 'waiting',
     'the home workspace’s own address, written once it let the page in behind the screen, still shows the step');
-  assert.equal(shows('https://tilo.example/#/@rooms.example/w/abc?invite=x', {stored: kept({step: 'waiting', code}), secrets: {invite: 'x'}}), false,
+  assert.equal(shows('https://tilo.example/#/@workspaces.example/w/abc?invite=x', {stored: kept({step: 'waiting', code}), secrets: {invite: 'x'}}), false,
     'an invitation still opens what it names');
   assert.equal(shows('https://tilo.example/?embed=1', {stored: kept({step: 'waiting', code})}), false, 'inside another site: never');
 });

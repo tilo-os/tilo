@@ -219,7 +219,7 @@ fn save(
 
 /// [`WORKSPACE`] as `person` 's own, showing the `shortcuts` its document holds: what the shell this
 /// device keeps shows of the workspace, as the session that kept it left it.
-fn room(person: &str, shortcuts: &[SavedShortcut]) -> Workspace {
+fn kept(person: &str, shortcuts: &[SavedShortcut]) -> Workspace {
     let mut workspace = Workspace::new(workspace_id(), "Chat");
     workspace.set_owner(person.to_owned());
     workspace.shortcuts = shortcuts.to_vec();
@@ -428,7 +428,7 @@ fn an_edit_that_matches_a_rule_fires_its_action_once() {
         state.path(),
         &socket,
         &person,
-        room(&person, std::slice::from_ref(&tidy)),
+        kept(&person, std::slice::from_ref(&tidy)),
     );
     // The pass that shows the shortcut catches up with the record: the first look at a record only
     // learns its heads, so a message posted before the shortcut is on the shell is not one it fires
@@ -491,7 +491,7 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
         state.path(),
         &socket,
         &person,
-        room(&person, std::slice::from_ref(&theirs_saved)),
+        kept(&person, std::slice::from_ref(&theirs_saved)),
     );
     post_a_message(&home);
     for _ in 0..500 {
@@ -563,7 +563,7 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
         state.path(),
         &socket,
         &person,
-        room(&person, std::slice::from_ref(&tidy)),
+        kept(&person, std::slice::from_ref(&tidy)),
     );
     let runs = until_a_run(&mut session, 1);
     assert_eq!(
@@ -600,7 +600,7 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
         state.path(),
         &socket,
         &person,
-        room(&person, std::slice::from_ref(&tidy)),
+        kept(&person, std::slice::from_ref(&tidy)),
     );
     // Past a tick, so a fire time the ledger kept would have come up.
     for _ in 0..60 {
@@ -635,7 +635,7 @@ fn a_shortcut_armed_on_a_chord_runs_once_when_the_person_presses_it() {
         state.path(),
         &socket,
         &person,
-        room(&person, std::slice::from_ref(&tidy)),
+        kept(&person, std::slice::from_ref(&tidy)),
     );
     // The pass that shows the shortcut takes its chord for the automation,
     // so the keys reach it rather than the desktop.
@@ -677,7 +677,7 @@ fn a_shortcut_armed_on_an_app_runs_once_when_it_starts() {
 
     let launches = Arc::new(Launches::default());
     let mut session = session_launching(state.path(), &socket, &person, Arc::clone(&launches));
-    show(&session, room(&person, std::slice::from_ref(&tidy)));
+    show(&session, kept(&person, std::slice::from_ref(&tidy)));
     // A tick arms the shortcut and learns the apps running, of which there are none.
     pass(&mut session, Duration::from_millis(700));
     // The session starts the app: its own process runs it.
@@ -720,7 +720,7 @@ fn a_shortcut_armed_on_a_focus_mode_runs_once_when_it_switches_on() {
         state.path(),
         &socket,
         &person,
-        room(&person, std::slice::from_ref(&tidy)),
+        kept(&person, std::slice::from_ref(&tidy)),
     );
     // A tick arms the shortcut and learns that Do Not Disturb is off.
     pass(&mut session, Duration::from_millis(700));
@@ -761,7 +761,7 @@ fn a_shortcut_armed_on_a_shared_folder_runs_once_when_a_file_in_it_changes() {
 
     // The folder the shortcut watches is the one the workspace shares with this person, as the
     // shell keeps it.
-    let mut workspace = room(&person, std::slice::from_ref(&tidy));
+    let mut workspace = kept(&person, std::slice::from_ref(&tidy));
     workspace
         .sandbox
         .push(sharing(&person, "notes", folder.path()));

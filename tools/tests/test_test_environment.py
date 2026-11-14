@@ -258,9 +258,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Tasks and its launcher for the closed app",
             )
-        # The lounge's end-to-end tests start a persistent relay room, a program
+        # The lounge's end-to-end tests start a persistent relay workspace, a program
         # of another package that only its `agents` feature builds: the
-        # session's room-service test and the browser peer's fresh-page test.
+        # session's workspace-service test and the browser peer's fresh-page test.
         lounge = scripts.pop("lounge-siblings")
         self.assertEqual(lounge["command"], ["bash", "tools/build-sibling-binaries.sh",
                                              "tilo-relay:tilo-relay=tilo-relay/agents"])

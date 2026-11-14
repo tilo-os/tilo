@@ -1995,7 +1995,7 @@ mod native_process_tests {
                 assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             }
             for (field, value) in [
-                ("room", "foreign-workspace"),
+                ("workspace", "foreign-workspace"),
                 ("app_id", "so.tilo.other"),
                 ("person", "person-b"),
             ] {

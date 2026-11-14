@@ -93,7 +93,7 @@ fn locking_down_the_camera_and_sound_stops_them_while_the_session_runs() {
     );
     let portal = desktop.portal().expect("the portal serves");
     let captures = portal.captures();
-    let binding = CaptureSessionBinding::new("so.tilo.meet", "room", "/session/1", "device")
+    let binding = CaptureSessionBinding::new("so.tilo.meet", "workspace", "/session/1", "device")
         .expect("binding");
     {
         let mut broker = captures.broker().lock().unwrap();

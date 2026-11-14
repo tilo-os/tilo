@@ -132,11 +132,11 @@ mod tests {
 
     use super::*;
 
-    /// A caller in `room`, sandboxed or not.
-    fn caller(room: Option<&str>, sandboxed: bool) -> PortalCaller {
+    /// A caller in `workspace`, sandboxed or not.
+    fn caller(workspace: Option<&str>, sandboxed: bool) -> PortalCaller {
         PortalCaller {
             sandboxed,
-            workspace: room.map(str::to_owned),
+            workspace: workspace.map(str::to_owned),
             ..PortalCaller::new("so.tilo.notes")
         }
     }

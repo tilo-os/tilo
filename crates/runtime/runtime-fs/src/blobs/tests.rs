@@ -135,9 +135,9 @@ impl BlobBackend for MemoryBackend {
 #[test]
 fn mit_app_blob_client_cannot_mint_another_scope() {
     let harness = Harness::start();
-    let app: tilo_fs_client::blobs::BlobClient = harness.app("room-1", "so.tilo.photos");
+    let app: tilo_fs_client::blobs::BlobClient = harness.app("workspace-1", "so.tilo.photos");
     assert_eq!(
-        app.scope("room-2", "so.tilo.photos").unwrap_err(),
+        app.scope("workspace-2", "so.tilo.photos").unwrap_err(),
         BlobError::InvalidScope
     );
     assert_eq!(app.refresh_public(), Err(BlobError::InvalidScope));
@@ -183,11 +183,11 @@ impl Harness {
         }
     }
 
-    fn app(&self, room: &str, app: &str) -> BlobClient {
+    fn app(&self, workspace: &str, app: &str) -> BlobClient {
         let mut stream = StdUnixStream::connect(&self.socket).unwrap();
         write_handoff(
             &mut stream,
-            &BlobPrincipal::App(BlobScope::new(room, app).unwrap()),
+            &BlobPrincipal::App(BlobScope::new(workspace, app).unwrap()),
         )
         .unwrap();
         BlobClient::from_app_stream(stream).unwrap()
@@ -204,12 +204,12 @@ tilo_test_env::scenario! {
     phase a_second_connection_of_the_same_scope_reads_what_the_first_put;
     {
         let harness = Harness::start();
-        let writer = harness.app("room-1", "so.tilo.photos");
+        let writer = harness.app("workspace-1", "so.tilo.photos");
         let stored = writer.put(b"portable image bytes", "image/png").unwrap();
         assert_eq!(stored.len, 20);
         assert_eq!(stored.mime, "image/png");
 
-        let reader = harness.app("room-1", "so.tilo.photos");
+        let reader = harness.app("workspace-1", "so.tilo.photos");
         assert!(reader.has(&stored.hash).unwrap());
         assert_eq!(reader.size(&stored.hash).unwrap(), Some(20));
         assert_eq!(
@@ -232,12 +232,12 @@ tilo_test_env::scenario! {
     {
         let harness = Harness::start();
         let stored = harness
-            .app("room-1", "so.tilo.photos")
+            .app("workspace-1", "so.tilo.photos")
             .put(b"private", "")
             .unwrap();
-        let neighbour = harness.app("room-1", "so.tilo.chat");
+        let neighbour = harness.app("workspace-1", "so.tilo.chat");
         assert!(neighbour.has(&stored.hash).unwrap());
-        let stranger = harness.app("room-2", "so.tilo.photos");
+        let stranger = harness.app("workspace-2", "so.tilo.photos");
         assert_eq!(
             stranger.read_all(&stored.hash).unwrap(),
             ReadOutcome::Unavailable
@@ -250,27 +250,27 @@ tilo_test_env::scenario! {
     {
         let harness = Harness::start();
         let stored = harness
-            .app("room-1", "so.tilo.photos")
+            .app("workspace-1", "so.tilo.photos")
             .put(b"launch me", "")
             .unwrap();
         let session = BlobClient::connect_session(&harness.socket).unwrap();
         assert_eq!(session.has(&stored.hash), Err(BlobError::InvalidScope));
-        let photos = session.scope("room-1", "so.tilo.photos").unwrap();
+        let photos = session.scope("workspace-1", "so.tilo.photos").unwrap();
         assert!(matches!(
             photos.read_all(&stored.hash).unwrap(),
             ReadOutcome::Ready { .. }
         ));
-        let elsewhere = session.scope("room-2", "so.tilo.photos").unwrap();
+        let elsewhere = session.scope("workspace-2", "so.tilo.photos").unwrap();
         assert_eq!(
             elsewhere.read_all(&stored.hash).unwrap(),
             ReadOutcome::Unavailable
         );
         assert_eq!(
-            photos.scope("room-1", "x").unwrap_err(),
+            photos.scope("workspace-1", "x").unwrap_err(),
             BlobError::InvalidScope
         );
         assert_eq!(
-            session.scope("../room", "so.tilo.chat").unwrap_err(),
+            session.scope("../workspace", "so.tilo.chat").unwrap_err(),
             BlobError::InvalidScope
         );
     }
@@ -285,7 +285,7 @@ tilo_test_env::scenario! {
             write_handoff(&mut frame, principal).unwrap();
             runtime.block_on(read_handoff(&mut frame.as_slice()))
         };
-        let app = BlobPrincipal::App(BlobScope::new("room-1", "so.tilo.notes").unwrap());
+        let app = BlobPrincipal::App(BlobScope::new("workspace-1", "so.tilo.notes").unwrap());
         assert_eq!(decode(&app).unwrap(), app);
         assert_eq!(
             decode(&BlobPrincipal::Session).unwrap(),
@@ -299,15 +299,15 @@ tilo_test_env::scenario! {
             runtime.block_on(read_handoff(&mut frame.as_slice()))
         };
         assert_eq!(
-            raw(r#"{"protocol":1,"principal":"app","room":"room-1","app_id":"so.tilo.notes"}"#)
+            raw(r#"{"protocol":1,"principal":"app","workspace":"workspace-1","app_id":"so.tilo.notes"}"#)
                 .unwrap(),
             app
         );
         for bad in [
             r#"{"protocol":2,"principal":"session"}"#,
-            r#"{"protocol":1,"principal":"session","room":"r"}"#,
-            r#"{"protocol":1,"principal":"app","room":"..","app_id":"a"}"#,
-            r#"{"protocol":1,"principal":"app","room":"a/b","app_id":"a"}"#,
+            r#"{"protocol":1,"principal":"session","workspace":"r"}"#,
+            r#"{"protocol":1,"principal":"app","workspace":"..","app_id":"a"}"#,
+            r#"{"protocol":1,"principal":"app","workspace":"a/b","app_id":"a"}"#,
             r#"{"protocol":1,"principal":"root"}"#,
             r#"{"protocol":1,"principal":"session","extra":true}"#,
         ] {
@@ -333,7 +333,7 @@ tilo_test_env::scenario! {
     phase content_larger_than_one_message_streams_and_verifies;
     {
         let harness = Harness::start();
-        let client = harness.app("room-1", "so.tilo.photos");
+        let client = harness.app("workspace-1", "so.tilo.photos");
         let big: Vec<u8> = (0..(MAX_PUT_CHUNK * 2 + 17))
             .map(|index| u8::try_from(index % 251).unwrap())
             .collect();
@@ -351,7 +351,7 @@ tilo_test_env::scenario! {
     phase pending_content_is_reported_not_waited_for;
     {
         let harness = Harness::start();
-        let client = harness.app("room-1", "so.tilo.photos");
+        let client = harness.app("workspace-1", "so.tilo.photos");
         let hash = blake3::hash(b"on its way").to_hex().to_string();
         harness.backend.pending.lock().unwrap().insert(hash.clone());
         assert_eq!(client.read_all(&hash).unwrap(), ReadOutcome::Pending);
@@ -360,7 +360,7 @@ tilo_test_env::scenario! {
     phase malformed_hashes_and_oversized_puts_are_refused_before_the_wire;
     {
         let harness = Harness::start();
-        let client = harness.app("room-1", "so.tilo.photos");
+        let client = harness.app("workspace-1", "so.tilo.photos");
         assert_eq!(client.has("../../etc/passwd"), Err(BlobError::InvalidHash));
         assert_eq!(
             client.read(&"A".repeat(64), 0, 1),
@@ -377,7 +377,7 @@ tilo_test_env::scenario! {
 #[test]
 fn blob_reader_fetches_ranges_as_it_is_read() {
     let harness = Harness::start();
-    let client = harness.app("room-1", "so.tilo.photos");
+    let client = harness.app("workspace-1", "so.tilo.photos");
     let len = MAX_READ_CHUNK as usize * 2 + 3;
     let big: Vec<u8> = (0..len).map(pattern).collect();
     let stored = client.put(&big, "").unwrap();
@@ -687,7 +687,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// Runs `scenario` against the `room-1` photos scope of `harness` as a raw
+/// Runs `scenario` against the `workspace-1` photos scope of `harness` as a raw
 /// framed peer, which `BlobClient`'s own checks do not constrain.
 fn raw_app<F, Fut>(harness: &Harness, scenario: F)
 where
@@ -697,7 +697,7 @@ where
     let mut stream = StdUnixStream::connect(&harness.socket).unwrap();
     write_handoff(
         &mut stream,
-        &BlobPrincipal::App(BlobScope::new("room-1", "so.tilo.photos").unwrap()),
+        &BlobPrincipal::App(BlobScope::new("workspace-1", "so.tilo.photos").unwrap()),
     )
     .unwrap();
     let connection = Connection::connect("test-raw-media", stream).unwrap();
@@ -750,7 +750,7 @@ tilo_test_env::scenario! {
     phase an_upload_reaches_the_backend_in_bounded_pieces;
     {
         let harness = Harness::start();
-        let client = harness.app("room-1", "so.tilo.photos");
+        let client = harness.app("workspace-1", "so.tilo.photos");
         let len = MAX_PUT_CHUNK * 2 + 17;
         let content: Vec<u8> = (0..len).map(pattern).collect();
         let stored = client.put(&content, "").unwrap();

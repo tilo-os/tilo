@@ -124,7 +124,7 @@ fn caller(current: Arc<AtomicBool>) -> Caller {
     Caller {
         peer: 7,
         app: "so.tilo.chat".to_owned(),
-        workspace: "room".to_owned(),
+        workspace: "workspace".to_owned(),
         record: "chat".to_owned(),
         current: Arc::new(move || {
             if current.load(Ordering::Acquire) {
@@ -470,7 +470,7 @@ async fn a_watch_is_answered_when_the_call_changes() {
     let watching = service.watch(
         who.clone(),
         live.revision,
-        ("room".to_owned(), "chat".to_owned(), "chat".to_owned()),
+        ("workspace".to_owned(), "chat".to_owned(), "chat".to_owned()),
     );
     let leaving = {
         let service = service.clone();

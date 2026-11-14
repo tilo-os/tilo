@@ -80,12 +80,12 @@ fn challenge(
     if hex::encode(Sha256::digest(bytes)) != binding.context_sha256 {
         return Err(refused());
     }
-    let (operation, app, publisher, package, room, resource, program, args, env): Context =
+    let (operation, app, publisher, package, workspace, resource, program, args, env): Context =
         serde_json::from_slice(&bytes[CONTEXT_DOMAIN.len()..]).map_err(io::Error::other)?;
     if operation != binding.operation_id
         || app != binding.app_id
         || package != binding.package_sha256
-        || room != binding.room
+        || workspace != binding.workspace
         || resource != "retained-home"
         || resource != binding.resource_record
     {
@@ -435,7 +435,7 @@ mod tests {
         runtime_collab::retained_person::RetainedLaunchBinding,
     ) {
         let operation = "11111111-1111-4111-8111-111111111111";
-        let room = "22222222-2222-4222-8222-222222222222";
+        let workspace = "22222222-2222-4222-8222-222222222222";
         let mut bytes = CONTEXT_DOMAIN.to_vec();
         bytes.extend(
             serde_json::to_vec(&(
@@ -443,7 +443,7 @@ mod tests {
                 "so.tilo.files",
                 "a".repeat(64),
                 "b".repeat(64),
-                room,
+                workspace,
                 "retained-home",
                 "/usr/libexec/tilo/tilo-launcher",
                 vec!["run"],
@@ -455,7 +455,7 @@ mod tests {
             operation_id: operation.into(),
             app_id: "so.tilo.files".into(),
             package_sha256: "b".repeat(64),
-            room: room.into(),
+            workspace: workspace.into(),
             resource_record: "retained-home".into(),
             target_uid: 1000,
             target_pid: 12,
@@ -470,13 +470,20 @@ mod tests {
         let decoded = challenge(&bytes, &binding, [1; 32]).unwrap();
         assert_eq!(decoded.command.program, "/usr/libexec/tilo/tilo-launcher");
         assert_eq!(decoded.command.args, ["run"]);
-        for field in ["operation", "app", "package", "room", "resource", "digest"] {
+        for field in [
+            "operation",
+            "app",
+            "package",
+            "workspace",
+            "resource",
+            "digest",
+        ] {
             let mut changed = binding.clone();
             match field {
                 "operation" => changed.operation_id = "33333333-3333-4333-8333-333333333333".into(),
                 "app" => changed.app_id = "so.tilo.terminal".into(),
                 "package" => changed.package_sha256 = "c".repeat(64),
-                "room" => changed.room = "44444444-4444-4444-8444-444444444444".into(),
+                "workspace" => changed.workspace = "44444444-4444-4444-8444-444444444444".into(),
                 "resource" => changed.resource_record = "another-source".into(),
                 _ => changed.context_sha256 = "d".repeat(64),
             }

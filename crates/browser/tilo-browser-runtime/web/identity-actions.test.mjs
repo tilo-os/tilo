@@ -403,7 +403,7 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
     copy: async () => {}, onAgent: agent => fixture.agents.push(agent),
     every: run => { fixture.poll = run; return () => { fixture.poll = null; }; },
     pairing: {
-      link: (invite, workspace = 'WORKSPACE') => `https://tilo.example/#/@rooms.example/w/${workspace}?pair=${identity.userPublicKey}${invite}`,
+      link: (invite, workspace = 'WORKSPACE') => `https://tilo.example/#/@workspaces.example/w/${workspace}?pair=${identity.userPublicKey}${invite}`,
       pending: async () => host.pending,
       answer: async (digest, approved) => {
         if (host.fail) throw host.fail;
@@ -480,8 +480,8 @@ test('each pairing link names a fresh invite, shown on a sheet that can copy it,
   await pairing.actions.perform(PAIR.id);
   await pairing.actions.perform(PAIR.id);
   assert.deepEqual(pairing.sheets.map(sheet => sheet.link), [
-    `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
-    `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_B}`,
+    `https://tilo.example/#/@workspaces.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
+    `https://tilo.example/#/@workspaces.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_B}`,
   ]);
   assert.deepEqual(pairing.sheets.map(sheet => sheet.expiresAt), [10 * 60 * 1000, 10 * 60 * 1000]);
   assert.equal(await pairing.sheets[0].copy(), true);
@@ -554,7 +554,7 @@ test('an agent’s link is a pairing link to this tab with a fresh invite, open 
   const pairing = await pairingFixture();
   const made = await pairing.actions.connectAgent();
   assert.deepEqual(made, {
-    link: `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
+    link: `https://tilo.example/#/@workspaces.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
     invite: INVITE_A,
     expiresAt: 10 * 60 * 1000,
   });
@@ -578,7 +578,7 @@ test('a link only shown asks the host nothing until the person uses it', async (
 test('an agent set up in the person’s own workspace gets a link that opens it', async () => {
   const pairing = await pairingFixture();
   const made = await pairing.actions.connectAgent({workspace: 'MINE'});
-  assert.equal(made.link, `https://tilo.example/#/@rooms.example/w/MINE?pair=${pairing.identity.userPublicKey}${INVITE_A}`);
+  assert.equal(made.link, `https://tilo.example/#/@workspaces.example/w/MINE?pair=${pairing.identity.userPublicKey}${INVITE_A}`);
 });
 
 test('the agent that answers its link is approved without asking, once, and said to have signed in', async () => {

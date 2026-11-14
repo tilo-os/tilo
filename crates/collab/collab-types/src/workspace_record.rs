@@ -1,12 +1,12 @@
-//! Records of a workspace's room that every app of the workspace opens
-//! beside its own: one per kind and room, kept by one app (its owner), read
-//! and changed from any app's window of the room.
+//! Records that every app of a workspace opens beside its own: one per kind
+//! and workspace, kept by one app (its owner), read and changed from any
+//! app's window of the workspace.
 //!
 //! An app's launch otherwise reaches only its own routes. These records are
-//! the exception, named here one by one: every app of the room may join
-//! and write the route `(owner, room, workspace_record_id(kind))` of its
-//! launch room, and nothing else of the owner's. The room's grants on the
-//! owner's resource decide every change, wherever it is made, as they
+//! the exception, named here one by one: every app of the workspace may join
+//! and write the route `(owner, workspace, workspace_record_id(kind))` of its
+//! launch workspace, and nothing else of the owner's. The workspace's grants
+//! on the owner's resource decide every change, wherever it is made, as they
 //! decide the owner's own.
 
 /// A record every app of a workspace opens.
@@ -42,7 +42,7 @@ pub const WORKSPACE_RECORDS: &[WorkspaceRecord] = &[
     },
 ];
 
-/// The id of the workspace record of `kind` in any room: one per kind, the
+/// The id of the workspace record of `kind` in any workspace: one per kind, the
 /// same on every device, derived as the person's record of a kind is.
 #[must_use]
 pub fn workspace_record_id(kind: &str) -> String {

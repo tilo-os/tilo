@@ -306,7 +306,7 @@ fn checked_in_the_window(bytes: &[u8], task: &str, person: &str) -> Vec<u8> {
         .expect("Tasks' package loads");
     let encoded = action.encode().expect("the action encodes");
     let context = ui::tilo_actions::ActionContext::for_resource(
-        action.resources().first().copied().unwrap_or("room"),
+        action.resources().first().copied().unwrap_or("workspace"),
         &action.kind,
         &action.kind,
     )

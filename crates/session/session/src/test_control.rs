@@ -2734,7 +2734,7 @@ mod tests {
                     "overlays": {"quick_settings": true, "overview": false},
                 },
                 "peers": Json::Null,
-                "sharing": {"sharing": [{"tab": "7", "room": "room-1", "viewers": []}]},
+                "sharing": {"sharing": [{"tab": "7", "workspace": "workspace-1", "viewers": []}]},
             }})
         };
         // Unlocked, the owner's door sees the session as the development socket does.
@@ -2764,7 +2764,7 @@ mod tests {
             gate: Gate::Dev,
             scope: Some(Arc::new(Scope {
                 app: "so.tilo.notes".to_owned(),
-                workspace: "room-1".to_owned(),
+                workspace: "workspace-1".to_owned(),
             })),
         };
         assert_eq!(
@@ -2802,9 +2802,9 @@ mod tests {
 
     #[test]
     fn a_tools_address_names_the_action_the_model_routes_to() {
-        let open = legacy_target("applications", "so.tilo.notes", "room-1")
+        let open = legacy_target("applications", "so.tilo.notes", "workspace-1")
             .expect("an app the workspace can open");
-        assert_eq!(open.provider, "workspace:room-1");
+        assert_eq!(open.provider, "workspace:workspace-1");
         assert_eq!(open.address.resource, "app.so.tilo.notes");
         assert_eq!(
             open.address.action,
@@ -2813,16 +2813,20 @@ mod tests {
 
         let app = legacy_target(
             "app-actions",
-            "application:room-1:so.tilo.notes:abc\u{1f}notes.page:abc\u{1f}new-page",
-            "room-1",
+            "application:workspace-1:so.tilo.notes:abc\u{1f}notes.page:abc\u{1f}new-page",
+            "workspace-1",
         )
         .expect("an app's own action");
-        assert_eq!(app.provider, "application:room-1:so.tilo.notes:abc");
+        assert_eq!(app.provider, "application:workspace-1:so.tilo.notes:abc");
         assert_eq!(app.address.resource, "notes.page:abc");
         assert_eq!(app.address.action, "new-page");
 
-        let session = legacy_target("so.tilo.session", "desktop:tab:5\u{1f}close-tab", "room-1")
-            .expect("the session's own action");
+        let session = legacy_target(
+            "so.tilo.session",
+            "desktop:tab:5\u{1f}close-tab",
+            "workspace-1",
+        )
+        .expect("the session's own action");
         assert_eq!(session.provider, "so.tilo.session");
         assert_eq!(session.address.resource, "desktop:tab:5");
         assert_eq!(session.address.action, "close-tab");
@@ -2832,16 +2836,17 @@ mod tests {
             ("workspace.create", "new-workspace"),
             ("workspace.branch", "branch-workspace"),
         ] {
-            let verb = legacy_target("actions", spelled, "room-1").expect("the session's verb");
+            let verb =
+                legacy_target("actions", spelled, "workspace-1").expect("the session's verb");
             assert_eq!(verb.provider, "so.tilo.session");
             assert_eq!(verb.address.resource, "desktop:chrome");
             assert_eq!(verb.address.action, action);
         }
-        assert!(legacy_target("actions", "workspace.nothing", "room-1").is_err());
+        assert!(legacy_target("actions", "workspace.nothing", "workspace-1").is_err());
 
-        assert!(legacy_target("app-actions", "half-an-id", "room-1").is_err());
-        assert!(legacy_target("applications", "", "room-1").is_err());
-        assert!(legacy_target("so.tilo.session", "no-action", "room-1").is_err());
+        assert!(legacy_target("app-actions", "half-an-id", "workspace-1").is_err());
+        assert!(legacy_target("applications", "", "workspace-1").is_err());
+        assert!(legacy_target("so.tilo.session", "no-action", "workspace-1").is_err());
     }
 
     #[test]

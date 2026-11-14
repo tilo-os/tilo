@@ -614,7 +614,7 @@ fn a_page_that_only_started_is_not_said_to_be_pictured_or_sent() {
     let reading = shares(&two.host.session);
     let plane = rows(&reading, "live")
         .iter()
-        .find(|plane| plane["room"].as_str() == Some(WORKSPACE))
+        .find(|plane| plane["workspace"].as_str() == Some(WORKSPACE))
         .expect("the reading names the workspace's live plane");
     assert_eq!(
         plane["asked_for"].as_array().map(Vec::as_slice),
@@ -1312,7 +1312,7 @@ impl TwoWindows {
                     "window": window,
                     "tab": tab.to_string(),
                     "app_id": app,
-                    "room": WORKSPACE,
+                    "workspace": WORKSPACE,
                 })),
             )
             .expect("the window is shared with the workspace");

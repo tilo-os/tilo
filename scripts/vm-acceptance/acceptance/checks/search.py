@@ -182,7 +182,7 @@ def files(ctx, res):
 def activity(ctx, res):
     ctx.reset()
     before = {g["id"] for g in core.all_groups(ctx.state())}
-    ctx.vm.invoke("actions", "room.activity.open")
+    ctx.vm.invoke("actions", "workspace.activity.open")
     # The activity view is an overlay in some builds and a window tile in others.
     st = ctx.wait_state(lambda s: core.overlays(s)["room_activity"]
                         or any(g["id"] not in before for g in core.all_groups(s)), 5, "activity view open")

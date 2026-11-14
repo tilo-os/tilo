@@ -20,7 +20,7 @@ async fn selected_file_private_wire_revokes_existing_handle_and_has_no_sibling_a
     std::fs::write(disk.path().join("sibling.txt"), b"private sibling").unwrap();
     let authority = NativeGrantAuthority::new();
     let owner = FsOwner {
-        workspace: "owned-room".into(),
+        workspace: "owned-workspace".into(),
         app_id: "so.tilo.editor".into(),
     };
     let file = authority
@@ -90,7 +90,7 @@ async fn selected_file_real_native_write_is_bounded_and_revocation_is_terminal()
     std::fs::write(&selected, b"existing source bytes").unwrap();
     let authority = NativeGrantAuthority::new();
     let owner = FsOwner {
-        workspace: "owned-room".into(),
+        workspace: "owned-workspace".into(),
         app_id: "so.tilo.editor".into(),
     };
     let descriptor = std::fs::OpenOptions::new()
@@ -279,7 +279,7 @@ async fn blocked_native_pipeline_refuses_excess_write_before_copy_or_invocation(
     std::fs::write(&selected, b"before").unwrap();
     let authority = NativeGrantAuthority::new();
     let owner = FsOwner {
-        workspace: "owned-room".into(),
+        workspace: "owned-workspace".into(),
         app_id: "so.tilo.editor".into(),
     };
     let descriptor = std::fs::OpenOptions::new()
@@ -381,7 +381,7 @@ async fn actual_selected_private_connection_retire_and_malformed_disconnect_repo
         std::fs::write(&selected, b"actual selected native bytes").unwrap();
         let authority = NativeGrantAuthority::new();
         let owner = FsOwner {
-            workspace: "owned-room".into(),
+            workspace: "owned-workspace".into(),
             app_id: "so.tilo.editor".into(),
         };
         let file = authority
@@ -488,7 +488,7 @@ async fn existing_read_write_and_atomic_append_use_live_exact_inode_custody() {
     let original = std::fs::metadata(&chosen).unwrap().ino();
     let authority = NativeGrantAuthority::new();
     let owner = FsOwner {
-        workspace: "owned-room".into(),
+        workspace: "owned-workspace".into(),
         app_id: "so.tilo.editor".into(),
     };
     let descriptor = std::fs::OpenOptions::new()
@@ -580,7 +580,7 @@ fn append_final_effect_gate_observes_independently_expired_lifetime() {
     std::fs::write(&path, b"original").unwrap();
     let authority = NativeGrantAuthority::new();
     let owner = FsOwner {
-        workspace: "owned-room".into(),
+        workspace: "owned-workspace".into(),
         app_id: "so.tilo.editor".into(),
     };
     let file = authority

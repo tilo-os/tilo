@@ -25,7 +25,7 @@ pub struct BoundAction {
 pub struct FieldSnapshot {
     pub field: String,
     pub app: String,
-    pub room: String,
+    pub workspace: String,
     pub record: String,
     pub revision: String,
     pub actions: Vec<BoundAction>,
@@ -41,7 +41,7 @@ impl FieldSnapshot {
         let strings = [
             &snapshot.field,
             &snapshot.app,
-            &snapshot.room,
+            &snapshot.workspace,
             &snapshot.record,
             &snapshot.revision,
         ];
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn different_bound_edits_share_the_original_canonical_action() {
-        let json = r#"{"field":"body","app":"notes","room":"room","record":"notebook","revision":"v5:current","actions":[{"address":{"resource":"page/body","action":"apply"},"arguments":{"mark":"bold"}},{"address":{"resource":"page/body","action":"apply"},"arguments":{"mark":"italic"}}]}"#;
+        let json = r#"{"field":"body","app":"notes","workspace":"workspace","record":"notebook","revision":"v5:current","actions":[{"address":{"resource":"page/body","action":"apply"},"arguments":{"mark":"bold"}},{"address":{"resource":"page/body","action":"apply"},"arguments":{"mark":"italic"}}]}"#;
         let snapshot = FieldSnapshot::decode(json).unwrap();
         assert_eq!(snapshot.actions.len(), 2);
         assert_eq!(snapshot.actions[0].address, snapshot.actions[1].address);
@@ -136,9 +136,9 @@ mod tests {
     #[test]
     fn malformed_and_oversized_app_metadata_is_refused() {
         assert!(FieldSnapshot::decode(&"x".repeat(MAX_SNAPSHOT_BYTES + 1)).is_err());
-        let json = r#"{"field":"body\nsecret","app":"notes","room":"room","record":"notebook","revision":"v5:current","actions":[]}"#;
+        let json = r#"{"field":"body\nsecret","app":"notes","workspace":"workspace","record":"notebook","revision":"v5:current","actions":[]}"#;
         assert!(FieldSnapshot::decode(json).is_err());
-        let json = r#"{"field":"body","app":"notes","room":"room","record":"notebook","revision":"v5:current","actions":[],"authority":"write"}"#;
+        let json = r#"{"field":"body","app":"notes","workspace":"workspace","record":"notebook","revision":"v5:current","actions":[],"authority":"write"}"#;
         assert!(FieldSnapshot::decode(json).is_err());
     }
 

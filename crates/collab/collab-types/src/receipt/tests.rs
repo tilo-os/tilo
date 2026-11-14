@@ -81,9 +81,9 @@ fn claim(byte: u8, action: ClaimedAction, units: Vec<UnitPath>) -> ChangeClaim {
     }
 }
 
-/// Ada edits the room; Cleo only comments.
+/// Ada edits the workspace; Cleo only comments.
 fn grants() -> Vec<Grant> {
-    let room = Grantee::person("room-owner");
+    let governor = Grantee::person("workspace-owner");
     vec![
         Grant::new(
             "ada-edits",
@@ -91,7 +91,7 @@ fn grants() -> Vec<Grant> {
             TreePath::workspace(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            room.clone(),
+            governor.clone(),
         ),
         Grant::new(
             "cleo-comments",
@@ -99,7 +99,7 @@ fn grants() -> Vec<Grant> {
             roles::comments(WORKSPACE),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
-            room,
+            governor,
         ),
     ]
 }
@@ -306,7 +306,7 @@ tilo_test_env::scenario! {
 
     phase each_change_is_decided_against_the_kind_its_action_names;
     // An op that carries changes of actions on items of different kinds (a record handed to its
-    // room whole: a category made, then a channel added to it) is decided change by change, each
+    // workspace whole: a category made, then a channel added to it) is decided change by change, each
     // against the kind its own action names, never all against the first one's.
     {
         let mut doc = AutoCommit::new();
@@ -453,7 +453,7 @@ impl ReceiptSurface for Calendar {
 }
 
 /// Whether Ada, who may make undoable changes but not reach outside the
-/// room, is admitted `claims`, each change writing what its claim says
+/// workspace, is admitted `claims`, each change writing what its claim says
 /// (inside each unit it names); `read`: the receiver read the changes
 /// themselves.
 fn calendar(claims: &[ChangeClaim], read: bool) -> Result<Receipt, ReceiptRefusal> {
@@ -495,7 +495,7 @@ fn calendar_read(
 }
 
 tilo_test_env::scenario! {
-    /// Whether a change reaches outside its room, read from what it queued in an outbox.
+    /// Whether a change reaches outside its workspace, read from what it queued in an outbox.
     fn a_change_reaches_outside_only_by_what_it_queued;
 
     phase a_change_reaches_outside_by_what_it_queued_in_an_outbox;

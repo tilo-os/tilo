@@ -128,7 +128,7 @@ if(Object.keys(secrets).length){
  try{if(secrets.invite&&!localStorage.getItem('tilo-setup')&&fresh())localStorage.setItem('tilo-setup',JSON.stringify({step:'later',at:Date.now()}));}catch(e){}
  return;
 }
-if(/[?&](embed|workspace|room|invite)(=|&|$)/.test(location.search))return;
+if(/[?&](embed|workspace|workspaceName|invite)(=|&|$)/.test(location.search))return;
 var setup=null;
 try{
  setup=JSON.parse(localStorage.getItem('tilo-setup')||'null');

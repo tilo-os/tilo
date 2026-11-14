@@ -160,7 +160,7 @@ impl HostedWorkspaces {
     }
 
     /// The person's devices as the record on each host of a workspace `engine` holds lists them:
-    /// every key `room.personal` answers there, once, each saying whether that host refuses it,
+    /// every key `workspace.personal` answers there, once, each saying whether that host refuses it,
     /// the browser it is a tab of, the agent it runs and when it was last there. A key their root
     /// certified on another of their devices — a browser in its own tab, a device paired there —
     /// is in that record and in no fleet of this one's, so this is what lists the person's
@@ -291,8 +291,8 @@ fn hosts_of(engine: &Engine) -> Vec<OnHosts> {
     hosts
 }
 
-/// The request that asks a host the person's record `step` (`room.personal.keep` with the list,
-/// `room.personal` alone).
+/// The request that asks a host the person's record `step` (`workspace.personal.keep` with the
+/// list, `workspace.personal` alone).
 fn record_request(
     step: &str,
     arguments: serde_json::Map<String, serde_json::Value>,

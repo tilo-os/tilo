@@ -1794,7 +1794,7 @@ impl CollaborationManager {
         transport.connection_snapshot(route).filter(|snapshot| {
             snapshot.valid()
                 && snapshot.app_id == route.app_id
-                && snapshot.room == route.cluster_id.to_string()
+                && snapshot.workspace == route.cluster_id.to_string()
                 && snapshot.document == route.record.as_deref().unwrap_or("")
         })
     }

@@ -267,7 +267,7 @@ fn unwatch(member: &mut Member, tab: u64) {
         .invoke(
             SHARES_RESOURCE,
             "unwatch",
-            &arguments(serde_json::json!({ "tab": tab.to_string(), "room": WORKSPACE })),
+            &arguments(serde_json::json!({ "tab": tab.to_string(), "workspace": WORKSPACE })),
         )
         .expect("the window is no longer asked for");
 }

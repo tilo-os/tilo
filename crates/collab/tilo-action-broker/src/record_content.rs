@@ -73,7 +73,7 @@ const MAX_OPEN_WANTS: usize = 256;
 
 /// Where a record's content lives on a device: the workspace the record is
 /// kept in, and the app whose record it is. A person record's content
-/// lives under the person's own room, whichever workspace the window showing it
+/// lives under the person's own workspace, whichever workspace the window showing it
 /// is in.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ContentScope {

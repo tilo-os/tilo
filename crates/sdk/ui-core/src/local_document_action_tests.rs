@@ -285,7 +285,7 @@ tilo_test_env::scenario! {
                 device: [2; 32],
                 agent: Some("agent".into()),
                 app_id: "app".into(),
-                room: "workspace".into(),
+                workspace: "workspace".into(),
                 document: "document".into(),
             };
             ACTIVE.with_borrow_mut(|active| {

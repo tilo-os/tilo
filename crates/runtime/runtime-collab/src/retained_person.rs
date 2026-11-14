@@ -18,9 +18,8 @@ pub struct RetainedLaunchBinding {
     pub operation_id: String,
     pub app_id: String,
     pub package_sha256: String,
-    /// This workspace's id. The signed claims JSON names it `room`, and other
-    /// crates build and read a binding under that name: kept as it was.
-    pub room: String,
+    /// This workspace's id.
+    pub workspace: String,
     pub resource_record: String,
     pub target_uid: u32,
     /// The actual native Shell task serving the proof, not a wire PID claim.
@@ -53,7 +52,7 @@ fn uuid(value: &str) -> bool {
 impl RetainedLaunchBinding {
     pub fn validate(&self) -> io::Result<()> {
         if !uuid(&self.operation_id)
-            || !uuid(&self.room)
+            || !uuid(&self.workspace)
             || !digest(&self.package_sha256)
             || !digest(&self.context_sha256)
             || self.target_uid == 0
@@ -350,7 +349,7 @@ impl SignedRetainedPersonProof {
         if self.claims.certificate != serde_json::to_vec(installed).map_err(io::Error::other)?
             || cert.capabilities.foreign
             || revocations.refuses(&cert)
-            || self.claims.binding.room != personal_cluster(&cert.user_public_key)
+            || self.claims.binding.workspace != personal_cluster(&cert.user_public_key)
         {
             return Err(refused());
         }

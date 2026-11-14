@@ -35,13 +35,13 @@ fn copy_context(
     {
         return Err(refused());
     }
-    let (operation, app, publisher, package, room, resource, program, args, env): Context =
+    let (operation, app, publisher, package, workspace, resource, program, args, env): Context =
         serde_json::from_slice(&bytes[CONTEXT_DOMAIN.len()..]).map_err(io::Error::other)?;
     if operation != binding.operation_id
         || app != "so.tilo.imager"
         || app != binding.app_id
         || package != binding.package_sha256
-        || room != binding.room
+        || workspace != binding.workspace
         || resource != format!("original-copy:{operation}")
         || resource != binding.resource_record
         || publisher.len() != 64

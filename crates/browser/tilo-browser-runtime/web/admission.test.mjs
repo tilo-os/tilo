@@ -51,7 +51,7 @@ test('the runtime is told what the link carries and what the page knows of its h
   const {asked, runtime} = rules(['accounts', 'door']);
   const {calls, deps} = doors({workspaceAt: origin => (origin === target.host ? commons : null),
     entered: ({origin, workspace: id}) => origin === target.host && id === 'elsewhere'});
-  assert.deepEqual(await admit({scope: target, secrets: {}, tickets: 'https://rooms.example/', runtime, deps}),
+  assert.deepEqual(await admit({scope: target, secrets: {}, tickets: 'https://workspaces.example/', runtime, deps}),
     {peer: {admission: true, workspace: target.workspace}});
   const here = {door: true, entered: false, tickets: true, pairing: true};
   assert.deepEqual(asked.slice(0, 2), [
@@ -267,7 +267,7 @@ test('a host this browser set up or joined as its person is reconnected to, and 
 });
 
 test('a guest ticket is redeemed where the web host says, and a pairing link pairs this browser', async () => {
-  const tickets = 'https://rooms.example/rooms/';
+  const tickets = 'https://workspaces.example/rooms/';
   const ticket = doors();
   assert.deepEqual(await admit({scope: target, secrets: {ticket: 't1'}, tickets, runtime: rules(['ticket']).runtime, deps: ticket.deps}),
     {peer: {admission: 'ticket'}});

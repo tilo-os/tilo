@@ -11,7 +11,7 @@ struct WireRequest {
     operation_id: String,
     app_id: String,
     package_sha256: String,
-    room: String,
+    workspace: String,
     resource_record: String,
     context_sha256: String,
 }
@@ -35,7 +35,7 @@ impl LaunchRequest {
         let value: WireRequest = serde_json::from_slice(bytes).map_err(io::Error::other)?;
         if value.schema != 1
             || !crate::is_operation_id(&value.operation_id)
-            || !uuid(&value.room)
+            || !uuid(&value.workspace)
             || !label(&value.app_id)
             || !label(&value.resource_record)
             || !digest(&value.package_sha256)
@@ -54,8 +54,8 @@ impl LaunchRequest {
     pub fn package_sha256(&self) -> &str {
         &self.0.package_sha256
     }
-    pub fn room(&self) -> &str {
-        &self.0.room
+    pub fn workspace(&self) -> &str {
+        &self.0.workspace
     }
     pub fn resource_record(&self) -> &str {
         &self.0.resource_record
@@ -84,7 +84,7 @@ mod tests {
     fn request() -> serde_json::Value {
         serde_json::json!({"schema":1,"operation_id":"11111111-1111-4111-8111-111111111111",
             "app_id":"so.tilo.files","package_sha256":"a".repeat(64),
-            "room":"22222222-2222-4222-8222-222222222222","resource_record":"home",
+            "workspace":"22222222-2222-4222-8222-222222222222","resource_record":"home",
             "context_sha256":"b".repeat(64)})
     }
     #[test]

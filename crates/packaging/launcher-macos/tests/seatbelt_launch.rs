@@ -484,7 +484,7 @@ fn each_app_keeps_its_own_shader_cache_and_no_other() {
         &f,
         &f.probe,
         "cache",
-        OsString::from(format!("../so.tilo+{room}+{PACKAGE}/planted")),
+        OsString::from(format!("../so.tilo+{workspace}+{PACKAGE}/planted")),
     );
     intruder.container_dir = other;
     assert_eq!(

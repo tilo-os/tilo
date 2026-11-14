@@ -134,7 +134,7 @@ fn private_checkpoints_follow_the_executed_child_owner_not_the_primary_document(
             1 => changed.device = [4; 32],
             2 => changed.agent = Some("different-agent".into()),
             3 => changed.app_id = "other-app".into(),
-            4 => changed.room = uuid::Uuid::new_v4().to_string(),
+            4 => changed.workspace = uuid::Uuid::new_v4().to_string(),
             _ => changed.document = "other-document".into(),
         }
         mismatches.push(Some(changed));

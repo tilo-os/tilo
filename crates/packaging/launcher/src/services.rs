@@ -970,7 +970,7 @@ mod tests {
         phase identity_handshake_uses_only_current_canonical_bound_subjects;
         {
             let (mut writer, mut reader) = UnixStream::pair().unwrap();
-            write_identity_handshake(&mut writer, "so.tilo.notes", "room-7").unwrap();
+            write_identity_handshake(&mut writer, "so.tilo.notes", "workspace-7").unwrap();
             drop(writer);
             let bytes = runtime_identity::wire::HANDSHAKE_FRAMING
                 .read(&mut reader)
@@ -980,11 +980,11 @@ mod tests {
             assert_eq!(
                 value,
                 serde_json::json!({
-                    "workspace_id": "room-7", "app_id": "so.tilo.notes"
+                    "workspace_id": "workspace-7", "app_id": "so.tilo.notes"
                 })
             );
             let actual: runtime_identity::wire::Handshake = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(actual.workspace_id, "room-7");
+            assert_eq!(actual.workspace_id, "workspace-7");
             assert_eq!(actual.app_id, "so.tilo.notes");
         }
 
@@ -992,7 +992,7 @@ mod tests {
         {
             for enabled in [false, true] {
                 let (mut writer, mut reader) = UnixStream::pair().unwrap();
-                write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "room-7", enabled)
+                write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "workspace-7", enabled)
                     .unwrap();
                 drop(writer);
                 let bytes = runtime_identity::wire::HANDSHAKE_FRAMING
@@ -1010,7 +1010,7 @@ mod tests {
                     assert_eq!(
                         bytes,
                         serde_json::to_vec(&runtime_identity::wire::Handshake {
-                            workspace_id: "room-7".into(),
+                            workspace_id: "workspace-7".into(),
                             app_id: "so.tilo.notes".into(),
                             surface: None,
                         })
@@ -1140,7 +1140,7 @@ mod tests {
                     assert_eq!(bytes[..4], [50, 0, 0, 0]);
                     serde_json::from_slice::<serde_json::Value>(&bytes[4..]).expect("json")
                 });
-                let bind = resolve_identity_bind("so.tilo.notes", Some("room-7"), false)
+                let bind = resolve_identity_bind("so.tilo.notes", Some("workspace-7"), false)
                     .expect("resolve")
                     .expect("identity bind");
                 assert_eq!(bind.name, IDENTITY_SERVICE);
@@ -1148,22 +1148,22 @@ mod tests {
                 drop(bind);
                 let handshake = reader.join().expect("reader");
                 assert_eq!(handshake["app_id"], "so.tilo.notes");
-                assert_eq!(handshake["workspace_id"], "room-7");
+                assert_eq!(handshake["workspace_id"], "workspace-7");
             }
             {
                 let fields = serde_json::json!({
                     "protocol": 1,
                     "app_id": "so.tilo.notes",
-                    "workspace_id": "room-7",
+                    "workspace_id": "workspace-7",
                 });
-                let bytes = written(|stream| write_collab_handoff(stream, "so.tilo.notes", "room-7"));
+                let bytes = written(|stream| write_collab_handoff(stream, "so.tilo.notes", "workspace-7"));
                 assert_eq!(bytes[..8], *b"QCL1\x3f\0\0\0");
                 assert_eq!(
                     serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
                     fields
                 );
 
-                let bytes = written(|stream| write_compat_handoff(stream, "so.tilo.notes", "room-7"));
+                let bytes = written(|stream| write_compat_handoff(stream, "so.tilo.notes", "workspace-7"));
                 assert_eq!(bytes[..4], [63, 0, 0, 0]);
                 assert_eq!(
                     serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
@@ -1189,14 +1189,14 @@ mod tests {
                 assert_eq!(empty, bytes);
 
                 let bytes =
-                    written(|stream| write_ush_handoff(stream, "so.tilo.notes", Some("room-7")));
+                    written(|stream| write_ush_handoff(stream, "so.tilo.notes", Some("workspace-7")));
                 assert_eq!(bytes[..8], *b"QUS1\x3c\0\0\0");
                 assert_eq!(
                     serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
                     serde_json::json!({
                         "protocol": 1,
                         "app_id": "so.tilo.notes",
-                        "workspace": "room-7",
+                        "workspace": "workspace-7",
                     })
                 );
 
@@ -1230,7 +1230,7 @@ mod tests {
                     }
                     frames
                 });
-                let workspace = resolve_blob_bind_at(&path, "so.tilo.notes", Some("room-7"), false)
+                let workspace = resolve_blob_bind_at(&path, "so.tilo.notes", Some("workspace-7"), false)
                     .expect("resolve")
                     .expect("blob bind");
                 assert_eq!(workspace.name, BLOB_SERVICE);
@@ -1246,7 +1246,7 @@ mod tests {
                     serde_json::json!({
                         "protocol": 1,
                         "principal": "app",
-                        "workspace": "room-7",
+                        "workspace": "workspace-7",
                         "app_id": "so.tilo.notes",
                     })
                 );
@@ -1287,7 +1287,7 @@ mod tests {
                         .expect("handshake");
                     line
                 });
-                let bind = resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("room-7"), false)
+                let bind = resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("workspace-7"), false)
                     .expect("resolve")
                     .expect("chooser bind");
                 assert_eq!(bind.name, CHOOSER_SERVICE);
@@ -1303,7 +1303,7 @@ mod tests {
                     serde_json::json!({
                         "protocol": 1,
                         "app_id": "so.tilo.sheets",
-                        "workspace_id": "room-7",
+                        "workspace_id": "workspace-7",
                     })
                 );
 
@@ -1314,7 +1314,7 @@ mod tests {
                     "the shell cannot scope a launch outside a workspace"
                 );
                 assert!(
-                    resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("room-7"), true)
+                    resolve_chooser_bind_at(&path, "so.tilo.sheets", Some("workspace-7"), true)
                         .expect("no services")
                         .is_none()
                 );
@@ -1322,7 +1322,7 @@ mod tests {
                     resolve_chooser_bind_at(
                         &dir.path().join("absent.sock"),
                         "so.tilo.sheets",
-                        Some("room-7"),
+                        Some("workspace-7"),
                         false
                     )
                     .expect("an absent chooser service gives no connection")
@@ -1360,7 +1360,7 @@ mod tests {
                     false,
                     ServiceLaunchContext {
                         app_id: "so.tilo.notes",
-                        workspace_id: Some("room-7"),
+                        workspace_id: Some("workspace-7"),
                     },
                 )
                 .expect("resolve");
@@ -1369,7 +1369,7 @@ mod tests {
                 assert_eq!(magic, COLLAB_LAUNCH_MAGIC);
                 assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
                 assert_eq!(handoff["app_id"], "so.tilo.notes");
-                assert_eq!(handoff["workspace_id"], "room-7");
+                assert_eq!(handoff["workspace_id"], "workspace-7");
             }
             {
                 use std::io::{BufRead, BufReader};

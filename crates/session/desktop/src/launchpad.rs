@@ -139,7 +139,7 @@ impl LaunchpadAction {
         Self::ALL.into_iter().find(|verb| verb.slug() == slug)
     }
 
-    /// The app the verb happens in, with the name a person reads for it: the launchpad's Chat room,
+    /// The app the verb happens in, with the name a person reads for it: the launchpad's Chat,
     /// its Notes and its tracker, Tasks. Inviting and catching up happen on the shell itself.
     pub const fn app_target(self) -> Option<(&'static str, &'static str)> {
         match self {

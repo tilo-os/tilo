@@ -74,9 +74,9 @@ test('a copy claimed in the click is written once its text arrives',async()=>{
   assert.equal(typeof fill,'function');
   await new Promise(done=>setTimeout(done,10));
   assert.deepEqual(reports,[],'nothing settles before the text is in');
-  fill('https://tilo.so/app/#/@host/room/so.tilo.chat');
+  fill('https://tilo.so/app/#/@host/workspace/so.tilo.chat');
   await new Promise(done=>setTimeout(done,10));
-  assert.deepEqual(browser.written,['https://tilo.so/app/#/@host/room/so.tilo.chat']);
+  assert.deepEqual(browser.written,['https://tilo.so/app/#/@host/workspace/so.tilo.chat']);
   assert.deepEqual(reports,[[true,undefined]]);
 });
 

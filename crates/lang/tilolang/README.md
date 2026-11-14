@@ -104,7 +104,7 @@ view counter(c: Counter) {
 }
 ```
 
-`root Counter` makes `Counter` a root type: one resource of it per room, which the launcher
+`root Counter` makes `Counter` a root type: one resource of it per workspace, which the launcher
 opens through the type's default view (`default view counter for Counter`). A type whose window
 switches between views names them (`views project_list, project_board for Project`), its default
 view first; a view it does not name is a helper its own views place.
@@ -191,7 +191,7 @@ results and resources compare with `==`; options and results are taken apart wit
 a resource of its own that code uses as that container (`notes.insert(n)`, `for n in notes`,
 `notes.matching(query)`); its one field is `Name.items` in the ids lock, so renaming an old
 `type Notebook { notes: Collection<Note> }` to it (`tilolang ids --rename`) keeps its records. A
-root names one such resource per room: `root notes: Notes` is `notes` in the package and
+root names one such resource per workspace: `root notes: Notes` is `notes` in the package and
 `alias.notes` in a package that uses it.
 
 **A package's own name wins.** The language provides types of its own — `Int`, `Float`, `Bool`,

@@ -557,7 +557,7 @@ mod tests {
                 webhook: "22".into(),
                 thread: None,
                 username: "Ada".into(),
-                avatar_url: Some("https://rooms.example/avatars/ab".into()),
+                avatar_url: Some("https://workspaces.example/avatars/ab".into()),
                 avatar_blob: Some("ab".into()),
                 content: "hi".into(),
                 attachments: vec![OutAttachment {

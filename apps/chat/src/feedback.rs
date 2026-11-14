@@ -280,7 +280,7 @@ mod tests {
             Submission {
                 id: "0123456789abcdef0123456789abcdef".into(),
                 destination: Destination {
-                    workspace: "room".into(),
+                    workspace: "workspace".into(),
                     provider: "demo-chat".into(),
                     channel: channel.id,
                 },

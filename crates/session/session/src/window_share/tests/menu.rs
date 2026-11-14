@@ -108,7 +108,7 @@ fn a_window_is_shared_with_its_workspace_from_its_menu_and_stopped_there() {
             .any(|shared| {
                 shared["tab"].as_str() == Some(wanted.as_str())
                     && shared["app_id"].as_str() == Some(APP)
-                    && shared["room"].as_str() == Some(WORKSPACE)
+                    && shared["workspace"].as_str() == Some(WORKSPACE)
             })
     });
     assert!(

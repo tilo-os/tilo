@@ -978,13 +978,13 @@ mod tests {
         {
             let tmp = TempDir::new().unwrap();
             let marker = tmp.path().join("claim");
-            assert!(claim_marker(&marker, "room-a").unwrap());
+            assert!(claim_marker(&marker, "workspace-a").unwrap());
             assert!(
-                !claim_marker(&marker, "room-b").unwrap(),
+                !claim_marker(&marker, "workspace-b").unwrap(),
                 "a second claimant cannot adopt the same source"
             );
             assert!(
-                claim_marker(&marker, "room-a").unwrap(),
+                claim_marker(&marker, "workspace-a").unwrap(),
                 "the original claimant can resume after an interruption"
             );
         }
@@ -994,7 +994,7 @@ mod tests {
             let marker = std::sync::Arc::new(tmp.path().join("claim"));
             let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
             let mut threads = Vec::new();
-            for claimant in ["room-a", "room-b"] {
+            for claimant in ["workspace-a", "workspace-b"] {
                 let barrier = std::sync::Arc::clone(&barrier);
                 let marker = std::sync::Arc::clone(&marker);
                 threads.push(std::thread::spawn(move || {
@@ -1016,10 +1016,10 @@ mod tests {
             // Shape left by a create-then-write that died between those
             // syscalls.  It has no valid owner, so recovery uses a separate
             // atomic claim rather than replacing this file in place.
-            fs::write(&marker, b"room-a").unwrap();
-            assert!(claim_marker(&marker, "room-a").unwrap());
-            assert!(!claim_marker(&marker, "room-b").unwrap());
-            assert!(claim_marker(&marker, "room-a").unwrap());
+            fs::write(&marker, b"workspace-a").unwrap();
+            assert!(claim_marker(&marker, "workspace-a").unwrap());
+            assert!(!claim_marker(&marker, "workspace-b").unwrap());
+            assert!(claim_marker(&marker, "workspace-a").unwrap());
         }
     }
 
@@ -1152,7 +1152,7 @@ mod tests {
         {
             let tmp = TempDir::new().unwrap();
             let store: Rc<dyn DurableStore> = Rc::new(FsStore::new(tmp.path()));
-            let key = StorageKey::workspace_index("so.tilo.test", "room");
+            let key = StorageKey::workspace_index("so.tilo.test", "workspace");
             let mut primary = DocStore::shared(Rc::clone(&store), key.clone()).unwrap();
             assert!(primary.is_exclusive_writer());
             // The desktop document's shape: many small changes, few bytes.

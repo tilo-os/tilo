@@ -264,7 +264,7 @@ mod tests {
             )
             .map(|node| node.to_string()),
             Some(format!(
-                "room:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1"
+                "workspace:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1"
             )),
             "a note of the workspace's notebook"
         );
@@ -280,7 +280,7 @@ mod tests {
             )
             .map(|node| node.to_string()),
             Some(format!(
-                "room:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:r1/item:p1"
+                "workspace:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:r1/item:p1"
             ))
         );
         assert_eq!(
@@ -290,7 +290,7 @@ mod tests {
             )
             .map(|node| node.to_string()),
             Some(format!(
-                "room:{workspace}/app:so.tilo.slides/kind:slides.deck/resource:d1"
+                "workspace:{workspace}/app:so.tilo.slides/kind:slides.deck/resource:d1"
             )),
             "a whole record"
         );

@@ -445,7 +445,7 @@ pub fn record_node(record: &Record<'_>) -> TreePath {
 }
 
 /// Decide a received op on `record`: a compaction as a write of the record
-/// (or the room's `compact` governance action), a redaction as the room's
+/// (or the workspace's `compact` governance action), a redaction as the workspace's
 /// governance action, a change by its claims ([`check_claims`]) against the
 /// app surface `surfaces` finds, or, with no surface source, as an edit of
 /// the record.
@@ -703,8 +703,8 @@ fn by_kind(
 /// A sealed compaction folds a record's sealed history into one snapshot of
 /// what it already held, and only a device holding the record's channel keys
 /// can make one. Whoever the record admits as a writer of it holds those
-/// keys, so compacting is part of writing it; the room's governor keeps its
-/// governance action as well. A compaction in the clear sets the room's
+/// keys, so compacting is part of writing it; the workspace's governor keeps its
+/// governance action as well. A compaction in the clear sets the workspace's
 /// history horizon for everyone and stays the governor's to make, which
 /// `governed` decides.
 fn admittable_compaction(

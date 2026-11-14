@@ -16,7 +16,7 @@ fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, ResourceSpe
     let submission = Submission {
         id: "0123456789abcdef0123456789abcdef".into(),
         destination: Destination {
-            workspace: "room".into(),
+            workspace: "workspace".into(),
             provider: "fixture-chat".into(),
             channel: channel.id,
         },

@@ -2,7 +2,7 @@
 //!
 //! The protocol does not mint workspace permissions. The native host supplies
 //! an implementation whose private session evidence comes from its verified
-//! grant/challenge service and current committed room authority. The grant
+//! grant/challenge service and current committed workspace authority. The grant
 //! arrives in the carrier's admission preface ([`crate::carrier`]).
 //!
 //! Every admitted publisher writes into a private ingress origin scoped to its

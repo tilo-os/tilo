@@ -36,7 +36,7 @@ fn capture_custody(
         device: [2; 32],
         agent: None,
         app_id: route.app_id.clone(),
-        room: route.cluster_id.to_string(),
+        workspace: route.cluster_id.to_string(),
         document: route.record.clone().unwrap_or_default(),
     }
 }

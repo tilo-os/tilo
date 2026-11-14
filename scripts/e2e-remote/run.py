@@ -1460,19 +1460,19 @@ class Run:
             said = state.get("sharing") or {}
             if "live" not in said:
                 return None
-            return next((row for row in said.get("live") or [] if row.get("room") == room),
+            return next((row for row in said.get("live") or [] if row.get("workspace") == workspace),
                         {"state": "absent",
                          "waiting_for": "its session names no live plane for the workspace"})
 
         self.person_opens_browser(b, res)
         on_b = desk(b)
         group, tab = browser_window(on_b)
-        room = next((held.get("workspace") for held in on_b.get("held_workspaces") or []
+        workspace = next((held.get("workspace") for held in on_b.get("held_workspaces") or []
                      if held.get("workspace")), None)
-        res.facts.update(group=group, tab=tab, workspace=room)
-        if not group or not tab or not room:
+        res.facts.update(group=group, tab=tab, workspace=workspace)
+        if not group or not tab or not workspace:
             raise Failed(f"B's desk does not hold the Browser's window in a workspace it shares: "
-                         f"group {group}, tab {tab}, workspace {room}")
+                         f"group {group}, tab {tab}, workspace {workspace}")
         # What A lists under the window's own tab before anything is shared: the window that
         # runs on B, as the workspace's layout brought it, and no window of A's own.
         b_key = (b.identity.get("this_device") or {}).get("device", "")
@@ -1975,7 +1975,7 @@ class Run:
 
         def plane(state: dict) -> dict:
             """How the session says the live plane of the window's workspace stands."""
-            return next((row for row in shares(state, "live") if row.get("room") == room),
+            return next((row for row in shares(state, "live") if row.get("workspace") == workspace),
                         {"state": "absent",
                          "waiting_for": "its session names no live plane for the workspace"})
 
@@ -2022,12 +2022,12 @@ class Run:
         if not live:
             raise Failed("the Browser A's person opened did not stay on A's desk")
         tab = live[0].get("tab")
-        room = next((workspace.get("id") or (workspace.get("policy") or {}).get("workspace")
+        workspace = next((workspace.get("id") or (workspace.get("policy") or {}).get("workspace")
                      for workspace, held in tabs(desk(a)) if str(held.get("id")) == str(tab)), None)
-        res.facts.update(tab=tab, workspace=room)
-        if tab is None or not room:
+        res.facts.update(tab=tab, workspace=workspace)
+        if tab is None or not workspace:
             raise Failed("A's desk does not hold its Browser's window in a tab of a workspace: "
-                         f"tab {tab}, workspace {room}")
+                         f"tab {tab}, workspace {workspace}")
         # A's person sends that Browser to the form, with the Browser's own action on its page,
         # and reads the form there before sharing anything.
         navigate = action_row(a, "navigate", "browser") or action_row(a, "navigate", "")

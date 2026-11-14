@@ -1,11 +1,11 @@
-//! What one app may ask of its room's render service.
+//! What one app may ask of its workspace's render service.
 //!
 //! Every number bounds work the service would otherwise do on an app's
-//! behalf, for every app in the room: an app over a limit gets that frame
+//! behalf, for every app in the workspace: an app over a limit gets that frame
 //! dropped and a diagnostic ([`crate::control::ServiceMessage::FrameDropped`]),
 //! never a stalled service. The defaults hold every toolkit frame measured
 //! (a dense Notes page encodes ~400 KB, ~6 000 paths) with an order of
-//! magnitude to spare; the service may lower them for a room under pressure.
+//! magnitude to spare; the service may lower them for a workspace under pressure.
 
 use serde::{Deserialize, Serialize};
 

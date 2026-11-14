@@ -91,7 +91,7 @@ fn edit_report(env: &Environment, route: &CrdtRoute) -> runtime_collab::LocalDoc
             device: env.cert.device_public_key,
             agent: None,
             app_id: route.app_id.clone(),
-            room: route.cluster_id.clone(),
+            workspace: route.cluster_id.clone(),
             document: route.record_id.clone(),
         }),
         version: 1,

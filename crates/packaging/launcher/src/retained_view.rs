@@ -388,7 +388,6 @@ pub struct ConsumerLaunchBinding {
     pub command: ConsumerCommand,
     pub manifest_path: String,
     pub payload_root: String,
-    #[serde(rename = "workspace", alias = "room")]
     pub workspace: String,
     pub resource_record: String,
     pub intent_sha256: String,

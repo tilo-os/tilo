@@ -4,7 +4,7 @@
 //!
 //! The record is Chat's ([`OWNER`]): any Editor adds emoji and removes their
 //! own, removing someone else's is moderation. The picture is kept inside the
-//! record, not in a content store, because content is kept per room *and app*:
+//! record, not in a content store, because content is kept per workspace *and app*:
 //! an emoji added from Notes would be unreadable to Chat. [`MAX_IMAGE_BYTES`]
 //! keeps it below the size at which an action's payload moves to content.
 
@@ -22,7 +22,7 @@ pub const KIND: &str = "tilo.workspace.emoji";
 /// The largest picture an emoji keeps, in bytes. An action's text or byte
 /// runs of 16 KiB or more are kept apart as content of the app invoking it
 /// (`tilo_actions::CONTENT_PART_THRESHOLD`), unreadable to other apps of the
-/// room; the picture travels as base64, so it stays below 12 KiB.
+/// workspace; the picture travels as base64, so it stays below 12 KiB.
 pub const MAX_IMAGE_BYTES: usize = 12_000;
 
 pub const MAX_EMOJI: usize = 250;
@@ -207,7 +207,7 @@ impl WorkspaceEmoji {
 
     /// Remove anyone's emoji.
     ///
-    /// Someone else's emoji: the room's roles decide who may.
+    /// Someone else's emoji: the workspace's roles decide who may.
     #[action(moderation)]
     pub fn remove_any_emoji(
         &mut self,

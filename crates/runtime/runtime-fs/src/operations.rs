@@ -1596,7 +1596,7 @@ pub(super) mod tests {
     }
     fn owner() -> FsOwner {
         FsOwner {
-            workspace: "test-room".into(),
+            workspace: "test-workspace".into(),
             app_id: "so.tilo.file-explorer".into(),
         }
     }

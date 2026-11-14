@@ -91,13 +91,13 @@ class Driver:
 
 
 def app_home(session: "ra.Session", state: Path) -> Path:
-    """The folder a Files window opens on: the app's own home in the room the
+    """The folder a Files window opens on: the app's own home in the workspace the
     desk's workspace holds, where the launcher mounts it, so the file planted
     here is the file the window lists."""
     workspaces = session.state_dump()["workspace_tree"]["workspaces"]
-    room = next((workspace["id"] for workspace in workspaces), None)
-    assert room, f"the desk holds no workspace: {workspaces!r}"
-    home = state / "data/tilo-workspaces" / room / "so.tilo.file-explorer"
+    workspace = next((held["id"] for held in workspaces), None)
+    assert workspace, f"the desk holds no workspace: {workspaces!r}"
+    home = state / "data/tilo-workspaces" / workspace / "so.tilo.file-explorer"
     home.mkdir(parents=True, exist_ok=True)
     return home
 

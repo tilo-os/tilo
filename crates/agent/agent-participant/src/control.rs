@@ -1339,7 +1339,7 @@ impl AgentSupervisor {
                             .ok_or_else(|| invalid(&format!("spawn needs {key}")))
                     };
                     let workspace = arguments
-                        .get("room")
+                        .get("workspace")
                         .and_then(serde_json::Value::as_str)
                         .filter(|value| !value.is_empty());
                     let (agent, task) = self

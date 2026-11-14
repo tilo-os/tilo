@@ -789,7 +789,7 @@ fn taken_in(vm: &str) -> Guest {
         slots: BTreeMap::from([(
             "me".to_owned(),
             Some(vec![Held {
-                room: "room-desk".into(),
+                workspace: "workspace-desk".into(),
                 name: "Desk".into(),
                 host: "dev".into(),
                 hosted_here: vm == "dev",
@@ -1105,22 +1105,22 @@ tilo_test_env::scenario! {
     phase a_sessions_workspace_hosts_say_who_hosts_them_and_whether_they_wait;
     {
         let answer = json!({"answer": {"workspaces": [
-            {"workspace": "room-desk", "name": "Desk", "host": "dev", "hosted_here": false, "awaiting_host": true},
-            {"workspace": "room-old", "name": ""},
+            {"workspace": "workspace-desk", "name": "Desk", "host": "dev", "hosted_here": false, "awaiting_host": true},
+            {"workspace": "workspace-old", "name": ""},
         ]}});
         assert_eq!(
             branch_admit::held_of(&answer),
             [
                 Held {
-                    room: "room-desk".into(),
+                    workspace: "workspace-desk".into(),
                     name: "Desk".into(),
                     host: "dev".into(),
                     hosted_here: false,
                     awaiting: true
                 },
                 Held {
-                    room: "room-old".into(),
-                    name: "room-old".into(),
+                    workspace: "workspace-old".into(),
+                    name: "workspace-old".into(),
                     ..Held::default()
                 },
             ]

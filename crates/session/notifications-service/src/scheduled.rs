@@ -150,9 +150,7 @@ impl ScheduleRequest {
 /// it from the notification centre.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Occurrence {
-    /// The workspace the deadline belongs to. Written as `room`: it travels
-    /// in a notification's published data, which apps already read that way.
-    #[serde(rename = "room")]
+    /// The workspace the deadline belongs to.
     pub workspace: String,
     /// The deadline's own token, never reused.
     pub token: String,
@@ -197,8 +195,6 @@ struct Rung {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Entry {
-    /// Written as `room`: an existing ledger keeps its exact bytes on save.
-    #[serde(rename = "room")]
     workspace: String,
     app: String,
     tag: String,

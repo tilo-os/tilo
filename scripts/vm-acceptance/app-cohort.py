@@ -21,7 +21,7 @@ CALCULATOR = "org.gnome.Calculator"
 
 
 def binding(row):
-    return tuple(row.get(k) for k in ("application", "room", "record", "resource"))
+    return tuple(row.get(k) for k in ("application", "workspace", "record", "resource"))
 
 
 def catalog(vm, app):
@@ -250,7 +250,7 @@ def fresh_browser(vm, out):
             require(record not in {b[2] for b in old}, "new tab reused an existing Browser record")
             rows = [r for r in catalog(vm, BROWSER)
                     if (r.get("semantic_identity") or {}).get("kind") == "browser.page"
-                    and r.get("room") == tab[0] and r.get("record") == record]
+                    and r.get("workspace") == tab[0] and r.get("record") == record]
             bound = {binding(r) for r in rows}
             require(len(bound) <= 1, "new tab published ambiguous page bindings")
             if bound:
@@ -271,7 +271,7 @@ def native_subject(state, tab, application):
     association = state.get("workspace_tree", {}).get("local_app_records", {}).get(tab[1])
     if association is None:
         return None
-    require(isinstance(association, dict) and association.get("room") == tab[0]
+    require(isinstance(association, dict) and association.get("workspace") == tab[0]
             and association.get("app_id") == application
             and type(association.get("record_instance")) is int
             and 0 < association["record_instance"] < 2**64,
@@ -280,7 +280,7 @@ def native_subject(state, tab, application):
     require(isinstance(proof, dict) and proof.get("method") == "authenticated-wayland-peer"
             and proof.get("omitted") == 0 and isinstance(proof.get("windows"), list),
             "authenticated native worker provenance unavailable")
-    rows = [row for row in proof["windows"] if row.get("room") == tab[0]
+    rows = [row for row in proof["windows"] if row.get("workspace") == tab[0]
             and str(row.get("tab_id")) == tab[1] and str(row.get("surface_id")) == tab[2]]
     require(len(rows) <= 1, "ambiguous authenticated native worker")
     if not rows:
@@ -302,8 +302,8 @@ def native_subject(state, tab, application):
     checkout = worker.get("certified_checkout")
     if checkout is None:
         return None  # The admitted worker has not registered a certified directory yet.
-    require(isinstance(checkout, dict) and set(checkout) == {"application", "room", "record"}
-            and checkout["application"] == application and checkout["room"] == tab[0]
+    require(isinstance(checkout, dict) and set(checkout) == {"application", "workspace", "record"}
+            and checkout["application"] == application and checkout["workspace"] == tab[0]
             and isinstance(checkout["record"], str) and 0 < len(checkout["record"].encode()) <= 512
             and not any(ord(char) < 32 for char in checkout["record"]),
             "current certified checkout differs from the native worker")

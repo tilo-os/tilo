@@ -939,7 +939,7 @@ tilo_test_env::scenario! {
     {
         let (temp, authority, _session, grant) = selected_write_file(vec![FsRight::Write]);
         let mut wrong = files_owner();
-        wrong.workspace = "foreign-room".into();
+        wrong.workspace = "foreign-workspace".into();
         assert!(matches!(
             authority.bind(wrong.clone(), MOUNT_B, &[], std::slice::from_ref(&grant)),
             Err(FsError::Denied)

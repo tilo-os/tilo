@@ -356,7 +356,7 @@ fn json(value: serde_json::Value) -> InvokeArgument {
 
 /// A key the person certified for a service acting for an agent they
 /// approved, as the host admits it: the agent the key is, for the person.
-/// Each connection is an execution the host minted for it, as the room
+/// Each connection is an execution the host minted for it, as the workspace
 /// host's session gives an agent's or a key's requests.
 fn key(person: [u8; 32], device: [u8; 32], label: &str) -> Caller {
     Caller::authenticated(person, device)

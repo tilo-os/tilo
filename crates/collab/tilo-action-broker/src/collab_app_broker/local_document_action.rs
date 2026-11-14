@@ -121,7 +121,7 @@ fn validate_report_custody(
         || custody.device != certificate.device_public_key
         || custody.agent != current.agent_id
         || custody.app_id != route.app_id
-        || custody.room != route.cluster_id
+        || custody.workspace != route.cluster_id
         || custody.document != route.record_id
     {
         return Err(rejected(

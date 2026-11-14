@@ -82,7 +82,7 @@ fn plane_of(device: &Device, workspace: &str) -> Value {
         .as_array()
         .and_then(|live| {
             live.iter()
-                .find(|plane| plane["room"].as_str() == Some(workspace))
+                .find(|plane| plane["workspace"].as_str() == Some(workspace))
                 .cloned()
         })
         .unwrap_or(Value::Null)

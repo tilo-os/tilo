@@ -223,7 +223,7 @@ async fn directory_rpc_keeps_native_names_rights_and_actual_durable_job_outcomes
         std::fs::write(disk.path().join(format!("page-{index:03}")), b"").unwrap();
     }
     let owner = FsOwner {
-        workspace: "owned-room".into(),
+        workspace: "owned-workspace".into(),
         app_id: "so.tilo.file-explorer".into(),
     };
     let authority = NativeGrantAuthority::new();

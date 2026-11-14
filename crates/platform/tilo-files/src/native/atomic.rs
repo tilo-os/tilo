@@ -547,9 +547,9 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt as _;
                 let d = TempDir::new().unwrap();
                 let p = d.path().join("workspace-id");
-                write_regenerable_with_mode(&p, b"room-a", 0o600).unwrap();
-                write_regenerable_with_mode(&p, b"room", 0o600).unwrap();
-                assert_eq!(fs::read(&p).unwrap(), b"room");
+                write_regenerable_with_mode(&p, b"workspace-a", 0o600).unwrap();
+                write_regenerable_with_mode(&p, b"workspace", 0o600).unwrap();
+                assert_eq!(fs::read(&p).unwrap(), b"workspace");
                 assert_eq!(
                     fs::metadata(&p).unwrap().permissions().mode() & 0o777,
                     0o600

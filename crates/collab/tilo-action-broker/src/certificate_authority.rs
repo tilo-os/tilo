@@ -2,7 +2,7 @@
 //!
 //! Implementations read the owner's explicit identity store on every check;
 //! this is never supplied by a wire request. Signature, expiry, device role,
-//! room membership and action policy remain mandatory broker checks
+//! workspace membership and action policy remain mandatory broker checks
 //! independent of this provider.
 use uuid::Uuid;
 
@@ -13,25 +13,25 @@ pub trait CertificateAuthority: Send + Sync {
     fn policy_time(&self) -> Result<Option<PolicyTime>, String> {
         Ok(None)
     }
-    /// Checks `_certificate` for `_room` at the retained policy `_time`.
+    /// Checks `_certificate` for `_workspace` at the retained policy `_time`.
     fn authorize_with_policy_time(
         &self,
-        _room: Uuid,
+        _workspace: Uuid,
         _certificate: &tilo_user_identity::DeviceCert,
         _time: &PolicyTime,
     ) -> Result<(), String> {
         Err("retained policy time authority unavailable".into())
     }
-    /// Checks `certificate` against the owner's current identity store for `room`.
+    /// Checks `certificate` against the owner's current identity store for `workspace`.
     fn authorize(
         &self,
-        room: Uuid,
+        workspace: Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String>;
-    /// Whether `_device` governs `_room`; `None` is this host's own device.
+    /// Whether `_device` governs `_workspace`; `None` is this host's own device.
     /// A foreign device is held to the workspace's cap only in rooms it does
     /// not govern; the default governs none.
-    fn governs(&self, _room: Uuid, _device: Option<&[u8; 32]>) -> bool {
+    fn governs(&self, _workspace: Uuid, _device: Option<&[u8; 32]>) -> bool {
         false
     }
     /// Local SDK admission may additionally require a current enrollment record.
@@ -41,9 +41,9 @@ pub trait CertificateAuthority: Send + Sync {
     /// Returns a message when [`Self::authorize`] refuses.
     fn authorize_join(
         &self,
-        room: Uuid,
+        workspace: Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        self.authorize(room, certificate)
+        self.authorize(workspace, certificate)
     }
 }

@@ -52,7 +52,7 @@ pub enum PeerPresencePayload {
     },
     Arrived,
     Left,
-    /// An ephemeral, room-scoped relationship cue: the authenticated sender
+    /// An ephemeral, workspace-scoped relationship cue: the authenticated sender
     /// is following `target`, or has stopped when it is `None`. This is not
     /// a collaboration command and must never be persisted or interpreted as
     /// permission to control another participant's view.
@@ -85,7 +85,7 @@ pub enum PeerPresencePayload {
         camera: bool,
         screen: bool,
     },
-    /// What the sender says beside their pointer (cursor chat) in a room
+    /// What the sender says beside their pointer (cursor chat) in a workspace
     /// with no live plane: `text` while the bubble is open (empty with
     /// nothing typed yet), `None` once it closed; `sent` once they pressed
     /// Enter. Desktop presence: shells show it, apps never receive it.
@@ -93,7 +93,7 @@ pub enum PeerPresencePayload {
         text: Option<String>,
         sent: bool,
     },
-    /// The sender reacted with `emoji` from their pointer, in a room with no
+    /// The sender reacted with `emoji` from their pointer, in a workspace with no
     /// live plane; a new `seq` is a new reaction. Desktop presence.
     Reaction {
         seq: u32,

@@ -651,7 +651,7 @@ impl JoinedChannel {
                 device: certificate.device_public_key,
                 agent: current.agent_id,
                 app_id: route.app_id,
-                room: route.cluster_id,
+                workspace: route.cluster_id,
                 document: route.record_id,
             };
             if !snapshot.valid() {

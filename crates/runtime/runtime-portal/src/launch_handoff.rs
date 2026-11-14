@@ -1,5 +1,5 @@
 //! What a process says first on its connection to its session's services:
-//! the app and the room its launch was for.
+//! the app and the workspace its launch was for.
 //!
 //! The connection is already the process's own — the launcher connected it,
 //! or a surface app connected the socket its session named — and the broker
@@ -39,10 +39,10 @@ pub fn write(stream: &mut UnixStream, app_id: &str, workspace_id: &str) -> std::
     )
 }
 
-/// Name the app, room and window instance a collaboration connection the
+/// Name the app, workspace and window instance a collaboration connection the
 /// session makes for one of its windows is for: the broker attests it
 /// against the launch record of exactly that window, so two windows of one
-/// app in one room never take each other's.
+/// app in one workspace never take each other's.
 pub fn write_window(
     stream: &mut UnixStream,
     app_id: &str,

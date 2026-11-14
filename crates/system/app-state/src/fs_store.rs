@@ -1863,7 +1863,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn record(name: &str) -> StorageKey {
-        StorageKey::document("so.tilo.test", "room-a", name)
+        StorageKey::document("so.tilo.test", "workspace-a", name)
     }
 
     tilo_test_env::scenario! {
@@ -2067,15 +2067,15 @@ mod tests {
             let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
             assert!(
                 store
-                    .documents("so.tilo.test", "room-a")
+                    .documents("so.tilo.test", "workspace-a")
                     .unwrap()
                     .is_empty()
             );
             for (workspace, name, bytes) in [
-                ("room-a", "b-rec", b"doc".as_slice()),
-                ("room-a", "a-rec", b"doc"),
-                ("room-a", "empty", b""),
-                ("room-b", "elsewhere", b"doc"),
+                ("workspace-a", "b-rec", b"doc".as_slice()),
+                ("workspace-a", "a-rec", b"doc"),
+                ("workspace-a", "empty", b""),
+                ("workspace-b", "elsewhere", b"doc"),
             ] {
                 let key = StorageKey::document("so.tilo.test", workspace, name);
                 let _lease = store.lease(&key).unwrap();
@@ -2085,10 +2085,10 @@ mod tests {
                 store.flush(Some(&key)).unwrap();
             }
             assert_eq!(
-                store.documents("so.tilo.test", "room-a").unwrap(),
+                store.documents("so.tilo.test", "workspace-a").unwrap(),
                 ["a-rec", "b-rec"]
             );
-            assert!(store.documents("so.tilo.test", "../room-a").is_err());
+            assert!(store.documents("so.tilo.test", "../workspace-a").is_err());
         }
 
         phase accepted_writes_become_durable_on_debounce_flush_drop_and_reopen;
@@ -2270,7 +2270,7 @@ mod tests {
                 let key = record("rec");
                 let _lease = store.lease(&key).unwrap();
                 let directory =
-                    DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                    DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "workspace-a", "rec")
                         .unwrap();
                 store.faults().sync_failure = Some(fs::canonicalize(&directory).unwrap());
                 let revision = store
@@ -2295,7 +2295,7 @@ mod tests {
                 let key = record("rec");
                 let _lease = store.lease(&key).unwrap();
                 let directory =
-                    DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
+                    DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "workspace-a", "rec")
                         .unwrap();
                 fs::remove_file(directory.join(CANONICAL_GATE)).unwrap();
                 fs::write(directory.join(CANONICAL_GATE), b"replacement").unwrap();
@@ -2398,7 +2398,7 @@ mod tests {
     fn a_read_without_waiting_includes_writes_still_queued() {
         let tmp = TempDir::new().unwrap();
         let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
-        let view = StorageKey::view("device", "room-a", 3);
+        let view = StorageKey::view("device", "workspace-a", 3);
         let (written, wait_written) = std::sync::mpsc::channel();
         let (done, wait_done) = std::sync::mpsc::channel::<()>();
         thread::scope(|scope| {
@@ -2517,9 +2517,13 @@ mod tests {
                 .write(&view, WriteOp::Replace(b"view".to_vec()), None)
                 .unwrap();
             store.flush(None).unwrap();
-            let directory =
-                DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "room-a", "rec")
-                    .unwrap();
+            let directory = DocStore::workspace_document_dir_at(
+                tmp.path(),
+                "so.tilo.test",
+                "workspace-a",
+                "rec",
+            )
+            .unwrap();
             assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
             assert_eq!(
                 fs::read_to_string(directory.join(ACTOR_FILE)).unwrap(),
@@ -2546,8 +2550,8 @@ mod tests {
             for (key, directory) in [
                 (StorageKey::app("so.tilo.test"), app.clone()),
                 (
-                    StorageKey::workspace_index("so.tilo.test", "room-a"),
-                    app.join(WORKSPACES_DIR).join("room-a"),
+                    StorageKey::workspace_index("so.tilo.test", "workspace-a"),
+                    app.join(WORKSPACES_DIR).join("workspace-a"),
                 ),
             ] {
                 let shared = store.lease_shared(&key).unwrap();

@@ -146,7 +146,7 @@ def answered_id(value) -> str | None:
     if isinstance(value, (str, int)) and not isinstance(value, bool):
         return str(value)
     if isinstance(value, dict):
-        for key in ("workspace", "id", "room", "workspace_id"):
+        for key in ("workspace", "id", "workspace", "workspace_id"):
             if isinstance(value.get(key), (str, int)) and not isinstance(value.get(key), bool):
                 return str(value[key])
     return None
@@ -377,7 +377,7 @@ def terminal_in(ctx, ws: dict, label: str) -> ae.Terminal:
     ae.select_workspace(ctx, ws)
 
     def mine():
-        rows = [r for r in ae.terminal_rows(ctx) if r.get("room") in (None, "", ws.get("id"))]
+        rows = [r for r in ae.terminal_rows(ctx) if r.get("workspace") in (None, "", ws.get("id"))]
         return sorted({ae.identity(r) for r in rows}, key=str) or None
 
     there = wait_until(mine, 5, interval=1.0)
@@ -625,10 +625,10 @@ def branch_by_action(ctx, source: dict, name: str, field: str) -> tuple[dict, di
                   "desk_baseline_s": baseline, "desk_during_s": probe.times, "desk_errors": probe.errors}
 
 
-def branch_said(ctx, name: str, room: str) -> dict:
+def branch_said(ctx, name: str, workspace: str) -> dict:
     """What the desk told the person when the branch `name` was made ("<name> is ready", or "<name>
     is not complete" with what did not come along), as its notifications name it, and what the
-    runtime that keeps the environments recorded of the branch into `room`."""
+    runtime that keeps the environments recorded of the branch into `workspace`."""
     def told():
         names = [str(t.get("name")) for t in ctx.vm.targets() if name in str(t.get("name", ""))]
         return [n for n in names if "is ready" in n or "is not complete" in n] or None
@@ -639,7 +639,7 @@ def branch_said(ctx, name: str, room: str) -> dict:
                        30, ctx.facts.get("wsb:since", 0)) if any(
         "is not complete" in n for n in notices) else ""
     audit = ctx.vm.exec("cat \"$HOME\"/.local/share/ush/audit/* \"$HOME\"/.local/share/ush/*/audit/* 2>/dev/null "
-                        f"| grep -a branch-workspace | grep -a {shlex.quote(room)} | tail -n 2 | cut -c1-600",
+                        f"| grep -a branch-workspace | grep -a {shlex.quote(workspace)} | tail -n 2 | cut -c1-600",
                         check=False)
     shown = []
     if any("is not complete" in n for n in notices):

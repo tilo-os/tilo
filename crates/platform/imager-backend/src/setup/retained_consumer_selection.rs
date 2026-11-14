@@ -53,7 +53,7 @@ impl ReviewedConsumerSelection {
             || self.binding.operation_id != selected.operation_id
             || self.binding.app_id != selected.app_id
             || self.binding.package_sha256 != selected.package_sha256
-            || self.binding.workspace != selected.room
+            || self.binding.workspace != selected.workspace
             || self.binding.resource_record != "retained-home"
             || selected.resource_record != "retained-home"
             || self.binding.shell_context_sha256 != selected.context_sha256

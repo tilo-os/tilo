@@ -18,7 +18,7 @@ use std::thread::JoinHandle;
 pub type FanoutSink = Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>;
 
 /// Explicit inputs for an ordinary native broker host. The owner supplies its
-/// real publisher and current room tree separately.
+/// real publisher and current workspace tree separately.
 #[derive(Clone)]
 pub struct NativePeerBrokerConfig {
     /// Where the durable invocation journal lives.

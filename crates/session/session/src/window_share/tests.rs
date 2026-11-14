@@ -495,7 +495,7 @@ fn share(member: &mut Member, app: &str, tab: u64) {
                 "window": window,
                 "tab": tab.to_string(),
                 "app_id": app,
-                "room": WORKSPACE,
+                "workspace": WORKSPACE,
             })),
         )
         .expect("the window is shared with the workspace");
@@ -508,7 +508,7 @@ fn watch(member: &mut Member, tab: u64) {
         .invoke(
             SHARES_RESOURCE,
             "watch",
-            &arguments(serde_json::json!({ "tab": tab.to_string(), "room": WORKSPACE })),
+            &arguments(serde_json::json!({ "tab": tab.to_string(), "workspace": WORKSPACE })),
         )
         .expect("the window is shown on the shell");
 }
@@ -1174,7 +1174,7 @@ fn a_shared_window_reaches_the_member_showing_it() {
     );
     let plane = rows(&reading, "live")
         .iter()
-        .find(|plane| plane["room"].as_str() == Some(WORKSPACE))
+        .find(|plane| plane["workspace"].as_str() == Some(WORKSPACE))
         .expect("the reading names the workspace's live plane");
     assert_eq!(plane["state"].as_str(), Some("open"), "{reading}");
     let watching = shared["viewers"].as_array().expect("who is watching");
@@ -2045,7 +2045,7 @@ fn a_window_is_shared_by_naming_the_tab_it_is_shown_in() {
             .any(|shared| {
                 shared["tab"].as_str() == Some(wanted.as_str())
                     && shared["app_id"].as_str() == Some(APP)
-                    && shared["room"].as_str() == Some(WORKSPACE)
+                    && shared["workspace"].as_str() == Some(WORKSPACE)
             })
     });
     let grants = host

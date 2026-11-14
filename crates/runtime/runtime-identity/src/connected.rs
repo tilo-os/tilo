@@ -56,7 +56,7 @@ mod tests {
         let identity = BrokerSigningIdentity::from_connected_io(app).unwrap();
         assert_eq!(identity.metadata().signing_public_key(), [5; 32]);
         assert_eq!(identity.metadata().device_certificate(), Some(&[7; 64][..]));
-        assert!(identity.sign_collaboration_join("room").is_err());
+        assert!(identity.sign_collaboration_join("workspace").is_err());
         drop(identity);
         assert!(worker.join().unwrap().is_ok());
     }

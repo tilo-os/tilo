@@ -1268,12 +1268,12 @@ async fn what_a_device_shares_in_the_workspace_it_hosts_reaches_that_workspaces_
         |peer| grants_of(peer, c_device, &window_share_id(beside)) > 0,
     )
     .await;
-    let mut rooms = Vec::new();
+    let mut heard_workspaces = Vec::new();
     loop {
         match c_heard.try_recv() {
             Ok(heard) => {
                 if let NeighbourMsg::SyncResp { workspace, .. } = heard.message {
-                    rooms.push(workspace);
+                    heard_workspaces.push(workspace);
                 }
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
@@ -1281,8 +1281,11 @@ async fn what_a_device_shares_in_the_workspace_it_hosts_reaches_that_workspaces_
         }
     }
     assert!(
-        !rooms.is_empty() && rooms.iter().all(|room| room == OTHER_WORKSPACE),
-        "a member hears the governance of its own workspace alone: {rooms:?}"
+        !heard_workspaces.is_empty()
+            && heard_workspaces
+                .iter()
+                .all(|heard| heard == OTHER_WORKSPACE),
+        "a member hears the governance of its own workspace alone: {heard_workspaces:?}"
     );
     assert_eq!(
         c.read(|peer| grants_of(peer, c_device, &share)),

@@ -205,7 +205,7 @@ impl App {
                 if let Some(custody) = &checkpoint.custody {
                     if !custody.valid()
                         || custody.app_id != route.app_id
-                        || custody.room != route.cluster_id.to_string()
+                        || custody.workspace != route.cluster_id.to_string()
                         || custody.document != route.record.as_deref().unwrap_or("")
                     {
                         return Err("private action checkpoint custody mismatch".into());

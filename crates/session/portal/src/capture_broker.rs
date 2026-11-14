@@ -1160,7 +1160,7 @@ mod tests {
                         LocalCaptureHandle::FileDescriptor(file.into()),
                     )
                     .unwrap();
-                let owner = binding("share", "work", "room");
+                let owner = binding("share", "work", "workspace");
                 let now = Instant::now();
                 let auth = broker
                     .authorize(&owner, "screen", CaptureKind::Screen, now)

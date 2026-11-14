@@ -2377,7 +2377,7 @@ fn published_index(index: &tilo_desktop_search::content_index::AppContentIndex, 
     for request in sent.borrow().iter() {
         if let CollabRequest::PublishSearchIndex { delta_json } = request {
             index
-                .publish("room", "so.tilo.lang.mail", "", delta_json)
+                .publish("workspace", "so.tilo.lang.mail", "", delta_json)
                 .expect("the session takes every delta");
         }
     }

@@ -32,7 +32,7 @@ def workspace(vm, expected_workspace_id):
     tree = state.get("workspace_tree", {})
     current = [w for w in tree.get("workspaces", []) if w.get("id") == tree.get("active")]
     require(state.get("chrome", {}).get("session_locked") is False and len(current) == 1
-            and current[0].get("room") == expected_workspace_id, "unlocked expected owner workspace unavailable")
+            and current[0].get("workspace") == expected_workspace_id, "unlocked expected owner workspace unavailable")
 
 
 def picker_rows(vm):
@@ -146,7 +146,7 @@ def review(door, fixture, filename, directories, out, initial_up=0):
 
 def opened_subject(state, window):
     candidates = [tab for tab in app.windows(state, window["package_id"])
-                  if tab[0] == window["room"] and tab[2] == str(window["surface_id"])]
+                  if tab[0] == window["workspace"] and tab[2] == str(window["surface_id"])]
     require(len(candidates) <= 1, "adopted application surface has ambiguous current tabs")
     if not candidates:
         return None
@@ -158,7 +158,7 @@ def opened_subject(state, window):
     require(isinstance(proof, dict) and proof.get("method") == "authenticated-wayland-peer"
             and proof.get("omitted") == 0 and isinstance(proof.get("windows"), list),
             "current device-owner native worker provenance unavailable")
-    matches = [row for row in proof["windows"] if row.get("room") == tab[0]
+    matches = [row for row in proof["windows"] if row.get("workspace") == tab[0]
                and str(row.get("tab_id")) == tab[1] and str(row.get("surface_id")) == tab[2]]
     require(len(matches) <= 1, "ambiguous authenticated native worker")
     if not matches:
@@ -192,7 +192,7 @@ def install_open(door, fixture, installed_before, out):
     launch = opened.get("launch") if isinstance(opened, dict) else None
     window = launch.get("adopted_window") if isinstance(launch, dict) else None
     require(isinstance(window, dict) and window.get("package_id") == package
-            and window.get("room") == door.bound[1]
+            and window.get("workspace") == door.bound[1]
             and type(window.get("surface_id")) is int and window["surface_id"] > 0,
             "Open did not return an authenticated adopted application window")
     def subject():

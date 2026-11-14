@@ -433,7 +433,7 @@ impl Hosts {
         );
         let request = InstanceRequest {
             app: instance.app.clone(),
-            room: instance.workspace.clone(),
+            workspace: instance.workspace.clone(),
             instance: instance.instance,
             person: instance.person,
             module_len,

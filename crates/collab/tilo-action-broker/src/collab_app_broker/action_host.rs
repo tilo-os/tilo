@@ -680,7 +680,7 @@ impl AppBrokerState {
                     .is_ok_and(|invocation| invocation.app == app_id)
                     .then(|| person.clone())
             }
-            // A node of the person's own room asked about, shared or
+            // A node of the person's own workspace asked about, shared or
             // unshared: what the person did in the app (a window shared to a
             // channel), which the workspace bounds by what the person holds there.
             // Never under the app's own identity, which the workspace knows not.

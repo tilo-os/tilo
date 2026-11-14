@@ -33,7 +33,7 @@ class Element {
   async fire(type) { await this.listeners.get(type)?.({preventDefault() {}}); await tick(); }
 }
 
-const workspace = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+const workspace = {name: 'Lounge', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/'};
 const NAMES = ['form', 'email', 'submit', 'done', 'againLine', 'againPrompt', 'again', 'change', 'leave', 'note', 'contact'];
 
 /** The door's wait list, mounted with `kept` left on an earlier visit (or

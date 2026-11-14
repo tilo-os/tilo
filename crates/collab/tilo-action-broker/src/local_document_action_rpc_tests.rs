@@ -153,7 +153,7 @@ async fn local_report_admission(
                     device: env.cert.device_public_key,
                     agent: identity.agent_id.clone(),
                     app_id: env.route.app_id.clone(),
-                    room: env.route.cluster_id.clone(),
+                    workspace: env.route.cluster_id.clone(),
                     document: env.route.record_id.clone(),
                 }),
                 version: 1,
@@ -189,7 +189,13 @@ async fn local_report_admission(
             // Even a correctly rebound report cannot move historical work to
             // the current caller or another document. No policy grant is spent.
             for field in [
-                "missing", "root", "device", "agent", "app", "room", "document",
+                "missing",
+                "root",
+                "device",
+                "agent",
+                "app",
+                "workspace",
+                "document",
             ] {
                 let mut wrong = request.clone();
                 if field == "missing" {
@@ -201,7 +207,7 @@ async fn local_report_admission(
                         "device" => custody.device = [92; 32],
                         "agent" => custody.agent = Some("other-agent".into()),
                         "app" => custody.app_id.push_str("-other"),
-                        "room" => custody.room.push_str("-other"),
+                        "workspace" => custody.workspace.push_str("-other"),
                         "document" => custody.document.push_str("-other"),
                         _ => unreachable!(),
                     }

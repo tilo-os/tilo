@@ -38,7 +38,7 @@ fn usage() -> ExitCode {
         "usage:\n  \
          tilo-collab-probe write:<text>\n  \
          tilo-collab-probe read:<timeout-seconds>\n\
-         The room comes from TILO_WORKSPACE_ID."
+         The workspace comes from TILO_WORKSPACE_ID."
     );
     ExitCode::from(2)
 }
@@ -63,18 +63,18 @@ fn main() -> ExitCode {
     };
     let (mode, arg) = (mode.to_string(), arg.to_string());
 
-    // The room is the collaboration address; without one the app cannot join.
+    // The workspace is the collaboration address; without one the app cannot join.
     let channel = match std::env::var("TILO_WORKSPACE_ID") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => {
             eprintln!(
                 "probe: FAIL TILO_WORKSPACE_ID is unset, so this app has no \
-                 room to collaborate in."
+                 workspace to collaborate in."
             );
             return ExitCode::from(2);
         }
     };
-    println!("probe: room = {channel}");
+    println!("probe: workspace = {channel}");
 
     // Report the descriptor before using it. `service_fd` returns None when
     // the variable is absent or names a closed descriptor.

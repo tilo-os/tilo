@@ -185,9 +185,7 @@ impl From<runtime_portal::NotAvailable> for BlobError {
 struct HandoffFrame {
     protocol: u16,
     principal: String,
-    /// The launcher sends `workspace`; a frame written before it did said
-    /// `room`, which is still read.
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "room")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     app_id: Option<String>,

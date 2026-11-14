@@ -579,9 +579,9 @@ impl RecordService {
     ) -> Result<(), String> {
         let encoded = action.encode().map_err(|error| error.to_string())?;
         let context = ActionContext::for_resource(
-            // The workspace root's path, as a grant's tree path names it (`room/app:todo/**`),
+            // The workspace root's path, as a grant's tree path names it (`workspace/app:todo/**`),
             // for an action that wrote no resource of its own.
-            action.resources().first().copied().unwrap_or("room"),
+            action.resources().first().copied().unwrap_or("workspace"),
             &action.kind,
             &action.kind,
         );

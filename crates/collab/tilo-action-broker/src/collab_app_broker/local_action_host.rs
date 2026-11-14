@@ -443,7 +443,7 @@ impl CertifiedPersonContext {
     }
 }
 impl AppBrokerState {
-    /// Project only an already admitted person's own room on a non-foreign
+    /// Project only an already admitted person's own workspace on a non-foreign
     /// device. This does not delegate account credentials or mint permissions.
     pub fn certified_person_context(
         self: &Arc<Self>,

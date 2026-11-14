@@ -61,15 +61,15 @@ impl Authority {
     /// The workspaces anything is published in, in a settled order.
     #[must_use]
     pub fn workspaces(&self) -> Vec<String> {
-        let mut rooms: Vec<String> = self
+        let mut workspaces: Vec<String> = self
             .published
             .borrow()
             .keys()
             .map(|(workspace, _)| workspace.clone())
             .collect();
-        rooms.sort();
-        rooms.dedup();
-        rooms
+        workspaces.sort();
+        workspaces.dedup();
+        workspaces
     }
 
     /// Publish what `workspace`'s policy lets the person at this device do in
@@ -145,7 +145,7 @@ impl Authority {
             .published
             .borrow()
             .keys()
-            .filter(|(room, _)| room == &workspace.id)
+            .filter(|(held, _)| held == &workspace.id)
             .map(|(_, app)| app.clone())
             .collect();
         for app in apps {
@@ -244,13 +244,13 @@ mod tests {
         {
             let directory = tempfile::tempdir().expect("a directory");
             let authority = Authority::new();
-            let room = workspace(
+            let published = workspace(
                 directory.path(),
                 WorkspacePolicy::new("workspace-7", OWNER),
                 OWNER,
             );
             let file = authority
-                .publish(&room, APP)
+                .publish(&published, APP)
                 .expect("published")
                 .expect("a projection to bind");
             assert_eq!(

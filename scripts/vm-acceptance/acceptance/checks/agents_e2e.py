@@ -116,7 +116,7 @@ def select_workspace(ctx, workspace: dict) -> None:
 
 
 def identity(row: dict) -> tuple:
-    return tuple(row.get(k) for k in ("application", "room", "record", "resource"))
+    return tuple(row.get(k) for k in ("application", "workspace", "record", "resource"))
 
 
 def terminal_rows(ctx) -> list[dict]:
@@ -773,7 +773,7 @@ def own_change(ctx, res):
             # Where the box says the app's instances publish, by workspace.
             print(f"--- {e['opened_app']} rows ---", flush=True)
             for row in ctx.vm.actions(e["opened_app"], programmatic=True)[:40]:
-                print(json.dumps({k: row.get(k) for k in ("application", "room", "provider", "record",
+                print(json.dumps({k: row.get(k) for k in ("application", "workspace", "provider", "record",
                                                           "resource", "operation")}), flush=True)
             problems.append(f"{e['name']}: {e['opened_app']}#open did not answer ok: "
                             f"{text_of(e['opened'])[:300]} (journal: {journal(ctx, e['opened_app'])})")
@@ -831,7 +831,7 @@ def asked_change(ctx, res):
                 print(f"--- one Terminal row whole ---\n{json.dumps(rows[0])[:3000]}", flush=True)
             print(f"--- {e['name']}: the person's Terminal rows ---", flush=True)
             for row in terminal_rows(ctx)[:20]:
-                print(json.dumps({k: row.get(k) for k in ("application", "room", "provider", "record",
+                print(json.dumps({k: row.get(k) for k in ("application", "workspace", "provider", "record",
                                                           "resource", "parent_resource", "operation")}),
                       flush=True)
             journal(ctx, "MCP server")

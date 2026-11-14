@@ -1180,7 +1180,7 @@ mod receipt_tests {
         Receipt {
             version: 1,
             id: uuid::Uuid::from_u128(0x1234),
-            workspace: "fixture-room".into(),
+            workspace: "fixture-workspace".into(),
             app_id: "fixture-app".into(),
             mount: uuid::Uuid::from_u128(0x5678),
             state: OperationState::RecoveryRequired,
@@ -1232,7 +1232,7 @@ mod receipt_tests {
         OperationOwner::open(
             std::fs::File::open(root.path()).unwrap(),
             FsOwner {
-                workspace: "fixture-room".into(),
+                workspace: "fixture-workspace".into(),
                 app_id: "fixture-app".into(),
             },
         )
@@ -1363,7 +1363,7 @@ mod receipt_tests {
                 OperationOwner::open(
                     std::fs::File::open(root.path()).unwrap(),
                     FsOwner {
-                        workspace: "fixture-room".into(),
+                        workspace: "fixture-workspace".into(),
                         app_id: "fixture-app".into(),
                     },
                 )
@@ -1414,7 +1414,7 @@ mod receipt_tests {
             let owner = OperationOwner::open(
                 std::fs::File::open(root.path()).unwrap(),
                 FsOwner {
-                    workspace: "fixture-room".into(),
+                    workspace: "fixture-workspace".into(),
                     app_id: "fixture-app".into(),
                 },
             )

@@ -663,8 +663,8 @@ impl TilolangHost {
                 tilolang_tilo::schema::register_previously(app, std::slice::from_ref(under));
             }
         }
-        let workspace = uuid::Uuid::parse_str(&request.room)
-            .map_err(|_| AdmitError::Workspace(request.room.clone()))?;
+        let workspace = uuid::Uuid::parse_str(&request.workspace)
+            .map_err(|_| AdmitError::Workspace(request.workspace.clone()))?;
         let identity =
             identity.ok_or_else(|| AdmitError::Join("no identity connection".to_owned()))?;
         let route = route_under(&bundle.meta, &records, workspace, &request.person);
@@ -691,7 +691,12 @@ impl TilolangHost {
                 installed: request.installed,
                 language: request.language,
                 standing: request.standing,
-                ..Spec::new(request.app, request.room, request.instance, request.person)
+                ..Spec::new(
+                    request.app,
+                    request.workspace,
+                    request.instance,
+                    request.person,
+                )
             },
             bundle: Arc::new(bundle),
             manager,

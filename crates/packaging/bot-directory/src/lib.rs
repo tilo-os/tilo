@@ -1,5 +1,5 @@
 //! Installing a bot from a registry: verify the listed program against its signed entry, derive the
-//! grant it needs, check its connectors, and build the `install-bot` arguments a room's governance
+//! grant it needs, check its connectors, and build the `install-bot` arguments a workspace's governance
 //! action takes. The Store and the room service share this, so both show and install the same thing.
 
 use std::collections::BTreeSet;
@@ -188,12 +188,12 @@ pub struct ConnectorStatus {
 
 /// The caller's view of the connectors on the host that will run the bot.
 /// The Store answers it from the action catalogue (`connector.status`); the
-/// room service answers it from its own configuration.
+/// workspace service answers it from its own configuration.
 pub trait HostConnectors {
     fn status(&self, package_id: &str, min_version: &str) -> ConnectorState;
 }
 
-/// What installing a listed bot into a room would do, for review before the
+/// What installing a listed bot into a workspace would do, for review before the
 /// grant is given.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BotInstallPlan {

@@ -1299,7 +1299,7 @@ mod action_authority_tests {
             "--payload-root",
             "/payload",
             "--workspace-id",
-            "room-a",
+            "workspace-a",
             "--action-authority",
             "/private/current.json",
         ])
@@ -1316,6 +1316,6 @@ mod action_authority_tests {
             action_authority.action_authority,
             Some(PathBuf::from("/private/current.json"))
         );
-        assert_eq!(workspace_id.as_deref(), Some("room-a"));
+        assert_eq!(workspace_id.as_deref(), Some("workspace-a"));
     }
 }

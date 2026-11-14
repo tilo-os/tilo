@@ -29,7 +29,10 @@ fn legacy_handoff_preserves_metadata_refusal_ownership_and_disconnection() {
         write_frame(&mut host, 1, b"root signing is refused").unwrap();
         assert_eq!(
             read_frame(&mut host).unwrap(),
-            (OP_SIGN, crate::collaboration_join_signing_bytes("room")),
+            (
+                OP_SIGN,
+                crate::collaboration_join_signing_bytes("workspace")
+            ),
         );
         write_frame(&mut host, 1, b"root signing is refused").unwrap();
     });
@@ -54,10 +57,12 @@ fn legacy_handoff_preserves_metadata_refusal_ownership_and_disconnection() {
         }
         other => panic!("unexpected signing result: {other:?}"),
     }
-    assert!(matches!(identity.sign_collaboration_join("room"),
+    assert!(matches!(identity.sign_collaboration_join("workspace"),
         Err(NotAvailable::ConnectionFailed(error)) if error.kind() == io::ErrorKind::PermissionDenied));
-    assert!(matches!(identity.group_keys("room", "app", "record", 0),
-        Err(NotAvailable::ConnectionFailed(error)) if error.kind() == io::ErrorKind::Unsupported));
+    assert!(
+        matches!(identity.group_keys("workspace", "app", "record", 0),
+        Err(NotAvailable::ConnectionFailed(error)) if error.kind() == io::ErrorKind::Unsupported)
+    );
     worker.join().unwrap();
     assert!(identity.sign(b"disconnected").is_err());
     let again = crate::load().unwrap();

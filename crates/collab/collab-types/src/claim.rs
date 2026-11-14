@@ -330,7 +330,7 @@ pub fn record_unit(_change: &automerge::Change) -> Vec<UnitPath> {
 
 /// The claims of `mutation`'s changes, each writing the units `units` lists
 /// for it. A snapshot carries none: it is a checkpoint, which only the
-/// room's pinned governor may publish.
+/// workspace's pinned governor may publish.
 ///
 /// # Errors
 /// The first change that cannot be claimed, or bytes that do not parse.
@@ -775,9 +775,9 @@ mod tests {
     fn op_of(mutation: &crate::op::DocumentMutation) -> crate::op::SignedOp {
         crate::op::SignedOp::new_unsigned(
             mutation.encode().unwrap(),
-            crate::op::document_artifact_id("app", "room", "record"),
+            crate::op::document_artifact_id("app", "workspace", "record"),
             crate::Ed25519PublicKey::from_bytes([7; 32]),
-            crate::op::document_attestation_id("app", "room", "record"),
+            crate::op::document_attestation_id("app", "workspace", "record"),
             crate::OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             1,

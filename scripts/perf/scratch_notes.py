@@ -42,8 +42,8 @@ class ScratchNotes:
     def owns(self, row: dict[str, Any]) -> bool:
         """Whether an action row is Notes' in this run's workspace and record."""
         return (row.get("application") == NOTES_APP
-                and row.get("room") == self.workspace_id
-                and row.get("room") not in self.protected
+                and row.get("workspace") == self.workspace_id
+                and row.get("workspace") not in self.protected
                 and row.get("record") == self.record)
 
     def surfaces(self, state: dict[str, Any]) -> list[Any]:
@@ -100,7 +100,7 @@ def open_scratch_notes(state: Callable[[], dict[str, Any]],
     invoke("applications", NOTES_APP, {})
     while True:
         records = {row.get("record") for row in rows()
-                   if row.get("application") == NOTES_APP and row.get("room") == workspace_id}
+                   if row.get("application") == NOTES_APP and row.get("workspace") == workspace_id}
         if len(records) > 1:
             raise ScratchWorkspaceError("Notes in the scratch workspace publishes more than one record")
         if len(records) == 1 and isinstance(next(iter(records)), str) and next(iter(records)):

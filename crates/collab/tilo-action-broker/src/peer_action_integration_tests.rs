@@ -11,7 +11,7 @@ use tilo_actions::remote::{
 /// The root every device in these fixtures is certified under.
 const ROOT_SEED: u8 = 51;
 
-/// The device the fixture's room belongs to, as the engine's action plane
+/// The device the fixture's workspace belongs to, as the engine's action plane
 /// hands a request over: verified by the plane, which is this person.
 fn a_device(fixture: &LocalDirectoryFixture, seed: u8) -> Caller {
     Caller::authenticated(
@@ -366,7 +366,7 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
             assert!(matches!(replayed.status, ReceiptStatus::Failed { .. }));
             assert!(fixture.invocation_rx.try_recv().is_err());
             let _ = silent_wire;
-            // Restart on the same journal and room tree.
+            // Restart on the same journal and workspace tree.
             let gone = Arc::downgrade(&fixture.state);
             drop(door);
             drop(fixture);
@@ -454,22 +454,24 @@ fn a_recording_publisher_cannot_advertise_a_durable_invocation_host() {
             .expect("secure broker fixture root");
     }
     let mut tree = WorkspaceTree::default();
-    let mut room = crate::test_support::Workspace::new(
+    let mut published = crate::test_support::Workspace::new(
         crate::test_support::WorkspaceId::from_u128(71),
         "Explicit native peer",
     );
-    room.set_owner(person_id_for_root(
+    published.set_owner(person_id_for_root(
         SigningKey::from_bytes(&[ROOT_SEED; 32])
             .verifying_key()
             .to_bytes(),
     ));
-    let workspace_id = uuid::Uuid::parse_str(&room.id().to_string()).unwrap();
-    tree.workspaces.push(room);
+    let workspace_id = uuid::Uuid::parse_str(&published.id().to_string()).unwrap();
+    tree.workspaces.push(published);
     tree.persist_path = Some(root.path().join("must-not-be-used/state.json"));
     let journal_root = root.path().join("explicit-journal");
     let config = crate::NativePeerBrokerConfig {
         journal_root: journal_root.clone(),
-        certificate_authority: Arc::new(RecordingAuthority { room: workspace_id }),
+        certificate_authority: Arc::new(RecordingAuthority {
+            workspace: workspace_id,
+        }),
     };
     let sink = Arc::new(RecordingSink::default());
     let broker = crate::collab_broker::spawn_native_peer(
@@ -493,16 +495,16 @@ fn a_recording_publisher_cannot_advertise_a_durable_invocation_host() {
 }
 
 struct RecordingAuthority {
-    room: uuid::Uuid,
+    workspace: uuid::Uuid,
 }
 
 impl crate::certificate_authority::CertificateAuthority for RecordingAuthority {
     fn authorize(
         &self,
-        room: uuid::Uuid,
+        workspace: uuid::Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        if room != self.room
+        if workspace != self.workspace
             || certificate.user_public_key
                 != SigningKey::from_bytes(&[ROOT_SEED; 32])
                     .verifying_key()

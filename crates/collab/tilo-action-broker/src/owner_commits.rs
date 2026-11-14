@@ -73,7 +73,7 @@ impl OwnerWrites {
 
 impl OwnerCommitService for NativeOwnerCommits {
     fn requires_workspace(&self, workspace: &str) -> bool {
-        WorkspaceId::parse(workspace).is_some_and(|room| self.custody.commits_documents(room))
+        WorkspaceId::parse(workspace).is_some_and(|id| self.custody.commits_documents(id))
     }
     /// A held workspace's effect receipts are this device's own to record in
     /// it, whichever model its records follow.
@@ -107,12 +107,12 @@ impl OwnerCommitService for NativeOwnerCommits {
             let owner = custody
                 .resolve_owner()
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
-            let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
+            let id = WorkspaceId::parse(&request.workspace).ok_or("invalid native workspace")?;
             // A receipt is this device's own, recorded in its person's slice
             // of the workspace and published as its own change.
-            custody.check_custody(&owner, room)?;
+            custody.check_custody(&owner, id)?;
             let receipt = owner.commit_effect_receipt(&request, tilo_clock::wall())?;
-            custody.schedule_publication(room);
+            custody.schedule_publication(id);
             Ok(receipt)
         }))
     }
@@ -134,8 +134,8 @@ impl OwnerCommitService for NativeOwnerCommits {
             let owner = custody
                 .resolve_owner()
                 .map_err(|error| format!("native durable owner unavailable: {error}"))?;
-            let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
-            let signer = custody.signer(&owner, room)?;
+            let id = WorkspaceId::parse(&request.workspace).ok_or("invalid native workspace")?;
+            let signer = custody.signer(&owner, id)?;
             // The commit runs whole on this blocking thread, waiting here for the custody's
             // signatures.
             let (committed, receipt) = tokio::runtime::Handle::current().block_on(
@@ -150,7 +150,7 @@ impl OwnerCommitService for NativeOwnerCommits {
             }
             // What the owner committed leaves for the workspace's peers from
             // its custody, the one copy every write goes through.
-            custody.schedule_publication(room);
+            custody.schedule_publication(id);
             Ok((committed, receipt))
         }))
     }

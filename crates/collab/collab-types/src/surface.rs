@@ -149,7 +149,7 @@ impl ReceiptSurface for KindSurface {
     }
 }
 
-/// Reads content by lowercase hex hash, from the record's room and app.
+/// Reads content by lowercase hex hash, from the record's workspace and app.
 type ReadContent = dyn Fn(&Record<'_>, &str) -> Option<Vec<u8>> + Send + Sync;
 
 /// Surfaces read from a content store by the hash each op names, parsed
@@ -161,7 +161,7 @@ pub struct ContentSurfaces {
 
 impl ContentSurfaces {
     /// Surfaces whose bytes `read` returns by lowercase hex hash, wherever
-    /// the record's room and app keep content.
+    /// the record's workspace and app keep content.
     pub fn new(
         read: impl Fn(&Record<'_>, &str) -> Option<Vec<u8>> + Send + Sync + 'static,
     ) -> Self {

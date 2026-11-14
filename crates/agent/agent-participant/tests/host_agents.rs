@@ -198,7 +198,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
                 serde_json::json!({
                     "grant": grant,
                     "task": "Create a new note titled \"Groceries\"",
-                    "room": WORKSPACE,
+                    "workspace": WORKSPACE,
                 })
                 .as_object()
                 .unwrap()
@@ -560,7 +560,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
                 serde_json::json!({
                     "grant": grant,
                     "task": "Read the cells of the sheet \"Sheet1\"",
-                    "room": WORKSPACE,
+                    "workspace": WORKSPACE,
                 })
                 .as_object()
                 .unwrap()
@@ -716,7 +716,7 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
                 serde_json::json!({
                     "grant": grant,
                     "task": "Add a new sheet named \"Budget\"",
-                    "room": WORKSPACE,
+                    "workspace": WORKSPACE,
                 })
                 .as_object()
                 .unwrap()
@@ -811,7 +811,7 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
             SUPERVISOR_RESOURCE,
             SPAWN_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({"grant": grant, "task": "Add a new sheet named \"Budget\"", "room": WORKSPACE})
+                serde_json::json!({"grant": grant, "task": "Add a new sheet named \"Budget\"", "workspace": WORKSPACE})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -972,7 +972,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
             SUPERVISOR_RESOURCE,
             SPAWN_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({ "grant": grant, "task": shelve_then_remove(), "room": WORKSPACE })
+                serde_json::json!({ "grant": grant, "task": shelve_then_remove(), "workspace": WORKSPACE })
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -1154,7 +1154,7 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
     )]);
     let spawn = |grant: &str, task: &serde_json::Value| {
         InvokeArgument::Json(
-            serde_json::json!({"grant": grant, "task": task.to_string(), "room": WORKSPACE})
+            serde_json::json!({"grant": grant, "task": task.to_string(), "workspace": WORKSPACE})
                 .as_object()
                 .unwrap()
                 .clone(),

@@ -16,7 +16,7 @@ APP = "so.tilo.terminal"
 
 
 def identity(row):
-    return tuple(row.get(k) for k in ("application", "room", "record", "resource"))
+    return tuple(row.get(k) for k in ("application", "workspace", "record", "resource"))
 
 
 def terminal_actions(vm):

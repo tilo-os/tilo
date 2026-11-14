@@ -1,7 +1,7 @@
 //! The check every batch an app sends passes before the UI host touches a widget.
 //!
-//! The UI host builds every window of a room from what each app sends. A batch that makes it
-//! build a widget wrongly, or work without bound, takes the room's windows down with it. So
+//! The UI host builds every window of a workspace from what each app sends. A batch that makes it
+//! build a widget wrongly, or work without bound, takes the workspace's windows down with it. So
 //! every message is checked, once, in the host's own copy:
 //!
 //! - **Valid by type.** A described component's node (`ui.ListRow`) names a component of the

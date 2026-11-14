@@ -42,7 +42,7 @@ pub(super) struct Guest {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct Held {
-    pub room: String,
+    pub workspace: String,
     pub name: String,
     pub host: String,
     pub hosted_here: bool,
@@ -72,12 +72,12 @@ fn waits_for_host(guest: Option<&Guest>, expected: &BTreeMap<String, Vec<Held>>)
         return false;
     };
     let mut waits = false;
-    for (slot, rooms) in expected {
+    for (slot, held_workspaces) in expected {
         let Some(Some(held)) = guest.slots.get(slot) else {
             return false;
         };
-        for want in rooms {
-            match held.iter().find(|h| h.room == want.room) {
+        for want in held_workspaces {
+            match held.iter().find(|h| h.workspace == want.workspace) {
                 None => return false,
                 Some(h) => waits |= h.awaiting,
             }
@@ -93,12 +93,12 @@ fn pending(guest: Option<&Guest>, expected: &BTreeMap<String, Vec<Held>>) -> Opt
     if !guest.recorded {
         return Some("it has not given itself a new device key yet".into());
     }
-    for (slot, rooms) in expected {
+    for (slot, held_workspaces) in expected {
         let Some(Some(held)) = guest.slots.get(slot) else {
             return Some(format!("its session in slot {slot} does not answer yet"));
         };
-        for want in rooms {
-            match held.iter().find(|h| h.room == want.room) {
+        for want in held_workspaces {
+            match held.iter().find(|h| h.workspace == want.workspace) {
                 None => {
                     return Some(format!(
                         "its session in slot {slot} does not hold {} yet",
@@ -641,17 +641,17 @@ pub(super) fn held_of(answer: &Value) -> Vec<Held> {
         .into_iter()
         .flatten()
         .filter_map(|row| {
-            let room = row.get("workspace")?.as_str()?.to_owned();
+            let workspace = row.get("workspace")?.as_str()?.to_owned();
             let text = |key: &str| row.get(key).and_then(Value::as_str).unwrap_or_default();
             let flag = |key: &str| row.get(key).and_then(Value::as_bool).unwrap_or(false);
             Some(Held {
                 name: Some(text("name"))
                     .filter(|name| !name.is_empty())
-                    .map_or_else(|| room.clone(), str::to_owned),
+                    .map_or_else(|| workspace.clone(), str::to_owned),
                 host: text("host").to_owned(),
                 hosted_here: flag("hosted_here"),
                 awaiting: flag("awaiting_host"),
-                room,
+                workspace,
             })
         })
         .collect()
