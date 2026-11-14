@@ -31,10 +31,12 @@ fn without_a_network_service_the_page_leaves_out_what_only_it_fills() {
         1,
         "the page names the missing service once: {lines:#?}"
     );
-    assert!(
-        lines.contains(&t("net-usage")),
-        "data usage stays: {lines:#?}"
-    );
+    for label in [t("net-usage"), t("net-advanced")] {
+        assert!(
+            !lines.contains(&label),
+            "`{label}` has nothing behind it without a network service: {lines:#?}"
+        );
+    }
 }
 
 #[test]

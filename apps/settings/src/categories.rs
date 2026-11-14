@@ -132,10 +132,6 @@ impl Category {
     #[cfg(not(feature = "tilo-os"))]
     pub const DEFAULT: Category = Category::Appearance;
 
-    pub fn is_built(self) -> bool {
-        Self::ALL.contains(&self)
-    }
-
     pub fn section(self) -> Section {
         match self {
             Category::Network | Category::Bluetooth | Category::DeviceMesh => Section::Connectivity,

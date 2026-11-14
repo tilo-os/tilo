@@ -54,11 +54,6 @@ impl SecretAsks {
         queue.asks.push(Ask::Open(key, Box::new(prompt)));
     }
 
-    #[must_use]
-    pub fn is_asking(&self, key: &str) -> bool {
-        self.0.borrow().open.as_deref() == Some(key)
-    }
-
     pub fn take_answer(&self, key: &str) -> Option<PromptOutcome> {
         let mut queue = self.0.borrow_mut();
         let at = queue.answers.iter().position(|(asked, _)| asked == key)?;

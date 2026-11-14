@@ -198,17 +198,13 @@ impl SettingsApp {
     }
 
     pub fn opener(&self) -> impl FnMut(&str) + 'static {
-        let selection = self.sidebar_selection.clone();
-        let setting_request = self.setting_request.clone();
+        let app = self.me.clone();
         move |anchor| {
+            let Some(app) = app.upgrade() else { return };
             if let Some(category) = crate::effects::pane_of_row(anchor) {
-                selection.set(Some(category));
-            } else if let Some((category, setting)) = anchor
-                .strip_prefix(crate::effects::SETTING_ANCHOR)
-                .and_then(setting_and_pane)
-            {
-                setting_request.set(Some(setting));
-                selection.set(Some(category));
+                app.request_pane(category);
+            } else if let Some(setting) = anchor.strip_prefix(crate::effects::SETTING_ANCHOR) {
+                let _ = app.request_setting(setting);
             }
         }
     }

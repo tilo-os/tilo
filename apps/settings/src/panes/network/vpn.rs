@@ -11,7 +11,7 @@ use os_actions::network_settings::{
     MAX_VPN_CONFIG_BYTES, VpnPlugin, VpnProfilePatch, VpnProfileSettings, WireGuardTunnel,
 };
 use ui::LocalState;
-use ui::framework::{Actions, EffectAnswer, EffectCx, LiveRow};
+use ui::framework::{EffectAnswer, EffectCx, LiveRow};
 use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, ButtonRole, ListRow, NumberInput, TextInput, Toggle};
@@ -308,19 +308,6 @@ pub(crate) fn answer(
     Ok(super::answer_begun(app, begun, cx))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct VpnEntry {
-    pub id: String,
-    pub name: String,
-    pub detail: String,
-    pub active: bool,
-}
-
-pub(crate) trait VpnEntries {
-    fn entries(&self) -> Vec<VpnEntry>;
-    fn bind(&self, actions: &Actions<Settings>, entry: &VpnEntry, toggle: Toggle) -> Toggle;
-}
-
 struct WireguardForm {
     name: LocalState<String>,
     address: LocalState<String>,
@@ -388,7 +375,6 @@ pub(crate) struct VpnState {
     plugin: PluginForm,
     import: Option<(ui::portal::PortalChannel, Option<&'static str>)>,
     export: Option<(ui::portal::OpenFileChannel, String)>,
-    entries: Option<Box<dyn VpnEntries>>,
     wanted: Option<String>,
     pub(super) devices: devices::DeviceVpnState,
 }
@@ -509,12 +495,6 @@ impl VpnState {
 }
 
 impl NetworkModel {
-    #[allow(dead_code, reason = "the seam another source of exits plugs into")]
-    pub(crate) fn set_vpn_entries(&mut self, entries: Box<dyn VpnEntries>) {
-        self.vpn.entries = Some(entries);
-        self.changed = true;
-    }
-
     fn vpn(&self, connection: &str) -> Result<VpnInfo, String> {
         self.vpns
             .iter()
@@ -1440,26 +1420,6 @@ impl Page<'_> {
             })
             .collect();
         lines.extend(self.through_lines());
-        if let Some(source) = &self.vpn.entries {
-            lines.extend(source.entries().into_iter().map(|entry| {
-                let toggle = source.bind(
-                    &self.actions,
-                    &entry,
-                    Toggle::from_state(&LocalState::new(entry.active))
-                        .with_id(&format!("settings.network.vpn.entry.{}", entry.id))
-                        .with_accessible_name(&entry.name),
-                );
-                Box::new(
-                    ListRow::new(
-                        format!("settings.network.vpn.entry.{}", entry.id),
-                        entry.name,
-                    )
-                    .icon(Icon::MonitorSmartphone)
-                    .secondary(entry.detail)
-                    .trailing(Box::new(toggle)),
-                ) as El
-            }));
-        }
         if lines.is_empty() && self.read_errors.vpns.is_none() {
             content.push(note(&t("net-vpn-none")));
         }

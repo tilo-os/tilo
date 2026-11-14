@@ -1522,6 +1522,7 @@ impl NetworkArea {
                     NetworkEffect::SET_AIRPLANE_MODE.id,
                     NetworkEffect::SET_WIRED.id,
                     NetworkEffect::REFRESH_NETWORKS.id,
+                    NetworkEffect::SHOW_ADVANCED_NETWORK_SETTINGS.id,
                 ],
                 "no_service",
                 &t("net-no-service"),

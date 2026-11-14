@@ -260,7 +260,7 @@ impl Page<'_> {
         if cards.is_empty() {
             cards.push(self.no_network_card());
         }
-        cards.push(self.controls_card());
+        cards.extend(self.controls_card());
         cards
     }
 
@@ -432,7 +432,7 @@ impl Page<'_> {
         })
     }
 
-    fn controls_card(&self) -> SettingsSection {
+    fn controls_card(&self) -> Option<SettingsSection> {
         let mut lines: Vec<El> = Vec::new();
         if !self.network_absent() {
             lines.push(Box::new(self.drill_row(
@@ -478,20 +478,31 @@ impl Page<'_> {
                     })),
             ));
         }
-        lines.push(Box::new(self.drill_row(
-            "settings.network.usage",
-            Icon::BarChart,
-            &t("net-usage"),
-            self.usage_summary(),
-            NetworkEffect::ShowDataUsage,
-        )));
-        lines.push(Box::new(self.drill_row(
-            "settings.network.advanced",
-            Icon::Settings2,
-            &t("net-advanced"),
-            None,
-            NetworkEffect::ShowAdvancedNetworkSettings,
-        )));
+        // Without a network service, only data counted before stays to
+        // show, and the advanced page sets up and checks what that service
+        // runs.
+        let usage = self.usage_summary();
+        if usage.is_some() || !self.network_absent() {
+            lines.push(Box::new(self.drill_row(
+                "settings.network.usage",
+                Icon::BarChart,
+                &t("net-usage"),
+                usage,
+                NetworkEffect::ShowDataUsage,
+            )));
+        }
+        if !self.network_absent() {
+            lines.push(Box::new(self.drill_row(
+                "settings.network.advanced",
+                Icon::Settings2,
+                &t("net-advanced"),
+                None,
+                NetworkEffect::ShowAdvancedNetworkSettings,
+            )));
+        }
+        if lines.is_empty() {
+            return None;
+        }
         let mut content = Vec::new();
         if !self.network_absent()
             && let Some(error) = &self.read_errors.radios
@@ -502,7 +513,7 @@ impl Page<'_> {
             ))));
         }
         content.push(block(Box::new(ui::widget::Section::new(lines))));
-        provider_settings_ui::widgets::untitled(rows(content))
+        Some(provider_settings_ui::widgets::untitled(rows(content)))
     }
 
     /// The wired connection on the first page: its switch (which

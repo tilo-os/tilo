@@ -355,7 +355,7 @@ fn pane_sections_stack_on_the_s6_step_and_never_touch() {
     );
     for (category, viewport) in [
         (Category::About, WIDE),
-        (Category::Network, WIDE),
+        (Category::Power, WIDE),
         (Category::Users, WIDE),
         (Category::RegionFormats, NARROW),
     ] {
