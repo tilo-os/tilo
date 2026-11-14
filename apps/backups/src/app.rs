@@ -1463,10 +1463,15 @@ impl ui::widget::Decorator for BackupsWindow {
     type Inner = NavShell;
 
     // While the restore sheet is open it is the window's one live child: what its controls
-    // run reaches it, not the shell behind its scrim.
+    // run reaches it, not the shell behind its scrim. Its resources are the dialog's own to
+    // publish, so the window leaves them to the dialog rather than publishing them twice.
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         match &self.restore {
-            Some(dialog) => dialog.provide(request),
+            Some(dialog) => {
+                if !request.wants::<dyn ui::resources::PublishesResources>() {
+                    dialog.provide(request);
+                }
+            }
             None => self.shell.provide(request),
         }
     }
