@@ -82,7 +82,7 @@ pub struct OutlineArgs {
     #[arg(long)]
     url: String,
     /// A file holding the API token; --token-env reads it from TILO_IMPORT_TOKEN.
-    #[arg(long, conflicts_with = "token")]
+    #[arg(long, conflicts_with = "token_env")]
     token_file: Option<PathBuf>,
     /// Read the API token from TILO_IMPORT_TOKEN instead.
     #[arg(long)]
@@ -95,7 +95,7 @@ pub struct OutlineArgs {
 #[derive(Args)]
 pub struct TokenArgs {
     /// A file holding the API token; --token-env reads it from TILO_IMPORT_TOKEN.
-    #[arg(long, conflicts_with = "token")]
+    #[arg(long, conflicts_with = "token_env")]
     token_file: Option<PathBuf>,
     /// Read the API token from TILO_IMPORT_TOKEN instead.
     #[arg(long)]
@@ -111,7 +111,7 @@ pub struct ForgejoArgs {
     #[arg(long)]
     url: String,
     /// A file holding the API token; --token-env reads it from TILO_IMPORT_TOKEN.
-    #[arg(long, conflicts_with = "token")]
+    #[arg(long, conflicts_with = "token_env")]
     token_file: Option<PathBuf>,
     /// Read the API token from TILO_IMPORT_TOKEN instead.
     #[arg(long)]
