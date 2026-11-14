@@ -1052,9 +1052,15 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     session.step(Duration::from_millis(1)).unwrap();
     session.compositor().input(key(56, false)).unwrap();
     until(&mut session, |session| here(session) == "none");
-    // The panel goes down on the frame after the reading moves, as it came up.
+    // The panel goes down on the frame after the reading moves, as it came up: the desk is kept
+    // once a frame is drawn without it.
     until(&mut session, |session| !says(session, "Go there"));
-    let rested = keep(&mut session, "shell-after-switcher");
+    let rested =
+        crate::common::wait_for(&mut session, "the switcher to leave the desk", |session| {
+            let shot = session.compositor().screenshot("HEADLESS-1").ok()?;
+            (changed(&held, &shot) > drawn / 2).then_some(shot)
+        });
+    save(&rested, "shell-after-switcher");
     assert!(
         changed(&held, &rested) > drawn / 2,
         "letting Alt go takes the switcher down again"
