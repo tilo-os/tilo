@@ -396,6 +396,129 @@ fn a_split_from_the_analysis_cache_writes_what_emitting_writes() -> Result<()> {
     result
 }
 
+/// A split that takes the plan an earlier one made (plan.rs) writes exactly
+/// what a split that makes it again writes: for the module it was filled
+/// from, after a change to one body's code alone (the plan holds, that body's
+/// module is emitted again), and after a change to what a body computes (the
+/// plan is made again).
+#[test]
+fn a_split_from_the_plan_cache_writes_what_emitting_writes() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    // `checksum` mixes its sum with a byte by `+` instead of `^`: it calls
+    // what it called and holds the addresses it held, so the plan it was part
+    // of is unchanged, and the start module that holds it is not.
+    let edited = source.replace(
+        "sum.rotate_left(5) ^ u32::from(*byte)",
+        "sum.rotate_left(5).wrapping_add(u32::from(*byte))",
+    );
+    assert_ne!(
+        source, edited,
+        "the fixture no longer mixes a byte with `^`"
+    );
+    // `double` multiplies by 3 instead of 2: one immediate more, and a plan
+    // that is another plan.
+    let moved = source.replace("x.wrapping_mul(2)", "x.wrapping_mul(3)");
+    assert_ne!(source, moved, "the fixture no longer doubles by 2");
+    // Built at one path: the module's static data holds the source's path.
+    let before = build_fixture("plan-cache")?.linked;
+    let after = build_fixture_from("plan-cache", &edited)?.linked;
+    let other = build_fixture_from("plan-cache", &moved)?.linked;
+    let (before_bound, after_bound, other_bound) = (
+        without_link_sections(&before)?,
+        without_link_sections(&after)?,
+        without_link_sections(&other)?,
+    );
+    let dir = scratch("plan-cache");
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let plans = crate::plan::PlanCache::at(&dir);
+        let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            Ok(written_modules(
+                Splitter::new(linked, bound)?.emit_with(None)?,
+            ))
+        };
+        // Both caches in one directory, as a local build gives them.
+        let cached = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            let analysis = AnalysisCache::at(&dir);
+            let mut splitter = Splitter::prepare(linked, bound, Some(&analysis))?;
+            splitter.finish(Some(&plans))?;
+            Ok(written_modules(
+                splitter.emit_with(Some(&EmitCache::at(&dir)?))?,
+            ))
+        };
+        let first = cached(&before, &before_bound)?;
+        assert_eq!(plans.taken(), 0, "an empty cache holds no plan");
+        assert!(
+            first == fresh(&before, &before_bound)?,
+            "the split that filled the plan wrote other modules than emitting does"
+        );
+        let again = cached(&before, &before_bound)?;
+        assert_eq!(plans.taken(), 1, "the same module read no plan back");
+        assert!(
+            again == first,
+            "the module read back from the plan differs from the one emitted"
+        );
+        let edited = cached(&after, &after_bound)?;
+        assert_eq!(
+            plans.taken(),
+            2,
+            "a change that moved no answer made the plan again"
+        );
+        assert!(
+            edited == fresh(&after, &after_bound)?,
+            "after a change, the plan gave other modules than making it does"
+        );
+        assert!(edited != first, "the change reached no module");
+        let moved = cached(&other, &other_bound)?;
+        assert_eq!(
+            plans.taken(),
+            2,
+            "a change to what a body computes read the plan back"
+        );
+        assert!(
+            moved == fresh(&other, &other_bound)?,
+            "a changed plan gave other modules than making it does"
+        );
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// A local variable's name is no part of what a split writes: the modules of
+/// a module whose only change is one are the same bytes.
+#[test]
+fn a_local_variables_name_reaches_no_module() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    let renamed = source
+        .replace(
+            "let listed = START_TABLE[(i % 2) as usize];",
+            "let table_slice = START_TABLE[(i % 2) as usize];",
+        )
+        .replace(
+            "u32::from(listed[at % listed.len()])",
+            "u32::from(table_slice[at % table_slice.len()])",
+        );
+    assert_ne!(
+        source, renamed,
+        "the fixture no longer names a local `listed`"
+    );
+    let before = build_fixture("local-name")?.linked;
+    let after = build_fixture_from("local-name", &renamed)?.linked;
+    let (before_bound, after_bound) = (
+        without_link_sections(&before)?,
+        without_link_sections(&after)?,
+    );
+    let split = |linked: &[u8], bound: &[u8]| -> Result<_> {
+        Ok(written_modules(
+            Splitter::new(linked, bound)?.emit_with(None)?,
+        ))
+    };
+    let (one, two) = (split(&before, &before_bound)?, split(&after, &after_bound)?);
+    eprintln!("modules equal: {}", one == two);
+    Ok(())
+}
+
 /// A change to the module's static data alone leaves every module's code as
 /// it was, so a split reads the modules that do not carry those bytes back
 /// instead of emitting them again, and writes what emitting them writes.

@@ -128,6 +128,18 @@ pub(crate) struct DataPlan {
     removed: Vec<Range<u32>>,
 }
 
+impl DataPlan {
+    /// The plan `moved` and `removed` make, as one an earlier split kept
+    /// (cache.rs) holds it.
+    pub(crate) fn from_ranges(moved: Vec<Vec<(u32, Vec<u8>)>>, removed: Vec<Range<u32>>) -> Self {
+        Self { moved, removed }
+    }
+
+    pub(crate) fn removed(&self) -> &[Range<u32>] {
+        &self.removed
+    }
+}
+
 /// One claimant of static data: the start module, or a split module or
 /// shared chunk by its index in [`DataPlan::moved`].
 pub(crate) enum Claimant {

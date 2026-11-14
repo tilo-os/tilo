@@ -34,6 +34,8 @@ mod cache;
 mod data;
 mod dedupe;
 mod parts;
+mod plan;
+mod relocations;
 mod split;
 #[cfg(test)]
 mod tests;
@@ -75,13 +77,12 @@ fn main() -> Result<()> {
     let bindgened = std::fs::read(bindgened).with_context(|| format!("reading {bindgened}"))?;
     let out = PathBuf::from(out);
 
-    // What an earlier split of this module read of its bodies, and where
-    // this one keeps its own (analysis.rs).
+    // What an earlier split of this module read of its bodies and decided
+    // from them, and where this one keeps its own (analysis.rs, plan.rs).
     let analysis = analysis::AnalysisCache::from_env();
-    let splitter = match &analysis {
-        Some(cache) => split::Splitter::with_analysis(&original, &bindgened, Some(cache))?,
-        None => split::Splitter::new(&original, &bindgened)?,
-    };
+    let plans = plan::PlanCache::from_env();
+    let mut splitter = split::Splitter::prepare(&original, &bindgened, analysis.as_ref())?;
+    splitter.finish(plans.as_ref())?;
     let outputs = splitter.emit()?;
 
     let main_file = format!("{name}_bg.wasm");

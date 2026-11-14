@@ -18,6 +18,8 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 
+use crate::data::DataPlan;
+
 /// Raised whenever what the emission writes changes, so a directory a
 /// different splitter filled is never read as this one's.
 const VERSION: &str = "wasm-split emit cache 1";
@@ -116,6 +118,137 @@ impl EmitCache {
         }
         Ok(())
     }
+}
+
+/// The start module's emission (its bytes and the static data it writes)
+/// kept by what that emission reads: the plan, and the code of every body the
+/// start module keeps.
+const START_MAGIC: &[u8; 8] = b"WSSSTART";
+
+/// How many start modules the directory keeps: a module alternates between a
+/// few states (a change and its revert, two branches), and one is tens of
+/// megabytes.
+const START_KEEP: usize = 4;
+
+impl EmitCache {
+    fn start_path(&self, key: &str) -> PathBuf {
+        self.dir.join(format!("start-{key}.bin"))
+    }
+
+    /// The start module emitted from `key` before, with the static data it
+    /// writes, if this cache kept them whole. A file a stopped write or a copy
+    /// left empty is no module: it is dropped here, and the caller emits it
+    /// again.
+    pub fn get_start(&self, key: &str) -> Option<(Vec<u8>, DataPlan)> {
+        let bytes = std::fs::read(self.start_path(key)).ok()?;
+        let read = read_start(&bytes)?;
+        // An empty module is no module: a stopped copy left it.
+        if read.0.is_empty() {
+            std::fs::remove_file(self.start_path(key)).ok();
+            return None;
+        }
+        Some(read)
+    }
+
+    /// Keep `main` and `data` as the start module emitted from `key`.
+    pub fn put_start(&self, key: &str, main: &[u8], data: &DataPlan) -> Result<()> {
+        let mut out = Vec::with_capacity(main.len() + 4096);
+        out.extend_from_slice(START_MAGIC);
+        out.extend_from_slice(&(data.moved.len() as u64).to_le_bytes());
+        for runs in &data.moved {
+            out.extend_from_slice(&(runs.len() as u64).to_le_bytes());
+            for (address, bytes) in runs {
+                out.extend_from_slice(&address.to_le_bytes());
+                out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+                out.extend_from_slice(bytes);
+            }
+        }
+        out.extend_from_slice(&(data.removed().len() as u64).to_le_bytes());
+        for range in data.removed() {
+            out.extend_from_slice(&range.start.to_le_bytes());
+            out.extend_from_slice(&range.end.to_le_bytes());
+        }
+        out.extend_from_slice(main);
+        std::fs::create_dir_all(&self.dir)
+            .with_context(|| format!("creating {}", self.dir.display()))?;
+        let path = self.start_path(key);
+        let partial = self
+            .dir
+            .join(format!(".start-{key}.{}", std::process::id()));
+        std::fs::write(&partial, &out).with_context(|| format!("writing {}", partial.display()))?;
+        std::fs::rename(&partial, &path).with_context(|| format!("writing {}", path.display()))?;
+        self.prune_start(key);
+        Ok(())
+    }
+
+    /// Drop the start modules this run did not use, past the last few.
+    fn prune_start(&self, used: &str) {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let mut kept = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Some(key) = name
+                .strip_prefix("start-")
+                .and_then(|rest| rest.strip_suffix(".bin"))
+            else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            let when = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            kept.push((when, key.to_owned()));
+        }
+        kept.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
+        for (_, key) in kept
+            .into_iter()
+            .filter(|(_, key)| key != used)
+            .skip(START_KEEP - 1)
+        {
+            std::fs::remove_file(self.start_path(&key)).ok();
+        }
+    }
+}
+
+/// The start module a cache file holds, and the data it writes.
+fn read_start(bytes: &[u8]) -> Option<(Vec<u8>, DataPlan)> {
+    let mut at = 0usize;
+    let take = |len: usize, at: &mut usize| -> Option<&[u8]> {
+        let slice = bytes.get(*at..at.checked_add(len)?)?;
+        *at += len;
+        Some(slice)
+    };
+    if take(START_MAGIC.len(), &mut at)? != START_MAGIC {
+        return None;
+    }
+    let count =
+        |at: &mut usize| -> Option<u64> { Some(u64::from_le_bytes(take(8, at)?.try_into().ok()?)) };
+    let mut moved = Vec::new();
+    for _ in 0..count(&mut at)? {
+        let mut runs = Vec::new();
+        for _ in 0..count(&mut at)? {
+            let address = u32::from_le_bytes(take(4, &mut at)?.try_into().ok()?);
+            let len = count(&mut at)? as usize;
+            runs.push((address, take(len, &mut at)?.to_vec()));
+        }
+        moved.push(runs);
+    }
+    let mut removed = Vec::new();
+    for _ in 0..count(&mut at)? {
+        let start = u32::from_le_bytes(take(4, &mut at)?.try_into().ok()?);
+        let end = u32::from_le_bytes(take(4, &mut at)?.try_into().ok()?);
+        removed.push(start..end);
+    }
+    let main = bytes.get(at..)?.to_vec();
+    Some((main, DataPlan::from_ranges(moved, removed)))
 }
 
 fn remove(path: &Path) -> Result<()> {

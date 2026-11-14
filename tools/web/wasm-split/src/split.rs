@@ -4,6 +4,8 @@
 use crate::analysis::{Analysis, AnalysisCache, Body, STRUCTURE_LEN, hash_body};
 use crate::cache::{EmitCache, Key};
 use crate::data::{Claimant, DataLayout, DataPlan};
+use crate::plan::{Plan, PlanCache};
+use crate::relocations::ModuleWithRelocations;
 use anyhow::{Context, Result};
 use itertools::Itertools;
 use rayon::prelude::{
@@ -21,10 +23,7 @@ use walrus::{
     FunctionKind, GlobalKind, ImportId, ImportKind, Module, ModuleConfig, RefType, TableId, TypeId,
     ir::{self, Visitor, dfs_in_order},
 };
-use wasmparser::{
-    BinaryReader, Linking, LinkingSectionReader, Payload, RelocSectionReader, RelocationEntry,
-    RelocationType, SymbolInfo,
-};
+use wasmparser::Payload;
 
 /// A parsed wasm module with additional metadata and functionality for splitting and patching.
 ///
@@ -53,6 +52,9 @@ pub struct Splitter<'a> {
     /// take, before the shared functions' slots.
     entry_slots: usize,
     chunks: Vec<HashSet<Node>>,
+    /// What each chunk's functions call outside it, by chunk index: read off
+    /// the call graph when the chunks are made, so an emission needs none.
+    chunk_imports: Vec<HashSet<Node>>,
     main_graph: HashSet<Node>,
     call_graph: HashMap<Node, HashSet<Node>>,
     parent_graph: HashMap<Node, HashSet<Node>>,
@@ -66,6 +68,11 @@ pub struct Splitter<'a> {
     bodies: Vec<Body>,
     /// How many of `bodies` a run before this one had read.
     bodies_reused: usize,
+    /// What the plan every module is taken from was made from (plan.rs).
+    plan_key: String,
+    /// The main module's symbols that nothing it keeps reaches: read off the
+    /// call graph when the plan is made, so an emission needs none.
+    planned_unused: Option<HashSet<Node>>,
 }
 
 /// What every emission's key starts from (`Splitter::emit_key_base`), and
@@ -196,6 +203,7 @@ impl<'a> Splitter<'a> {
     ///
     /// It's important to compile the wasm with --emit-relocs such that the relocations are available
     /// to construct the callgraph.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(original: &'a [u8], bindgened: &'a [u8]) -> Result<Self> {
         Self::with_analysis(original, bindgened, None)
     }
@@ -203,7 +211,22 @@ impl<'a> Splitter<'a> {
     /// [`Self::new`], reading back from `cache` what an earlier run of this
     /// module's bodies read of them, and keeping this run's there
     /// (analysis.rs).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_analysis(
+        original: &'a [u8],
+        bindgened: &'a [u8],
+        cache: Option<&AnalysisCache>,
+    ) -> Result<Self> {
+        let mut splitter = Self::prepare(original, bindgened, cache)?;
+        splitter.finish(None)?;
+        Ok(splitter)
+    }
+
+    /// [`Self::with_analysis`], stopping once every body is read: what the
+    /// split's plan is made from is settled then ([`Self::plan_key`]), so a
+    /// run whose plan an earlier one kept (plan.rs) skips [`Self::finish`] —
+    /// the call graph, the shared code and everything read from them.
+    pub fn prepare(
         original: &'a [u8],
         bindgened: &'a [u8],
         cache: Option<&AnalysisCache>,
@@ -232,7 +255,7 @@ impl<'a> Splitter<'a> {
         // A body's answers are its code's, so the sections that are not code
         // are what says which bodies they belong to: the data section is one
         // module's own ranges, written from the plan.
-        hash_sections(&mut structure, bindgened, &sections_not_read(bindgened)?);
+        hash_sections(&mut structure, bindgened, &sections_not_read(bindgened)?)?;
         structure.add(&imported).add(&hashes.len());
         let structure = structure.finish();
         assert_eq!(structure.len(), STRUCTURE_LEN);
@@ -265,6 +288,7 @@ impl<'a> Splitter<'a> {
             fns_to_ids,
             main_graph: Default::default(),
             chunks: Default::default(),
+            chunk_imports: Default::default(),
             call_graph: Default::default(),
             parent_graph: Default::default(),
             shared_symbols: Default::default(),
@@ -272,14 +296,19 @@ impl<'a> Splitter<'a> {
             imported,
             bodies: Vec::new(),
             bodies_reused: bodies.len(),
+            plan_key: String::new(),
+            planned_unused: None,
         };
 
+        // The bodies first: everything after this reads their answers, so a
+        // run whose plan is kept reads them and then stops.
         let started = std::time::Instant::now();
-        module.build_call_graph(&hashes, bodies)?;
-        took("built the call graph", started);
+        module.walk_bodies(&hashes, bodies)?;
+        took("walked the bound functions' bodies", started);
+
         let started = std::time::Instant::now();
-        module.build_split_chunks()?;
-        took("grouped the shared code", started);
+        module.plan_key = crate::plan::key(&structure, original, &module.bodies)?;
+        took("read what the split's plan is made from", started);
 
         if let Some(cache) = cache {
             cache.store(&Analysis {
@@ -288,6 +317,117 @@ impl<'a> Splitter<'a> {
             })?;
         }
         Ok(module)
+    }
+
+    /// Take the call graph and the shared code from the bodies [`Self::prepare`]
+    /// read: what every module's emission is decided by. A plan an earlier
+    /// run made from the same things is read back instead of made again
+    /// (plan.rs); what each module then holds is settled against that
+    /// module's own key, so a body whose code changed is still emitted.
+    pub fn finish(&mut self, plans: Option<&PlanCache>) -> Result<()> {
+        if let Some(plans) = plans {
+            if let Some(plan) = plans.load(&self.plan_key) {
+                self.use_plan(plan);
+                eprintln!("wasm-split: the plan is the last split's: its graphs read back");
+                return Ok(());
+            }
+        }
+        let started = std::time::Instant::now();
+        self.build_call_graph()?;
+        took("built the call graph", started);
+        let started = std::time::Instant::now();
+        self.build_split_chunks()?;
+        took("grouped the shared code", started);
+        // What the start module keeps that nothing it reaches: the walk is
+        // the call graph's, and every emission of the start module reads it.
+        let started = std::time::Instant::now();
+        let mut unused = self.unused_main_symbols();
+        self.keep_referenced(&mut unused);
+        self.planned_unused = Some(unused);
+        took("found what the start module keeps", started);
+        if let Some(plans) = plans {
+            plans.store(&self.plan_key, &self.plan())?;
+        }
+        Ok(())
+    }
+
+    /// Everything a split decides before it writes a module, in the module's
+    /// index spaces (plan.rs).
+    fn plan(&self) -> Plan {
+        Plan {
+            main_graph: self
+                .main_graph
+                .iter()
+                .map(|node| self.plan_node(node))
+                .collect(),
+            reachable: self
+                .split_points
+                .iter()
+                .map(|split| {
+                    split
+                        .reachable_graph
+                        .iter()
+                        .map(|node| self.plan_node(node))
+                        .collect()
+                })
+                .collect(),
+            chunks: self
+                .chunks
+                .iter()
+                .map(|chunk| chunk.iter().map(|node| self.plan_node(node)).collect())
+                .collect(),
+            chunk_imports: self
+                .chunk_imports
+                .iter()
+                .map(|imports| imports.iter().map(|node| self.plan_node(node)).collect())
+                .collect(),
+            shared_symbols: self
+                .shared_symbols
+                .iter()
+                .map(|node| self.plan_node(node))
+                .collect(),
+            data_sizes: self.data_sizes.clone(),
+            unused: self
+                .planned_unused
+                .iter()
+                .flatten()
+                .map(|node| self.plan_node(node))
+                .collect(),
+        }
+    }
+
+    /// Take `plan` as this split's, as [`Self::plan`] would have made it.
+    fn use_plan(&mut self, plan: Plan) {
+        let ids = &self._ids_to_fns;
+        let node = |node| from_plan_node(ids, node);
+        self.main_graph = plan.main_graph.into_iter().map(node).collect();
+        for (split, reachable) in self.split_points.iter_mut().zip(plan.reachable) {
+            split.reachable_graph = reachable.into_iter().map(node).collect();
+        }
+        self.chunks = plan
+            .chunks
+            .into_iter()
+            .map(|chunk| chunk.into_iter().map(node).collect())
+            .collect();
+        self.chunk_imports = plan
+            .chunk_imports
+            .into_iter()
+            .map(|imports| imports.into_iter().map(node).collect())
+            .collect();
+        self.shared_symbols = plan.shared_symbols.into_iter().map(node).collect();
+        self.data_sizes = plan.data_sizes;
+        self.planned_unused = Some(plan.unused.into_iter().map(node).collect());
+    }
+
+    /// A node as a plan holds it: the function's index in the bound module,
+    /// or the data symbol's own.
+    fn plan_node(&self, node: &Node) -> crate::plan::Node {
+        match node {
+            Node::Function(id) => {
+                crate::plan::function_node(self.fns_to_ids.get(id).copied().unwrap_or(usize::MAX))
+            }
+            Node::DataSymbol(index) => crate::plan::data_node(*index),
+        }
     }
 
     /// Split the module into multiple modules at the boundaries of split points.
@@ -354,9 +494,32 @@ impl<'a> Splitter<'a> {
         let bodies_reused = self.bodies_reused;
 
         let started = std::time::Instant::now();
-        let (main, data) =
-            self.emit_main_module(&data_layout, &data_refs, data_claimants, &loaded)?;
-        let main = merged(main)?;
+        let start_key = self.start_key();
+        let held_start = cache.and_then(|cache| cache.get_start(&start_key));
+        let (main, data) = match held_start {
+            Some((bytes, data)) => {
+                eprintln!("wasm-split: the start module is the last split's: read back");
+                (
+                    SplitModule {
+                        module_name: "main".to_string(),
+                        component_name: None,
+                        bytes,
+                        relies_on_chunks: Default::default(),
+                        hash_id: None,
+                    },
+                    data,
+                )
+            }
+            None => {
+                let (main, data) =
+                    self.emit_main_module(&data_layout, &data_refs, data_claimants, &loaded)?;
+                let main = merged(main)?;
+                if let Some(cache) = cache {
+                    cache.put_start(&start_key, &main.bytes, &data)?;
+                }
+                (main, data)
+            }
+        };
         took("emitted the start module", started);
 
         // Each module being emitted holds a parse of its own; run only as
@@ -468,6 +631,35 @@ impl<'a> Splitter<'a> {
         })
     }
 
+    /// What the start module's emission was made from (cache.rs): the plan,
+    /// and the code of every body the start module keeps, which is every one
+    /// nothing it reaches prunes away.
+    fn start_key(&self) -> String {
+        let mut key = Key::new();
+        key.add(&"start").add(&self.plan_key);
+        let unused: HashSet<usize> = self
+            .planned_unused
+            .iter()
+            .flatten()
+            .filter_map(|node| match node {
+                Node::Function(id) => self
+                    .fns_to_ids
+                    .get(id)
+                    .copied()
+                    .and_then(|index| index.checked_sub(self.imported)),
+                Node::DataSymbol(_) => None,
+            })
+            .collect();
+        let kept: Vec<usize> = (0..self.bodies.len())
+            .filter(|index| !unused.contains(index))
+            .collect();
+        key.add(&kept.len());
+        for index in kept {
+            key.add(&index).add(&self.bodies[index].hash);
+        }
+        key.finish()
+    }
+
     /// What every module's emission reads alike (see cache.rs): the bound
     /// module but for its function bodies, the table slots the entries and
     /// the shared functions take, in order.
@@ -482,7 +674,7 @@ impl<'a> Splitter<'a> {
             &mut key,
             self.bindgened,
             &sections_not_read(self.bindgened)?,
-        );
+        )?;
         key.add(&self.split_points.len()).add(&self.entry_slots);
         let shared: Vec<_> = self
             .shared_symbols
@@ -580,9 +772,12 @@ impl<'a> Splitter<'a> {
     ) -> Result<(SplitModule, DataPlan)> {
         tracing::info!("Emitting main bundle split module");
 
-        // Perform some analysis of the module before we start messing with it
-        let mut unused_symbols = self.unused_main_symbols();
-        self.keep_referenced(&mut unused_symbols);
+        // The symbols nothing the start module keeps reaches, read off the
+        // call graph when the plan was made (see `Splitter::finish`).
+        let unused_symbols = self
+            .planned_unused
+            .clone()
+            .context("the start module's kept symbols are read before it is emitted")?;
 
         let mut out = std::mem::take(&mut self.source_module);
         let hole = self.make_dummy_func(&mut out);
@@ -764,26 +959,23 @@ impl<'a> Splitter<'a> {
         let unique_symbols = &self.chunks[idx];
 
         // What the chunk's functions call outside it: the start module's
-        // functions and other chunks', all reached through the table.
-        let symbols_to_import: HashSet<_> = unique_symbols
-            .iter()
-            .flat_map(|node| self.call_graph.get(node).into_iter().flatten())
-            .filter(|node| matches!(node, Node::Function(_)) && !unique_symbols.contains(node))
-            .copied()
-            .collect();
+        // functions and other chunks', all reached through the table. Read
+        // off the plan, whose chunks were made with it, so a split that takes
+        // its plan from an earlier run needs no call graph.
+        let symbols_to_import = &self.chunk_imports[idx];
 
         // The start module's functions it does not call.
         let symbols_to_delete: HashSet<_> = self
             .main_graph
-            .difference(&symbols_to_import)
+            .difference(symbols_to_import)
             .cloned()
             .collect();
 
-        let stops = self.replaced_or_deleted(&symbols_to_import, &symbols_to_delete);
+        let stops = self.replaced_or_deleted(symbols_to_import, &symbols_to_delete);
         let bodies = self.kept_bodies(unique_symbols.iter().copied(), &stops);
         SplitParts {
             unique_symbols: unique_symbols.clone(),
-            symbols_to_import,
+            symbols_to_import: symbols_to_import.clone(),
             symbols_to_delete,
             relies_on_chunks: HashSet::new(),
             bodies,
@@ -1541,6 +1733,20 @@ impl<'a> Splitter<'a> {
                 }
             }
         }
+        // What each chunk's functions call outside it: the start module's
+        // functions and other chunks', all reached through the table.
+        let mut chunk_imports = Vec::with_capacity(self.chunks.len());
+        for chunk in &self.chunks {
+            chunk_imports.push(
+                chunk
+                    .iter()
+                    .flat_map(|node| self.call_graph.get(node).into_iter().flatten())
+                    .filter(|node| matches!(node, Node::Function(_)) && !chunk.contains(node))
+                    .copied()
+                    .collect::<HashSet<Node>>(),
+            );
+        }
+        self.chunk_imports = chunk_imports;
         Ok(())
     }
 
@@ -1577,9 +1783,91 @@ impl<'a> Splitter<'a> {
             .collect()
     }
 
+    /// Read every one of the module's own functions' bodies: the functions it
+    /// calls and the immediates it holds.
+    ///
+    /// Each body is walked on its own, so every body is walked at once, and a
+    /// body an earlier run walked with the same bytes is read back instead
+    /// (analysis.rs): the answers are what that body's code says, whatever the
+    /// rest of the module holds.
+    fn walk_bodies(&mut self, hashes: &[u64], known: HashMap<usize, Body>) -> Result<()> {
+        let ids = &self._ids_to_fns;
+        let fns_to_ids = &self.fns_to_ids;
+        let module = &self.source_module;
+        let imported = self.imported;
+        let locals: Vec<FunctionId> = ids[imported..].to_vec();
+        self.bodies = locals
+            .par_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                if let Some(body) = known.get(&index) {
+                    return body.clone();
+                }
+                let FunctionKind::Local(local) = &module.funcs.get(*id).kind else {
+                    unreachable!("a module's own functions are its local ones")
+                };
+                let mut found = Vec::new();
+                let mut values = Vec::new();
+                struct Walk<'a> {
+                    found: &'a mut Vec<FunctionId>,
+                    values: &'a mut Vec<u32>,
+                }
+                impl<'i> Visitor<'i> for Walk<'_> {
+                    fn visit_function_id(&mut self, function: &walrus::FunctionId) {
+                        self.found.push(*function);
+                    }
+                    // The immediates that can name an address, as data.rs
+                    // reads them from a bound body.
+                    fn visit_instr(&mut self, instr: &'i ir::Instr, _: &'i ir::InstrLocId) {
+                        let arg = match instr {
+                            ir::Instr::Const(ir::Const {
+                                value: ir::Value::I32(value),
+                            }) => {
+                                self.values.push(*value as u32);
+                                return;
+                            }
+                            ir::Instr::Load(ir::Load { arg, .. })
+                            | ir::Instr::Store(ir::Store { arg, .. })
+                            | ir::Instr::AtomicRmw(ir::AtomicRmw { arg, .. })
+                            | ir::Instr::Cmpxchg(ir::Cmpxchg { arg, .. })
+                            | ir::Instr::AtomicNotify(ir::AtomicNotify { arg, .. })
+                            | ir::Instr::AtomicWait(ir::AtomicWait { arg, .. })
+                            | ir::Instr::LoadSimd(ir::LoadSimd { arg, .. }) => arg,
+                            _ => return,
+                        };
+                        self.values.push(arg.offset);
+                    }
+                }
+                dfs_in_order(
+                    &mut Walk {
+                        found: &mut found,
+                        values: &mut values,
+                    },
+                    local,
+                    local.entry_block(),
+                );
+                let mut seen = HashSet::with_capacity(found.len());
+                let callees = found
+                    .iter()
+                    .filter_map(|id| fns_to_ids.get(id).copied())
+                    .filter(|index| seen.insert(*index))
+                    .map(|index| index as u32)
+                    .collect();
+                values.sort_unstable();
+                values.dedup();
+                Body {
+                    hash: hashes[index],
+                    callees,
+                    values,
+                }
+            })
+            .collect();
+        Ok(())
+    }
+
     /// Accumulate the relocations from the original module, create a relocation map, and then convert
     /// that to our *new* module's symbols.
-    fn build_call_graph(&mut self, hashes: &[u64], known: HashMap<usize, Body>) -> Result<()> {
+    fn build_call_graph(&mut self) -> Result<()> {
         let mut step = std::time::Instant::now();
         let original = ModuleWithRelocations::new(self.original)?;
         took("read the linked module's relocations", step);
@@ -1752,102 +2040,30 @@ impl<'a> Splitter<'a> {
         }
 
         took("paired the linked functions with the bound ones", step);
-        step = std::time::Instant::now();
 
-        // Walk the functions and try to disconnect any holes manually
-        // This will attempt to resolve any of the new symbols like the shim functions
-        //
-        // Each body is walked on its own, so every body is walked at once, and
-        // a body an earlier run walked with the same bytes is read back
-        // instead (analysis.rs): the answers are what that body's code says,
-        // whatever the rest of the module holds.
-        let ids = &self._ids_to_fns;
-        let fns_to_ids = &self.fns_to_ids;
-        let module = &self.source_module;
-        let imported = self.imported;
-        let locals: Vec<FunctionId> = ids[imported..].to_vec();
-        let bodies: Vec<Body> = locals
-            .par_iter()
-            .enumerate()
-            .map(|(index, id)| {
-                if let Some(body) = known.get(&index) {
-                    return body.clone();
+        // The bodies' answers are read before the plan, which is half made
+        // from them (analysis.rs, plan.rs): the functions each one calls join
+        // the graph here, under the edges the relocations gave above.
+        {
+            let ids = &self._ids_to_fns;
+            let locals: Vec<FunctionId> = ids[self.imported..].to_vec();
+            let bodies = std::mem::take(&mut self.bodies);
+            for (index, body) in bodies.iter().enumerate() {
+                if body.callees.is_empty() {
+                    continue;
                 }
-                let FunctionKind::Local(local) = &module.funcs.get(*id).kind else {
-                    unreachable!("a module's own functions are its local ones")
-                };
-                let mut found = Vec::new();
-                let mut values = Vec::new();
-                struct Walk<'a> {
-                    found: &'a mut Vec<FunctionId>,
-                    values: &'a mut Vec<u32>,
-                }
-                impl<'i> Visitor<'i> for Walk<'_> {
-                    fn visit_function_id(&mut self, function: &walrus::FunctionId) {
-                        self.found.push(*function);
-                    }
-                    // The immediates that can name an address, as data.rs
-                    // reads them from a bound body.
-                    fn visit_instr(&mut self, instr: &'i ir::Instr, _: &'i ir::InstrLocId) {
-                        let arg = match instr {
-                            ir::Instr::Const(ir::Const {
-                                value: ir::Value::I32(value),
-                            }) => {
-                                self.values.push(*value as u32);
-                                return;
-                            }
-                            ir::Instr::Load(ir::Load { arg, .. })
-                            | ir::Instr::Store(ir::Store { arg, .. })
-                            | ir::Instr::AtomicRmw(ir::AtomicRmw { arg, .. })
-                            | ir::Instr::Cmpxchg(ir::Cmpxchg { arg, .. })
-                            | ir::Instr::AtomicNotify(ir::AtomicNotify { arg, .. })
-                            | ir::Instr::AtomicWait(ir::AtomicWait { arg, .. })
-                            | ir::Instr::LoadSimd(ir::LoadSimd { arg, .. }) => arg,
-                            _ => return,
-                        };
-                        self.values.push(arg.offset);
-                    }
-                }
-                dfs_in_order(
-                    &mut Walk {
-                        found: &mut found,
-                        values: &mut values,
-                    },
-                    local,
-                    local.entry_block(),
-                );
-                let mut seen = HashSet::with_capacity(found.len());
-                let callees = found
-                    .iter()
-                    .filter_map(|id| fns_to_ids.get(id).copied())
-                    .filter(|index| seen.insert(*index))
-                    .map(|index| index as u32)
-                    .collect();
-                values.sort_unstable();
-                values.dedup();
-                Body {
-                    hash: hashes[index],
-                    callees,
-                    values,
-                }
-            })
-            .collect();
-        for (index, body) in bodies.iter().enumerate() {
-            if body.callees.is_empty() {
-                continue;
+                self.call_graph
+                    .entry(Node::Function(locals[index]))
+                    .or_default()
+                    .extend(
+                        body.callees
+                            .iter()
+                            .map(|index| Node::Function(ids[*index as usize])),
+                    );
             }
-            self.call_graph
-                .entry(Node::Function(locals[index]))
-                .or_default()
-                .extend(
-                    body.callees
-                        .iter()
-                        .map(|index| Node::Function(ids[*index as usize])),
-                );
+            self.bodies = bodies;
         }
-        self.bodies = bodies;
 
-        took("walked every bound function's body", step);
         step = std::time::Instant::now();
 
         for (parnet, children) in self.call_graph.iter() {
@@ -1961,17 +2177,17 @@ impl<'a> Splitter<'a> {
 }
 
 /// Where a module's code section and its function bodies are.
-struct CodeSection {
+pub(crate) struct CodeSection {
     /// The section's id byte.
     start: usize,
     /// Its contents, after the size.
-    contents: usize,
+    pub(crate) contents: usize,
     end: usize,
     /// Each defined function's body, after its size.
-    bodies: Vec<Range<usize>>,
+    pub(crate) bodies: Vec<Range<usize>>,
 }
 
-fn read_leb(bytes: &[u8], at: &mut usize) -> Result<usize> {
+pub(crate) fn read_leb(bytes: &[u8], at: &mut usize) -> Result<usize> {
     let mut value = 0usize;
     for shift in (0..35).step_by(7) {
         let byte = *bytes.get(*at).context("truncated module")?;
@@ -2016,21 +2232,62 @@ pub(crate) fn sections_not_read(bytes: &[u8]) -> Result<Vec<Range<usize>>> {
     Ok(skipped)
 }
 
-/// `key` over `bytes` without `skipped`, which must be in order.
-fn hash_sections(key: &mut Key, bytes: &[u8], skipped: &[Range<usize>]) {
+/// `key` over `bytes` without `skipped`, which must be in order, and without
+/// the local variables' names in its name section: a local's name reaches no
+/// module's bytes (the tests prove it), so a change to one is no change of
+/// what a key covers. Everything else is hashed as it is.
+pub(crate) fn hash_sections(key: &mut Key, bytes: &[u8], skipped: &[Range<usize>]) -> Result<()> {
     let mut at = 0;
     for range in skipped {
         if range.start > at {
-            key.add(&bytes[at..range.start]);
+            hash_locals_out(key, bytes, at..range.start)?;
         }
         at = at.max(range.end);
     }
     if at < bytes.len() {
-        key.add(&bytes[at..]);
+        hash_locals_out(key, bytes, at..bytes.len())?;
     }
+    Ok(())
 }
 
-fn code_section(bytes: &[u8]) -> Result<Option<CodeSection>> {
+/// The name section's subsection id of a function's local variables' names.
+const LOCAL_NAMES: u8 = 2;
+
+/// [`hash_sections`] over one section: a section as it is, but for a name
+/// section, whose local variables' names are left out.
+fn hash_locals_out(key: &mut Key, bytes: &[u8], section: Range<usize>) -> Result<()> {
+    let mut at = section.start;
+    let id = bytes[at];
+    at += 1;
+    let size = read_leb(bytes, &mut at)?;
+    let name = if id == 0 {
+        let mut name_at = at;
+        let len = read_leb(bytes, &mut name_at)?;
+        bytes.get(name_at..name_at + len)
+    } else {
+        None
+    };
+    if name != Some(&b"name"[..]) {
+        key.add(&bytes[section]);
+        return Ok(());
+    }
+    key.add(&bytes[section.start..at]);
+    let end = (at + size).min(bytes.len());
+    while at < end {
+        let start = at;
+        let id = bytes[at];
+        at += 1;
+        let size = read_leb(bytes, &mut at)?;
+        at = (at + size).min(end);
+        if id == LOCAL_NAMES {
+            continue;
+        }
+        key.add(&bytes[start..at]);
+    }
+    Ok(())
+}
+
+pub(crate) fn code_section(bytes: &[u8]) -> Result<Option<CodeSection>> {
     // Sections follow the 8-byte header: an id byte, a LEB128 size, the
     // contents. The code section's id is 10.
     let mut at = 8;
@@ -2066,7 +2323,7 @@ fn code_section(bytes: &[u8]) -> Result<Option<CodeSection>> {
 /// `bytes` with the body of every defined function whose index is not in
 /// `keep` replaced by `unreachable`. Function indices, types and every other
 /// section stay as they are.
-fn keep_function_bodies(bytes: &[u8], keep: &HashSet<usize>) -> Result<Vec<u8>> {
+pub(crate) fn keep_function_bodies(bytes: &[u8], keep: &HashSet<usize>) -> Result<Vec<u8>> {
     // Locals: none; `unreachable`; `end`.
     const STUB: [u8; 4] = [3, 0x00, 0x00, 0x0b];
 
@@ -2115,7 +2372,7 @@ fn imported_functions(bytes: &[u8]) -> Result<usize> {
 
 /// Parse a module and return the mapping of index to FunctionID.
 /// We'll use this mapping to remap ModuleIDs
-fn parse_module_with_ids(
+pub(crate) fn parse_module_with_ids(
     bindgened: &[u8],
 ) -> Result<(Module, Vec<FunctionId>, HashMap<FunctionId, usize>)> {
     let ids = Arc::new(RwLock::new(Vec::new()));
@@ -2143,194 +2400,6 @@ fn parse_module_with_ids(
     }
 
     Ok((module, ids, fns_to_ids))
-}
-
-struct ModuleWithRelocations<'a> {
-    /// The module's functions, tables and names; function bodies are
-    /// `unreachable` (see `new`).
-    module: Module,
-    /// Each local function's code, as relocation offsets count: from the
-    /// code section's contents, including the body's size.
-    code_ranges: Vec<(FunctionId, Range<usize>)>,
-    symbols: Vec<SymbolInfo<'a>>,
-    funcs_by_index: Vec<FunctionId>,
-    call_graph: HashMap<Node, HashSet<Node>>,
-    parents: HashMap<Node, HashSet<Node>>,
-    relocation_map: HashMap<Node, Vec<RelocationEntry>>,
-    data_symbols: BTreeMap<usize, DataSymbol>,
-    data_section_range: Range<usize>,
-}
-
-impl<'a> ModuleWithRelocations<'a> {
-    fn new(bytes: &'a [u8]) -> Result<Self> {
-        // The call graph comes from relocations, not from the code itself,
-        // so the module is parsed without its function bodies: parsing them
-        // took gigabytes for a large module and none of it was read.
-        let module = Module::from_buffer(&keep_function_bodies(bytes, &HashSet::new())?)?;
-        let raw_data = parse_bytes_to_data_segment(bytes)?;
-        // walrus adds a parsed module's functions in index order, imports
-        // first.
-        let funcs_by_index: Vec<FunctionId> = module.funcs.iter().map(|f| f.id()).collect();
-        let code = code_section(bytes)?.context("module has no code section")?;
-        let imported = funcs_by_index.len() - code.bodies.len();
-        // A relocation's offset counts from the code section's contents, and
-        // a function's code from its size, written as LEB128 in as few bytes
-        // as the size needs.
-        let code_ranges = code
-            .bodies
-            .iter()
-            .zip(&funcs_by_index[imported..])
-            .map(|(body, id)| {
-                let size_len = (usize::BITS - body.len().leading_zeros())
-                    .div_ceil(7)
-                    .max(1);
-                let start = body.start - code.contents - size_len as usize;
-                (*id, start..body.end - code.contents)
-            })
-            .collect::<Vec<_>>();
-
-        let mut module = Self {
-            module,
-            code_ranges,
-            data_symbols: raw_data.data_symbols,
-            data_section_range: raw_data.data_range,
-            symbols: raw_data.symbols,
-            funcs_by_index,
-            call_graph: Default::default(),
-            relocation_map: Default::default(),
-            parents: Default::default(),
-        };
-
-        module.build_code_call_graph()?;
-        module.build_data_call_graph()?;
-
-        for (func, children) in module.call_graph.iter() {
-            for child in children {
-                module.parents.entry(*child).or_default().insert(*func);
-            }
-        }
-
-        Ok(module)
-    }
-
-    fn build_code_call_graph(&mut self) -> Result<()> {
-        let codes_relocations = self.collect_relocations_from_section("reloc.CODE")?;
-        let mut relocations = codes_relocations.iter().peekable();
-
-        for (func_id, range) in &self.code_ranges {
-            let (func_id, range) = (*func_id, range.clone());
-
-            while let Some(entry) =
-                relocations.next_if(|entry| entry.relocation_range().start < range.end)
-            {
-                let reloc_range = entry.relocation_range();
-                assert!(reloc_range.start >= range.start);
-                assert!(reloc_range.end <= range.end);
-
-                if let Some(target) = self.relocation_target(entry)? {
-                    let us = Node::Function(func_id);
-                    self.call_graph.entry(us).or_default().insert(target);
-                    self.relocation_map.entry(us).or_default().push(*entry);
-                }
-            }
-        }
-
-        assert!(relocations.next().is_none());
-
-        Ok(())
-    }
-
-    fn build_data_call_graph(&mut self) -> Result<()> {
-        let data_relocations = self.collect_relocations_from_section("reloc.DATA")?;
-        let mut relocations = data_relocations.iter().peekable();
-
-        let symbols_sorted = self
-            .data_symbols
-            .values()
-            .sorted_by(|a, b| a.range.start.cmp(&b.range.start));
-
-        for symbol in symbols_sorted {
-            let start = symbol.range.start - self.data_section_range.start;
-            let end = symbol.range.end - self.data_section_range.start;
-            let range = start..end;
-
-            while let Some(entry) =
-                relocations.next_if(|entry| entry.relocation_range().start < range.end)
-            {
-                let reloc_range = entry.relocation_range();
-                assert!(reloc_range.start >= range.start);
-                assert!(reloc_range.end <= range.end);
-
-                if let Some(target) = self.relocation_target(entry)? {
-                    let dep = Node::DataSymbol(symbol.index);
-                    self.call_graph.entry(dep).or_default().insert(target);
-                    self.relocation_map.entry(dep).or_default().push(*entry);
-                }
-            }
-        }
-
-        assert!(relocations.next().is_none());
-
-        Ok(())
-    }
-
-    /// Accumulate all relocations from a section.
-    ///
-    /// Parses the section using the RelocSectionReader and returns a vector of relocation entries.
-    fn collect_relocations_from_section(&self, name: &str) -> Result<Vec<RelocationEntry>> {
-        let (_reloc_id, code_reloc) = self
-            .module
-            .customs
-            .iter()
-            .find(|(_, c)| c.name() == name)
-            .context("Module does not contain the reloc section")?;
-
-        let code_reloc_data = code_reloc.data(&Default::default());
-        let reader = BinaryReader::new(&code_reloc_data, 0);
-        let relocations = RelocSectionReader::new(reader)
-            .context("failed to parse reloc section")?
-            .entries()
-            .into_iter()
-            .flatten()
-            .collect();
-
-        Ok(relocations)
-    }
-
-    /// The node a relocation refers to. A type-index relocation (the
-    /// signature of a `call_indirect`) carries a type index, not a symbol
-    /// index; reading it as a symbol links the caller to whatever function
-    /// happens to hold that symbol slot.
-    fn relocation_target(&self, entry: &RelocationEntry) -> Result<Option<Node>> {
-        if entry.ty == RelocationType::TypeIndexLeb {
-            return Ok(None);
-        }
-        self.get_symbol_dep_node(entry.index as usize)
-    }
-
-    /// Get the symbol's corresponding entry in the call graph
-    ///
-    /// This might panic if the source module isn't built properly. Make sure to enable LTO and `--emit-relocs`
-    /// when building the source module.
-    fn get_symbol_dep_node(&self, index: usize) -> Result<Option<Node>> {
-        let res = match self.symbols[index] {
-            SymbolInfo::Data { .. } => Some(Node::DataSymbol(index)),
-            // The symbol names its function by index. Looking it up by name
-            // instead picks an arbitrary one of the functions sharing that
-            // name (copies of a generic shim), which wires unrelated code
-            // together.
-            SymbolInfo::Func { index, .. } => {
-                let func = self.funcs_by_index.get(index as usize).copied();
-                Some(Node::Function(func.with_context(|| {
-                    format!("function symbol names function {index}, past the module's functions")
-                })?))
-            }
-
-            _ => None,
-        };
-
-        Ok(res)
-    }
 }
 
 /// A module split off the start module, and every way into it.
@@ -2499,6 +2568,17 @@ pub enum Node {
     DataSymbol(usize),
 }
 
+/// The node a plan's is: the same function, in this run's parse of the bound
+/// module, whose functions a plan names by index (plan.rs).
+fn from_plan_node(ids: &[FunctionId], node: crate::plan::Node) -> Node {
+    let (index, data) = crate::plan::node_index(node);
+    if data {
+        Node::DataSymbol(index)
+    } else {
+        Node::Function(ids[index])
+    }
+}
+
 fn reachable_graph(deps: &HashMap<Node, HashSet<Node>>, roots: &HashSet<Node>) -> HashSet<Node> {
     let mut queue: VecDeque<Node> = roots.iter().copied().collect();
     let mut reachable = HashSet::<Node>::new();
@@ -2519,82 +2599,6 @@ fn reachable_graph(deps: &HashMap<Node, HashSet<Node>>, roots: &HashSet<Node>) -
     }
 
     reachable
-}
-
-struct RawDataSection<'a> {
-    data_range: Range<usize>,
-    symbols: Vec<SymbolInfo<'a>>,
-    data_symbols: BTreeMap<usize, DataSymbol>,
-}
-
-#[derive(Debug)]
-struct DataSymbol {
-    index: usize,
-    range: Range<usize>,
-}
-
-/// Manually parse the data section from a wasm module
-///
-/// We need to do this for data symbols because walrus doesn't provide the right range and offset
-/// information for data segments. Fortunately, it provides it for code sections, so we only need to
-/// do a small amount extra of parsing here.
-fn parse_bytes_to_data_segment(bytes: &[u8]) -> Result<RawDataSection<'_>> {
-    let parser = wasmparser::Parser::new(0);
-    let mut parser = parser.parse_all(bytes);
-    let mut segments = vec![];
-    let mut data_range = 0..0;
-    let mut symbols = vec![];
-
-    // Process the payloads in the raw wasm file so we can extract the specific sections we need
-    while let Some(Ok(payload)) = parser.next() {
-        match payload {
-            Payload::DataSection(section) => {
-                data_range = section.range();
-                segments = section.into_iter().collect::<Result<Vec<_>, _>>()?
-            }
-            Payload::CustomSection(section) if section.name() == "linking" => {
-                let reader = BinaryReader::new(section.data(), 0);
-                let reader = LinkingSectionReader::new(reader)?;
-                for subsection in reader.subsections() {
-                    if let Linking::SymbolTable(map) = subsection? {
-                        symbols = map.into_iter().collect::<Result<Vec<_>, _>>()?;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Accumulate the data symbols into a btreemap for later use
-    let mut data_symbols = BTreeMap::new();
-    for (index, symbol) in symbols.iter().enumerate() {
-        let SymbolInfo::Data {
-            symbol: Some(symbol),
-            ..
-        } = symbol
-        else {
-            continue;
-        };
-
-        if symbol.size == 0 {
-            continue;
-        }
-
-        let data_segment = segments
-            .get(symbol.index as usize)
-            .context("Failed to find data segment")?;
-        let offset: usize =
-            data_segment.range.end - data_segment.data.len() + (symbol.offset as usize);
-        let range = offset..(offset + symbol.size as usize);
-
-        data_symbols.insert(index, DataSymbol { index, range });
-    }
-
-    Ok(RawDataSection {
-        data_range,
-        symbols,
-        data_symbols,
-    })
 }
 
 /// For each split module, then each shared chunk (as data.rs numbers
