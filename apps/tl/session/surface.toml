@@ -689,6 +689,26 @@ name = "height"
 required = false
 type = "int"
 
+[[resources.verbs.params]]
+name = "seen_x"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "seen_y"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "seen_width"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "seen_height"
+required = false
+type = "int"
+
 [[resources.verbs]]
 id = "open"
 kind = "undoable"

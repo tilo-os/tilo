@@ -121,11 +121,35 @@ impl CanvasPlace {
     /// Whether the two overlap, or come closer than `gap` to each other.
     #[must_use]
     pub fn crowds(&self, other: &Self, gap: u32) -> bool {
-        let gap = i64::from(gap);
-        i64::from(self.x) < other.right().saturating_add(gap)
-            && i64::from(other.x) < self.right().saturating_add(gap)
-            && i64::from(self.y) < other.bottom().saturating_add(gap)
-            && i64::from(other.y) < self.bottom().saturating_add(gap)
+        self.crowds_apart(other, gap, gap)
+    }
+
+    /// Whether the two overlap, or come closer than `across` side by side or `down` one over the
+    /// other.
+    #[must_use]
+    pub fn crowds_apart(&self, other: &Self, across: u32, down: u32) -> bool {
+        let (across, down) = (i64::from(across), i64::from(down));
+        i64::from(self.x) < other.right().saturating_add(across)
+            && i64::from(other.x) < self.right().saturating_add(across)
+            && i64::from(self.y) < other.bottom().saturating_add(down)
+            && i64::from(other.y) < self.bottom().saturating_add(down)
+    }
+
+    /// Whether the two stand too close on a canvas: closer than [`CANVAS_GAP`] side by side, or
+    /// than [`CANVAS_ROW_GAP`] one over the other, so the caption over the lower one is never
+    /// under the upper one.
+    #[must_use]
+    pub fn crowds_on_canvas(&self, other: &Self) -> bool {
+        self.crowds_apart(other, CANVAS_GAP, CANVAS_ROW_GAP)
+    }
+
+    /// Whether this place stands wholly inside `area`.
+    #[must_use]
+    pub fn inside(&self, area: &Self) -> bool {
+        self.x >= area.x
+            && self.y >= area.y
+            && self.right() <= area.right()
+            && self.bottom() <= area.bottom()
     }
 
     /// Whether the two share any area.
@@ -149,6 +173,15 @@ impl CanvasPlace {
 /// The space kept between two windows on the canvas, in canvas pixels: the
 /// design language's `group` rhythm.
 pub const CANVAS_GAP: u32 = 24;
+
+/// The band a place keeps over its top edge on the canvas for its caption and its handle, in
+/// canvas pixels: the toolkit's place band (`ui::widget::canvas_place::PLACE_BAND`). A place's
+/// point is its view's top, and the band stands above it.
+pub const CANVAS_BAND: u32 = 44;
+
+/// The space kept between a place and the one under it on the canvas: the lower one's band and
+/// the canvas's gap, so its caption stands clear of the place above it.
+pub const CANVAS_ROW_GAP: u32 = CANVAS_GAP + CANVAS_BAND;
 
 /// The window a group the desk opened takes on the canvas when nobody named a place for it:
 /// the framed canvas's window, in canvas pixels, which is what the arrangement's own place
@@ -482,7 +515,7 @@ impl Arrangement {
             .filter(|(id, _)| Some(**id) != except)
             .map(|(_, place)| *place)
             .collect();
-        let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds(o, CANVAS_GAP));
+        let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds_on_canvas(o));
         let wanted = CanvasPlace::new(anchor.0, anchor.1, width, height);
         if free(&wanted) {
             return wanted;
@@ -491,6 +524,7 @@ impl Arrangement {
         // (or the anchor's own line): try each obstacle's four sides, on the
         // anchor's line and flush with the obstacle's edges.
         let gap = i64::from(CANVAS_GAP);
+        let row_gap = i64::from(CANVAS_ROW_GAP);
         let (w, h) = (i64::from(width), i64::from(height));
         let mut xs = vec![i64::from(anchor.0)];
         let mut ys = vec![i64::from(anchor.1)];
@@ -502,8 +536,8 @@ impl Arrangement {
                 o.right().saturating_sub(w),
             ]);
             ys.extend([
-                o.bottom().saturating_add(gap),
-                i64::from(o.y).saturating_sub(gap).saturating_sub(h),
+                o.bottom().saturating_add(row_gap),
+                i64::from(o.y).saturating_sub(row_gap).saturating_sub(h),
                 i64::from(o.y),
                 o.bottom().saturating_sub(h),
             ]);
@@ -576,11 +610,12 @@ impl Arrangement {
             .filter(|(id, _)| Some(**id) != except)
             .map(|(_, place)| *place)
             .collect();
-        let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds(o, CANVAS_GAP));
+        let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds_on_canvas(o));
         let gap = i64::from(CANVAS_GAP);
-        let step_y = i64::from(height).saturating_add(gap);
+        let row_gap = i64::from(CANVAS_ROW_GAP);
+        let step_y = i64::from(height).saturating_add(row_gap);
         let right = subject.right().saturating_add(gap);
-        let below = subject.bottom().saturating_add(gap);
+        let below = subject.bottom().saturating_add(row_gap);
         let clamp = |v: i64| i32::try_from(v).unwrap_or(if v < 0 { i32::MIN } else { i32::MAX });
         // Past every obstacle's foot both columns are free: the walk stops there.
         let foot = others
@@ -588,7 +623,7 @@ impl Arrangement {
             .map(CanvasPlace::bottom)
             .max()
             .unwrap_or(0)
-            .saturating_add(gap);
+            .saturating_add(row_gap);
         // The trailing side at the anchor's own line first: what a person opening something
         // beside where they are expects to see.
         for (x, y) in [
@@ -625,6 +660,100 @@ impl Arrangement {
             }
             y = y.saturating_add(step_y);
         }
+    }
+
+    /// The free place next to `subject` that stands wholly inside `seen` (the part of the canvas
+    /// the person sees), for a window of `width` × `height` or, where no room of that size is
+    /// free there, the largest part of it that is, never under a window's least size: what an
+    /// answer's views take beside the turn that asked for them, so they stand where the person is
+    /// looking (canvas.md §7, "Everything stays in view"). Of the free places inside `seen`, the
+    /// nearest the trailing side of `subject` at its own line wins, the side
+    /// [`Self::free_place_next_to`] tries first. Nothing placed moves, and every candidate is
+    /// clear of everything but `except` ([`CanvasPlace::crowds_on_canvas`]). `None` when no room
+    /// inside `seen` is free: the caller stands it next to `subject` as it always did.
+    #[must_use]
+    pub fn free_place_within(
+        &self,
+        subject: CanvasPlace,
+        (width, height): (u32, u32),
+        seen: CanvasPlace,
+        except: Option<GroupId>,
+    ) -> Option<CanvasPlace> {
+        let others: Vec<CanvasPlace> = self
+            .places
+            .iter()
+            .filter(|(id, _)| Some(**id) != except)
+            .map(|(_, place)| *place)
+            .collect();
+        // A place's band stands over its top: inside what the person sees, the band is too.
+        let top = i64::from(seen.y).saturating_add(i64::from(CANVAS_BAND));
+        let free = |place: &CanvasPlace| {
+            i64::from(place.y) >= top
+                && place.inside(&seen)
+                && !others.iter().any(|o| place.crowds_on_canvas(o))
+        };
+        let gap = i64::from(CANVAS_GAP);
+        let row_gap = i64::from(CANVAS_ROW_GAP);
+        let wanted = (subject.right().saturating_add(gap), i64::from(subject.y));
+        let clamp = |v: i64| i32::try_from(v).unwrap_or(if v < 0 { i32::MIN } else { i32::MAX });
+        // The sizes tried, the asked one first: a room too small for it takes the largest part of
+        // it that fits, no smaller than a window.
+        let sizes = [(4, 4), (3, 4), (4, 3), (3, 3), (2, 3), (3, 2), (2, 2)].map(|(w, h)| {
+            (
+                (width.saturating_mul(w) / 4).max(WINDOW_MIN_WIDTH),
+                (height.saturating_mul(h) / 4).max(WINDOW_MIN_HEIGHT),
+            )
+        });
+        for (width, height) in sizes {
+            let (w, h) = (i64::from(width), i64::from(height));
+            // Every free place nearest the wanted point touches an obstacle's edge, the subject's
+            // or an edge of what the person sees.
+            let mut xs = vec![
+                wanted.0,
+                i64::from(subject.x),
+                i64::from(subject.x).saturating_sub(gap).saturating_sub(w),
+                i64::from(seen.x),
+                seen.right().saturating_sub(w),
+            ];
+            let mut ys = vec![
+                wanted.1,
+                subject.bottom().saturating_add(row_gap),
+                i64::from(subject.y)
+                    .saturating_sub(row_gap)
+                    .saturating_sub(h),
+                top,
+                seen.bottom().saturating_sub(h),
+            ];
+            for o in &others {
+                xs.extend([
+                    o.right().saturating_add(gap),
+                    i64::from(o.x).saturating_sub(gap).saturating_sub(w),
+                ]);
+                ys.extend([
+                    o.bottom().saturating_add(row_gap),
+                    i64::from(o.y).saturating_sub(row_gap).saturating_sub(h),
+                ]);
+            }
+            let mut best: Option<(i64, CanvasPlace)> = None;
+            for &x in &xs {
+                for &y in &ys {
+                    let place = CanvasPlace::new(clamp(x), clamp(y), width, height);
+                    if !free(&place) {
+                        continue;
+                    }
+                    let dx = x.saturating_sub(wanted.0);
+                    let dy = y.saturating_sub(wanted.1);
+                    let distance = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
+                    if best.is_none_or(|(d, b)| (distance, place.y, place.x) < (d, b.y, b.x)) {
+                        best = Some((distance, place));
+                    }
+                }
+            }
+            if let Some((_, place)) = best {
+                return Some(place);
+            }
+        }
+        None
     }
 
     /// The groups standing within `radius` canvas pixels of `point`,
@@ -784,7 +913,7 @@ mod tests {
         let wide = CanvasPlace::new(-1000, 0, 2000, 300);
         let arrangement = canvas(&[(1, wide)]);
         let place = arrangement.free_place_near((0, 100), 400, 300, None);
-        assert_eq!((place.x, place.y), (0, 324));
+        assert_eq!((place.x, place.y), (0, 368));
     }
 
     #[test]
@@ -847,14 +976,82 @@ mod tests {
             (744, 0),
             "the first stands beside the conversation, at its line"
         );
-        assert_eq!((opened[1].x, opened[1].y), (0, 544), "the second below it");
+        assert_eq!((opened[1].x, opened[1].y), (0, 588), "the second below it");
         assert_eq!(
             (opened[2].x, opened[2].y),
-            (744, 544),
+            (744, 588),
             "the third under its right"
         );
         let places: Vec<CanvasPlace> = opened_places(&arrangement);
         assert_eq!(places.len(), 7, "every place stands clear of the rest");
+    }
+
+    /// A place under another keeps its caption's band clear of the one above (canvas.md §7,
+    /// "Captions never hidden"): one over the other they stand the band and the gap apart, side by
+    /// side the gap.
+    #[test]
+    fn a_place_below_another_keeps_its_caption_clear() {
+        let above = CanvasPlace::new(0, 0, 400, 300);
+        let next = canvas(&[(1, above)]).free_place_next_to(above, 400, 300, None);
+        assert_eq!((next.x, next.y), (424, 0), "side by side the gap is enough");
+        let crowded = canvas(&[(1, above), (2, CanvasPlace::new(424, 0, 400, 300))]);
+        let below = crowded.free_place_next_to(above, 400, 300, None);
+        assert_eq!(
+            (below.x, below.y),
+            (0, 300 + 44 + 24),
+            "below, the band and the gap stand between them"
+        );
+        let near = canvas(&[(1, above)]).free_place_near((0, 310), 400, 300, None);
+        assert!(
+            !near.crowds_on_canvas(&above),
+            "{near:?} keeps its caption clear of {above:?}"
+        );
+        assert!(
+            CanvasPlace::new(0, 330, 400, 300).crowds_on_canvas(&above),
+            "a place whose band stands under the one above crowds it"
+        );
+    }
+
+    /// Beside a turn, an answer's view takes free room inside what the person sees: the trailing
+    /// side when it fits, else the nearest room that does, made smaller to fit when the whole
+    /// size does not, and nothing when no room inside it is free.
+    #[test]
+    fn an_answer_beside_its_turn_stands_where_the_person_looks() {
+        let seen = CanvasPlace::new(0, 0, 1280, 740);
+        let turn = CanvasPlace::new(100, 100, 520, 480);
+        let place = canvas(&[(1, turn)])
+            .free_place_within(turn, (600, 400), seen, None)
+            .expect("room beside the turn");
+        assert_eq!(
+            (place.x, place.y),
+            (644, 100),
+            "the trailing side, at its line"
+        );
+        assert!(place.inside(&seen) && !place.crowds_on_canvas(&turn));
+        // The turn near the right edge: the trailing side is past what the person sees, so the
+        // answer stands on its leading side instead, still in view.
+        let right = CanvasPlace::new(700, 100, 520, 480);
+        let place = canvas(&[(1, right)])
+            .free_place_within(right, (600, 400), seen, None)
+            .expect("room on the leading side");
+        assert!(place.inside(&seen), "{place:?} stands in view");
+        assert!(
+            !place.crowds_on_canvas(&right),
+            "{place:?} clear of the turn"
+        );
+        // The window's size fits nowhere free: a smaller part of it does.
+        let wide = CanvasPlace::new(0, 60, 700, 480);
+        let place = canvas(&[(1, wide)])
+            .free_place_within(wide, (720, 520), seen, None)
+            .expect("a smaller room beside it");
+        assert!(place.inside(&seen) && !place.crowds_on_canvas(&wide));
+        assert!(place.width < 720, "made smaller to fit: {place:?}");
+        // Nothing free in view: the caller stands it beside the turn as it always did.
+        let full = CanvasPlace::new(0, 44, 1280, 696);
+        assert_eq!(
+            canvas(&[(1, full)]).free_place_within(full, (720, 520), seen, None),
+            None
+        );
     }
 
     /// The places standing in `arrangement`, for saying one crowds none.

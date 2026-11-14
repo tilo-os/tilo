@@ -130,7 +130,7 @@ d-qrsfr4a5 = Notizbuchmenü
     .w-insert-an-image = Ein Bild einfügen…
     .w-export-this-note = Diese Notiz exportieren…
 
-d-kdl43aw7 = Alle Notizen
+d-kdl43aw7 = Notizen
     .w-no-notes-yet = Noch keine Notizen
 
 d-xqxkoqbj = Notizzeile

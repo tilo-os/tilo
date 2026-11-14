@@ -208,6 +208,16 @@ pub enum ArrangementAction {
         width: i64,
         #[serde(default)]
         height: i64,
+        /// The part of the canvas the person saw when they pointed, in canvas pixels (zero size
+        /// when the caller names none): an answer's views stand in free room inside it.
+        #[serde(default)]
+        seen_x: i64,
+        #[serde(default)]
+        seen_y: i64,
+        #[serde(default)]
+        seen_width: i64,
+        #[serde(default)]
+        seen_height: i64,
     },
     /// Float the place `place` above its workspace's windows at `float`:
     /// every member sees it there, and the strip it stands in is untouched,
@@ -399,6 +409,10 @@ pub type AskOrigin = Rc<dyn Fn(&str) -> OriginAnswer>;
 /// refused to search or the run failed before it could.
 pub type SearchOutcome = Result<(), String>;
 
+/// Where the person pointed when they typed: the canvas point, the size of the rectangle they
+/// dragged (`None` for a click), and the part of the canvas they saw.
+type Pointed = ((i64, i64), Option<(i64, i64)>, Option<CanvasRect>);
+
 /// What a text typed on the canvas found, and where it stands: the inputs of
 /// [`Arrangement::place_found`] besides the arrangement itself.
 #[derive(Clone, Copy)]
@@ -416,6 +430,10 @@ pub struct Found<'a> {
     /// The size of the rectangle the person dragged, when they dragged one: what is found fills
     /// it, and an answer's views fill it (canvas.md §1). `None` for a click.
     pub size: Option<(i64, i64)>,
+    /// The part of the canvas the person saw when they pointed, when the caller says: the views
+    /// an answer stands beside its turn take free room inside it (canvas.md §7, "Everything
+    /// stays in view").
+    pub seen: Option<CanvasRect>,
     /// The hits the text found, in the ranking's order, from the system's [`Find`]: answered
     /// before the place is made, so a host whose search waits for a source does so on its own
     /// thread and never in the pass that places.
@@ -544,6 +562,11 @@ pub struct Target {
     /// app's whole window shows this when the words that placed it name the resource rather than
     /// the app. `None` where the default view is the resource's own.
     pub place_view: Option<String>,
+    /// What [`Self::place_view`] is called, as its app publishes the view (`All inboxes`, `All
+    /// notes`): what a place standing through it is captioned, since it shows the thing the view
+    /// names rather than the record the resource's own label is (an app's root goes by its first
+    /// account or record).
+    pub place_title: String,
     /// What its app is called (`Mail`): the words that, typed alone, name the app rather than the
     /// resource, so its whole window stands (canvas.md §7, "The thing, never the app").
     pub app_title: String,
@@ -558,6 +581,21 @@ impl Target {
         match &self.place_view {
             Some(view) if !names_app(text, &self.app_title) => view.clone(),
             _ => String::new(),
+        }
+    }
+
+    /// What a place showing the resource through `view` is called: the place view's own name when
+    /// it stands through that view ([`Self::place_title`]), else the resource's label.
+    #[must_use]
+    pub fn title_through(&self, view: &str) -> String {
+        let placed = self
+            .place_view
+            .as_deref()
+            .is_some_and(|place| place == view.trim());
+        if placed && !self.place_title.trim().is_empty() {
+            self.place_title.trim().to_owned()
+        } else {
+            self.title.clone()
         }
     }
 
@@ -817,6 +855,7 @@ impl Arrangement {
             strip,
             at,
             size,
+            seen,
             hits,
             ask,
             ask_origin,
@@ -894,7 +933,7 @@ impl Arrangement {
                 return Err(format!("nothing matches {text:?}"));
             };
             // The turn stands where the person asked once Chat says which message it posted.
-            self.await_turn(asked, sent, strip, at, size);
+            self.await_turn(asked, sent, strip, (at, size), seen);
             return Ok(None);
         }
         let Some(resource) = named else {
@@ -904,7 +943,9 @@ impl Arrangement {
         // laid out to the rectangle they dragged (canvas.md §1). A click names no height: the
         // place is as tall as what it shows, up to a window's (`place_at`). A second place of a
         // note is the person's to make.
-        let (width, height) = size.unwrap_or((DEFAULT_WIDTH, 0));
+        // At a click its width is its own, as far as the room to the edge of what the person sees
+        // allows: it stands at the point, in view (canvas.md §7, "Everything stays in view").
+        let (width, height) = size.unwrap_or((width_in_view(at.0, DEFAULT_WIDTH, seen), 0));
         let surface = self.surface_at_strip(strip)?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
@@ -1175,7 +1216,7 @@ impl Arrangement {
         // beside the turn instead.
         let room = if self.is_conversation_of(resource, beside) {
             self.turn_of(beside)
-                .map(|turn| TurnRoom::Beside(turn.place))
+                .map(|turn| TurnRoom::Beside(turn.place, turn.seen))
         } else {
             self.take_turn_room(beside)
         };
@@ -1202,14 +1243,31 @@ impl Arrangement {
             .trim()
             .rsplit_once("/messages/")
             .map_or(beside, |(conversation, _)| conversation);
-        let at = match room {
-            Some(TurnRoom::BesideAsked(turn)) => self.point_beside_rect(turn),
-            Some(TurnRoom::Beside(place)) => self.point_beside(place, None),
+        // Beside a turn asked on the canvas, the free room inside what the person saw when they
+        // asked comes first, so the answer's views stand where they look (canvas.md §7,
+        // "Everything stays in view"); a room too small for a window's size takes the largest part
+        // of it that fits.
+        let in_view = match room {
+            Some(TurnRoom::BesideAsked(turn, Some(seen))) => {
+                self.room_in_view(Beside::Asked(turn), seen)
+            }
+            Some(TurnRoom::Beside(place, Some(seen))) => {
+                self.room_in_view(Beside::Place(place), seen)
+            }
+            _ => None,
+        };
+        let at = match (in_view, room) {
+            (Some(room), _) => Some((i64::from(room.x), i64::from(room.y))),
+            (None, Some(TurnRoom::BesideAsked(turn, _))) => self.point_beside_rect(turn),
+            (None, Some(TurnRoom::Beside(place, _))) => self.point_beside(place, None),
             _ => self
                 .anchor_of(beside)
                 .or_else(|| self.anchor_of(conversation))
                 .and_then(|place| self.point_beside(place, None)),
         };
+        let (width, height) = in_view.map_or((DEFAULT_WIDTH, DEFAULT_HEIGHT), |room| {
+            (i64::from(room.width), i64::from(room.height))
+        });
         let surface = self.surface_at()?;
         // Where the new place stands: the free space next to the anchor (`free_place_next_to`),
         // its trailing side first, then below it, then further down the two columns the anchor
@@ -1229,8 +1287,8 @@ impl Arrangement {
             view: view.to_owned(),
             x,
             y,
-            width: DEFAULT_WIDTH,
-            height: DEFAULT_HEIGHT,
+            width,
+            height,
             float: None,
         };
         self.ask(asked, action, Busy::default())?;
@@ -1965,7 +2023,7 @@ fn place_at(
     let view = target.chosen_view(asked.view);
     let window = Tab {
         id,
-        title: target.title.clone(),
+        title: target.title_through(&view),
         tile: TileContent::LocalApp {
             app_id: target.app,
             label: target.title,
@@ -2037,6 +2095,30 @@ fn place_at(
     Ok(true)
 }
 
+/// How wide a thing standing at canvas x `x` with no rectangle of its own stands: `want`, or the
+/// room from `x` to the trailing edge of what the person sees (`seen`) when that is narrower and
+/// still at least [`LEAST_IN_VIEW`] wide. Narrower room than that leaves it `want` wide, and the
+/// canvas pans to show it.
+pub(super) fn width_in_view(x: i64, want: i64, seen: Option<CanvasRect>) -> i64 {
+    let Some(seen) = seen else {
+        return want;
+    };
+    let room = seen
+        .x
+        .saturating_add(seen.width)
+        .saturating_sub(x)
+        .saturating_sub(i64::from(tilo_desktop_model::CANVAS_GAP));
+    if room >= LEAST_IN_VIEW {
+        want.min(room)
+    } else {
+        want
+    }
+}
+
+/// The narrowest a thing placed at a click is made to stand inside what the person sees: a list's
+/// row still reads at it.
+const LEAST_IN_VIEW: i64 = 360;
+
 /// The size a place asked for at `width` by `height` takes on the canvas, and whether it hugs what
 /// it shows. A place asked for with no height (a thing found where the person clicked) takes a
 /// window's height as the most it takes, and what it shows hugs what it holds up to it
@@ -2079,7 +2161,7 @@ fn show_at(
     // else the place keeps — its id, its strip, its place on the canvas, whether it is pinned.
     let window = Tab {
         id: place,
-        title: target.title.clone(),
+        title: target.title_through(&view),
         tile: TileContent::LocalApp {
             app_id: target.app,
             label: target.title,
@@ -2606,11 +2688,21 @@ impl Door {
             y,
             width,
             height,
+            seen_x,
+            seen_y,
+            seen_width,
+            seen_height,
         } = &action
         {
             // A rectangle the person dragged is its size; a click names none.
             let size = (*width > 0 && *height > 0).then_some((*width, *height));
-            self.find_and_place_found(&asked, text, view, *strip, ((*x, *y), size), busy);
+            let seen = (*seen_width > 0 && *seen_height > 0).then_some(CanvasRect {
+                x: *seen_x,
+                y: *seen_y,
+                width: *seen_width,
+                height: *seen_height,
+            });
+            self.find_and_place_found(&asked, text, view, *strip, ((*x, *y), size, seen), busy);
             // The search is under way and the place stands on a later pass: the door answers as it
             // always did for an arranging action, which is complete when the ask is taken. Nothing
             // of the place is left for the caller to read back, so it is not a pending invocation
@@ -2667,7 +2759,7 @@ impl Door {
         text: &str,
         view: &str,
         strip: Option<u64>,
-        (at, size): ((i64, i64), Option<(i64, i64)>),
+        (at, size, seen): Pointed,
         busy: Busy,
     ) {
         let find = Rc::clone(&self.find);
@@ -2686,6 +2778,7 @@ impl Door {
                     strip,
                     at,
                     size,
+                    seen,
                     hits: &hits,
                     ask: &*ask,
                     ask_origin: &*ask_origin,
@@ -2819,6 +2912,8 @@ mod specs;
 use specs::{float_actions, float_coord, float_side, strip_actions};
 
 mod turns;
+use beside::Beside;
+pub use turns::CanvasRect;
 use turns::{AwaitedTurn, TurnAnchor, TurnRoom};
 pub use turns::{FindTurn, Posted, TURN_VIEW, turn_key};
 

@@ -176,6 +176,28 @@ fn place_found_action() -> ActionSpec {
                 ParamType::Integer,
                 "The height of the rectangle it fills, in canvas pixels; its own when left out",
             ),
+            // What the person saw when they pointed: an answer's views stand in free room
+            // inside it, so everything it places stays in view.
+            optional(
+                "seen_x",
+                ParamType::Integer,
+                "The canvas x of the part of the canvas the person sees",
+            ),
+            optional(
+                "seen_y",
+                ParamType::Integer,
+                "The canvas y of the part of the canvas the person sees",
+            ),
+            optional(
+                "seen_width",
+                ParamType::Integer,
+                "The width of the part of the canvas the person sees, in canvas pixels",
+            ),
+            optional(
+                "seen_height",
+                ParamType::Integer,
+                "The height of the part of the canvas the person sees, in canvas pixels",
+            ),
         ],
         |args| ArrangementAction::PlaceFound {
             text: text(args, "text"),
@@ -188,6 +210,10 @@ fn place_found_action() -> ActionSpec {
             y: args.integer("y").unwrap_or_default(),
             width: args.integer("width").unwrap_or_default(),
             height: args.integer("height").unwrap_or_default(),
+            seen_x: args.integer("seen_x").unwrap_or_default(),
+            seen_y: args.integer("seen_y").unwrap_or_default(),
+            seen_width: args.integer("seen_width").unwrap_or_default(),
+            seen_height: args.integer("seen_height").unwrap_or_default(),
         },
     )
 }

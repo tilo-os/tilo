@@ -171,11 +171,15 @@ pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
     }
     // A card's padding on every side, as an object's card keeps it: the turn stands on the
     // canvas's surface with no frame, so its words keep their room from its edges. Not a page:
-    // a page scrolls and takes the height its pane gives it, where the turn hugs its words.
+    // a page takes the height its pane gives it, where the turn hugs its words.
     let mut card = ui::stack(&cx.key("turn"), Gap::Related, column);
     card.props
         .insert("padding".to_owned(), Value::text("section"));
-    card
+    // The card scrolls its words once they come to more than the canvas shows: its place hugs
+    // them up to the visible area and no further (canvas.md §7, "Everything stays in view"), and
+    // the words wrap at the card's width and scroll inside it.
+    let scroll = ui::ScrollBuilder::new(&cx.key("turn-scroll")).into();
+    node::with(scroll, vec![card])
 }
 
 /// What a turn says while the agent has taken no step and said nothing of what it does.

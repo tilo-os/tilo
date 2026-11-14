@@ -296,6 +296,55 @@ fn what_is_found_at_a_click_stands_at_the_point() {
     );
 }
 
+/// What is found at a click is named for what it is and hugs what it shows (`canvas.md` §7): "my
+/// mails" stands captioned as the inbox's own view is called, never by the account or the first
+/// record its app's root goes by, and "my notes" as the notes; each list stands as tall as its
+/// rows, not at a window's height with an empty foot; and the one under the other keeps its
+/// caption clear of it.
+#[test]
+fn what_is_found_at_a_click_is_named_for_what_it_is_and_hugs_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    point_and_say(&mut session, (x + w * 0.05, y + h * 0.1), "my mails");
+    let inbox = wait_for(&mut session, "the inbox placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.contains("so.tilo.lang.mail"))
+    });
+    assert_eq!(inbox.title, "All inboxes", "named for its view: {inbox:?}");
+    point_and_say(&mut session, (x + w * 0.65, y + h * 0.1), "my notes");
+    let notes = wait_for(&mut session, "the notes placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.contains("so.tilo.lang.notes"))
+    });
+    assert_eq!(notes.title, "Notes", "named for its view: {notes:?}");
+    for _ in 0..30 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    for place in [&inbox, &notes] {
+        until(
+            &mut session,
+            &format!("{} captioned on screen", place.title),
+            |session| !session.shell_controls(&place.title).is_empty(),
+        );
+        let strip =
+            crate::common::strip(&session, crate::common::number(&place.strip)).expect("its strip");
+        let (_, _, _, ph) = wait_for(&mut session, "it on screen", |session| {
+            place_on_screen(session, place)
+        });
+        #[allow(clippy::cast_precision_loss, reason = "canvas pixels")]
+        let most = strip.canvas_height as f64;
+        assert!(
+            ph < most * 0.9,
+            "{} hugs its rows rather than standing at its most: {ph} of {most}",
+            place.title
+        );
+    }
+}
+
 /// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)` in canvas
 /// pixels, as the desk holds it.
 fn canvas_box(session: &Session, needle: &str) -> Option<(i64, i64, i64, i64)> {
@@ -367,8 +416,9 @@ fn a_question_stands_its_turn_at_the_caret() {
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
-    // What a found thing does where the person clicks: the canvas point the click names.
-    let found_at = (x + w * 0.05, y + h * 0.05);
+    // What a found thing does where the person clicks: the canvas point the click names, low
+    // enough that the caption over it stands in view, so the canvas has no reason to pan.
+    let found_at = (x + w * 0.05, y + h * 0.1);
     point_and_say(&mut session, found_at, "my mails");
     let (fx, fy, _, _) = wait_for(&mut session, "the inbox placed", |session| {
         canvas_box(session, "so.tilo.lang.mail")
@@ -1072,6 +1122,108 @@ fn a_turn_asked_at_the_edge_is_panned_into_view() {
         (zoom - 1.0).abs() < 0.02,
         "the canvas panned and kept its zoom: {zoom}"
     );
+}
+
+/// The person's turn wins over the agent's later placement (`canvas.md` §7, "Everything stays in
+/// view"): what the agent stands beside the turn takes free room where the person is looking,
+/// and a place the agent puts far off-screen is not chased at the cost of the turn, which stays
+/// wholly in view, at the zoom the person had.
+#[test]
+fn the_turn_stays_in_view_over_the_agents_places() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let inside = |(px, py, pw, ph): (f64, f64, f64, f64)| {
+        px >= x - 0.5 && px + pw <= x + w + 0.5 && py >= y - 0.5 && py + ph <= y + h + 0.5
+    };
+    point_and_say(
+        &mut session,
+        (x + w * 0.45, y + h * 0.2),
+        "what is on my task list?",
+    );
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
+    });
+    chat_holds(&session, CONVERSATION, "q1");
+    let turn = wait_for(&mut session, "the turn placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.starts_with("chat.workspace.turns:"))
+    });
+    for _ in 0..60 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    let shown = wait_for(&mut session, "the turn on screen", |session| {
+        place_on_screen(session, &turn)
+    });
+    assert!(inside(shown), "the turn stands in view: {shown:?}");
+    let root_of = |session: &Session, app: &str| {
+        let prefix = format!("tl:{app}:root-");
+        session
+            .resources()
+            .into_iter()
+            .map(|spec| spec.id.as_str().to_owned())
+            .find(|id| id.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("{app}'s root is published"))
+    };
+    // The agent's step in the turn, standing what it shows beside the turn: in view.
+    let notes = root_of(&session, "so.tilo.lang.notes");
+    session
+        .invoke_in_turn(
+            "agent:assistant",
+            (CONVERSATION, "q1"),
+            "shell:arrangement",
+            "place",
+            &serde_json::json!({"resource": notes}),
+        )
+        .unwrap_or_else(|error| panic!("the agent's place runs: {error}"));
+    let placed = wait_for(&mut session, "the notes placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.contains("so.tilo.lang.notes"))
+    });
+    for _ in 0..60 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    let beside = wait_for(&mut session, "the notes on screen", |session| {
+        place_on_screen(session, &placed)
+    });
+    assert!(
+        inside(beside),
+        "what the agent stood beside the turn is in view: {beside:?}"
+    );
+    let shown = place_on_screen(&session, &turn).expect("the turn");
+    assert!(inside(shown), "and the turn still is: {shown:?}");
+    // A place the agent puts far off-screen: the canvas does not chase it.
+    let mails = root_of(&session, "so.tilo.lang.mail");
+    session
+        .invoke_with_actor(
+            "agent:assistant",
+            "shell:arrangement",
+            "place",
+            &serde_json::json!({"resource": mails, "x": 6000, "y": 5000}),
+        )
+        .unwrap_or_else(|error| panic!("the agent's place runs: {error}"));
+    wait_for(&mut session, "the inbox placed", |session| {
+        canvas_box(session, "so.tilo.lang.mail")
+    });
+    for _ in 0..60 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    let shown = place_on_screen(&session, &turn).expect("the turn");
+    assert!(
+        inside(shown),
+        "the turn stays wholly in view, not pushed out by a place off-screen: {shown:?}"
+    );
+    let (_, _, box_w, _) = canvas_box(&session, "chat.workspace.turns:").expect("its box");
+    #[allow(clippy::cast_precision_loss, reason = "canvas pixels")]
+    let zoom = shown.2 / box_w as f64;
+    assert!((zoom - 1.0).abs() < 0.02, "and kept its zoom: {zoom}");
 }
 
 /// The whole conversation is reached from the turn's handle, not a button in its card: what the

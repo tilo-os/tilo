@@ -173,3 +173,30 @@ fn a_done_turns_steps_are_one_line_that_unfolds() {
         "the line, and every step under it when it unfolds"
     );
 }
+
+/// A long answer never grows past what the canvas shows (canvas.md §7, "Everything stays in
+/// view"): the card's words stand in a scroll, so its place hugs them up to the visible area and
+/// they wrap and scroll there.
+#[test]
+fn a_turns_words_scroll_inside_its_card() {
+    let turn = turn_answered(Message {
+        id: "r1".to_owned(),
+        author: "agent:assistant".to_owned(),
+        text: "Nine tasks are due this week. ".repeat(40),
+        work: Some(Work {
+            state: "done".to_owned(),
+            ..Work::default()
+        }),
+        ..Message::default()
+    });
+    let channel = Channel::default();
+    let tree = super::turn(&turn, &view_cx(&channel));
+    passes(&tree);
+    assert_eq!(tree.kind, "ui.Scroll", "the card scrolls what it holds");
+    let card = tree.children.first().expect("the card in the scroll");
+    assert_eq!(
+        card.props.get("padding"),
+        Some(&Value::text("section")),
+        "the card keeps its padding inside the scroll"
+    );
+}

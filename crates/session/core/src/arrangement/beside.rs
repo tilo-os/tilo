@@ -12,7 +12,48 @@ use super::{
     Arrangement, ArrangementAction, DEFAULT_HEIGHT, DEFAULT_WIDTH, Door, Item, clamp_side, locate,
 };
 
+/// What an answer's view stands beside: a turn's place, or the rectangle a turn will take
+/// before its view stands.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Beside {
+    Place(u64),
+    Asked(CanvasRect),
+}
+
+/// `rect` as a canvas place, its coordinates kept to what a place holds.
+fn canvas_place(rect: CanvasRect) -> CanvasPlace {
+    let at = |value: i64| {
+        i32::try_from(value.clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or_default()
+    };
+    let side = |value: i64| u32::try_from(value.clamp(0, i64::from(u32::MAX))).unwrap_or_default();
+    CanvasPlace::new(at(rect.x), at(rect.y), side(rect.width), side(rect.height))
+}
+
 impl Arrangement {
+    /// The free room inside `seen` (the part of the canvas the person saw when they asked) next to
+    /// `subject`, for a window of the default size or the largest part of it that fits
+    /// (`free_place_within`): where an answer's view stands so the person sees it without the
+    /// canvas moving away from their turn (canvas.md §7, "Everything stays in view"). `None` when
+    /// no room inside `seen` is free, or `subject` stands on no canvas.
+    pub(super) fn room_in_view(&self, subject: Beside, seen: CanvasRect) -> Option<CanvasPlace> {
+        let seen = canvas_place(seen);
+        let size = (clamp_side(DEFAULT_WIDTH), clamp_side(DEFAULT_HEIGHT));
+        self.handle.read(|tree| match subject {
+            Beside::Place(anchor) => {
+                let (workspace, row, group, _) = locate(tree, anchor)?;
+                let held = tree.workspaces.get(workspace)?;
+                let id = held.strips.get(row)?.window_groups.get(group)?.id;
+                let place = held.arrangement.place_of(id)?;
+                held.arrangement.free_place_within(place, size, seen, None)
+            }
+            Beside::Asked(rect) => {
+                let held = tree.active_workspace()?;
+                held.arrangement
+                    .free_place_within(canvas_place(rect), size, seen, None)
+            }
+        })
+    }
+
     /// The place `beside` names: a place of the arrangement by its own resource
     /// (`shell:place:<key>`), or the place showing that record, or anything of its root. `None`
     /// for empty text or a resource no place shows.
@@ -73,15 +114,11 @@ impl Arrangement {
     /// default size: where a step of a turn stands what it shows beside where the turn will stand,
     /// before its view does. `None` without a workspace in front.
     pub(super) fn point_beside_rect(&self, rect: CanvasRect) -> Option<(i64, i64)> {
-        let at = |value: i64| {
-            i32::try_from(value.clamp(i64::from(i32::MIN), i64::from(i32::MAX))).unwrap_or_default()
+        let subject = CanvasPlace {
+            width: clamp_side(rect.width),
+            height: clamp_side(rect.height),
+            ..canvas_place(rect)
         };
-        let subject = CanvasPlace::new(
-            at(rect.x),
-            at(rect.y),
-            clamp_side(rect.width),
-            clamp_side(rect.height),
-        );
         self.handle.read(|tree| {
             let held = tree.active_workspace()?;
             let free = held.arrangement.free_place_next_to(
