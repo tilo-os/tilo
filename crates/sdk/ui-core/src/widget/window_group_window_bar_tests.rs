@@ -367,6 +367,32 @@ fn a_window_whose_app_names_no_location_shows_its_own_name() {
     }
 }
 
+/// A window's one tab that a person named shows that name in its pill: the bar does not say it
+/// again in the location the app leaves empty.
+#[test]
+fn a_named_windows_name_stands_in_the_bar_once() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark().with_reduce_motion(true);
+    let mut g = pages(1);
+    let mut toolbar = slots();
+    toolbar.location = None;
+    assert!(g.set_tab_toolbar(1, Some(toolbar)));
+    let mut named = TabDescriptor::new(1, "Friday plan");
+    named.named = true;
+    g.update_tab_descriptor(named);
+    lay_out(&mut g, &theme);
+    let shown = g
+        .bar_for_tests()
+        .toolbar_row()
+        .toolbar()
+        .and_then(|toolbar| toolbar.location.as_ref())
+        .map(|location| location.label.clone());
+    assert_eq!(
+        shown, None,
+        "the pill names the window, the location stays empty"
+    );
+}
+
 #[test]
 fn a_fullscreen_windows_bar_fades_over_the_content_and_reduced_motion_cuts() {
     let start = crate::time::now();

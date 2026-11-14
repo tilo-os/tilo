@@ -1038,7 +1038,10 @@ impl TabBar {
         self.touch();
         let active = self.active_id;
         let mut toolbar = self.active_toolbar().cloned();
+        // The title stands in for a location the app does not name, except where the window's one
+        // pill says it already: a tab a person named shows that name once.
         if let Some(toolbar) = toolbar.as_mut()
+            && (!self.solo() || self.icon_only(active))
             && !toolbar.menu_only()
             && toolbar
                 .location
