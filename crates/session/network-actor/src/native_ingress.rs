@@ -718,7 +718,12 @@ impl ActorState {
         // The host did not answer: until a link with a host of the workspace
         // completes, its apps say it cannot be reached and work on what this
         // device has. The route dials again on the next heartbeat.
-        tracing::debug!(ws = %ws, host = %hex::encode(via.host.device_public_key), %reason, "native host dial failed; retrying");
+        // Where the host was dialled, as its hint names it: a hint signed before the host knew
+        // its relay names only the sockets it had then.
+        let at = WorkspaceDeviceHintV1::authenticate_transport_hint(via)
+            .map(|(payload, _)| format!("{:?}", payload.endpoint_addr))
+            .unwrap_or_default();
+        tracing::debug!(ws = %ws, host = %hex::encode(via.host.device_public_key), %at, %reason, "native host dial failed; retrying");
         crate::workspace_sync::unreachable(ws);
     }
 
@@ -788,6 +793,10 @@ impl ActorState {
             // A workspace this device hosts needs nothing of its own host's
             // live plane: it is the same process.
             tracing::debug!(ws = %ws, "joined the workspace's own host in process");
+        } else {
+            // The other half of "a workspace's link ended": from here on the
+            // workspace's governance and records reach this device again.
+            tracing::debug!(ws = %ws, governor, "a workspace's link is up");
         }
         self.drive_native_publication(ws);
     }

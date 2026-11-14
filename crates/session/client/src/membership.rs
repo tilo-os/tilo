@@ -176,8 +176,14 @@ impl<'a> Membership<'a> {
                 identity.signer.as_ref(),
                 tilo_clock::wall(),
             )
-            .await
-            .map(|_receipt| ())
+            .await?;
+        // What this device just committed leaves for the workspace's other devices now, rather
+        // than with whatever it next writes there.
+        tilo_broker_core::custody::OwnerCustody::schedule_publication(
+            self.engine,
+            self.workspace_id,
+        );
+        Ok(())
     }
 }
 
@@ -185,7 +191,9 @@ impl<'a> Membership<'a> {
 /// of them takes there, when each was admitted, the owner aside, whom the layout's policy names on
 /// its own, and the grants it makes, which are the ones the broker decides a person's and an app's
 /// actions against here: a grant governs from the device it was written on, and one taken back is
-/// gone here as it is everywhere. Whether anything changed.
+/// gone here as it is everywhere. The windows its devices share with it are among them
+/// ([`tilo_desktop_model::window_share`]): a share is the workspace's, so the desk of every device
+/// that holds the workspace reads it there, the sharer's own included. Whether anything changed.
 pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let owner = policy.owner.as_deref();
     let members: BTreeMap<UserId, Role> = policy

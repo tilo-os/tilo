@@ -110,6 +110,10 @@ host answers with a `selection_text` event carrying the same `request_id` and
 the frame's selection as `text` (empty when nothing is selected, at most 1 MiB).
 An offscreen engine cannot reach the system clipboard; the embedder copies it.
 
+`ready` / `tab_ready` advertise `page_events: true`: this host sends the events
+`page_record` and `page_changed` of its own accord (see "Several actors in one
+tab"). Neither is asked for and neither is answered.
+
 ### Keys and input methods
 
 `key` carries the key's logical name or text in `key` and, optionally, its
@@ -187,12 +191,35 @@ requests. Navigation waits for document-start script registration and the prior
 native lifecycle, and replacements stop the prior load without crediting its
 callbacks to a new action.
 
-Every tab starts on `about:blank` before its first address. That first entry is
-no page the person visited: `history` reports no `back` while it is all that is
-behind the page, `back` does not go to it, and `navigation_history` leaves it
-out. Once the first page commits, the session history forgets it
-(`Page.resetNavigationHistory`), so the page's own `history.back()` cannot reach
-it either and `history.length` starts at the page.
+A tab holds no page until its first address. The host creates its browser
+with a load it refuses itself (`data:,`, refused in `OnBeforeBrowse` before any
+document), so nothing commits: the tab's session history is the engine's
+initial entry alone, and the first navigation replaces that entry as it
+commits. The first page is therefore the history's first entry from its first
+script on: `history.length` is 1, the page's own `history.back()` goes nowhere,
+`history` reports no `back`, `back` does nothing and `navigation_history` has
+nothing behind the page. Nothing is removed from the history after a page
+committed, so there is no moment at which a script could see more. No `uri`
+or `loaded` comes for a tab before those of its first address. Until then the
+tab shows the empty document its frame began with: where the host names the
+address a tab shows (to extensions, in `navigation_outcome`), that is
+`about:blank`, as that document's own `location` says.
+
+The refused load is there for the renderer: the engine starts a new tab's
+renderer only for a navigation, and the renderer answers the DevTools commands
+a first navigation waits for (the document-start scripts). The engine picks
+and starts the frame's renderer as it creates the navigation, before it asks
+the host; refused there, the navigation leaves the renderer on the empty
+document every frame begins with, unused, so the first page loads in it. An
+address that needs no request (`about:blank`) could not be refused: the engine
+asks about none. A popup needs none of this: it comes from its opener with a
+live frame, and its first navigation replaces its initial entry in the same
+way.
+
+`tests/first_page_history.py` opens some 250 tabs, one after another and
+several at once, and fails if the first script of any first page saw more
+than the page itself or its tab could go back; it also prints what opening a
+tab costs (`perf chromium tab open`).
 
 A page's own questions (`alert`, `confirm`, `prompt`, and "leave this page?"
 from a `beforeunload` handler) are the embedder's to show. `ready` /
@@ -211,6 +238,82 @@ navigation that asked to leave it: an owned navigation fails with "The page
 asked to stay". A tab that never asked for questions has each declined at once
 (a confirm is false, a prompt null) and its page left when it asks to stay, as
 closing a tab always leaves it; no page waits on a question nobody sees.
+
+A file chooser a person opens (a click of their own on a file input) is the
+embedder's to show as well. `ready` / `tab_ready` advertise
+`file_choosers: true`; a tab that then receives `file_choosers` with a boolean
+`enabled` gets each as a `file_chooser` event: a positive `id`, `mode` (`open`
+for one file, `open_multiple` for several, `open_folder` for a folder), the
+chooser's `title` (at most 256 bytes, empty for the default) and `accept`, what
+the input takes as MIME types (`image/*`) and extensions (`.png`), each at most
+128 bytes and at most 256 of them. The page waits until `file_chooser_reply`
+with that `id` and `paths` answers it: absolute paths, exactly what the person
+picked (at most 4096, and one where one was asked for), or an empty list to
+cancel. The page then runs what a platform panel's answer runs: its own trusted
+`input` and `change` events, or `cancel`. `file_chooser_closed` with the `id`
+says the page no longer waits, answered or not: its document left, its tab
+closed or moved, a newer chooser took its place, or ten minutes passed with no
+answer. Only that reply answers it; no `page` action does. A chooser is a
+person's when the click or key the page heard last was the embedder's own
+(`mouse_button`, `key`): one that comes while a `page` action runs, or on an
+action's click or key however long after the action answered, is never the
+embedder's (an action's click is held for `fill_files`, see "Page actions").
+A tab that never asked keeps what the
+platform does: the host's own panel on macOS, and a chooser cancelled at once
+everywhere else, where every page is offscreen and no panel exists. A chooser
+to save into is never the embedder's.
+
+A server's sign-in (HTTP authentication, Basic or Digest, and a proxy's) is the
+embedder's to ask the person as well. `ready` / `tab_ready` advertise
+`http_auth: true`; a tab that then receives `http_auth` with a boolean
+`enabled` gets each challenge as an `http_auth` event while Chromium holds the
+request: a positive `id`, the `asker`, whether it is a `proxy`, the `realm`, the
+`scheme` (`basic`, `digest`; lower case, empty when it is no plain token) and
+whether it is a `retry`. The `asker` is where the credentials go and what a
+prompt names: the challenged request's origin (`https://example.org`,
+`http://127.0.0.1:8080`) for a server, `host:port` for a proxy. The `realm` is
+the server's own text, without control characters and at most 256 bytes; it
+names nobody and is shown as what the server says. `retry` says the credentials
+given last for this asker, realm and scheme were not accepted: a request that
+was given them was challenged again. The request waits
+until `http_auth_reply` with that `id` and that `asker` answers it: a `username`
+and a `password` (each at most 1024 bytes) to go on, or neither to cancel, which
+shows the server's own 401 page. A reply naming another `id` or another `asker`
+is no answer and sends nothing, so credentials never answer a question other
+than the one the person was shown. `http_auth_closed` with the `id` says the
+request no longer waits, answered or not: the tab went elsewhere, closed or
+moved, its renderer ended, another question took its place, or ten minutes
+passed with no answer.
+
+Only the tab's own document asks (the navigation under way, by its address), and
+what a document loads from its own origin. A challenge for anything else a page
+loads (an image, a frame or a request of another origin) is cancelled at once and
+nobody is asked, as current browsers do, so one site cannot put another's sign-in
+in front of the person as if it were its own; a proxy's challenge asks whatever
+the page is. A challenge whose sender is not the server the request went to is
+cancelled too. Requests waiting on one question (the same asker, realm and
+scheme) are one question, answered together; a different question supersedes an
+unanswered one. A request whose challenge reaches the host only after that
+question was answered was on its way to it: it is answered the same way, with
+the credentials or cancelled, and nobody is asked a second time. Each request
+has the answer once, so a request challenged again after it was given the
+credentials is the server refusing them, which is the next `http_auth`, with
+`retry`. For this the host keeps the last answer, the password with it, until
+the tab's next document, a `clear_data`, or `http_auth` turned off; it goes to
+no request of another asker, realm or scheme. A tab that never asked has each
+challenge cancelled at once, so no request waits on a question nobody sees. No
+event and no log carries a password, and no `page` action answers a challenge
+or reads its answer.
+
+No challenge is ever Chromium's to ask. Its own prompt is a window of its own,
+on the desktop of whoever runs the host, while the page behind it stays blank
+on `ERR_INVALID_AUTH_CREDENTIALS`. Every start of the host sets
+`disable-chrome-login-prompt`, which hands each challenge to the host, and a
+host the switch is not in effect for ends at once instead of running. The host
+then holds a challenge for an embedder that asked, and cancels every other one
+itself: a tab that never asked, one whose embedder stopped answering, one that
+is closing or moved. The rules are `src/http_auth.h`
+(`tests/http_auth_test.cc`); `tests/http_auth.py` runs them against two servers.
 
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
 only each tab's newest pending frame is kept, and tabs take turns, so a page
@@ -237,6 +340,12 @@ when it is the tab's first, its size changed, a popup is composited onto it,
 the rects cover half of it, or the app asks (`resend_frame`, when it lacks the
 frame they change). The toolkit applies the rects to the frame it keeps whole,
 converts only their pixels, and repaints and uploads only them.
+The engine draws an unchanged page again at times and reports the whole view
+repainted: four seconds after a document loaded into the frame its tab began
+with (a tab's first page), when it stops holding what was painted before. A
+paint that would go whole and is, pixel for pixel, the frame the tab has is
+not sent again, unless the app is owed a frame (`resend_frame`, a `resize`,
+the tab shown again). Only such a paint is compared.
 `tests/frame_damage.py` checks that a blinking caret arrives as small rects
 inside its field, that the frame rebuilt from them is the frame the host sends
 whole, and prints the bytes per blink each way.
@@ -351,16 +460,21 @@ python3 apps/browser/chromium/tests/native_regressions.py \
 
 ## Page actions
 
-`page` reads or operates the main document for the browser's `browser.page`
-actions and answers with exactly one `page_result` carrying its `request_id`.
+`page` reads or operates the page's own document, or a frame's (see
+"Frames"), for the browser's `browser.page` actions and answers with exactly
+one `page_result` carrying its `request_id`.
 `action` is `outline`, `click`, `fill`, `select`, `press` or `submit`.
 `src/page_automation.js` runs in a DevTools-created isolated world of the main
 frame: it shares the DOM, but page script cannot see or call it (the regression
 suite checks this from the main world). An outline lists landmarks, headings,
 text and interactive elements; interactive elements carry refs
 `d<document>e<element>`. Documents are numbered across the host's tabs, so a ref
-never resolves in a later document or another tab. Password and card-number
-values are reported by length only. Clicks and keys go through CEF's own input
+never resolves in a later document or another tab. Nothing a page action kept
+of a document (its script world, its refs, its frames) outlives it: when the
+page commits a new document all of it is dropped, so a script context of the
+document before is never taken for one of the next, whose renderer may be
+another that numbers its contexts from the start again. What a secret field
+holds is reported by its length only. Clicks and keys go through CEF's own input
 path, so pages see trusted events with user activation; fill, select and submit
 edit the DOM and dispatch the page's input, change and submit events.
 
@@ -374,12 +488,478 @@ navigation is not the action's answer: it arrives in the `network` log as its
 document request, marked `navigation` with Chromium's `user_gesture`. `none`:
 the action ran none of the page's code (reading, reader view).
 
-Not yet covered: cross-origin and same-origin iframe content (listed as
-`iframe` lines), file inputs, and drag gestures.
+A drawn `path` sends each point once the page has heard the one before (a
+move the page has not handled yet reaches it together with the next, as one),
+so a line through seven points is six strokes, one to each point after the
+first, on a busy page as on an idle one. The button then comes up where the
+pointer is, with no move of no length before it. A page that says of two
+points in a row that it did not hear them is sent the rest a frame apart.
+
+A key named by a letter reaches the page as that letter on every system: an
+upper-case one carries Shift for its own events on Linux, where the engine
+reads a key from its key code and Shift alone.
+
+A click that opens a file chooser holds it for `fill_files` on every system;
+the platform's own panel is never opened for an action, and neither is the
+embedder's picker (`file_choosers`), which is a person's alone.
 
 ```sh
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 ```
+
+### Reading a page
+
+A read follows the tree a person sees, the flat tree: an element with an open
+shadow tree is read as that tree, a slot as the nodes it was given, and as its
+own children only when it was given none; a slot handed on to another shadow
+tree's slot is followed in its turn. No element is left out for its name, its
+role or its lack of one: only what is not laid out is (`display: none`, the
+`hidden` attribute, `visibility: hidden`, `aria-hidden`, what a closed
+`details` or `content-visibility: hidden` folds away). An element whose
+display is `contents` has no box and is laid out as what it holds, so it is
+read through: a slot is one, and so is an article a page sets in a grid.
+`find`, `search`, `fields` and reader view read the same tree, and a ref
+inside a shadow tree acts like any other. A closed shadow tree is out of a
+page script's reach: a custom element that draws from one is listed in one
+line that says so and carries its ref, for a `capture` of it. A `pre` is a
+block of code, read as `code "…"` with its line breaks and indentation kept
+(a long one a part to a line, broken between two of its own lines); code
+named inside a sentence stays a word of the sentence.
+
+An outline line of text carries a paragraph whole; names and values stay
+short. Running text the page parts with two line breaks, as pages without
+paragraph elements do, is a line to each part. A run longer than 2000
+characters goes on in the next line, broken at the end of a sentence, so no
+word of the page's text is left out. One read carries at most 1200 lines or 100000
+characters. A read that stops short says so in its message and its last line,
+with the line to read on from: `outline` takes an optional `from`, the number
+of the line to start at (the first is 1, the most 1000000). The page is walked whole on each
+read (up to 20000 lines), so a line keeps its number between reads of a page
+that has not changed. Reading on does not move the baseline `changes`
+compares with; only a read from the top does. A `from` past the page's last
+line is refused.
+
+A `scroll` answers with how far it went and where it left what it scrolled
+(`Scrolled 700px down, to 1400 of 23400; nothing changed`, or `Did not move,
+at 0 of 23400`), then with what changed in the outline. A scroll by a distance
+goes that distance from wherever the box stands. The wheel is turned toward
+the place asked for and what is left is measured from where the box stands
+after each turn, so a turn the page shows late, or drops, neither stops the
+scroll short nor carries it too far. A box asked to go further than it holds
+is turned once more at its end, for a page that loads more there. A turn goes
+out as wheel events of at most one page of the box each: where the engine's
+wheel is a mouse's (Linux), Chromium carries a box no further than a page of
+itself for the wheel event that begins a scroll, and the events behind it in
+full. A turn that still carries a box only part of the way, with room left to
+go, is as far as a turn goes there, and the turns after it are that long. Each
+turn is made over the box where the page has it then: a page that grew above
+the box while the wheel turned has moved it, and a box moved out of view is
+turned no further, which the answer says (`the page moved the box out of view
+while the wheel turned, so it stopped there`). On a page
+its caller has not read, a scroll says so in place of the changes and does not
+answer with the page.
+
+`action: "search"` with `text` (1 to 200 UTF-16 units) and optionally a
+`frame`, whose document is then the one searched, answers with the outline
+lines that hold those words in any letter case: `data.total`, and up to 30
+`data.matches` of `line` and the `text` around the match, also printed as
+`line: text`. A match's line is a `from` to read on from. It reads what the
+outline reads, so a secret's value is found by neither. Words on either side
+of a link, or in two paragraphs, are on separate lines. `find` names controls
+and headings only; its refusal says words are found by searching. A search or
+a find that names no `frame` looks on in the frames the page shows (see
+"Frames"), and one that comes up empty there too names the frames to look in.
+
+`action: "settle"` with `quiet_ms` (50 or more) and `timeout_ms` (at most
+20000) answers once the document has loaded and nothing in it or its
+resources has changed for the quiet time, or at the timeout: `data.settled`,
+`waited_ms`, `mutations` and `resources`, and `Settled after 563 ms` or `Still
+changing after 10000 ms`. Quiet is all that wait knows of. A page that shows
+"Loading..." and waits on a timer or a server changes nothing meanwhile, and
+is settled while what it loads has not arrived.
+
+A caller that knows what the page will say names it. `text` is words the page
+must say and `gone` words it must no longer say, each 1 to 200 UTF-16 units;
+given both, both must hold. The wait then ends when a read of the document
+says so or at the timeout, whatever `quiet_ms` is, and never answers
+`settled`. `data.appeared` (of `text`) and `data.gone` say whether each held
+and `data.timed_out` whether the wait ran out; `data.line` is the number of
+the outline line that says `text` and `data.gone_line` of one that still says
+`gone`, each printed in `outline` as a search prints a match
+(`12: - heading "Hello World!" level=4`) and a `from` to read on from. The
+message says the same: `After 5012 ms the page says "Hello World!" (line 12)
+and no longer says "Loading..."`, or `Timed out after 3004 ms: the page does
+not say "Hello World!"`. A wait that ran out is an answer, `ok`, and never a
+failure: the caller decides what it means. Words that were not on the page
+when the wait began are gone at once (`does not say`).
+
+The words a caller waits for are often the next page's. A page that leaves
+its document while a wait for words runs has not ended the wait: the document
+the page went on to is waited on for what is left of the time, and the answer
+says so (`data.page_left`, `…, in the document it went on to`), with
+`waited_ms` counted from the wait's start. A second leaving is `page_changed`.
+A frame that moves on to another document is waited on the same way.
+
+A read is not answered by the page leaving its document either. An `outline`,
+`changes`, `find`, `search`, `fields`, `forms`, `at` or `capture` in flight
+when the page's own document is replaced has read nothing it can answer with,
+and ran none of the page's code: when the load ends it is asked again, from its
+start, of the document the page went on to, as the same request with what is
+left of its time. It answers with what it read there, or is refused; a page
+that never stops leaving its documents ends it as `timeout`. No read answers
+`ok` without what it read.
+
+The words are found as `search` finds them, in the lines a read prints, in
+any letter case. So what the page holds without showing (a spinner it has
+hidden) is not said, words in an open shadow tree are, and words of two lines
+are no match. With a `frame` the frame's document is the one waited on;
+without one only the page's own document is, and the frames it shows are not
+looked in. A read that stops short of a very long page's end says so of words
+it did not find (`data.partial`, `as far as a page is read`). Words outside
+their bound are refused as `invalid_request`.
+
+Each look for the words is a read of the whole document, so the page is not
+looked at every frame. It is looked at when the wait begins; after a change in
+the document, or in a shadow tree a look has met, and then no sooner than nine
+times the length of the look before and never within 50 ms of it, so that
+between its first look and its last a wait spends at most a tenth of a busy
+page's time looking; once a second while nothing changes, for what a page
+shows without changing its document (a style that runs out, a field's value);
+and once more at the timeout, so an answer that the words never came has just
+looked. A look costs what one `search` of the page costs. `data.checks` counts
+the looks and `data.read_ms` the time they took.
+
+`action: "reader"` with `enabled` shows the document's article alone and puts
+the page back when turned off. The article is the `article`, `main` or
+article-body element whose paragraphs hold the most text, else the block whose
+own paragraphs do. A page without paragraph elements is read by the text its
+blocks hold themselves, outside their links: an essay set in the cells of a
+layout table is its table, and one run on in a single block (line breaks
+between its paragraphs, font tags around it) is that block. What an old page
+says of its looks in attributes is left behind. A page with less than 500
+characters of such text answers `no_article`.
+
+### Frames
+
+A frame is its own document, and often the one that matters: a site puts its
+cookie question, its payment form or its sign-in in a frame, usually of
+another site. A frame of another site runs in a renderer of its own, and
+nothing reaches it from the page around it. The host asks the engine which
+frame an `iframe` element holds (`DOM.describeNode`) and runs the same
+isolated-world script in that frame's own process, on the connection the
+page's inspector hands out for it (`Target.setAutoAttach`, flattened, frames
+only, never holding a frame's document back). Web security, site isolation
+and the sandbox are as they were.
+
+- **A frame has a number.** A read lists a frame as
+  `iframe "Privacy choices" [frame=3] src="…"`. The number is the tab's: a
+  frame is given it when a read first lists it, and keeps it while its own
+  document moves on and while other frames come and go around it. It is the
+  element that holds the frame that is numbered, so a frame the page takes
+  out and puts back is another frame with another number. A number is not
+  passed on to another frame; only after 999 are the numbers of pages long
+  gone given again. `frame` takes the number, `frame=3` or `[frame=3]`.
+- **A ref carries its frame.** A ref says which document it was read in, so
+  an action on an element of a frame (`click`, `fill`, `select`, `press`,
+  `submit`, `fill_files`, `capture`, `hover`, `drag`, `path`, a `pointer`
+  step) runs in that frame without `frame`.
+  `outline`, `changes`, `find`, `search`, `fields`, `forms`, `fill_form`,
+  `scroll` and `settle` take `frame` to read, answer or turn a frame's
+  document. A `frame` named beside a ref is the document the action runs in.
+- **The page's read shows what its frames hold.** An `outline` of the page's
+  own document reads up to 6 of the frames the page shows (visible, and at
+  least 40 by 20 CSS pixels), 40 lines of each, under the line that lists the
+  frame, with refs that act in it. The message says how many lines came from
+  frames (`Read 12 lines, and 6 lines of frame 3`), and a frame with more
+  says to read the rest by its number. A frame nobody sees (a tracker's
+  pixel) is listed and not read. A frame inside a frame is listed among its
+  holder's lines and read by its own number.
+- **A find and a search look on in the frames.** With no `frame` named, a
+  `search` whose words the page's own document does not say, and a `find` it
+  has no match for, look in the frames the page shows (the same six a read of
+  the page reads), and with `frames: true` they look there as well as in the
+  page. A search's match in a frame carries `frame`, is printed
+  `frame 3, 12: text`, and its line is a `from` to read on from with that
+  frame; `data.total` counts every match and `data.page_total` the page's
+  own. A find counts the matches of every document it looked in together, the
+  page's first, by the closest way any of them matched (the whole name, then
+  any letter case, then a part): one match answers with its `frame` beside
+  the ref, which acts there; several without `nth` are refused as `ambiguous`
+  and listed with their frames, and `nth` counts across them. With a `frame`
+  named, that document alone is looked in.
+- **A gesture in a frame.** `hover`, `drag` and `path` on an element of a
+  frame run in the frame's document: the element is brought into view there,
+  the frame in the page, and the engine's pointer goes where the two put the
+  point. Both ends of a drag are elements of the one frame; an end given as a
+  point, or in another document, is `invalid_request`. A `fill_files` in a
+  frame sets the files of the frame's own input, and a click that opens its
+  chooser holds it as in the page.
+- **A point over a frame is the frame's.** `at` takes a point of the page.
+  Over a frame it answers with the frame's own element, through frames inside
+  frames: `data.frame`, a `ref` that acts there, and
+  `… is at 310, 240 in frame 3`. A frame that cannot be read is answered as
+  the `iframe` the page holds at that point. `at` with a `frame` is refused:
+  a point is the page's.
+- **Gone is said.** `frame_gone`: the number was given and its frame has left
+  the page, with its element or with the page it was on. `no_frame`: no read
+  of this tab printed that number. `not_ready`: the frame is between two
+  documents; ask again. A ref read in a frame document that is gone is
+  `stale_element`, as on the page.
+- **What is done in a frame is done to the frame.** An action in a frame
+  answers `navigation: "none"` unless the page itself left. A click or a sent
+  form there answers once the frame has settled or gone on to its next
+  document.
+- **The record and the review cover frames.** See "Several actors in one
+  tab".
+
+### Several actors in one tab
+
+A tab may be worked in by more than one actor at once: two agents, agents on
+other devices, an agent and the person reviewing what it did. `page` takes an
+optional `actor`, a name of 1 to 64 UTF-16 units the caller gives whoever asks.
+The engine trusts it as it trusts the rest of the command: the app decides who
+may act and passes the name of the invoker it admitted.
+
+- **Each actor reads its own changes.** `changes` answers with what changed
+  since that actor's own last `outline` or `changes`, per frame. Another
+  actor's read takes nothing away from it. A caller that names no actor is
+  the one unnamed actor.
+- **Actions take turns.** A request that arrives while another runs waits and
+  runs in the order it came; it is not refused. At most 32 wait, each for at
+  most 30 seconds, after which it is answered `busy` as never run. A private
+  `text_input` request never waits and is still answered `busy`.
+- **A cancel names its request.** `page_cancel` takes an optional
+  `request_id`. A request still waiting is answered `cancelled` as never run;
+  the one running is stopped as before; any other request is left alone.
+  Without `request_id` it stops the request that is running.
+- **The tab keeps a record.** Every action that operates the page (`click`,
+  `fill`, `select`, `fill_files`, `press`, `submit`, `hover`, `drag`, `path`,
+  `pointer`, `scroll`, `reader`) is set down when it ends: `seq`, `time_ms`,
+  `actor`, `action`, `ok` (and `code`), `message`, `url` (and `to_url` when
+  the page left it), `navigation`, the `target` it acted on as `role`, `name`
+  and `nth` (what `find` takes, so it still names the element after the
+  document's refs are gone), the `text` it wrote and the `values` it chose.
+  An action in a frame carries `frame` (the number the tab called the frame
+  by then), `frame_name` (the title or name the page gave it) and `frame_url`
+  (the origin and path of the frame's own document), which still say which
+  frame it was once the number names nothing.
+  What was written into a secret field is never recorded, whatever wrote it
+  (the entry then carries `secret: true`), and nor is text the page refused.
+  Reads take no place in it. `page` with `action: "ledger"` and `since`
+  answers with the entries after that place, `next`, `more`, `dropped`, the
+  action `running` and how many are `waiting`. It reads nothing of the page,
+  so it answers at once whatever is running. `running` is an operating action
+  this host is carrying out now: a read that is running, or an action its
+  caller has not sent yet, shows as neither. The record holds the newest 1000
+  actions of the tab and lasts as long as the tab.
+- **No secret is in the record.** A field is secret by its nature: a password
+  field, a field whose `autocomplete` says it holds a card detail (`cc-…`), a
+  current or new password or a one-time code, and a field the page draws as
+  dots (`-webkit-text-security`). A password field stays secret for as long
+  as its document lives, so a page that shows a password on request (its
+  field turned into plain text) is still read by length only; what
+  `autocomplete` or the page's style says of a field holds while the page
+  says it. What is written
+  into such a field is in the page and nowhere else. Its record entry carries
+  `secret: true` and no `text`, whether or not the caller marked the fill
+  `secret`. A `press` that writes a character there answers `Pressed a key in
+  a secret field` and is set down so, in the record and in every `others`
+  note. `fill_form` does not place it (`secret_field`). A key pressed without
+  an element goes where the page's focus is: the page says which field that
+  is (the entry's `target`), and when focus is inside a frame, the frame's
+  document is asked in turn; a character written where the focus could not
+  be read is not named either. Every read (`outline`, `fields`, `forms`,
+  `search`) says of a secret that it is set, by its length. A fill still
+  needs `secret: true` to write into one (`secret_field` otherwise): that is
+  the caller's consent, and not what keeps the text out of the record.
+- **What a person types is in the record.** Direct input, typed or chosen
+  straight in the page, is set down too: one entry to a burst of editing one
+  field, which ends when the person stops for a second, leaves the field,
+  commits it (a box ticked, an option chosen) or an action begins. The entry
+  has `how: "input"` and no `action`, an empty `actor`, `ok: true`, the field
+  as its `target` (`role`, `name` and `nth`, as an action's), the `text` the
+  field then holds as `fields` would give it, `message`, `url`, `time_ms` and,
+  in a frame, the frame fields. Of a secret field it carries `secret: true`
+  and no text. It takes the next `seq` when it is set down, so a reader of
+  the record sees it in order among the actions around it; one that ends
+  while an action runs is set down right after that action. An agent's own
+  input (the keys of its `press`, its fills, the clicks of its gestures) is
+  that action's entry and is not set down again. No answer carries such an
+  entry, so the host says it: the event `page_record`, with `tab`, `seq` and
+  the `entry` as `ledger` lists it. A named actor's next answer lists it
+  among `others`.
+- **What a window held is in the record.** A tab told `hold_departures` holds
+  what its page is about to send until the app answers: a form submission or
+  a request with data (`held`, answered by `hold_answer`) and a download
+  (`download_prompt`, answered by `download_decision`). The record says so in
+  two entries no action made, both with `how: "hold"` and `ok: true`. The
+  first is set down when it is held: its `action` is what waits (`submit`,
+  `request`, `download`), its `actor` that of the operating action running
+  then (empty when the page sent it on its own), `url` the page, `to_url` the
+  origin it would go to, and `message` its method and that origin
+  (`POST https://visa.example`), or of a download the file's name (at most
+  120 bytes) and the origin. The second is set down when it ends, with the
+  same `to_url` and `message`: its `action` is `allow`, `keep`, `drop`,
+  `too_many` or `gone`. The
+  host cannot know who answered, so `hold_answer` and `download_decision` may
+  say: `actor`, a name as a page action carries one, and `reason`, which is
+  `expired` when nobody answered and the app dropped it at its own deadline,
+  and `full` when the app turned it away at once as one more than it asks the
+  person about. A refusal is set down as `drop` for the first and as
+  `too_many` for the second. No hold waits for good: one no app answers
+  within three minutes, or within the `wait_ms` (1000 to 600000) the app
+  names with `hold_departures`, the host drops itself as one nobody answered
+  (`drop`, then `held_closed`), and a held download it discards the same
+  way. An answer that says
+  neither is the person's at the window, `allow` or `keep` with an empty
+  `actor`, which is how an app that knows of neither field is read. Neither
+  entry carries a request's body, a field's value or a secret. Each takes the
+  next `seq` when it is set down, after the action that is running, and is
+  told by `page_record` as direct input is. When the tab's main frame shows
+  another document, every hold of the tab ends: nothing of it leaves,
+  `held_closed` says so, and the record sets down `gone` with the page it was
+  held on as `url`. An answer that comes after that answers nothing, so a
+  held submission is never issued again from another page. A download the
+  page offered is not ended by this: the offer is the host's, not the
+  page's. A tab that closes ends its holds the same way and sets nothing
+  more down: its record ends with it.
+- **The engine says when the page changes itself.** The event `page_changed`
+  tells whoever reviews a page that something other than an action's own edit
+  changed what a field holds or what a form asks, so nobody reads the page
+  again and again to find out. It carries `tab`, `document` (the number that
+  document's refs carry), in a frame `frame`, `frame_name` and `frame_url` as
+  a record entry does, `forms` (each form whose shape changed: `form`, with
+  its `signature` and `offers` now, or `gone: true`) and `fields` (at most 8
+  changed fields, `more` counting the rest: `element`, `role`, `name`, `how`,
+  and `form` and `question` when the field answers one). `how` is `page` for
+  the page's own script and `input` for what a person typed. It never carries
+  what a field holds: that is read with `fields`, which says a secret by its
+  length. What inputs, selects and text areas hold is compared every 400 ms
+  (a script that writes a value sends no event), a form's shape when the
+  document changed, and a document sends at most one event in 250 ms, so a
+  page that rewrites a field forty times in two seconds is told a few times.
+  A field in an open shadow root is compared like the rest once a read of
+  the page's forms has met it. An editable region is told when it sends an
+  input event of its own, not when a script rewrites it.
+- **An actor is told what the others did.** An answer to a named actor
+  carries `others`: the newest eight record entries of other actors since
+  that actor last heard from the tab (`others_earlier` counts older ones). An
+  operating action's own answer carries its `seq`. A refusal carries both as
+  an answer does: what the others did is often why an action was refused.
+  `seq`, `next`, `dropped` and `time_ms` are numbers that may arrive written
+  as doubles (`3.0`); they are whole.
+- **A form is reviewed by who set each field.** `action: "fields"` lists every
+  field of the page's own document, and of up to 8 frames this tab has read
+  or acted in (each such field carries `frame`, and its line stands under the
+  frame's `iframe` line), or of one named `frame` alone, with what it holds
+  now and
+  `set`: `how` is `action` (with `by` and `seq`), `input` (typed straight into
+  the page, as a person does) or `page` (the page's own script), and
+  `changed` when the field no longer holds what was set. Secrets are listed
+  by length. A field nothing set since the page was first read carries no
+  `set`. It reads values and the page's own validity without dispatching
+  events, and takes no place in the record.
+
+Attribution of edits is by time: an action opens a window its own input lands
+in, which each edit it causes extends, so direct input within 1.5 seconds of an
+action's last edit is read as that action's. Tracking starts when the document
+is first read or operated, so what was typed before that carries no `set`, is
+not set down in the record and sends no `page_changed`.
+
+### A form as typed actions
+
+`action: "forms"` reads the document's forms (or a named `frame`'s) as what
+they ask. Each form has an id (`form1`, `form2` in document order, the forms
+that stand in shadow trees numbered after those of the document's own tree;
+`page` for fields in no form), a `label` (its own name, else the heading it
+stands under),
+its `method` and `action` path, a `signature`, `offers` and its `submit`
+buttons by label. Each field has a `name`, a `kind` (`text`, `email`, `tel`, `url`,
+`number`, `date`, `time`, `datetime-local`, `month`, `week`, `range`, `color`,
+`choice`, `choices`, `flag`, `secret`, `file`), its `choices` when it offers
+them, `required`, `locked`, the `value` it holds and the ref (`element`, or
+`elements` for a group) its own action takes. Radios of one name are one
+`choice`; checkboxes of one name are one `choices`; a select's empty option is
+no answer and is not listed. A label two fields share is said with its group
+(`"Date of birth: Day"`). Hidden and disabled controls are not listed. The
+signature is a hash of the method, the path and every field's name, kind and
+whether it is required, so it names the same form on a later visit and stops
+naming it once the form asks something else. `offers` is a second hash beside
+it, of the answers each choice question offers: a form whose list of dates is
+another list tomorrow keeps its signature and has other `offers`. The outline
+prints an answer that is a control of its own (a radio, a checkbox of a group)
+with its ref.
+
+A `fill` or a `select` that makes a form ask something it did not ask before
+says so in its message (`; the form now also asks "Which country?"`). `fields`
+names each field by the question it answers as well: `form`, `question` and,
+for one answer of a group, `answer`, and its outline line starts with the
+question.
+
+`action: "fill_form"` answers a form: `form` (an id or a signature, 1 to 64
+UTF-16 units), `answers` (an object of at most 200 names of 1 to 200 units,
+each to text of at most 65536 units, a number, a boolean, or a list of at
+most 64 strings of at most 1024 units for `choices`) and optionally `submit`
+(`true` for the form's first submit button, a button's label of 1 to 200
+units, or `false`, which is the same as leaving it out) and `cross_origin`
+(a boolean, as on `submit`: a form that sends its data to another site is
+sent only with it). With `frame` it answers a form of that frame's document,
+as `forms` with the same `frame` read it. Answers are placed in the form's own order, and
+the form is read again after each, so an answer that opens a question is
+placed before the answer to it. A name matches exactly, or in any letter case
+when only one field is like it. The answer's `data` carries `results` (one per
+answer: `ok`, or `code`, `message` and the field's `element`), `set` (name and
+the value placed), `submitted`, `now_asks` (fields that appeared),
+`unanswered` (required fields still empty), `signature` (the form as it was
+answered) and `became`: the `signature` and `offers` a read of the form gives
+once the answers were placed, so a caller knows at once that the form now asks
+something else or offers other answers. Placing is the same DOM edit and
+events `fill` and `select` make; a checkbox or radio is clicked through the
+DOM.
+
+What it does not place is refused per field, for the caller to do with that
+field's own action: `secret_field` (use `fill` with `secret`), `needs_files`
+(`fill_files`), `needs_typing` (an editor `fill` types into), `no_option`,
+`not_editable`, `rejected`, and `no_field` for a name the form does not ask.
+A form with an answer not placed is not sent, nor one with a required field
+empty or invalid; the message says which. A call that places nothing and
+sends nothing fails with the first refusal's code. A page that has forms, none
+of them the one named (by a signature it no longer has, or an id the page does
+not have), answers `form_changed`; a page that has no form at all answers
+`no_form`. `fill_form` takes a place in the tab's
+record with its `answers` as placed; `forms` is a read and takes none.
+
+On a page built of components a form's questions are the fields a person
+sees in it, found along the flat tree a read follows. A field in a component's
+open shadow tree belongs to no form of the page's tree, and neither does a
+field the page hands a form component through a slot: each is a question of
+the form it is drawn in, in the place it is drawn, and a form that stands in a
+shadow tree is a form of the page like any other. A field of a shadow tree is
+named by the label its component draws for it (the words handed to the label
+through a slot included), else by what names the component: its
+`aria-label`, a label of the page that is for it or around it, its `label`
+attribute. A component that takes part in a form through the page's form
+association (ElementInternals) and draws no input, select or text area is a
+question itself: a `flag` answered by a click when its role is `checkbox` or
+`switch` (so is any component with such a role), the form's submit button
+when its `type` says so, and otherwise a question that carries `unreachable`
+and is not answered by name: `closed_shadow_tree` when the component is drawn
+from a closed shadow tree, which no page action reaches, `no_field_of_its_own`
+when it draws a control of its own making. An answer for it is refused with
+`unreachable_field` and its ref. A page without components is read as it
+always was, and on any page a form whose fields are all its own keeps its
+number, its questions and its signature.
+
+A form is sent by its own path: its own submit button as the submitter, else
+the form's submit. A button a component draws is no submitter of the form, so
+it is pressed, and the form is listened to: `submitted` is true when the form
+then sent, and when it did not, `pressed` names the button and the message
+says the form sent nothing, since what the page did then is its script's. A
+page that takes the form's sending in its own script and keeps the form from
+leaving is said with `taken_by_page`.
+
+A frame's forms are its own document's: `forms` and `fill_form` read and
+answer them with `frame`.
 
 ### Private guarded text input
 
@@ -496,6 +1076,18 @@ pages painting nothing yet answering page actions, and the paint stream's
 python3 apps/browser/chromium/tests/agent_host.py target/chromium/tilo-chromium-host
 ```
 
+What a shared window hands over — a real page, captured as Browser captures it
+(drawn from its pixels, a display list only while a session shares the window
+with someone watching), drawn by the web view and put whole into the share's
+outbox within seconds of being asked, for a share that starts on a loaded page
+and for one that starts before the page loaded, with what the page's fields
+hold (the toolkit's `page-share-probe` example plays the session's ask):
+
+```sh
+cargo build -p tilo-ui --example page-share-probe
+python3 apps/browser/chromium/tests/page_share.py target/chromium/tilo-chromium-host target/debug/examples/page-share-probe
+```
+
 ## Native blocking
 
 A request-context handler checks HTTP(S) resources, including dedicated-worker
@@ -561,6 +1153,26 @@ fixture also checks startup navigation ownership, redirects, repeated URLs,
 explicit internal-URL rejection at the Browser boundary, and native-engine
 blank/canonical URL, cancellation/recovery, history refusal, and renderer
 termination followed by Reload.
+
+## Several actors, end to end
+
+```sh
+cargo build --locked -p browser --example native_page_actors
+tools/with-test-environment.sh target/debug/examples/native_page_actors --host PATH
+```
+
+Drives the real Browser's registered page actions against an engine host that
+is already built (`PATH` is its executable) and a form fixture on the
+loopback, as the host runs them for actors it admitted: two named agents
+answer one form at once through `fill-page-form`, the second waiting its turn
+and being told what the first did; a review reads who set each field
+(`read-page-fields`) and the tab's record (`read-page-record`); words are
+found by line (`find-page-text`) and read on from (`read-page` with `from`);
+and the form is sent, completing on the page it opened, where the fixture
+says what the site received. It runs on Linux and macOS, starts no supervisor
+and builds no engine. It is the real Browser, so it runs only inside the test
+environment: started through `cargo run` it would browse with the profile of
+whoever runs it, and it refuses to.
 
 ## Extensions and tabs
 
@@ -674,7 +1286,11 @@ content scripts (with `sender.tab`) work without help.
 - `scripting.executeScript` reaches the frames an extension names
   (`frameIds`, `documentIds`, `allFrames`) and `tabs.sendMessage` one frame
   (`frameId`, `documentId`), as Bitwarden injects its form filler into each
-  frame that asks. A message reaches the frame's content scripts, or the
+  frame that asks. Each of them reads the page's script contexts from the
+  tab's inspector, one at a time: the frames of a page ask at once, and a
+  read that began while another ran would empty what that one had collected
+  and lose its own, so a frame that is there would be answered as `No frame
+  with id`. A message reaches the frame's content scripts, or the
   extension's own page in the frame, as Evernote Web Clipper answers the
   panel it shows in the page. A message that names no frame reaches every
   frame the extension has a world in, as in Chrome, so a password manager's

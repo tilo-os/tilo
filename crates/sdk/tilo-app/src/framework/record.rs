@@ -314,9 +314,20 @@ impl<P: Resource> RecordDoor for Held<P> {
         }
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+        not_by_app::<P>(&action)?;
         self.apply(&action, invoker)
             .map_err(|error| error.to_string())
     }
+}
+
+/// Refuse `action` when only the app's own code applies it
+/// ([`Resource::by_app`]): a door takes what a caller may send, and this is
+/// no caller's, however it came to be encoded.
+pub(crate) fn not_by_app<P: Resource>(action: &P::Action) -> Result<(), String> {
+    if P::by_app(action) {
+        return Err(tilo_resource::by_app_refusal(P::LABEL));
+    }
+    Ok(())
 }
 
 /// Who a change made now is by: the invoker the host delivered the

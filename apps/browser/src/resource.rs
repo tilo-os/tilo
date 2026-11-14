@@ -34,6 +34,12 @@ pub struct Browser {
     /// Sites without tracker protection, by exact origin
     #[model(readonly)]
     pub site_exceptions: Set<String>,
+    /// Forms remembered of the sites that asked them, by site and
+    /// signature: their shape, never what a field held. Reading or
+    /// answering a page's forms remembers them, and forgetting a form, a
+    /// site's forms or all of them forgets them; nothing else changes them.
+    #[model(readonly)]
+    pub site_forms: std::collections::BTreeMap<String, crate::site_memory::RememberedForm>,
 }
 
 impl Browser {
@@ -52,6 +58,7 @@ impl Browser {
     initialize = Browser::default,
     scopes = Browser::scopes,
     children = Browser::sites,
+    facts = Browser::document_facts,
     read_content = Browser::read_document
 )]
 impl Browser {
@@ -114,6 +121,59 @@ impl Browser {
         }
         Ok(())
     }
+
+    /// Remember the forms a page asks.
+    #[action(housekeeping)]
+    pub fn remember_forms(
+        &mut self,
+        #[param("The site's exact origin, such as https://example.org")] origin: String,
+        #[param("The page's path on the site")] page: String,
+        #[param("The forms read on the page, by their shape")] forms: Vec<
+            crate::site_memory::RememberedForm,
+        >,
+        #[param("Whether they are every form the page asks now")] whole: bool,
+        #[param("When they were read, in Unix seconds")] at: u64,
+    ) -> Result<(), Refusal> {
+        crate::site_memory::remember(&mut self.site_forms, &origin, &page, forms, whole, at)
+    }
+
+    /// Forget a remembered form.
+    #[action(keywords = "remembered form, site memory")]
+    pub fn forget_form(
+        &mut self,
+        #[param("The site's address or exact origin, such as https://example.org")] origin: String,
+        #[param("The form's signature, as read-remembered-forms gives it")] signature: String,
+    ) -> Result<(), Refusal> {
+        let origin = site_named(&origin)?;
+        if crate::site_memory::forget_form(&mut self.site_forms, &origin, &signature) == 0 {
+            return Err(Refusal::new("no such form is remembered of this site"));
+        }
+        Ok(())
+    }
+
+    /// Forget a site's remembered forms.
+    #[action(keywords = "remembered forms, site memory, forget site")]
+    pub fn forget_site_forms(
+        &mut self,
+        #[param("The site's address or exact origin, such as https://example.org")] origin: String,
+    ) -> Result<(), Refusal> {
+        let origin = site_named(&origin)?;
+        crate::site_memory::forget_site(&mut self.site_forms, &origin);
+        Ok(())
+    }
+
+    /// Forget all remembered forms.
+    #[action(keywords = "remembered forms, site memory, clear forms")]
+    pub fn forget_all_forms(&mut self) -> Result<(), Refusal> {
+        self.site_forms.clear();
+        Ok(())
+    }
+}
+
+/// The site `named` by its address or its exact origin.
+fn site_named(named: &str) -> Result<String, Refusal> {
+    crate::site_controls::origin(named.trim())
+        .ok_or_else(|| Refusal::new("a site is named by one http(s) origin"))
 }
 
 pub fn bookmark_resource_id(id: &Id) -> String {
@@ -136,6 +196,37 @@ impl Browser {
                 CATALOG.t("browser-library-section-downloads"),
             ),
         ]
+    }
+
+    /// What the document holds, as a person would state it: the bookmarks
+    /// in order, the preferences, and the sites tracker protection is off
+    /// for. It is the document's read, and so what the action directory
+    /// discloses the window through: Show page and the window's other views
+    /// change only what their caller sees, and a window disclosed through
+    /// one of them is never listed to an agent, nor the page on it.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the signature is the one `#[resource(facts = path)]` takes"
+    )]
+    fn document_facts(&self) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({
+            "bookmarks": self
+                .bookmarks
+                .values()
+                .map(|bookmark| {
+                    serde_json::json!({ "title": bookmark.title, "address": bookmark.url })
+                })
+                .collect::<Vec<_>>(),
+            "homepage": self.preferences.homepage,
+            "search_engine": self.preferences.search_engine,
+            "blocks_ads_and_trackers": self.preferences.adblock_enabled,
+            "clears_data_on_exit": self.preferences.clear_on_exit,
+            "sites_without_tracker_protection": self
+                .site_exceptions
+                .iter()
+                .cloned()
+                .collect::<Vec<String>>(),
+        }))
     }
 
     fn sites(&self) -> Vec<Derived<Self>> {
@@ -172,6 +263,18 @@ impl Browser {
             )
     }
 
+    /// Forgetting the forms remembered of the site `origin`, as the row of a
+    /// page on that site offers it.
+    pub(crate) fn forget_site(origin: &str) -> Option<ActionDecl<Self>> {
+        let params = browser::ForgetSiteForms::paths();
+        Self::FORGET_SITE_FORMS
+            .bind(params.origin, origin.to_owned())
+            .declaration(
+                "forget-this-site-forms",
+                ui::tilo_resource::word!("browser-application-forget-this-site-forms"),
+            )
+    }
+
     pub fn exceptions(&self) -> std::collections::BTreeSet<String> {
         self.site_exceptions.iter().cloned().collect()
     }
@@ -189,6 +292,10 @@ const SCENARIOS: &[&str] = &[
     "error",
     "permission",
     "page-dialog",
+    "page-sign-in",
+    "page-sign-in-again",
+    "review",
+    "site-forms",
     "suggestions",
     "library-history",
     "library-bookmarks",
@@ -275,7 +382,12 @@ impl ResourceApp for BrowserShell {
         match scenario {
             Some("pip-empty" | "suggestions") => (1000, 650),
             Some("settings" | "history-paused") => (900, 700),
-            Some("loading" | "error" | "permission" | "page-dialog") => (900, 620),
+            Some(
+                "loading" | "error" | "permission" | "page-dialog" | "page-sign-in"
+                | "page-sign-in-again",
+            ) => (900, 620),
+            Some("review") => (1000, 1480),
+            Some("site-forms") => (900, 1120),
             Some(name) if name.starts_with("library-") || name.starts_with("downloads-") => {
                 (1000, 700)
             }
@@ -284,6 +396,15 @@ impl ResourceApp for BrowserShell {
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<Browser>> {
+        if name == Some("site-forms") {
+            return vec![Browser::REMEMBER_FORMS.with(browser::RememberForms {
+                origin: crate::site_memory::SHOT_SITE.into(),
+                page: crate::site_memory::SHOT_PAGE.into(),
+                forms: crate::site_memory::shot_forms(),
+                whole: true,
+                at: tilo_clock::unix_now(),
+            })];
+        }
         if name != Some("library-bookmarks") {
             return Vec::new();
         }
@@ -475,6 +596,17 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
         && let Some(history) = cx.person::<crate::history::BrowsingHistory>()
     {
         window.attach_history(history);
+    }
+    // What operated this tab's page is a record of Browser's in the
+    // workspace, each action a change of it by whoever acted: History, a
+    // recording and the person's other devices read it there. A private
+    // window keeps none.
+    if !cx.is_private()
+        && let Some(record) = cx.person::<crate::page_record::PageRecord>()
+    {
+        window
+            .page_mut()
+            .attach_page_record(record, cx.device().unwrap_or_default());
     }
     if custody && let Some(person) = cx.me() {
         window
@@ -712,6 +844,39 @@ mod tests {
         );
     }
 
+    /// A site's sign-in is the window's row while its request waits, with
+    /// the prompt's two answers bound to it and nothing typed in it;
+    /// cancelled in the prompt, both go.
+    #[test]
+    fn a_sites_sign_in_is_answered_through_its_row() {
+        let mut app = TestApp::<BrowserShell>::capture(Some("page-sign-in")).unwrap();
+        app.settle();
+        let published = app.harness().resources();
+        let sign_in = find(&published, crate::page_sign_in::ROW)
+            .expect("the sign-in a request waits on is a row");
+        assert_eq!(sign_in.label, "Sign in to staging.example.org");
+        let ids: Vec<&str> = sign_in.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["answer-page-sign-in", "cancel-page-sign-in"]);
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key(crate::page_sign_in::ROW),
+            "the prompt stands over the page"
+        );
+
+        // A person cancels in the prompt, and the row goes with it.
+        app.harness()
+            .click_named(&format!("{}.secondary", crate::page_sign_in::ROW))
+            .unwrap();
+        app.settle();
+        assert!(find(&app.harness().resources(), crate::page_sign_in::ROW).is_none());
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key(crate::page_sign_in::ROW)
+        );
+    }
+
     #[test]
     fn a_launch_opens_only_the_web_pages_the_browser_claims() {
         let uri = "HTTPS://example.test/a --still-data";
@@ -915,6 +1080,116 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// [`reachable_by_an_agent`] from the top of the directory, as an agent's door walks it: the
+    /// rows the window's directory starts with, then what each listed resource holds. A row an
+    /// agent is not shown hides everything below it, the window's own row included.
+    fn reachable_from_the_top(app: &mut TestApp<BrowserShell>) -> (Vec<(String, String)>, String) {
+        use ui::collaboration::action_directory::ActionDirectorySnapshot;
+        use ui::tilo_actions::OperationKind;
+        let resources = app.harness().resources();
+        let descriptors = ui::tilo_actions::door::survey(&resources);
+        let snapshot = ActionDirectorySnapshot::build(&resources, &descriptors, |_| None);
+        let mut reached = Vec::new();
+        let mut top = String::new();
+        let mut rows: Vec<_> = snapshot.roots.iter().map(|row| (row, true)).collect();
+        while let Some((row, at_top)) = rows.pop() {
+            match (&row.action, &row.visibility) {
+                (Some(action), _) => reached.push((row.resource.clone(), action.clone())),
+                (None, Some(visibility)) => {
+                    let private_view = visibility.governing_kind == Some(OperationKind::View)
+                        && !visibility.contract.is_participant_view()
+                        && !visibility.contract.reads_document();
+                    if at_top {
+                        use std::fmt::Write as _;
+                        let _ = write!(
+                            top,
+                            "{} is disclosed through {} ({}); ",
+                            row.resource,
+                            visibility.action,
+                            if private_view {
+                                "a private view"
+                            } else {
+                                "listed"
+                            }
+                        );
+                    }
+                    if !private_view {
+                        rows.extend(
+                            snapshot
+                                .nodes
+                                .get(&row.resource)
+                                .map_or(&[][..], |node| &node.rows)
+                                .iter()
+                                .map(|row| (row, false)),
+                        );
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        (reached, top)
+    }
+
+    /// An agent at the door lists a Browser window from the top: the window's own row, then the
+    /// page on it. The page's actions reach it only when every row above the page is one an agent
+    /// is shown.
+    #[test]
+    fn an_agent_reaches_the_page_from_the_top_of_the_windows_directory() {
+        let url = "https://github.com/ada";
+        for arguments in [&[ui::webview::VISITOR_WINDOW_FLAG, url][..], &[url][..]] {
+            let engine = ui::webview::test_engine::TestEngine::new();
+            crate::browser_widget::test_window_engine::install(engine.clone());
+            let mut app = TestApp::<BrowserShell>::launched(arguments).expect("Browser opens");
+            engine.push_event(ui::webview::WebViewEvent::LoadFinished);
+            app.settle();
+            let (reached, top) = reachable_from_the_top(&mut app);
+            for action in ["read-page", "navigate"] {
+                assert!(
+                    reached
+                        .iter()
+                        .any(|(resource, id)| resource == "browser.page" && id == action),
+                    "{arguments:?}: {action} on browser.page is not reached from the top of the \
+                     directory; at the top: {top}reached: {reached:?}"
+                );
+            }
+        }
+    }
+
+    /// The document states its bookmarks in order, as a person would name them, and its
+    /// preferences: what the window's row in the action directory is disclosed through.
+    #[test]
+    fn the_document_states_its_bookmarks_and_preferences() {
+        let mut app = TestApp::<BrowserShell>::capture(Some("library-bookmarks")).unwrap();
+        app.settle();
+        let state = app.state();
+        let facts = state
+            .document_facts()
+            .expect("the document states its facts");
+        let stated: Vec<(String, String)> = facts["bookmarks"]
+            .as_array()
+            .expect("the bookmarks are a list")
+            .iter()
+            .map(|bookmark| {
+                (
+                    bookmark["title"].as_str().unwrap_or_default().to_owned(),
+                    bookmark["address"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        let held: Vec<(String, String)> = state
+            .bookmarks
+            .values()
+            .map(|bookmark| (bookmark.title.clone(), bookmark.url.clone()))
+            .collect();
+        assert_eq!(stated.len(), 2, "{facts}");
+        assert_eq!(stated, held);
+        assert_eq!(facts["homepage"], state.preferences.homepage.as_str());
+        assert_eq!(
+            facts["search_engine"],
+            state.preferences.search_engine.as_str()
+        );
     }
 
     #[test]

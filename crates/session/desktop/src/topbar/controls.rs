@@ -176,40 +176,7 @@ impl TopBarChrome {
                 let name = if named.is_empty() {
                     t("topbar-show-people")
                 } else {
-                    let viewers = named
-                        .iter()
-                        .map(|(peer, name, is_agent, _)| {
-                            let kind = match is_agent {
-                                Some(true) => "agent",
-                                Some(false) => "person",
-                                None => "session",
-                            };
-                            let (view_only, controlled) = self.sharing_targets_for_peer(*peer);
-                            let mut access = Vec::new();
-                            if !controlled.is_empty() {
-                                access.push(t_args(
-                                    "topbar-viewer-can-control",
-                                    &[("targets", controlled.join(", ").into())],
-                                ));
-                            }
-                            if !view_only.is_empty() {
-                                access.push(t_args(
-                                    "topbar-viewer-view-only",
-                                    &[("targets", view_only.join(", ").into())],
-                                ));
-                            }
-                            t_args(
-                                "topbar-viewer-entry",
-                                &[
-                                    ("name", name.as_str().into()),
-                                    ("kind", kind.into()),
-                                    ("access", access.join("; ").into()),
-                                ],
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    t_args("topbar-people-visible", &[("viewers", viewers.into())])
+                    self.sharing_disclosure(&named)
                 };
                 if watching == 0 {
                     name

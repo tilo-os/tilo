@@ -300,6 +300,7 @@ impl Session {
             &self.shared.handle,
             displays,
             sync.as_deref(),
+            self.shared.engine.as_ref(),
             &self.shared.pages,
             Instant::now(),
         );
@@ -339,6 +340,13 @@ impl Session {
     /// What the frame just drawn asked of the session: the control socket's answer, what assistive
     /// technology reads of it, a live projection and a call it is shared to.
     fn serve_drawn_frame(&mut self) {
+        // A tile showing another device's window took its picture while the desk built this frame,
+        // after this turn's pass of the shares asked it: the shares ask their tiles again, so what
+        // they say of a window is what the frame just drawn shows of it.
+        self.shared
+            .window_shares
+            .borrow_mut()
+            .follow_drawn(&self.shared.handle);
         let answering = Instant::now();
         // What `tilo-control` asks of the frame just drawn.
         let desk = desk(&self.shared, &self.compositor);
@@ -842,6 +850,7 @@ fn desk<'a>(shared: &'a crate::Shared, compositor: &Compositor) -> crate::test_c
         engine: shared.engine.as_deref(),
         seats: &shared.seats,
         sync: shared.sync.as_deref(),
+        shares: &shared.window_shares,
         locked: compositor.locked(),
         lock_screen_drawn: compositor.lock_drawn(),
         lock: &shared.lock,

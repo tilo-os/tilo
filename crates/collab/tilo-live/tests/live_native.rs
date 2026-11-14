@@ -164,8 +164,7 @@ async fn native_carrier_admits_scopes_and_relays_their_sealed_tracks() {
         move |session| {
             let relay = relay.clone();
             async move {
-                let peer = Peer(session.remote());
-                relay.serve_session(session, peer).await;
+                native::serve_on(&relay, session).await;
             }
         }
     })

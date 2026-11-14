@@ -13,6 +13,18 @@
 //! workspace goes through. An encrypted write has no place here: the key of
 //! the store is the identity itself, and its documents travel only between
 //! devices that already share it.
+//!
+//! One record of the store is the store's own: the certificates of the
+//! person's devices, as each device knows them ([`DEVICES_APP`]). A device
+//! lists the certificates it holds there and admits the ones it reads there,
+//! each checked as the certificate a device shows for itself is — signed by
+//! the root, current, not revoked, not a store node's — so every device of
+//! the person comes to know the others, whichever of them it met.
+//!
+//! No document, that record included, is handed to a device this store
+//! holds no such certificate of: not as a snapshot when a link starts, and
+//! not as a write while it lasts. A device never met is told who this one
+//! is, and catches up once the certificate it shows is admitted.
 
 use super::{
     DocumentRow, PeerDocument, ReceiveOutcome, Route, backend, default_surfaces, err, now_ns,
@@ -50,6 +62,21 @@ const STORE_VERSION_PLAIN: u32 = 1;
 /// A write's clock may lead or trail the receiving device by this much.
 const CLOCK_SKEW: Duration = Duration::from_secs(300);
 
+/// The app the record of the person's devices is filed under: the identity's
+/// own, which no installed app publishes records as.
+const DEVICES_APP: &str = "so.tilo.identity";
+/// The kind of the person's record that lists their devices: one entry per
+/// device, its key in hex naming its certificate's postcard bytes.
+const DEVICES_KIND: &str = "identity.devices";
+/// The most devices that record names to this device: entries past it are
+/// not read, and this device adds none.
+const MAX_DEVICES: usize = 256;
+/// The longest certificate one entry of it carries.
+const MAX_CERTIFICATE_BYTES: usize = 4096;
+/// The most writes of one entry, made at once by different devices, that are
+/// read for the certificate it lists.
+const MAX_WRITES: usize = 8;
+
 /// One person's own documents, held by one of their devices.
 #[derive(Clone)]
 pub struct PersonalStore {
@@ -75,6 +102,9 @@ pub struct PersonalStore {
     /// Whether what this device refuses moved since it was last asked: the
     /// links send the sets it names.
     refusals_moved: bool,
+    /// Whether the certificates this device holds moved since the record of
+    /// the person's devices was last published: the links publish it again.
+    devices_moved: bool,
 }
 
 impl PersonalStore {
@@ -93,6 +123,8 @@ impl PersonalStore {
             refusals: Vec::new(),
             told: BTreeSet::new(),
             refusals_moved: false,
+            // This device's own certificate is not listed yet.
+            devices_moved: true,
         })
     }
 
@@ -330,10 +362,212 @@ impl PersonalStore {
             return Err("device revoked".into());
         }
         let verified = admitted(self.root, certificate, now)?;
-        Ok(self
+        let held = self
             .certificates
-            .insert(certificate.device_public_key, verified)
-            .is_none())
+            .insert(certificate.device_public_key, verified);
+        // A certificate this device did not hold is one its siblings may
+        // lack: the record of the person's devices is published with it.
+        self.devices_moved |= held.as_ref().is_none_or(|held| **held != *certificate);
+        Ok(held.is_none())
+    }
+
+    /// The route of the record that lists the person's devices.
+    fn devices_route() -> Route {
+        Self::route(DEVICES_APP, &collab_types::person_record_id(DEVICES_KIND))
+    }
+
+    /// Whether `record` of `app` is the record that lists the person's
+    /// devices: the store's own, which no app reads or is handed.
+    fn is_devices_record(app: &str, record: &str) -> bool {
+        app == DEVICES_APP && record == collab_types::person_record_id(DEVICES_KIND)
+    }
+
+    /// Whether this store holds a certificate for `device` that makes it one
+    /// of the person's devices now: one their root signed, current, and not
+    /// revoked. A device never met holds none, whatever it will show.
+    fn holds_device(&self, device: &[u8; 32], now: SystemTime) -> bool {
+        self.certificates.get(device).is_some_and(|certificate| {
+            !self.revocations.refuses(certificate) && certificate.current_typed(now_ns(now)).is_ok()
+        })
+    }
+
+    /// Whether `message` is `remote`'s to be sent. A document of the person's
+    /// goes only to a device already verified as one of theirs: a device that
+    /// has shown no certificate, one of another person's, a revoked one and
+    /// one whose certificate ran out are sent none, the record of the
+    /// person's devices included. What this device refuses is told to the
+    /// device whose writes it is about and to the person's devices, and to
+    /// no one else: a refusal names the record it is of.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(dead_code, reason = "the page's session wires its own links")
+    )]
+    fn hands(&self, message: &NeighbourMsg, remote: &[u8; 32], now: SystemTime) -> bool {
+        match message {
+            NeighbourMsg::AppDocument { .. } => self.holds_device(remote, now),
+            NeighbourMsg::WriteRefusals { refusals } => {
+                self.holds_device(remote, now)
+                    || refusals.iter().all(|refusal| &refusal.author == remote)
+            }
+            _ => true,
+        }
+    }
+
+    /// The certificates `doc` lists, at most [`MAX_DEVICES`] entries of it
+    /// read: each under the key of the device it certifies. Nothing here is
+    /// verified; an entry that is no certificate, or not that device's, is
+    /// no entry.
+    fn listed_devices(doc: &AutoCommit) -> Vec<DeviceCert> {
+        use automerge::ReadDoc as _;
+        doc.keys(automerge::ROOT)
+            .take(MAX_DEVICES)
+            .filter_map(|device| {
+                // ignored-failure: an entry that cannot be read lists no device
+                let written = doc.get_all(automerge::ROOT, device.as_str()).ok()?;
+                // Two devices that listed one device at once both wrote its
+                // entry: the later certificate is the one listed, whichever
+                // write the document settled on.
+                written
+                    .iter()
+                    .take(MAX_WRITES)
+                    .filter_map(|(value, _)| Self::listed_certificate(value, &device))
+                    .max_by_key(|certificate| certificate.issued_at_ns)
+            })
+            .collect()
+    }
+
+    /// The certificate of the device keyed `device` that `value` is, when it
+    /// is one: nothing of it is verified here.
+    fn listed_certificate(value: &automerge::Value<'_>, device: &str) -> Option<DeviceCert> {
+        let automerge::Value::Scalar(value) = value else {
+            return None;
+        };
+        let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
+            return None;
+        };
+        if bytes.len() > MAX_CERTIFICATE_BYTES {
+            return None;
+        }
+        // ignored-failure: bytes that are no certificate list no device
+        let certificate: DeviceCert = postcard::from_bytes(bytes).ok()?;
+        (hex::encode(certificate.device_public_key) == device).then_some(certificate)
+    }
+
+    /// The certificates this device holds, of devices that are the person's
+    /// now, that the record of their devices does not list or lists an
+    /// earlier certificate for: what this device adds to it, while it has
+    /// room.
+    fn unlisted_devices(&self, now: SystemTime) -> Vec<DeviceCert> {
+        use automerge::ReadDoc as _;
+        let (listed, entries) = self
+            .documents
+            .get(&Self::devices_route())
+            .map(|held| {
+                (
+                    Self::listed_devices(&held.doc),
+                    held.doc.length(automerge::ROOT),
+                )
+            })
+            .unwrap_or_default();
+        let mut room = MAX_DEVICES.saturating_sub(entries);
+        self.certificates
+            .iter()
+            .filter(|(device, _)| self.holds_device(device, now))
+            .filter(|(device, certificate)| {
+                match listed
+                    .iter()
+                    .find(|listed| &listed.device_public_key == *device)
+                {
+                    Some(listed) => listed.issued_at_ns < certificate.issued_at_ns,
+                    None if room == 0 => false,
+                    None => {
+                        room = room.saturating_sub(1);
+                        true
+                    }
+                }
+            })
+            .map(|(_, certificate)| certificate.as_ref().clone())
+            .collect()
+    }
+
+    /// Admit the devices the record of the person's devices lists that this
+    /// one does not hold, or holds an earlier certificate of. Each is
+    /// admitted as the certificate a device shows for itself is: one the
+    /// root did not sign, one that does not hold now, a revoked device's and
+    /// a store node's stay out. Returns whether any was new here.
+    fn learn_devices(&mut self, now: SystemTime) -> bool {
+        let Some(listed) = self
+            .documents
+            .get(&Self::devices_route())
+            .map(|held| Self::listed_devices(&held.doc))
+        else {
+            return false;
+        };
+        let mut learned = false;
+        for certificate in listed {
+            let device = certificate.device_public_key;
+            // This device's own certificate is the one its identity gave it.
+            if device == self.device.device_public_key {
+                continue;
+            }
+            if self
+                .certificates
+                .get(&device)
+                .is_some_and(|held| held.issued_at_ns >= certificate.issued_at_ns)
+            {
+                continue;
+            }
+            // ignored-failure: a listed certificate this store refuses is one it does not admit
+            learned |= self.admit_device(&certificate, now).is_ok();
+        }
+        learned
+    }
+
+    /// The record of the person's devices was written: admit what it lists,
+    /// and have it published again when it lacks what this device holds.
+    /// Returns whether a device was learned from it.
+    fn devices_written(&mut self, now: SystemTime) -> bool {
+        let learned = self.learn_devices(now);
+        self.devices_moved |= !self.unlisted_devices(now).is_empty();
+        learned
+    }
+
+    /// The record of the person's devices as the frame to publish, when the
+    /// certificates this device holds moved since it last was: with every
+    /// one of them it lacked, whole, so a device that never held the record
+    /// reads it as well as one that did. `None` while nothing moved, and on
+    /// a device the person revoked.
+    fn take_devices_update(
+        &mut self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<Option<NeighbourMsg>, String> {
+        use collab_types::CommitNamed as _;
+        if !std::mem::take(&mut self.devices_moved) || self.revoked_here() {
+            return Ok(None);
+        }
+        let route = Self::devices_route();
+        let mut doc = match self.documents.get(&route) {
+            Some(held) => AutoCommit::load(&held.doc.saved()).map_err(err)?,
+            None => AutoCommit::new(),
+        };
+        for certificate in self.unlisted_devices(now) {
+            doc.put(
+                automerge::ROOT,
+                hex::encode(certificate.device_public_key),
+                automerge::ScalarValue::Bytes(postcard::to_allocvec(&certificate).map_err(err)?),
+            )
+            .map_err(err)?;
+        }
+        doc.commit_edit(DEVICES_KIND, "devices");
+        self.publish(
+            &route.app,
+            &route.record,
+            &DocumentMutation::Snapshot(doc.save()),
+            key,
+            now,
+        )
+        .map(Some)
     }
 
     /// Hold a revocation the identity root signed. Returns whether it
@@ -419,8 +653,11 @@ impl PersonalStore {
     /// Every document held, by what it belongs to.
     #[must_use]
     pub fn rows(&self) -> Vec<DocumentRow> {
+        let devices = Self::devices_route();
         self.documents
             .iter()
+            // The record of the person's devices is the store's own.
+            .filter(|(route, _)| **route != devices)
             .map(|(route, held)| DocumentRow {
                 app_id: route.app.clone(),
                 record_id: route.record.clone(),
@@ -482,39 +719,54 @@ impl PersonalStore {
             // The store's verdict on the person's own write is filed like a
             // sibling's: what its history shows, and what a notice is made of.
             let reason = refused.to_string();
-            self.file_refusal(app, record, &envelope, &reason, key, now)?;
+            // The record of their devices is the store's, not a write of
+            // theirs: nobody is told of it.
+            if !Self::is_devices_record(app, record) {
+                self.file_refusal(app, record, &envelope, &reason, key, now)?;
+            }
             return Err(reason);
         }
         Ok(self.frame(app, record, envelope))
     }
 
-    /// What another device may lack: this device's certificate and the
-    /// revocations its identity signed, then a signed snapshot of every
-    /// document held. Whoever holds a document can hand over its whole state,
-    /// so a device added later catches up from any of its siblings.
-    pub fn catch_up(
-        &mut self,
-        key: &dyn DeviceSigner,
-        remote: [u8; 32],
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
+    /// What this device says first to whoever is on a link, before that
+    /// device has shown anything: its certificate and the revocations its
+    /// identity signed, and what it refuses of that device's writes. Nothing
+    /// of the person's documents is in it.
+    fn greeting(&self, remote: &[u8; 32]) -> Vec<NeighbourMsg> {
         let mut messages = vec![self.hello()];
         // What this device refuses of the peer's writes reaches it on the
         // link, live or here, even when it is revoked and gets nothing else:
         // a person whose device was taken away is told why their writes stop.
-        if let Some(frame) = self.refusals_frame(&remote) {
+        if let Some(frame) = self.refusals_frame(remote) {
             messages.push(frame);
+        }
+        messages
+    }
+
+    /// A signed snapshot of every document held, for `remote` to catch up
+    /// from: whoever holds a document can hand over its whole state, so a
+    /// device added later catches up from any of its siblings. `None` while
+    /// this store holds no certificate that makes `remote` one of the
+    /// person's devices now: a device that has shown none, one of another
+    /// person's, a revoked one and one whose certificate ran out are handed
+    /// no document.
+    fn documents_for(
+        &mut self,
+        key: &dyn DeviceSigner,
+        remote: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<Option<Vec<NeighbourMsg>>, String> {
+        if !self.holds_device(remote, now) {
+            return Ok(None);
         }
         // A revoked device says only who it is and what was refused of
         // theirs: its siblings keep no documents from it.
         if self.revoked_here() {
-            return Ok(messages);
+            return Ok(Some(Vec::new()));
         }
-        let routes: Vec<Route> = if self.admits_device(&remote, now).is_ok() {
-            self.documents.keys().cloned().collect()
-        } else {
-            Vec::new()
-        };
+        let routes: Vec<Route> = self.documents.keys().cloned().collect();
+        let mut messages = Vec::with_capacity(routes.len());
         for route in routes {
             let Some(held) = self.documents.get(&route) else {
                 continue;
@@ -528,6 +780,23 @@ impl PersonalStore {
                 now,
             )?);
         }
+        Ok(Some(messages))
+    }
+
+    /// What another device may lack: this device's certificate, the
+    /// revocations its identity signed and what it refuses of that device's
+    /// writes, then, for a device this store holds a certificate of that
+    /// makes it one of the person's now, a signed snapshot of every document
+    /// held. A device never met is given the first part alone: its documents
+    /// follow once the certificate it shows is admitted.
+    pub fn catch_up(
+        &mut self,
+        key: &dyn DeviceSigner,
+        remote: [u8; 32],
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut messages = self.greeting(&remote);
+        messages.extend(self.documents_for(key, &remote, now)?.unwrap_or_default());
         Ok(messages)
     }
 
@@ -653,9 +922,12 @@ impl PersonalStore {
             return Err(refused.to_string());
         }
         // The store's verdict on this one write is now a fact it keeps: the
-        // write's author is told, and its history joins it to the write.
+        // write's author is told, and its history joins it to the write. The
+        // record of the person's devices is no write of theirs to be told of.
         let reason = refused.to_string();
-        self.file_refusal(&app_id, &record_id, &envelope, &reason, key, now)?;
+        if !Self::is_devices_record(&app_id, &record_id) {
+            self.file_refusal(&app_id, &record_id, &envelope, &reason, key, now)?;
+        }
         Err(reason)
     }
 
@@ -765,9 +1037,10 @@ impl PersonalStore {
         self.exact.insert(&admitted).map_err(err)?;
         self.documents.insert(route, candidate);
         self.landed(&source, app, record, envelope.seq);
+        let learned = Self::is_devices_record(app, record) && self.devices_written(now);
         Ok(ReceiveOutcome {
             changed,
-            metadata_changed: changed,
+            metadata_changed: changed || learned,
             ..Default::default()
         })
     }
@@ -919,7 +1192,11 @@ impl PersonalStore {
         }
         let mut store = Self::open(durable.root, durable.device, now)?;
         for certificate in durable.certificates {
-            store.admit_device(&certificate, now)?;
+            // A sibling's certificate that stopped holding since the store
+            // was kept admits nothing, and the store opens without it: the
+            // person's documents are not lost to another device's expiry.
+            // ignored-failure: a kept certificate that no longer holds is not admitted
+            let _ = store.admit_device(&certificate, now);
         }
         for entry in durable.revocations {
             store.revoke(entry)?;
@@ -1215,6 +1492,19 @@ mod tests {
 
         a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
             .unwrap();
+        // A hands its documents to no device it holds no certificate of:
+        // until B says who it is, A tells it who A is and nothing else.
+        let unmet = a
+            .catch_up(&a_key, b_key.verifying_key().to_bytes(), now())
+            .unwrap();
+        assert!(
+            unmet
+                .iter()
+                .all(|message| matches!(message, NeighbourMsg::IdentityHello { .. })),
+            "a device never met is handed no document: {unmet:?}"
+        );
+        a.receive(&a_key, b_key.verifying_key().to_bytes(), b.hello(), now())
+            .unwrap();
         // B holds nothing until it meets A, then catches up whole.
         assert!(!b.holds_document("tube", "prefs"));
         for message in a
@@ -1231,10 +1521,7 @@ mod tests {
             revision(&a.document("tube", "prefs").unwrap())
         );
 
-        // B says who it is, then its own write reaches A, and both hold one
-        // document.
-        a.receive(&a_key, b_key.verifying_key().to_bytes(), b.hello(), now())
-            .unwrap();
+        // B's own write reaches A, and both hold one document.
         let published = b
             .publish("tube", "prefs", &change("accent", "blue"), &b_key, now())
             .unwrap();
@@ -1281,6 +1568,14 @@ mod tests {
                 .any(|cert| cert.device_public_key == other_key.verifying_key().to_bytes())
         );
 
+        // None of A's documents is among the frames it is given, the
+        // certificate it showed refused or not.
+        assert!(
+            a.catch_up(&a_key, other_key.verifying_key().to_bytes(), now())
+                .unwrap()
+                .iter()
+                .all(|message| matches!(message, NeighbourMsg::IdentityHello { .. }))
+        );
         // And given A's frames, it admits none of them.
         for message in a
             .catch_up(&a_key, other_key.verifying_key().to_bytes(), now())
@@ -1312,6 +1607,10 @@ mod tests {
         let mut b = PersonalStore::open(root.verifying_key().to_bytes(), b_cert, now()).unwrap();
         a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
             .unwrap();
+        // B introduces itself and catches up, and a write of its is admitted
+        // before the revocation.
+        a.receive(&a_key, b_key.verifying_key().to_bytes(), b.hello(), now())
+            .unwrap();
         for message in a
             .catch_up(&a_key, b_key.verifying_key().to_bytes(), now())
             .unwrap()
@@ -1319,10 +1618,6 @@ mod tests {
             b.receive(&b_key, a_key.verifying_key().to_bytes(), message, now())
                 .unwrap();
         }
-        // B introduces itself, and a write of its is admitted before the
-        // revocation.
-        a.receive(&a_key, b_key.verifying_key().to_bytes(), b.hello(), now())
-            .unwrap();
         let published = b
             .publish("tube", "prefs", &change("accent", "blue"), &b_key, now())
             .unwrap();
@@ -1381,6 +1676,8 @@ mod tests {
         let mut a = PersonalStore::open(root_key, a_cert, now()).unwrap();
         let mut b = PersonalStore::open(root_key, b_cert.clone(), now()).unwrap();
         a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
+            .unwrap();
+        a.receive(&a_key, b_key.verifying_key().to_bytes(), b.hello(), now())
             .unwrap();
         for message in a
             .catch_up(&a_key, b_key.verifying_key().to_bytes(), now())
@@ -1549,5 +1846,502 @@ mod tests {
         };
         sign_device_cert(&mut cert, root).unwrap();
         cert
+    }
+
+    /// A device `seed` names, certified by `signer` for the identity `root`
+    /// from `issued_at_ns` until `expires_at_ns`, called `label`.
+    fn certificate(
+        signer: &SigningKey,
+        root: [u8; 32],
+        seed: [u8; 32],
+        label: &str,
+        issued_at_ns: u64,
+        expires_at_ns: Option<u64>,
+    ) -> (SigningKey, DeviceCert) {
+        let key = SigningKey::from_bytes(&seed);
+        let mut cert = DeviceCert {
+            user_public_key: root,
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: label.into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns,
+            expires_at_ns,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, signer).unwrap();
+        (key, cert)
+    }
+
+    /// The record of the person's devices listing `certificates` as they
+    /// are, as a device holding them would write it.
+    fn devices_record(certificates: &[DeviceCert]) -> DocumentMutation {
+        let mut doc = AutoCommit::new();
+        for certificate in certificates {
+            doc.put(
+                automerge::ROOT,
+                hex::encode(certificate.device_public_key),
+                automerge::ScalarValue::Bytes(postcard::to_allocvec(certificate).unwrap()),
+            )
+            .unwrap();
+        }
+        doc.commit_edit(DEVICES_KIND, "devices");
+        DocumentMutation::Snapshot(doc.save())
+    }
+
+    /// Two devices of `root` that met: each holds the other's certificate.
+    fn met(root: &SigningKey) -> ((SigningKey, PersonalStore), (SigningKey, PersonalStore)) {
+        let root_key = root.verifying_key().to_bytes();
+        let (a_key, a_cert) = device(root, 2, DeviceCapabilities::member());
+        let (b_key, b_cert) = device(root, 3, DeviceCapabilities::member());
+        let mut a = PersonalStore::open(root_key, a_cert, now()).unwrap();
+        let mut b = PersonalStore::open(root_key, b_cert, now()).unwrap();
+        a.receive(&a_key, b_key.verifying_key().to_bytes(), b.hello(), now())
+            .unwrap();
+        b.receive(&b_key, a_key.verifying_key().to_bytes(), a.hello(), now())
+            .unwrap();
+        ((a_key, a), (b_key, b))
+    }
+
+    fn holds(store: &PersonalStore, device: &DeviceCert) -> bool {
+        store
+            .devices()
+            .iter()
+            .any(|held| held.device_public_key == device.device_public_key)
+    }
+
+    /// `author` writes the record of the person's devices as `mutation` and
+    /// `reader`, which holds its certificate, receives the write.
+    fn hand_on(
+        author_key: &SigningKey,
+        author: &mut PersonalStore,
+        reader_key: &SigningKey,
+        reader: &mut PersonalStore,
+        mutation: &DocumentMutation,
+    ) -> Result<ReceiveOutcome, String> {
+        let route = PersonalStore::devices_route();
+        let frame = author
+            .publish(&route.app, &route.record, mutation, author_key, now())
+            .unwrap();
+        reader.receive(
+            reader_key,
+            author_key.verifying_key().to_bytes(),
+            frame,
+            now(),
+        )
+    }
+
+    /// A certificate one of the person's devices passes on is admitted as
+    /// the one a device shows for itself is, and only then: another root's,
+    /// one that root never signed, an expired one and a revoked device's all
+    /// stay out, and the device they name is unknown here.
+    #[test]
+    fn a_passed_on_certificate_is_admitted_only_as_a_shown_one_would_be() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let other = SigningKey::from_bytes(&[9; 32]);
+        let ((a_key, mut a), (b_key, mut b)) = met(&root);
+
+        let (_, sibling) = certificate(&root, root_key, [5; 32], "sibling", 1, None);
+        let (_, anothers) = certificate(
+            &other,
+            other.verifying_key().to_bytes(),
+            [6; 32],
+            "another person's",
+            1,
+            None,
+        );
+        // Names this identity, signed by a key that is not its root.
+        let (_, mut forged) = certificate(
+            &other,
+            other.verifying_key().to_bytes(),
+            [7; 32],
+            "forged",
+            1,
+            None,
+        );
+        forged.user_public_key = root_key;
+        let (_, expired) = certificate(&root, root_key, [8; 32], "expired", 1, Some(2));
+        let (gone_key, gone) = certificate(&root, root_key, [10; 32], "revoked", 1, None);
+        // A already holds the revocation its identity signed.
+        assert!(a.revoke(revocation(&root, &gone_key)).unwrap());
+
+        let outcome = hand_on(
+            &b_key,
+            &mut b,
+            &a_key,
+            &mut a,
+            &devices_record(&[
+                sibling.clone(),
+                anothers.clone(),
+                forged.clone(),
+                expired.clone(),
+                gone.clone(),
+            ]),
+        )
+        .unwrap();
+        assert!(outcome.metadata_changed, "a device was learned");
+        assert!(holds(&a, &sibling), "the root's current certificate");
+        for (refused, why) in [
+            (&anothers, "another root's"),
+            (&forged, "not the root's signature"),
+            (&expired, "expired"),
+            (&gone, "revoked"),
+        ] {
+            assert!(!holds(&a, refused), "{why} certificate is not admitted");
+            assert!(!a.holds_device(&refused.device_public_key, now()), "{why}");
+        }
+        assert_eq!(
+            a.devices().len(),
+            3,
+            "this device, the one met, the one learned"
+        );
+        // Nobody is told a write of theirs was refused: the record is the
+        // store's own, and an app's listing never shows it.
+        assert!(a.write_refusals().is_empty());
+        assert!(a.rows().is_empty());
+        assert!(b.rows().is_empty());
+    }
+
+    /// A device learned from the record is one its person revoked as soon as
+    /// the revocation arrives: it is no device of theirs here from then on,
+    /// and listing it again changes nothing.
+    #[test]
+    fn a_revocation_wins_over_a_certificate_that_was_passed_on() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let ((a_key, mut a), (b_key, mut b)) = met(&root);
+        let (gone_key, gone) = certificate(&root, root_key, [10; 32], "lost", 1, None);
+        hand_on(
+            &b_key,
+            &mut b,
+            &a_key,
+            &mut a,
+            &devices_record(std::slice::from_ref(&gone)),
+        )
+        .unwrap();
+        assert!(a.holds_device(&gone.device_public_key, now()));
+
+        // The revocation reaches A as it always did: in a sibling's hello.
+        let outcome = a
+            .receive(
+                &a_key,
+                b_key.verifying_key().to_bytes(),
+                hello(b.device(), vec![revocation(&root, &gone_key)]),
+                now(),
+            )
+            .unwrap();
+        assert!(outcome.metadata_changed);
+        assert!(!a.holds_device(&gone.device_public_key, now()));
+        assert!(a.admits_device(&gone.device_public_key, now()).is_err());
+
+        // Listed again, with a later certificate even, it stays out.
+        let (_, later) = certificate(&root, root_key, [10; 32], "lost", 5, None);
+        hand_on(&b_key, &mut b, &a_key, &mut a, &devices_record(&[later])).unwrap();
+        assert!(!a.holds_device(&gone.device_public_key, now()));
+        assert!(a.admits_device(&gone.device_public_key, now()).is_err());
+        // And A lists it to no one: what it adds to the record leaves it out.
+        assert!(
+            !a.unlisted_devices(now())
+                .iter()
+                .any(|listed| listed.device_public_key == gone.device_public_key)
+        );
+    }
+
+    /// A device's later certificate replaces the earlier one held for it,
+    /// and an earlier one listed afterwards does not come back: two devices
+    /// holding different certificates of a third settle on the later.
+    #[test]
+    fn a_later_certificate_replaces_an_earlier_one_and_never_the_reverse() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let ((a_key, mut a), (b_key, mut b)) = met(&root);
+        let (_, earlier) = certificate(&root, root_key, [5; 32], "phone", 1, None);
+        let (_, later) = certificate(&root, root_key, [5; 32], "renamed phone", 7, None);
+        let label = |store: &PersonalStore| {
+            store
+                .devices()
+                .into_iter()
+                .find(|held| held.device_public_key == earlier.device_public_key)
+                .map(|held| held.device_label)
+        };
+
+        hand_on(
+            &b_key,
+            &mut b,
+            &a_key,
+            &mut a,
+            &devices_record(std::slice::from_ref(&earlier)),
+        )
+        .unwrap();
+        assert_eq!(label(&a).as_deref(), Some("phone"));
+        hand_on(
+            &b_key,
+            &mut b,
+            &a_key,
+            &mut a,
+            &devices_record(std::slice::from_ref(&later)),
+        )
+        .unwrap();
+        assert_eq!(label(&a).as_deref(), Some("renamed phone"));
+        hand_on(
+            &b_key,
+            &mut b,
+            &a_key,
+            &mut a,
+            &devices_record(std::slice::from_ref(&earlier)),
+        )
+        .unwrap();
+        assert_eq!(label(&a).as_deref(), Some("renamed phone"));
+        // What A adds to the record is the later one, once: it settles.
+        a.take_devices_update(&a_key, now()).unwrap();
+        assert!(a.take_devices_update(&a_key, now()).unwrap().is_none());
+        assert!(a.unlisted_devices(now()).is_empty());
+    }
+
+    /// The record names at most [`MAX_DEVICES`] devices to a device: entries
+    /// past that are not read, and a device adds none to a full record.
+    #[test]
+    fn no_more_devices_are_taken_from_the_record_than_it_may_name() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let ((a_key, mut a), (b_key, mut b)) = met(&root);
+        let many: Vec<DeviceCert> = (0..MAX_DEVICES + 9)
+            .map(|n| {
+                let mut seed = [0x40; 32];
+                seed[..8].copy_from_slice(&u64::try_from(n).unwrap().to_le_bytes());
+                certificate(&root, root_key, seed, "one of many", 1, None).1
+            })
+            .collect();
+        hand_on(&b_key, &mut b, &a_key, &mut a, &devices_record(&many)).unwrap();
+        assert_eq!(
+            a.devices().len(),
+            MAX_DEVICES + 2,
+            "this device, the one met, and no more than the record may name"
+        );
+        // The record is full: A adds neither itself nor the device it met.
+        let entries = |store: &PersonalStore| {
+            let held = store
+                .documents
+                .get(&PersonalStore::devices_route())
+                .unwrap();
+            held.doc.length(automerge::ROOT)
+        };
+        assert_eq!(entries(&a), MAX_DEVICES + 9);
+        assert!(a.unlisted_devices(now()).is_empty());
+        a.take_devices_update(&a_key, now()).unwrap();
+        assert_eq!(entries(&a), MAX_DEVICES + 9);
+    }
+
+    /// The op `author` signs for `mutation` of the record of the person's
+    /// devices in the store keyed `store_key`.
+    fn devices_write(
+        mutation: &DocumentMutation,
+        author: &SigningKey,
+        store_key: &str,
+    ) -> SignedOp {
+        let route = PersonalStore::devices_route();
+        let mut envelope = SignedOp::new_unsigned(
+            mutation.encode().unwrap(),
+            collab_types::document_artifact_id(&route.app, store_key, &route.record),
+            Ed25519PublicKey::from_bytes(author.verifying_key().to_bytes()),
+            collab_types::document_attestation_id(&route.app, store_key, &route.record),
+            OpKind::Change,
+            now(),
+            1,
+        );
+        collab_types::sign_op(&mut envelope, author).unwrap();
+        envelope
+    }
+
+    /// A device of another person is handed the record of none of the
+    /// person's devices, at the start of a link or while it lasts, and
+    /// nothing it lists is admitted: who the person's devices are is said
+    /// only between them.
+    #[test]
+    fn a_device_of_another_person_is_told_of_no_device_and_teaches_none() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let other = SigningKey::from_bytes(&[9; 32]);
+        let ((a_key, mut a), (b_key, _b)) = met(&root);
+        let (stranger_key, stranger_cert) = device(&other, 10, DeviceCapabilities::member());
+        let stranger = stranger_key.verifying_key().to_bytes();
+        let devices = |message: &NeighbourMsg| {
+            matches!(message, NeighbourMsg::AppDocument { app_id, record_id, .. }
+                if PersonalStore::is_devices_record(app_id, record_id))
+        };
+
+        // A's record lists itself and the device it met.
+        let published = a.take_devices_update(&a_key, now()).unwrap().unwrap();
+        assert!(devices(&published));
+        // One of the person's devices is handed it, live and catching up.
+        let sibling = b_key.verifying_key().to_bytes();
+        assert!(a.hands(&published, &sibling, now()));
+        assert!(
+            a.catch_up(&a_key, sibling, now())
+                .unwrap()
+                .iter()
+                .any(devices)
+        );
+        // A device that showed nothing, and one of another person, is not.
+        assert!(!a.hands(&published, &stranger, now()));
+        assert!(
+            !a.catch_up(&a_key, stranger, now())
+                .unwrap()
+                .iter()
+                .any(devices)
+        );
+        assert!(
+            a.receive(&a_key, stranger, hello(&stranger_cert, Vec::new()), now())
+                .is_err()
+        );
+        assert!(!a.hands(&published, &stranger, now()));
+        assert!(
+            !a.catch_up(&a_key, stranger, now())
+                .unwrap()
+                .iter()
+                .any(devices)
+        );
+
+        // What it lists is refused with the write that carries it, even a
+        // certificate the person's root did sign, and nobody keeps a verdict.
+        let (_, sibling_cert) = certificate(&root, root_key, [5; 32], "sibling", 1, None);
+        let route = PersonalStore::devices_route();
+        let envelope = devices_write(
+            &devices_record(&[sibling_cert.clone(), stranger_cert.clone()]),
+            &stranger_key,
+            &a.store_key(),
+        );
+        let refused = a.receive(
+            &a_key,
+            stranger,
+            NeighbourMsg::AppDocument {
+                peer: peer_handle(&stranger),
+                app_id: route.app,
+                cluster_id: a.store_key(),
+                record_id: route.record,
+                envelope: Box::new(envelope),
+            },
+            now(),
+        );
+        assert!(refused.is_err());
+        assert!(!holds(&a, &sibling_cert));
+        assert!(!holds(&a, &stranger_cert));
+        assert_eq!(a.devices().len(), 2);
+        assert!(a.write_refusals().is_empty());
+    }
+
+    /// A store kept while it held a sibling's certificate opens after that
+    /// certificate expired: the person's documents are there, and the device
+    /// whose certificate no longer holds is not one of theirs here.
+    #[test]
+    fn a_store_opens_after_a_siblings_certificate_expired() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
+        let kept_at = now();
+        let expires = now_ns(kept_at + Duration::from_secs(60));
+        let (_, short) = certificate(&root, root_key, [5; 32], "short-lived", 1, Some(expires));
+        let mut a = PersonalStore::open(root_key, a_cert.clone(), kept_at).unwrap();
+        assert!(a.admit_device(&short, kept_at).unwrap());
+        a.publish("tube", "prefs", &record("theme", "dark"), &a_key, kept_at)
+            .unwrap();
+        let kept = a.durable().unwrap();
+
+        let later = kept_at + Duration::from_secs(120);
+        let restored = PersonalStore::restore(&kept, &a_cert, later).unwrap();
+        assert_eq!(
+            field(&restored.document("tube", "prefs").unwrap(), "theme").as_deref(),
+            Some("dark")
+        );
+        assert!(!holds(&restored, &short));
+        assert!(!restored.holds_device(&short.device_public_key, later));
+    }
+
+    /// The person's documents, as snapshots when a link starts and as writes
+    /// while it lasts, are handed to a device only while this store holds a
+    /// certificate that makes it one of the person's: not to one that showed
+    /// none, one of another person's, a revoked one, or one whose certificate
+    /// ran out. A refusal names its record to its author and to no stranger.
+    #[test]
+    fn a_document_is_handed_only_to_a_device_that_is_the_persons_now() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let other = SigningKey::from_bytes(&[9; 32]);
+        let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
+        let mut a = PersonalStore::open(root_key, a_cert, now()).unwrap();
+        let written = a
+            .publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
+            .unwrap();
+        // Whether `device` is handed a document at `at`: in what it catches
+        // up from, and of what is written while its link lasts.
+        let handed = |a: &mut PersonalStore, device: [u8; 32], at: SystemTime| {
+            let caught_up = a
+                .catch_up(&a_key, device, at)
+                .unwrap()
+                .iter()
+                .any(|message| matches!(message, NeighbourMsg::AppDocument { .. }));
+            (caught_up, a.hands(&written, &device, at))
+        };
+
+        // A device that has shown nothing.
+        let (new_key, new_cert) = certificate(&root, root_key, [5; 32], "new", 1, None);
+        let new = new_key.verifying_key().to_bytes();
+        assert_eq!(handed(&mut a, new, now()), (false, false));
+
+        // A device of another person, before and after the certificate it
+        // shows is refused.
+        let (stranger_key, stranger_cert) = device(&other, 10, DeviceCapabilities::member());
+        let stranger = stranger_key.verifying_key().to_bytes();
+        assert_eq!(handed(&mut a, stranger, now()), (false, false));
+        assert!(
+            a.receive(&a_key, stranger, hello(&stranger_cert, Vec::new()), now())
+                .is_err()
+        );
+        assert_eq!(handed(&mut a, stranger, now()), (false, false));
+
+        // The person's new device, once the certificate it shows is admitted.
+        a.receive(&a_key, new, hello(&new_cert, Vec::new()), now())
+            .unwrap();
+        assert_eq!(handed(&mut a, new, now()), (true, true));
+
+        // The same device, once the person took it away.
+        assert!(a.revoke(revocation(&root, &new_key)).unwrap());
+        assert_eq!(handed(&mut a, new, now()), (false, false));
+
+        // A device whose certificate holds, and then has run out.
+        let at = now();
+        let (short_key, short_cert) = certificate(
+            &root,
+            root_key,
+            [6; 32],
+            "short-lived",
+            1,
+            Some(now_ns(at + Duration::from_secs(60))),
+        );
+        let short = short_key.verifying_key().to_bytes();
+        a.receive(&a_key, short, hello(&short_cert, Vec::new()), at)
+            .unwrap();
+        assert_eq!(handed(&mut a, short, at), (true, true));
+        let later = at + Duration::from_secs(120);
+        assert_eq!(handed(&mut a, short, later), (false, false));
+
+        // What A refuses of that device's writes names the record: its
+        // author is told, whatever became of its certificate, and a device
+        // that is not the person's is not.
+        let refused = write(&change("font", "serif"), &short_key, 1, &a.store_key());
+        a.file_refusal(
+            "tube",
+            "prefs",
+            &refused,
+            "it waits for earlier writes",
+            &a_key,
+            now(),
+        )
+        .unwrap();
+        let told = a.take_refusal_updates();
+        assert_eq!(told.len(), 1, "one set, about the one author: {told:?}");
+        assert!(a.hands(&told[0], &short, later));
+        assert!(!a.hands(&told[0], &stranger, now()));
     }
 }

@@ -17,7 +17,7 @@ const line = prefix => {
   assert.ok(found, `page_automation.js must contain ${prefix}`);
   return found;
 };
-const consumer = [line('  const type ='), line('  const secret ='),
+const consumer = [line('  const type ='), slice('  const SECRET_TOKENS =', '  function checked('),
   slice('  let textLease =', '  function validateNativeReplacement(')].join('\n');
 
 class Node {

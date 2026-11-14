@@ -22,6 +22,18 @@ if (location.search === '?drop') {
   // Asked without the person doing anything, it is refused.
   (async () => show('ready', {unasked: await failure(chrome.permissions.request({permissions: ['tabs']})), ...await state()}))()
     .catch((error) => show('failed', error.message));
+  // What the page heard of the pointer, for whoever clicks in it: how many
+  // clicks, and where the pointer was seen last. The engine takes no click
+  // on a page it has not drawn yet, and a click that came to nothing is told
+  // from one still on its way by the pointer's next place, which the page
+  // hears of after it.
+  let clicks = 0;
+  const heard = (event) => {
+    if (event.type === 'click') clicks += 1;
+    document.title = 'heard:' + JSON.stringify({clicks, at: [event.clientX, event.clientY]});
+  };
+  document.addEventListener('mousemove', heard, true);
+  document.addEventListener('click', heard, true);
   document.addEventListener('click', () => {
     // What the manifest does not offer is refused; what it does is asked
     // for, here in the callback form.

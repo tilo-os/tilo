@@ -4,7 +4,7 @@ use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tokens::TextRole;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
-use ui::widget::{Button, Column, Container, EmptyState, ListRow, Row, Text, Widget};
+use ui::widget::{Button, Column, EmptyState, ListRow, Text, Widget};
 
 /// How long a site's permission question stands before the engine withdraws it;
 /// the question states it in the person's words.
@@ -408,41 +408,39 @@ impl Capabilities {
                 return None;
             };
         drop(downloads);
-        let mut row = Row::new();
-        for (label, allow) in [
-            (
-                crate::CATALOG.t(if permission {
-                    "browser-permission-allow"
-                } else {
-                    "browser-download-save"
-                }),
-                true,
-            ),
-            (crate::CATALOG.t("browser-permission-deny"), false),
-        ] {
+        let decide = |allow: bool| {
+            let label = crate::CATALOG.t(match (allow, permission) {
+                (true, true) => "browser-permission-allow",
+                (true, false) => "browser-download-save",
+                (false, _) => "browser-permission-deny",
+            });
             let engine = engine.clone();
-            row = row.push(Box::new(
-                Button::new(
-                    &format!("browser.decision.{permission}.{id}.{allow}"),
-                    &label,
-                )
-                .control_size(ui::widget::ControlSize::Regular)
-                .on_effect(move || {
-                    engine.send(if permission {
-                        WebViewCommand::PermissionDecision { id, allow }
-                    } else {
-                        WebViewCommand::DownloadDecision { id, allow }
-                    });
-                }),
-            ));
-        }
+            Button::new(
+                &format!("browser.decision.{permission}.{id}.{allow}"),
+                &label,
+            )
+            .control_size(ui::widget::ControlSize::Regular)
+            .on_effect(move || {
+                engine.send(if permission {
+                    WebViewCommand::PermissionDecision { id, allow }
+                } else {
+                    // The person at the window chose.
+                    let by = ui::webview::AnsweredBy::Person;
+                    WebViewCommand::DownloadDecision { id, allow, by }
+                });
+            })
+        };
+        // The popover is the prompt's surface and pads it: the question and
+        // its two answers stand in it as every other panel's content does.
         Some(Box::new(
-            Container::new().with_background().with_child(Box::new(
-                Column::new()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(&title).with_role(ui::TextRole::Body)))
-                    .push(Box::new(row)),
-            )),
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(ui::tokens::Rhythm::Sibling)
+                .push(Box::new(Text::new(&title).with_role(ui::TextRole::Body)))
+                .push(Box::new(
+                    ui::widget::Actions::new(decide(true)).secondary(decide(false)),
+                )),
         ))
     }
     /// An extension's question: what it could then do, with the same two answers a
@@ -469,27 +467,25 @@ impl Capabilities {
                 Text::new(line).with_role(TextRole::Caption).dimmed(),
             ));
         }
-        let mut row = Row::new();
-        for (label, allow) in [
-            (crate::CATALOG.t("browser-permission-allow"), true),
-            (crate::CATALOG.t("browser-permission-deny"), false),
-        ] {
+        let decide = |allow: bool| {
+            let label = crate::CATALOG.t(if allow {
+                "browser-permission-allow"
+            } else {
+                "browser-permission-deny"
+            });
             let engine = engine.clone();
             let questions = self.extension_questions.clone();
-            row = row.push(Box::new(
-                Button::new(
-                    &format!("browser.decision.extension.{request}.{allow}"),
-                    &label,
-                )
-                .control_size(ui::widget::ControlSize::Regular)
-                .on_effect(move || questions.borrow_mut().answer(&engine, request, allow)),
-            ));
-        }
-        Box::new(
-            Container::new()
-                .with_background()
-                .with_child(Box::new(column.push(Box::new(row)))),
-        )
+            Button::new(
+                &format!("browser.decision.extension.{request}.{allow}"),
+                &label,
+            )
+            .control_size(ui::widget::ControlSize::Regular)
+            .on_effect(move || questions.borrow_mut().answer(&engine, request, allow))
+        };
+        // In the popover as a site's question is: no frame of its own.
+        Box::new(column.push(Box::new(
+            ui::widget::Actions::new(decide(true)).secondary(decide(false)),
+        )))
     }
     pub fn prompt_is_permission(&self) -> bool {
         !self.permissions.is_empty() || self.asks_for_extension()
@@ -600,7 +596,11 @@ impl Capabilities {
         } else if let Some((&id, _)) = self.permissions.first_key_value() {
             engine.send(WebViewCommand::PermissionDismissed { id });
         } else if let Some((&id, _)) = self.downloads.borrow().prompts.first_key_value() {
-            engine.send(WebViewCommand::DownloadDecision { id, allow: false });
+            engine.send(WebViewCommand::DownloadDecision {
+                id,
+                allow: false,
+                by: ui::webview::AnsweredBy::Person,
+            });
         }
     }
     #[cfg(test)]

@@ -12,7 +12,21 @@ topbar-sharing-session-controls = In control: { $name }
 topbar-sharing-session-viewing = Watching: { $name }
 topbar-sharing-count-controlling = { $viewers } watching, { $controllers } in control
 topbar-sharing-count = { $viewers } watching
+# A viewer asked to see a shared window and nothing of it has gone out to them: they wait, and are
+# said to watch or to be in control only once it has.
+topbar-sharing-agent-waiting = Agent waiting: { $name }
+topbar-sharing-agent-waiting-control = Agent waiting, may control: { $name }
+topbar-sharing-person-waiting = Waiting: { $name }
+topbar-sharing-person-waiting-control = Waiting, may control: { $name }
+topbar-sharing-session-waiting = Waiting: { $name }
+topbar-sharing-session-waiting-control = Waiting, may control: { $name }
+topbar-sharing-count-waiting = { $waiting } waiting
+topbar-sharing-count-waiting-control = { $waiting } waiting, { $controllers } may control
+topbar-sharing-count-mixed = { $viewers } watching, { $waiting } waiting
+topbar-sharing-count-mixed-controlling = { $viewers } watching, { $controllers } in control, { $waiting } waiting
 topbar-sharing-unknown-window = a window
+# Who views a shared window when nothing names them, after "Watching:" or "In control:".
+topbar-sharing-unnamed-viewer = another device
 topbar-sharing-window-in-workspace = { $window } in { $workspace }
 topbar-watching-count = +{ $count } watching
 topbar-watching-description = { $count } { $count ->
@@ -37,12 +51,20 @@ topbar-bell-silenced = { $unread ->
 topbar-show-people = Everyone here
 topbar-viewer-can-control = can control { $targets }
 topbar-viewer-view-only = view only { $targets }
-topbar-viewer-entry = { $name } ({ $kind ->
-        [agent] agent
-        [person] person
-       *[session] unidentified session
-    }): { $access }
+topbar-viewer-waiting = waiting for { $targets }
+topbar-viewer-waiting-control = waiting for { $targets }, control allowed
+# One viewer of the shared windows, as a screen reader says them: who the workspace says they are,
+# the name the bar's pill shows for a viewer it knows only by name, and for one nothing names that
+# it has no name.
+topbar-viewer-entry = { $kind ->
+        [agent] { $name } (agent)
+        [person] { $name } (person)
+        [unnamed] a device with no name
+       *[named] { $name }
+    }: { $access }
 topbar-people-visible = Screen visible to { $viewers }. Show who is here
+topbar-people-waiting = Nothing sent yet to { $viewers }. Show who is here
+topbar-people-visible-and-waiting = Screen visible to { $viewers }. Nothing sent yet to { $waiting }. Show who is here
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
 topbar-invite = Invite
@@ -1048,16 +1070,36 @@ session-clipboard = Clipboard
 
 session-window-share = Shared windows
 session-window-share-share = Share a window with the workspace
-session-window-share-param-window = The window, by the identifier its app may capture
+session-window-share-param-window = The window, by the identifier its app may capture; leave out for the window the tab shows
 session-window-share-param-tab = The tab the window is shown in on this device
-session-window-share-param-app = The app the window belongs to
+session-window-share-param-app = The app the window belongs to; leave out for the app of the window the tab shows
 session-window-share-param-workspace = The workspace to share it in
+session-window-share-param-share-workspace = The workspace to share it in; leave out for the one the tab stands in
 session-window-share-stop = Stop sharing the window
 session-window-share-allow-input = Let the workspace control the window
 session-window-share-param-on = Whether they may control it; leave out to switch it
 session-window-share-watch = Show a window another member shares
 session-window-share-unwatch = Stop showing it
 session-window-share-workspace-left = This computer is no longer in the workspace
+session-window-share-live-keys = Waiting for this workspace's keys to reach this device
+session-window-share-live-keyless = This device holds no keys of this workspace
+session-window-share-live-unread = This device cannot read who is in this workspace
+session-window-share-live-no-relay = No device in this workspace carries its calls and shared windows
+session-window-share-live-unreached = Waiting to reach { $device }, the device that carries this workspace's calls and shared windows
+session-window-share-live-busy = { $device }, the device that carries this workspace's calls and shared windows, is taking in as many devices as it can at once; this device asks it again shortly
+session-window-share-live-refused = { $device } did not let this device into this workspace's calls and shared windows
+session-window-share-live-absent = This computer takes no part in this workspace's calls and shared windows
+session-window-share-live-lent = This device can share its own windows in this workspace and cannot open what others share
+session-window-share-live-unheard-bound = { $count ->
+        [one] One more device is in this workspace's calls and shared windows and is not heard here: this device hears { $bound } others at once
+       *[other] { $count } more devices are in this workspace's calls and shared windows and are not heard here: this device hears { $bound } others at once
+    }
+session-window-share-first-page = Waiting for the window's page from the device that runs it
+session-window-share-first-picture = Waiting for the window's first picture
+session-window-share-page-unsent = Waiting for the window's page to go out to the devices showing it
+session-window-share-page-withheld = The window's app was asked for its page and has not handed it over
+session-window-share-page-overdue = The device that runs the window was asked for its page and has not sent it
+session-window-share-page-too-large = The window's page is too large to send to the devices showing it
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = On-screen readout
@@ -1136,7 +1178,76 @@ window-menu-new-group = Move to a new window
 window-menu-close = Close
 window-menu-close-window = Close this window
 window-menu-stop-desktop-control = Stop controlling the desktop
+# Sharing a window with its workspace shows its live picture in its tab on the workspace's other
+# devices. The toolkit's "Share to channel…" posts the window in a channel instead: the two rows
+# stand together, so each names where the window goes.
+window-menu-share-with-workspace = Share with workspace
+window-menu-stop-sharing-with-workspace = Stop sharing with workspace
+window-menu-stop-sharing-watched = Stop sharing with workspace ({ $viewers } watching)
+window-menu-stop-sharing-waiting = Stop sharing with workspace ({ $viewers } waiting)
 window-menu-someone-elses = { $name }'s window
+# A window another device shares, as the tab showing it says it: what the tab is called, whose
+# window it is, whether this device may type into it, and how its pictures stand.
+peer-window-name = { $window } on { $device }
+peer-window-of = { $name }'s window
+peer-window-can-type = Can type
+peer-window-view-only = View only
+peer-window-first-picture = Waiting for its first picture
+peer-window-picture-lost = Part of the picture was lost and the next whole one has not arrived
+peer-window-live = Live
+peer-window-ended = Ended: { $why }
+# Why it ended, as the rest of the sentence after "Ended:".
+peer-window-ended-tab-gone = the window is no longer shown here
+peer-window-ended-left-workspace = this device left the workspace
+peer-window-ended-sender-stopped = the sender stopped sharing it
+peer-window-ended-restarted = its picture changed size
+peer-window-ended-let-go = this device let the window go
+# The same tab while nothing of the window is shown in it: which app's window it is and the device
+# it runs on, and under that why it is not here. A device nothing names is another device of the
+# workspace, never its key.
+peer-window-elsewhere = { $app } runs on { $device }
+peer-window-elsewhere-unnamed = { $app } runs on another device of this workspace
+peer-window-not-shared = It is not shared with this workspace right now
+peer-window-awaited = Waiting for { $device } to send it
+peer-window-awaited-unnamed = Waiting for its device to send it
+peer-window-host-away = { $device } is not connected to this workspace right now
+peer-window-host-away-unnamed = Its device is not connected to this workspace right now
+peer-window-host-left = { $device } is no longer in this workspace
+peer-window-host-left-unnamed = Its device is no longer in this workspace
+# What can be done to the window from the tab showing it, as its actions are listed: what each is
+# called, what it asks for, and what each thing it is told means.
+peer-window-action-pointer-motion = Move the pointer
+peer-window-action-pointer-motion-hint = Where the pointer goes
+peer-window-action-pointer-button = Press a pointer button
+peer-window-action-pointer-button-hint = Which button
+peer-window-action-key = Press a key
+peer-window-action-key-hint = Which key
+peer-window-action-scroll = Scroll
+peer-window-action-scroll-hint = How far
+peer-window-action-text = Type text
+peer-window-action-text-hint = What to type
+peer-window-action-keyframe = Ask for the whole picture again
+peer-window-action-keyframe-hint = Ask the device that sends it
+peer-window-action-end = Let the window go
+peer-window-action-end-hint = Stop showing it
+peer-window-param-x = How far across the window, in its own pixels
+peer-window-param-y = How far down the window, in its own pixels
+peer-window-param-button = The button, by its number
+peer-window-param-pressed = Whether it goes down or comes back up
+peer-window-param-keysym = The key, by its number
+peer-window-param-modifiers = The modifier keys held with it
+peer-window-param-dx = How far across to scroll, in the window's pixels
+peer-window-param-dy = How far down to scroll, in the window's pixels
+peer-window-param-text = What goes into the focused field
+# Why the tab does not do one of them.
+peer-window-refused-ended = This window's share has ended
+peer-window-refused-view-only = This window is shared for watching only
+peer-window-refused-number = “{ $argument }” is not a number
+peer-window-refused-whole = “{ $argument }” is not a whole number
+peer-window-refused-flag = “{ $argument }” is neither true nor false
+peer-window-refused-button = That is not a pointer button
+peer-window-refused-key = That is not a key
+peer-window-refused-text = There is no text to type
 
 # The shell's widgets: what each is called, and what its controls do.
 shell-widget-music = Music

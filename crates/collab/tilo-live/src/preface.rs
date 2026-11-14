@@ -20,6 +20,10 @@
 //! | [`STATUS_ADMITTED`] | Admitted. Origins are attached; start `moq-lite` now. |
 //! | [`STATUS_DENIED`] | Refused; the host closes with [`CLOSE_DENIED`]. |
 //! | [`STATUS_REVOKED`] | Authority lapsed; close with [`CLOSE_REVOKED`]. |
+//!
+//! A host that is admitting as many sessions as it takes at once reads no
+//! preface and answers no byte: it closes the session with [`CLOSE_BUSY`],
+//! which says nothing about the grant.
 
 /// The `moq-lite` draft every Tilo `MoQ` session
 /// negotiates. No other version is offered or accepted.
@@ -40,6 +44,12 @@ pub const CLOSE_PREFACE: u32 = 0x7400;
 pub const CLOSE_DENIED: u32 = 0x7401;
 /// Close code for a session whose authority lapsed.
 pub const CLOSE_REVOKED: u32 = 0x7402;
+/// Close code for a session the host did not take into admission because it
+/// is admitting as many as it takes at once. Nothing of the session was read
+/// and nobody was judged, so it is no answer about the grant: a session that
+/// asks again later is judged then. A client that does not know the code
+/// reads a host it could not reach, which asks again too.
+pub const CLOSE_BUSY: u32 = 0x7403;
 /// How long a refused session stays open for its client to read the
 /// refusal and close it.
 pub const DENIED_GRACE: std::time::Duration = std::time::Duration::from_secs(1);

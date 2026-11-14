@@ -36,7 +36,7 @@ use runtime_portal::environment_door::{Reply, Request};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_sheets::word;
 
-use super::{ASK_EVERY, MAX_CONNECTIONS, PeerRefusal, Serving, WAIT};
+use super::{ASK_EVERY, PeerRefusal, Serving, WAIT};
 
 /// Environments with a door open at once; more are refused one.
 const MAX_ENVIRONMENTS: usize = 64;
@@ -511,14 +511,14 @@ fn accept(listener: &UnixListener, environment: &Arc<Environment>, serving: &Ser
             }
         };
         let admitted = super::identify(&stream).and_then(|(pid, peer)| {
-            if serving.connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-                return Err(PeerRefusal::Busy);
-            }
             environment_decision(&peer, pid, environment)?;
-            Ok(pid)
+            // Only a program of this environment is told that the door is full.
+            let place = serving.room.take().ok_or(PeerRefusal::Busy)?;
+            Ok((pid, place))
         });
         match admitted {
-            Ok(pid) => serving.serve(
+            Ok((pid, place)) => serving.serve(
+                place,
                 stream,
                 super::From::Environment(pid, Arc::clone(environment)),
             ),

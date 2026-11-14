@@ -77,6 +77,13 @@ test-ledger = Ledger
 test-ledger-ask = Ask for an entry
 test-ledger-answer = Record what looking an entry up answered
 
+## crates/sdk/tilo-app/tests/by_app.rs
+test-jukebox = Player
+test-jukebox-play = Play a video
+test-jukebox-played = Played
+test-jukebox-played-note = Note that a video was played
+test-jukebox-played-star = Star a video
+
 ## crates/sdk/tilo-app/tests/chain_list.rs
 test-chain-log = Log
 test-chain-log-rename = Rename the log

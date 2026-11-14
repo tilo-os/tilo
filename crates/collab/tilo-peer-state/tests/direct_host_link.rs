@@ -32,6 +32,8 @@ use tilo_user_identity::{
 use web_time::SystemTime;
 
 const WORKSPACE: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+/// A second workspace one device hosts beside [`WORKSPACE`]: where nothing of the first may show.
+const OTHER_WORKSPACE: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 
@@ -385,10 +387,25 @@ async fn joins(
     tilo_peer_state::owner::NativeWorkspaceOwner,
     tilo_desktop_model::WorkspaceId,
 ) {
+    joins_in(WORKSPACE, state, cert, key, invitation, service).await
+}
+
+/// [`joins`], into the workspace `named`.
+async fn joins_in(
+    named: &str,
+    state: &Path,
+    cert: &tilo_user_identity::DeviceCert,
+    key: &SigningKey,
+    invitation: String,
+    service: std::sync::Arc<dyn tilo_peer_state::join_transport::LocalJoinService>,
+) -> (
+    tilo_peer_state::owner::NativeWorkspaceOwner,
+    tilo_desktop_model::WorkspaceId,
+) {
     use tilo_identity_host::custody::HostIdentity;
     let owner = owner_at(state);
     let identity = HostIdentity::kept(cert.clone(), key.clone());
-    let topic = tilo_peer_state::join::WorkspaceId::parse(WORKSPACE).expect("a workspace topic");
+    let topic = tilo_peer_state::join::WorkspaceId::parse(named).expect("a workspace topic");
     let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
         tilo_peer_state::join_transport::WorkspaceJoinClient::local(
             service,
@@ -450,7 +467,31 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     ));
     let frames = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(frames.path(), Appetite::StoreAll).unwrap());
-    let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store));
+    // What the device's own channels hold of the workspace: a member that links is handed it as
+    // its link starts, since the device says a channel's frame once, to the members linked then.
+    let standing = NeighbourMsg::MlsGovernance {
+        workspace: WORKSPACE.into(),
+        frame: Box::new(
+            collab_types::MlsGovernanceFrame::signed(
+                workspace_id(),
+                [0; 32],
+                0,
+                collab_types::MlsGovernanceAction::Genesis,
+                &host_key,
+            )
+            .unwrap(),
+        ),
+        delivery: 7,
+    };
+    let handed = standing.clone();
+    let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store))
+        .with_channel_history(Arc::new(move |asked| {
+            if asked == workspace {
+                vec![handed.clone()]
+            } else {
+                Vec::new()
+            }
+        }));
     // The device's session hears what its members bring, in the workspace they write to: its own
     // apps and channels read it, and it sends it on to the workspace's own host. A member's write
     // and its channel governance went nowhere past this device's links.
@@ -592,6 +633,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     .await;
     let c = DirectSync::over(c.replica(workspace).unwrap(), c_key.clone());
     let c_endpoint = localhost_endpoint(&c_key).await;
+    let mut c_first = c.heard();
     let c_link = tokio::spawn({
         let c = c.clone();
         let c_endpoint = c_endpoint.clone();
@@ -602,6 +644,19 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         peer.document_heads(APP, RECORD) == written
     })
     .await;
+    // It was also handed what the device's channels hold, in the name of the device that signed
+    // it, and none of it is the workspace's state.
+    let first = hears(
+        &mut c_first,
+        &standing,
+        "a member that links is handed the channel governance the device holds",
+    )
+    .await;
+    assert_eq!(first.author, host_key.verifying_key().to_bytes());
+    assert!(
+        !first.landed,
+        "channel governance is never the workspace's state"
+    );
 
     // A channel's governance one member sends reaches the others through the device that holds
     // the workspace, which admits none of it into the workspace: a request to join a record's
@@ -1009,6 +1064,390 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
     host_endpoint.close().await;
     b_endpoint.close().await;
     c_endpoint.close().await;
+}
+
+/// How many grants of the share `share` the governance `peer` holds gives, as `device` reads it.
+fn grants_of(peer: &StatePeer, device: [u8; 32], share: &str) -> usize {
+    peer.permissions(device, SystemTime::now())
+        .map_or(0, |standing| {
+            standing
+                .policy
+                .grants
+                .iter()
+                .filter(|grant| {
+                    tilo_peer_state::workspace::share::share_of(&grant.id) == Some(share)
+                })
+                .count()
+        })
+}
+
+/// Commit `command` into `workspace`'s governance as `owner`'s device, as a session's engine
+/// commits what its person changes of the workspace's people and shares.
+async fn commit_membership(
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+    (cert, key): (&tilo_user_identity::DeviceCert, &SigningKey),
+    command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+) -> Result<(), String> {
+    owner
+        .commit_workspace_membership_command(
+            tilo_peer_state::owner_commit::OwnerCommitRequest {
+                workspace: workspace.to_string(),
+                operation:
+                    tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                        invocation: uuid::Uuid::new_v4(),
+                        caller: cert.clone(),
+                        command,
+                    },
+            },
+            key,
+            SystemTime::now(),
+        )
+        .await
+        .map(|_| ())
+}
+
+/// A window a device shares in a workspace it hosts itself is shared with the members linked to
+/// it, now: the share is a change of the governance the device keeps itself, so no host hands it
+/// on, and the device's own commit has to. Committed into its custody for a host to take, the
+/// share reached a member only when its link was next made: a person shared a window on the
+/// machine hosting the workspace, and their other machine never showed it.
+///
+/// The share goes where it was made and nowhere else: a member of another workspace the device
+/// hosts hears nothing of it, a share the workspace refuses reaches nobody, the share's end
+/// leaves the members as it came, and a member that links later reads it as it catches up.
+#[expect(
+    clippy::too_many_lines,
+    reason = "two workspaces hosted here, a member of each, a share, a refused one, its end, \
+              and a member that links later"
+)]
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_device_shares_in_the_workspace_it_hosts_reaches_that_workspaces_members_live() {
+    use tilo_action_policy::share::ShareAccess;
+    use tilo_desktop_model::ids::{compose_id, device_salt_of_key};
+    use tilo_desktop_model::window_share::{window_node, window_share_id};
+    use tilo_peer_state::direct::Owning;
+    use tilo_peer_state::join_answer::JoinAnswer;
+    use tilo_peer_state::owner::OwnerJoinWorkspaces;
+    use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+
+    let root = SigningKey::from_bytes(&[4; 32]);
+    let (host_key, host_cert) =
+        crate::common::device_with(&root, 11, DeviceCapabilities::primary());
+    let (b_key, b_cert) = device(&root, 12);
+    let (c_key, c_cert) = device(&root, 13);
+    let (d_key, d_cert) = device(&root, 14);
+    let now = SystemTime::now();
+    let host_endpoint = localhost_endpoint(&host_key).await;
+    let host_state = tempfile::tempdir().unwrap();
+    let host = owner_at(host_state.path());
+    let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
+    let other = tilo_desktop_model::WorkspaceId::parse(OTHER_WORKSPACE).unwrap();
+    let route = hint(workspace, &host_endpoint, &host_cert, &host_key);
+    let other_route = hint(other, &host_endpoint, &host_cert, &host_key);
+    for (held, name, route) in [
+        (workspace, "Hosted", &route),
+        (other, "Hosted beside it", &other_route),
+    ] {
+        host.create_workspace(held, name, &host_cert, &host_key, Some(route), now)
+            .await
+            .expect("the workspace is founded here");
+    }
+    let service: Arc<dyn tilo_peer_state::join_transport::LocalJoinService> = Arc::new(JoinAnswer(
+        OwnerJoinWorkspaces::new(host.clone(), host_key.clone()),
+    ));
+    let frames = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(frames.path(), Appetite::StoreAll).unwrap());
+    let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store));
+    let router = Router::builder(host_endpoint.clone())
+        .accept(DIRECT_ALPN, serving.clone())
+        .spawn();
+    let host_addr = addr(&host_endpoint);
+    let as_host = (&host_cert, &host_key);
+
+    // One member of each workspace, each linked to the device hosting both and caught up.
+    let b_state = tempfile::tempdir().unwrap();
+    let (b, _) = joins(
+        b_state.path(),
+        &b_cert,
+        &b_key,
+        invitation(
+            &host,
+            workspace,
+            &host_cert,
+            &host_key,
+            route.clone(),
+            [12; 32],
+        )
+        .await,
+        Arc::clone(&service),
+    )
+    .await;
+    let c_state = tempfile::tempdir().unwrap();
+    let (c, _) = joins_in(
+        OTHER_WORKSPACE,
+        c_state.path(),
+        &c_cert,
+        &c_key,
+        invitation(&host, other, &host_cert, &host_key, other_route, [13; 32]).await,
+        Arc::clone(&service),
+    )
+    .await;
+    let b = DirectSync::over(b.replica(workspace).unwrap(), b_key.clone());
+    let c = DirectSync::over(c.replica(other).unwrap(), c_key.clone());
+    let b_endpoint = localhost_endpoint(&b_key).await;
+    let c_endpoint = localhost_endpoint(&c_key).await;
+    let mut links = Vec::new();
+    for (member, endpoint) in [(&b, &b_endpoint), (&c, &c_endpoint)] {
+        let mut caught_up = member.caught_up();
+        links.push(tokio::spawn({
+            let (member, endpoint, host_addr) =
+                (member.clone(), endpoint.clone(), host_addr.clone());
+            async move { member.connect(&endpoint, host_addr).await }
+        }));
+        tokio::time::timeout(Duration::from_secs(30), caught_up.wait_for(|up| *up))
+            .await
+            .expect("the member catches up")
+            .unwrap();
+    }
+    let (b_device, c_device) = (b_cert.device_public_key, c_cert.device_public_key);
+    let mut c_heard = c.heard();
+
+    // A window is its own device's to share: the workspace refuses the device hosting it another
+    // device's window, and nothing of the refused share reaches a member.
+    let salt = device_salt_of_key(&host_cert.device_public_key);
+    let anothers = compose_id(device_salt_of_key(&b_device), 7);
+    let refused = commit_membership(
+        &host,
+        workspace,
+        as_host,
+        WorkspaceMembershipCommand::Share {
+            share: window_share_id(anothers),
+            node: window_node(WORKSPACE, APP, anothers),
+            access: ShareAccess::View,
+        },
+    )
+    .await;
+    assert!(
+        refused.is_err(),
+        "the workspace refuses a share of a window that runs on another device"
+    );
+
+    // The device shares a window of its own in the first workspace: the member linked there
+    // reads the share with no new link made.
+    let tab = compose_id(salt, 3);
+    let share = window_share_id(tab);
+    let shares = |named: &str, tab| WorkspaceMembershipCommand::Share {
+        share: window_share_id(tab),
+        node: window_node(named, APP, tab),
+        access: ShareAccess::View,
+    };
+    commit_membership(&host, workspace, as_host, shares(WORKSPACE, tab))
+        .await
+        .expect("the workspace takes its device's share");
+    until(&b, "the member reads the share its host made", |peer| {
+        grants_of(peer, b_device, &share) > 0
+    })
+    .await;
+    assert_eq!(
+        b.read(|peer| grants_of(peer, b_device, &window_share_id(anothers))),
+        0,
+        "a refused share reaches no member"
+    );
+
+    // Nothing of it reached the other workspace's member. That member hears what is shared in
+    // its own workspace, committed after the first share: a frame of the first workspace sent
+    // down its link would have come before this one.
+    let beside = compose_id(salt, 4);
+    commit_membership(&host, other, as_host, shares(OTHER_WORKSPACE, beside))
+        .await
+        .expect("the other workspace takes its device's share");
+    until(
+        &c,
+        "the other workspace's member reads its own share",
+        |peer| grants_of(peer, c_device, &window_share_id(beside)) > 0,
+    )
+    .await;
+    let mut rooms = Vec::new();
+    loop {
+        match c_heard.try_recv() {
+            Ok(heard) => {
+                if let NeighbourMsg::SyncResp { workspace, .. } = heard.message {
+                    rooms.push(workspace);
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+            Err(_) => break,
+        }
+    }
+    assert!(
+        !rooms.is_empty() && rooms.iter().all(|room| room == OTHER_WORKSPACE),
+        "a member hears the governance of its own workspace alone: {rooms:?}"
+    );
+    assert_eq!(
+        c.read(|peer| grants_of(peer, c_device, &share)),
+        0,
+        "a share is its workspace's: a member of another workspace holds none of it"
+    );
+
+    // The share's end leaves the member as the share came.
+    commit_membership(
+        &host,
+        workspace,
+        as_host,
+        WorkspaceMembershipCommand::Unshare {
+            share: share.clone(),
+        },
+    )
+    .await
+    .expect("the workspace ends its device's share");
+    until(&b, "the member reads that the share ended", |peer| {
+        grants_of(peer, b_device, &share) == 0
+    })
+    .await;
+
+    // A member that links once the window is shared again reads the share as it catches up.
+    commit_membership(&host, workspace, as_host, shares(WORKSPACE, tab))
+        .await
+        .expect("the workspace takes its device's share again");
+    let d_state = tempfile::tempdir().unwrap();
+    let (d, _) = joins(
+        d_state.path(),
+        &d_cert,
+        &d_key,
+        invitation(&host, workspace, &host_cert, &host_key, route, [14; 32]).await,
+        Arc::clone(&service),
+    )
+    .await;
+    let d = DirectSync::over(d.replica(workspace).unwrap(), d_key.clone());
+    let d_endpoint = localhost_endpoint(&d_key).await;
+    links.push(tokio::spawn({
+        let (d, d_endpoint) = (d.clone(), d_endpoint.clone());
+        async move { d.connect(&d_endpoint, host_addr).await }
+    }));
+    let d_device = d_cert.device_public_key;
+    for (member, device, step) in [
+        (&d, d_device, "the member that linked later reads the share"),
+        (
+            &b,
+            b_device,
+            "the member linked before reads the share again",
+        ),
+    ] {
+        until(member, step, |peer| grants_of(peer, device, &share) > 0).await;
+    }
+
+    for link in links {
+        link.abort();
+    }
+    router.shutdown().await.unwrap();
+    host_endpoint.close().await;
+    b_endpoint.close().await;
+    c_endpoint.close().await;
+    d_endpoint.close().await;
+}
+
+/// A device the workspace's host admits is known to the members linked to that host at once. The
+/// admission is a change of the governance the hosting device keeps itself, and nobody else hands
+/// it on. A member that never heard of the device does not take the commit that brings it into
+/// the workspace's key group, and reads nothing its host seals under the keys that follow: two
+/// machines watched a window their host shared, a third came into the workspace, and the first
+/// stopped hearing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_the_host_admits_is_known_to_the_members_linked_to_it_at_once() {
+    use tilo_peer_state::direct::Owning;
+    use tilo_peer_state::join_answer::JoinAnswer;
+    use tilo_peer_state::owner::OwnerJoinWorkspaces;
+
+    let root = SigningKey::from_bytes(&[5; 32]);
+    let (host_key, host_cert) =
+        crate::common::device_with(&root, 15, DeviceCapabilities::primary());
+    let (b_key, b_cert) = device(&root, 16);
+    let (c_key, c_cert) = device(&root, 17);
+    let now = SystemTime::now();
+    let host_endpoint = localhost_endpoint(&host_key).await;
+    let host_state = tempfile::tempdir().unwrap();
+    let host = owner_at(host_state.path());
+    let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
+    let route = hint(workspace, &host_endpoint, &host_cert, &host_key);
+    host.create_workspace(
+        workspace,
+        "Hosted",
+        &host_cert,
+        &host_key,
+        Some(&route),
+        now,
+    )
+    .await
+    .expect("the workspace is founded here");
+    let service: Arc<dyn tilo_peer_state::join_transport::LocalJoinService> = Arc::new(JoinAnswer(
+        OwnerJoinWorkspaces::new(host.clone(), host_key.clone()),
+    ));
+    let frames = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(frames.path(), Appetite::StoreAll).unwrap());
+    let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store));
+    let router = Router::builder(host_endpoint.clone())
+        .accept(DIRECT_ALPN, serving.clone())
+        .spawn();
+
+    let b_state = tempfile::tempdir().unwrap();
+    let (b, _) = joins(
+        b_state.path(),
+        &b_cert,
+        &b_key,
+        invitation(
+            &host,
+            workspace,
+            &host_cert,
+            &host_key,
+            route.clone(),
+            [16; 32],
+        )
+        .await,
+        Arc::clone(&service),
+    )
+    .await;
+    let b = DirectSync::over(b.replica(workspace).unwrap(), b_key.clone());
+    let mut caught_up = b.caught_up();
+    let b_endpoint = localhost_endpoint(&b_key).await;
+    let b_link = tokio::spawn({
+        let (b, b_endpoint, host_addr) = (b.clone(), b_endpoint.clone(), addr(&host_endpoint));
+        async move { b.connect(&b_endpoint, host_addr).await }
+    });
+    tokio::time::timeout(Duration::from_secs(30), caught_up.wait_for(|up| *up))
+        .await
+        .expect("the member catches up")
+        .unwrap();
+    let c_device = c_cert.device_public_key;
+    let knows = |peer: &StatePeer| {
+        peer.certificates()
+            .iter()
+            .any(|held| held.device_public_key == c_device)
+    };
+    assert!(!b.read(knows), "nobody admitted the further device yet");
+
+    // The host admits a further device. That device holds the workspace from then on, and has
+    // not linked: nothing but the host's own commit tells the member of it.
+    let c_state = tempfile::tempdir().unwrap();
+    let _admitted = joins(
+        c_state.path(),
+        &c_cert,
+        &c_key,
+        invitation(&host, workspace, &host_cert, &host_key, route, [17; 32]).await,
+        Arc::clone(&service),
+    )
+    .await;
+    until(
+        &b,
+        "the member linked to the host knows the device the host admitted",
+        knows,
+    )
+    .await;
+
+    b_link.abort();
+    router.shutdown().await.unwrap();
+    host_endpoint.close().await;
+    b_endpoint.close().await;
 }
 
 /// Commit `value` to the test record of `workspace` as `owner`'s device, numbered from the

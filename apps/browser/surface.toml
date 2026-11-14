@@ -16,6 +16,7 @@ fields = [
   { path = "preferences.search_engine", type = "text" },
   { path = "preferences.homepage", type = "text" },
   { path = "site_exceptions", type = { set = "text" }, readonly = true },
+  { path = "site_forms", type = { map = { named = "RememberedForm" } }, readonly = true },
 ]
 
 [[resources.verbs]]
@@ -41,11 +42,64 @@ params = [
   { name = "enabled", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
+[[resources.verbs]]
+id = "remember-forms"
+kind = "undoable"
+params = [
+  { name = "origin", type = "text", required = true, schema = { type = "string" } },
+  { name = "page", type = "text", required = true, schema = { type = "string" } },
+  { name = "forms", type = { list = { named = "RememberedForm" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { follows = { type = "string" }, grew_from = { type = "string" }, label = { type = "string" }, pages = { type = "array", items = { type = "string" } }, questions = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, choices = { type = "array", items = { type = "string" } }, fallback = { type = "string" }, kind = { type = "string" }, required = { type = "boolean" } } } }, seen = { type = "integer", minimum = 0 }, signature = { type = "string" }, submit = { type = "array", items = { type = "string" } } } } } },
+  { name = "whole", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "at", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "forget-form"
+kind = "undoable"
+params = [
+  { name = "origin", type = "text", required = true, schema = { type = "string" } },
+  { name = "signature", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "forget-site-forms"
+kind = "undoable"
+params = [
+  { name = "origin", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "forget-all-forms"
+kind = "undoable"
+
 [[resources.types]]
 name = "Bookmark"
 fields = [
   { name = "url", type = "text" },
   { name = "title", type = "text" },
+]
+
+[[resources.types]]
+name = "RememberedForm"
+fields = [
+  { name = "signature", type = "text" },
+  { name = "label", type = "text" },
+  { name = "pages", type = { list = "text" } },
+  { name = "questions", type = { list = { named = "RememberedQuestion" } } },
+  { name = "submit", type = { list = "text" } },
+  { name = "follows", type = "text" },
+  { name = "grew_from", type = "text" },
+  { name = "seen", type = "int" },
+]
+
+[[resources.types]]
+name = "RememberedQuestion"
+fields = [
+  { name = "name", type = "text" },
+  { name = "kind", type = "text" },
+  { name = "choices", type = { list = "text" } },
+  { name = "required", type = "bool" },
+  { name = "fallback", type = "text" },
 ]
 
 [[resources.types]]
@@ -168,6 +222,58 @@ fields = [
   { name = "title", type = "text" },
   { name = "last", type = "int" },
   { name = "count", type = "int" },
+]
+
+[[resources]]
+kind = "browser.page-record"
+label = "Page record"
+version = 1
+fields = [
+  { path = "actions", type = { map = { named = "PageAction" } }, readonly = true },
+  { path = "tabs", type = { map = { named = "Tab" } }, readonly = true },
+]
+
+[[resources.types]]
+name = "Answer"
+fields = [
+  { name = "name", type = "text" },
+  { name = "value", type = "text" },
+]
+
+[[resources.types]]
+name = "PageAction"
+fields = [
+  { name = "seq", type = "int" },
+  { name = "time_ms", type = "int" },
+  { name = "actor", type = "text" },
+  { name = "device", type = "text" },
+  { name = "device_name", type = "text" },
+  { name = "device_unknown", type = "bool" },
+  { name = "how", type = "text" },
+  { name = "action", type = "text" },
+  { name = "ok", type = "bool" },
+  { name = "code", type = "text" },
+  { name = "message", type = "text" },
+  { name = "url", type = "text" },
+  { name = "to_url", type = "text" },
+  { name = "navigation", type = "text" },
+  { name = "frame", type = "text" },
+  { name = "role", type = "text" },
+  { name = "name", type = "text" },
+  { name = "nth", type = "int" },
+  { name = "secret", type = "bool" },
+  { name = "text", type = { option = "text" } },
+  { name = "values", type = { option = { list = "text" } } },
+  { name = "answers", type = { list = { named = "Answer" } } },
+]
+
+[[resources.types]]
+name = "Tab"
+fields = [
+  { name = "last", type = "int" },
+  { name = "dropped", type = "int" },
+  { name = "at", type = "int" },
+  { name = "device", type = "text" },
 ]
 
 [[resources]]

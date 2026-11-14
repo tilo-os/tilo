@@ -42,6 +42,7 @@ use moq_net::web_transport_trait::poll;
 use tilo_lock::MutexRecover as _;
 
 use crate::admit::{AdmissionError, Dial, Dialling, start};
+use crate::plane::{MAX_HEARD, TRACKS};
 use crate::preface::PROTOCOL;
 
 /// The ALPN every carrier connection negotiates: the `moq-lite` draft name.
@@ -52,25 +53,66 @@ pub const ALPN: &[u8] = PROTOCOL.as_bytes();
 const RECEIVE_BUFFER: usize = 256 * 1024;
 /// A carrier connection ends after this long without a packet from the peer.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
-/// Unidirectional streams one connection accepts at once: a picture stream per
-/// source and layer, each with room to start over.
-const MAX_UNI_STREAMS: u32 = 64;
-/// Bidirectional streams one connection accepts at once: the admission stream
-/// and `moq-lite`'s own.
-const MAX_BI_STREAMS: u32 = 16;
+/// Bidirectional streams a connection accepts before its session is admitted:
+/// the admission stream, and room for a few opened beside it. Whoever reaches
+/// an endpoint can open a connection, and every stream it may open is memory
+/// the endpoint holds for it unread, so a peer nobody judged yet is allowed
+/// few.
+const PREFACE_BI_STREAMS: u32 = 4;
+/// Unidirectional streams a connection accepts before its session is
+/// admitted: the other end's `moq-lite` setup, which arrives before this end
+/// knows it was admitted.
+const PREFACE_UNI_STREAMS: u32 = 4;
+/// [`MAX_HEARD`] and the tracks every device is read by, as the stream budget
+/// counts them.
+const HEARD: u32 = 32;
+const HEARD_TRACKS: u32 = 3;
+const _: () = assert!(HEARD as usize == MAX_HEARD && HEARD_TRACKS as usize == TRACKS.len());
+/// Tracks asked for one by one that the stream budget of an admitted
+/// connection has room for beside the ones every device is read by: the
+/// picture layers, shared windows and windows' pages a device shows of the
+/// others, and the ones the relay asks one publisher for (five layers,
+/// thirty-two windows and thirty-two pages at most, [`crate::relay`]).
+const SHOWN_TRACKS: u32 = 72;
+/// Streams of `moq-lite`'s own on an admitted connection, and the admission
+/// stream that stays open under it.
+const CONTROL_STREAMS: u32 = 8;
+/// Groups of one shown track in flight at once: what the relay copies of one
+/// track concurrently.
+const SHOWN_GROUPS: u32 = 8;
+/// Bidirectional streams an admitted connection accepts at once.
+///
+/// A track is read on one stream for as long as it is read, and asked about
+/// on a second while it is opened, and nothing ends a subscription that waits
+/// for a stream: a connection that allows fewer than its plane reads leaves
+/// the further devices unread for good. So the budget is twice the tracks a
+/// plane reads at once (the [`TRACKS`] of [`MAX_HEARD`] devices and
+/// [`SHOWN_TRACKS`]) and [`CONTROL_STREAMS`]. The limit itself costs nothing:
+/// the transport allocates a stream's state when the stream is opened. What
+/// costs is the subscription behind it, which is what [`MAX_HEARD`] bounds.
+pub const MAX_BI_STREAMS: u32 = 2 * (HEARD_TRACKS * HEARD + SHOWN_TRACKS) + CONTROL_STREAMS;
+/// Unidirectional streams an admitted connection accepts at once: a group is
+/// a stream, so one burst of each stream track of every device read (its
+/// presence and its activity note; audio travels as datagrams) and
+/// [`SHOWN_GROUPS`] of every shown track.
+pub const MAX_UNI_STREAMS: u32 = (HEARD_TRACKS - 1) * HEARD + SHOWN_GROUPS * SHOWN_TRACKS;
 
-/// The QUIC transport a carrier's connections need: datagrams enabled, the
-/// session's idle timeout, and room for a call's picture streams. An endpoint
-/// that carries calls is built with this
-/// ([`Endpoint::builder`](iroh::EndpointBuilder::transport_config)).
+/// The QUIC transport of an endpoint that carries only the live plane:
+/// datagrams enabled, the session's idle timeout, and the few streams a
+/// connection may open before its session is admitted. What an admitted
+/// session opens is allowed on its own connection when it is admitted
+/// ([`Session::admitted`]), on whatever transport its endpoint was bound
+/// with, so a session's endpoint, which carries other protocols too and is
+/// bound with their transport, allows a carrier the same streams as one bound
+/// with this.
 #[must_use]
 pub fn transport_config() -> QuicTransportConfig {
     let idle = u32::try_from(IDLE_TIMEOUT.as_millis()).unwrap_or(u32::MAX);
     QuicTransportConfig::builder()
         .max_idle_timeout(Some(VarInt::from_u32(idle).into()))
         .datagram_receive_buffer_size(Some(RECEIVE_BUFFER))
-        .max_concurrent_uni_streams(VarInt::from_u32(MAX_UNI_STREAMS))
-        .max_concurrent_bidi_streams(VarInt::from_u32(MAX_BI_STREAMS))
+        .max_concurrent_uni_streams(VarInt::from_u32(PREFACE_UNI_STREAMS))
+        .max_concurrent_bidi_streams(VarInt::from_u32(PREFACE_BI_STREAMS))
         .build()
 }
 
@@ -153,6 +195,19 @@ impl Session {
     #[must_use]
     pub fn remote(&self) -> [u8; 32] {
         *self.connection.remote_id().as_bytes()
+    }
+
+    /// This connection's session was admitted: from now on the other end may
+    /// open the streams an admitted session opens ([`MAX_BI_STREAMS`],
+    /// [`MAX_UNI_STREAMS`]), whatever the endpoint's transport allowed a
+    /// connection before. The relay says so of a session its authority
+    /// admitted ([`serve_on`]), and a device of the carrier it was admitted
+    /// on ([`Iroh`]): both ends of every carrier allow the same.
+    pub fn admitted(&self) {
+        self.connection
+            .set_max_concurrent_bi_streams(VarInt::from_u32(MAX_BI_STREAMS));
+        self.connection
+            .set_max_concurrent_uni_streams(VarInt::from_u32(MAX_UNI_STREAMS));
     }
 }
 
@@ -475,7 +530,12 @@ impl Dial for Iroh {
                     .connect(self.addr.clone(), ALPN)
                     .await
                     .map_err(|_| AdmissionError::Unavailable)?;
-                start(Session::new(connection), grant, publish, subscribe).await
+                let session = Session::new(connection);
+                let connected = start(session.clone(), grant, publish, subscribe).await?;
+                // The relay admitted this device: it may open what it reads
+                // of this device's broadcast.
+                session.admitted();
+                Ok(connected)
             })
             .await
             .map_err(|_| AdmissionError::Unavailable)?
@@ -503,6 +563,19 @@ where
     Ok(Router::builder(endpoint)
         .accept(ALPN, Handler { serve })
         .spawn())
+}
+
+/// Serve `session` on `relay` as the endpoint the handshake proved, and allow
+/// its connection what an admitted session opens once `relay`'s authority
+/// admitted it ([`Session::admitted`]): what a carrier's handler runs for
+/// each connection ([`handler`]).
+#[cfg(all(feature = "relay", not(target_arch = "wasm32")))]
+pub async fn serve_on(relay: &crate::relay::Relay, session: Session) {
+    let peer = crate::relay::Peer(session.remote());
+    let admitted = session.clone();
+    relay
+        .serve_session_then(session, peer, move || admitted.admitted())
+        .await;
 }
 
 /// The [`ALPN`] handler alone, for a device that already runs a router: an

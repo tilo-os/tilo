@@ -21,6 +21,12 @@ impl NativeWorkspaceOwner {
     /// member publishes the changes it made, which every participant admits
     /// as it admits every member's. Exact retries converge; changed
     /// invocation reuse never changes policy.
+    ///
+    /// A workspace this device hosts itself has no host to publish to: its
+    /// device is its keeper, and holds no link that carries its custody. What
+    /// the command changed goes to the members linked to this device now
+    /// ([`crate::owner::NativeKeptHereObserver`]), as its record writes do; a
+    /// member that links later reads it in the governance its catch-up brings.
     pub async fn commit_workspace_membership_command(
         &self,
         request: OwnerCommitRequest,
@@ -62,7 +68,8 @@ impl NativeWorkspaceOwner {
                 .peer
                 .signed_by_owner(&candidate.device().device_public_key);
             let previous = candidate.peer.clone();
-            let (receipt, record) = candidate.change(|live, record| {
+            let hosted_here = candidate.record.hosted_here();
+            let ((receipt, changes), record) = candidate.change(|live, record| {
                 let before = live.workspace_heads().unwrap_or_default();
                 live.workspace_mut()
                     .apply_workspace_membership_command(&caller, &command, key, now)?;
@@ -70,7 +77,7 @@ impl NativeWorkspaceOwner {
                     .generation
                     .checked_add(1)
                     .ok_or("native membership generation exhausted")?;
-                let written = if writes_checkpoint {
+                if writes_checkpoint {
                     let messages = live.publication_mut().durable_mutation_messages(
                         &previous,
                         key,
@@ -85,10 +92,12 @@ impl NativeWorkspaceOwner {
                             crate::owner::publication::append_local(record, outgoing)?;
                         }
                     }
-                    Vec::new()
-                } else {
-                    live.workspace_changes_since(&before)
-                };
+                }
+                // What the command changed in the workspace's governance: what
+                // a member publishes for the workspace's host to admit, and
+                // what a device that hosts the workspace hands the members
+                // linked to it.
+                let changes = live.workspace_changes_since(&before);
                 key.settled()?;
                 record.generation = next_generation;
                 let receipt = OwnerCommitReceipt {
@@ -109,18 +118,19 @@ impl NativeWorkspaceOwner {
                         receipt.binding.clone(),
                         now,
                     )?;
-                } else if !written.is_empty() {
+                } else if !changes.is_empty() {
                     crate::owner::publication::add_member_changes(
                         live,
                         record,
-                        written,
+                        changes.clone(),
                         receipt.binding.clone(),
                         now,
                     )?;
                 }
-                Ok(receipt)
+                Ok((receipt, changes))
             })?;
             self.publish_record(workspace, &candidate, record, None)?;
+            self.0.governance_kept_here(workspace, hosted_here, changes);
             Ok(receipt)
         })
         .await

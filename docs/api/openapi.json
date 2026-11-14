@@ -2537,6 +2537,17 @@
             "description": "The actions of the resource listed.",
             "default": []
           },
+          "kinds": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ActionRow"
+              }
+            },
+            "description": "The actions the rows offer, once for each kind of row: a row names\nthose it offers by id.",
+            "default": {}
+          },
           "next_cursor": {
             "type": [
               "string",
@@ -2580,8 +2591,9 @@
           "actions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ActionRow"
+              "type": "string"
             },
+            "description": "The ids of the actions it offers, each described once in the\nlisting's `kinds` under the row's `kind`.",
             "default": []
           },
           "state": {
@@ -3322,6 +3334,130 @@
           "origin",
           "enabled"
         ],
+        "description": ""
+      },
+      "browser.application.remember-forms.Arguments": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "string"
+          },
+          "page": {
+            "type": "string"
+          },
+          "forms": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "follows": {
+                  "type": "string"
+                },
+                "grew_from": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "pages": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "questions": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "choices": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "fallback": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "seen": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "signature": {
+                  "type": "string"
+                },
+                "submit": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "whole": {
+            "type": "boolean"
+          },
+          "at": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "origin",
+          "page",
+          "forms",
+          "whole",
+          "at"
+        ],
+        "description": ""
+      },
+      "browser.application.forget-form.Arguments": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin",
+          "signature"
+        ],
+        "description": ""
+      },
+      "browser.application.forget-site-forms.Arguments": {
+        "type": "object",
+        "properties": {
+          "origin": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin"
+        ],
+        "description": ""
+      },
+      "browser.application.forget-all-forms.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
         "description": ""
       },
       "browser.personal-bookmarks.add-bookmark.Arguments": {
@@ -12525,7 +12661,7 @@
           "event": {},
           "chat": {},
           "context": {},
-          "workspace": {},
+          "room": {},
           "emoji": {}
         },
         "required": [
@@ -26017,6 +26153,30 @@
       "resource": "browser.application",
       "action": "set-site-protection",
       "arguments": "#/components/schemas/browser.application.set-site-protection.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "browser.application",
+      "action": "remember-forms",
+      "arguments": "#/components/schemas/browser.application.remember-forms.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "browser.application",
+      "action": "forget-form",
+      "arguments": "#/components/schemas/browser.application.forget-form.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "browser.application",
+      "action": "forget-site-forms",
+      "arguments": "#/components/schemas/browser.application.forget-site-forms.Arguments"
+    },
+    {
+      "app": "so.tilo.browser",
+      "resource": "browser.application",
+      "action": "forget-all-forms",
+      "arguments": "#/components/schemas/browser.application.forget-all-forms.Arguments"
     },
     {
       "app": "so.tilo.browser",

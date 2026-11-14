@@ -93,6 +93,13 @@ pub fn desktop_manifest(
             .map_or(100, |entry| entry.splash_budget_ms),
         runtime: None,
         origins: Vec::new(),
+        // What the app's windows are to other devices is the app's to say, whatever it is built
+        // for.
+        window: authored
+            .entrypoint
+            .as_ref()
+            .map(|entry| entry.window.clone())
+            .unwrap_or_default(),
     });
     manifest.target = Some(Target {
         platform: platform.to_owned(),

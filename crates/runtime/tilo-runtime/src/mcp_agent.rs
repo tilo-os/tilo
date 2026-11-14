@@ -49,11 +49,11 @@ mod undo_run;
 pub(super) use undo_run::Undoable;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
-use answer::{action_row, action_rows, answer_of, text_result};
+use answer::{action_row, action_rows, answer_of, outcome, text_result};
 use level::{LevelPages, LsCursor};
 use render::{
-    action_line, action_page, block_line, parse_read_cursor, read_answer, render_value,
-    restart_pause, strip_blank,
+    action_line, action_page, block_line, parse_read_cursor, read_answer, restart_pause,
+    strip_blank,
 };
 use tilo::actions_note;
 /// A person's own line in a run's conversation, run in the task's host as they are
@@ -64,6 +64,9 @@ pub use tilo::{TaskHosts, TaskProgram};
 
 /// Resource rows one directory level reads at most, across its pages.
 const LEVEL_PAGES: usize = 4;
+/// Times a name not found is looked for again, after pauses that double from 5 ms to 200 ms:
+/// about seven tenths of a second in all.
+const LOOKS_AGAIN: u32 = 8;
 /// Rows asked per page.
 const PAGE_ROWS: u32 = 128;
 /// Containers at an app's top level whose contents the app's root also
@@ -602,6 +605,25 @@ fn action_rank(name: &str, action: &ActionDescriptor) -> Option<u8> {
         .then_some(2)
 }
 
+/// `picked`, the action `name` was found to mean at `path`, unless `name` is
+/// the word that starts an app (`starts`) and names the action by nothing
+/// but the start of its id: `open` begins `open-link` and is neither its id
+/// nor its label, so it is not that action.
+fn named_beyond_its_start(
+    starts: bool,
+    name: &str,
+    path: &str,
+    picked: Result<(String, ActionDescriptor), String>,
+) -> Result<(String, ActionDescriptor), String> {
+    match picked {
+        Ok((_, found)) if starts && action_rank(name, &found) == Some(2) => Err(format!(
+            "{path} has no action {name}; its {} is another action",
+            found.address.action
+        )),
+        picked => picked,
+    }
+}
+
 /// The action that reads a resource, among those its directory level offers:
 /// the one declared to read its document, else one named `read`, else a view
 /// whose action starts with `read` (`read-settings` next to `read`).
@@ -877,96 +899,6 @@ impl ResourceRead {
     }
 }
 
-/// What an invocation's final update says, as an agent reads it.
-fn outcome(value: &Value) -> Reply {
-    let state = value
-        .pointer("/update/state")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let mut text = match state {
-        "succeeded" => {
-            let mut text = String::from("ok");
-            let output = value.pointer("/update/output");
-            if let Some(result) = output
-                .and_then(|output| output.get("value"))
-                .map(render_value)
-                .filter(|result| !result.is_empty())
-            {
-                text.push('\n');
-                text.push_str(&result);
-            }
-            for resource in output
-                .and_then(|output| output.get("resources"))
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .take(8)
-            {
-                let _ = write!(text, "\n-> {resource}");
-            }
-            text
-        }
-        "failed" => {
-            let code = value
-                .pointer("/update/error/code")
-                .and_then(Value::as_str)
-                .unwrap_or("failed");
-            let message = value
-                .pointer("/update/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            format!("failed: {code}: {message}")
-        }
-        "cancelled" => "cancelled".to_owned(),
-        "item" | "progress" => {
-            let id = value
-                .get("invocation_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let mut text = format!("pending {id}: still running");
-            // A run in a shell says what it printed so far as it prints it.
-            if let Some(tail) = value
-                .pointer("/update/value/tail")
-                .and_then(Value::as_str)
-                .filter(|tail| !tail.trim().is_empty())
-            {
-                let total = value
-                    .pointer("/update/value/total")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default();
-                let _ = write!(
-                    text,
-                    "; its output so far ({total} bytes), newest last:\n{}",
-                    tail.trim_end()
-                );
-            }
-            let _ = write!(
-                text,
-                "\ntilo_status {{invocation_id}} says how it went; {{\"cancel\": true}} stops it"
-            );
-            text
-        }
-        _ => {
-            let id = value
-                .get("invocation_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            format!(
-                "pending {id}: not finished yet; tilo_status {{invocation_id}} says how it went"
-            )
-        }
-    };
-    if let Some(adjusted) = value.get("adjusted").and_then(Value::as_str) {
-        let _ = write!(text, "\n(adjusted: {adjusted})");
-    }
-    Reply {
-        failed: state != "succeeded",
-        text,
-        structured: None,
-    }
-}
-
 /// The output's cursor to continue a read from, when the app gave one.
 fn next_cursor(value: &Value) -> Option<String> {
     let found = ["nextCursor", "next_cursor"]
@@ -1044,6 +976,13 @@ struct Resolved {
     levels: Levels,
     /// The directory revision the target was found at.
     revision: String,
+}
+
+/// Whether `page` says of itself that it is not all there is and cannot be gone on from: it
+/// stopped at a limit, is not the end and offers no cursor. An app answers so when its
+/// directory cannot be read now and when a page of it broke off.
+fn cannot_be_read_now(page: &tilo_actions::remote::CataloguePage) -> bool {
+    page.budget_exhausted && !page.exhausted && page.next_cursor.is_empty()
 }
 
 impl Resolved {
@@ -1433,29 +1372,35 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 return Ok((only, among));
             }
         }
-        let here = match parent {
-            Some(owner) => self.level(provider, &owner.id, levels).await?,
-            None => self.app_children(provider, levels).await?,
-        };
-        let found = match pick(segment, &here.children, forms)? {
-            Some(node) => node.clone(),
-            None => self
-                .deep(provider, segment, parent, levels, forms)
-                .await?
-                .ok_or_else(|| {
-                    format!(
-                        "no {segment} in {app}; it has: {}",
-                        list_names(
-                            &here
-                                .children
-                                .iter()
-                                .map(|node| node.name(&here.children))
-                                .collect::<Vec<_>>()
-                        )
-                    )
-                })?,
-        };
-        Ok((found, here))
+        // An app's directory is rebuilt whenever its document changes, and for an instant it
+        // lists less than it has. A name not found is looked for again for a moment, the
+        // levels read anew, before the app is said not to have it.
+        let mut looks: u32 = 0;
+        loop {
+            let here = match parent {
+                Some(owner) => self.level(provider, &owner.id, levels).await?,
+                None => self.app_children(provider, levels).await?,
+            };
+            let found = match pick(segment, &here.children, forms)? {
+                Some(node) => Some(node.clone()),
+                None => self.deep(provider, segment, parent, levels, forms).await?,
+            };
+            if let Some(found) = found {
+                return Ok((found, here));
+            }
+            if looks >= LOOKS_AGAIN {
+                let names: Vec<_> = (here.children.iter())
+                    .map(|node| node.name(&here.children))
+                    .collect();
+                return Err(format!(
+                    "no {segment} in {app}; it has: {}",
+                    list_names(&names)
+                ));
+            }
+            looks = looks.saturating_add(1);
+            tokio::time::sleep(restart_pause(looks.saturating_add(1))).await;
+            levels.clear();
+        }
     }
 
     /// A resource `name` names somewhere below `within` (or anywhere in the
@@ -2698,9 +2643,21 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             if opens && starts_app(&action) {
                 return Ok(self.running(&resolved, &action).await);
             }
-            match self.pick_action_in(&action, &resolved).await {
+            // With arguments the word that starts an app is no other action's either: it names
+            // an action of the running app only where the app calls one that, by its id or its
+            // label, never another whose id merely begins with it, which nobody asked for.
+            let starts = parsed.segments.is_empty() && starts_app(&action);
+            let picked = self.pick_action_in(&action, &resolved).await;
+            // Found, and refused below as the word that starts an app: the word only begins
+            // the id of another action the app offers.
+            let begins_another = starts && picked.is_ok();
+            match named_beyond_its_start(starts, &action, &resolved.path, picked) {
                 Ok(found) => found,
-                Err(_) if parsed.segments.is_empty() && starts_app(&action) => {
+                // The open's own arguments are a file, which reaches the app's open whether
+                // the app runs or not. Arguments that name no file are another action's where
+                // the app offers one the word begins: the caller is told which, and nothing
+                // is run.
+                Err(_) if starts && (opens_a_file(&arguments) || !begins_another) => {
                     let opening = (&parsed, resolved.app_id.as_str(), action.as_str());
                     return self.launched(opening, arguments, invocation, wait_ms).await;
                 }
@@ -2877,6 +2834,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 fn starts_app(action: &str) -> bool {
     action == tilo_actions::remote::APPLICATION_OPEN_ACTION
         || action == tilo_actions::remote::APPLICATION_START_ACTION
+}
+
+/// Whether `arguments` are those of an app's own `open` of a file: they name the file's
+/// content, as the workspace's open reads it.
+fn opens_a_file(arguments: &serde_json::Map<String, Value>) -> bool {
+    arguments.contains_key("content")
 }
 
 /// The one window `instance` (a provider an `open` or `tilo_ls` named) among `running`, which

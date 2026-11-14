@@ -26,11 +26,19 @@
 //! another carrier when its own goes ([`Dial::redials`]). While it is gone,
 //! nobody it was reading is drawn as here: what a peer last said of itself is
 //! heard again from the broadcast the next carrier carries.
+//!
+//! A plane reads at most [`MAX_HEARD`] devices at once. Every device it reads
+//! is three subscriptions it and its relay hold for as long as the device is
+//! there, and that, not the transport, is what a further device costs. A
+//! device beyond the bound is not heard, and the plane says how many those
+//! are ([`Plane::unheard`]): nobody is absent without a word.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::Poll;
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use crate::frame::{Opener, PlaneKeys, Refusal, Sealer, Stream, TrackName};
@@ -51,6 +59,34 @@ use crate::voice::{self, VoiceObject};
 /// [`Track::Screen`]) are not among them: a layer exists only while someone
 /// asks for it ([`Plane::show`]).
 pub const TRACKS: [Track; 3] = [Track::Presence, Track::Audio, Track::Activity];
+
+/// Devices of a scope one plane reads at once: the ones it hears.
+///
+/// Each device read is one subscription per track of [`TRACKS`], held by this
+/// plane and by its relay for as long as the device is in the scope. Measured
+/// with every device of a plane and its relay in one process, each device a
+/// device hears holds about 250 KiB of them, so what a plane costs grows with
+/// the square of its devices: 277 MiB for thirty-three devices that all hear
+/// each other, a gibibyte for sixty-four and 4.3 GiB for a hundred and
+/// twenty-eight. Thirty-two keeps a relay, which is a member's own device,
+/// within what it can hold, and is about what a session's transport let one
+/// device read before this was a number anyone chose. Devices beyond it are in the scope, are read by
+/// whoever has room for them, and are counted here as not heard
+/// ([`Plane::unheard`]). The carrier allows an admitted connection the
+/// streams this many devices take ([`crate::native::MAX_BI_STREAMS`]).
+pub const MAX_HEARD: usize = 32;
+
+/// Who of a scope's devices a plane reads now, and who it does not.
+#[derive(Default)]
+struct Hearing {
+    /// The devices read, each with how many of its tracks' readers hold its
+    /// seat: at most [`MAX_HEARD`] devices.
+    seated: BTreeMap<[u8; 32], usize>,
+    /// The devices carried here that no seat is free for.
+    beyond: BTreeSet<[u8; 32]>,
+    /// The readers waiting for a seat.
+    waiting: Vec<Waker>,
+}
 
 /// Objects one plane keeps before it drops the oldest: a jitter buffer, not a
 /// backlog.
@@ -73,6 +109,11 @@ pub enum PlaneError {
     /// The relay refused the grant.
     #[error("the live plane was not admitted")]
     Denied,
+    /// The relay is admitting as many sessions as it takes at once and took
+    /// nothing of this one: it judged nobody, so this says nothing about the
+    /// grant, and asking again is the remedy.
+    #[error("the live plane's relay is admitting as many devices as it takes at once")]
+    Busy,
     /// The carrier or its setup failed.
     #[error("the live plane is unavailable")]
     Unavailable,
@@ -100,6 +141,7 @@ impl From<AdmissionError> for PlaneError {
     fn from(error: AdmissionError) -> Self {
         match error {
             AdmissionError::Denied | AdmissionError::Invalid => Self::Denied,
+            AdmissionError::Busy => Self::Busy,
             AdmissionError::Unavailable => Self::Unavailable,
         }
     }
@@ -233,6 +275,11 @@ pub(crate) struct Shared {
     /// How many readers each device the roster named has running now: a
     /// device is read by exactly one set of them.
     reading: Mutex<BTreeSet<[u8; 32]>>,
+    /// Which of the devices carried here those readers read, and which they
+    /// do not ([`Plane::unheard`]).
+    hearing: Mutex<Hearing>,
+    /// Told whenever [`Plane::unheard`] says otherwise.
+    unheard_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     published: Mutex<std::collections::BTreeMap<String, moq_net::track::Producer>>,
     /// This device's broadcast, kept for as long as the plane lives: dropping
     /// it withdraws the announcement its subscribers are reading.
@@ -305,6 +352,8 @@ impl Shared {
             keys: Mutex::new(join.keys.clone()),
             roster: Mutex::new(join.roster.clone()),
             reading: Mutex::new(BTreeSet::new()),
+            hearing: Mutex::new(Hearing::default()),
+            unheard_hook: Mutex::new(None),
             join: join.clone(),
             outgoing: outgoing.clone(),
             incoming: incoming.clone(),
@@ -358,6 +407,91 @@ impl Shared {
                 hook();
             }
             self.wake();
+            // A reader waiting for a seat has nothing left to wait for.
+            self.wake_waiting();
+        }
+    }
+    /// How many devices are carried here that this plane does not hear.
+    fn unheard(&self) -> usize {
+        self.hearing.lock_recover().beyond.len()
+    }
+    /// Tell whoever reads [`Plane::unheard`] when it says otherwise than
+    /// `before`.
+    fn unheard_moved(&self, before: usize) {
+        if self.unheard() == before {
+            return;
+        }
+        let hook = self.unheard_hook.lock_recover().clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+    /// Take a seat for `device`, whose broadcast is carried here: at once
+    /// when its other tracks' readers hold one or one is free, and otherwise
+    /// when one is given back, until when the device counts as beyond what
+    /// this plane reads.
+    fn poll_seat(&self, device: [u8; 32], cx: &Context<'_>) -> Poll<()> {
+        let mut hearing = self.hearing.lock_recover();
+        let before = hearing.beyond.len();
+        if let Some(readers) = hearing.seated.get_mut(&device) {
+            *readers = readers.saturating_add(1);
+            return Poll::Ready(());
+        }
+        let seated = hearing.seated.len() < MAX_HEARD;
+        if seated {
+            hearing.seated.insert(device, 1);
+            hearing.beyond.remove(&device);
+        } else {
+            hearing.beyond.insert(device);
+            if !hearing
+                .waiting
+                .iter()
+                .any(|waiting| waiting.will_wake(cx.waker()))
+            {
+                hearing.waiting.push(cx.waker().clone());
+            }
+        }
+        drop(hearing);
+        self.unheard_moved(before);
+        if seated {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+    /// One reader let go of `device`'s seat: with the last of them the seat
+    /// is free, and whoever waits for one is told.
+    fn leave_seat(&self, device: [u8; 32]) {
+        let mut hearing = self.hearing.lock_recover();
+        let left = hearing.seated.get_mut(&device).map(|readers| {
+            *readers = readers.saturating_sub(1);
+            *readers
+        });
+        let freed = left == Some(0);
+        if freed {
+            hearing.seated.remove(&device);
+        }
+        drop(hearing);
+        if freed {
+            self.wake_waiting();
+        }
+    }
+    /// `device`, which waited for a seat, is carried here no longer, or is
+    /// not read any more: it is not one this plane does not hear.
+    fn stops_waiting(&self, device: [u8; 32]) {
+        let before = {
+            let mut hearing = self.hearing.lock_recover();
+            let before = hearing.beyond.len();
+            hearing.beyond.remove(&device);
+            before
+        };
+        self.unheard_moved(before);
+    }
+    /// Have every reader that waits for a seat look again.
+    fn wake_waiting(&self) {
+        let waiting = std::mem::take(&mut self.hearing.lock_recover().waiting);
+        for waiting in waiting {
+            waiting.wake();
         }
     }
     /// Nothing this plane read is heard here any more: every device it was reading has left, as
@@ -489,6 +623,64 @@ impl Drop for ReadGuard {
     }
 }
 
+/// One reader's hold on its device's seat ([`Shared::poll_seat`]), let go when
+/// the reader stops reading the broadcast it took it for.
+struct Seat(Arc<Shared>, [u8; 32]);
+
+impl Drop for Seat {
+    fn drop(&mut self) {
+        self.0.leave_seat(self.1);
+    }
+}
+
+/// Take a seat for `device`, whose `broadcast` is carried here, waiting for
+/// one while the plane reads as many devices as it reads at once: `None`
+/// when the broadcast went away first, the plane ended or the roster names
+/// the device no longer.
+async fn seat(
+    shared: &Arc<Shared>,
+    device: [u8; 32],
+    broadcast: &moq_net::broadcast::Consumer,
+) -> Option<Seat> {
+    let mut gone = std::pin::pin!(broadcast.closed());
+    let seated = std::future::poll_fn(|cx| {
+        if shared.ended() || !shared.admits(device) || gone.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(false);
+        }
+        shared.poll_seat(device, cx).map(|()| true)
+    })
+    .await;
+    if seated {
+        Some(Seat(Arc::clone(shared), device))
+    } else {
+        shared.stops_waiting(device);
+        None
+    }
+}
+
+/// A wait a device takes up to a quarter off, by its own key and `turn`: the
+/// same device waits the same, and two devices almost never do.
+///
+/// Devices that missed a relay in the same moment (it was away and came back,
+/// or it had no room for them) would otherwise all ask it again in the same
+/// moment, every time, and meet its bound together again. A quarter keeps the
+/// schedule's shape: each wait is still longer than the one before it, and
+/// none is longer than the schedule says.
+#[must_use]
+pub fn spread(wait: Duration, device: [u8; 32], turn: u64) -> Duration {
+    let mut hasher = std::hash::DefaultHasher::new();
+    device.hash(&mut hasher);
+    turn.hash(&mut hasher);
+    // A thousand and twenty-four steps of the quarter.
+    let step = u32::try_from(hasher.finish() % 1024).unwrap_or(0);
+    let quarter = wait.checked_div(4).unwrap_or_default();
+    let off = quarter
+        .saturating_mul(step)
+        .checked_div(1024)
+        .unwrap_or_default();
+    wait.saturating_sub(off)
+}
+
 /// The first wait before a carrier that went away is dialled again, and the longest: a network that
 /// dropped is usually back within a second, and one that is gone for longer is dialled now and then
 /// rather than never.
@@ -496,7 +688,8 @@ const REDIAL_FIRST: Duration = Duration::from_millis(250);
 const REDIAL_LONGEST: Duration = Duration::from_secs(8);
 
 /// How long to wait before the `attempt`th redial after a carrier went away: the wait doubles with
-/// every attempt that found no relay, up to [`REDIAL_LONGEST`].
+/// every attempt that found no relay, up to [`REDIAL_LONGEST`]. A device takes up to a quarter off
+/// each ([`spread`]), so the planes a relay dropped together do not dial it together.
 fn redial_wait(attempt: u32) -> Duration {
     let doublings = attempt.saturating_sub(1).min(8);
     REDIAL_FIRST
@@ -544,7 +737,8 @@ async fn reconnect(
         attempt = 0;
         loop {
             attempt = attempt.saturating_add(1);
-            n0_future::time::sleep(redial_wait(attempt)).await;
+            let wait = spread(redial_wait(attempt), shared.join.device, u64::from(attempt));
+            n0_future::time::sleep(wait).await;
             if shared.ended() {
                 return;
             }
@@ -564,8 +758,9 @@ async fn reconnect(
                     shared.end();
                     return;
                 }
-                // The relay is not there yet: it is dialled again, waiting longer each time.
-                Err(AdmissionError::Unavailable) => {}
+                // The relay is not there yet, or is admitting as many sessions as it takes at
+                // once and judged nobody: it is dialled again, waiting longer each time.
+                Err(AdmissionError::Unavailable | AdmissionError::Busy) => {}
             }
         }
     }
@@ -602,6 +797,8 @@ impl Plane {
     /// # Errors
     ///
     /// [`PlaneError::Denied`] when the relay refuses the grant,
+    /// [`PlaneError::Busy`] when the relay took nothing of the session because
+    /// it is admitting as many as it takes at once,
     /// [`PlaneError::Unavailable`] when the carrier or its setup fails, and
     /// [`PlaneError::Refused`] when the scope's keys do not cover this
     /// device's own presence.
@@ -796,6 +993,21 @@ impl Plane {
     #[must_use]
     pub fn refusals(&self) -> BTreeMap<String, usize> {
         self.shared.refusals.lock_recover().clone()
+    }
+
+    /// How many devices are in this plane's scope now that it does not hear:
+    /// the ones beyond the [`MAX_HEARD`] it reads at once, each read once one
+    /// it reads has gone. A device it does not hear is absent from presence,
+    /// a call and a shared window on this device, and nothing else says so.
+    /// Changes with [`Self::set_unheard_changed`].
+    #[must_use]
+    pub fn unheard(&self) -> usize {
+        self.shared.unheard()
+    }
+
+    /// Ask `changed` to run whenever [`Self::unheard`] says otherwise.
+    pub fn set_unheard_changed(&self, changed: Arc<dyn Fn() + Send + Sync>) {
+        *self.shared.unheard_hook.lock_recover() = Some(changed);
     }
 
     /// Show `tracks` of `sender` here, and stop showing those left out: this
@@ -1111,6 +1323,9 @@ impl Plane {
         self.shared.opener.lock_recover().set_roster(roster.clone());
         *self.shared.roster.lock_recover() = roster;
         read_roster(&self.shared, &mut self.readers.lock_recover());
+        // A reader that waits for a seat for a device the roster names no
+        // longer has nothing left to wait for.
+        self.shared.wake_waiting();
     }
 
     /// Seal and open under `keys` from now on: a channel whose epoch moved,
@@ -1331,9 +1546,16 @@ pub(crate) async fn unused(track: &moq_net::track::Producer) {
 /// namespace by the session that took its place. This reader waits for that
 /// announcement and reads the track again, so the device is heard here
 /// without this plane joining again; what it said before is not played twice.
+///
+/// A track every device is read by ([`TRACKS`]) is read from a seat: its
+/// device is one of the [`MAX_HEARD`] this plane reads at once, or the
+/// reader waits for one of those to go and the device counts as not heard
+/// until then ([`Plane::unheard`]). A track asked for by what the device
+/// shows ([`Plane::show`]) takes none.
 async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
     let address = Namespace::new(&shared.join.scope, device).path();
     let name = live::track(track);
+    let seated = TRACKS.contains(&track);
     loop {
         if shared.ended() || !shared.admits(device) {
             return;
@@ -1345,6 +1567,16 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
             .await
         else {
             return;
+        };
+        let _seat = if seated {
+            let Some(seat) = seat(&shared, device, &broadcast).await else {
+                // The broadcast went away while this reader waited for a
+                // seat, or there is nothing left to read it for.
+                continue;
+            };
+            Some(seat)
+        } else {
+            None
         };
         // A reader that attaches late starts at the newest group the track
         // holds: the presence a peer said before it joined is what it draws,
@@ -1594,5 +1826,59 @@ mod tests {
             REDIAL_FIRST,
             "the first attempt of a carrier that went away waits the shortest"
         );
+    }
+
+    /// A device takes up to a quarter off a wait, by its own key: never more, never longer than
+    /// the wait, the same every time it is asked, and not what the next device takes, so the
+    /// devices that missed a relay together do not ask it again together.
+    #[test]
+    fn devices_that_wait_for_the_same_thing_do_not_all_wait_the_same() {
+        let wait = Duration::from_secs(8);
+        let three_quarters = Duration::from_secs(6);
+        let waits: Vec<Duration> = (0..64_u8)
+            .map(|device| spread(wait, [device; 32], 3))
+            .collect();
+        for spread in &waits {
+            assert!(
+                *spread <= wait && *spread >= three_quarters,
+                "a device waits between three quarters of the wait and all of it: {spread:?}"
+            );
+        }
+        assert_eq!(
+            spread(wait, [7; 32], 3),
+            spread(wait, [7; 32], 3),
+            "a device's own wait is the same whenever it is asked"
+        );
+        // Sixty-four devices that missed a relay in one moment ask it again over the quarter,
+        // and no sixteen of them (what a relay admits at once) within the same tenth of it.
+        let tenths: Vec<usize> = (0..10_u128)
+            .map(|tenth| {
+                waits
+                    .iter()
+                    .filter(|spread| {
+                        // The quarter is two seconds: a tenth of it is two hundred milliseconds.
+                        let off = wait.saturating_sub(**spread).as_millis();
+                        (off / 200).min(9) == tenth
+                    })
+                    .count()
+            })
+            .collect();
+        assert!(
+            tenths.iter().all(|devices| *devices < 16),
+            "the devices' waits are spread over the quarter: {tenths:?}"
+        );
+        let distinct: BTreeSet<Duration> = waits.iter().copied().collect();
+        assert!(distinct.len() > 56, "{} distinct waits", distinct.len());
+        // The schedule keeps its shape: each wait is longer than the one before it, whatever each
+        // device takes off, until the longest.
+        for device in 0..64_u8 {
+            let waits: Vec<Duration> = (1..=6)
+                .map(|attempt| spread(redial_wait(attempt), [device; 32], u64::from(attempt)))
+                .collect();
+            assert!(
+                waits.windows(2).all(|pair| pair[1] > pair[0]),
+                "a device waits longer each time: {waits:?}"
+            );
+        }
     }
 }

@@ -251,7 +251,15 @@ impl BrowserWindow {
             _ => {}
         }
         let invocation = cx.invocation().unwrap_or_default();
-        match self.page.admit(invocation, effect.operation())? {
+        // Who the action door admitted this invocation for: a page action
+        // reaches the engine under that name, so a tab several actors work
+        // in keeps what each read and did apart. Nobody, for the person at
+        // this window.
+        let invoker = ui::invocation_scope::current_invoker();
+        match self
+            .page
+            .admit_for(invocation, invoker.as_ref(), effect.operation())?
+        {
             Effected::Pending => {
                 let reply = cx.reply();
                 // The window keeps the answer, not a job of this effect, so the
@@ -840,7 +848,7 @@ impl ui::application_view::ApplicationViewState for BrowserWindow {
             .map(|payload| ui::application_view::ApplicationLocalView {
                 app_id: <crate::resource::BrowserShell as ui::framework::ResourceApp>::ID.into(),
                 version: SAVED_PAGE_VERSION,
-                payload,
+                payload: self.page.saved_with_page_record(payload),
             }))
     }
 
@@ -854,6 +862,7 @@ impl ui::application_view::ApplicationViewState for BrowserWindow {
                 "the saved page cannot be shown".into(),
             ));
         }
+        self.page.restore_page_record(&local.payload);
         self.focus_address = false;
         self.dirty = true;
         Ok(ui::application_view::ApplicationFocusRestore::Generic)

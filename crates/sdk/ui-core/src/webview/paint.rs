@@ -26,12 +26,17 @@ const MAX_RESOURCE_REQUESTS: usize = 8;
 const MAX_BLOB_BYTES: usize = 16 << 20;
 /// Patches queued for a stream consumer before it must take a whole frame.
 const MAX_QUEUED_PATCHES: usize = 64;
-/// Largest encoded payload the app → shell channel carries once base64 encoded (its
-/// frames are at most 1 MiB).
-pub const MAX_SHARE_PAYLOAD: usize = 700 * 1024;
-const MAX_SHARE_BLOB: usize = MAX_SHARE_PAYLOAD - 1024;
-/// Shared frames waiting for the app to send them before it must start over.
-const MAX_SHARE_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+/// Largest part of a payload one message of the app → shell channel carries once base64
+/// encoded (its frames are at most 1 MiB). A larger payload goes in several.
+pub const MAX_SHARE_PART: usize = 700 * 1024;
+/// Largest encoded payload a share hands over whole: what the paint stream's wire carries.
+/// Of a larger one only its size and its start go, so the session can say that the page is
+/// too large rather than wait for it.
+pub const MAX_SHARE_PAYLOAD: usize = stream::wire::MAX_PAYLOAD_BYTES;
+const MAX_SHARE_BLOB: usize = stream::wire::MAX_BLOB_BYTES;
+/// Shared frames waiting for the app to send them before it must start over. A whole frame
+/// and an image of the largest size both fit.
+const MAX_SHARE_QUEUE_BYTES: usize = 2 * MAX_SHARE_PAYLOAD;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResourceSpec {
@@ -89,6 +94,28 @@ impl PaintSource {
     /// The page may have changed: capture again at the next opportunity.
     pub fn invalidate(&mut self) {
         self.dirty = true;
+    }
+
+    /// When [`Self::poll`] next has something to do although the engine says nothing new: a
+    /// change that waits for the capture interval to pass, or a request whose answer is
+    /// overdue. Whoever runs the source comes back then; the engine wakes nobody for either.
+    #[must_use]
+    pub fn due(&self, now: Instant) -> Option<Instant> {
+        let capture = match self.capture {
+            Some((_, at)) => at.checked_add(REQUEST_TIMEOUT),
+            None if self.dirty => Some(
+                self.last_capture
+                    .and_then(|at| at.checked_add(self.min_interval))
+                    .unwrap_or(now),
+            ),
+            None => None,
+        };
+        let resources = self
+            .resource_requests
+            .values()
+            .filter_map(|(_, at)| at.checked_add(REQUEST_TIMEOUT))
+            .min();
+        capture.into_iter().chain(resources).min()
     }
 
     pub fn set_viewport(&mut self, viewport: Point) {
@@ -303,12 +330,35 @@ impl PaintSource {
     }
 }
 
-/// One encoded frame of the page this app shares, for the session.
+/// One encoded payload of the page a window shares, for the session.
 pub struct SharedFrame {
+    /// The payload, or only its start when it is larger than a share hands over
+    /// ([`MAX_SHARE_PAYLOAD`]): `of` says which.
     pub payload: Vec<u8>,
+    /// How many bytes the whole payload has.
+    pub of: usize,
     /// Where the page sits in the window, logical pixels: x, y, w, h.
     pub page: [f64; 4],
     pub scale: f64,
+}
+
+impl SharedFrame {
+    /// A payload that goes whole.
+    #[must_use]
+    pub const fn whole(payload: Vec<u8>, page: [f64; 4], scale: f64) -> Self {
+        Self {
+            of: payload.len(),
+            payload,
+            page,
+            scale,
+        }
+    }
+
+    /// Whether the payload is all here: one larger than a share hands over is not.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.payload.len() == self.of
+    }
 }
 
 static PAINT_CAPABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -319,6 +369,8 @@ pub fn share_capable() -> bool {
     PAINT_CAPABLE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// What one window hands its session of its page.
+#[derive(Default)]
 struct ShareOutbox {
     watched: bool,
     keyframe: bool,
@@ -326,62 +378,116 @@ struct ShareOutbox {
     bytes: usize,
 }
 
-static SHARE: Mutex<ShareOutbox> = Mutex::new(ShareOutbox {
-    watched: false,
-    keyframe: false,
-    frames: VecDeque::new(),
-    bytes: 0,
-});
+/// Every window's share, by window. A process shows several windows
+/// ([`crate::window_door`]), each with its own page, its own connection to the session and
+/// its own watchers: what one of them is asked for, and what it hands over, is never
+/// another's. The functions below act on the window whose events run
+/// ([`crate::window_toolbar::current_window`]); `None` is a process that runs its one
+/// window with no host around it, as a test does. A window nobody watches keeps nothing
+/// here.
+static SHARES: Mutex<std::collections::BTreeMap<Option<u64>, ShareOutbox>> =
+    Mutex::new(std::collections::BTreeMap::new());
 
-fn share() -> std::sync::MutexGuard<'static, ShareOutbox> {
-    SHARE.lock_recover()
+/// Read or change the share of `window`.
+fn share_of<T>(window: Option<u64>, act: impl FnOnce(&mut ShareOutbox) -> T) -> T {
+    let mut shares = SHARES.lock_recover();
+    let outbox = shares.entry(window).or_default();
+    let answer = act(outbox);
+    if !outbox.watched {
+        shares.remove(&window);
+    }
+    answer
 }
 
-/// Whether the session shares this app's page with someone watching.
+/// The window whose events run now.
+fn window() -> Option<u64> {
+    crate::window_toolbar::current_window()
+}
+
+/// Whether the session shares this window's page with someone watching.
 #[must_use]
 pub fn share_watched() -> bool {
-    share().watched
+    share_watched_in(window())
 }
 
-/// The session started (`true`) or stopped (`false`) sharing the page.
+/// Whether the session shares the page of `window` with someone watching.
+fn share_watched_in(window: Option<u64>) -> bool {
+    SHARES
+        .lock_recover()
+        .get(&window)
+        .is_some_and(|outbox| outbox.watched)
+}
+
+/// The session started (`true`) or stopped (`false`) sharing this window's page.
 pub fn set_share_watched(watched: bool) {
-    let mut outbox = share();
-    outbox.watched = watched;
-    outbox.keyframe = watched;
-    if !watched {
-        outbox.frames.clear();
-        outbox.bytes = 0;
-    }
+    share_of(window(), |outbox| {
+        outbox.watched = watched;
+        outbox.keyframe = watched;
+        if !watched {
+            outbox.frames.clear();
+            outbox.bytes = 0;
+        }
+    });
 }
 
-/// Whether the next shared frame must be a whole one; asking clears it.
+/// Whether this window's next shared frame must be a whole one; asking clears it.
 #[must_use]
 pub fn take_share_keyframe() -> bool {
-    std::mem::take(&mut share().keyframe)
+    share_of(window(), |outbox| std::mem::take(&mut outbox.keyframe))
 }
 
-/// Queue one frame for the session.
+/// Queue one frame of this window's page for the session.
 pub fn queue_share(frame: SharedFrame) {
-    let mut outbox = share();
-    if !outbox.watched {
-        return;
-    }
-    let bytes = outbox.bytes.saturating_add(frame.payload.len());
-    if bytes > MAX_SHARE_QUEUE_BYTES {
-        outbox.frames.clear();
-        outbox.bytes = 0;
-        outbox.keyframe = true;
-        return;
-    }
-    outbox.bytes = bytes;
-    outbox.frames.push_back(frame);
+    share_of(window(), |outbox| {
+        if !outbox.watched {
+            return;
+        }
+        let bytes = outbox.bytes.saturating_add(frame.payload.len());
+        if bytes > MAX_SHARE_QUEUE_BYTES {
+            outbox.frames.clear();
+            outbox.bytes = 0;
+            outbox.keyframe = true;
+            return;
+        }
+        outbox.bytes = bytes;
+        outbox.frames.push_back(frame);
+    });
 }
 
-/// The frames to send the session, oldest first.
+/// How many more bytes of images this window's share takes now, beside a whole frame: what
+/// is past it stays with the engine until the app has sent what is queued.
+#[must_use]
+pub fn share_room() -> usize {
+    share_of(window(), |outbox| {
+        MAX_SHARE_QUEUE_BYTES
+            .saturating_sub(MAX_SHARE_PAYLOAD)
+            .saturating_sub(outbox.bytes)
+    })
+}
+
+/// This window closes: nothing of its share stays behind, watched or not. A process that runs
+/// its one window with no host around it keeps its share to its end.
+pub fn forget_share() {
+    if let Some(window) = window() {
+        SHARES.lock_recover().remove(&Some(window));
+    }
+}
+
+/// The oldest frame this window has to send its session.
+pub fn next_share_frame() -> Option<SharedFrame> {
+    share_of(window(), |outbox| {
+        let frame = outbox.frames.pop_front()?;
+        outbox.bytes = outbox.bytes.saturating_sub(frame.payload.len());
+        Some(frame)
+    })
+}
+
+/// The frames this window has to send its session, oldest first.
 pub fn take_share_frames() -> Vec<SharedFrame> {
-    let mut outbox = share();
-    outbox.bytes = 0;
-    outbox.frames.drain(..).collect()
+    share_of(window(), |outbox| {
+        outbox.bytes = 0;
+        outbox.frames.drain(..).collect()
+    })
 }
 
 fn data_url_bytes(url: &str) -> Option<Vec<u8>> {
@@ -407,7 +513,17 @@ struct PaintState {
     undrawn_since: Option<Instant>,
     painting: bool,
     hide_after: Duration,
+    /// The window that runs this engine: the one whose events last called it, whose share
+    /// is the one this page is handed over in.
+    window: Option<u64>,
+    /// When to come back for the images of the page a watched share was not handed yet, for
+    /// want of room; `None` while it holds them all.
+    images_due: Option<Instant>,
 }
+
+/// How soon a share that had no room for all of a page's images is offered the rest: what
+/// it holds goes to the session meanwhile.
+const SHARE_IMAGES_RETRY: Duration = Duration::from_millis(30);
 
 const HIDE_UNPRESENTED: Duration = Duration::from_secs(2);
 
@@ -455,6 +571,8 @@ impl PaintEngine {
                 undrawn_since: None,
                 painting: true,
                 hide_after: HIDE_UNPRESENTED,
+                window: None,
+                images_due: None,
             }),
             draws,
         })
@@ -480,9 +598,20 @@ impl PaintEngine {
         Ok(state.patches.drain(..).collect())
     }
 
+    /// Whether the session shares this engine's page with someone watching: the share of
+    /// the window that runs the engine. A window's events run its own engine and no other
+    /// window's, so the window whose events last called it is the one; a call from outside
+    /// any window's events (the engine's own thread) is the same window's still.
+    fn watched(state: &mut PaintState) -> bool {
+        if let Some(window) = window() {
+            state.window = Some(window);
+        }
+        share_watched_in(state.window)
+    }
+
     /// Run the source: notice new pixels (the page changed) and issue its requests.
     fn pump(&self, state: &mut PaintState) {
-        if !self.draws && !share_watched() {
+        if !self.draws && !Self::watched(state) {
             return;
         }
         let pixels = self
@@ -519,7 +648,7 @@ impl PaintEngine {
         let seen = state
             .undrawn_since
             .is_none_or(|since| now.saturating_duration_since(since) < state.hide_after);
-        let paint = state.wanted_visible && (seen || share_watched());
+        let paint = state.wanted_visible && (seen || Self::watched(state));
         if paint != state.painting {
             state.painting = paint;
             self.inner.set_visible(paint);
@@ -589,7 +718,24 @@ impl WebViewEngine for PaintEngine {
         self.inner.frames()
     }
     fn paint_seq(&self) -> u64 {
+        // A view draws this engine from its pixels unless it draws the display list: the
+        // list a share captures beside them is nothing the view has to repaint for.
+        if !self.draws {
+            return 0;
+        }
         self.lock().source.frame().map_or(0, |frame| frame.seq)
+    }
+    fn paint_due(&self) -> Option<Instant> {
+        let mut state = self.lock();
+        if self.draws || !Self::watched(&mut state) {
+            return None;
+        }
+        state
+            .source
+            .due(crate::time::now())
+            .into_iter()
+            .chain(state.images_due)
+            .min()
     }
     fn drain_events(&self) -> Vec<WebViewEvent> {
         let events = self.inner.drain_events();
@@ -630,6 +776,9 @@ impl WebViewEngine for PaintEngine {
         state.source.frame()
     }
     fn take_paint_stream(&self, keyframe: bool) -> Vec<Payload> {
+        self.take_paint_stream_within(keyframe, usize::MAX)
+    }
+    fn take_paint_stream_within(&self, keyframe: bool, room: usize) -> Vec<Payload> {
         let mut state = self.lock();
         self.update_visibility(&mut state);
         self.pump(&mut state);
@@ -649,19 +798,39 @@ impl WebViewEngine for PaintEngine {
         let Some(frame) = state.source.frame() else {
             return out;
         };
+        let mut taken = 0_usize;
+        state.images_due = None;
         for hash in frame.blobs().filter_map(|b| match b {
             BlobRef::Hash(h) => Some(*h),
             BlobRef::Url(_) => None,
         }) {
-            if state.sent_blobs.insert(hash)
-                && let Some(bytes) = state.source.blob(&hash)
-                && bytes.len() <= MAX_SHARE_BLOB
-            {
-                out.push(Payload::Blob {
-                    hash,
-                    bytes: bytes.to_vec(),
-                });
+            if state.sent_blobs.contains(&hash) {
+                continue;
             }
+            let Some(bytes) = state.source.blob(&hash) else {
+                continue;
+            };
+            if bytes.len() > MAX_SHARE_BLOB {
+                // Said once: the page goes without this image.
+                state.sent_blobs.insert(hash);
+                tracing::warn!(
+                    bytes = bytes.len(),
+                    largest = MAX_SHARE_BLOB,
+                    "an image of the shared page is too large to hand over: the page is shared without it"
+                );
+                continue;
+            }
+            if taken.saturating_add(bytes.len()) > room {
+                // The rest waits with the engine until the app has sent what it holds.
+                state.images_due = crate::time::now().checked_add(SHARE_IMAGES_RETRY);
+                break;
+            }
+            taken = taken.saturating_add(bytes.len());
+            state.sent_blobs.insert(hash);
+            out.push(Payload::Blob {
+                hash,
+                bytes: bytes.to_vec(),
+            });
         }
         out
     }
@@ -1278,6 +1447,228 @@ mod tests {
         set_share_watched(true);
         with_monotonic_time(at(180), || drop(engine.take_paint_stream(false)));
         assert_eq!(test.visibility_changes(), vec![false, true, false, true]);
+        set_share_watched(false);
+    }
+
+    /// How many captures of its page `test` was asked for.
+    fn captures(test: &TestEngine) -> usize {
+        test.commands()
+            .iter()
+            .filter(|command| matches!(command, WebViewCommand::PaintCapture { .. }))
+            .count()
+    }
+
+    /// An engine drawn from its pixels, as a Browser window runs it, on the page `snapshot`.
+    fn streaming_engine(snapshot: &str) -> (Arc<TestEngine>, Arc<PaintEngine>) {
+        let test = TestEngine::new();
+        test.set_paint_snapshot(snapshot);
+        let engine = PaintEngine::streaming(test.clone());
+        engine.send(WebViewCommand::Resize {
+            width: 800,
+            height: 600,
+            scale_factor: 1.0,
+        });
+        (test, engine)
+    }
+
+    /// A process shows several windows, each with its page and its share. What the session
+    /// asks of one window, that window alone answers: another window of the process is not
+    /// watched, captures nothing, and holds nothing of the first window's page; told that
+    /// nobody watches it, it stops nothing of the first. An engine belongs to the window
+    /// whose events run it, also when its own thread calls it.
+    #[test]
+    #[serial_test::serial(paint_share)]
+    fn each_window_of_a_process_shares_its_own_page_and_no_other() {
+        use crate::hosted_window::HostedWindow;
+        use crate::time::testing::with_monotonic_time;
+        let (one, other) = (HostedWindow::new(), HostedWindow::new());
+        let (first_test, first) = streaming_engine(TOP);
+        let (second_test, second) = streaming_engine(SCROLLED);
+        set_share_watched(false);
+        let start = crate::time::now();
+        let at = |ms| start + Duration::from_millis(ms);
+
+        // The session asks the first window for its page.
+        with_monotonic_time(at(0), || {
+            let _events = crate::window_toolbar::enter(Some(&one));
+            set_share_watched(true);
+            assert!(share_watched());
+            assert!(take_share_keyframe(), "it starts from a whole frame");
+            drop(settle(&first));
+            let payloads = first.take_paint_stream(true);
+            assert!(
+                matches!(payloads.first(), Some(Payload::Key(_))),
+                "{} payloads",
+                payloads.len()
+            );
+            for payload in payloads {
+                queue_share(SharedFrame::whole(
+                    payload.encode().expect("a payload"),
+                    [0.0; 4],
+                    1.0,
+                ));
+            }
+        });
+
+        // The second window is asked for nothing.
+        with_monotonic_time(at(0), || {
+            let _events = crate::window_toolbar::enter(Some(&other));
+            assert!(!share_watched(), "nobody watches this window");
+            assert!(!take_share_keyframe());
+            drop(settle(&second));
+            assert!(second.take_paint_stream(true).is_empty());
+            assert_eq!(captures(&second_test), 0, "its page is not captured");
+            queue_share(SharedFrame::whole(vec![0, 1, 2], [0.0; 4], 1.0));
+            assert!(
+                take_share_frames().is_empty(),
+                "it holds nothing: not its own page, and not the first window's"
+            );
+            // The session tells it nobody watches it, as it tells every window it stops.
+            set_share_watched(false);
+        });
+        assert!(
+            !share_watched(),
+            "a process that runs one window with no host around it was never asked"
+        );
+
+        // Both pages paint again a moment later, and the engines' own threads take that:
+        // outside any window's events each is still its own window's.
+        with_monotonic_time(at(10), || {
+            first_test.paint_before_page();
+            second_test.paint_before_page();
+            drop(first.drain_events());
+            drop(second.drain_events());
+            assert_eq!(
+                first.paint_due(),
+                Some(at(50)),
+                "the watched window's page is captured again once its interval passed"
+            );
+            assert_eq!(second.paint_due(), None, "the other window's never");
+        });
+        assert_eq!(captures(&second_test), 0);
+
+        // The first window's share went on through the second window's stop.
+        let _events = crate::window_toolbar::enter(Some(&one));
+        assert!(share_watched(), "another window's stop stops nothing here");
+        let frames = take_share_frames();
+        assert!(
+            frames
+                .first()
+                .is_some_and(|frame| Payload::is_key(&frame.payload) && frame.complete()),
+            "the first window holds its own page: {} frames",
+            frames.len()
+        );
+        set_share_watched(false);
+    }
+
+    /// A page nothing changes has no work while it is watched, and the view that draws it
+    /// from pixels repaints for nothing a share captured. A change that comes sooner after a
+    /// capture than the capture interval is not lost: the engine wakes nobody for it, so it
+    /// says when it is due, and whoever takes its events then gets it captured.
+    #[test]
+    #[serial_test::serial(paint_share)]
+    fn a_watched_page_says_when_it_has_work_and_a_still_one_has_none() {
+        use crate::time::testing::with_monotonic_time;
+        let (test, engine) = streaming_engine(TOP);
+        set_share_watched(false);
+        let start = crate::time::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        with_monotonic_time(at(0), || {
+            assert_eq!(engine.paint_due(), None, "nobody watches: nothing is due");
+            set_share_watched(true);
+            assert!(
+                engine.paint_due().is_some_and(|due| due <= at(0)),
+                "a watched page that was never captured is due now"
+            );
+            drop(settle(&engine));
+        });
+        // Whatever the page still had to settle is long done.
+        with_monotonic_time(at(1000), || {
+            test.paint_before_page();
+            drop(settle(&engine));
+            assert!(matches!(
+                engine.take_paint_stream(true).first(),
+                Some(Payload::Key(_))
+            ));
+            assert_eq!(engine.paint_due(), None, "a still page has no work");
+            assert_eq!(
+                engine.paint_seq(),
+                0,
+                "and a view that draws its pixels repaints for nothing the share captured"
+            );
+        });
+        let captured = captures(&test);
+        // The page paints again ten milliseconds after its last capture.
+        with_monotonic_time(at(1010), || {
+            test.set_paint_snapshot(SCROLLED);
+            test.paint_before_page();
+            drop(engine.drain_events());
+            assert_eq!(captures(&test), captured, "too soon after the last capture");
+            assert_eq!(
+                engine.paint_due(),
+                Some(at(1050)),
+                "it is due when the capture interval has passed"
+            );
+        });
+        with_monotonic_time(at(1050), || {
+            drop(engine.drain_events());
+            assert_eq!(captures(&test), captured + 1, "captured when due");
+            assert_eq!(
+                engine.paint_due(),
+                Some(at(1050) + REQUEST_TIMEOUT),
+                "and looked at again should the answer not come"
+            );
+            drop(settle(&engine));
+            assert_eq!(engine.paint_due(), None, "the answer came: still again");
+            assert!(
+                matches!(
+                    engine.take_paint_stream(false).first(),
+                    Some(Payload::Patches(_))
+                ),
+                "the change is in the stream"
+            );
+        });
+        set_share_watched(false);
+    }
+
+    /// A share is handed the images of a page as it has room for them: the rest stay with
+    /// the engine, which says when to come back, and none is handed over twice or lost.
+    #[test]
+    #[serial_test::serial(paint_share)]
+    fn images_a_share_has_no_room_for_wait_with_the_engine() {
+        let (_test, engine) = streaming_engine(TOP);
+        set_share_watched(true);
+        drop(settle(&engine));
+        let all = engine.take_paint_stream(true);
+        let images = all
+            .iter()
+            .filter(|payload| matches!(payload, Payload::Blob { .. }))
+            .count();
+        assert!(images >= 1, "the page shows an image");
+        assert_eq!(engine.paint_due(), None, "everything was handed over");
+
+        // The same page again, to a share with no room for images.
+        let whole = engine.take_paint_stream_within(true, 0);
+        assert!(matches!(whole.first(), Some(Payload::Key(_))));
+        assert_eq!(whole.len(), 1, "the whole frame comes, and no image");
+        assert!(
+            engine.paint_due().is_some(),
+            "the engine says when to come back for the images"
+        );
+        let rest = engine.take_paint_stream_within(false, usize::MAX);
+        assert_eq!(
+            rest.iter()
+                .filter(|payload| matches!(payload, Payload::Blob { .. }))
+                .count(),
+            images,
+            "they come when there is room"
+        );
+        assert_eq!(engine.paint_due(), None);
+        assert!(
+            engine
+                .take_paint_stream_within(false, usize::MAX)
+                .is_empty()
+        );
         set_share_watched(false);
     }
 

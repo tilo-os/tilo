@@ -28,7 +28,13 @@ grants and history name members, never devices.
 the device key is its iroh `EndpointId`. Pairing brings the identity to a new
 device; any of the person's devices can pair another, and the devices that hold
 the identity key approve it. Revocations travel in the same hellos as
-certificates and win over them. Another person's device is never admitted
+certificates and win over them. Each device lists the certificates it holds in
+a record of the person's own store, which only their devices are handed, so
+every device comes to know the others whichever of them it paired with; a
+certificate read there is checked as one a device shows for itself. Nothing
+of that store leaves a device for one it holds no such certificate of: a
+device it never met is told who this one is, and catches up once the
+certificate it shows is admitted. Another person's device is never admitted
 through pairing; it comes in through an invitation to a workspace, as that
 person's device.
 
@@ -165,6 +171,17 @@ Devices talk over iroh, and nothing else. A device reaches the other devices
 that hold a workspace, directly or through any device that stores it;
 store-and-forward is what a store does. There is no separate relay protocol,
 no second send path, and no gossip lane beside it.
+
+A device is one iroh endpoint, under its device key, and one member of each
+workspace's key group; both are its engine's. Whatever else its session asks a
+host (the actions of a workspace placed there, the person's list kept there)
+runs on that endpoint, in a session that holds no keys. A relay hands what is
+sent to an endpoint id to the connection that registered under it last, so a
+second endpoint of the device's key takes the device's place there: a device
+that starts later, or comes back, then dials it through the relay and reaches
+an endpoint that answers nothing. And a second member key asked for as the same
+device has the group's participants commit one in and the other out, turn
+about, for as long as both sessions run.
 
 ## State
 
@@ -364,6 +381,141 @@ views it. A Tilo app's window is a view of a resource the workspace already
 holds, so sharing it shares the resource and nothing is streamed: other
 members open the same resource in the same app. Driving someone else's window
 needs its owner's control grant.
+
+An app says which of the two its windows are. What a window shows may live in
+the app's own process on the device that opened it, as a Browser's page lives
+in its engine: its manifest says so (`[entrypoint] window = "device"`), and no
+session code names the app. The device that opened such a window writes it
+into the workspace's layout as a window that runs on it. Every other device
+holds it as that device's window: it starts no instance of the app for it,
+asking for the app there opens that device's own window, and the window's tab
+shows its picture while its device shares it. An app that says nothing has
+windows that are views of records, and a window one device opens is one every
+other device opens for itself.
+
+A person shares a window from its own menu, "Share with workspace", on the
+device that has it, and stops there. The row is one more caller of the
+session's window share (`session:window-share`, `share` and `stop` by the
+tab): it reads whether the window is shared, how many devices asked to see
+it and whether it goes out to them from that resource, and keeps no state of
+its own. Only a window the device maps, in a tab it minted, in a workspace
+its session takes part in offers the row; a device that shows the window's
+picture, or its placeholder, does not.
+
+The share itself is workspace state. The device the window runs on writes the
+share's grants, on the window's own node, into the workspace's governance as
+its member's change (`WorkspaceMembershipCommand::Share`), so they leave with
+the rest of what that device writes there. Every device that holds the
+workspace, the sharer's included, reads them from the governance it admitted
+and shows the window from there. Which device shares makes no difference to
+who is shown it. A device that takes part through the workspace's host sends
+the change to that host, which admits it and hands it on to the workspace's
+other devices. The device that hosts the workspace keeps its governance
+itself, so it has no host to send to: what it commits there (a share, its end,
+a member's role, a grant, a device it admits) goes at once to the devices
+linked to it in that workspace, as its record writes do, and to no device of
+another workspace it hosts. A device that links later reads it in the
+governance its link starts with. The admission matters to a share as much as
+the share does: a device that was never told of a newcomer takes no commit
+that brings the newcomer into the workspace's key group, and opens nothing its
+host seals under the keys that follow. A desk takes the grants into its own
+copy of a workspace only when the device holds no governance of that
+workspace: one that lives on that desk alone, which has no other device to
+tell.
+
+Every other device shows the shared window as a window that runs on the
+sharing device, and asks that device for its pictures. Where a desk already
+lists the window as one that runs on that device, it is pictured in that tab,
+and the tab stays when the share ends: the window still runs there, and its
+tab is the layout's. Otherwise it stands in a tab of its own. Where a desk
+lists the window under the window's own id as an app's window, that tab is the
+device's own view of it, which it opened itself: it is left as it is, and the
+shared window stands beside it in a tab the viewing device mints. That tab is
+the viewing desk's alone, and never goes into the desk's record: a window that
+runs on another device is that device's to add there. The two are different
+things. The view is what the viewing device opened; the shared window is what
+runs on the sharer's device, which is what someone reviewing it has to see.
+When the share ends the shared window's tab goes, and the view stays. The
+share's reading names the tab on the row of the window it watches
+(`shown_in`).
+
+A tab whose window runs on another device never stands empty. While a share
+stands in it, it shows the share: the card of something arriving until the
+first picture or page is here, then the window. Otherwise it shows the
+toolkit's notice, titled with the app and the device the window runs on (a
+device nothing names is another device of the workspace, never its key), and
+under it why the window is not here, which the device's session reads: the
+window is not shared with the workspace; it is shared and still on its way,
+with what its share's reading says it waits for; nothing is heard of its
+device in the workspace; or the workspace no longer admits that device. A
+share this device let go says that it ended and why, and shows no picture
+that no longer follows the window. The shares' reading says the same of each
+such window in one word (`hosted`). Nothing here asks the window's device to
+share it: a person shares a window on the device that has it.
+
+A window whose app draws its own page, as the Browser's does, is shared as
+that page and not as a picture of it. Its app hands the session the page as a
+display list while a member's desk shows the window, the list travels the
+live plane on a track of its own, sealed as the pictures are, and the device
+showing the window draws it with its own text and vector stack. Nothing of
+such a window is captured or encoded, and the device showing it sends it no
+input. The tile that draws the page names the page's text, each run where it
+is drawn, so a reader who cannot see the page, and a tool that lists what a
+desk shows, read what is on the screen.
+
+The window's pictures travel the workspace's live plane, which the device
+serving the workspace relays for its members. A device is in the plane once
+it holds the workspace's keys and reached that device; while it is not taken
+in, it asks again, waiting longer each time and at most every fifteen
+seconds, each device up to a quarter sooner by its own key so that the
+devices a relay missed together do not come back together (`retry_wait` in
+`crates/session/session/src/live.rs`), since a device that comes back tells
+nobody. The relaying device takes sixteen sessions through admission at
+once, at most four of them of one endpoint, and four more of endpoints that
+none of its workspaces names as a device, which therefore cannot keep a
+workspace's devices out (`MAX_ADMITTING`, `MAX_ADMITTING_OF_ONE` and
+`MAX_ADMITTING_STRANGERS` in `crates/collab/tilo-live/src/relay.rs`). One
+more it closes as busy, unread: it judged nobody, so the device it closed
+asks again the same way and reads as told busy by it (`relay-busy`), where a
+device that did not reach it reads as waiting to reach it and a device it
+judged and did not admit reads as refused. A plane reads thirty-two devices
+at once (`MAX_HEARD` in `crates/collab/tilo-live/src/plane.rs`): each is
+three tracks that it and the relay hold open, about 250 KiB between them,
+and that, not the transport, is what a further device costs. A device that
+is in the plane beyond those is not heard on this device, and the plane's
+row says how many those are and why (`unheard`, `unheard_why`, `not_heard`).
+The connection to the relay is allowed the streams thirty-two devices take
+once its session is admitted (`MAX_BI_STREAMS` and `MAX_UNI_STREAMS` in
+`crates/collab/tilo-live/src/native.rs`), on a session's endpoint as on one
+bound for the plane alone. The share's reading
+says how far that came, since a plane that is not open drops nothing and
+reports nothing by itself: `live` names each workspace's plane as open or by
+what it waits for (the keys, the device that relays it, that device being
+busy, or its refusal), a window shared or watched under a plane that is not open says the
+same on its own row (`waiting_for`), and a shared window says whether it goes
+out to a member's desk now (`streaming`): a captured window as soon as a desk
+asks for it, a window shared as its page once its app handed a page over. A
+stream's start puts nothing on a screen, so a device that shows a window says
+whether its tile holds it (`pictured`: a decoded picture, or the page's whole
+frame), and until then that its row waits for the first one; a shared window
+a member shows, nothing of which went out, says that it waits too. A device
+that asked to see a window is not yet one that sees it, so what the sharing
+device tells its person follows `streaming` and nothing else: while nothing
+of a window goes out, the bar's sharing pill, the window's menu and what both
+tell a screen reader say that its viewers wait, and they say that someone
+watches a window, or is in control of it, only while it goes out. `streaming`
+says what left the sharing device; whether a viewer's own tile holds the
+window is that device's to say (`pictured`), and it says so in the turn the
+tile takes the window or loses it: a picture is decoded off the loop and taken
+into the tile while the desk builds a frame, so the session asks its tiles
+again once that frame is drawn. An open
+plane also says the epoch it seals under, what it opened and could not open
+of the other devices, and which of its windows another device asks it for
+(`asked_for`), which is where two devices that hear nothing of each other read
+why. A device that holds none of the workspace's keys and is lent the keys of
+its own streams by the workspace's host, as the session in a workspace's VM
+is, is in the plane on those (`lent_keys`): it sends what it shares and opens
+nothing another device sends, and a window it watches says so.
 
 ## Presence
 

@@ -39,13 +39,15 @@ pub enum TileContent {
         #[serde(default)]
         note: String,
     },
-    /// A legacy (X11 / Wayland) window that runs only on the device `host`
-    /// (its hex device key), shown on every other device as that window,
-    /// never relaunched there: a legacy app's state lives in its process,
-    /// not in a record another device could open. The tab id and `host`
-    /// stay stable for the window's life, so a per-window stream from the
-    /// host can attach to this tab. On the hosting device the same tab is
-    /// its live [`Self::Foreign`] surface.
+    /// A window that runs only on the device `host` (its hex device key),
+    /// shown on every other device as that window, never relaunched there:
+    /// what it shows lives in its process on that device, not in a record
+    /// another device could open. A legacy (X11 / Wayland) window is one,
+    /// and so is a window of an app that says so of its windows (a
+    /// browser's page lives in its engine). The tab id and `host` stay
+    /// stable for the window's life, so a per-window stream from the host
+    /// can attach to this tab. On the hosting device the same tab is its
+    /// live [`Self::Foreign`] surface.
     HostedWindow {
         /// The wayland app-id or X11 class the window announces.
         app_id: String,

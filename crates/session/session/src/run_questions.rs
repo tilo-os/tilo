@@ -288,6 +288,7 @@ mod tests {
             question: None,
             turn: None,
             delegation: None,
+            origin: Some(tilo_actions::InvokerDevice::certified([0x4c; 32], "Laptop")),
         };
         let held = doors.open("w1", run, true);
         (doors, held)

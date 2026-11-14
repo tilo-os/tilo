@@ -1346,6 +1346,54 @@ mod tests {
         );
     }
 
+    /// The window numbers what it holds itself, one number to a hold: a
+    /// request and a download the engine gave the same number are published
+    /// side by side under two. Each is read with its own number and is
+    /// answered by it, so the person's allow of one never reaches the other.
+    #[test]
+    fn two_departures_published_side_by_side_are_each_answered_by_their_own_number() {
+        let page = CataloguePage {
+            rows: [
+                page_row(
+                    SEND_HELD,
+                    "Let it leave: POST https://orders.example",
+                    Some(1),
+                ),
+                page_row(
+                    SEND_HELD,
+                    "Let it leave: download from https://files.example (return.pdf)",
+                    Some(2),
+                ),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            ..CataloguePage::default()
+        };
+        let held = published_holds(&page);
+        assert_eq!(
+            held.iter().map(|held| held.id).collect::<Vec<_>>(),
+            [1, 2],
+            "each departure is read under the number the window gave it"
+        );
+        assert!(held[1].describing.contains("return.pdf"));
+        for held in &held {
+            let request = answer(held.id, 42, &held.describing, &held.facts, SEND_HELD);
+            assert_eq!(
+                request.argument,
+                InvokeArgument::Json(serde_json::Map::from_iter([(
+                    "id".to_owned(),
+                    held.id.to_string().into()
+                )])),
+                "and answered by that number and no other"
+            );
+            assert_eq!(
+                request.context.and_then(|context| context.purpose),
+                Some(held.describing.clone())
+            );
+        }
+    }
+
     /// The invocation reported for a hold names the window, the action and
     /// the id the window published it with: what the host asks the person
     /// about and their answer runs. Kept instead, it names the same request

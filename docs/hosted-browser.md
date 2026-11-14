@@ -227,7 +227,10 @@ whose run reached the hold answers that it needs the person and states the
 departure it holds — the page it leaves from, what it does, the method, where
 it goes and the picture of the filled page — so the question the host puts to
 them names what leaves, as it does for a departure the page started on its
-own. Their allow releases that one request — the invocation does not run the
+own. Beside the departure the answer states the number the window holds it
+under (`browser.held`), outside the departure's parts: the caller learns which
+hold waits, and the person asked what leaves is not shown a number. Their
+allow releases that one request — the invocation does not run the
 page action again — while a denial or a question nobody answers drops it and
 leaves the page as it was. Such a hold is the
 invocation's, and the window publishes no second way to answer it, so nobody
@@ -236,8 +239,10 @@ is asked about one departure twice.
 A departure no action asked for, such as a page posting on its own or a
 download the page started, waits on nobody's invocation. The window publishes
 it as the wait it is — `send-held-request` and `keep-held-request` of
-`browser.page`, each bound to the hold's id and stating it as the argument a
-caller names — and the session in the VM reports each one it publishes to the
+`browser.page`, each bound to the number the window holds it under and stating
+it as the argument a caller names. The number is the window's own, one per
+hold: a request and a download the engine counts alike are two holds with two
+numbers. The session in the VM reports each hold the window publishes to the
 relay, naming that invocation. The departure travels with the row, so the
 question names what leaves and not only a name for it: the page it leaves
 from, what it sends and where (`send the form to https://visa.example
@@ -249,6 +254,11 @@ the relay signs for a page action, for that one request. Denied or unanswered,
 the session runs `keep-held-request` instead and the page stays as it was
 filled. A person's own window holds none of this: what they click leaves as
 they click it.
+
+The tab's record says what was held, whose action reached it and how it
+ended: let leave and by whom, kept as it is, or dropped and why: nobody
+answered, as many as the window asks about already waited, or the page it
+was held on went away ([web page actors](architecture/web-page-actors.md)).
 
 A key can carry the authority to operate the pages its workspaces' Browser
 holds without asking each time: the person ticks **Operate web pages in

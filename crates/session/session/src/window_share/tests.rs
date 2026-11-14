@@ -442,6 +442,17 @@ fn rows<'a>(reading: &'a Value, array: &str) -> &'a [Value] {
         .unwrap_or_default()
 }
 
+/// Whether what `viewer` publishes of the window it shows in `tab` says its tile holds the window.
+fn says_pictured(viewer: &Member, tab: u64) -> bool {
+    let wanted = tab.to_string();
+    rows(&shares(&viewer.session), "received")
+        .iter()
+        .any(|stream| {
+            stream["tab"].as_str() == Some(wanted.as_str())
+                && stream["pictured"].as_bool() == Some(true)
+        })
+}
+
 /// The tab of the desk the window of `app` became.
 fn tab_of(session: &Session, app: &str) -> u64 {
     fn find(resources: &[ResourceSpec], label: &str) -> Option<u64> {
@@ -1088,13 +1099,19 @@ fn a_shared_window_reaches_the_member_showing_it() {
     until(&mut host, &mut window, &mut viewer, |host, _, _| {
         !rows(&shares(&host.session), "sharing").is_empty()
     });
+    // What is read below is what the member publishes of the window, so that is what is waited
+    // for: its reading saying the tile holds the picture, not the tile itself.
     until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        says_pictured(viewer, tab)
+    });
+    assert!(
         viewer
             .session
             .handle()
             .peer_surface_read(tab)
-            .is_some_and(|read| read.pictured())
-    });
+            .is_some_and(|read| read.pictured()),
+        "the reading says so of a tile that holds the picture"
+    );
 
     let reading = shares(&viewer.session);
     let received = rows(&reading, "received");
@@ -1143,6 +1160,23 @@ fn a_shared_window_reaches_the_member_showing_it() {
         Some(tab.to_string().as_str()),
         "which window: {reading}"
     );
+    // The workspace's live plane is open here and a member's desk asks it for the window: the
+    // share waits for nothing, and says its pictures go out.
+    assert_eq!(
+        shared["waiting_for"].as_str(),
+        Some(""),
+        "the share waits for nothing: {reading}"
+    );
+    assert_eq!(
+        shared["streaming"].as_bool(),
+        Some(true),
+        "the window is sent to the member showing it: {reading}"
+    );
+    let plane = rows(&reading, "live")
+        .iter()
+        .find(|plane| plane["room"].as_str() == Some(WORKSPACE))
+        .expect("the reading names the workspace's live plane");
+    assert_eq!(plane["state"].as_str(), Some("open"), "{reading}");
     let watching = shared["viewers"].as_array().expect("who is watching");
     assert_eq!(watching.len(), 1, "one member watches it: {reading}");
     assert_eq!(
@@ -1163,6 +1197,8 @@ fn a_shared_window_reaches_the_member_showing_it() {
             peer: viewer.sync.peer(),
             surface: tab,
             can_control: false,
+            streaming: true,
+            name: String::new(),
         }],
         "the bar's sharing indicator says who is watching what"
     );
@@ -1841,6 +1877,28 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     );
 }
 
+/// A window shared with its workspace, and no longer, from its own menu.
+mod menu;
+
+/// A window's share written into the workspace's own governance, and read from it on another
+/// device of the workspace.
+mod governed;
+
+/// Two members showing the one shared window at the same time, each a viewer of its own.
+mod viewers;
+
+/// A window whose app draws its own page, drawn from that page on the device showing it.
+mod page;
+
+/// What the sharing device says of who sees a window: a device that asked waits until the window
+/// goes out to it.
+mod watching;
+
+/// What a desk says of a window that runs on another device while nothing of it is shown there.
+mod hosted;
+/// What a device says of a window it shows is what the tile showing it holds, after every turn.
+mod pictured;
+
 /// A window one device shares shows on another device's desk because the workspace's governance
 /// says it is shared there: nobody names the tab on the other device.
 #[test]
@@ -1929,6 +1987,367 @@ fn a_share_shows_on_another_device_from_the_workspace_governance() {
     });
 }
 
+/// The tile `session` 's desk shows in `tab` .
+fn tile_of(session: &Session, tab: u64) -> Option<TileContent> {
+    session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|shown| shown.id == tab)
+            .map(|shown| shown.tile.clone())
+    })
+}
+
+/// A person shares a window by the tab their desk shows it in, and names nothing else. The
+/// identifier a window is captured under is the compositor's own, which it tells only the clients
+/// it trusts: no person, script or agent at the desk's actions can name it. The workspace is the
+/// one the tab stands in.
+#[test]
+fn a_window_is_shared_by_naming_the_tab_it_is_shown_in() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x51).as_bytes());
+    let mut host = member_minting_under(
+        0x51,
+        desk(
+            TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            tilo_desktop_model::ids::compose_id(salt, 1),
+        ),
+        salt,
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    // The tab the desk shows the window in, which is all the person names.
+    let tab = foreign_tab(&host.session);
+    assert_eq!(
+        tilo_desktop_model::peer_salt_of(tab),
+        salt,
+        "the window's tab is this device's own: {:?}",
+        tile_of(&host.session, tab)
+    );
+    let mut viewer = member_minting_under(0x52, own_desk(), 1);
+
+    host.session
+        .invoke(
+            SHARES_RESOURCE,
+            "share",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the window the tab shows is shared with the workspace the tab stands in");
+    let wanted = tab.to_string();
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        rows(&shares(&host.session), "sharing")
+            .iter()
+            .any(|shared| {
+                shared["tab"].as_str() == Some(wanted.as_str())
+                    && shared["app_id"].as_str() == Some(APP)
+                    && shared["room"].as_str() == Some(WORKSPACE)
+            })
+    });
+    let grants = host
+        .session
+        .handle()
+        .read(|tree| tree.workspaces[0].policy.grants.clone());
+    assert!(
+        grants
+            .iter()
+            .any(|grant| is_of_share(grant, &window_share_id(tab))),
+        "the share is in the workspace's governance, where its other devices read it: {grants:?}"
+    );
+
+    // A tab that shows no window of this device shares nothing.
+    host.session
+        .invoke(
+            SHARES_RESOURCE,
+            "share",
+            &arguments(serde_json::json!({ "tab": "7" })),
+        )
+        .expect("the ask is taken");
+    settle(&mut host, &mut window, &mut viewer);
+    let reading = shares(&host.session);
+    assert_eq!(
+        rows(&reading, "sharing").len() + rows(&reading, "starting").len(),
+        1,
+        "only the window the desk shows is shared: {reading}"
+    );
+}
+
+/// A share whose window was minted by a device this session has not heard in the workspace is
+/// the one case the workspace's governance is asked who it admits: a window of a device that was
+/// heard, or of this one, never asks.
+#[test]
+fn only_a_share_of_an_unheard_device_asks_who_the_workspace_admits() {
+    let host = device(0x71);
+    let salt = tilo_desktop_model::ids::device_salt_of_key(host.as_bytes());
+    let tab = tilo_desktop_model::ids::compose_id(salt, 3);
+    let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, person(0x71));
+    let heard = BTreeMap::from([(salt, hex::encode(host.as_bytes()))]);
+    let unheard = BTreeMap::from([(salt.wrapping_add(1), hex::encode(device(0x72).as_bytes()))]);
+    assert!(
+        !super::shares_of_unheard(&policy, &unheard),
+        "a workspace that shares no window asks nothing"
+    );
+    policy.grants.extend(
+        tilo_action_policy::share::share_grants(
+            WORKSPACE,
+            &person(0x71),
+            &window_share_id(tab),
+            &tilo_desktop_model::window_share::window_node(WORKSPACE, APP, tab),
+            tilo_action_policy::share::ShareAccess::View,
+        )
+        .expect("a window's share"),
+    );
+    assert!(
+        super::shares_of_unheard(&policy, &unheard),
+        "the device that minted the shared window was not heard here"
+    );
+    assert!(
+        !super::shares_of_unheard(&policy, &heard),
+        "the device that minted the shared window was heard here"
+    );
+}
+
+/// Two devices that hold one workspace each list the other's windows already: the desk's own
+/// record says so before anything is shared, and each device opens its own view of a window the
+/// other opened. That view is this device's. What the other device shares is the window that runs
+/// there, so it is pictured in a tab of its own beside the view, which stays as it was; and when
+/// the share ends that tab goes, and the view stays.
+#[test]
+fn a_window_the_desk_already_lists_is_pictured_in_a_tab_of_its_own_beside_the_desks_view_of_it() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x67).as_bytes());
+    let mut host = member_minting_under(
+        0x67,
+        desk(
+            TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            tilo_desktop_model::ids::compose_id(salt, 1),
+        ),
+        salt,
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    let mut viewer = member_minting_under(
+        0x68,
+        desk(
+            TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            tab,
+        ),
+        1,
+    );
+    let stands = |session: &Session| {
+        session.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(tilo_desktop_model::Workspace::tabs)
+                .filter(|shown| shown.id == tab)
+                .count()
+        })
+    };
+    let own_view = tile_of(&viewer.session, tab);
+    assert!(
+        matches!(own_view, Some(TileContent::LocalApp { .. })),
+        "the other device lists the window as one it opens its own view of"
+    );
+
+    share(&mut host, APP, tab);
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !rows(&shares(&host.session), "sharing").is_empty()
+    });
+    carry_governance(&host.session, &viewer.session);
+    heard(&viewer, 0x67, "Framework");
+
+    // The window that runs on the sharing device is pictured, with nobody asking for it by hand.
+    let wanted = tab.to_string();
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        rows(&shares(&viewer.session), "received")
+            .iter()
+            .any(|stream| {
+                stream["tab"].as_str() == Some(wanted.as_str())
+                    && stream["pictured"].as_bool() == Some(true)
+            })
+    });
+    // It stands in a tab of its own, which says which device it runs on.
+    let place: u64 = rows(&shares(&viewer.session), "watching")
+        .iter()
+        .find(|watched| watched["tab"].as_str() == Some(wanted.as_str()))
+        .and_then(|watched| watched["shown_in"].as_str())
+        .and_then(|place| place.parse().ok())
+        .expect("the tab the shared window is pictured in");
+    assert_ne!(place, tab, "the shared window stands in a tab of its own");
+    assert_eq!(
+        hosted(&viewer.session, place),
+        Some(hex::encode(device(0x67).as_bytes())),
+        "which shows it as the window running on the device that shares it"
+    );
+    assert_eq!(
+        viewer.session.handle().peer_surface_tabs(),
+        vec![place],
+        "and holds its picture"
+    );
+    assert_eq!(
+        tile_of(&viewer.session, tab),
+        own_view,
+        "the desk's own view of the window is as it was"
+    );
+    assert_eq!(
+        stands(&viewer.session),
+        1,
+        "and nothing else stands under the window's own id"
+    );
+
+    // The share ends: the tab that pictured it goes, and the desk's own view of the window stays.
+    host.session
+        .invoke(
+            SHARES_RESOURCE,
+            "stop",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the share is stopped");
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !host.session.handle().read(|tree| {
+            tree.workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+        })
+    });
+    carry_governance(&host.session, &viewer.session);
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        let reading = shares(&viewer.session);
+        rows(&reading, "watching").is_empty() && rows(&reading, "received").is_empty()
+    });
+    assert!(
+        tile_of(&viewer.session, place).is_none(),
+        "the tab that pictured the shared window went with the share"
+    );
+    assert!(
+        viewer.session.handle().peer_surface_tabs().is_empty(),
+        "and no picture of it is held"
+    );
+    assert_eq!(
+        tile_of(&viewer.session, tab),
+        own_view,
+        "the desk's own view of the window stays when the share ends"
+    );
+    assert_eq!(stands(&viewer.session), 1);
+}
+
+/// A window that runs only on its device stands on every other desk as that window, in the tab
+/// its host laid it in: a Browser's, whose page lives in the engine there. Sharing it pictures it
+/// in that tab, and the tab stays when the share ends. The window still runs on its host, and
+/// taking its tab off this desk would close it in the workspace's layout, on every device.
+#[test]
+fn a_window_the_desk_lists_as_running_on_its_host_is_pictured_there_and_stays_when_its_share_ends()
+{
+    tilo_window_share::flatpak_share::read_encoders();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x81).as_bytes());
+    let mut host = member_minting_under(
+        0x81,
+        desk(
+            TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            tilo_desktop_model::ids::compose_id(salt, 1),
+        ),
+        salt,
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    let host_key = hex::encode(device(0x81).as_bytes());
+    // The other desk lists the window as the workspace's layout does: in the group its host put
+    // it in, as a window that runs on that device.
+    let mut viewer = member_minting_under(0x82, showing(device(0x81), APP, tab), 1);
+    let hosted_tabs = |session: &Session| {
+        session.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(tilo_desktop_model::Workspace::tabs)
+                .filter(|shown| matches!(shown.tile, TileContent::HostedWindow { .. }))
+                .map(|shown| shown.id)
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(hosted_tabs(&viewer.session), vec![tab]);
+
+    share(&mut host, APP, tab);
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !rows(&shares(&host.session), "sharing").is_empty()
+    });
+    carry_governance(&host.session, &viewer.session);
+    heard(&viewer, 0x81, "Framework");
+
+    // The window is pictured in the tab the desk lists it in, and in no tab made for the share.
+    let wanted = tab.to_string();
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        rows(&shares(&viewer.session), "received")
+            .iter()
+            .any(|stream| {
+                stream["tab"].as_str() == Some(wanted.as_str())
+                    && stream["pictured"].as_bool() == Some(true)
+            })
+    });
+    let place = rows(&shares(&viewer.session), "watching")
+        .iter()
+        .find(|watched| watched["tab"].as_str() == Some(wanted.as_str()))
+        .and_then(|watched| watched["shown_in"].as_str())
+        .map(str::to_owned);
+    assert_eq!(
+        place.as_deref(),
+        Some(wanted.as_str()),
+        "the tab that lists the window pictures it"
+    );
+    assert_eq!(viewer.session.handle().peer_surface_tabs(), vec![tab]);
+    assert_eq!(hosted_tabs(&viewer.session), vec![tab]);
+
+    // The share ends: the picture goes, and the window's tab stays where its host laid it.
+    host.session
+        .invoke(
+            SHARES_RESOURCE,
+            "stop",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the share is stopped");
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !host.session.handle().read(|tree| {
+            tree.workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+        })
+    });
+    carry_governance(&host.session, &viewer.session);
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        let reading = shares(&viewer.session);
+        rows(&reading, "watching").is_empty() && rows(&reading, "received").is_empty()
+    });
+    assert!(
+        viewer.session.handle().peer_surface_tabs().is_empty(),
+        "no picture of the window is held once its share ended"
+    );
+    assert_eq!(
+        hosted(&viewer.session, tab).as_deref(),
+        Some(host_key.as_str()),
+        "the window still stands on the desk, as one that runs on its host"
+    );
+    assert_eq!(hosted_tabs(&viewer.session), vec![tab]);
+}
+
 /// The window of another device shown on `session` 's desk as `tab` , with the key of the device
 /// that hosts it: what a person sees there.
 fn hosted(session: &Session, tab: u64) -> Option<String> {
@@ -1975,7 +2394,13 @@ fn person(seed: u8) -> String {
 /// The device `seed` said who it is on `viewer` 's plane: the certificate a session says when it
 /// starts, which names the device it runs on.
 fn heard(viewer: &Member, seed: u8, label: &str) {
-    let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    heard_of(viewer, seed, seed, label);
+}
+
+/// The device `seed` said on `viewer` 's plane that it is a device of the person whose root key
+/// `of` makes: two devices of one person say certificates the same root signed.
+fn heard_of(viewer: &Member, seed: u8, of: u8, label: &str) {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[of; 32]);
     let mut cert = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: *device(seed).as_bytes(),
@@ -2084,7 +2509,7 @@ fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
                     let object = VideoObject::decode(&object.body).expect("a picture");
                     heard.push(wall_us().saturating_sub(object.timestamp_us));
                     if object.keyframe && tiles.read(TAB).is_none() {
-                        let start = super::picture_start(&tree, 7, peer, TAB, &object)
+                        let start = super::picture_start(&tree, 7, peer, (TAB, TAB), &object)
                             .expect("a codec this build decodes");
                         tiles
                             .start(&tree, &start)

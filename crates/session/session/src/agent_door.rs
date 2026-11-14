@@ -22,11 +22,13 @@
 
 mod agent_key;
 mod environments;
+mod room;
 mod seats;
 mod service_steps;
 mod task_hosts;
 
 use environments::Origin;
+pub(crate) use room::{Place, Room};
 pub(crate) use seats::{Agents, Seats, Working};
 pub(crate) use service_steps::invoke_service_step;
 use service_steps::{arguments_of, change_through, with_turn_beside};
@@ -38,7 +40,6 @@ use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
@@ -72,9 +73,6 @@ pub(crate) const KIND: &str = "session.agent-door";
 
 /// Names the door when it is not the real seat's; honoured by developer builds only.
 pub(crate) const ENV: &str = "TILO_AGENT_DOOR";
-
-/// Connections served at once; more are refused.
-const MAX_CONNECTIONS: usize = 16;
 
 /// How often a waiting connection looks for the person's answer and for its client.
 const ASK_EVERY: Duration = Duration::from_millis(50);
@@ -369,8 +367,8 @@ pub(crate) struct Loop {
     /// The desk the broker decides against, kept by the same loop: an admission made here reaches
     /// the broker now, not on its next pass.
     desk: Option<Arc<DeskAuthority>>,
-    /// Connections being served now, against the door's cap.
-    connections: Arc<AtomicUsize>,
+    /// The places connections are served in: as many as the door serves at once.
+    room: Room,
     /// Polls the questions: the loop looks for an answer on each of its own passes, so nothing else
     /// has to wake it.
     waker: Waker,
@@ -406,28 +404,27 @@ struct Serving {
     wake: Wake,
     control: Arc<crate::test_control::Door>,
     seats: Arc<Seats>,
-    /// Connections being served now, against the door's cap.
-    connections: Arc<AtomicUsize>,
+    /// The places connections are served in: as many as the door serves at once.
+    room: Room,
     environments: environments::Opener,
 }
 
 impl Serving {
-    /// Serve one connection of this account, from `from`, on its own thread: nothing it asks for
-    /// runs before the person admits it.
-    fn serve(&self, stream: UnixStream, from: From) {
+    /// Serve one connection of this account, from `from`, on its own thread, in the `place` it
+    /// took, which it gives back when it ends: nothing it asks for runs before the person admits
+    /// it.
+    fn serve(&self, place: Place, stream: UnixStream, from: From) {
         let serving = self.clone();
-        let connections = Arc::clone(&self.connections);
-        connections.fetch_add(1, Ordering::Relaxed);
         let spawned = std::thread::Builder::new()
             .name("tilo-agent-door".into())
             .spawn(move || {
                 serve_connection(Opened { stream, from }, &serving);
-                serving.connections.fetch_sub(1, Ordering::Relaxed);
+                drop(place);
                 // A question for a client that is gone is withdrawn on the next pass.
                 (serving.wake)();
             });
         if let Err(error) = spawned {
-            connections.fetch_sub(1, Ordering::Relaxed);
+            // The thread that did not start took the connection, and its place, with it.
             tracing::warn!(%error, "agent door: a connection could not be served");
         }
     }
@@ -556,7 +553,7 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         launches,
         wake,
         desk: None,
-        connections: Arc::new(AtomicUsize::new(0)),
+        room: Room::default(),
         // The loop polls its questions itself, each pass, so an answer needs no wakeup.
         waker: Waker::noop().clone(),
         admits,
@@ -589,10 +586,10 @@ impl Shared {
 }
 
 impl Loop {
-    /// Serve what the person's other devices connect with through `remote`,
-    /// and carry this login's clients to theirs.
+    /// Serve what the person's other devices connect with through `remote`, each in a place of
+    /// this door's room, and carry this login's clients to theirs.
     pub(crate) fn hear_remote(&mut self, remote: Arc<Remote>) {
-        remote.serve();
+        remote.serve(self.room.clone());
         self.remote = Some(remote);
     }
 
@@ -641,51 +638,49 @@ impl Loop {
                 }
             };
             let pressed = identify(&stream).and_then(|(pid, peer)| {
-                if self.connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-                    return Err(PeerRefusal::Busy);
-                }
-                match peer_decision(&peer) {
-                    Ok(()) => Ok(From::Login(pid)),
+                let from = match peer_decision(&peer) {
+                    Ok(()) => From::Login(pid),
                     // The login's confined shell runtime runs in a mount namespace systemd made
                     // for it: it is let in to ask for its environments' doors, and for nothing
                     // else (`serve_connection`).
-                    Err(PeerRefusal::Sandboxed) if is_shell_runtime(pid) => {
-                        Ok(From::ShellRuntime(pid))
-                    }
-                    Err(refusal) => Err(refusal),
-                }
+                    Err(PeerRefusal::Sandboxed) if is_shell_runtime(pid) => From::ShellRuntime(pid),
+                    Err(refusal) => return Err(refusal),
+                };
+                // Only a program the door would serve is told that it is full.
+                let place = self.room.take().ok_or(PeerRefusal::Busy)?;
+                Ok((place, from))
             });
-            let from = match pressed {
-                Ok(from) => from,
+            let (place, from) = match pressed {
+                Ok(served) => served,
                 Err(refusal) => {
                     tracing::info!(?refusal, "agent door: a connection is refused");
                     refuse(stream, &refusal);
                     continue;
                 }
             };
-            self.serve(stream, from);
+            self.serve(place, stream, from);
         }
     }
 
     /// Accept every connection the person's other devices opened since the last pass, each on its
-    /// own thread, as a connection of this login is.
+    /// own thread, as a connection of this login is, in the place it took when it arrived.
     fn accept_remote(&self) {
         let Some(remote) = &self.remote else {
             return;
         };
-        for arrival in remote.take() {
-            if self.connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-                refuse(arrival.stream, &PeerRefusal::Busy);
-                continue;
-            }
-            self.serve(arrival.stream, From::Device(Box::new(arrival.origin)));
+        for (arrival, place) in remote.take() {
+            self.serve(
+                place,
+                arrival.stream,
+                From::Device(Box::new(arrival.origin)),
+            );
         }
     }
 
-    /// Serve one connection of this account on its own thread: nothing it asks for runs before the
-    /// person admits it.
-    fn serve(&self, stream: UnixStream, from: From) {
-        self.serving().serve(stream, from);
+    /// Serve one connection of this account on its own thread, in its `place`: nothing it asks
+    /// for runs before the person admits it.
+    fn serve(&self, place: Place, stream: UnixStream, from: From) {
+        self.serving().serve(place, stream, from);
     }
 
     /// What serving a connection of this door takes.
@@ -699,7 +694,7 @@ impl Loop {
             wake: Arc::clone(&self.wake),
             control: Arc::clone(&self.control),
             seats: Arc::clone(&self.seats),
-            connections: Arc::clone(&self.connections),
+            room: self.room.clone(),
             environments: self.environments.opener(),
         }
     }
@@ -1204,7 +1199,7 @@ pub(crate) enum PeerRefusal {
     Sandboxed,
     /// This session serves no agents: it has no actions published yet.
     Unavailable,
-    /// As many connections as it takes are being served.
+    /// As many connections as the door serves at once are being served ([`room`]).
     Busy,
     /// A connection to an environment's door from a process outside that environment.
     OutsideEnvironment,
@@ -1219,7 +1214,7 @@ impl PeerRefusal {
             }
             Self::Sandboxed => "programs inside a sandboxed app can't connect here",
             Self::Unavailable => "this desktop isn't serving its actions yet; try again shortly",
-            Self::Busy => "the agent door is serving as many connections as it takes",
+            Self::Busy => room::NO_ROOM,
             Self::OutsideEnvironment => {
                 "this door serves only programs inside the environment it belongs to"
             }
@@ -2550,6 +2545,9 @@ fn serve_admitted(
     // through.
     let agent: Arc<std::sync::Mutex<Option<[String; 4]>>> = Arc::default();
     let starting = Arc::clone(&agent);
+    // Where the connection came from, when another of the person's devices carried it: the
+    // device whose certificate the remote door verified, which its run then names.
+    let from = facts.origin.as_ref().map(crate::door_runs::device_of);
     let seat = seats.joining(facts.entrance.door());
     // An agent from another of the person's own devices, which the door toward them let through:
     // what this device's setting for such agents may answer for once its run asks.
@@ -2579,6 +2577,7 @@ fn serve_admitted(
                 person: &person,
                 agent: &member,
                 seated: &seated,
+                origin: from.as_ref(),
             };
             // Every admitted agent's connection works in a run of its own: one that cannot start
             // acts on nothing, and the client is told why rather than refused action by action.

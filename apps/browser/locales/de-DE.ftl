@@ -5,6 +5,10 @@ browser-set-site-protection = { $enabled ->
     [true] Trackerschutz für { $origin } eingeschaltet
    *[false] Trackerschutz für { $origin } ausgeschaltet
 }
+browser-remember-forms = Formulare von { $origin } gemerkt
+browser-forget-form = Ein Formular von { $origin } vergessen
+browser-forget-site-forms = Formulare von { $origin } vergessen
+browser-forget-all-forms = Alle gemerkten Formulare vergessen
 browser-browser-bookmarks = Die Lesezeichen geändert
 browser-bookmark-title = Lesezeichen { $item } umbenannt
 browser-settings-adblock-enabled = { $new ->
@@ -22,6 +26,9 @@ browser-settings-homepage = Die Startseite geändert
 browser-visit = { $url } besucht
 browser-forget = { $url } vergessen
 browser-clear-history = Den Browserverlauf gelöscht
+
+## History: what operated a tab's page
+browser-set-down = Festgehalten, was auf einer Seite getan wurde
 
 ## History: the person's address book
 browser-address-book-enabled = { $new ->
@@ -206,6 +213,27 @@ browser-page-dialog-unsaved = Vorgenommene Änderungen werden eventuell nicht ge
 browser-page-dialog-leave = Verlassen
 browser-page-dialog-reload = Neu laden
 
+## A page's file chooser, shown by the system's own picker
+browser-file-chooser-file = Datei auswählen
+browser-file-chooser-files = Dateien auswählen
+browser-file-chooser-folder = Ordner auswählen
+browser-file-chooser-choose = Auswählen
+browser-file-chooser-accepted = Akzeptierte Dateien
+
+## A server's sign-in (HTTP authentication): who asks is the origin the
+## credentials go to; the realm is the server's own text
+browser-page-sign-in-title = Bei { $site } anmelden
+browser-page-sign-in-title-long = Bei dieser Website anmelden
+browser-page-sign-in-title-proxy = Beim Proxy { $site } anmelden
+browser-page-sign-in-title-proxy-long = Beim Proxy anmelden
+browser-page-sign-in-asks = { $asker } verlangt Benutzername und Passwort.
+browser-page-sign-in-asks-proxy = Der Proxy { $asker } verlangt Benutzername und Passwort.
+browser-page-sign-in-realm = In eigenen Worten: „{ $realm }“.
+browser-page-sign-in-clear = Diese Verbindung ist nicht privat: Das Passwort kann unterwegs mitgelesen werden.
+browser-page-sign-in-retry = Benutzername oder Passwort wurde nicht angenommen.
+browser-page-sign-in-too-long = Benutzername oder Passwort ist zu lang.
+browser-page-sign-in-submit = Anmelden
+
 ## Die gespeicherten Adressen, aus denen der Browser Formulare füllt
 browser-autofill-offline = Adressausfüllen ist hier nicht verfügbar: Dieses Fenster surft ohne deine Anmeldungen.
 browser-autofill-enable = Adressausfüllen einschalten
@@ -251,6 +279,72 @@ browser-library-bookmarks-empty-hint = Wählen Sie den Stern in der Adressleiste
 browser-library-extensions-empty = Keine Erweiterungen installiert
 browser-library-remove-bookmark = Lesezeichen { $title } entfernen
 browser-library-forget-visit = { $title } aus dem Verlauf entfernen
+
+## The page's review: its forms, who set each answer, and what was done
+browser-review-open = Seite prüfen
+browser-review-title = Prüfung
+browser-review-done = Fertig
+browser-review-empty = Keine Formulare auf dieser Seite
+browser-review-unreadable = Diese Seite konnte nicht gelesen werden
+browser-review-unreadable-hint = Laden Sie die Seite neu und versuchen Sie es erneut.
+browser-review-form-untitled = Formular
+browser-review-form-other = Weitere Felder
+browser-review-form-in-frame = In Frame { $name }
+browser-review-question-unnamed = Unbenanntes Feld
+browser-review-no-answer = Keine Antwort
+browser-review-yes = Ja
+browser-review-no = Nein
+browser-review-secret-set = Gesetzt
+browser-review-secret-not-set = Nicht gesetzt
+browser-review-set-by = Gesetzt von { $name }
+browser-review-set-by-you = Von Ihnen gesetzt
+browser-review-set-typed = In die Seite eingetippt
+browser-review-set-by-page = Von der Seite gesetzt
+browser-review-set-by-no-one = Von niemandem gesetzt
+browser-review-changed = Seit dem Setzen geändert
+browser-review-required = Erforderlich
+browser-review-invalid = Ungültig
+browser-review-record = In diesem Tab ausgeführt
+browser-review-earlier = { $count ->
+    [one] { $count } frühere Aktion wird nicht angezeigt
+   *[other] { $count } frühere Aktionen werden nicht angezeigt
+}
+browser-review-by = Von { $name }
+browser-review-by-you = Von Ihnen
+browser-review-actor-on-device = { $name } auf { $device }
+browser-review-actor-device-unknown = { $name }, Gerät nicht bekannt
+browser-review-failed = Fehlgeschlagen
+browser-review-did-click = { $target } angeklickt
+browser-review-did-fill = { $target } ausgefüllt
+browser-review-did-select = In { $target } ausgewählt
+browser-review-did-files = Dateien an { $target } angehängt
+browser-review-did-press = Taste in { $target } gedrückt
+browser-review-did-key = Taste gedrückt
+browser-review-did-hover = Auf { $target } gezeigt
+browser-review-did-drag = { $target } gezogen
+browser-review-did-pointer = Zeiger verwendet
+browser-review-did-submit = Formular gesendet
+browser-review-did-scroll = Seite gescrollt
+browser-review-did-reader = Leseansicht umgeschaltet
+browser-review-did-form = { $count ->
+    [one] { $count } Frage beantwortet
+   *[other] { $count } Fragen beantwortet
+}
+browser-review-did-other = Auf der Seite gehandelt
+browser-review-did-type = In { $target } getippt
+browser-review-did-type-page = In die Seite getippt
+browser-review-by-typing = Direkte Eingabe
+browser-review-wrote-secret = Gesetzt, nicht angezeigt
+browser-review-held-submit = Absenden für Sie angehalten: { $what }
+browser-review-held-request = Anfrage für Sie angehalten: { $what }
+browser-review-held-download = Download für Sie angehalten: { $what }
+browser-review-held-other = Für Sie angehalten: { $what }
+browser-review-hold-allowed-by = Von { $name } freigegeben
+browser-review-hold-allowed-by-you = Von Ihnen freigegeben
+browser-review-hold-kept = Unverändert belassen
+browser-review-hold-dropped = Verworfen, niemand hat geantwortet
+browser-review-hold-too-many = Verworfen, zu viele warteten bereits
+browser-review-hold-gone = Verworfen, die Seite wurde verlassen
 
 ## Downloads: the list in the Library and its progress
 browser-downloads-empty = Noch keine Downloads
@@ -318,7 +412,18 @@ browser-site-block-permissions = Berechtigungen blockieren
 browser-site-block-note = Blockiert Kamera, Mikrofon, Standort und Benachrichtigungen. Laden Sie die Seite neu, um laufende Sitzungen zu beenden.
 browser-site-ask-again = Erneut fragen
 browser-site-clear-data = Websitedaten löschen
-browser-site-clear-note = Löscht Speicher und Cookies dieser Website, auch Cookies, die sie mit ihren Subdomains teilt. Laden Sie die Seite neu, um verbliebene Daten zurückzusetzen.
+browser-site-clear-note = Löscht Speicher, Cookies und gemerkte Formulare dieser Website, auch Cookies, die sie mit ihren Subdomains teilt. Laden Sie die Seite neu, um verbliebene Daten zurückzusetzen.
+browser-site-forms = Gemerkte Formulare
+browser-site-forms-none = Keine Formulare für diese Website gemerkt
+browser-site-forms-note = Die Fragen, die jedes Formular stellt. Antworten werden nicht gespeichert.
+browser-site-forms-forget = Formulare dieser Website vergessen
+browser-site-form-untitled = Formular
+browser-site-form-questions = { $count ->
+    [one] { $count } Frage
+   *[other] { $count } Fragen
+}
+browser-site-form-forget = Vergessen
+browser-site-form-forget-name = { $form } vergessen
 browser-site-protection-off-settings = Der Schutz ist in den Einstellungen aus
 browser-site-protection-off = Der Schutz ist für diese Website aus
 browser-site-protection-on = Der Schutz ist für diese Website an
@@ -418,6 +523,8 @@ browser-resource-personal-bookmarks = Persönliche Lesezeichen
 browser-resource-bookmark-navigation = Lesezeichen-Navigation
 browser-library-already-clear = Der Filter der Bibliothek ist bereits leer
 browser-action-needs-page = Öffne zuerst eine Webseite
+browser-action-private-no-forms = Ein privates Fenster merkt sich keine Formulare
+browser-action-form-changed = Dieses Formular fragt etwas anderes als zu der Zeit, als seine Aktion entstand; die Seite liest ihre Formulare von selbst neu und veröffentlicht die Aktion des Formulars, wie es jetzt ist. Erscheint keine, lies sie (read-page-forms)
 browser-action-no-previous-page = Keine vorherige Seite
 browser-action-no-next-page = Keine nächste Seite
 browser-action-page-idle = Die Seite ist untätig
@@ -528,6 +635,19 @@ browser-effect-import-personal-bookmarks = Lesezeichen importieren
 browser-effect-remove-personal-bookmark = Lesezeichen entfernen
 browser-effect-remove-personal-imported-node = Importiertes Lesezeichen entfernen
 browser-effect-show-personal-bookmark-folder = Lesezeichenordner öffnen
+browser-effect-read-page-record = Wer was auf der Seite getan hat
+browser-effect-read-page-fields = Felder der Seite und wer sie ausgefüllt hat
+browser-effect-read-page-forms = Formulare der Seite und was sie fragen
+browser-effect-find-page-text = Wörter auf der Seite finden
+browser-effect-fill-page-form = Formular der Seite ausfüllen
+browser-effect-answer-form = Ein Formular der Seite ausfüllen
+browser-effect-send-form = Ein Formular der Seite absenden
+browser-effect-answer-page-sign-in = Bei der Website anmelden, die danach fragt
+browser-effect-cancel-page-sign-in = Anmeldung bei der Website abbrechen
+browser-effect-review-page = Seite prüfen
+browser-effect-show-page-field = Feld auf der Seite zeigen
+browser-effect-read-remembered-forms = Gemerkte Formulare dieser Website lesen
+browser-effect-read-all-remembered-forms = Alle gemerkten Formulare lesen
 browser-browsing-history = Browserverlauf
 browser-browsing-history-visit = Besuch vermerken
 browser-browsing-history-import-history-bundle = Verlauf importieren
@@ -543,6 +663,13 @@ browser-application = Browser
 browser-application-add-bookmark = Seite als Lesezeichen merken
 browser-application-remove-bookmark = Lesezeichen entfernen
 browser-application-set-site-protection = Tracker-Schutz
+browser-application-remember-forms = Formulare einer Seite merken
+browser-application-forget-form = Ein gemerktes Formular vergessen
+browser-application-forget-site-forms = Gemerkte Formulare einer Website vergessen
+browser-application-forget-all-forms = Alle gemerkten Formulare vergessen
+browser-application-forget-this-site-forms = Gemerkte Formulare dieser Website vergessen
+browser-page-record = Seitenprotokoll
+browser-page-record-set-down = Eine Seitenaktion festhalten
 
 ## What the app is called in a window and in the launcher
 browser-app-title = Browser

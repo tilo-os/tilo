@@ -401,10 +401,10 @@ pub struct Hosted {
     /// written through it too, and its person is who the broker admits them
     /// as. `None` when the session holds no workspaces.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
-    /// The endpoint this device runs under its key, once bound: what it dials
-    /// the hosts of its workspaces from. Never bound when the session runs
-    /// none.
-    pub endpoint: std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>,
+    /// Where the endpoint this device runs under its key lands once bound:
+    /// what it dials the hosts of its workspaces from. `None` when the
+    /// session runs none.
+    pub endpoint: Option<std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>>,
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
@@ -1118,7 +1118,7 @@ fn seams(
     let hosting = engine.as_ref().and_then(|engine| {
         crate::hosted_workspaces::HostedWorkspaces::service(
             Some(engine),
-            std::sync::Arc::clone(&endpoint),
+            endpoint,
             tilo_rt::app().handle().clone(),
         )
     });
@@ -1699,7 +1699,6 @@ mod tests {
             own_device: None,
             nearby: None,
             engine: None,
-            endpoint: std::sync::Arc::default(),
             record_content: None,
             action_offload: None,
             journal_root: None,
@@ -1713,6 +1712,7 @@ mod tests {
             )),
             personal: None,
             fanout: std::sync::Arc::new(FanoutState::new()),
+            endpoint: None,
         }
     }
 

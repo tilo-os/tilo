@@ -152,6 +152,47 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase an_app_says_what_its_windows_are_to_other_devices_in_its_entrypoint;
+    // An app says its windows run only on the device that opened them with one word of its
+    // entrypoint, and one that says nothing has windows that are views of records. A kind of window
+    // no build knows is refused, never taken for a view.
+    {
+            let notes = repo_root().join("apps/notes");
+            assert!(
+                !load(&notes).window_runs_on_its_device(),
+                "a Notes window is a view of a record"
+            );
+            let src = std::fs::read_to_string(manifest_path(&notes)).expect("Notes' manifest");
+            let said = src.replacen("[entrypoint]", "[entrypoint]\nwindow = \"device\"", 1);
+            assert_ne!(said, src, "the manifest has an entrypoint to say it in");
+            let manifest = Manifest::from_toml_str(&said).expect("the manifest decodes");
+            assert!(manifest.window_runs_on_its_device());
+            validate_manifest(&manifest).expect("and is a valid manifest");
+            let unknown = src.replacen("[entrypoint]", "[entrypoint]\nwindow = \"elsewhere\"", 1);
+            assert!(
+                Manifest::from_toml_str(&unknown).is_err(),
+                "a kind of window no build knows is refused"
+            );
+    }
+
+    phase browser_says_its_windows_run_only_on_the_device_that_opened_them;
+    // A window of Browser is its page, which lives in the engine of the device that opened it: its
+    // manifest says so, and the session reads it there, so no session code names an app. No other
+    // shipped app says it yet.
+    {
+            assert!(
+                load(&repo_root().join("apps/browser")).window_runs_on_its_device(),
+                "a Browser window runs only on the device whose engine holds its page"
+            );
+            let bound: Vec<String> = app_dirs()
+                .iter()
+                .map(|dir| load(dir))
+                .filter(Manifest::window_runs_on_its_device)
+                .map(|manifest| manifest.package.id)
+                .collect();
+            assert_eq!(bound, ["so.tilo.browser"]);
+    }
+
     phase shipped_apps_declare_presentation_metadata;
     {
         {

@@ -174,11 +174,32 @@ impl<P: Resource> PersonRecord<P> {
     }
 
     /// Apply the action `invoke` names, as [`Self::apply`].
+    ///
+    /// This, with [`Self::invoke_as`], is how the app applies what its
+    /// resource keeps for itself (`#[action(by_app)]`): such an action is
+    /// declared to no caller, and the record's door refuses it.
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
         self.apply(&action)
+    }
+
+    /// [`Self::invoke`] as `invoker` (an agent, a script the host admitted),
+    /// which the change is attributed to in the record's history: what an
+    /// agent did beside the person is set down as the agent's, not as theirs.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn invoke_as(
+        &self,
+        invoker: &ActionInvoker,
+        invoke: &Invoke<P>,
+    ) -> Result<(), ActionError> {
+        let action = invoke
+            .build(tilo_resource::origin_now_ms())
+            .map_err(ActionError::Refused)?;
+        self.apply_as(&action, invoker)
     }
 
     /// Whether this app changes the record: its own, or a shared one it is

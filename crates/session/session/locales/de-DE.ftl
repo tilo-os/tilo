@@ -116,6 +116,10 @@ refusal-reason-other = der Grund ist nicht bekannt
 # ist dort nicht angekommen: die Änderung bleibt auf diesem Gerät.
 desk-not-shared-app = Geteilter Schreibtisch
 desk-not-shared-title = { $workspace } hat deine Fensteranordnung nicht übernommen
+# Dasselbe für einen Arbeitsbereich, den niemand benannt hat, und für einen, den dieses Gerät vor
+# dem Hinweis verlassen hat: Einen Namen gibt es dann nicht.
+desk-not-shared-title-unnamed = Ein Arbeitsbereich ohne Namen hat deine Fensteranordnung nicht übernommen
+desk-not-shared-title-gone = Ein Arbeitsbereich, in dem dieses Gerät nicht mehr ist, hat deine Fensteranordnung nicht übernommen
 desk-not-shared-body = Sie bleibt auf diesem Gerät: { $reason }.
 
 # Das Gerät einer mitarbeitenden Person spricht eine andere Tilo-Protokollversion:

@@ -597,14 +597,22 @@ pub(crate) fn refused_write_notice(device: &str, reason: neighbour_wire::Refusal
 }
 
 /// The notice that the workspace did not take what the person changed on its shared desk.
+/// `workspace` is the name the person reads for it. A desk stores no name for a workspace nobody
+/// named, and a workspace that left the desk since has no row to read one from (`None`): the title
+/// says which of the two it is, and never opens with a name nobody gave.
 pub(crate) fn desk_not_shared_notice(
-    workspace: &str,
+    workspace: Option<&str>,
     reason: neighbour_wire::RefusalReason,
 ) -> Notice {
+    let title = match workspace.map(str::trim) {
+        Some("") => t("desk-not-shared-title-unnamed"),
+        Some(name) => t_args("desk-not-shared-title", &[("workspace", name.into())]),
+        None => t("desk-not-shared-title-gone"),
+    };
     Notice::new(
         t("desk-not-shared-app"),
         2,
-        t_args("desk-not-shared-title", &[("workspace", workspace.into())]),
+        title,
         t_args(
             "desk-not-shared-body",
             &[("reason", reason_in_words(reason).into())],
@@ -622,14 +630,11 @@ pub(crate) fn tell_desk_not_taken(
         .workspaces
         .iter()
         .find(|workspace| workspace.id() == room)
-        .map_or_else(
-            || tilo_desktop_surface::names::workspace(""),
-            |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
-        );
+        .map(|workspace| workspace.name.as_str());
     let reason = neighbour_wire::RefusalReason::of(&why);
     notifications
         .borrow()
-        .tell(&desk_not_shared_notice(&workspace, reason));
+        .tell(&desk_not_shared_notice(workspace, reason));
 }
 
 /// Tell the person what the crash records in `dir` say happened before this start.
@@ -1267,6 +1272,48 @@ mod tests {
             assert!(
                 !unknown.title.contains("zpeerexample") && !unknown.body.contains("zpeerexample"),
                 "its endpoint is not the person's language"
+            );
+        }
+    }
+
+    /// The notice that a workspace did not take the window arrangement names the workspace by
+    /// the name the person gave it. One nobody named, and one that left the desk since, are said
+    /// to be that: the title never opens with an empty name, or with a word standing in for one.
+    #[test]
+    fn a_desk_the_workspace_did_not_take_names_the_workspace_or_says_it_has_no_name() {
+        let title = |workspace| {
+            desk_not_shared_notice(workspace, neighbour_wire::RefusalReason::Forbidden).title
+        };
+        let words = || [Some("Research"), Some(""), Some("  "), None].map(title);
+        let english = words();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let german = words();
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(
+            english,
+            [
+                "Research did not take your window arrangement",
+                "A workspace with no name did not take your window arrangement",
+                "A workspace with no name did not take your window arrangement",
+                "A workspace this device is no longer in did not take your window arrangement",
+            ]
+        );
+        assert_eq!(
+            german,
+            [
+                "Research hat deine Fensteranordnung nicht übernommen",
+                "Ein Arbeitsbereich ohne Namen hat deine Fensteranordnung nicht übernommen",
+                "Ein Arbeitsbereich ohne Namen hat deine Fensteranordnung nicht übernommen",
+                "Ein Arbeitsbereich, in dem dieses Gerät nicht mehr ist, hat deine \
+                 Fensteranordnung nicht übernommen",
+            ]
+        );
+        for title in english.iter().chain(&german) {
+            assert!(
+                !title.starts_with(' ')
+                    && !title.starts_with("Workspace ")
+                    && !title.starts_with("Arbeitsbereich "),
+                "{title:?} names no workspace"
             );
         }
     }

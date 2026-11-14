@@ -20,11 +20,30 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@b99f0cb69ffd791f";
+export const SURFACE = "so.tilo.browser@118ee95647821b37";
 
 export interface Bookmark {
   url: string;
   title: string;
+}
+
+export interface RememberedForm {
+  signature: string;
+  label: string;
+  pages: string[];
+  questions: RememberedQuestion[];
+  submit: string[];
+  follows: string;
+  grew_from: string;
+  seen: number;
+}
+
+export interface RememberedQuestion {
+  name: string;
+  kind: string;
+  choices: string[];
+  required: boolean;
+  fallback: string;
 }
 
 export interface Settings {
@@ -52,6 +71,43 @@ export interface Visit {
   count: number;
 }
 
+export interface Answer {
+  name: string;
+  value: string;
+}
+
+export interface PageAction {
+  seq: number;
+  time_ms: number;
+  actor: string;
+  device: string;
+  device_name: string;
+  device_unknown: boolean;
+  how: string;
+  action: string;
+  ok: boolean;
+  code: string;
+  message: string;
+  url: string;
+  to_url: string;
+  navigation: string;
+  frame: string;
+  role: string;
+  name: string;
+  nth: number;
+  secret: boolean;
+  text: string | null;
+  values: string[] | null;
+  answers: Answer[];
+}
+
+export interface Tab {
+  last: number;
+  dropped: number;
+  at: number;
+  device: string;
+}
+
 export interface AddressProfile {
   id: string;
   label: string;
@@ -70,6 +126,7 @@ export interface Application extends tilo.Resource {
   bookmarks: Bookmark[];
   preferences: Settings;
   readonly site_exceptions: string[];
+  readonly site_forms: Record<string, RememberedForm>;
   addBookmark(args: {
     url: string;
     title?: string;
@@ -81,6 +138,21 @@ export interface Application extends tilo.Resource {
     origin: string;
     enabled: boolean;
   }): Promise<tilo.Run | void>;
+  rememberForms(args: {
+    origin: string;
+    page: string;
+    forms: RememberedForm[];
+    whole: boolean;
+    at: number;
+  }): Promise<tilo.Run | void>;
+  forgetForm(args: {
+    origin: string;
+    signature: string;
+  }): Promise<tilo.Run | void>;
+  forgetSiteForms(args: {
+    origin: string;
+  }): Promise<tilo.Run | void>;
+  forgetAllForms(): Promise<tilo.Run | void>;
 }
 
 /** The `browser.application` kind at `path`. */
@@ -144,6 +216,17 @@ export interface BrowsingHistory extends tilo.Resource {
 /** The `browser.browsing-history` kind at `path`. */
 export function browsingHistory(ws: tilo.Workspace, path: string): BrowsingHistory {
   return resourceProxy(ws, path, SURFACE) as unknown as BrowsingHistory;
+}
+
+/** Page record — `browser.page-record`. */
+export interface PageRecord extends tilo.Resource {
+  readonly actions: Record<string, PageAction>;
+  readonly tabs: Record<string, Tab>;
+}
+
+/** The `browser.page-record` kind at `path`. */
+export function pageRecord(ws: tilo.Workspace, path: string): PageRecord {
+  return resourceProxy(ws, path, SURFACE) as unknown as PageRecord;
 }
 
 /** Address book — `browser.address-book`. */

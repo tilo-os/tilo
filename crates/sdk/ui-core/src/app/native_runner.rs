@@ -3830,6 +3830,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     /// `RenderSurface<'static>` references it, and wgpu may panic if the
     /// surface outlives the window.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // A window that closes while its page is watched hands nothing more over.
+        crate::webview::paint::forget_share();
         self.app.close_wake_scope();
         let _entry = self.app.enter_wake_scope();
         // The Unix adapter owns an asynchronous AT-SPI provider.  Drop it
@@ -4456,6 +4458,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .wake_at(self.animation_schedule.interval()),
             )
             .chain(self.app.screen_reader_deadline())
+            // What a shared page has to hand over and the connection had no room for.
+            .chain(self.app.share_backlog_at())
             .min();
         if frame_demand::enabled() {
             let mut askers = Vec::new();

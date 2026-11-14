@@ -201,13 +201,25 @@ pub(crate) struct Minted {
 }
 
 /// What a run is minted for: the workspace the connection works in, the person who admitted it
-/// (whom the agent acts for), the agent member it is a session of, and the name its seat shows
-/// (`Claude Code #2`), which its run, and so its history, is listed under.
+/// (whom the agent acts for), the agent member it is a session of, the name its seat shows
+/// (`Claude Code #2`), which its run, and so its history, is listed under, and the other device
+/// of the person's it came from.
 pub(crate) struct Admitted<'a> {
     pub(crate) workspace: &'a str,
     pub(crate) person: &'a str,
     pub(crate) agent: &'a str,
     pub(crate) seated: &'a str,
+    /// The device the connection came from, as the remote door verified it ([`device_of`]);
+    /// `None` for a program of this login.
+    pub(crate) origin: Option<&'a tilo_actions::InvokerDevice>,
+}
+
+/// The device a connection from another of the person's devices came from, as its run names it:
+/// the key and the label of the certificate the remote door verified for the connection
+/// ([`tilo_runtime::remote_door`]), which chains to the person's root. Nothing the client says
+/// of itself is in it.
+pub(crate) fn device_of(origin: &tilo_runtime::remote_door::Origin) -> tilo_actions::InvokerDevice {
+    tilo_actions::InvokerDevice::certified(origin.key(), &origin.device.device_label)
 }
 
 /// Mint the run of one admitted connection: a key of its own (`agent_key`), certified as the
@@ -269,6 +281,9 @@ pub(crate) fn mint(
         // person's grants capped at an agent's, as every run without a turn does.
         turn: None,
         delegation: Some(Ok(delegation.encode())),
+        // What the run does is then told apart from what an agent on this device does: an app
+        // its actions reach is told the device with each of them.
+        origin: admitted.origin.cloned(),
     };
     Ok(Minted { run, presentation })
 }
@@ -335,6 +350,7 @@ mod tests {
             person: &person,
             agent: "claude-code",
             seated: "claude-code@box#1",
+            origin: None,
         };
         let first = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
         let second = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
@@ -374,6 +390,52 @@ mod tests {
         assert_eq!(certified.device_public_key, cert.device_public_key);
     }
 
+    /// The run of a connection that came from another of the person's devices names that
+    /// device: the key and the label of the certificate the remote door verified, and nothing
+    /// of the delegation, which this device signs. The run of a program of this login names
+    /// none.
+    #[test]
+    fn a_run_names_the_device_its_connection_came_from() {
+        let (key, cert) = device();
+        let person = person(&cert);
+        // The laptop the agent runs on: another device the same root certified.
+        let root = SigningKey::from_bytes(&[0x41; 32]);
+        let laptop = SigningKey::from_bytes(&[0x43; 32]);
+        let mut theirs = tilo_user_identity::DeviceCert {
+            device_public_key: laptop.verifying_key().to_bytes(),
+            device_label: "Studio laptop".into(),
+            ..cert.clone()
+        };
+        tilo_user_identity::sign_device_cert(&mut theirs, &root).unwrap();
+        let from = device_of(&tilo_runtime::remote_door::Origin {
+            device: theirs.clone(),
+            workspace: None,
+        });
+        assert_eq!(from.id, hex::encode(theirs.device_public_key));
+        assert_eq!(from.name, "Studio laptop");
+        let remote = Admitted {
+            workspace: WORKSPACE,
+            person: &person,
+            agent: "claude-code",
+            seated: "claude-code@studio-laptop-1a2b3c4d#1",
+            origin: Some(&from),
+        };
+        let minted = mint((&key, &cert), &agent_key().unwrap(), &remote, 1_000).unwrap();
+        assert_eq!(minted.run.origin.as_ref(), Some(&from));
+        assert_ne!(
+            from.id,
+            hex::encode(cert.device_public_key),
+            "the device it came from, not the one that delegates its run"
+        );
+        let local = Admitted {
+            origin: None,
+            seated: "claude-code@host#1",
+            ..remote
+        };
+        let minted = mint((&key, &cert), &agent_key().unwrap(), &local, 1_000).unwrap();
+        assert_eq!(minted.run.origin, None, "a program of this login");
+    }
+
     /// A device whose identity is not the admitting person's mints nobody a run.
     #[test]
     fn another_persons_device_mints_no_run() {
@@ -383,6 +445,7 @@ mod tests {
             person: "someone-else",
             agent: "claude-code",
             seated: "claude-code@box#1",
+            origin: None,
         };
         assert!(mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).is_err());
     }
@@ -397,6 +460,7 @@ mod tests {
             person: &person,
             agent: "claude-code",
             seated: "claude-code@box#1",
+            origin: None,
         };
         let minted = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
         let runs = Arc::new(DoorRuns::default());
@@ -434,11 +498,13 @@ mod tests {
     fn a_run_from_another_device_is_known_by_its_agent_while_it_goes() {
         let (key, cert) = device();
         let person = person(&cert);
+        let from = tilo_actions::InvokerDevice::certified([0x4c; 32], "Laptop");
         let admitted = Admitted {
             workspace: WORKSPACE,
             person: &person,
             agent: "claude-code",
             seated: "claude-code@laptop#1",
+            origin: Some(&from),
         };
         let minted = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
         let runs = Arc::new(DoorRuns::default());

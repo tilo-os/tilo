@@ -25,8 +25,8 @@ use ui::theme::Theme;
 use ui::tilo_actions::{ActionBinding, ControlInvocation, ResourceSpec};
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
-    MediaElementInfo, NavigationCommand, NavigationDirection, PageFailure, PageReply, PageRequest,
-    SharedEngine, WebViewCommand, WebViewEvent,
+    MediaElementInfo, NavigationCommand, NavigationDirection, PageReply, PageRequest, SharedEngine,
+    WebViewCommand, WebViewEvent,
 };
 use ui::widget::{
     AppKind, AppWidget, BannerNotice, Button, Column, Container, ContextMenu, Continuable,
@@ -58,6 +58,10 @@ mod continuity;
 mod dialog;
 mod download_read;
 mod engine_runtime;
+mod form_actions;
+#[cfg(test)]
+mod form_actions_tests;
+mod forms_read;
 mod holds;
 #[cfg(test)]
 mod holds_tests;
@@ -75,13 +79,23 @@ mod load_failure;
 mod page_actions;
 mod page_answer;
 mod page_clipboard;
+mod page_events;
+#[cfg(test)]
+mod page_files_tests;
 mod page_find;
+mod page_record;
+mod page_review_view;
 mod page_stopping;
+mod page_turns;
 pub(crate) mod personal;
 #[cfg(test)]
 mod regression_tests;
+mod remembered;
 mod review_hooks;
 mod side_panel;
+mod sign_in;
+#[cfg(test)]
+mod sign_in_tests;
 #[cfg(test)]
 #[allow(
     unused_mut,
@@ -137,6 +151,9 @@ fn action_failed(
 struct PageOperation {
     invocation: ui::tilo_actions::InvocationId,
     request_id: u32,
+    /// Who asked, as the engine is told: the invoker the action door
+    /// admitted, or `None` for the tab's one unnamed actor.
+    actor: Option<ui::webview::PageActor>,
     /// The action as it was asked, for an answer that says what ran.
     acted: ui::webview::PageRequest,
     phase: PagePhase,
@@ -356,6 +373,7 @@ enum CompositionView {
     Page { find: bool },
     Settings,
     Library(LibrarySection),
+    Review,
 }
 
 #[derive(Clone, PartialEq)]
@@ -423,6 +441,12 @@ pub struct BrowserWidget {
     /// this page?"), shown over the window.
     page_dialogs: crate::page_dialogs::PageDialogs,
     page_dialog_node: Option<NodeId>,
+    /// The sign-in a site asks for before it answers, shown over the window
+    /// in the question's place while a request waits on it.
+    page_sign_in: crate::page_sign_in::PageSignIn,
+    /// The page's file chooser a person opened, while the host's picker is
+    /// open for it.
+    page_files: crate::page_files::PageFiles,
     /// What answering the page's question did, for the action's answer.
     page_dialog_answer: Option<String>,
     permission_answer: Option<String>,
@@ -460,7 +484,6 @@ pub struct BrowserWidget {
     /// When the current load began, the loading line's sweep epoch.
     loading_started: Option<ui::time::Instant>,
     reader_view: bool,
-    reader_request: Option<bool>,
     title: String,
     /// What the window is called when no page names it, in the desktop's language.
     window_name: String,
@@ -591,6 +614,24 @@ pub struct BrowserWidget {
     resource_pip_deadline: Option<ui::time::Instant>,
     page_operation: Option<PageOperation>,
     page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
+    /// Page actions admitted while another held the tab, in the order they
+    /// came: several actors may work in one tab, and each takes its turn.
+    page_waiting: std::collections::VecDeque<page_turns::WaitingPage>,
+    /// Reads of the tab's record that are with the engine, and their answers
+    /// not yet read. They take no turn: the record answers whatever runs.
+    page_record_reads: Vec<page_turns::RecordRead>,
+    page_record_answers: Vec<ui::tilo_actions::InvocationUpdate>,
+    /// Where this tab's engine stands against the tab's record, which is
+    /// Browser's resource ([`crate::page_record`]).
+    page_record: crate::page_record::TabRecorder,
+    /// What the window knows of its page's forms: the actions the page
+    /// publishes for them, from a read of it or from site memory.
+    forms: crate::page_forms::PageForms,
+    /// The window's own reads of its page's forms.
+    forms_read: forms_read::FormsRead,
+    /// The review of the page in front, while it stands in the page's
+    /// place, and what the engine last answered about the page.
+    page_review: page_review_view::PageReview,
     /// What the page may not send until the person answers.
     holds: holds::Holds,
     pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
@@ -1332,6 +1373,8 @@ impl BrowserWidget {
             site: crate::site_controls::SiteControls::default(),
             page_popups: crate::page_popups::PagePopups::default(),
             page_dialogs: crate::page_dialogs::PageDialogs::default(),
+            page_sign_in: crate::page_sign_in::PageSignIn::default(),
+            page_files: crate::page_files::PageFiles::default(),
             page_dialog_node: None,
             page_dialog_answer: None,
             permission_answer: None,
@@ -1361,7 +1404,6 @@ impl BrowserWidget {
             progress: if headless { 1.0 } else { 0.0 },
             loading_started: None,
             reader_view: false,
-            reader_request: None,
             title: String::new(),
             window_name: crate::resource::CATALOG.t("browser-window-name"),
             favicon: None,
@@ -1447,6 +1489,13 @@ impl BrowserWidget {
             resource_pip_deadline: None,
             page_operation: None,
             page_operation_result: None,
+            page_waiting: std::collections::VecDeque::new(),
+            page_record_reads: Vec::new(),
+            page_record_answers: Vec::new(),
+            page_record: crate::page_record::TabRecorder::default(),
+            forms: crate::page_forms::PageForms::default(),
+            forms_read: forms_read::FormsRead::default(),
+            page_review: page_review_view::PageReview::default(),
             holds: holds::Holds::default(),
             pending_replies: Vec::new(),
             page_request_seq: 0,
@@ -1506,6 +1555,7 @@ impl BrowserWidget {
         }
         self.apply_preferences(state.preferences.clone());
         self.site_exceptions = state.exceptions();
+        self.present_forms(&state.site_forms);
         self.site
             .present_exceptions(&self.engine, &self.site_exceptions, self.bootstrap_done);
     }
@@ -1563,6 +1613,7 @@ impl BrowserWidget {
         let protected = !self.site_exceptions.contains(&origin);
         Browser::site_switch(&origin, protected)
             .into_iter()
+            .chain(self.forget_site_declaration(&origin))
             .collect()
     }
 
@@ -1723,6 +1774,7 @@ impl BrowserWidget {
                 self.clear_address_error();
                 self.show_library = false;
                 self.show_settings = false;
+                self.close_page_review();
                 self.structure_dirty = true;
                 self.set_loading_progress(0.0);
                 self.send_navigation(NavigationCommand::Navigate { url: target }, owner)?;
@@ -1765,6 +1817,7 @@ impl BrowserWidget {
             BrowserOperation::ShowPage => {
                 self.show_settings = false;
                 self.show_library = false;
+                self.close_page_review();
                 self.structure_dirty = true;
             }
             operation @ (BrowserOperation::BookmarkPersonalPage { .. }
@@ -1782,6 +1835,7 @@ impl BrowserWidget {
             }
             BrowserOperation::RequestWebsiteDataClear => {
                 self.engine.send(WebViewCommand::ClearWebsiteData);
+                self.forget_all_forms();
             }
             BrowserOperation::TogglePictureInPicture => self.begin_pip_probe(),
             BrowserOperation::ToggleReaderView => {
@@ -1859,6 +1913,10 @@ impl BrowserWidget {
                 );
                 self.page_dialog_answer = Some(answer);
             }
+            BrowserOperation::AnswerPageSignIn {
+                sign_in,
+                credentials,
+            } => self.page_dialog_answer = Some(self.answer_sign_in(sign_in, credentials)?),
             BrowserOperation::AnswerPermission { request, allow } => {
                 let asked = self
                     .capabilities
@@ -1894,6 +1952,16 @@ impl BrowserWidget {
             BrowserOperation::Page(_) => {
                 return Err("page actions report their result; start them as an invocation".into());
             }
+            BrowserOperation::Form(_) => {
+                return Err("form actions report their result; start them as an invocation".into());
+            }
+            BrowserOperation::RememberedForms { .. } => {
+                return Err("remembered forms are read as an invocation".into());
+            }
+            BrowserOperation::ReviewPage => self.open_page_review()?,
+            BrowserOperation::ShowPageField { .. } => {
+                return Err("showing a field reports its result; start it as an invocation".into());
+            }
         }
         Ok(())
     }
@@ -1925,131 +1993,6 @@ impl BrowserWidget {
         Ok(checked)
     }
 
-    /// Read and operate the page's content without its pixels: an outline whose
-    /// interactive elements carry refs, and actions on those refs.
-    fn start_page_operation(
-        &mut self,
-        invocation: ui::tilo_actions::InvocationId,
-        request: PageRequest,
-    ) -> Result<(), String> {
-        let request = match request {
-            PageRequest::FillFiles {
-                element,
-                paths,
-                frame,
-            } => PageRequest::FillFiles {
-                element,
-                paths: Self::checked_page_files(&paths)?,
-                frame,
-            },
-            other => other,
-        };
-        if let PageRequest::Press { key, .. } = &request
-            && let Err(why) = ui::webview::PageKey::parse_detailed(&key.chord())
-        {
-            return Err(why);
-        }
-        if !request.valid() {
-            if !request.frame_valid() {
-                return Err(format!(
-                    "`{}` was given a frame id the page outline never printed",
-                    request.action()
-                ));
-            }
-            if let PageRequest::Scroll { .. } = request {
-                return Err(
-                    "`scroll` goes to an end of the page, by a distance, or brings an element \
-                     into view: one of them, and no two"
-                        .into(),
-                );
-            }
-            return Err(format!(
-                "`{}` names no element of the page outline, or arguments the page cannot take",
-                request.action()
-            ));
-        }
-        // A settled operation waits here for the effect reply that asked for
-        // it. One whose reply is gone is spent: holding the slot would refuse
-        // every later action in this tab.
-        self.abandon_unwatched_page_result();
-        if self.page_operation.is_some() {
-            return Err("another page action is already running in this tab".into());
-        }
-        // A result its caller stopped waiting for is refused exactly like one
-        // still running.
-        if self.page_operation_result.is_some() {
-            return Err("another page action is already running in this tab".into());
-        }
-        // The page runs nothing while it waits on its question.
-        if let Some(dialog) = self.page_dialogs.current() {
-            let refused = dialog::blocked_output(invocation, Some(dialog));
-            self.page_operation_result = Some(refused);
-            return Ok(());
-        }
-        // A secret filled into the page is the person's credential from the
-        // moment it is sent.
-        if matches!(request, PageRequest::Fill { secret: true, .. }) {
-            self.hold_sign_in();
-        }
-        self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
-        let act = request.described();
-        let acted = request.clone();
-        let now = std::time::Instant::now();
-        self.page_operation = Some(PageOperation {
-            invocation,
-            request_id: self.page_request_seq,
-            acted,
-            phase: PagePhase::Queued {
-                request,
-                until: now + PAGE_LOAD_WAIT,
-            },
-            deadline: now + PAGE_OPERATION_TIMEOUT,
-            settled_while_sent: None,
-            act,
-        });
-        self.drive_page_operation();
-        Ok(())
-    }
-
-    /// Send a request once its page has settled, and bound every phase.
-    fn drive_page_operation(&mut self) {
-        let now = std::time::Instant::now();
-        let loading = self.page_loading();
-        let Some(operation) = self.page_operation.as_mut() else {
-            return;
-        };
-        if let PagePhase::Queued { until, .. } = &operation.phase
-            && (!loading || now >= *until)
-            && let PagePhase::Queued { request, .. } =
-                std::mem::replace(&mut operation.phase, PagePhase::Sent)
-        {
-            self.engine.send(WebViewCommand::Page {
-                request_id: operation.request_id,
-                request,
-            });
-            return;
-        }
-        if now < operation.deadline {
-            return;
-        }
-        let Some(operation) = self.page_operation.take() else {
-            return;
-        };
-        self.note_text_entered(&operation.acted);
-        self.reader_request = None;
-        self.page_operation_result = Some(match operation.phase {
-            PagePhase::Navigating { reply } => self.page_success(
-                operation.invocation,
-                &reply,
-                &operation.acted,
-                Some("the page it opened is still loading"),
-            ),
-            PagePhase::Queued { .. } | PagePhase::Sent => {
-                Self::answer_a_timed_out_page_operation(&operation)
-            }
-        });
-    }
-
     /// The page asked a question while a page action waits on it: the action
     /// did what it said, so it answers as a success carrying the question
     /// rather than as a failure or a wait until the timeout.
@@ -2058,7 +2001,6 @@ impl BrowserWidget {
             return;
         };
         self.note_text_entered(&operation.acted);
-        self.reader_request = None;
         let dialog = self.page_dialogs.current();
         // The question went before it could be read: the action is refused.
         self.page_operation_result = Some(match dialog {
@@ -2070,58 +2012,6 @@ impl BrowserWidget {
                 dialog,
             ),
             None => dialog::blocked_output(operation.invocation, None),
-        });
-    }
-
-    fn accept_page_result(&mut self, request_id: u32, result: Result<PageReply, PageFailure>) {
-        let Some(operation) = self.page_operation.take_if(|operation| {
-            operation.request_id == request_id && matches!(operation.phase, PagePhase::Sent)
-        }) else {
-            return;
-        };
-        self.note_text_entered(&operation.acted);
-        if let Some(enabled) = self.reader_request.take()
-            && result.is_ok()
-        {
-            self.reader_view = enabled;
-            self.structure_dirty = true;
-        }
-        if let (Ok(reply), Some(settled)) = (&result, &operation.settled_while_sent)
-            && reply.loading
-        {
-            let note = match settled {
-                SettledLoad::Loaded => None,
-                SettledLoad::Failed(error) => {
-                    Some(format!("the page it opened failed to load: {error}"))
-                }
-            };
-            self.page_operation_result = Some(self.page_success(
-                operation.invocation,
-                reply,
-                &operation.acted,
-                note.as_deref(),
-            ));
-            return;
-        }
-        self.page_operation_result = Some(match result {
-            Ok(reply) if reply.loading => {
-                self.page_operation = Some(PageOperation {
-                    phase: PagePhase::Navigating { reply },
-                    deadline: std::time::Instant::now() + PAGE_NAVIGATION_WAIT,
-                    ..operation
-                });
-                return;
-            }
-            Ok(reply) => self.page_success(operation.invocation, &reply, &operation.acted, None),
-            // A busy page, or one that never answered, is reported as that:
-            // calling it retryable would contradict the at-most-once contract
-            // and the broker would drop every page action in the session.
-            Err(failure) => action_failed(
-                operation.invocation,
-                format!("browser.page.{}", failure.code),
-                failure.message,
-                None,
-            ),
         });
     }
 
@@ -2675,6 +2565,8 @@ impl BrowserWidget {
                 CompositionView::Settings
             } else if self.show_library {
                 CompositionView::Library(self.library_section)
+            } else if self.page_review_shown() {
+                CompositionView::Review
             } else {
                 CompositionView::Page {
                     find: self.daily.open,
@@ -2726,7 +2618,7 @@ impl BrowserWidget {
         }
         // Over a web page, messages run edge to edge under the toolbar; over
         // the settings or the library they are the page's first part.
-        let on_page = self.show_settings || self.show_library;
+        let on_page = self.show_settings || self.show_library || self.page_review_shown();
         let mut notices: Vec<BannerNotice> = Vec::new();
         if self.service_pending.is_some() {
             notices.push(crate::service_sessions::PendingView::notice());
@@ -2779,6 +2671,8 @@ impl BrowserWidget {
             )
         } else if self.show_library {
             self.build_library_composition(theme, &notices)
+        } else if self.page_review_shown() {
+            self.build_review_composition(&notices)
         } else if self.engine_failed {
             engine_failed_state()
         } else if let Some(error) = &self.load_error {
@@ -2838,6 +2732,7 @@ impl BrowserWidget {
                 self.show_library = false;
                 self.credentials.stage_for_review(addresses, &url);
             }
+            ReviewStage::SiteForms => self.show_remembered_for_shot(),
         }
         self.structure_dirty = true;
     }
@@ -3238,6 +3133,7 @@ impl BrowserWidget {
                         self.follow_personal_bookmarks();
                     }
                     self.page_navigation_settled(None);
+                    self.page_document_loaded();
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
                     if self.retry_over_http(&uri, &error) {
@@ -3308,6 +3204,8 @@ impl BrowserWidget {
                 WebViewEvent::PageResult { request_id, result } => {
                     self.accept_page_result(request_id, result);
                 }
+                WebViewEvent::PageRecord { seq, entry } => self.hear_page_record(seq, &entry),
+                WebViewEvent::PageChanged(change) => self.hear_page_changed(&change),
                 event @ (WebViewEvent::PageDialog(_) | WebViewEvent::PageDialogClosed { .. }) => {
                     // The question is taken first, so the action it stopped
                     // answers with it.
@@ -3315,6 +3213,13 @@ impl BrowserWidget {
                     if matches!(event, WebViewEvent::PageDialog(_)) {
                         self.settle_page_operation_on_question();
                     }
+                }
+                event @ (WebViewEvent::FileChooser(_) | WebViewEvent::FileChooserClosed { .. }) => {
+                    self.page_files
+                        .apply(&event, &self.engine, self.browsing_mode);
+                }
+                event @ (WebViewEvent::HttpAuth(_) | WebViewEvent::HttpAuthClosed { .. }) => {
+                    self.structure_dirty |= self.page_sign_in.apply(&event, &self.engine);
                 }
                 WebViewEvent::HeldRequest(request) => self.hold_asked(&request),
                 WebViewEvent::HeldRequestClosed { id } => self.held_closed(id),
@@ -3324,6 +3229,8 @@ impl BrowserWidget {
                 | WebViewEvent::DownloadFailed { .. }) => self.apply_download_event(event),
             }
         }
+        // After what the engine said: a chooser it let go is not answered.
+        self.page_files.poll(&self.engine);
     }
 
     fn apply_download_event(&mut self, event: WebViewEvent) {
@@ -3616,7 +3523,8 @@ impl BrowserWidget {
         if self.site.open {
             return Some((
                 PanelKind::Site,
-                self.site.panel(width, max_height),
+                self.site
+                    .panel_with(width, max_height, self.remembered_section()),
                 anchor_ids(&["browser.site.info", toolbar::OVERFLOW_ID, URL_INPUT_ID]),
             ));
         }
@@ -3814,7 +3722,11 @@ impl BrowserWidget {
         let WindowEvent::KeyboardInput { event: key, .. } = event else {
             return false;
         };
-        if key.state != ElementState::Pressed || self.show_settings || self.show_library {
+        if key.state != ElementState::Pressed
+            || self.show_settings
+            || self.show_library
+            || self.page_review_shown()
+        {
             return false;
         }
         let modifiers = modifiers.state();
@@ -4298,7 +4210,7 @@ impl Widget for BrowserWidget {
         }
         // The page's question covers the window out of flow, over the panel.
         self.page_dialog_node = None;
-        if let Some(dialog) = self.page_dialogs.widget_mut() {
+        if let Some(dialog) = sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs) {
             let node = dialog.build_layout(taffy, theme, node_map);
             children.push(node);
             self.page_dialog_node = Some(node);
@@ -4327,8 +4239,10 @@ impl Widget for BrowserWidget {
         {
             panel.apply_layout(taffy, panel_node, Point::new(self.rect.x0, self.rect.y0));
         }
-        if let (Some(node), Some(dialog)) = (self.page_dialog_node, self.page_dialogs.widget_mut())
-        {
+        if let (Some(node), Some(dialog)) = (
+            self.page_dialog_node,
+            sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs),
+        ) {
             dialog.apply_layout(taffy, node, Point::new(self.rect.x0, self.rect.y0));
         }
         if let Some(r) = self.address_input_rect() {
@@ -4421,7 +4335,7 @@ impl Widget for BrowserWidget {
             .draw_child(scene, transform, text_renderer, theme, presence);
         self.back_menu
             .draw_child(scene, transform, text_renderer, theme, presence);
-        if let Some(dialog) = self.page_dialogs.widget_mut() {
+        if let Some(dialog) = sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs) {
             dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -4438,9 +4352,7 @@ impl Widget for BrowserWidget {
                 .composed
                 .element()
                 .is_some_and(Widget::needs_animation_frame)
-            || self
-                .page_dialogs
-                .widget()
+            || sign_in::modal(&self.page_sign_in, &self.page_dialogs)
                 .is_some_and(Widget::needs_animation_frame)
     }
 
@@ -4477,9 +4389,7 @@ impl Widget for BrowserWidget {
         // Toggling the settings pane swaps the content widget: rebuild.
         let own = std::mem::take(&mut self.structure_dirty);
         self.composition_dirty |= own;
-        let dialog = self
-            .page_dialogs
-            .widget_mut()
+        let dialog = sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs)
             .is_some_and(Widget::take_structure_dirty);
         own || self.composed.take_structure_dirty() || dialog
     }
@@ -4499,12 +4409,15 @@ impl Widget for BrowserWidget {
             self.focus_control_preserving_selection(id);
             *ctx.focus_target = Some(node);
         }
-        if let (Some(node), Some(dialog)) = (self.page_dialog_node, self.page_dialogs.widget_mut())
-        {
+        if let (Some(node), Some(dialog)) = (
+            self.page_dialog_node,
+            sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs),
+        ) {
             // The page waits on its question: the dialog owns the pointer and
             // the keyboard.
             dialog.handle_event(event, &mut ctx.reborrow(ctx.path, node));
             self.structure_dirty |= self.page_dialogs.poll(&self.engine);
+            self.poll_sign_in();
             if matches!(
                 event,
                 WindowEvent::KeyboardInput { .. }
@@ -4690,6 +4603,10 @@ impl Widget for BrowserWidget {
             return;
         }
         if self.handle_address_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
+            return;
+        }
+        if self.review_shortcut(event, *ctx.modifiers) {
             *ctx.handled = true;
             return;
         }
@@ -4945,6 +4862,7 @@ impl Widget for BrowserWidget {
                     self.page_operation
                         .as_ref()
                         .map(|operation| operation.deadline),
+                    self.page_wait_deadline(),
                 ]
             })
             .into_iter()
@@ -4955,6 +4873,8 @@ impl Widget for BrowserWidget {
             .into_iter()
             .chain(feedback_expiry)
             .chain(self.credentials.deadline())
+            .chain(self.page_review_deadline())
+            .chain(self.forms_read_deadline())
             .chain(waiting)
             .chain(
                 self.children()
@@ -4964,7 +4884,9 @@ impl Widget for BrowserWidget {
             .min()
     }
     fn modal_capture(&self) -> Option<Rect> {
-        if let Some(capture) = self.page_dialogs.widget().and_then(Widget::modal_capture) {
+        if let Some(capture) =
+            sign_in::modal(&self.page_sign_in, &self.page_dialogs).and_then(Widget::modal_capture)
+        {
             return Some(capture);
         }
         if let Some(panel) = &self.anchored_panel {
@@ -4988,7 +4910,7 @@ impl Widget for BrowserWidget {
                     .as_ref()
                     .map(|p| p.as_ref() as &dyn Widget),
             )
-            .chain(self.page_dialogs.widget())
+            .chain(sign_in::modal(&self.page_sign_in, &self.page_dialogs))
             .collect()
     }
 
@@ -5002,7 +4924,10 @@ impl Widget for BrowserWidget {
                     .as_mut()
                     .map(|p| p.as_mut() as &mut (dyn Widget + '_)),
             )
-            .chain(self.page_dialogs.widget_mut())
+            .chain(sign_in::modal_mut(
+                &mut self.page_sign_in,
+                &mut self.page_dialogs,
+            ))
             .collect()
     }
 
@@ -5020,13 +4945,14 @@ impl Widget for BrowserWidget {
 }
 
 /// What a window publishes of its page: the rows it shows, the edits bound to
-/// it, the question it waits on, and what search finds of the history,
-/// downloads and personal bookmarks.
+/// it, the question it waits on, the sign-in a site asks for, and what search
+/// finds of the history, downloads and personal bookmarks.
 pub(crate) struct PagePublication {
     pub(crate) rows: Vec<ui::framework::LiveRow>,
     pub(crate) bound: Vec<ui::tilo_resource::ActionDecl<Browser>>,
     page_row: Vec<ui::tilo_resource::ActionDecl<Browser>>,
     question: Option<ui::framework::LiveRow>,
+    sign_in: Option<ui::framework::LiveRow>,
     search_index: crate::search_provider::BrowserSearchIndex,
     personal_bookmarks: Rc<crate::personal_bookmarks::PersonalBookmarkState>,
 }
@@ -5044,6 +4970,9 @@ impl PagePublication {
     pub(crate) fn row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         if id == crate::page_dialogs::ROW {
             return self.question.clone();
+        }
+        if id == crate::page_sign_in::ROW {
+            return self.sign_in.clone();
         }
         self.search_index
             .resource(id)
@@ -5084,6 +5013,10 @@ impl BrowserWidget {
                 .page_dialogs
                 .resource()
                 .map(ui::framework::LiveRow::from_resource),
+            sign_in: self
+                .page_sign_in
+                .resource()
+                .map(ui::framework::LiveRow::from_resource),
             search_index: self.search_index.clone(),
             personal_bookmarks: Rc::clone(&self.personal_bookmarks),
         }
@@ -5110,13 +5043,25 @@ impl BrowserWidget {
         use crate::effects::BrowserEffect as E;
         use ui::tilo_resource::Effect as _;
         const MATERIALIZED_LIMIT: usize = 100;
+        // The page is named by its site, not its title, and from the moment
+        // its window opens: by the address it is opening until the engine
+        // reports one. A person asked about an action here is shown this
+        // name, and it has to be the same when they answer, or what they
+        // allowed is refused as another action. A title arrives while the
+        // page loads and its script changes it at will, and a first address
+        // that arrived after the asking would rename the page just the same.
+        let site = window_bar::site_label(if self.current_uri.is_empty() {
+            &self.initial_url
+        } else {
+            &self.current_uri
+        });
         let mut page = ResourceSpec::new(
             "browser.page",
             "browser.page",
-            if self.title.is_empty() {
+            if site.is_empty() {
                 CATALOG.t("browser-page-untitled")
             } else {
-                self.title.clone()
+                site
             },
         );
         if self.person_bookmarks.is_some()
@@ -5180,18 +5125,25 @@ impl BrowserWidget {
         } else {
             reader.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
         });
+        let review = E::ReviewPage.bound();
+        page.actions.push(if web_page {
+            review
+        } else {
+            review.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
+        });
         page.actions.extend(self.daily.zoom_actions());
         // A permission the page waits on is one of the page's own actions, so a
         // reader answers it beside its other buttons.
         page.actions.extend(self.capabilities.permission_answers());
         // A departure the page started on its own waits on the person: the
-        // action states its id, and the page it leaves from, what it does, the
-        // method and where it goes, so whoever answers sees what leaves. One
-        // is asked about at a time, the oldest first: an action's address is
-        // the page's and its own name, which two answers cannot share, and a
-        // window publishing two would publish none of its actions.
+        // action states the number the window holds it under, one per hold
+        // whatever the engine calls it, and the page it leaves from, what it
+        // does, the method and where it goes, so whoever answers sees what
+        // leaves. One is asked about at a time, the oldest first: an action's
+        // address is the page's and its own name, which two answers cannot
+        // share, and a window publishing two would publish none of its actions.
         if let Some(held) = self.holds.waiting().next() {
-            let id = held.request.id.to_string();
+            let id = held.number().to_string();
             let mut bound: Vec<(String, serde_json::Value)> = held
                 .facts()
                 .into_iter()
@@ -5220,15 +5172,30 @@ impl BrowserWidget {
         }
         let element = String::new();
         for (spec, asking) in [
-            (E::ReadPage { frame: None }, &["frame"][..]),
+            (
+                E::ReadPage {
+                    from: None,
+                    frame: None,
+                },
+                &["from", "frame"][..],
+            ),
             (
                 E::FindPageElement {
                     role: None,
                     name: None,
                     nth: None,
                     frame: None,
+                    frames: None,
                 },
-                &["role", "name", "nth", "frame"][..],
+                &["role", "name", "nth", "frame", "frames"][..],
+            ),
+            (
+                E::FindPageText {
+                    text: String::new(),
+                    frame: None,
+                    frames: None,
+                },
+                &["text", "frame", "frames"][..],
             ),
             (
                 E::ClickPage {
@@ -5285,6 +5252,24 @@ impl BrowserWidget {
                 },
                 &["element", "cross_origin", "frame"][..],
             ),
+            (
+                E::FillPageForm {
+                    form: String::new(),
+                    answers: serde_json::Map::new(),
+                    submit: None,
+                    submit_button: None,
+                    cross_origin: None,
+                    frame: None,
+                },
+                &[
+                    "form",
+                    "answers",
+                    "submit",
+                    "submit_button",
+                    "cross_origin",
+                    "frame",
+                ][..],
+            ),
             (E::ReadPageChanges { frame: None }, &["frame"][..]),
             (
                 E::ReadPageElementAt {
@@ -5325,12 +5310,24 @@ impl BrowserWidget {
                 E::WaitPageSettled {
                     quiet_ms: None,
                     timeout_ms: None,
+                    text: None,
+                    gone: None,
                     frame: None,
                 },
-                &["quiet_ms", "timeout_ms", "frame"][..],
+                &["quiet_ms", "timeout_ms", "text", "gone", "frame"][..],
+            ),
+            (
+                E::ShowPageField {
+                    element: String::new(),
+                    frame: None,
+                },
+                &["element", "frame"][..],
             ),
             (E::ReadPageConsole { since: None }, &["since"][..]),
             (E::ReadPageNetwork { since: None }, &["since"][..]),
+            (E::ReadPageRecord { since: None }, &["since"][..]),
+            (E::ReadPageFields { frame: None }, &["frame"][..]),
+            (E::ReadPageForms { frame: None }, &["frame"][..]),
             (
                 E::CapturePage {
                     element: None,
@@ -5374,6 +5371,8 @@ impl BrowserWidget {
                 spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
             });
         }
+        // Each form the page is known to ask is an action of its own.
+        page.actions.extend(self.form_actions());
 
         let mut session = ResourceSpec::new(
             "browser.session",
@@ -5561,6 +5560,7 @@ impl BrowserWidget {
             CATALOG.t("browser-resource-settings"),
         );
         settings.actions.push(E::RequestSiteDataClear.bound());
+        settings.actions.push(E::ReadAllRememberedForms.bound());
 
         let mut browser = ResourceSpec::new(
             crate::resource::Browser::KIND,
@@ -5573,6 +5573,7 @@ impl BrowserWidget {
         ];
         browser.children.extend(bookmark_rows);
         browser.children.extend(self.page_dialogs.resource());
+        browser.children.extend(self.page_sign_in.resource());
         browser.children.extend(self.capabilities.resource());
         for selection in &self.service_selections {
             browser.children.push(selection.resource());
@@ -5652,6 +5653,9 @@ impl BrowserWidget {
         {
             return Some(stopped);
         }
+        if let Some(released) = self.holds.take_answer(invocation) {
+            return Some(released);
+        }
         self.drive_page_operation();
         if self
             .page_operation_result
@@ -5659,6 +5663,12 @@ impl BrowserWidget {
             .is_some_and(|update| update.invocation() == invocation)
         {
             return self.page_operation_result.take();
+        }
+        if let Some(never_ran) = self.answer_a_page_action_that_waited_too_long(invocation) {
+            return Some(never_ran);
+        }
+        if let Some(record) = self.take_page_record_answer(invocation) {
+            return Some(record);
         }
         if self
             .resource_navigation_result
@@ -5814,9 +5824,12 @@ impl BrowserWidget {
         self.structure_dirty |= self.extensions.sync(&self.engine, &self.current_uri);
         self.structure_dirty |= self.page_popups.sync(&self.engine);
         self.structure_dirty |= self.page_dialogs.sync(&self.engine);
+        self.structure_dirty |= self.page_sign_in.sync(&self.engine);
+        self.page_files.sync(&self.engine, self.browsing_mode);
         // Whichever engine shows the page now copies to the system clipboard.
         self.engine.share_clipboard();
         self.structure_dirty |= self.page_dialogs.poll(&self.engine);
+        self.poll_sign_in();
         self.structure_dirty |= self.daily.sync(&self.engine);
         let site_was_open = self.site.open;
         self.structure_dirty |= self.site.sync(&self.engine);
@@ -5825,6 +5838,7 @@ impl BrowserWidget {
                 Browser::SET_SITE_PROTECTION.with(browser::SetSiteProtection { origin, enabled }),
             );
         }
+        self.forget_cleared_sites();
         if self.site.open && !site_was_open {
             self.deactivate_credentials();
         }
@@ -5842,6 +5856,8 @@ impl BrowserWidget {
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
         self.drive_page_operation();
+        self.sync_page_review();
+        self.sync_forms_read();
         self.expire_holds();
         self.structure_dirty |= self.capabilities.ask(self.extensions.take_questions());
         let downloads_changed = self.capabilities.downloads_changed();
@@ -5857,20 +5873,40 @@ impl BrowserWidget {
         if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);
         }
-        if let Some(dialog) = self.page_dialogs.widget_mut() {
+        if let Some(dialog) = sign_in::modal_mut(&mut self.page_sign_in, &mut self.page_dialogs) {
             dialog.sync(state, path);
         }
         self.select_inline_completion();
         self.poll_active_pip_element();
     }
 
-    /// Start `operation` for `invocation`: done at once, or accepted and settled
-    /// through [`Self::poll_invocation`].
+    /// [`Self::admit_for`] with no invoker: the person at this window, who
+    /// is the tab's one unnamed actor.
+    #[cfg(test)]
     pub(crate) fn admit(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
         operation: BrowserOperation,
     ) -> Result<ui::framework::Effected, String> {
+        self.admit_for(invocation, None, operation)
+    }
+
+    /// Start `operation` for `invocation`: done at once, or accepted and settled
+    /// through [`Self::poll_invocation`].
+    ///
+    /// `invoker` is who the action door admitted the invocation for. A page
+    /// action reaches the engine under that principal's name, so a tab
+    /// several actors work in tells each what changed since its own last
+    /// read and keeps what each did under its name. The name is the admitted
+    /// principal and nothing else ([`ui::webview::PageActor::named`]).
+    pub(crate) fn admit_for(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        invoker: Option<&ui::tilo_actions::ActionInvoker>,
+        operation: BrowserOperation,
+    ) -> Result<ui::framework::Effected, String> {
+        let actor = invoker.and_then(|invoker| ui::webview::PageActor::named(&invoker.key()));
+        self.admitted_to_page(actor.as_ref(), invoker, &operation);
         if matches!(operation, BrowserOperation::ReadServiceSession) {
             if let Some(pending) = &self.service_forget {
                 return Ok(ui::framework::Effected::value(pending.report()));
@@ -5902,23 +5938,38 @@ impl BrowserWidget {
                 return Ok(ui::framework::Effected::value(value));
             }
             BrowserOperation::AnswerDownload { id, allow } => {
-                let value = self.answer_download(id, *allow)?;
+                let value = self.answer_download(id, *allow, invoker)?;
                 return Ok(ui::framework::Effected::value(value));
             }
             BrowserOperation::AnswerHeldRequest { id, allow } => {
-                let value = self.answer_hold(id, *allow)?;
+                let value = self.answer_hold(id, *allow, invoker)?;
                 return Ok(ui::framework::Effected::value(value));
             }
             _ => {}
         }
+        if let BrowserOperation::RememberedForms { all } = operation {
+            return self.remembered_forms(all);
+        }
+        // The person allowed the departure this invocation reached: it
+        // leaves now, or is said to have been dropped meanwhile, and what
+        // reached it, a page action or a form's own action, is not run again.
+        if matches!(
+            operation,
+            BrowserOperation::Form(_) | BrowserOperation::Page(_)
+        ) && let Some(released) = self.release_reached(invocation)
+        {
+            return Ok(released);
+        }
+        if let BrowserOperation::Form(run) = operation {
+            self.start_form_run(invocation, actor, &run)?;
+            return Ok(ui::framework::Effected::Pending);
+        }
         if let BrowserOperation::Page(request) = operation {
-            // The person allowed the departure: it leaves now, and the page
-            // action is not run a second time.
-            if let Some((id, kind)) = self.holds.release_for(invocation) {
-                self.release_held(id, kind, true);
-                return Ok(ui::framework::Effected::Pending);
-            }
-            self.start_page_operation(invocation, request)?;
+            self.start_page_operation(invocation, actor, request)?;
+            return Ok(ui::framework::Effected::Pending);
+        }
+        if let BrowserOperation::ShowPageField { element, frame } = operation {
+            self.show_page_field(invocation, actor, element, frame)?;
             return Ok(ui::framework::Effected::Pending);
         }
         if matches!(&operation, BrowserOperation::ToggleReaderView) {
@@ -5926,8 +5977,7 @@ impl BrowserWidget {
                 return Err("Reader view needs a web page".into());
             }
             let enabled = !self.reader_view;
-            self.start_page_operation(invocation, PageRequest::Reader { enabled })?;
-            self.reader_request = self.page_operation.is_some().then_some(enabled);
+            self.start_page_operation(invocation, actor, PageRequest::Reader { enabled })?;
             return Ok(ui::framework::Effected::Pending);
         }
         let is_navigation = matches!(
@@ -5961,6 +6011,9 @@ impl BrowserWidget {
                 matches!(&operation, BrowserOperation::ToggleHistoryPause);
             let is_zoom = matches!(&operation, BrowserOperation::Zoom { .. });
             let output = match &operation {
+                BrowserOperation::ReviewPage => {
+                    local_output("The review of this page is open in the window.")
+                }
                 BrowserOperation::ForgetVisit { .. } => {
                     local_output("Browsing history entry removed.")
                 }
@@ -6000,7 +6053,11 @@ impl BrowserWidget {
                 ),
                 _ => ui::tilo_actions::ActionOutput::default(),
             };
-            let answers_a_dialog = matches!(operation, BrowserOperation::AnswerPageDialog { .. });
+            let answers_a_dialog = matches!(
+                operation,
+                BrowserOperation::AnswerPageDialog { .. }
+                    | BrowserOperation::AnswerPageSignIn { .. }
+            );
             let answers_permission = matches!(operation, BrowserOperation::AnswerPermission { .. });
             self.perform_browser_operation(operation)?;
             let output = if answers_a_dialog {
@@ -6123,6 +6180,7 @@ impl ui::widget::search_field::Filterable for BrowserWidget {
 #[derive(Clone, Copy, Debug)]
 enum ReviewStage {
     Autofill { addresses: bool },
+    SiteForms,
 }
 
 fn is_compact_chrome(width: f64, breakpoint: f32) -> bool {

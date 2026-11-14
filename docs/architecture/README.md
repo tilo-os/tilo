@@ -104,6 +104,9 @@ shell. Each is being replaced by the model above, not kept beside it.
 - [Security model](../security/README.md): threat model, sign-in, boot chain.
 - [Surfaces](surfaces.md), [window management](window-management.md),
   [theming](theming.md): the shell and the toolkit.
+- [Several actors in one web page](web-page-actors.md): agents, people and
+  devices working in one Browser tab, the tab's record, review, and a form as
+  typed actions.
 - [Session UI inventory](ui-inventory.md): which shell surfaces still lay
   themselves out by hand, what replaces each, and the policy that stops new
   ones.

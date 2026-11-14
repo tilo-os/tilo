@@ -214,7 +214,7 @@ pub fn start_session(
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
 ) -> Link {
-    let (task, link, receiver) = session_task(config, signer, store, None);
+    let (task, link, receiver) = session_task(config, signer, store, None, false);
     n0_future::task::spawn(task.run(receiver));
     link
 }
@@ -227,10 +227,14 @@ pub struct Lent {
     /// The device's own key service: the session reads and asks with it, and settles no keys of
     /// its own. A device holds one place in a workspace's key group, and a second service under
     /// the same device key would take that place from the first each time it asked to be admitted.
+    /// Lent none, the session holds no keys and asks for none: the device's member key in each
+    /// group is its own session's.
     pub keys: Option<tilo_workspace_keys::SharedKeys>,
-    /// The endpoint the device runs under its key: the session dials from it. A relay keeps one
-    /// connection per endpoint id, so a second endpoint under the same key cut the first off.
-    pub endpoint: Option<iroh::Endpoint>,
+    /// Where the endpoint the device runs under its key lands once bound: the session dials from
+    /// it. A relay keeps one connection per endpoint id, so a second endpoint under the same key
+    /// cut the first off; a session opened before the endpoint is bound waits for it and binds
+    /// none in its place.
+    pub endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
 }
 
 /// [`start_session`] for a session of a device that lends it what its own session runs
@@ -242,7 +246,7 @@ pub fn start_session_lent(
     store: Arc<dyn PeerStore>,
     lent: Lent,
 ) -> Link {
-    let (mut task, link, receiver) = session_task(config, signer, store, lent.keys);
+    let (mut task, link, receiver) = session_task(config, signer, store, lent.keys, true);
     if let Some(endpoint) = lent.endpoint {
         task.dial.lend(endpoint);
     }
@@ -251,12 +255,15 @@ pub fn start_session_lent(
 }
 
 /// The session [`start_session`] runs, the link to it and its command queue,
-/// before it runs: over `keys` when the device's own key service settles them.
+/// before it runs: over `keys` when the device's own key service settles them. One that is
+/// `lent` what its device's own session runs ([`start_session_lent`]) and is handed no keys holds
+/// none.
 fn session_task(
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
     keys: Option<tilo_workspace_keys::SharedKeys>,
+    lent: bool,
 ) -> (Task, Link, mpsc::UnboundedReceiver<Command>) {
     let (commands, receiver) = mpsc::unbounded_channel();
     let reports = Reports::connecting(config.cert.device_public_key);
@@ -268,9 +275,11 @@ fn session_task(
     let governance = keys.is_none().then(HostGovernance::default);
     let workspace_keys = keys.unwrap_or_else(|| {
         let gates = Arc::new(tilo_workspace_keys::Gates::default());
-        tilo_workspace_keys::SharedKeys::new(open_keys(
-            &replicas, &key_state, vault, &signer, &gates,
-        ))
+        tilo_workspace_keys::SharedKeys::new(if lent {
+            keyless_keys(&replicas, &gates)
+        } else {
+            open_keys(&replicas, &key_state, vault, &signer, &gates)
+        })
     });
     let engine = Arc::new(crate::engine::Engine::holding(
         replicas.owner(),
@@ -2203,6 +2212,22 @@ fn open_keys(
     .unwrap_or_else(|_| {
         tilo_workspace_keys::WorkspaceKeys::without_store(directory(), Arc::clone(gates) as _)
     })
+}
+
+/// The key service of a session beside its device's own that was handed
+/// none of the device's ([`start_session_lent`]): it holds no keys and asks
+/// for none, as a device with no secret store does, since the device's member
+/// key in each workspace's group is its engine's.
+fn keyless_keys(
+    replicas: &crate::replica::Replicas,
+    gates: &Arc<tilo_workspace_keys::Gates>,
+) -> tilo_workspace_keys::WorkspaceKeys {
+    tilo_workspace_keys::WorkspaceKeys::without_store(
+        Box::new(crate::workspace_keys::OwnerDirectory::reader(
+            replicas.owner(),
+        )),
+        Arc::clone(gates) as Arc<dyn tilo_workspace_keys::GateRegistry>,
+    )
 }
 
 /// Where the keys of a route this session opened stand: the engine holds them

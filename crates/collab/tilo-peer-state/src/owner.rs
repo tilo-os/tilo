@@ -476,6 +476,35 @@ impl SharedOwner {
             observer.kept_here(workspace, message);
         }
     }
+    /// Tell [`NativeKeptHereObserver`]s of `changes`, what this device just
+    /// committed to the governance of `workspace`, when it hosts that
+    /// workspace itself (`hosted_here`): a share, a member's role, a grant, a
+    /// device it admitted. Such a workspace has no host that hands its
+    /// device's change on, and the custody the change is also kept in leaves
+    /// on no link, so without this the members linked to the device read it
+    /// only in the governance their next link starts with.
+    fn governance_kept_here(
+        &self,
+        workspace: WorkspaceId,
+        hosted_here: bool,
+        changes: Vec<Vec<u8>>,
+    ) {
+        if !hosted_here || changes.is_empty() {
+            return;
+        }
+        tracing::debug!(
+            %workspace,
+            changes = changes.len(),
+            "a change of the governance this device keeps goes to the members linked to it"
+        );
+        self.kept_here(
+            workspace,
+            &NeighbourMsg::SyncResp {
+                changes,
+                workspace: workspace.to_string(),
+            },
+        );
+    }
     fn notify(&self, workspace: WorkspaceId, continuity: u64) {
         let observers: Vec<_> = {
             let mut listeners = self.listeners.lock();

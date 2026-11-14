@@ -32,6 +32,9 @@
 //!
 //! A session whose first bidirectional stream is not a well-formed preface
 //! within the budget is closed with [`CLOSE_PREFACE`] and never reaches `MoQ`.
+//! A session that arrives while the host is admitting as many as it takes at
+//! once is closed with [`CLOSE_BUSY`] before anything of it is read: that is
+//! no answer about its grant, and the client asks again.
 //! The end of the admission stream after `ADMITTED` (host shut down, stream
 //! reset) means the same as `REVOKED`.
 
@@ -52,8 +55,8 @@ pub use crate::admit::{
 /// negotiates. No other version is offered or accepted.
 pub use crate::preface::PROTOCOL;
 pub use crate::preface::{
-    CLOSE_DENIED, CLOSE_PREFACE, CLOSE_REVOKED, MAX_GRANT_BYTES, PREFACE_VERSION, STATUS_ADMITTED,
-    STATUS_DENIED, STATUS_REVOKED,
+    CLOSE_BUSY, CLOSE_DENIED, CLOSE_PREFACE, CLOSE_REVOKED, MAX_GRANT_BYTES, PREFACE_VERSION,
+    STATUS_ADMITTED, STATUS_DENIED, STATUS_REVOKED,
 };
 
 /// Time from session open to the complete preface.
@@ -173,10 +176,14 @@ pub(crate) struct Accepted<S: Carrier> {
 
 /// Admit `transport` with `admit`, which returns the configured server and the
 /// caller's admission state (or `None` to refuse), then run the `moq-lite` SETUP. The client reaches `MoQ`
-/// only after `admit` succeeded.
+/// only after `admit` succeeded. `on_admitted` runs once `admit` accepted the
+/// session, before the client is told: where a carrier allows the client the
+/// streams an admitted session opens, which a session nobody judged is not
+/// allowed.
 pub(crate) async fn accept<S, F, Fut, T>(
     transport: S,
     admit: F,
+    on_admitted: impl FnOnce() + Send,
 ) -> Result<(Accepted<S>, T), PrefaceError>
 where
     S: Carrier,
@@ -202,6 +209,7 @@ where
         admission.deny(&transport).await;
         return Err(PrefaceError::Closed);
     };
+    on_admitted();
     if admission.admit().await.is_err() {
         close(&transport, CLOSE_PREFACE, "admission stream closed");
         return Err(PrefaceError::Closed);

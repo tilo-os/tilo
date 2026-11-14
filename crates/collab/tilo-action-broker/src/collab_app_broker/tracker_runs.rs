@@ -343,6 +343,7 @@ impl AppBrokerState {
                 revision: run.paused_through.unwrap_or(0),
                 starter: Some(run.starter.clone()),
                 turn: run.turn.clone(),
+                origin: run.origin.clone(),
             },
             TaskRunEnvelope {
                 paused: paused_step(run),

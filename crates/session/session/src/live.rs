@@ -9,12 +9,16 @@
 //! only for a workspace the session relays now, as the workspace's state names it: a device only
 //! when the certificate it presents is the roster's own and the handshake proved the key. It cuts
 //! a session when the workspace's membership or keys move.
+//! While that relay does not take a device in — it is away, does not know the device yet, or is
+//! admitting as many devices as it takes at once — the device asks it again, waiting longer each
+//! time, since a relay that comes back says nothing to the devices that missed it.
 //! Every other member dials that relay over iroh ([`tilo_live::native`]) with its device
 //! certificate as its grant, and each participant seals its own tracks under the scope's channel
 //! content keys ([`tilo_live::plane::Plane`]): the relay copies bytes it cannot open, and it is a
 //! member that holds them already.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -26,7 +30,7 @@ use tilo_live::frame::PlaneKeys;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace};
 use tilo_live::native;
-use tilo_live::plane::{Heard, Join, Plane};
+use tilo_live::plane::{Heard, Join, Plane, PlaneError};
 use tilo_live::relay::{
     Admission, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
 };
@@ -60,6 +64,37 @@ pub(crate) fn relay_of(
 /// How long the workspace's relay has to open its plane before this device gives up on this
 /// attempt.
 const ATTEMPT: Duration = Duration::from_secs(4);
+/// How long a workspace whose relays did not take this device in waits before it asks them again:
+/// [`RETRY_FIRST`] after the first miss, twice as long after each further one, and never longer
+/// than [`RETRY_LONGEST`]. A relay that is away costs one dial of [`ATTEMPT`] each time, so a
+/// device whose workspace's host is off for a week asks four or five times a minute and no more.
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+const RETRY_LONGEST: Duration = Duration::from_secs(15);
+
+/// The wait the schedule gives before a workspace's relays are asked again after `missed` attempts
+/// in a row that none of them answered with a plane.
+fn retry_schedule(missed: u32) -> Duration {
+    let doublings = missed.saturating_sub(1).min(8);
+    RETRY_FIRST
+        .saturating_mul(1_u32 << doublings)
+        .min(RETRY_LONGEST)
+}
+
+/// The wait before `device` asks `workspace` 's relays again after `missed` attempts in a row that
+/// none of them answered with a plane: the schedule's ([`retry_schedule`]), less up to a quarter
+/// that the device takes off by its own key ([`tilo_live::plane::spread`]).
+///
+/// The devices of a workspace miss its relay together: it was away and came back, or it was
+/// admitting as many as it takes when they all asked. On the schedule alone they would ask it
+/// again in the same moment each time, and sixteen of them would be taken at each try. Spread
+/// over a quarter, they arrive one after another, and each wait is still longer than the one
+/// before it and never longer than the schedule's.
+fn retry_wait(device: [u8; 32], workspace: WorkspaceId, missed: u32) -> Duration {
+    let mut turn = std::hash::DefaultHasher::new();
+    workspace.as_uuid().as_bytes().hash(&mut turn);
+    missed.hash(&mut turn);
+    tilo_live::plane::spread(retry_schedule(missed), device, turn.finish())
+}
 
 /// Now, in Unix nanoseconds.
 fn now_ns() -> u64 {
@@ -68,6 +103,214 @@ fn now_ns() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
         })
+}
+
+/// A device that relays a workspace's live plane, as a standing names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Relayer {
+    /// Its device key.
+    pub device: [u8; 32],
+    /// What its person called it, as the certificate the workspace holds of it says; empty for a
+    /// device they never named.
+    pub name: String,
+    /// Whether it is this device.
+    pub here: bool,
+}
+
+/// How far one workspace's live plane came on this device. A plane that is not open carries no
+/// presence, no call and no picture of a shared window, and nothing else says so: what was asked
+/// of it waits without a word. The session publishes this, so a person, a tool and a test read why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// This device is in the plane, through `relay`, sealing under the keys of `epoch`. `lent`
+    /// says those are the keys of its own streams alone, lent by the workspace's host
+    /// ([`MediaKeysLender`]): it publishes with them and opens nothing another device sends.
+    Open {
+        relay: Relayer,
+        epoch: u64,
+        lent: bool,
+    },
+    /// This device asked for the keys of the workspace's media channel, or asked the workspace's
+    /// host to lend it the keys of its own streams, and does not hold them yet.
+    WaitingForKeys,
+    /// This device holds no keys of the workspace and none are coming: it keeps no secret store,
+    /// or the workspace removed it from the channel.
+    Keyless,
+    /// Who is in the workspace cannot be read here, so nothing names who relays it.
+    Unread,
+    /// The workspace names no device that relays its live plane.
+    NoRelay,
+    /// The workspace's relay, `relay`, was not reached.
+    Unreached { relay: Relayer },
+    /// The workspace's relay, `relay`, was reached and took nothing of this device's session: it
+    /// was admitting as many devices as it takes at once. It judged nobody, so this is no refusal,
+    /// and the relay is asked again like one that was not reached.
+    Busy { relay: Relayer },
+    /// `relay` answered and did not admit this device, which presented the keys of `epoch`. Why
+    /// is the relay's to say ([`TurnedAway`]): it tells the device it turns away nothing but that.
+    Refused { relay: Relayer, epoch: u64 },
+}
+
+impl Standing {
+    /// Whether the plane carries what this device says and asks for now.
+    #[must_use]
+    pub const fn is_open(&self) -> bool {
+        matches!(self, Self::Open { .. })
+    }
+}
+
+/// `device` as a standing names it, by the certificate `devices` holds of it.
+fn relayer(devices: &[Device], device: [u8; 32], own: [u8; 32]) -> Relayer {
+    let name = devices
+        .iter()
+        .find(|held| held.device == device)
+        .and_then(|held| tilo_user_identity::device_name(&held.cert.device_label))
+        .unwrap_or_default()
+        .to_owned();
+    Relayer {
+        device,
+        name,
+        here: device == own,
+    }
+}
+
+/// Why a workspace's relay did not carry its plane for this device: the relay, whether it
+/// refused this device, and whether it was busy. A refusal is an answer that waiting alone does
+/// not change; a relay that was not reached may be back at any time. A relay that was admitting
+/// as many devices as it takes at once judged nobody: it is asked again like one that was not
+/// reached, and never stands as a refusal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Missed {
+    relay: [u8; 32],
+    refused: bool,
+    busy: bool,
+}
+
+impl Missed {
+    /// What `error`, the answer to this device's ask for a plane through `relay`, says of it.
+    const fn of(relay: [u8; 32], error: &PlaneError) -> Self {
+        Self {
+            relay,
+            refused: matches!(error, PlaneError::Denied),
+            busy: matches!(error, PlaneError::Busy),
+        }
+    }
+
+    /// How the plane stands after it: refused by `relay` when it presented the keys of `epoch`,
+    /// told by it that it is busy, or waiting to reach it.
+    fn standing(self, relay: Relayer, epoch: u64) -> Standing {
+        if self.refused {
+            Standing::Refused { relay, epoch }
+        } else if self.busy {
+            Standing::Busy { relay }
+        } else {
+            Standing::Unreached { relay }
+        }
+    }
+}
+
+/// Why a relay turned a device away from a workspace's live plane. The relay knows, and the device
+/// it turned away is told only that it was not let in: so the relay's journal and its own reading
+/// say it ([`TurnedAway`]), where the person whose devices these are reads both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The grant names no workspace.
+    Unparsed,
+    /// Who is in the workspace cannot be read on this relay.
+    Unread,
+    /// The grant asks for a scope this relay carries no plane for.
+    Scope,
+    /// This device does not relay the workspace: it is not the device serving it.
+    NotRelayedHere,
+    /// The certificate the grant carries does not read as one.
+    CertificateUnread,
+    /// The certificate the grant carries ran out.
+    CertificateExpired,
+    /// The workspace holds no device of the certificate's key.
+    NotAMember,
+    /// The workspace holds another certificate for the device than the one it presented.
+    CertificateDiffers,
+    /// The connection's endpoint is not the device, and the device did not sign for it, or that
+    /// signature ran out.
+    Endpoint,
+    /// The device seals under keys this relay already moved past: it presented `presented`, and
+    /// the workspace's media channel is at `newest` here.
+    KeysBehind { presented: u64, newest: u64 },
+}
+
+impl Refusal {
+    /// The word a reading and the journal say it by: what a tool branches on.
+    #[must_use]
+    pub const fn word(&self) -> &'static str {
+        match self {
+            Self::Unparsed => "grant-unparsed",
+            Self::Unread => "membership-unread",
+            Self::Scope => "scope-not-carried",
+            Self::NotRelayedHere => "not-relayed-here",
+            Self::CertificateUnread => "certificate-unread",
+            Self::CertificateExpired => "certificate-expired",
+            Self::NotAMember => "not-a-member",
+            Self::CertificateDiffers => "certificate-differs",
+            Self::Endpoint => "endpoint-not-the-device",
+            Self::KeysBehind { .. } => "keys-behind",
+        }
+    }
+}
+
+/// One endpoint this relay turned away from a workspace's live plane, and has not let in since.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnedAway {
+    /// The endpoint the handshake proved: a device's key, or the key a page dials under.
+    pub peer: [u8; 32],
+    /// What its person called it, when it is a device the workspace holds and they named it.
+    pub name: String,
+    /// Why it was turned away the last time it asked.
+    pub why: Refusal,
+    /// How often it asked and was turned away since it was last let in.
+    pub times: u32,
+}
+
+/// How many endpoints a workspace's reading keeps as turned away: a relay answers whoever dials
+/// it, so what it remembers of them is bounded.
+const TURNED_AWAY_KEPT: usize = 8;
+
+/// Note in `turned` that `peer` was turned away for `why`. Answers whether that is news: the
+/// endpoint was not turned away before, or for another reason.
+fn note_turned_away(
+    turned: &mut BTreeMap<[u8; 32], TurnedAway>,
+    peer: [u8; 32],
+    name: String,
+    why: Refusal,
+) -> bool {
+    if let Some(known) = turned.get_mut(&peer) {
+        let news = known.why.word() != why.word();
+        known.why = why;
+        known.name = name;
+        known.times = known.times.saturating_add(1);
+        return news;
+    }
+    if turned.len() >= TURNED_AWAY_KEPT {
+        turned.pop_first();
+    }
+    turned.insert(
+        peer,
+        TurnedAway {
+            peer,
+            name,
+            why,
+            times: 1,
+        },
+    );
+    true
+}
+
+/// Whether a device that presented the keys of `presented` seals under keys a relay that saw
+/// `newest` still opens: a device behind would publish nothing anyone opens.
+const fn keys_current(presented: u64, newest: u64) -> Result<(), Refusal> {
+    if presented < newest {
+        return Err(Refusal::KeysBehind { presented, newest });
+    }
+    Ok(())
 }
 
 /// What one granted preface asked for, once its certificate is bound to the handshake and to the
@@ -95,36 +338,40 @@ fn bind(
     host: Option<[u8; 32]>,
     own: [u8; 32],
     now_ns: u64,
-) -> Result<Request, Denied> {
+) -> Result<Request, Refusal> {
     let Peer(endpoint) = peer;
-    let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
+    let workspace =
+        WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Refusal::Unparsed)?;
     // One scope per workspace today: the workspace itself.
     if grant.scope != scope_of(workspace).id() {
-        return Err(Denied);
+        return Err(Refusal::Scope);
     }
     // Only the device the workspace's state names relays.
     if relay_of(devices, host, now_ns) != Some(own) {
-        return Err(Denied);
+        return Err(Refusal::NotRelayedHere);
     }
-    let certificate: DeviceCert = serde_json::from_slice(&grant.certificate).map_err(|_| Denied)?;
+    let certificate: DeviceCert =
+        serde_json::from_slice(&grant.certificate).map_err(|_| Refusal::CertificateUnread)?;
     if certificate.is_expired_at(now_ns) {
-        return Err(Denied);
+        return Err(Refusal::CertificateExpired);
     }
     let device = certificate.device_public_key;
     let admitted = devices
         .iter()
         .find(|admitted| admitted.device == device)
-        .ok_or(Denied)?;
+        .ok_or(Refusal::NotAMember)?;
     if certificate != admitted.cert {
-        return Err(Denied);
+        return Err(Refusal::CertificateDiffers);
     }
     if endpoint != device {
         let delegation: EndpointDelegation =
-            serde_json::from_slice(&grant.delegation).map_err(|_| Denied)?;
+            serde_json::from_slice(&grant.delegation).map_err(|_| Refusal::Endpoint)?;
         if delegation.device_public_key != device {
-            return Err(Denied);
+            return Err(Refusal::Endpoint);
         }
-        delegation.verify(&endpoint, now_ns).map_err(|_| Denied)?;
+        delegation
+            .verify(&endpoint, now_ns)
+            .map_err(|_| Refusal::Endpoint)?;
     }
     Ok(Request { workspace, device })
 }
@@ -203,8 +450,21 @@ struct Shared {
     /// Told when a workspace's membership or keys moved.
     changed: tokio::sync::watch::Sender<u64>,
     planes: Mutex<BTreeMap<WorkspaceId, Joined>>,
-    /// Told when a plane ended, so the workspace is settled again through its relay.
-    rejoin: tokio::sync::mpsc::UnboundedSender<WorkspaceId>,
+    /// How far each workspace's plane came here, as it was last settled ([`Standing`]).
+    standings: Mutex<BTreeMap<WorkspaceId, Standing>>,
+    /// The endpoints this relay turned away from each workspace's plane and has not let in since,
+    /// and why ([`TurnedAway`]): of the workspaces this session runs a plane for, and no others.
+    turned: Mutex<BTreeMap<WorkspaceId, BTreeMap<[u8; 32], TurnedAway>>>,
+    /// Counts each move of a standing and each plane opened: what the session reads the standings
+    /// and the planes again on, and not on every pass.
+    moves: std::sync::atomic::AtomicU64,
+    /// What wakes each workspace's reconciler beside the workspace's own changes: a plane of it
+    /// ended, so the workspace is settled again through its relay, or this
+    /// session was given a lender of media keys ([`Live::lend_media_keys`]).
+    nudges: Mutex<BTreeMap<WorkspaceId, Arc<tokio::sync::Notify>>>,
+    /// Told when the session's workspaces are to be read again for ones no reconciler runs for
+    /// yet, beside the keys that announce a workspace joined later.
+    readopt: tokio::sync::Notify,
     wake: Arc<dyn Fn() + Send + Sync>,
     /// The runtime the planes run on, once the plane's thread started it: what a plane's readers
     /// are started on, whichever thread asks the plane to show a track.
@@ -235,18 +495,64 @@ impl RelayAuthority for Shared {
     fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
         Box::pin(std::future::ready(self.decide(peer, proof)))
     }
+
+    /// An endpoint none of the workspaces this session read names as a device: told from the
+    /// rosters it last read ([`Self::observe_roster`]), with no read of its own. A session that
+    /// has read none yet cannot tell, and calls nobody a stranger. An endpoint that is no device,
+    /// as the key a page dials under, is one, and is judged by its grant like any other.
+    fn stranger(&self, peer: Peer) -> bool {
+        let Peer(endpoint) = peer;
+        let rosters = self.rosters.lock_recover();
+        !rosters.is_empty() && !rosters.values().any(|devices| devices.contains(&endpoint))
+    }
 }
 
 impl Shared {
     /// Whether `peer` may take part in the plane its grant (`proof`) names, from what this
     /// device holds of the workspace now.
     fn decide(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-        let Peer(_) = peer;
-        let grant = grant::Native::parse(proof).ok_or(Denied)?;
-        let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
-        let devices = workspace_keys::devices_of(&self.engine, workspace).map_err(|_| Denied)?;
+        let Peer(endpoint) = peer;
+        let named = grant::Native::parse(proof).and_then(|grant| {
+            let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace))?;
+            Some((grant, workspace))
+        });
+        let Some((grant, workspace)) = named else {
+            tracing::debug!(peer = %hex::encode(endpoint), why = Refusal::Unparsed.word(),
+                "a device was turned away from the live plane");
+            return Err(Denied);
+        };
+        let devices = workspace_keys::devices_of(&self.engine, workspace);
+        let judged = match &devices {
+            Ok(devices) => self.judge(peer, &grant, workspace, devices),
+            Err(_) => Err(Refusal::Unread),
+        };
+        match judged {
+            Ok(permit) => {
+                self.let_in(workspace, endpoint);
+                Ok(permit)
+            }
+            Err(why) => {
+                let name = devices
+                    .as_deref()
+                    .map(|devices| relayer(devices, endpoint, self.device).name)
+                    .unwrap_or_default();
+                self.turned_away(workspace, endpoint, name, why);
+                Err(Denied)
+            }
+        }
+    }
+
+    /// [`Self::decide`] for a grant that names `workspace`, whose devices are `devices`: the
+    /// session it is admitted as, or why it is turned away.
+    fn judge(
+        &self,
+        peer: Peer,
+        grant: &grant::Native,
+        workspace: WorkspaceId,
+        devices: &[Device],
+    ) -> Result<Arc<dyn SessionAuthorization>, Refusal> {
         let host = self.engine.host_of(workspace);
-        let request = bind(peer, &grant, &devices, host, self.device, now_ns())?;
+        let request = bind(peer, grant, devices, host, self.device, now_ns())?;
         // A device that sealed under an epoch this relay already moved past would publish nothing
         // anyone opens: it is refused at the preface.
         let newest = self
@@ -255,9 +561,7 @@ impl Shared {
             .get(&workspace)
             .copied()
             .unwrap_or(0);
-        if grant.epoch < newest {
-            return Err(Denied);
-        }
+        keys_current(grant.epoch, newest)?;
         let scope = scope_of(request.workspace);
         Ok(Arc::new(Permit {
             engine: Arc::clone(&self.engine),
@@ -270,6 +574,59 @@ impl Shared {
             scope: scope.id(),
         }))
     }
+
+    /// `peer` was turned away from `workspace` 's plane for `why` : the journal says so when that
+    /// is news, and so does this session's reading for a workspace it runs a plane for, which
+    /// counts the asks that follow and is read again ever less often as they repeat. A relay
+    /// answers whoever dials it, so nothing is kept of a workspace this session does not hold.
+    fn turned_away(&self, workspace: WorkspaceId, peer: [u8; 32], name: String, why: Refusal) {
+        let (presented, newest) = match why {
+            Refusal::KeysBehind { presented, newest } => (Some(presented), Some(newest)),
+            _ => (None, None),
+        };
+        if !self.standings.lock_recover().contains_key(&workspace) {
+            tracing::debug!(%workspace, peer = %hex::encode(peer), why = why.word(),
+                "a device was turned away from the live plane of a workspace this session runs \
+                 no plane for");
+            return;
+        }
+        let (news, times) = {
+            let mut turned = self.turned.lock_recover();
+            let of_workspace = turned.entry(workspace).or_default();
+            let news = note_turned_away(of_workspace, peer, name, why);
+            let times = of_workspace.get(&peer).map_or(1, |kept| kept.times);
+            drop(turned);
+            (news, times)
+        };
+        if news {
+            tracing::warn!(%workspace, peer = %hex::encode(peer), why = why.word(), ?presented,
+                ?newest, "a device was turned away from this workspace's live plane");
+        } else {
+            tracing::debug!(%workspace, peer = %hex::encode(peer), why = why.word(), ?presented,
+                ?newest, "a device was turned away from this workspace's live plane again");
+        }
+        // The reading says it when it is news, and then ever less often: a device that asks again
+        // every few seconds, or an endpoint that dials in a loop, wakes the session a handful of
+        // times and no more.
+        if news || times.is_power_of_two() {
+            self.moved();
+        }
+    }
+
+    /// `peer` was let into `workspace` 's plane: it is no longer one this relay turned away.
+    fn let_in(&self, workspace: WorkspaceId, peer: [u8; 32]) {
+        let was = self
+            .turned
+            .lock_recover()
+            .get_mut(&workspace)
+            .and_then(|turned| turned.remove(&peer));
+        if let Some(was) = was {
+            tracing::info!(%workspace, peer = %hex::encode(peer), why = was.why.word(),
+                times = was.times,
+                "a device this relay turned away is in the workspace's live plane now");
+            self.moved();
+        }
+    }
 }
 
 impl Shared {
@@ -281,6 +638,7 @@ impl Shared {
             Err(error) => {
                 tracing::warn!(%workspace, %error, "the live plane's membership is unknown");
                 self.withdraw(workspace);
+                self.stand(workspace, Standing::Unread);
                 return None;
             }
         };
@@ -290,6 +648,7 @@ impl Shared {
                 tracing::info!(%workspace, "no member relays this workspace's live plane any more");
             }
             self.withdraw(workspace);
+            self.stand(workspace, Standing::NoRelay);
             return None;
         };
         Some((devices, relay))
@@ -322,16 +681,15 @@ impl Shared {
         // A device that may hold none of them (a session in a workspace's VM) is lent its own
         // streams' keys instead, asked afresh at each join: a plane whose epoch moved is cut, and
         // joins again on the keys its host lends then.
-        let keys = if let Ok(crate::engine::SealKeys::Here(keys)) = keys {
-            PlaneKeys::from(keys)
-        } else {
-            let Some(lent) = self.lent(workspace).await else {
-                // The plane opens when the workspace's keys are here; a plane already open keeps
-                // what it has until they move.
-                tracing::debug!(%workspace, "the live plane waits for the workspace's keys");
-                return;
-            };
-            PlaneKeys::from(lent)
+        let (keys, lent) = match keys {
+            Ok(crate::engine::SealKeys::Here(keys)) => (PlaneKeys::from(keys), false),
+            held => {
+                let Some(lent) = self.lent(workspace).await else {
+                    self.without_keys(workspace, &held);
+                    return;
+                };
+                (PlaneKeys::from(lent), true)
+            }
         };
         self.observe(workspace, keys.epoch());
         self.observe_roster(workspace, &devices);
@@ -349,8 +707,17 @@ impl Shared {
             // and seals under the keys and roster it now has.
             tracing::debug!(%workspace, relay = %hex::encode(at),
                 epoch = keys.epoch(), "the live plane keeps its relay");
+            let epoch = keys.epoch();
             plane.set_keys(keys);
             plane.set_roster(roster);
+            self.stand(
+                workspace,
+                Standing::Open {
+                    relay: relayer(&devices, at, self.device),
+                    epoch,
+                    lent,
+                },
+            );
             return;
         }
         // A plane whose relay the workspace no longer names, or one that ended, is closed before
@@ -366,24 +733,73 @@ impl Shared {
         };
         let opened = if serving == self.device {
             Plane::local(relay, &join)
-        } else {
-            let Some((addr, grant)) = self.dial_target(workspace, &scope, epoch, serving) else {
-                return;
-            };
+        } else if let Some((addr, grant)) = self.dial_target(workspace, &scope, epoch, serving) {
             let carrier = native::Iroh::new(endpoint.clone(), addr);
             Plane::join_within(Arc::new(carrier), &grant, join, ATTEMPT).await
+        } else {
+            // Where the relay is reached, or the grant it asks for, is not here yet: it was not
+            // reached, and is asked again.
+            Err(PlaneError::Unavailable)
         };
-        let Ok(plane) = opened else {
-            tracing::debug!(%workspace, relay = %hex::encode(serving),
-                "this workspace's relay was not reached");
-            return;
+        let plane = match opened {
+            Ok(plane) => plane,
+            Err(error) => {
+                tilo_failure::ignored!(
+                    "the plane's standing says its relay was missed, and the relay is asked again",
+                    tracing::debug!(%workspace, relay = %hex::encode(serving), %error,
+                        "this workspace's relay was not reached")
+                );
+                self.missed(workspace, &devices, Missed::of(serving, &error), epoch);
+                return;
+            }
         };
-        plane.set_wake(Arc::clone(&self.wake));
-        let ended = Arc::clone(self);
-        plane.set_ended(Arc::new(move || ended.ended(workspace)));
         tracing::debug!(%workspace, relay = %hex::encode(serving),
             local = serving == self.device, epoch,
             "the live plane opened");
+        let open = Standing::Open {
+            relay: relayer(&devices, serving, self.device),
+            epoch,
+            lent,
+        };
+        self.keep(workspace, serving, plane, open);
+    }
+
+    /// `workspace` 's keys are not here (`held`), and none were lent: the plane opens when they
+    /// are, and until then it stands as waiting for them, or as holding none where none are coming.
+    /// A device whose host lends it keys waits for those. A plane already open keeps what it has
+    /// until they move.
+    fn without_keys(&self, workspace: WorkspaceId, held: &Result<crate::engine::SealKeys, String>) {
+        tracing::debug!(%workspace, "the live plane waits for the workspace's keys");
+        if self.joined(workspace) {
+            return;
+        }
+        let waiting =
+            matches!(held, Ok(crate::engine::SealKeys::Waiting)) || self.lender.get().is_some();
+        self.stand(
+            workspace,
+            if waiting {
+                Standing::WaitingForKeys
+            } else {
+                Standing::Keyless
+            },
+        );
+    }
+
+    /// Keep `plane`, opened through the relay `serving`, as `workspace` 's: it wakes the session on
+    /// what it hears, has the workspace settled again when it ends, and stands as `open` says.
+    fn keep(
+        self: &Arc<Self>,
+        workspace: WorkspaceId,
+        serving: [u8; 32],
+        plane: Plane,
+        open: Standing,
+    ) {
+        plane.set_wake(Arc::clone(&self.wake));
+        let ended = Arc::clone(self);
+        plane.set_ended(Arc::new(move || ended.ended(workspace)));
+        // The devices a plane does not hear are part of what the session reads of it.
+        let unheard = Arc::clone(self);
+        plane.set_unheard_changed(Arc::new(move || unheard.moved()));
         let replaced = self.planes.lock_recover().insert(
             workspace,
             Joined {
@@ -392,7 +808,17 @@ impl Shared {
             },
         );
         drop(replaced);
+        self.stand(workspace, open);
+        // A plane opened again where one stood is another plane, whatever its standing says.
+        self.moved();
         self.bump();
+    }
+
+    /// Tell the session that a standing moved or a plane opened: it reads both again.
+    fn moved(&self) {
+        self.moves
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        (self.wake)();
     }
 
     /// Where the workspace's serving device `serving` is reached and the grant that admits this
@@ -482,6 +908,60 @@ impl Shared {
         }
     }
 
+    /// Whether this device is in `workspace` 's plane now.
+    fn joined(&self, workspace: WorkspaceId) -> bool {
+        self.planes
+            .lock_recover()
+            .get(&workspace)
+            .is_some_and(|joined| !joined.plane.ended())
+    }
+
+    /// Note how far `workspace` 's plane came, and wake the session when that moved: what it
+    /// publishes of the plane is read again. Answers whether it moved.
+    fn stand(&self, workspace: WorkspaceId, standing: Standing) -> bool {
+        let moved = {
+            let mut standings = self.standings.lock_recover();
+            let moved = standings.get(&workspace) != Some(&standing);
+            if moved {
+                standings.insert(workspace, standing);
+            }
+            moved
+        };
+        if moved {
+            self.moved();
+        }
+        moved
+    }
+
+    /// The relay of `workspace` did not carry its plane for this device, which presented the keys
+    /// of `epoch` : the plane stands as waiting for the relay `missed` names, as told by it that it
+    /// is busy, or as refused by it, and the journal says so when that is news.
+    fn missed(&self, workspace: WorkspaceId, devices: &[Device], missed: Missed, epoch: u64) {
+        let relay = relayer(devices, missed.relay, self.device);
+        let standing = missed.standing(relay, epoch);
+        if self.stand(workspace, standing) {
+            tracing::warn!(%workspace, relay = %hex::encode(missed.relay), refused = missed.refused,
+                busy = missed.busy, epoch,
+                "the live plane is not open: no device that relays this workspace took this device in");
+        } else {
+            tracing::debug!(%workspace, busy = missed.busy,
+                "no relay of this workspace was reached");
+        }
+    }
+
+    /// What wakes `workspace` 's reconciler when a plane of it ended.
+    fn nudge(&self, workspace: WorkspaceId) -> Arc<tokio::sync::Notify> {
+        Arc::clone(self.nudges.lock_recover().entry(workspace).or_default())
+    }
+
+    /// Whether `workspace` names a relay that did not take this device in when it was last settled.
+    fn awaits_relay(&self, workspace: WorkspaceId) -> bool {
+        matches!(
+            self.standings.lock_recover().get(&workspace),
+            Some(Standing::Unreached { .. } | Standing::Busy { .. } | Standing::Refused { .. })
+        )
+    }
+
     /// Stop carrying `workspace` : the plane is closed and its sessions cut.
     fn withdraw(&self, workspace: WorkspaceId) {
         self.rosters.lock_recover().remove(&workspace);
@@ -491,11 +971,16 @@ impl Shared {
         }
     }
 
-    /// A plane of `workspace` ended: settle the workspace again, through the first relay it reaches
-    /// now.
+    /// A plane of `workspace` ended: settle the workspace again, through its relay.
     fn ended(&self, workspace: WorkspaceId) {
         self.planes.lock_recover().remove(&workspace);
-        let _ = self.rejoin.send(workspace);
+        // Until it is settled again the plane is not open: the relay it ran through is the one it
+        // waits to reach.
+        let was = self.standings.lock_recover().get(&workspace).cloned();
+        if let Some(Standing::Open { relay, .. }) = was {
+            self.stand(workspace, Standing::Unreached { relay });
+        }
+        self.nudge(workspace).notify_one();
     }
 
     fn bump(&self) {
@@ -517,8 +1002,6 @@ pub struct Live {
     /// The ALPN handler this session serves, handed over before the endpoint binds
     /// ([`Self::protocols`]): which workspaces it relays is read per connection, from their state.
     protocols: Protocols,
-    /// A workspace whose plane ended, to be settled again.
-    rejoin: tokio::sync::mpsc::UnboundedReceiver<WorkspaceId>,
 }
 
 impl std::fmt::Debug for Live {
@@ -540,7 +1023,6 @@ impl Live {
     pub(crate) fn new(engine: Arc<Engine>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let device = engine.identity().device_cert.device_public_key;
         let (changed, _) = tokio::sync::watch::channel(0);
-        let (rejoin, rejoined) = tokio::sync::mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
             engine,
             device,
@@ -548,7 +1030,11 @@ impl Live {
             rosters: Mutex::new(BTreeMap::new()),
             changed,
             planes: Mutex::new(BTreeMap::new()),
-            rejoin,
+            standings: Mutex::new(BTreeMap::new()),
+            turned: Mutex::new(BTreeMap::new()),
+            moves: std::sync::atomic::AtomicU64::new(0),
+            nudges: Mutex::new(BTreeMap::new()),
+            readopt: tokio::sync::Notify::new(),
             wake,
             runtime: std::sync::OnceLock::new(),
             lender: std::sync::OnceLock::new(),
@@ -560,8 +1046,9 @@ impl Live {
                 let Some(relay) = served(&mut named).await else {
                     return;
                 };
-                let peer = Peer(session.remote());
-                relay.serve_session(session, peer).await;
+                // A session this relay admitted may open what an admitted session opens, on this
+                // session's endpoint as on any other.
+                native::serve_on(&relay, session).await;
             }
         });
         let protocols = vec![(
@@ -574,7 +1061,6 @@ impl Live {
             stopped: None,
             thread: None,
             protocols,
-            rejoin: rejoined,
         }
     }
 
@@ -585,10 +1071,24 @@ impl Live {
         if self.shared.lender.set(lender).is_err() {
             return;
         }
+        // Each workspace's own reconciler settles it again, and a workspace none runs for yet is
+        // given one, which settles it at once.
         for workspace in self.shared.engine.workspaces() {
-            // A plane thread that ended settles nothing again.
-            let _ = self.shared.rejoin.send(workspace);
+            self.shared.nudge(workspace).notify_one();
         }
+        self.shared.readopt.notify_one();
+    }
+
+    /// This device came to hold another workspace: its host admitted this device, as the person's
+    /// list or an invitation brought it. The workspace is given its reconciler now, which asks
+    /// for its keys and joins its relay.
+    ///
+    /// Nothing else says so. The channel service announces a workspace's keys once this device
+    /// asked for them, and the plane is what asks: until something else moved a key of some
+    /// workspace here, a workspace taken in while the session ran had no plane, and said nothing
+    /// of it.
+    pub(crate) fn workspace_arrived(&self) {
+        self.shared.readopt.notify_one();
     }
 
     /// Run for the rest of the session on `endpoint` : this device's relay role, for the workspaces
@@ -597,10 +1097,9 @@ impl Live {
         let (stop, stopped) = tokio::sync::mpsc::unbounded_channel();
         let shared = Arc::clone(&self.shared);
         let relayed = self.relayed.clone();
-        let rejoin = std::mem::replace(&mut self.rejoin, tokio::sync::mpsc::unbounded_channel().1);
         match std::thread::Builder::new()
             .name("tilo-live".into())
-            .spawn(move || run(shared, endpoint, relayed, rejoin, stopped))
+            .spawn(move || run(shared, endpoint, relayed, stopped))
         {
             Ok(thread) => {
                 self.thread = Some(thread);
@@ -635,6 +1134,40 @@ impl Live {
             .iter()
             .map(|(workspace, joined)| (*workspace, Arc::clone(&joined.plane)))
             .collect()
+    }
+
+    /// How far each workspace's plane came on this device, by workspace: open, or what it waits
+    /// for. A workspace this session has not looked at yet is not among them.
+    #[must_use]
+    pub fn standings(&self) -> Vec<(WorkspaceId, Standing)> {
+        self.shared
+            .standings
+            .lock_recover()
+            .iter()
+            .map(|(workspace, standing)| (*workspace, standing.clone()))
+            .collect()
+    }
+
+    /// The endpoints this device's relay turned away from each workspace's plane and has not let
+    /// in since, by workspace, and why: what the relay knows and the device it turned away is not
+    /// told.
+    #[must_use]
+    pub fn turned_away(&self) -> Vec<(WorkspaceId, Vec<TurnedAway>)> {
+        self.shared
+            .turned
+            .lock_recover()
+            .iter()
+            .filter(|(_, turned)| !turned.is_empty())
+            .map(|(workspace, turned)| (*workspace, turned.values().cloned().collect()))
+            .collect()
+    }
+
+    /// Moves whenever a standing did, a plane opened or a device was turned away or let in:
+    /// [`Self::standings`], [`Self::planes`] and [`Self::turned_away`] say nothing new while it
+    /// stands still.
+    #[must_use]
+    pub fn standings_revision(&self) -> u64 {
+        self.shared.moves.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The runtime the planes run on, once it started: a plane asked to show a track starts its
@@ -710,7 +1243,6 @@ fn run(
     shared: Arc<Shared>,
     endpoint: Endpoint,
     relayed: tokio::sync::watch::Sender<Option<Arc<Relay>>>,
-    mut rejoined: tokio::sync::mpsc::UnboundedReceiver<WorkspaceId>,
     mut stopped: tokio::sync::mpsc::UnboundedReceiver<()>,
 ) {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -731,10 +1263,11 @@ fn run(
         let mut keyed = keys.generation();
         let mut known = BTreeSet::new();
         adopt(&shared, &endpoint, &serving, &mut known);
-        // A workspace this session joins later opens its plane the same way: its channel keys
+        // A workspace this session joins later opens its plane the same way: the session says
+        // when its host admitted this device ([`Live::workspace_arrived`]), its channel keys
         // arriving is announced by the channel service, and the workspace list is read again then.
-        // A plane whose relay went away is settled again on the event that it ended, through the
-        // first relay the workspace names that this device reaches now.
+        // Each workspace's own reconciler settles it again when a plane of it ended, or when no
+        // relay took this device in ([`reconcile`]).
         loop {
             tokio::select! {
                 _ = stopped.recv() => break,
@@ -742,10 +1275,8 @@ fn run(
                     keyed = changed;
                     adopt(&shared, &endpoint, &serving, &mut known);
                 }
-                Some(workspace) = rejoined.recv() => {
-                    Arc::clone(&shared)
-                        .settle(workspace, &endpoint, &serving)
-                        .await;
+                () = shared.readopt.notified() => {
+                    adopt(&shared, &endpoint, &serving, &mut known);
                 }
             }
         }
@@ -771,24 +1302,46 @@ fn adopt(
     }
 }
 
-/// Keep one workspace's plane in step with its membership and keys, on the event that moved them
-/// and never on a timer.
+/// Keep one workspace's plane in step with its membership and keys, on the event that moved them:
+/// the workspace's media channel changed, or a plane of the workspace ended.
+///
+/// One thing has no event. A relay that was away when this device asked, or that did not know this
+/// device yet, says nothing when that changes, and the keys this device already holds do not move
+/// because of it. So while the workspace names a relay and none took this device in, its relays
+/// are asked again after [`retry_wait`], until the plane opens. Without that a device whose session
+/// started before the device relaying the workspace was reachable stayed out of the workspace's
+/// live plane for as long as both ran: no presence, no call and no shared window crossed, and
+/// nothing said so.
 async fn reconcile(
     shared: Arc<Shared>,
     workspace: WorkspaceId,
     endpoint: Endpoint,
     relay: Arc<Relay>,
 ) {
+    let keys = shared.engine.keys();
+    let nudge = shared.nudge(workspace);
     let mut after = 0;
+    let mut missed: u32 = 0;
     loop {
         Arc::clone(&shared)
             .settle(workspace, &endpoint, &relay)
             .await;
-        after = shared
-            .engine
-            .keys()
-            .workspace_changed(workspace, after)
-            .await;
+        missed = if shared.awaits_relay(workspace) {
+            missed.saturating_add(1)
+        } else {
+            0
+        };
+        let again = async {
+            if missed == 0 {
+                std::future::pending::<()>().await;
+            }
+            tokio::time::sleep(retry_wait(shared.device, workspace, missed)).await;
+        };
+        tokio::select! {
+            changed = keys.workspace_changed(workspace, after) => after = changed,
+            () = nudge.notified() => {}
+            () = again => {}
+        }
     }
 }
 
@@ -1000,6 +1553,248 @@ mod tests {
             !admits([2; 32], &elsewhere, &devices, [2; 32], 10),
             "a scope this session carries no plane for is refused"
         );
+    }
+
+    /// A relay that answers and refuses this device is told apart from one that was not reached:
+    /// waiting reaches the one, and changes nothing about the other. A relay that was admitting as
+    /// many devices as it takes at once is neither: it judged nobody, so it is no refusal.
+    #[test]
+    fn a_relay_that_refuses_is_told_apart_from_one_that_is_away() {
+        assert_eq!(
+            Missed::of([2; 32], &PlaneError::Denied),
+            Missed {
+                relay: [2; 32],
+                refused: true,
+                busy: false
+            }
+        );
+        assert_eq!(
+            Missed::of([1; 32], &PlaneError::Unavailable),
+            Missed {
+                relay: [1; 32],
+                refused: false,
+                busy: false
+            },
+            "the relay that was away is the one the plane waits to reach"
+        );
+        assert_eq!(
+            Missed::of([3; 32], &PlaneError::Busy),
+            Missed {
+                relay: [3; 32],
+                refused: false,
+                busy: true
+            },
+            "a relay that had no room judged nobody: it is asked again, and refused nobody"
+        );
+    }
+
+    /// A relay is named by what its person called it, as the workspace's certificate of it says,
+    /// and a device they never named by nothing.
+    #[test]
+    fn a_relay_is_named_as_its_certificate_names_it() {
+        let devices = vec![device([1; 32], None), device([2; 32], None)];
+        assert_eq!(
+            relayer(&devices, [2; 32], [1; 32]),
+            Relayer {
+                device: [2; 32],
+                name: "device 2".to_owned(),
+                here: false
+            }
+        );
+        assert!(relayer(&devices, [1; 32], [1; 32]).here);
+        assert_eq!(relayer(&devices, [7; 32], [1; 32]).name, "");
+    }
+
+    /// A workspace whose relay did not take this device in asks it again soon, then ever less
+    /// often, and never stops asking: the relay it waits for may come back at any time.
+    #[test]
+    fn a_relay_that_was_missed_is_asked_again_ever_less_often_and_always() {
+        assert_eq!(retry_schedule(1), RETRY_FIRST);
+        assert_eq!(retry_schedule(2), RETRY_FIRST * 2);
+        assert_eq!(retry_schedule(3), RETRY_FIRST * 4);
+        let waits: Vec<Duration> = (1..40).map(retry_schedule).collect();
+        assert!(waits.windows(2).all(|pair| pair[0] <= pair[1]), "{waits:?}");
+        assert_eq!(waits.last(), Some(&RETRY_LONGEST));
+        assert_eq!(retry_schedule(u32::MAX), RETRY_LONGEST);
+        assert_eq!(retry_schedule(0), RETRY_FIRST);
+    }
+
+    /// The devices of a workspace that missed its relay in one moment do not ask it again in one
+    /// moment: each takes up to a quarter off the schedule's wait, by its own key. The schedule
+    /// keeps its shape for every one of them: each wait is longer than the one before it, until
+    /// the longest, and none is longer than the schedule's.
+    #[test]
+    fn devices_that_missed_a_relay_together_do_not_ask_it_again_together() {
+        let workspace = WorkspaceId::new();
+        for missed in 1..=6 {
+            let schedule = retry_schedule(missed);
+            let waits: BTreeSet<Duration> = (0..64_u8)
+                .map(|device| retry_wait([device; 32], workspace, missed))
+                .collect();
+            assert!(
+                waits
+                    .iter()
+                    .all(|wait| *wait <= schedule
+                        && *wait >= schedule.saturating_sub(schedule / 4)),
+                "after {missed} misses every device waits within a quarter of {schedule:?}: \
+                 {waits:?}"
+            );
+            assert!(
+                waits.len() > 56,
+                "sixty-four devices wait {} different times after {missed} misses",
+                waits.len()
+            );
+        }
+        for device in 0..64_u8 {
+            let waits: Vec<Duration> = (1..=5)
+                .map(|missed| retry_wait([device; 32], workspace, missed))
+                .collect();
+            assert!(
+                waits.windows(2).all(|pair| pair[0] < pair[1]),
+                "a device waits longer each time: {waits:?}"
+            );
+            assert_eq!(
+                waits,
+                (1..=5)
+                    .map(|missed| retry_wait([device; 32], workspace, missed))
+                    .collect::<Vec<_>>(),
+                "a device's own waits are the same whenever it is asked"
+            );
+        }
+        // One device in two workspaces asks each at a time of its own.
+        assert_ne!(
+            retry_wait([1; 32], workspace, 1),
+            retry_wait([1; 32], WorkspaceId::new(), 1)
+        );
+    }
+
+    /// A relay that had no room stands as busy, by name, and never as refused or as not reached:
+    /// the three are told apart from the relay's answer alone.
+    #[test]
+    fn a_busy_relay_stands_as_busy_and_never_as_a_refusal() {
+        let relay = Relayer {
+            device: [3; 32],
+            name: "device 3".to_owned(),
+            here: false,
+        };
+        assert_eq!(
+            Missed::of([3; 32], &PlaneError::Busy).standing(relay.clone(), 4),
+            Standing::Busy {
+                relay: relay.clone()
+            }
+        );
+        assert_eq!(
+            Missed::of([3; 32], &PlaneError::Unavailable).standing(relay.clone(), 4),
+            Standing::Unreached {
+                relay: relay.clone()
+            }
+        );
+        assert_eq!(
+            Missed::of([3; 32], &PlaneError::Denied).standing(relay.clone(), 4),
+            Standing::Refused { relay, epoch: 4 }
+        );
+    }
+
+    /// A relay that turns a device away says why, each case by its own word: a device that is not
+    /// in the workspace, one presenting a certificate the workspace does not hold for it, an
+    /// endpoint that is not the device, a scope this relay does not carry, and a device that does
+    /// not serve the workspace.
+    #[test]
+    fn a_relay_that_turns_a_device_away_says_why() {
+        let workspace = WorkspaceId::new();
+        let mine = cert([1; 32], None);
+        let other = cert([2; 32], None);
+        let devices = vec![
+            Device {
+                device: [1; 32],
+                cert: mine.clone(),
+            },
+            Device {
+                device: [2; 32],
+                cert: other.clone(),
+            },
+        ];
+        // The first device serves the workspace.
+        let why = |peer: [u8; 32], grant: &grant::Native, own: [u8; 32]| {
+            bind(Peer(peer), grant, &devices, Some([1; 32]), own, 10)
+                .err()
+                .map(|refusal| refusal.word())
+        };
+        assert_eq!(why([2; 32], &grant(workspace, &other), [1; 32]), None);
+        let stranger = cert([3; 32], None);
+        assert_eq!(
+            why([3; 32], &grant(workspace, &stranger), [1; 32]),
+            Some("not-a-member")
+        );
+        let mut renamed = other.clone();
+        renamed.device_label = "Another name".to_owned();
+        assert_eq!(
+            why([2; 32], &grant(workspace, &renamed), [1; 32]),
+            Some("certificate-differs")
+        );
+        assert_eq!(
+            why([3; 32], &grant(workspace, &other), [1; 32]),
+            Some("endpoint-not-the-device")
+        );
+        let mut elsewhere = grant(workspace, &other);
+        elsewhere.scope = Scope::record(workspace.to_string(), "elsewhere").id();
+        assert_eq!(why([2; 32], &elsewhere, [1; 32]), Some("scope-not-carried"));
+        assert_eq!(
+            why([1; 32], &grant(workspace, &mine), [2; 32]),
+            Some("not-relayed-here")
+        );
+    }
+
+    /// A device whose keys are behind the relay's is turned away with both epochs, and one at the
+    /// relay's epoch or past it is not: the relay follows the keys later than the device did.
+    #[test]
+    fn a_device_behind_the_relays_keys_is_turned_away_with_both_epochs() {
+        assert_eq!(
+            keys_current(3, 4),
+            Err(Refusal::KeysBehind {
+                presented: 3,
+                newest: 4
+            })
+        );
+        assert_eq!(keys_current(4, 4), Ok(()));
+        assert_eq!(keys_current(5, 4), Ok(()));
+    }
+
+    /// What a relay keeps of the endpoints it turned away is bounded, counts how often each asked,
+    /// and says only a new reason as news.
+    #[test]
+    fn what_a_relay_keeps_of_the_devices_it_turned_away_is_bounded() {
+        let mut turned = BTreeMap::new();
+        let behind = Refusal::KeysBehind {
+            presented: 3,
+            newest: 4,
+        };
+        assert!(note_turned_away(
+            &mut turned,
+            [1; 32],
+            "Ada's laptop".to_owned(),
+            behind
+        ));
+        assert!(!note_turned_away(
+            &mut turned,
+            [1; 32],
+            "Ada's laptop".to_owned(),
+            Refusal::KeysBehind {
+                presented: 3,
+                newest: 5
+            }
+        ));
+        assert!(note_turned_away(
+            &mut turned,
+            [1; 32],
+            "Ada's laptop".to_owned(),
+            Refusal::NotAMember
+        ));
+        assert_eq!(turned.get(&[1; 32]).map(|turned| turned.times), Some(3));
+        for peer in 2..=20_u8 {
+            note_turned_away(&mut turned, [peer; 32], String::new(), Refusal::NotAMember);
+        }
+        assert_eq!(turned.len(), TURNED_AWAY_KEPT);
     }
 
     #[test]

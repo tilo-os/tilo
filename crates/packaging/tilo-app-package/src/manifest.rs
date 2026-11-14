@@ -897,6 +897,10 @@ pub struct Entrypoint {
     /// of the app is open. Only for an entrypoint that names a `runtime`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub origins: Vec<String>,
+    /// What a window of the app is to other devices ([`WindowKind`]). Left out, it is a view of
+    /// records, which every device opens for itself.
+    #[serde(default, skip_serializing_if = "WindowKind::is_view")]
+    pub window: WindowKind,
 }
 
 impl Entrypoint {
@@ -916,6 +920,30 @@ impl Entrypoint {
             EntrypointType::Cli => Some(&self.bin),
             EntrypointType::Both => self.cli_bin.as_ref().or(Some(&self.bin)),
         }
+    }
+}
+
+/// What a window of an app is to the person's other devices and the workspace's other members;
+/// wire form is lowercase (`view`/`device`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowKind {
+    /// A view of records the workspace holds. A window one device opens is one every other
+    /// device opens for itself, on the same records.
+    #[default]
+    View,
+    /// What the window shows lives in the app's process on the device that opened it: a page in
+    /// a web engine, a terminal's session, another machine's display. The window runs only on
+    /// that device. Other devices list it as a window that runs there and start nothing for it;
+    /// they see it when it is shared, and act on it through that device.
+    Device,
+}
+
+impl WindowKind {
+    /// Whether this is the kind a manifest need not say.
+    #[must_use]
+    pub fn is_view(&self) -> bool {
+        matches!(self, Self::View)
     }
 }
 
@@ -1157,6 +1185,15 @@ fn normalize_unique(values: &[String], normalize: impl Fn(&str) -> String) -> Ve
 }
 
 impl Manifest {
+    /// Whether a window of this app runs only on the device that opened it
+    /// (`[entrypoint] window = "device"`, [`WindowKind::Device`]).
+    #[must_use]
+    pub fn window_runs_on_its_device(&self) -> bool {
+        self.entrypoint
+            .as_ref()
+            .is_some_and(|entrypoint| entrypoint.window == WindowKind::Device)
+    }
+
     /// Decode a manifest from TOML source.
     ///
     /// # Errors
