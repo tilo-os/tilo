@@ -1,7 +1,9 @@
 //! A member's custody of its own writes to a workspace another device hosts, over the direct
 //! link: the hosting device answers each write it lands or refuses for good, and the member lets
 //! it go. A write refused for good still reaches its writer as the hosting device's verdict, and
-//! a sealed write that waited past its epoch leaves renewed, is answered and leaves custody.
+//! a sealed write that waited past its epoch leaves renewed, is answered and leaves custody. A
+//! cleartext write that waited past the live window lands as it is: the hosting device judges a
+//! member's own writes on its link as history.
 //!
 //! Each test drives what the member's network actor does with its custody (one pass of
 //! `Sending::drive`, `retire_answered` on the answers, `renew_outgoing` when a pass held writes
@@ -324,11 +326,22 @@ async fn a_write_the_host_refuses_for_good_leaves_custody_and_its_verdict_reache
         },
     )
     .await;
-    let refusals = hosted.member.write_refusals(workspace);
-    let refusal = refusals
-        .iter()
-        .find(|refusal| names_the_write(refusal))
-        .expect("the member's owner holds the host's verdict on its write");
+    // The member's owner takes in what its link's replica holds a moment later.
+    let refusal = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(refusal) = hosted
+                .member
+                .write_refusals(workspace)
+                .into_iter()
+                .find(|refusal| names_the_write(refusal))
+            {
+                break refusal;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the member's owner holds the host's verdict on its write");
     assert!(
         refusal.reason.permanent(),
         "the verdict says the write is refused for good: {refusal:?}"
@@ -517,12 +530,46 @@ async fn an_expired_sealed_write_is_renewed_sent_answered_and_leaves_custody() {
     hosted.close().await;
 }
 
+/// The value of the test record as `owner` holds it in `workspace`.
+fn record_value(
+    owner: &NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+) -> Option<String> {
+    owner
+        .with_current(workspace, |view| {
+            let bytes = view.peer().document(APP, RECORD).ok_or("no record")?;
+            let document = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+            Ok(automerge::ReadDoc::get(&document, ROOT, "value")
+                .map_err(|error| error.to_string())?
+                .and_then(|(value, _)| value.into_string().ok()))
+        })
+        .unwrap()
+}
+
+/// Whether the host filed no verdict against any of `device`'s writes.
+fn host_refused_none(hosted: &Hosted, device: [u8; 32]) -> bool {
+    hosted
+        .host
+        .with_current(hosted.workspace, |view| {
+            Ok(view
+                .peer()
+                .workspace()
+                .write_refusals()
+                .iter()
+                .all(|refusal| refusal.author != device))
+        })
+        .unwrap()
+}
+
 /// A member's cleartext write that waited in its custody past the live window, while its host was
-/// away, is no write the host refused: the host neither answers it as refused nor files a verdict
-/// on it, and the member keeps it, in its replica and in its custody. Answered as refused, the
-/// member withdrew the edit from its own replica too, and lost it.
+/// unreachable for six minutes, lands on the host once the member links again: the hosting device
+/// judges the member's own writes on its link as history, as a relay host judges what a member's
+/// session hands it, so a write is decided by its signature, its author's sequence and the
+/// author's standing, never by how long it waited. The host answers it durable, holds the edit,
+/// and the member keeps it and lets it go from custody. Judged as a live frame, the host refused
+/// it as late and it never landed.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_cleartext_write_that_waited_past_the_live_window_stays_with_its_writer() {
+async fn a_cleartext_write_that_waited_past_the_live_window_lands_on_the_host() {
     let mut hosted = Hosted::new(60).await;
     let workspace = hosted.workspace;
     let (_, sent) = hosted.custody_pass();
@@ -534,7 +581,7 @@ async fn a_cleartext_write_that_waited_past_the_live_window_stays_with_its_write
     let written = SystemTime::now()
         .checked_sub(Duration::from_secs(360))
         .unwrap();
-    commit_record_at(
+    let seq = commit_record_at(
         &hosted.member,
         workspace,
         &hosted.member_key,
@@ -552,44 +599,98 @@ async fn a_cleartext_write_that_waited_past_the_live_window_stays_with_its_write
     let (_, sent) = hosted.custody_pass();
     assert!(sent.contains(&write), "the write goes to the host");
     hosted.run(dialed);
-    // What the host answers meanwhile the member's network actor takes, as it would.
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    let mut answered = BTreeMap::new();
-    while let Ok(answer) = hosted.answers.try_recv() {
-        answered.insert(answer.write, answer);
-    }
-    assert!(
-        answered
-            .get(&write)
-            .is_none_or(|answer| answer.kept != Kept::Refused),
-        "the host does not answer a late write as refused: {answered:?}"
+    let answered = hosted.answered(&[write]).await;
+    assert_eq!(
+        (answered[&write].kept, answered[&write].seq),
+        (Kept::Durable, seq),
+        "the host takes the late write in, named as custody names it"
     );
     hosted.retire(&answered);
-    hosted.member.retire_outgoing(workspace).unwrap();
-    if !answered.contains_key(&write) {
-        assert!(
-            hosted
-                .member
-                .owed_writes(workspace)
-                .unwrap()
-                .contains(&write),
-            "the write stays in custody"
-        );
-    }
-    let kept = hosted
-        .member
-        .with_current(workspace, |view| {
-            let bytes = view.peer().document(APP, RECORD).ok_or("no record")?;
-            let document = AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-            Ok(automerge::ReadDoc::get(&document, ROOT, "value")
-                .map_err(|error| error.to_string())?
-                .and_then(|(value, _)| value.into_string().ok()))
-        })
-        .unwrap();
+    assert!(
+        hosted.member.owed_writes(workspace).unwrap().is_empty(),
+        "custody ends empty"
+    );
     assert_eq!(
-        kept.as_deref(),
+        record_value(&hosted.host, workspace).as_deref(),
+        Some("written offline"),
+        "the host's replica holds the member's edit"
+    );
+    assert_eq!(
+        record_value(&hosted.member, workspace).as_deref(),
         Some("written offline"),
         "the member's replica keeps its edit"
+    );
+    assert!(
+        host_refused_none(&hosted, hosted.member_device()),
+        "the host refused none of the member's writes"
+    );
+
+    hosted.close().await;
+}
+
+/// A sealed write the member made while its host was unreachable for six minutes is held back
+/// past its epoch, renewed as the member links again, and lands on the host: answered durable,
+/// and custody ends empty. The regression check beside the cleartext one above.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sealed_write_made_offline_past_the_live_window_is_renewed_and_lands() {
+    let mut hosted = Hosted::new(70).await;
+    let workspace = hosted.workspace;
+    let (_, sent) = hosted.custody_pass();
+    let answered = hosted.answered(&sent).await;
+    hosted.retire(&answered);
+    hosted.unlink();
+
+    let keys = key_group::KeyGroup::create(
+        collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
+        key_group::MemberKey::generate("member").unwrap(),
+    )
+    .unwrap()
+    .content_keys()
+    .unwrap();
+    let written = SystemTime::now()
+        .checked_sub(Duration::from_secs(360))
+        .unwrap();
+    commit_sealed(&hosted, &keys, written);
+    let [original] = hosted
+        .member
+        .owed_writes(workspace)
+        .unwrap()
+        .try_into()
+        .expect("custody holds the sealed write made offline");
+
+    let dialed = hosted.dial().await;
+    let (queued, sent) = hosted.custody_pass();
+    assert_eq!(queued, vec![original], "the expired write waits in custody");
+    assert!(sent.is_empty(), "the expired write is held back unsent");
+    hosted
+        .member
+        .keep_sealed_histories(Arc::new(Renewing(keys)));
+    let renewed = hosted
+        .member
+        .renew_outgoing(workspace, &hosted.member_key, tilo_clock::wall())
+        .await
+        .expect("the expired write renews");
+    assert_eq!(renewed, 1);
+    let (_, sent) = hosted.custody_pass();
+    let [renewal] = sent
+        .try_into()
+        .expect("the renewal, and nothing else, goes to the host");
+    hosted.run(dialed);
+
+    let answered = hosted.answered(&[renewal]).await;
+    assert_eq!(
+        answered[&renewal].kept,
+        Kept::Durable,
+        "the host takes the renewal in"
+    );
+    hosted.retire(&answered);
+    assert!(
+        hosted.member.owed_writes(workspace).unwrap().is_empty(),
+        "custody ends empty"
+    );
+    assert!(
+        host_refused_none(&hosted, hosted.member_device()),
+        "the host refused none of the member's writes"
     );
 
     hosted.close().await;
