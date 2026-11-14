@@ -1584,16 +1584,16 @@ impl InstanceRecord {
             record: &record_id,
         };
         self.keep_on_disk(chunk);
-        // What the store wrote of the action is its change when it wrote it as the author, and
-        // as replaying the action writes it: committed as it stands, never written twice.
+        // What the store wrote of the action is its change, as replaying the action writes it:
+        // committed as the author's, never applied a second time.
         let written = match (&self.chunks, part) {
             (Docs::Store(store), Some(part)) => store
-                .written_as(chunk, part, author.as_bytes())
+                .written_as(chunk, part)
                 .map(|described| (store.clone(), part, described)),
             _ => None,
         };
         let (before, refused) = if let Some((store, part, described)) = written {
-            let (out, moved) = store.commit_open(chunk, |doc| {
+            let (out, moved) = store.commit_open(chunk, part, author.as_bytes(), |doc| {
                 let before = doc.committed_heads();
                 tilo_actions::commit_written(
                     doc,

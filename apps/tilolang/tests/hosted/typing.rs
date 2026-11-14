@@ -327,8 +327,25 @@ fn a_window_dropped_mid_burst_keeps_every_letter() {
     new_note_with_title(&mut session, "Groceries");
     // The window goes away before any pause would end the burst: only the record holds the letters.
     after_a_pause(&session, std::time::Duration::from_secs(600));
+    let written = store(&session).stats().written_once;
+    let before = record(&session);
     session.window.type_text("twenty characters in");
     session.settle();
+    // Letters the record takes in one turn are each written once, as the change each makes.
+    assert_eq!(
+        store(&session).stats().written_once,
+        written + 20,
+        "every letter is written into the record once"
+    );
+    let host = session.instance_host();
+    let mut reproduced = 0;
+    for (chunk, doc) in record(&session).all() {
+        let from = before
+            .held(chunk)
+            .map(automerge::AutoCommit::committed_heads);
+        reproduced += replayed(&mut doc.clone(), from.as_deref().unwrap_or(&[]), &host);
+    }
+    assert_eq!(reproduced, 20, "a peer reproduces every letter");
     let route = session.instance().record().route().clone();
     let held = record(&session);
     // What the record holds, as another device of the workspace reads it.

@@ -1246,10 +1246,11 @@ impl Host {
     /// Run `encode`, the door building an invocation the record applies as soon as it is built:
     /// the action it plans keeps what it wrote, so the store's writes are the change the record
     /// commits ([`crate::store::TiloStore::written_as`]) and the action does not run a second
-    /// time. Every other plan is a trial and is taken back.
-    pub fn carrying_out<R>(&self, encode: impl FnOnce() -> R) -> R {
+    /// time. It writes as `author`, whose change it is. Every other plan is a trial and is taken
+    /// back.
+    pub fn carrying_out<R>(&self, author: &[u8], encode: impl FnOnce() -> R) -> R {
         self.inner.carried.set(true);
-        let out = encode();
+        let out = self.inner.store.writing_as(author, encode);
         self.inner.carried.set(false);
         out
     }

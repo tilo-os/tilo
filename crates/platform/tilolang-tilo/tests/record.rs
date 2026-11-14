@@ -332,6 +332,15 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
 /// `who` adds one to the counter at `root` in their window: the runtime plans it and the workspace
 /// path commits it.
 fn add_one(window: &mut Window, root: &tilolang_tilo::runtime::ResourceRef, who: &str) {
+    let queued = queue_one(window, root, who);
+    let committed = window.workspace.commit(&mut window.instance).unwrap();
+    assert_eq!(committed, queued, "the edit is committed, never refused");
+    window.instance.update();
+}
+
+/// `who` adds one to the counter at `root` in their window, queued for the workspace and not
+/// committed yet: its tickets.
+fn queue_one(window: &Window, root: &tilolang_tilo::runtime::ResourceRef, who: &str) -> Vec<u64> {
     let host = window.instance.host().unwrap();
     let increment = host
         .package(APP)
@@ -356,9 +365,106 @@ fn add_one(window: &mut Window, root: &tilolang_tilo::runtime::ResourceRef, who:
     let queued =
         tilolang_tilo::instance::queue_commits(&host, &window.instance.outgoing(), first, None);
     assert!(!queued.is_empty(), "the edit is queued for the workspace");
-    let committed = window.workspace.commit(&mut window.instance).unwrap();
-    assert_eq!(committed, queued, "the edit is committed, never refused");
-    window.instance.update();
+    queued
+}
+
+/// A desk its origin derives: what the origin writes of it stays in the store's unsaved layer,
+/// open in the same document the counter's changes are written in.
+const DESK: &str = r#"app so.tilo.test.desk "Desk"
+
+type Desk (origin: session.desk) {
+  clock: Text merge register
+}
+
+root Desk
+
+default view bar for Desk
+
+view bar(d: Desk) {
+  text(d.clock)
+}
+"#;
+
+/// Each action the person takes is written once, as the change replaying it makes, whatever else
+/// its document holds open: the desk its origin derives, written there and never saved, and a
+/// second action queued before the record took the first. A peer replaying every new change gets
+/// the same change, and the desk still reads what its origin wrote.
+#[test]
+fn an_action_is_written_once_whatever_else_its_document_holds_open() {
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let platform = Rc::new(Counter {
+        ids: RefCell::new(String::new()),
+    });
+    let (mut ada, root) = ada_window(&route, &platform);
+    let host = ada.instance.host().unwrap();
+    let desk_package = host.load_builtin(DESK, "").unwrap();
+    let desk = host.root_of("so.tilo.test.desk").unwrap();
+    let clock = tilolang_tilo::origin::origin_types(&desk_package.meta, "session")
+        .into_iter()
+        .find(|ty| ty.kind == "session.desk")
+        .unwrap()
+        .fields
+        .into_iter()
+        .find(|(name, _)| name.as_str() == "clock")
+        .unwrap()
+        .1;
+    host.runtime()
+        .apply_origin(
+            "session",
+            vec![tilolang_runtime::origin::OriginWrite::Set {
+                target: desk.clone(),
+                fields: vec![(
+                    clock,
+                    tilolang_tilo::runtime::Value::Text("12:01".to_owned()),
+                )],
+            }],
+            Some("2026-10-28T10:00:00Z".to_owned()),
+        )
+        .unwrap();
+    assert!(host.take_committed().is_empty(), "the desk is no change");
+    let before = ada.workspace.marks();
+    let written = host.store().stats().written_once;
+
+    // Two adds the record takes in one turn: the second is open behind the first.
+    let mut queued = queue_one(&ada, &root, "ada");
+    queued.extend(queue_one(&ada, &root, "ada"));
+    let committed = ada.workspace.commit(&mut ada.instance).unwrap();
+    assert_eq!(committed, queued, "both adds are committed");
+    ada.instance.update();
+    assert_eq!(value_at(&ada.instance, &root), 2, "both adds count");
+    assert_eq!(
+        host.store().stats().written_once,
+        written + 2,
+        "each add is written once, as the change it makes"
+    );
+    assert_eq!(
+        host.runtime().read(&desk, "clock").ok(),
+        Some(tilolang_tilo::runtime::Value::Text("12:01".to_owned())),
+        "the desk reads what its origin wrote"
+    );
+
+    let mut registry = tilo_actions::ActionRegistry::new();
+    tilolang_tilo::history::register(&mut registry);
+    let mut reproduced = 0;
+    for (chunk, doc) in ada.workspace.chunks().all() {
+        let mut peer = doc.clone();
+        let from = before.get(&chunk).cloned().unwrap_or_default();
+        let arrived: Vec<_> = peer
+            .get_changes(&from)
+            .iter()
+            .map(automerge::Change::hash)
+            .collect();
+        for change in arrived {
+            let verified =
+                host.with_schemas(|| tilo_actions::verify_change(&mut peer, change, &registry));
+            assert!(
+                matches!(verified, Ok(tilo_actions::Verified::Reproduced)),
+                "a peer replaying the change gets the same one: {verified:?}"
+            );
+            reproduced += 1;
+        }
+    }
+    assert_eq!(reproduced, 2, "each add is one change");
 }
 
 #[test]

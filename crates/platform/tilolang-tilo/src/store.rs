@@ -196,8 +196,12 @@ struct LocalWrite {
     chunk: ChunkNo,
     edit: DynEdit,
     seed: Vec<u8>,
-    /// Its place among the store's writes into its chunk when it was written: the ids it mints
-    /// are drawn from it, as replaying its action draws them ([`crate::action::edit_seed`]).
+    /// The action it is a write of: the ticket that action is queued under when it commits
+    /// ([`Inner::next_ticket`]).
+    action: u64,
+    /// Its place among its action's writes into its chunk (derived writes counted apart): the
+    /// ids it mints are drawn from it, as replaying its action draws them
+    /// ([`crate::action::edit_seed`]).
     index: usize,
     /// For the first write of an action into its chunk that names a resource, that resource as
     /// the chunk held it before the write, read for the action's app: what the action's history
@@ -1995,12 +1999,17 @@ impl Inner {
         // A run's manifest is written before what it places reads it: the next edit of the same
         // action sees the run the last one recorded.
         let manifest = matches!(edit.bare(), DynEdit::RunChunk { .. });
-        let mut held = self.local.iter().filter(|write| write.chunk == chunk);
+        let action = self.next_ticket;
+        let mut held = self.local.iter().filter(|write| {
+            write.chunk == chunk && write.action == action && write.derived == derived
+        });
         let index = held.clone().count();
         let named = held.any(|write| subject_of(write.edit.bare()));
         let doc = self.chunks.open(chunk);
-        // An action's first write into a chunk that holds no other open writes writes as the
-        // record's holder, who commits it as the action's change.
+        // An action's first write into a chunk that holds no other open writes writes as its
+        // author, who commits it as the action's change. Writes open before it (another
+        // action's, or derived ones) leave the actor as it is: setting it would commit them, and
+        // the action's change is written alone when it commits ([`TiloStore::commit_open`]).
         if !derived
             && index == 0
             && doc.pending_ops() == 0
@@ -2020,6 +2029,7 @@ impl Inner {
             chunk,
             edit,
             seed: seed.to_vec(),
+            action,
             index,
             subject,
             touched: touched.to_vec(),

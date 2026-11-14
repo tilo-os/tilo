@@ -287,6 +287,48 @@ fn a_new_note_is_invoked_at_the_door_by_what_its_control_does() {
     );
 }
 
+/// What an agent invokes in a person's window is written once, as the agent's own change: the
+/// run that built it wrote it as theirs, and a peer replaying it gets the same change.
+#[test]
+fn an_agents_invocation_in_a_window_is_written_once_as_its_change() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = super::Session::live_notes();
+    let new_note = session.identity_named("New note");
+    let held = super::record(&session);
+    let written = super::store(&session).stats().written_once;
+    let answered = session.invoke_as("agent-task:7", &new_note, &serde_json::json!({}));
+    assert!(
+        matches!(
+            answered,
+            ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "the door ran what the control does: {answered:?}"
+    );
+    assert_eq!(
+        super::store(&session).stats().written_once,
+        written + 1,
+        "the agent's note is written once, as the change it makes"
+    );
+    let host = session.instance_host();
+    let mut reproduced = 0;
+    for (chunk, doc) in super::record(&session).all() {
+        let from = held
+            .held(chunk)
+            .map(automerge::AutoCommit::committed_heads)
+            .unwrap_or_default();
+        let mut doc = doc.clone();
+        for change in doc.get_changes(&from) {
+            assert_eq!(
+                change.actor_id().to_bytes(),
+                b"agent-task:7",
+                "the change is the agent's"
+            );
+        }
+        reproduced += super::replayed(&mut doc, &from, &host);
+    }
+    assert_eq!(reproduced, 1, "a peer reproduced the agent's change");
+}
+
 /// A control that takes an argument is invoked by what it does, with that argument: the Tasks
 /// window's New task, run at the door as another app's call or an agent's reaches it, makes the
 /// task it names.

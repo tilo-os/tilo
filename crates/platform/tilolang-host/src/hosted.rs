@@ -1765,7 +1765,9 @@ impl Hosted {
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the record commits.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
-        let encoded = host.carrying_out(|| encode(&resources, &address, argument));
+        let encoded = host.carrying_out(invoker.actor.as_bytes(), || {
+            encode(&resources, &address, argument)
+        });
         CALLER.with(|slot| *slot.borrow_mut() = None);
         let encoded =
             encoded.map_err(|error| Refused::new(door_code(&error), error.to_string()))?;
@@ -2638,11 +2640,15 @@ impl Applier {
                 change.resource, self.spec.app
             ));
         }
-        self.host
-            .root_record(&self.spec.app, ty)
-            .map_err(|error| error.to_string())?;
         let invoker: ActionInvoker = serde_json::from_value(change.invoker.clone())
             .map_err(|error| format!("the change's invoker does not decode: {error}"))?;
+        // Made as the invoker's step: the store writes it as theirs.
+        self.host
+            .store()
+            .writing_as(invoker.actor.as_bytes(), || {
+                self.host.root_record(&self.spec.app, ty)
+            })
+            .map_err(|error| error.to_string())?;
         let ambient: Option<ActionContext> = change
             .context
             .clone()
@@ -2691,8 +2697,12 @@ impl Applier {
             .addressed(&[], address.item.as_deref().unwrap_or(&address.resource));
         let (resources, address) = self.surface.naming(resources, &address);
         let caller = caller_of(&invoker);
+        // The action is applied as soon as it is built: the run that builds it is the one whose
+        // writes the record commits, as the invoker's.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
-        let encoded = tilo_actions::door::encode_json(&resources, &address, &change.arguments);
+        let encoded = self.host.carrying_out(invoker.actor.as_bytes(), || {
+            tilo_actions::door::encode_json(&resources, &address, &change.arguments)
+        });
         CALLER.with(|slot| *slot.borrow_mut() = None);
         let encoded = match encoded {
             Ok(encoded) if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE => {
