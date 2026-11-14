@@ -13,7 +13,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_session_client::{Cmd, Event, FailureSubject, LocalState, Outbox};
+use tilo_session_client::{Cmd, Event, FailureSubject, LocalState, Outbox, TransportPhase};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::{
@@ -150,21 +150,30 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
 
     drop(host.web);
     host.relay.shutdown().await;
-    // Gone long enough that the next attempt is many seconds away.
-    let due = wait_for("a long backoff", || async {
+    // The session waits out a backoff before its next attempt, and its
+    // status names when that is. Away from its host, a dial runs to its
+    // deadline, so a backoff many attempts in would take minutes to reach:
+    // the first one is what tells a session told the network is back from
+    // one left to its timer.
+    let due = wait_for("the session to wait out a backoff", || async {
         let status = peer.status();
-        (status.attempt >= 5)
+        (status.phase == TransportPhase::Offline)
             .then_some(status.next_attempt_at_ms)
             .flatten()
     })
     .await;
-    let host = restart_host_relayed(&root, &host_device, state.path()).await;
     peer.send(Cmd::Retry).unwrap();
-    ready(&[&peer]).await;
+    // The session dials at once, not when the backoff runs out.
+    wait_for("the session to dial again", || async {
+        (peer.status().phase == TransportPhase::Reconnecting).then_some(())
+    })
+    .await;
     assert!(
         tilo_clock::unix_now_ms() < due,
         "back before the backoff ran out"
     );
+    let host = restart_host_relayed(&root, &host_device, state.path()).await;
+    ready(&[&peer]).await;
     peer.close();
     host.relay.shutdown().await;
 }
