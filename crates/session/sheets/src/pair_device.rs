@@ -418,29 +418,34 @@ mod tests {
 
     use super::*;
 
-    /// The code the sheet draws carries the link the session handed it, byte for byte: a phone
-    /// scanning it reads the link that admits the new device.
-    #[test]
-    fn the_code_carries_the_link_the_session_made() {
-        let device = AddDevice::of(SAMPLE_LINK, "9 min");
-        let code = code_of(&device);
-        assert!(code.carries(SAMPLE_LINK.as_bytes()));
-        assert!(code.error().is_none(), "the link fits a code");
-        assert_eq!(code.alt(), device.alt);
-    }
+    tilo_test_env::scenario! {
+        /// `code_of`: the code the sheet draws for the link it shows.
+        fn the_code_drawn_carries_the_link_now_shown;
 
-    /// A link that ran out is replaced by a new one, and the code the sheet draws is that new
-    /// link: the person never scans a code that admits nothing.
-    #[test]
-    fn a_refreshed_link_is_the_one_the_code_carries() {
-        const LATER: &str = "https://tilo.coffee/#/@eu1.tilo.coffee/w/\
+        phase the_code_carries_the_link_the_session_made;
+        // The code the sheet draws carries the link the session handed it, byte for byte: a phone
+        // scanning it reads the link that admits the new device.
+        {
+            let device = AddDevice::of(SAMPLE_LINK, "9 min");
+            let code = code_of(&device);
+            assert!(code.carries(SAMPLE_LINK.as_bytes()));
+            assert!(code.error().is_none(), "the link fits a code");
+            assert_eq!(code.alt(), device.alt);
+        }
+
+        phase a_refreshed_link_is_the_one_the_code_carries;
+        // A link that ran out is replaced by a new one, and the code the sheet draws is that new
+        // link: the person never scans a code that admits nothing.
+        {
+            const LATER: &str = "https://tilo.coffee/#/@eu1.tilo.coffee/w/\
                              0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c?pair=fefefefefefefefefefefefefefefefe\
                              fefefefefefefefefefefefefefefefedcba9876543210fedcba9876543210";
-        let seat = AddDeviceSeat::default();
-        seat.show(AddDevice::of(SAMPLE_LINK, "9 min"));
-        seat.show(AddDevice::of(LATER, "10 min"));
-        let code = code_of(&seat.device());
-        assert!(code.carries(LATER.as_bytes()));
-        assert!(!code.carries(SAMPLE_LINK.as_bytes()));
+            let seat = AddDeviceSeat::default();
+            seat.show(AddDevice::of(SAMPLE_LINK, "9 min"));
+            seat.show(AddDevice::of(LATER, "10 min"));
+            let code = code_of(&seat.device());
+            assert!(code.carries(LATER.as_bytes()));
+            assert!(!code.carries(SAMPLE_LINK.as_bytes()));
+        }
     }
 }

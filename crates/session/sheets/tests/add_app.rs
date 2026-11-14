@@ -59,120 +59,125 @@ fn press(app: &mut HeadlessApp<AddApp>, id: &str) {
     app.settle();
 }
 
-#[test]
-fn an_appimage_is_shown_as_it_will_be_listed_with_the_move_offered() {
-    let mut app = staged("appimage");
-    for text in [
-        "Add Krita to apps?",
-        "Krita",
-        "krita-5.2.AppImage",
-        "Move to Applications",
-        "Keeps it in the Applications folder in your files",
-        "Add to apps",
-        "Don't add",
-    ] {
-        assert!(says(&mut app, text), "{text:?} is shown");
+tilo_test_env::scenario! {
+    /// "Add to apps?": what the question shows of the program, and each answer it gives the shell.
+    fn the_add_to_apps_question_shows_the_program_and_answers_the_shell;
+
+    phase an_appimage_is_shown_as_it_will_be_listed_with_the_move_offered;
+    {
+        let mut app = staged("appimage");
+        for text in [
+            "Add Krita to apps?",
+            "Krita",
+            "krita-5.2.AppImage",
+            "Move to Applications",
+            "Keeps it in the Applications folder in your files",
+            "Add to apps",
+            "Don't add",
+        ] {
+            assert!(says(&mut app, text), "{text:?} is shown");
+        }
+        assert!(
+            says(&mut app, "krita-5.2.AppImage"),
+            "the file it runs from is named"
+        );
     }
-    assert!(
-        says(&mut app, "krita-5.2.AppImage"),
-        "the file it runs from is named"
-    );
-}
 
-#[test]
-fn a_program_from_a_tarball_is_offered_no_move() {
-    let mut app = staged("program");
-    assert!(says(&mut app, "Add Krita to apps?"));
-    assert!(
-        !says(&mut app, "Move to Applications"),
-        "a program may need the files beside it, so it stays where it is"
-    );
-    assert_eq!(
-        app.harness()
-            .a11y_nodes()
-            .into_iter()
-            .filter(|(_, node)| node.label() == Some(MOVE))
-            .count(),
-        0
-    );
-}
+    phase a_program_from_a_tarball_is_offered_no_move;
+    {
+        let mut app = staged("program");
+        assert!(says(&mut app, "Add Krita to apps?"));
+        assert!(
+            !says(&mut app, "Move to Applications"),
+            "a program may need the files beside it, so it stays where it is"
+        );
+        assert_eq!(
+            app.harness()
+                .a11y_nodes()
+                .into_iter()
+                .filter(|(_, node)| node.label() == Some(MOVE))
+                .count(),
+            0
+        );
+    }
 
-#[test]
-fn adding_asks_the_shell_for_the_program_and_no_move_unless_switched_on() {
-    let (mut app, seat) = seated(appimage());
-    press(&mut app, "add-app.primary");
-    assert_eq!(
-        seat.take_asked(),
-        [AddAppEffect::Add {
-            move_to_applications: None
-        }],
-        "the switch starts off, and adding where the file is is the default"
-    );
+    phase adding_asks_the_shell_for_the_program_and_no_move_unless_switched_on;
+    {
+        let (mut app, seat) = seated(appimage());
+        press(&mut app, "add-app.primary");
+        assert_eq!(
+            seat.take_asked(),
+            [AddAppEffect::Add {
+                move_to_applications: None
+            }],
+            "the switch starts off, and adding where the file is is the default"
+        );
 
-    let (mut app, seat) = seated(appimage());
-    press(&mut app, MOVE_SWITCH);
-    press(&mut app, "add-app.primary");
-    assert_eq!(
-        seat.take_asked(),
-        [AddAppEffect::Add {
-            move_to_applications: Some(true)
-        }]
-    );
+        let (mut app, seat) = seated(appimage());
+        press(&mut app, MOVE_SWITCH);
+        press(&mut app, "add-app.primary");
+        assert_eq!(
+            seat.take_asked(),
+            [AddAppEffect::Add {
+                move_to_applications: Some(true)
+            }]
+        );
 
-    let (mut app, seat) = seated(appimage());
-    app.harness().key("Enter");
-    app.settle();
-    assert_eq!(
-        seat.take_asked(),
-        [AddAppEffect::Add {
-            move_to_applications: None
-        }],
-        "adding can't break anything, so it is the default and Enter gives it"
-    );
-}
+        let (mut app, seat) = seated(appimage());
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(
+            seat.take_asked(),
+            [AddAppEffect::Add {
+                move_to_applications: None
+            }],
+            "adding can't break anything, so it is the default and Enter gives it"
+        );
+    }
 
-#[test]
-fn not_adding_and_closing_both_decline_the_file() {
-    let (mut app, seat) = seated(appimage());
-    press(&mut app, "add-app.secondary");
-    assert_eq!(seat.take_asked(), [AddAppEffect::Decline]);
+    phase not_adding_and_closing_both_decline_the_file;
+    {
+        let (mut app, seat) = seated(appimage());
+        press(&mut app, "add-app.secondary");
+        assert_eq!(seat.take_asked(), [AddAppEffect::Decline]);
 
-    let (mut app, seat) = seated(appimage());
-    app.harness().key("Escape");
-    app.settle();
-    assert_eq!(
-        seat.take_asked(),
-        [AddAppEffect::Decline],
-        "closing it is an answer too: that file is not asked about again"
-    );
+        let (mut app, seat) = seated(appimage());
+        app.harness().key("Escape");
+        app.settle();
+        assert_eq!(
+            seat.take_asked(),
+            [AddAppEffect::Decline],
+            "closing it is an answer too: that file is not asked about again"
+        );
 
-    let (mut app, seat) = seated(appimage());
-    app.harness().click_at(10.0, 10.0);
-    app.settle();
-    assert_eq!(
-        seat.take_asked(),
-        [AddAppEffect::Decline],
-        "and so is a press beside the question"
-    );
-}
+        let (mut app, seat) = seated(appimage());
+        app.harness().click_at(10.0, 10.0);
+        app.settle();
+        assert_eq!(
+            seat.take_asked(),
+            [AddAppEffect::Decline],
+            "and so is a press beside the question"
+        );
+    }
 
-#[test]
-fn another_program_is_asked_about_with_the_switch_off_again() {
-    let (mut app, seat) = seated(appimage());
-    press(&mut app, MOVE_SWITCH);
-    seat.show(Offer {
-        file: PathBuf::from("/home/ute/Downloads/inkscape.AppImage"),
-        name: "Inkscape".to_owned(),
-        ..appimage()
-    });
-    app.settle();
-    assert!(says(&mut app, "Add Inkscape to apps?"));
-    press(&mut app, "add-app.primary");
-    assert_eq!(
-        seat.take_asked(),
-        [AddAppEffect::Add {
-            move_to_applications: None
-        }],
-        "each question starts where the person's answer to the last one ended"
-    );
+    phase another_program_is_asked_about_with_the_switch_off_again;
+    {
+        let (mut app, seat) = seated(appimage());
+        press(&mut app, MOVE_SWITCH);
+        seat.show(Offer {
+            file: PathBuf::from("/home/ute/Downloads/inkscape.AppImage"),
+            name: "Inkscape".to_owned(),
+            ..appimage()
+        });
+        app.settle();
+        assert!(says(&mut app, "Add Inkscape to apps?"));
+        press(&mut app, "add-app.primary");
+        assert_eq!(
+            seat.take_asked(),
+            [AddAppEffect::Add {
+                move_to_applications: None
+            }],
+            "each question starts where the person's answer to the last one ended"
+        );
+    }
 }
