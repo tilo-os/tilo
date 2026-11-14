@@ -234,7 +234,37 @@ pub fn is_bookkeeping(patch: &Patch) -> bool {
 }
 
 fn kind_of(doc: &AutoCommit, version: &Version) -> Kind {
-    kind_in(doc.committed_document(), version)
+    classified(doc.committed_document(), version)
+}
+
+/// How many changes' kinds [`classified`] keeps on a thread.
+const KINDS_KEPT: usize = 4096;
+
+thread_local! {
+    /// The kinds [`classified`] read, by change.
+    static KINDS: std::cell::RefCell<std::collections::HashMap<ChangeHash, Kind>> =
+        std::cell::RefCell::default();
+}
+
+/// [`kind_in`], read once a change: what a change was to the steps is a fact
+/// of the change and the history it was made on, the same in every document
+/// that holds it. Reading it means fetching the change's operations, as many
+/// as a large paste wrote, and every question about history (what the next
+/// undo takes back, whether a step is still in effect, what an undo is
+/// called) asks it of the newest steps again.
+fn classified(doc: &automerge::Automerge, version: &Version) -> Kind {
+    if let Some(kind) = KINDS.with(|kinds| kinds.borrow().get(&version.hash).cloned()) {
+        return kind;
+    }
+    let kind = kind_in(doc, version);
+    KINDS.with(|kinds| {
+        let mut kinds = kinds.borrow_mut();
+        if kinds.len() >= KINDS_KEPT {
+            kinds.clear();
+        }
+        kinds.insert(version.hash, kind.clone());
+    });
+    kind
 }
 
 #[cfg(test)]
@@ -743,7 +773,7 @@ impl StepIndex {
         if let Some(kind) = position.and_then(|at| self.kinds.get(&at)) {
             return kind.clone();
         }
-        let kind = kind_in(doc.committed_document(), version);
+        let kind = classified(doc.committed_document(), version);
         if let Some(at) = position {
             self.kinds.insert(at, kind.clone());
         }
@@ -921,7 +951,7 @@ pub fn undos_in_effect(
 /// What one redo change brought back, by full hash; empty for any other
 /// change.
 pub fn brought_back(doc: &AutoCommit, version: &Version) -> Vec<String> {
-    match kind_in(doc.committed_document(), version) {
+    match classified(doc.committed_document(), version) {
         Kind::Redo(hashes) => hashes,
         _ => Vec::new(),
     }
@@ -1294,7 +1324,8 @@ pub fn resolve(doc: &AutoCommit, version: &str) -> Result<Vec<ChangeHash>, Strin
             .parse::<ChangeHash>()
             .map_err(|error| error.to_string())?;
         return doc
-            .get_change_by_hash(&hash)
+            .committed_document()
+            .get_change_meta_by_hash(&hash)
             .map(|_| vec![hash])
             .ok_or_else(|| "The exact version contains an unknown change.".into());
     }
@@ -1314,7 +1345,12 @@ pub fn resolve(doc: &AutoCommit, version: &str) -> Result<Vec<ChangeHash>, Strin
             let hash = part
                 .parse::<ChangeHash>()
                 .map_err(|error| error.to_string())?;
-            if heads.contains(&hash) || doc.get_change_by_hash(&hash).is_none() {
+            if heads.contains(&hash)
+                || doc
+                    .committed_document()
+                    .get_change_meta_by_hash(&hash)
+                    .is_none()
+            {
                 return Err("A causal frontier contains a duplicate or unknown head.".into());
             }
             heads.push(hash);

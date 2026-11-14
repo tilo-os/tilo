@@ -476,3 +476,24 @@ what is committed and leaves the transaction open: a disk writer that shares
 a document with code holding a transaction never stores, or commits, that
 code's pending writes. Pinned by
 `crates/doc/tilo-automerge/tests/committed_readers.rs`.
+
+# Tilo patch: a deletion of many elements is one walk and few splices
+
+Deleting `n` elements sought each one by index again and wrote its successor
+with a splice of seven columns: taking back a paste of a mebibyte of text was
+a million seeks and seven million splices, ten seconds in a debug build where
+the paste itself, written as one batch, took one.
+
+`TransactionInner::inner_splice` now finds the elements once
+(`OpSet::seek_run_by_index`: the first as before, the rest by walking on
+from it), makes each delete as it did (its id counts the ones before), and
+writes the successors with `OpSet::add_succ_run_with_undo`: side-by-side
+elements of one live op each, as a paste leaves them, take one splice per
+column; any other element is written alone, as before. Each element's
+successors are placed as though those before it had theirs, so each delete
+holds the undo it held before and a rollback takes them back one by one.
+The change is the one deleting the elements one at a time makes. The marked
+spots are `TILO(run-delete)` in `transaction/inner.rs` and `op_set.rs`.
+Pinned by `collaboration`'s
+`a_run_deleted_at_once_is_the_change_one_at_a_time_makes` (tombstones, a
+list element two writers set, characters wider than one unit, a rollback).

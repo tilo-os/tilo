@@ -355,6 +355,77 @@ impl OpSet {
         undo
     }
 
+    /// TILO(run-delete): [`Self::add_succ_with_undo`] of each element one
+    /// deletion takes, in order, each element's successors placed as though
+    /// those before it had theirs. A stretch of side-by-side elements of one
+    /// live op each (fresh text, as a paste leaves it) is written in one
+    /// splice per column; what each element's undo holds is what writing it
+    /// alone would have held.
+    pub(crate) fn add_succ_run_with_undo(
+        &mut self,
+        elements: &[Vec<SuccInsert>],
+    ) -> Vec<Vec<SuccUndo>> {
+        let single = |element: &Vec<SuccInsert>| match element.as_slice() {
+            [succ] if succ.len == 0 && succ.inc.is_none() => Some(*succ),
+            _ => None,
+        };
+        let mut out = Vec::with_capacity(elements.len());
+        let mut at = 0;
+        while let Some(element) = elements.get(at) {
+            let mut run: Vec<SuccInsert> = Vec::new();
+            for next in elements[at..].iter().map_while(single) {
+                if run
+                    .last()
+                    .is_some_and(|last| next.pos != last.pos + 1 || next.sub_pos != last.sub_pos + 1)
+                {
+                    break;
+                }
+                run.push(next);
+            }
+            let Some(first) = run.first().copied().filter(|_| run.len() > 1) else {
+                out.push(self.add_succ_with_undo(element));
+                at += 1;
+                continue;
+            };
+            let n = run.len();
+            for succ in &run {
+                let visible = self.cols.index.visible.get(succ.pos);
+                let text = self.cols.index.text.values().get(succ.pos);
+                let top = self.cols.index.top.values().get(succ.pos);
+                out.push(vec![SuccUndo::new(*succ, visible, text, top)]);
+            }
+            self.cols
+                .succ_count
+                .splice(first.pos, n, std::iter::repeat_n(1u32, n));
+            self.cols
+                .succ_actor
+                .splice(first.sub_pos, 0, run.iter().map(|succ| succ.id.actoridx()));
+            self.cols.succ_ctr.splice(
+                first.sub_pos,
+                0,
+                run.iter().map(|succ| succ.id.counter() as u32),
+            );
+            self.cols
+                .index
+                .inc
+                .splice(first.sub_pos, 0, std::iter::repeat_n(None::<i64>, n));
+            self.cols
+                .index
+                .visible
+                .splice(first.pos, n, std::iter::repeat_n(false, n));
+            self.cols
+                .index
+                .text
+                .splice(first.pos, n, std::iter::repeat_n(None::<u32>, n));
+            self.cols
+                .index
+                .top
+                .splice(first.pos, n, std::iter::repeat_n(false, n));
+            at += n;
+        }
+        out
+    }
+
     pub(crate) fn undo_succ(&mut self, op_pos: &[SuccUndo]) {
         for undo in op_pos.iter().rev() {
             let i = undo.succ;
@@ -682,6 +753,46 @@ impl OpSet {
         } else {
             self.seek_ops_by_index_slow(obj, index, seq_type, clock)
         }
+    }
+
+    /// TILO(run-delete): the elements a deletion of `units` index units from
+    /// `index` takes, in order: the first found as [`Self::seek_ops_by_index`]
+    /// finds it, every later one by walking on from there, so a deletion of
+    /// many elements reads the object once rather than once an element. The
+    /// first may start before `index` (inside a multi-unit element): the
+    /// `units` are then counted from the element after it, as the caller
+    /// skips it.
+    pub(crate) fn seek_run_by_index<'a>(
+        &'a self,
+        obj: &ObjId,
+        index: usize,
+        units: usize,
+        seq_type: SequenceType,
+        clock: Option<&Clock>,
+    ) -> Vec<OpsFound<'a>> {
+        let first = self.seek_ops_by_index(obj, index, seq_type, clock);
+        if first.ops.is_empty() {
+            return Vec::new();
+        }
+        let end = self.scope_to_obj(obj).end;
+        let mut covered = first.index.saturating_add(first.width(seq_type, self.text_encoding));
+        // A deletion that starts inside the first element starts after it.
+        let start = if first.index < index { covered } else { index };
+        let wanted = start.saturating_add(units);
+        let after = first.end_pos..end.max(first.end_pos);
+        let mut out = vec![first];
+        if covered >= wanted {
+            return out;
+        }
+        for mut found in OpsFoundIter::new(self.iter_range(&after).no_marks(), clock.cloned()) {
+            found.index = covered;
+            covered = covered.saturating_add(found.width(seq_type, self.text_encoding));
+            out.push(found);
+            if covered >= wanted {
+                break;
+            }
+        }
+        out
     }
 
     pub(crate) fn seek_ops_by_index_slow<'a>(

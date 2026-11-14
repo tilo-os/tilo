@@ -215,9 +215,11 @@ impl TiloStore {
             inner.reapply_kept(chunk);
             return false;
         }
-        let kept = seen
-            .iter()
-            .all(|head| doc.committed_document().get_change_by_hash(head).is_some());
+        let kept = seen.iter().all(|head| {
+            doc.committed_document()
+                .get_change_meta_by_hash(head)
+                .is_some()
+        });
         if !kept {
             // The holder took changes back (an action the workspace refused partway): what the
             // store derived of them goes, and the chunk is read again.
@@ -226,8 +228,12 @@ impl TiloStore {
             return true;
         }
         let arrived = doc.committed_document().get_changes(seen);
+        // The record's own document holds its new changes already: the chunk stood at what the
+        // store saw of it, and every index that took that in takes in the new changes alone.
+        let mut from = inner.chunks.heads();
+        from.insert(chunk, seen.to_vec());
         let before = Before {
-            from: inner.chunks.heads(),
+            from,
             snapshots: inner.answering(),
             overlay: std::mem::take(&mut inner.overlay),
         };

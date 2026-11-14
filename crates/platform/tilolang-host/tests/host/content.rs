@@ -258,6 +258,7 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
 
     // Ada pastes the body: one edit, too large to record inline.
     let body = pasted_body(paragraphs);
+    let pasting = std::time::Instant::now();
     window.send(&[ToApp::EditRich {
         lane: Lane::Root,
         target: note.clone(),
@@ -265,6 +266,7 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
         rich: body,
     }]);
     settle(&mut host, &mut window);
+    let pasted_in = pasting.elapsed();
     assert!(
         window.notices.is_empty(),
         "the paste is kept: {:?}",
@@ -314,10 +316,18 @@ fn pastes_past_a_mebibyte(paragraphs: usize) {
         "Ada's connection sent nothing while the others read her record"
     );
 
-    // Ada's undo takes the paste back exactly, as a change of its own sent on her connection.
+    // Ada's undo takes the paste back exactly, as a change of its own sent on her connection,
+    // in about the time the paste took: what it deletes goes as one run, and no history read
+    // fetches the paste's characters again.
     let shared = documents_sent(&sent);
+    let undoing = std::time::Instant::now();
     window.send(&[ToApp::Undo]);
     settle(&mut host, &mut window);
+    let undone_in = undoing.elapsed();
+    assert!(
+        undone_in < pasted_in.saturating_mul(2),
+        "the undo took {undone_in:?}, the paste {pasted_in:?}"
+    );
     assert_eq!(
         body_of(&host, &note),
         before,

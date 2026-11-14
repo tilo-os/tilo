@@ -61,9 +61,9 @@ fn key(doc: &AutoCommit, obj: &ObjId, unit: usize, at: Option<&[ChangeHash]>) ->
 /// in document order, each indexed as the ones before it left the text: an
 /// insertion's units are where they are at `hi`, and a deletion's are where
 /// they were at `lo` once the earlier patches' net growth is taken off.
-fn each_splice(
+fn each_splice<'p>(
     doc: &AutoCommit,
-    patches: &[Patch],
+    patches: impl IntoIterator<Item = &'p Patch>,
     lo: &[ChangeHash],
     hi: &[ChangeHash],
     mut each: impl FnMut(&ObjId, Option<Key>, Option<Key>),
@@ -135,20 +135,25 @@ pub(super) fn rewritten(
     later: &HashMap<ObjId, LaterText>,
 ) -> HashMap<ObjId, String> {
     let mut own: HashMap<ObjId, Own> = HashMap::new();
+    // Only a text somebody wrote in since can have been rewritten: the run's
+    // characters are read in those alone, so taking back a paste nobody
+    // touched since reads none of its characters.
+    let forward: Vec<&Patch> = forward
+        .iter()
+        .filter(|patch| later.contains_key(&patch.obj))
+        .collect();
     // Where the run deleted, as of `after`: a diff's later patches into a
     // text are all further on, so a deletion's index is its place then.
     let deletions: Vec<(ObjId, usize)> = forward
         .iter()
-        .filter(|patch| later.contains_key(&patch.obj) && is_text(doc, &patch.obj))
+        .filter(|patch| is_text(doc, &patch.obj))
         .filter_map(|patch| match &patch.action {
             PatchAction::DeleteSeq { index, .. } => Some((patch.obj.clone(), *index)),
             _ => None,
         })
         .collect();
     each_splice(doc, forward, before, after, |obj, inserted, _| {
-        if let Some(key) = inserted
-            && later.contains_key(obj)
-        {
+        if let Some(key) = inserted {
             own.entry(obj.clone()).or_default().inserted.insert(key);
         }
     });

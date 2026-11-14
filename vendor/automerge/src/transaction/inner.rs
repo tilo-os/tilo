@@ -770,21 +770,27 @@ impl TransactionInner {
             0
         };
 
-        // delete `del` items - performing the query for each one
+        // delete `del` items. TILO(run-delete): the elements are found in one
+        // walk of the object, then each is deleted as it was found.
         let mut delete_index = index + inserted_width;
         let mut deleted: usize = 0;
-        while deleted < (del as usize) {
-            // TODO: could do this with a single custom query
-
-            let query =
-                doc.ops()
-                    .seek_ops_by_index(&obj.id, delete_index, seq_type, self.scope.as_ref());
-
-            let step = if let Some(op) = query.ops.last() {
-                op.width(seq_type, doc.text_encoding())
-            } else {
+        // Each delete is pending as it is made (its id counts them); its
+        // successors are written once every element is found.
+        let mut deletes: Vec<(usize, Vec<SuccInsert>)> = Vec::new();
+        for query in doc.ops().seek_run_by_index(
+            &obj.id,
+            delete_index,
+            del as usize,
+            seq_type,
+            self.scope.as_ref(),
+        ) {
+            if deleted >= del as usize {
+                break;
+            }
+            let Some(last) = query.ops.last() else {
                 break;
             };
+            let step = last.width(seq_type, doc.text_encoding());
 
             // if we delete in the middle of a multi-character
             // move cursor to the next character
@@ -794,18 +800,32 @@ impl TransactionInner {
             }
 
             let query_elemid = query.elemid().ok_or(AutomergeError::InvalidIndex(index))?;
-            let mut op = self.next_delete(obj, delete_index, query_elemid, &query.ops);
+            let op = self.next_delete(obj, delete_index, query_elemid, &query.ops);
             let ops_pos = query
                 .ops
                 .iter()
                 .map(|o| o.add_succ(op.id(), None))
                 .collect::<Vec<_>>();
-
-            op.undo = doc.ops_mut().add_succ_with_undo(&ops_pos);
-
             deleted += step;
-
+            deletes.push((self.pending.len(), ops_pos));
             self.pending.push(op);
+        }
+        // Each element's successors were placed against the object as it was
+        // before any of them was deleted: the successors written for the
+        // elements before it (which sit before it) move its own along.
+        let mut written = 0;
+        let (at, mut elements): (Vec<usize>, Vec<Vec<SuccInsert>>) = deletes.into_iter().unzip();
+        for succs in &mut elements {
+            for succ in succs.iter_mut() {
+                succ.sub_pos += written;
+            }
+            written += succs.len();
+        }
+        let undos = doc.ops_mut().add_succ_run_with_undo(&elements);
+        for (at, undo) in at.into_iter().zip(undos) {
+            if let Some(op) = self.pending.get_mut(at) {
+                op.undo = undo;
+            }
         }
 
         if deleted > 0 && patch_log.is_active() {

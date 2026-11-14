@@ -531,9 +531,11 @@ impl Chunks {
     pub fn holds(&self, stamps: &Stamps) -> bool {
         stamps.iter().all(|(chunk, heads)| {
             self.mirror(*chunk).is_some_and(|doc| {
-                heads
-                    .iter()
-                    .all(|head| doc.committed_document().get_change_by_hash(head).is_some())
+                heads.iter().all(|head| {
+                    doc.committed_document()
+                        .get_change_meta_by_hash(head)
+                        .is_some()
+                })
             })
         })
     }

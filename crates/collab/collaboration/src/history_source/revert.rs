@@ -881,4 +881,85 @@ mod replay_regressions {
             assert_eq!(doc.text(&text).unwrap(), "hello");
         }
     }
+
+    /// Taking back a paste deletes its characters as one run: the change is
+    /// the one deleting them one at a time makes, over tombstones, a list
+    /// element two writers set at once and characters wider than one unit,
+    /// and a rollback takes the run back whole.
+    #[test]
+    fn a_run_deleted_at_once_is_the_change_one_at_a_time_makes() {
+        use automerge::transaction::CommitOptions;
+        fn read(doc: &AutoCommit, obj: &ObjId) -> String {
+            match doc.object_type(obj) {
+                Ok(ObjType::Text) => doc.text(obj).unwrap(),
+                _ => format!("{:?}", doc.values(obj).collect::<Vec<_>>()),
+            }
+        }
+        fn splice(doc: &mut AutoCommit, obj: &ObjId, index: usize, del: usize) {
+            let del = isize::try_from(del).unwrap();
+            if doc.object_type(obj) == Ok(ObjType::Text) {
+                doc.splice_text(obj, index, del, "").unwrap();
+            } else {
+                doc.splice(
+                    obj,
+                    index,
+                    del,
+                    std::iter::empty::<automerge::ScalarValue>(),
+                )
+                .unwrap();
+            }
+        }
+        fn same(doc: &mut AutoCommit, obj: &ObjId, index: usize, length: usize) {
+            let before = read(doc, obj);
+            let carol = || ActorId::from(b"carol".as_slice());
+            let mut whole = doc.fork().with_actor(carol());
+            let mut each = doc.fork().with_actor(carol());
+            let mut back = doc.fork().with_actor(carol());
+            splice(&mut whole, obj, index, length);
+            splice(&mut back, obj, index, length);
+            back.rollback();
+            assert_eq!(read(&back, obj), before, "a rollback takes the run back");
+            assert_eq!(back.save(), doc.save(), "a rollback takes the run back");
+            let mut gone = 0;
+            while gone < length && index < each.length(obj) {
+                let len = each.length(obj);
+                splice(&mut each, obj, index, 1);
+                gone += len - each.length(obj);
+            }
+            whole.commit_with(CommitOptions::default().with_time(7));
+            each.commit_with(CommitOptions::default().with_time(7));
+            assert_eq!(read(&whole, obj), read(&each, obj), "{index} {length}");
+            assert_eq!(whole.save(), each.save(), "{index} {length}");
+        }
+        let mut doc = AutoCommit::new().with_actor(ActorId::from(b"ada".as_slice()));
+        let text = doc.put_object(ROOT, "text", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, &"the quick brown fox ".repeat(50))
+            .unwrap();
+        doc.commit();
+        doc.splice_text(&text, 10, 5, "").unwrap();
+        doc.splice_text(&text, 40, 3, "").unwrap();
+        doc.commit();
+        same(&mut doc, &text, 3, 200);
+        same(&mut doc, &text, 0, 5000);
+        let list = doc.put_object(ROOT, "list", ObjType::List).unwrap();
+        for n in 0..20_i64 {
+            doc.insert(&list, 0, n).unwrap();
+        }
+        doc.commit();
+        let mut bob = doc.fork().with_actor(ActorId::from(b"bob".as_slice()));
+        doc.put(&list, 5, 100_i64).unwrap();
+        bob.put(&list, 5, 200_i64).unwrap();
+        doc.commit();
+        bob.commit();
+        doc.merge(&mut bob).unwrap();
+        same(&mut doc, &list, 2, 10);
+        let mut wide = AutoCommit::new_with_encoding(automerge::TextEncoding::Utf16CodeUnit)
+            .with_actor(ActorId::from(b"ada".as_slice()));
+        let text = wide.put_object(ROOT, "text", ObjType::Text).unwrap();
+        wide.splice_text(&text, 0, 0, &"a\u{1F600}b\u{1F600}".repeat(20))
+            .unwrap();
+        wide.commit();
+        same(&mut wide, &text, 2, 9);
+        same(&mut wide, &text, 1, 30);
+    }
 }

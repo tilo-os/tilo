@@ -21,7 +21,7 @@
 //! record again; its versions are not in the record) and when it is removed: an undone removal
 //! brings back the resource it was, made when it was made.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 use automerge::ReadDoc as _;
@@ -245,7 +245,7 @@ pub fn run_of(context: &tilo_actions::ActionContext) -> Option<Run> {
 /// The versions `change` made, one per resource it changed, when it is a tilolang action's
 /// change: who, when, by which action, in which run, and what it did to each.
 #[must_use]
-pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
+pub fn versions_of(change: &(impl ChangeHead + ?Sized)) -> Vec<Version> {
     let Some((stamp, action, run)) = read_change(change) else {
         return Vec::new();
     };
@@ -303,7 +303,9 @@ fn items_inserted_into(inserted: &[(String, String)], holder: &str) -> Vec<Strin
 /// Where `change` placed items, when it is a tilolang action's change
 /// ([`DynAction::placed`]).
 #[must_use]
-pub fn placed_of(change: &automerge::Change) -> Vec<(String, String, String, Option<String>)> {
+pub fn placed_of(
+    change: &(impl ChangeHead + ?Sized),
+) -> Vec<(String, String, String, Option<String>)> {
     read_change(change).map_or_else(Vec::new, |(_, action, _)| action.placed())
 }
 
@@ -435,7 +437,7 @@ pub fn at_lit(value: &FieldValue) -> Lit {
 /// The version `change` made, and the resources it changed (as the runtime writes them), when
 /// it is a tilolang action's change.
 #[must_use]
-pub fn stamp_of(change: &automerge::Change) -> Option<(Stamp, Vec<String>)> {
+pub fn stamp_of(change: &(impl ChangeHead + ?Sized)) -> Option<(Stamp, Vec<String>)> {
     let (stamp, action, _) = read_change(change)?;
     Some((stamp, action.changed()))
 }
@@ -703,7 +705,7 @@ impl Ends {
 /// it was made from, which the change is a version of too though of no field of its own. A
 /// comment under a task changed that task, for whoever made or read it; the store's versions
 /// note it the same way (`super::super::store::versions`).
-fn made_of(change: &automerge::Change) -> Vec<(String, Vec<String>, VersionKind)> {
+fn made_of(change: &(impl ChangeHead + ?Sized)) -> Vec<(String, Vec<String>, VersionKind)> {
     let mut out: Vec<(String, Vec<String>, VersionKind)> = Vec::new();
     for version in versions_of(change) {
         if let Some(from) = &version.from {
@@ -722,10 +724,9 @@ fn made_of(change: &automerge::Change) -> Vec<(String, Vec<String>, VersionKind)
 /// A resource an action was made from is a version of that change too, of no field of its own:
 /// a comment under a task changed that task, for whoever made or read it. The store's versions
 /// note it the same way (`super::super::store::versions`).
-fn versions_of_changes<'c>(
-    changes: impl IntoIterator<Item = &'c automerge::Change>,
-    mirror: &Doc,
-    resources: &BTreeMap<DocId, (AppId, TypeId)>,
+fn versions_of_changes<C: ChangeHead>(
+    changes: impl IntoIterator<Item = C>,
+    stepped: &mut Stepped<'_>,
     undone: &BTreeSet<String>,
 ) -> BTreeMap<String, Ends> {
     let mut out: BTreeMap<String, Ends> = BTreeMap::new();
@@ -733,25 +734,30 @@ fn versions_of_changes<'c>(
         if undone.contains(&change.hash().to_string()) {
             continue;
         }
-        let (stamp, wrote) = if let Some((stamp, _)) = stamp_of(change) {
-            (stamp, made_of(change))
+        let (stamp, wrote) = if let Some((stamp, _)) = stamp_of(&change) {
+            (stamp, made_of(&change))
         } else {
-            let Some(stamp) = written_stamp(change) else {
+            let Some(stamp) = written_stamp(&change) else {
                 continue;
             };
             // A package action whose edits are kept as content changed the fields it wrote, as
             // its version names them; a step takes a change back rather than changing a field.
-            let action = parsed(change).apart.is_some();
-            let written = stepped(change, mirror, resources)
-                .into_iter()
+            let action = parsed(&change).apart.is_some();
+            let written = stepped
+                .of(&change)
+                .iter()
                 .map(|version| {
-                    let fields = if action { version.fields } else { Vec::new() };
-                    (version.resource, fields, version.kind)
+                    let fields = if action {
+                        version.fields.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    (version.resource.clone(), fields, version.kind)
                 })
                 .collect();
             (stamp, written)
         };
-        let placed: BTreeSet<String> = placed_of(change)
+        let placed: BTreeSet<String> = placed_of(&change)
             .into_iter()
             .map(|(item, _, _, _)| item)
             .collect();
@@ -830,7 +836,10 @@ pub fn ends_of<'c>(
         .copied()
         .filter(|change| step_stamp(change).is_some())
         .collect();
-    let mut out = versions_of_changes(batch.iter().copied(), mirror, resources, &BTreeSet::new());
+    // What a step wrote is read off its operations once, however often it is asked: a step
+    // that takes back a paste writes as many operations as the paste did.
+    let mut stepped = Stepped::new(mirror, resources);
+    let mut out = versions_of_changes(batch.iter().copied(), &mut stepped, &BTreeSet::new());
     if steps.is_empty() {
         return out;
     }
@@ -841,17 +850,19 @@ pub fn ends_of<'c>(
     let mut touched: BTreeSet<String> = BTreeSet::new();
     for step in &steps {
         touched.extend(
-            stepped(step, mirror, resources)
-                .into_iter()
-                .map(|version| version.resource),
+            stepped
+                .of(step)
+                .iter()
+                .map(|version| version.resource.clone()),
         );
     }
     let marked: BTreeSet<String> = steps.iter().flat_map(|step| marked_by(step)).collect();
+    let document = mirror.committed_document();
     for hash in undone.iter().chain(marked.iter()) {
         let Ok(hash) = hash.parse::<automerge::ChangeHash>() else {
             continue;
         };
-        let Some(change) = mirror.committed_document().get_change_by_hash(&hash) else {
+        let Some(change) = document.get_change_meta_by_hash(&hash) else {
             continue;
         };
         match stamp_of(&change) {
@@ -861,18 +872,16 @@ pub fn ends_of<'c>(
                     .map(|(resource, _, _)| resource),
             ),
             None => touched.extend(
-                stepped(&change, mirror, resources)
-                    .into_iter()
-                    .map(|version| version.resource),
+                stepped
+                    .of(&change)
+                    .iter()
+                    .map(|version| version.resource.clone()),
             ),
         }
     }
-    let whole = versions_of_changes(
-        &mirror.committed_document().get_changes(&[]),
-        mirror,
-        resources,
-        &undone,
-    );
+    // The whole log, read for what each change says of itself: only a step's operations are
+    // fetched, and each once.
+    let whole = versions_of_changes(document.get_changes_meta(&[]), &mut stepped, &undone);
     for resource in touched {
         if let Some(end) = whole.get(&resource) {
             let mut end = end.clone();
@@ -881,6 +890,32 @@ pub fn ends_of<'c>(
         }
     }
     out
+}
+
+/// What the changes of `mirror` that are read off what they wrote ([`stepped`]) made, each read
+/// once by its hash.
+struct Stepped<'d> {
+    mirror: &'d Doc,
+    resources: &'d BTreeMap<DocId, (AppId, TypeId)>,
+    read: HashMap<automerge::ChangeHash, Vec<Version>>,
+}
+
+impl<'d> Stepped<'d> {
+    fn new(mirror: &'d Doc, resources: &'d BTreeMap<DocId, (AppId, TypeId)>) -> Self {
+        Self {
+            mirror,
+            resources,
+            read: HashMap::new(),
+        }
+    }
+
+    /// [`stepped`] of `change`, read the first time it is asked.
+    fn of(&mut self, change: &(impl ChangeHead + ?Sized)) -> &[Version] {
+        let (mirror, resources) = (self.mirror, self.resources);
+        self.read
+            .entry(change.hash())
+            .or_insert_with(|| stepped(change, mirror, resources))
+    }
 }
 
 /// The version a step on the record that is no action of a package was made by (an undo, a

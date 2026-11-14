@@ -768,14 +768,16 @@ impl InstanceRecord {
     pub fn changes_of(&self, invocation: InvocationId) -> Vec<[u8; 32]> {
         let mut changes: Vec<(i64, [u8; 32])> = Vec::new();
         self.read(|chunks| {
+            // What each change says of itself is enough: its operations are never read.
             for (_, doc) in chunks.all() {
-                for change in doc.committed_document().get_changes(&[]) {
+                for change in doc.committed_document().get_changes_meta(&[]) {
                     if change
-                        .message()
+                        .message
+                        .as_deref()
                         .and_then(ActionContext::from_change_message)
                         .is_some_and(|context| context.source_invocation == Some(invocation))
                     {
-                        changes.push((change.timestamp(), change.hash().0));
+                        changes.push((change.timestamp, change.hash.0));
                     }
                 }
             }
@@ -792,9 +794,8 @@ impl InstanceRecord {
                 .all()
                 .find(|(_, doc)| {
                     doc.committed_document()
-                        .get_changes(&[])
-                        .iter()
-                        .any(|known| known.hash().0 == *change)
+                        .get_change_meta_by_hash(&ChangeHash(*change))
+                        .is_some()
                 })
                 .map(|(chunk, _)| chunk)
         })
@@ -807,10 +808,10 @@ impl InstanceRecord {
             chunks
                 .held(chunk)?
                 .committed_document()
-                .get_changes(&[])
-                .into_iter()
-                .find(|known| known.hash().0 == *change)
-                .and_then(|known| known.message().and_then(ActionContext::from_change_message))
+                .get_change_meta_by_hash(&ChangeHash(*change))?
+                .message
+                .as_deref()
+                .and_then(ActionContext::from_change_message)
                 .and_then(|context| context.source_invocation)
         })
     }
