@@ -589,12 +589,13 @@ fn chat_channels(doc: &automerge::AutoCommit) -> Option<Vec<String>> {
     )
 }
 
-fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
-    // A device of the owner's root that the room never enrolled.
+fn unenrolled_stranger_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+    // A device of a root the room has nobody of in it: membership follows a
+    // person, so this is the device that stays out.
     let sibling_key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
         getrandom::SysRng,
     ));
-    let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
+    let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x12; 32]);
     let mut sibling_cert = tilo_user_identity::DeviceCert {
         user_public_key: owner_root.verifying_key().to_bytes(),
         device_public_key: sibling_key.verifying_key().to_bytes(),
@@ -907,7 +908,7 @@ fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() 
     let (id, plain) = (started.workspace, started.plain);
     let visiting = join_through_door(&runtime, plain, &id, own_device(0x71, "Ana"), "Ana");
     let writer = join_through_door(&runtime, plain, &id, own_device(0x72, "Ben"), "Ben");
-    let sibling = unenrolled_owner_device();
+    let sibling = unenrolled_stranger_device();
     runtime.block_on(persons_read_the_room_and_are_refused(
         plain,
         &id,
@@ -956,8 +957,8 @@ fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() 
 }
 
 /// The first start's pages: two people who joined through the door read the
-/// chat and the viewer's writes are refused, and a device of the owner the
-/// room never enrolled is not admitted.
+/// chat and the viewer's writes are refused, and a device of a root with
+/// nobody in the room is not admitted.
 async fn persons_read_the_room_and_are_refused(
     plain: std::net::SocketAddr,
     cluster: &str,
@@ -1032,7 +1033,7 @@ async fn persons_read_the_room_and_are_refused(
                 .status()
                 .failures
                 .into_iter()
-                .find(|failure| failure.message == "device not in workspace membership")
+                .find(|failure| failure.code == "not-admitted")
         },
         || format!("{:?}", other.status()),
     )
