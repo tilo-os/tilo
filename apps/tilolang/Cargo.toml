@@ -36,16 +36,12 @@ libc.workspace = true
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
 # The directory protocol a running app takes later builds of its package through (`src/updates.rs`).
 tilo-app-module = { version = "0.1.0", path = "../../crates/platform/tilo-app-module" }
-# The IMAP and SMTP protocol code of native Mail, and the settings' account store, behind the
-# mail origin of packages whose types hold a mail server's resources (`src/mail`).
-mail = { path = "../mail" }
 # The mail origin: in the window's process outside a host, and the connector process the
 # system runs for a hosted Mail.
 tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
 # YouTube as an outside origin: a live window of an app whose types hold YouTube's resources
 # keeps them in step with it, in native code with the network.
 tilolang-youtube = { path = "../../crates/platform/tilolang-youtube" }
-tilo-content = { path = "../../crates/system/content" }
 # The UI host's half of the window, and the patch protocol between it and the instance.
 tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }
 tilo-render-protocol = { path = "../../crates/platform/tilo-render-protocol" }
@@ -58,10 +54,6 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tilolang = { path = "../../crates/lang/tilolang" }
-# Waiting for a server's answer without a fixed budget that a busy runner overruns.
-tilo-test-env = { path = "../../crates/dev/test-env" }
-# The test IMAP and SMTP servers the mail origin's tests run against.
-mail = { path = "../mail", features = ["fake-servers"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`),
 # whose tests play the broker over the host's own fake (`testing`).

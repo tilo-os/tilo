@@ -20,11 +20,8 @@ pub mod hosted;
 pub mod i18n;
 
 pub mod names;
-#[cfg(test)]
-pub mod packages;
 pub mod resource;
 pub mod updates;
-pub mod window;
 
 use std::sync::{Arc, OnceLock};
 
@@ -122,11 +119,6 @@ pub fn definition() -> &'static ApplicationDefinition {
             return;
         }
         let Some(bundle) = installed_bundle() else {
-            #[cfg(test)]
-            match packages::surface() {
-                Ok(surface) => ui::app_surface::register_package(UNBUNDLED_ID, &surface),
-                Err(error) => tracing::error!(error, "the built-in packages' surface is unusable"),
-            }
             return;
         };
         match bundle.surface() {

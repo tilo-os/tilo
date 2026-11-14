@@ -499,13 +499,6 @@ impl Instance {
         self.rootless = true;
     }
 
-    /// Open over the workspace's indexes before its record, which `loader` reads: a write, or a
-    /// field no index holds, waits for it. Before the host starts.
-    pub fn set_record_loader(&mut self, loader: Box<dyn Fn() -> Option<tilo_resource::Doc>>) {
-        self.opening = true;
-        self.record_loader = Some(loader);
-    }
-
     /// Read the person's standing in the workspace from `source`: what the runtime invokes is decided
     /// by the workspace's policy with it. May come after the host started (a window shown before its
     /// host gave it one).
@@ -592,12 +585,6 @@ impl Instance {
     /// comes to the front as their input does, and takes the keyboard.
     pub fn opens_what_it_made(&mut self, anchor: String) {
         self.pressed_opens.push((self.taken_press, anchor));
-    }
-
-    /// Where the door's answers to effects mark work for the next frame.
-    #[must_use]
-    pub fn door_work(&self) -> Rc<Cell<bool>> {
-        Rc::clone(&self.door_work)
     }
 
     /// The commits waiting for the door.
@@ -744,11 +731,6 @@ impl Instance {
             .unwrap_or_default();
         shown.sort();
         shown
-    }
-
-    /// The later build this instance took since last asked.
-    pub fn take_taken_build(&mut self) -> Option<u64> {
-        self.taken_build.take()
     }
 
     /// The undos and redos the person asked for since last asked, in the order they asked: Undo
@@ -2325,14 +2307,6 @@ impl Instance {
         }
         self.poll_views();
         self.flush();
-    }
-
-    /// The record is the instance's now: it was opened over the indexes, and reads the record
-    /// from here on.
-    pub fn took_record(&mut self) {
-        self.opening = false;
-        self.record_loader = None;
-        self.record_moved = true;
     }
 
     /// Whether work is still under way off the frame that changes what the window shows: an

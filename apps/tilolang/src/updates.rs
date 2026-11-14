@@ -7,10 +7,8 @@
 //! protocol of `tilo_app_module`: the directory is named in `TILO_APP_MODULE_UPDATES`. Without
 //! one, nothing here runs.
 //!
-//! A thread watches the directory, reads each new generation as a [`Bundle`] and wakes the
-//! windows, which take it over on their own thread ([`crate::window::Window`]): in place when
-//! the new build reads the state the old one wrote, and otherwise by starting the app over on the
-//! workspace record, as its next start would.
+//! A thread watches the directory and reads each new generation as a [`Bundle`]: the latest
+//! is what [`latest`] answers.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -52,37 +50,7 @@ fn lock() -> std::sync::MutexGuard<'static, Shared> {
 /// The latest later build, once there is one.
 #[must_use]
 pub fn latest() -> Option<Update> {
-    #[cfg(test)]
-    {
-        HANDED.with(|handed| handed.borrow().clone())
-    }
-    #[cfg(not(test))]
-    {
-        lock().latest.clone()
-    }
-}
-
-#[cfg(test)]
-thread_local! {
-    /// The window tests run side by side on threads of one process: each hands its own later
-    /// builds over.
-    static HANDED: std::cell::RefCell<Option<Update>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Hand `bundle` to the windows of this thread as the next later build, as the watch does.
-#[cfg(test)]
-pub fn hand_over(bundle: Bundle) {
-    HANDED.with(|handed| {
-        let mut handed = handed.borrow_mut();
-        let generation = handed
-            .as_ref()
-            .map_or(1, |update| update.generation.saturating_add(1));
-        *handed = Some(Update {
-            generation,
-            bundle: Arc::new(bundle),
-            read_at: Instant::now(),
-        });
-    });
+    lock().latest.clone()
 }
 
 /// Wake `wake` whenever a later build arrives.

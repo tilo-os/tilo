@@ -129,6 +129,75 @@ impl NameHost for Told {
 mod tests {
     use super::*;
 
+    /// What a window with nobody named yet calls each id: by what the id says it is, never by
+    /// part of a key.
+    #[test]
+    fn a_participant_nobody_named_is_named_by_what_they_are_never_by_part_of_their_id() {
+        let told = Told::new("me-id", Rc::new(Unnamed));
+        let rows: &[(&str, &str, &str)] = &[
+            ("agent:planner", "Planner (agent)", "an agent by its name"),
+            (
+                "0123456789abcdef0123456789abcdef",
+                "Unknown participant",
+                "a key nobody named is never shown, in full or cut short",
+            ),
+            ("tomas", "Unknown participant", "a person nobody named"),
+            ("scenario:Mia", "Mia", "a scenario's sample person"),
+            (
+                "trigger:so.tilo.lang.today",
+                "Today",
+                "an app acting by itself",
+            ),
+            ("app:so.tilo.lang.today", "Today", "an app by its own name"),
+            ("app:so.tilo.lang.notes", "Notes", "an app by its own name"),
+            (
+                "app:org.example.Editor",
+                "Editor",
+                "an app installed nowhere here reads as the words its id makes",
+            ),
+            ("", "Unknown participant", "no id at all"),
+            (
+                "agent:",
+                "Unknown participant (agent)",
+                "an agent that gave no name still reads as an agent",
+            ),
+            (
+                "  agent:planner  ",
+                "Planner (agent)",
+                "the spaces around an id are not part of it",
+            ),
+            ("app:", "Unknown participant", "an app id with no words"),
+            (
+                "app:org.gnome.TextEditor",
+                "Text Editor",
+                "a camel-case hump is a space",
+            ),
+            (
+                "app:so.tilo.lang.read-later",
+                "Read Later",
+                "a dash is a space, and each word is capitalised",
+            ),
+            (
+                "bot:helper",
+                "Helper",
+                "a bot nobody named, by its own name",
+            ),
+            ("shortcut:morning", "Morning", "a shortcut by its name"),
+            (
+                "migration:so.tilo.lang.today@1f2e",
+                "Today",
+                "an update to a later build is the app's own act",
+            ),
+        ];
+        for (id, expected, why) in rows {
+            assert_eq!(
+                told.name(&Principal::new((*id).to_owned())),
+                *expected,
+                "{id:?}: {why}"
+            );
+        }
+    }
+
     #[test]
     fn a_participant_is_named_as_the_window_said_and_by_what_they_are_when_nobody_did() {
         let id = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";

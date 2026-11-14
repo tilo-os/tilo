@@ -756,11 +756,9 @@ readers = [
 
 [[cargo]]
 package = "tilolang-app"
-# The window's tests compile the built-in tilolang packages (source and ids lock), and the
-# crate embeds the letters fixture among them.
-inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/letters/"]
+# The tests compile the built-in tilolang packages (source and ids lock).
+inputs = ["apps/tl/"]
 readers = [
-  "apps/tilolang/src/packages.rs",
   "apps/tilolang/tests/hosted/tasks_board.rs",
   "apps/tilolang/tests/narrow.rs",
   "apps/tilolang/tests/support.rs",
