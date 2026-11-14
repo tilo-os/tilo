@@ -199,10 +199,11 @@ impl<S: RichTextSource + 'static> RichTextSurface<S> {
         &self.editor
     }
 
-    /// The editor, mutably. What the caller changes through it is compared
-    /// with the document whole on the next commit.
+    /// The editor, mutably. What the caller changes in it is compared with
+    /// the document on the next commit: the editor notes which blocks its
+    /// own edits may have touched, and an edit through its blocks
+    /// ([`BlockEditor::blocks_mut`]) may have touched any.
     pub fn editor_mut(&mut self) -> &mut BlockEditor {
-        self.editor.note_edit_anywhere();
         &mut self.editor
     }
 
@@ -1238,8 +1239,10 @@ mod tests {
     }
 
     /// Blocks compared and paragraphs presented while typing `typed` into
-    /// the first of `paragraphs` paragraphs.
-    fn typing_work(paragraphs: usize, typed: &str) -> (usize, usize) {
+    /// the first of `paragraphs` paragraphs. A host that reaches into the
+    /// editor between keystrokes (a scroll, a request it takes) does so
+    /// through [`RichTextSurface::editor_mut`], as Notes does every frame.
+    fn typing_work(paragraphs: usize, typed: &str, host_reaches_in: bool) -> (usize, usize) {
         ui::i18n::I18nManager::init("en-US");
         let mut app = TestApp::<FieldApp>::new().unwrap();
         let mut markdown = String::new();
@@ -1258,14 +1261,22 @@ mod tests {
         app.harness().click_at(rect.x0 + 40.0, rect.y0 + 10.0);
         app.harness().type_text("warm ");
         WORK.with(|work| work.set((0, 0)));
-        app.harness().type_text(typed);
+        for key in typed.chars() {
+            app.harness().type_text(&key.to_string());
+            if host_reaches_in {
+                app.surface(|surface: &mut RichTextSurface<RichTextField>| {
+                    surface.editor_mut().take_slash_request()
+                })
+                .unwrap();
+            }
+        }
         WORK.with(std::cell::Cell::get)
     }
 
     #[test]
     fn a_keystroke_compares_and_presents_what_it_touched_not_the_document() {
-        let small = typing_work(200, "typed");
-        let large = typing_work(2000, "typed");
+        let small = typing_work(200, "typed", false);
+        let large = typing_work(2000, "typed", true);
         assert!(
             small.0 > 0 && small.1 > 0,
             "the typing reached the document: {small:?}"

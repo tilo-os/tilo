@@ -2031,6 +2031,7 @@ impl BlockEditor {
     /// Splitting at byte 0 of an empty block still produces two blocks
     /// — how the user gets a blank line by hitting Enter twice.
     pub fn split_at_cursor(&mut self, idx: usize, split_at: usize) {
+        self.note_edit_anywhere();
         let Some(block) = self.blocks.get_mut(idx) else {
             return;
         };
@@ -2067,6 +2068,7 @@ impl BlockEditor {
     /// block's kind — backspacing a paragraph into a heading folds the
     /// text into the heading, not the reverse.
     pub fn merge_with_previous(&mut self, idx: usize) {
+        self.note_edit_anywhere();
         if idx == 0 {
             return;
         }
@@ -2102,6 +2104,7 @@ impl BlockEditor {
     /// Never deletes the last block — the editor always retains at
     /// least one paragraph to receive focus.
     pub fn delete_empty(&mut self, idx: usize) {
+        self.note_edit_anywhere();
         if self.blocks.len() <= 1 {
             // A lone block resets to an empty Paragraph rather than vanishing.
             if let Some(b) = self.blocks.get_mut(0) {
@@ -2125,6 +2128,7 @@ impl BlockEditor {
     /// the keystroke right after an empty paragraph, or typing `#`
     /// mid-paragraph would promote wrongly; see `handle_event`.
     pub fn try_promote_to_heading(&mut self, idx: usize) -> bool {
+        self.note_edit_anywhere();
         let Some(b) = self.blocks.get_mut(idx) else {
             return false;
         };
@@ -2141,6 +2145,7 @@ impl BlockEditor {
     }
 
     pub fn try_promote_to_quote(&mut self, idx: usize) -> bool {
+        self.note_edit_anywhere();
         let Some(block) = self.blocks.get_mut(idx) else {
             return false;
         };
@@ -2195,6 +2200,7 @@ impl BlockEditor {
     }
 
     pub fn insert_link_to(&mut self, target: &str, label: &str) -> bool {
+        self.note_edit_anywhere();
         let target = target.trim();
         let label = label.trim();
         if target.is_empty() || label.is_empty() {
@@ -2256,6 +2262,7 @@ impl BlockEditor {
     /// A divider holds no text, so turning a block that has some into one
     /// puts a divider above it instead: converting never deletes writing.
     pub fn try_convert_to(&mut self, idx: usize, new_kind: BlockKind) -> bool {
+        self.note_edit_anywhere();
         if matches!(new_kind, BlockKind::Divider)
             && self
                 .blocks
@@ -2660,6 +2667,7 @@ impl BlockEditor {
     }
 
     pub fn link_block_to_page(&mut self, id: &str, page: &PageEntry) -> bool {
+        self.note_edit_anywhere();
         let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
             return false;
         };
@@ -4925,6 +4933,7 @@ impl BlockEditor {
     }
 
     pub fn try_toggle_check(&mut self, idx: usize) -> Option<bool> {
+        self.note_edit_anywhere();
         self.begin_edit();
         let b = self.blocks.get_mut(idx)?;
         if let BlockKind::Checklist { indent, done } = &b.kind {
@@ -6740,6 +6749,7 @@ impl BlockEditor {
     /// mutations happen in this call, so the host commits one Automerge undo
     /// boundary for the originating key/IME event.
     pub fn replace_document_selection(&mut self, replacement: &str) -> bool {
+        self.note_edit_anywhere();
         self.begin_edit();
         let Some(selection) = self.document_selection else {
             return false;

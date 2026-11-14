@@ -102,6 +102,7 @@ pub(super) struct References {
 impl BlockEditor {
     /// Show `rich` read-only, each reference as it reads for the person reading.
     pub fn show_rich_text(&mut self, rich: &RichText) -> bool {
+        self.note_edit_anywhere();
         let changed_references = self.show_references(rich);
         if self.references.shown.as_ref() != Some(rich) {
             self.references.shown = Some(rich.clone());

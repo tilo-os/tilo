@@ -210,6 +210,7 @@ impl BlockEditor {
     }
 
     pub fn replace_document_selection_with_blocks(&mut self, pasted: Vec<BlockContent>) -> bool {
+        self.note_edit_anywhere();
         let mut pasted: Vec<BlockContent> = pasted
             .into_iter()
             .map(|mut block| {

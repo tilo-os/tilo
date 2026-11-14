@@ -6,6 +6,7 @@ use crate::widget::marks::{Mark, MarkSpan};
 
 impl BlockEditor {
     pub fn toggle_mark(&mut self, mark: Mark) -> bool {
+        self.note_edit_anywhere();
         if self.read_only {
             return false;
         }
@@ -94,6 +95,7 @@ impl BlockEditor {
     /// that list, they become paragraphs again. Code and tables stay what
     /// they are. `false` when nothing changed.
     pub fn toggle_list(&mut self, ordered: bool) -> bool {
+        self.note_edit_anywhere();
         if self.read_only {
             return false;
         }
@@ -148,6 +150,7 @@ impl BlockEditor {
     pub const HEADING_LEVELS: std::ops::RangeInclusive<u8> = 1..=3;
 
     pub fn set_heading(&mut self, level: Option<u8>) -> bool {
+        self.note_edit_anywhere();
         if self.read_only {
             return false;
         }

@@ -422,6 +422,7 @@ impl BlockEditor {
     }
 
     pub fn rename_block(&mut self, from: &str, to: &str) -> bool {
+        self.note_edit_anywhere();
         if from == to || self.blocks.iter().any(|block| block.id == to) {
             return false;
         }
