@@ -2035,7 +2035,7 @@ mod tests {
                 "  action     See what this desktop can do, and do it\n",
                 "  workspace  Your workspaces on this desktop\n",
                 "  keys       Keys to your hosted workspaces, for your code and its agents\n",
-                "  members    The people in a hosted workspace, and inviting more\n",
+                "  members    The people in a hosted workspace, inviting more, and how it names you\n",
                 "  account    Your hosted account: its workspaces\n",
                 "  files      Files into a hosted workspace\n",
                 "  import     Bring another tool's records in, as the workspace's own\n",
