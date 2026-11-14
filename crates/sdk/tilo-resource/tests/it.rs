@@ -10,6 +10,8 @@ pub mod data_enum;
 #[cfg(feature = "chrono")]
 #[path = "dates.rs"]
 pub mod dates;
+#[path = "edit_arguments.rs"]
+pub mod edit_arguments;
 #[path = "evolution.rs"]
 pub mod evolution;
 #[path = "fields.rs"]

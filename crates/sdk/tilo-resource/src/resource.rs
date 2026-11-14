@@ -611,9 +611,10 @@ fn described_edit(
             fields.push(format!("`{key}`"));
         } else {
             let kind = value_kind(&value);
+            let usage: Vec<String> = ops.iter().map(|op| crate::path::op_usage(op)).collect();
             let line = format!(
                 "- `{title}`: {} — {}{}",
-                ops.join(", "),
+                usage.join(", "),
                 text("/description"),
                 kind.map_or_else(String::new, |kind| format!(" ({kind})")),
             );
@@ -730,7 +731,9 @@ fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
                 "set",
             ]
         }
-        _ if rich => vec!["rich"],
+        // Rich text is written whole as markdown, or edited in its own
+        // vocabulary.
+        _ if rich => vec!["replace", "rich"],
         _ if ty.starts_with("Counter") => vec!["add", "set"],
         _ if ty.starts_with("Set<") => vec!["insert", "remove", "set"],
         _ if ty.starts_with("Grid<") => vec![

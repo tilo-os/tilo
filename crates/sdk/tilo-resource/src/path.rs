@@ -1016,6 +1016,138 @@ fn op_from_json(value: serde_json::Value) -> Result<EditOp, serde_json::Error> {
     EditOpWire::deserialize(serde_json::Value::Object(tagged)).map(EditOp::from)
 }
 
+/// What each field-edit operation takes beside `path` and `op`, as its JSON
+/// form reads it: the operation's name, the arguments it requires and the
+/// ones it may be given. The published field-edit schema states these, so an
+/// agent reading it sends what the edit needs; `op_arguments_match_what_an_edit_reads`
+/// holds the table to the reader.
+pub const OP_ARGUMENTS: &[(&str, &[&str], &[&str])] = &[
+    ("set", &["value"], &[]),
+    ("splice", &["at", "delete", "insert"], &[]),
+    ("replace", &["text"], &[]),
+    ("add", &["by"], &[]),
+    ("insert", &["value"], &[]),
+    ("remove", &["value"], &[]),
+    ("insert-item", &["value"], &["id", "at"]),
+    ("upsert-item", &["match", "value"], &["id"]),
+    ("remove-item", &["id"], &[]),
+    ("move-to", &["id"], &["at"]),
+    ("remove-key", &["key"], &[]),
+    ("set-cell", &["row", "column"], &["value"]),
+    ("insert-row", &["at"], &["id"]),
+    ("insert-column", &["at"], &["id"]),
+    ("remove-row", &["id"], &[]),
+    ("remove-column", &["id"], &[]),
+    ("settle", &["id", "outcome"], &[]),
+    ("forget", &["id"], &[]),
+    ("react", &["emoji"], &[]),
+    ("unreact", &["emoji"], &[]),
+    ("rich", &["rich"], &[]),
+];
+
+/// The arguments the operation `op` requires and may be given
+/// ([`OP_ARGUMENTS`]); `None` for no operation of that name.
+#[must_use]
+pub fn op_arguments(op: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
+    OP_ARGUMENTS
+        .iter()
+        .find(|(name, ..)| *name == op)
+        .map(|(_, required, optional)| (*required, *optional))
+}
+
+/// The schema of the argument `argument` of the operation `op`, as its JSON
+/// form reads it. An argument several operations share (`at`, `id`) has one
+/// schema that holds for each of them.
+#[must_use]
+pub fn op_argument_schema(op: &str, argument: &str) -> serde_json::Value {
+    let described = |schema: serde_json::Value, description: &str| {
+        let mut schema = schema;
+        if let Some(object) = schema.as_object_mut() {
+            object.insert("description".into(), description.into());
+        }
+        schema
+    };
+    match (op, argument) {
+        ("splice", "delete") => described(
+            serde_json::json!({ "type": "integer", "minimum": 0 }),
+            "splice: how many characters it replaces",
+        ),
+        ("splice", "insert") => described(
+            serde_json::json!({ "type": "string" }),
+            "splice: the text it puts there",
+        ),
+        (_, "at") => serde_json::json!({
+            "description": "insert-item, move-to: \"end\" (the default), {\"after\": id} or {\"before\": id}; splice: the character the replaced text starts at; insert-row, insert-column: the position it goes at",
+            "oneOf": [
+                { "const": "end" },
+                { "type": "object", "properties": { "after": { "type": "string" } }, "required": ["after"] },
+                { "type": "object", "properties": { "before": { "type": "string" } }, "required": ["before"] },
+                { "type": "integer", "minimum": 0 }
+            ]
+        }),
+        (_, "text") => described(
+            serde_json::json!({ "type": "string" }),
+            "replace: the whole new text; rich text takes markdown",
+        ),
+        (_, "by") => described(serde_json::json!({ "type": "integer" }), "add: how much"),
+        (_, "id") => described(
+            serde_json::json!({ "type": "string" }),
+            "remove-item, move-to, remove-row, remove-column, settle, forget: the item's id; \
+             insert-item, upsert-item, insert-row, insert-column: the new item's id, minted without",
+        ),
+        (_, "key") => described(
+            serde_json::json!({ "type": "string" }),
+            "remove-key: the entry's key",
+        ),
+        (_, "row" | "column") => described(
+            serde_json::json!({ "type": "string" }),
+            "set-cell: the cell's row and column ids",
+        ),
+        (_, "outcome") => described(
+            serde_json::json!({ "type": "object" }),
+            "settle: how the entry settled",
+        ),
+        (_, "emoji") => described(
+            serde_json::json!({ "type": "string" }),
+            "react, unreact: a Unicode emoji, or a workspace emoji as :name:",
+        ),
+        (_, "match") => serde_json::json!({
+            "type": "object",
+            "description": "upsert-item: the fields that identify the item, e.g. {\"name\": \"Ana\"}; it updates the one item holding them with `value`'s fields, else appends `value` as a new item"
+        }),
+        (_, "rich") => described(
+            serde_json::json!({ "type": "object" }),
+            "rich: an edit in the field type's own vocabulary",
+        ),
+        _ => serde_json::json!({}),
+    }
+}
+
+/// How the operation `op` reads in a listing of what a path takes, with its
+/// arguments: `remove-item {id}`, `move-to {id, at?}`; an operation that
+/// takes only a value (`set`) by its name.
+#[must_use]
+pub fn op_usage(op: &str) -> String {
+    let Some((required, optional)) = op_arguments(op) else {
+        return op.to_owned();
+    };
+    // A value is what every `set` takes: the listing says the field's kind
+    // of value on the same line.
+    if required == ["value"] && optional.is_empty() {
+        return op.to_owned();
+    }
+    let arguments: Vec<String> = required
+        .iter()
+        .map(|argument| (*argument).to_owned())
+        .chain(optional.iter().map(|argument| format!("{argument}?")))
+        .collect();
+    if arguments.is_empty() {
+        op.to_owned()
+    } else {
+        format!("{op} {{{}}}", arguments.join(", "))
+    }
+}
+
 impl EditOp {
     /// The operation's name, as its JSON form tags it.
     #[must_use]
@@ -1376,22 +1508,36 @@ impl<R> crate::JsonSchema for Edit<R> {
 
 #[inline(never)]
 fn edit_schema() -> serde_json::Value {
+    let ops: Vec<&str> = OP_ARGUMENTS.iter().map(|(op, ..)| *op).collect();
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "path".into(),
+        serde_json::json!({ "type": "array", "items": {"type": "object"} }),
+    );
+    properties.insert(
+        "op".into(),
+        serde_json::json!({ "type": "string", "enum": ops }),
+    );
+    let mut needs = Vec::new();
+    for (op, required, optional) in OP_ARGUMENTS {
+        for argument in required.iter().chain(optional.iter()) {
+            if !properties.contains_key(*argument) {
+                properties.insert((*argument).to_owned(), op_argument_schema(op, argument));
+            }
+        }
+        let mut needed = vec!["path", "op"];
+        needed.extend(required.iter().copied());
+        needs.push(serde_json::json!({
+            "properties": { "op": { "const": op } },
+            "required": needed,
+        }));
+    }
     serde_json::json!({
         "type": "object",
-        "description": "A field edit: the path from the record's root (fields by name, items by id) and an operation the field's type supports",
-        "properties": {
-            "path": {
-                "type": "array",
-                "items": {"type": "object"},
-            },
-            "op": {"type": "string", "enum": [
-                "set", "splice", "replace", "add", "insert", "remove", "insert-item",
-                "upsert-item", "remove-item", "move-to", "remove-key", "set-cell", "insert-row",
-                "insert-column", "remove-row", "remove-column", "settle", "react", "unreact",
-                "rich",
-            ]},
-        },
+        "description": "A field edit: the path from the record's root (fields by name, items by id) and an operation the field's type supports, with the arguments that operation takes",
+        "properties": properties,
         "required": ["path", "op"],
+        "oneOf": needs,
     })
 }
 

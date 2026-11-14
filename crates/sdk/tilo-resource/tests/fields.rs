@@ -168,7 +168,10 @@ fn an_atom_is_listed_as_set_whole_and_a_text_by_character() {
     let (layer, _) = described(&schema, "layer");
     assert!(layer.starts_with("- `layer`: set \u{2014}"), "{layer}");
     let (title, _) = described(&schema, "title");
-    assert!(title.contains("`title`: set, splice, replace"), "{title}");
+    assert!(
+        title.contains("`title`: set, splice {at, delete, insert}, replace {text}"),
+        "{title}"
+    );
 }
 
 #[test]
@@ -754,7 +757,10 @@ fn an_agent_builds_a_field_edit_from_the_published_descriptor_alone() {
 
     // Every editable path is described: title, ops, value, flags.
     let (title, _) = described(&schema, "title");
-    assert!(title.contains("`title`: set, splice, replace"), "{title}");
+    assert!(
+        title.contains("`title`: set, splice {at, delete, insert}, replace {text}"),
+        "{title}"
+    );
     assert!(title.contains("(string)"), "{title}");
     let (notes, _) = described(&schema, "notes");
     assert!(notes.contains("Undo takes it back"), "{notes}");
@@ -1539,7 +1545,10 @@ fn a_records_fields_only_ever_set_are_named_on_its_line() {
         "{look}"
     );
     let (caption, _) = described(&schema, "look.caption");
-    assert!(caption.contains("set, splice, replace"), "{caption}");
+    assert!(
+        caption.contains("set, splice {at, delete, insert}, replace {text}"),
+        "{caption}"
+    );
     let listing = schema["description"].as_str().unwrap();
     assert!(!listing.contains("- `look.colour`"), "{listing}");
     let edit = serde_json::json!({

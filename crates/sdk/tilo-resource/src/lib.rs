@@ -150,6 +150,7 @@ pub mod recording;
 pub mod replica;
 pub mod resource;
 pub mod schema;
+pub mod schema_check;
 pub mod search_default;
 pub mod search_index;
 pub mod shape;
@@ -192,7 +193,10 @@ pub use model::{
 };
 pub use non_blank::{Blank, NonBlank};
 pub use ordered::{Arranged, Ordered};
-pub use path::{At, Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
+pub use path::{
+    At, Edit, EditOp, OP_ARGUMENTS, Operations, Path, Segment, Settable, op_argument_schema,
+    op_arguments, op_usage, outbox_settle_arguments,
+};
 pub use reactions::{
     Reaction, ReactionGroup, Reactions, Reactor, custom_emoji_name, reaction_emoji,
     valid_custom_emoji_name,

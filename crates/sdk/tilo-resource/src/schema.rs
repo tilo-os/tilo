@@ -761,7 +761,7 @@ fn record_action_schema_of(vocabulary: &crate::Vocabulary, seeds: bool) -> Value
             "at",
             describe(
                 json!({"type": "integer"}),
-                "When the action was authored, in milliseconds since the Unix epoch",
+                "When the action was authored, in milliseconds since the Unix epoch: set by the host that applies it, which replaces a value given here. When content was first written elsewhere, the action that writes it takes that as its `origin`",
             ),
             false,
         ),

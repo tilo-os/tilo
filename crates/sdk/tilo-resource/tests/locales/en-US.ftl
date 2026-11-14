@@ -8,6 +8,10 @@ test-pad-add = Add an item
 test-board = Board
 test-board-add = Add a card
 
+## crates/sdk/tilo-resource/tests/edit_arguments.rs
+test-ledger = Ledger
+test-ledger-name = Name the ledger
+
 ## crates/sdk/tilo-resource/tests/apply_cache.rs
 test-cached-checklist = Checklist
 test-cached-checklist-draft = Type into the draft
