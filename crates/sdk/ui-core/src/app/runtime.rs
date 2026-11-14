@@ -728,9 +728,8 @@ pub(super) struct PresenceRuntime {
     pub(super) last_pointer_broadcast: Option<Instant>,
     pub(super) last_focus: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     pub(super) last_location: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    /// What the app last said it was composing, and where: a start, a move to another
-    /// conversation, and a stop each go out once.
-    pub(super) last_composing: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    /// What the app last said of the draft its person writes.
+    pub(super) composing: crate::presence::DraftSaid,
     pub(super) last_view: Option<crate::view::ViewSubset>,
     pub(super) broadcast_sink: Option<PresenceBroadcastSink>,
 }
@@ -744,7 +743,7 @@ impl PresenceRuntime {
             last_pointer_broadcast: None,
             last_focus: None,
             last_location: None,
-            last_composing: None,
+            composing: crate::presence::DraftSaid::default(),
             last_view: None,
             broadcast_sink: None,
         }

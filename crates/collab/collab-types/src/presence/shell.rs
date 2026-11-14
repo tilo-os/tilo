@@ -61,10 +61,13 @@ pub struct ShellSelection {
     pub anchor: String,
     /// The other end of the selection, hex.
     pub head: String,
-    /// Whether they are writing a message where the caret is: a conversation
-    /// says they are typing, and nothing of the draft travels.
+    /// Whether they are writing a message where the caret is: 0 when not,
+    /// and otherwise how many times their app said the draft under way, which
+    /// it says again while they type. A conversation says they are typing
+    /// while the count moves, and stops shortly after it holds still. Nothing
+    /// of the draft travels.
     #[serde(default)]
-    pub composing: bool,
+    pub composing: u32,
 }
 
 /// Who a shell shows itself as, and what its desktop looks like now.
@@ -148,7 +151,7 @@ mod tests {
             selection: Some(ShellSelection {
                 anchor: "0102".into(),
                 head: "0102".into(),
-                composing: true,
+                composing: 1,
             }),
             chat: Some(ShellChat {
                 text: "here".into(),

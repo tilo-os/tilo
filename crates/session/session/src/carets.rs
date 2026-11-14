@@ -26,13 +26,16 @@ struct Typing {
     key: PresenceKey,
     start: usize,
     end: usize,
-    composing: bool,
+    /// 0 with no draft, else how many times the app said it under way
+    /// ([`ShellSelection::composing`]).
+    composing: u32,
 }
 
 impl Typing {
     /// What `payload`, which the person's app in `app` published under `key`, makes of where they
     /// type, from `was`: a caret or selection moves it (keeping their draft where it stays), and a
-    /// draft started or stopped says so there. `None` for what says nothing of either.
+    /// draft started, said again, or stopped says so there. `None` for what says nothing of
+    /// either.
     fn after(
         was: Option<&Self>,
         app: &str,
@@ -46,7 +49,11 @@ impl Typing {
                 Some(Self::at(app, key, *start, *end, same))
             }
             PresencePayload::Composing { composing } => Some(Self {
-                composing: *composing,
+                composing: if *composing {
+                    same.map_or(0, |was| was.composing).wrapping_add(1).max(1)
+                } else {
+                    0
+                },
                 ..same
                     .cloned()
                     .unwrap_or_else(|| Self::at(app, key, 0, 0, None))
@@ -61,7 +68,7 @@ impl Typing {
             key: key.clone(),
             start,
             end,
-            composing: same.is_some_and(|was| was.composing),
+            composing: same.map_or(0, |was| was.composing),
         }
     }
 }
@@ -72,7 +79,7 @@ impl Typing {
 struct Caret {
     key: PresenceKey,
     payload: PresencePayload,
-    composing: bool,
+    composing: u32,
 }
 
 /// The carets of the people in this session's workspaces, as its apps show them and say them.
@@ -196,7 +203,7 @@ impl Carets {
             .collect();
         for (user, caret) in gone {
             shown.remove(&(workspace.to_owned(), user.clone()));
-            if caret.composing {
+            if caret.composing != 0 {
                 self.hand(workspace, user.clone(), caret.key.clone(), composing(false));
             }
             self.hand(workspace, user, caret.key, PresencePayload::Left);
@@ -209,7 +216,7 @@ impl Carets {
             }
             // A draft left behind where the caret was stops there.
             if let Some(was) = &was
-                && was.composing
+                && was.composing != 0
                 && was.key != caret.key
             {
                 self.hand(workspace, user.clone(), was.key.clone(), composing(false));
@@ -220,10 +227,12 @@ impl Carets {
             {
                 self.hand(workspace, user.clone(), caret.key.clone(), caret.payload);
             }
-            if was.as_ref().map_or(caret.composing, |was| {
+            // A draft said again keeps it shown: the apps drop one they hear nothing of.
+            let writes = caret.composing != 0;
+            if was.as_ref().map_or(writes, |was| {
                 was.composing != caret.composing || was.key != caret.key
             }) {
-                self.hand(workspace, user, caret.key, composing(caret.composing));
+                self.hand(workspace, user, caret.key, composing(writes));
             }
         }
     }
@@ -325,28 +334,28 @@ mod tests {
         let said = ShellSelection {
             anchor: hex::encode(anchor.cursor),
             head: hex::encode(head.cursor),
-            composing: true,
+            composing: 1,
         };
         assert_eq!(
             caret_of(&said),
             Some(Caret {
                 key: key.clone(),
                 payload: PresencePayload::Caret { pos: 7 },
-                composing: true,
+                composing: 1,
             })
         );
         let (anchor, head) = tilo_relay_protocol::live::presence_anchors(&key, 2, 9).unwrap();
         let said = ShellSelection {
             anchor: hex::encode(anchor.cursor),
             head: hex::encode(head.cursor),
-            composing: false,
+            composing: 0,
         };
         assert_eq!(
             caret_of(&said),
             Some(Caret {
                 key,
                 payload: PresencePayload::Selection { start: 2, end: 9 },
-                composing: false,
+                composing: 0,
             })
         );
     }
@@ -355,30 +364,18 @@ mod tests {
     fn a_draft_the_persons_app_says_rides_with_their_caret_until_it_stops() {
         let (carets, fanout, _) = carets();
         ada_says(&fanout, PresencePayload::Selection { start: 0, end: 0 });
-        let said = carets.said_in("so.tilo.lang.chat").expect("her caret");
-        assert!(!said.composing, "no draft yet");
+        let said = || carets.said_in("so.tilo.lang.chat").expect("her caret");
+        assert_eq!(said().composing, 0, "no draft yet");
         ada_says(&fanout, composing(true));
-        assert!(
-            carets
-                .said_in("so.tilo.lang.chat")
-                .expect("her caret")
-                .composing
-        );
+        assert_eq!(said().composing, 1);
         // Moving within the record keeps the draft where it is.
         ada_says(&fanout, PresencePayload::Caret { pos: 0 });
-        assert!(
-            carets
-                .said_in("so.tilo.lang.chat")
-                .expect("her caret")
-                .composing
-        );
+        assert_eq!(said().composing, 1);
+        // Said again as she keeps typing: what keeps her typing on other devices.
+        ada_says(&fanout, composing(true));
+        assert_eq!(said().composing, 2);
         ada_says(&fanout, composing(false));
-        assert!(
-            !carets
-                .said_in("so.tilo.lang.chat")
-                .expect("her caret")
-                .composing
-        );
+        assert_eq!(said().composing, 0);
         assert_eq!(
             carets.said_in("so.tilo.notes"),
             None,
@@ -395,13 +392,15 @@ mod tests {
             composing,
         };
         let take = || std::mem::take(&mut *handed.lock_recover());
-        carets.show(WORKSPACE, HashMap::from([("bo".to_owned(), caret(true))]));
+        carets.show(WORKSPACE, HashMap::from([("bo".to_owned(), caret(1))]));
         assert_eq!(take(), [PresencePayload::Caret { pos: 0 }, composing(true)]);
-        carets.show(WORKSPACE, HashMap::from([("bo".to_owned(), caret(true))]));
+        carets.show(WORKSPACE, HashMap::from([("bo".to_owned(), caret(1))]));
         assert_eq!(take(), [], "nothing moved");
-        carets.show(WORKSPACE, HashMap::from([("bo".to_owned(), caret(false))]));
+        carets.show(WORKSPACE, HashMap::from([("bo".to_owned(), caret(2))]));
+        assert_eq!(take(), [composing(true)], "still typing: said again");
+        carets.show(WORKSPACE, HashMap::from([("bo".to_owned(), caret(0))]));
         assert_eq!(take(), [composing(false)], "sent: no one typing");
-        carets.show(WORKSPACE, HashMap::from([("bo".to_owned(), caret(true))]));
+        carets.show(WORKSPACE, HashMap::from([("bo".to_owned(), caret(1))]));
         assert_eq!(take(), [composing(true)]);
         carets.show(WORKSPACE, HashMap::new());
         assert_eq!(

@@ -294,7 +294,7 @@ pub fn view(
         selection: selection.map(|(anchor, head)| ShellSelection {
             anchor: hex::encode(&anchor.cursor),
             head: hex::encode(&head.cursor),
-            composing: false,
+            composing: 0,
         }),
         chat: None,
         reaction: None,

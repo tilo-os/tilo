@@ -462,25 +462,30 @@ impl Instance {
     }
 
     /// Whether the detail view's bound controls hold anything, and where: a draft being typed
-    /// in a conversation. Only whether, never what it says: presence carries "composing",
-    /// never the words.
+    /// in a conversation, with a number that changes as the person types it. Only whether,
+    /// never what it says: presence carries "composing", never the words.
     #[must_use]
-    pub fn composing_in(&self) -> Option<&ResourceRef> {
+    pub fn composing_in(&self) -> Option<(&ResourceRef, u64)> {
+        use std::hash::{Hash as _, Hasher as _};
         let detail = self.detail.as_ref()?;
+        let shown = self.lane(Lane::Detail)?;
         // The view's own controls, as the bound values it holds: any text or rich text with
-        // something in it is a draft under way.
-        let holds = self.lane(Lane::Detail).is_some_and(|shown| {
-            shown
-                .bound
-                .keys()
-                .filter_map(|key| shown.view.borrow().bound_value(key))
-                .any(|value| match value {
-                    crate::runtime::Value::Text(text) => !text.trim().is_empty(),
-                    crate::runtime::Value::Rich(rich) => !rich.written_text().trim().is_empty(),
-                    _ => false,
-                })
-        });
-        holds.then_some(&detail.target)
+        // something in it is a draft under way. The revision sums each control's, so the order
+        // the controls are held in does not change it.
+        let mut revision = 0_u64;
+        let mut holds = false;
+        for key in shown.bound.keys() {
+            let text = match shown.view.borrow().bound_value(key) {
+                Some(crate::runtime::Value::Text(text)) => text.clone(),
+                Some(crate::runtime::Value::Rich(rich)) => rich.written_text(),
+                _ => continue,
+            };
+            holds |= !text.trim().is_empty();
+            let mut hasher = std::hash::DefaultHasher::new();
+            (key, &text).hash(&mut hasher);
+            revision = revision.wrapping_add(hasher.finish());
+        }
+        holds.then_some((&detail.target, revision))
     }
 
     /// Tell the window what the bound control `key` of `lane` holds now that the edit it sent

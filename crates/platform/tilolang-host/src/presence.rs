@@ -9,7 +9,8 @@
 //! (`lenses(c)`): who else is at each resource, and who is composing a message in the one the
 //! detail view shows, so a conversation says "… is typing" without reading a draft. What the
 //! instance says of its own person is where they are (the resource the detail view shows) and
-//! whether they hold a draft there, said once each time it changes.
+//! whether they hold a draft there: where, once each time it changes; a draft, again while they
+//! type in it ([`ui::presence::DraftSaid`]).
 
 use std::collections::HashMap;
 
@@ -17,7 +18,7 @@ use collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::value::ResourceRef;
 use ui::permissions::MemberId;
-use ui::presence::{PresenceCtx, PresenceKey};
+use ui::presence::{DraftSaid, PresenceCtx, PresenceKey};
 
 /// What an instance heard of the record's participants, and what it last said of its own.
 pub struct Presence {
@@ -26,8 +27,8 @@ pub struct Presence {
     heard: PresenceCtx,
     /// Where the instance last said its person is.
     said_at: Option<PresenceKey>,
-    /// Where the instance last said its person writes a message, while they do.
-    said_composing: Option<PresenceKey>,
+    /// What the instance last said of the draft its person writes.
+    said_composing: DraftSaid,
     /// Whether the member list changed since the instance was last told what people are called.
     renamed: bool,
 }
@@ -45,7 +46,7 @@ impl Presence {
             me: MemberId::person(me),
             heard,
             said_at: None,
-            said_composing: None,
+            said_composing: DraftSaid::default(),
             renamed: true,
         }
     }
@@ -111,11 +112,25 @@ impl Presence {
         instance.set_peers_and_composers(self.peers(), &composing);
     }
 
-    /// Say where `instance`'s person is and whether they write a message there, through `send`,
-    /// when either changed since it was last said. A draft emptied says so at once, under the
-    /// key it was under, so nobody reads them typing after they stopped.
-    pub fn say(&mut self, instance: &Instance, mut send: impl FnMut(CollabRequest)) {
+    /// Say where `instance`'s person is, when that changed since it was last said, and whether
+    /// they write a message there, through `send`: again while they type, and a draft emptied at
+    /// once, under the key it was under, so nobody reads them typing after they stopped.
+    pub fn say(&mut self, instance: &Instance, send: impl FnMut(CollabRequest)) {
         let at = instance.detail_target().map(|target| self.key(target));
+        let draft = instance
+            .composing_in()
+            .map(|(target, revision)| (self.key(target), revision));
+        self.say_at(at, draft, ui::time::now(), send);
+    }
+
+    /// [`Self::say`] with the person at `at`, writing `draft`, at `now`.
+    fn say_at(
+        &mut self,
+        at: Option<PresenceKey>,
+        draft: Option<(PresenceKey, u64)>,
+        now: ui::time::Instant,
+        mut send: impl FnMut(CollabRequest),
+    ) {
         if at != self.said_at {
             if let Some(key) = &at {
                 send(CollabRequest::Presence {
@@ -125,20 +140,8 @@ impl Presence {
             }
             self.said_at = at;
         }
-        let composing = instance.composing_in().map(|target| self.key(target));
-        if composing != self.said_composing {
-            match (&composing, &self.said_composing) {
-                (Some(key), _) => send(CollabRequest::Presence {
-                    key: key.clone(),
-                    payload: PresencePayload::Composing { composing: true },
-                }),
-                (None, Some(key)) => send(CollabRequest::Presence {
-                    key: key.clone(),
-                    payload: PresencePayload::Composing { composing: false },
-                }),
-                (None, None) => {}
-            }
-            self.said_composing = composing;
+        if let Some((key, payload)) = self.said_composing.look(draft, now) {
+            send(CollabRequest::Presence { key, payload });
         }
     }
 
@@ -213,5 +216,55 @@ mod tests {
             PresencePayload::Selection { start: 0, end: 0 },
         );
         assert_eq!(selected.peers(), presence.peers());
+    }
+
+    /// Ada's instance says what she does each 100 ms of a test-driven clock for 30 s, typing a
+    /// key each step until `typed` ms, then sending her draft or leaving it; Bo's instance hears
+    /// it. Whether Bo reads her typing in the channel at each step, by its ms.
+    fn read_by_bo(typed: u64, sent: bool) -> Vec<(u64, bool)> {
+        let start = ui::time::now();
+        let mut ada = Presence::new(APP, "ada");
+        let mut bo = Presence::new(APP, "bo");
+        let mut read = Vec::new();
+        for at in (0..=30_000).step_by(100) {
+            let now = start
+                .checked_add(std::time::Duration::from_millis(at))
+                .expect("a clock 30 s on");
+            let draft = (at < typed || !sent).then(|| (channel(), at.min(typed)));
+            ada.say_at(Some(channel()), draft, now, |request| {
+                if let CollabRequest::Presence { key, payload } = request {
+                    bo.heard
+                        .apply_remote_presence_at(MemberId::person("ada"), key, payload, now);
+                }
+            });
+            bo.heard.prune_composing(now);
+            let typing = bo
+                .heard
+                .composing_at(&channel(), now)
+                .contains(&MemberId::person("ada"));
+            read.push((at, typing));
+        }
+        read
+    }
+
+    #[test]
+    fn someone_typing_in_a_conversation_reads_as_typing_until_they_send_or_stop() {
+        let typed = 20_000;
+        let kept = read_by_bo(typed, false);
+        assert!(
+            kept.iter().all(|(at, typing)| *at >= typed || *typing),
+            "typing for 20 s reads as typing throughout"
+        );
+        let linger = u64::try_from(ui::presence::COMPOSING_LINGER.as_millis()).expect("seconds");
+        assert!(
+            kept.iter()
+                .all(|(at, typing)| !*typing || at.saturating_sub(typed) < linger),
+            "a draft left standing stops reading as typing within the linger"
+        );
+        let sent = read_by_bo(typed, true);
+        assert!(
+            sent.iter().all(|(at, typing)| (*at < typed) == *typing),
+            "typing until sent, and not a moment after"
+        );
     }
 }

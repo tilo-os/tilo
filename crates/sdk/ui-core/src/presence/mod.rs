@@ -6,6 +6,7 @@ use tilo_sort::CompactSort as _;
 pub mod capability;
 mod caret_tag;
 mod chat;
+mod draft;
 mod faces;
 pub mod frame;
 mod geom;
@@ -26,6 +27,7 @@ pub use chat::{
     CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,
     ReactionFloat, single_emoji,
 };
+pub use draft::DraftSaid;
 pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
@@ -73,7 +75,8 @@ pub fn local_surface_pointer() -> PresenceKey {
 }
 
 /// How long a person stays shown as composing after their last word: a draft under way is
-/// said again as they type, so one who stops drops out shortly after, with no message.
+/// said again as they type ([`DraftSaid`]), so one who stops drops out shortly after, with no
+/// message.
 pub const COMPOSING_LINGER: crate::time::Duration = crate::time::Duration::from_secs(6);
 
 /// How long a "just typed" highlight lingers, its fade included: the

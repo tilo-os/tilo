@@ -19,12 +19,10 @@ pub trait PublishesPresence: Widget {
         None
     }
 
-    /// Whether this widget is composing a message where it stands (a conversation's composer
-    /// holding a draft): published under the key beside it, so a reader can say "… is typing".
-    /// Ephemeral, a presence frame; never what the draft says.
-    fn composing_payload(
-        &self,
-    ) -> Option<(super::PresenceKey, crate::collaboration::PresencePayload)> {
+    /// The draft this widget holds where it stands (a conversation's composer holding one): the
+    /// key it is written under and any number that changes as the person types, so a reader can
+    /// say "… is typing" while they do ([`super::DraftSaid`]). Never what the draft says.
+    fn composing_draft(&self) -> Option<(super::PresenceKey, u64)> {
         None
     }
 
@@ -59,11 +57,9 @@ pub fn presence_key(widget: &(impl Widget + ?Sized)) -> Option<super::PresenceKe
     capability::<dyn PublishesPresence>(widget)?.presence_key()
 }
 
-/// `widget`'s composing presence, when it is composing a message where it stands.
-pub fn composing_payload(
-    widget: &(impl Widget + ?Sized),
-) -> Option<(super::PresenceKey, crate::collaboration::PresencePayload)> {
-    capability::<dyn PublishesPresence>(widget)?.composing_payload()
+/// The draft `widget` holds where it stands, when it composes a message there.
+pub fn composing_draft(widget: &(impl Widget + ?Sized)) -> Option<(super::PresenceKey, u64)> {
+    capability::<dyn PublishesPresence>(widget)?.composing_draft()
 }
 
 /// `widget`'s outbound presence.
