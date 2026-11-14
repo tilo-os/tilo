@@ -93,6 +93,8 @@ pub mod unsaved;
 pub mod workspace_authority;
 #[cfg(any(feature = "filesystem", feature = "document-media"))]
 pub mod write_attribution;
+#[cfg(feature = "filesystem")]
+pub mod writer;
 
 #[cfg(test)]
 #[cfg(feature = "filesystem")]

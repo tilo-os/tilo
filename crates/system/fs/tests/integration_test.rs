@@ -2196,3 +2196,93 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
     })
     .await;
 }
+
+/// A write through the mount is named for the process the kernel says asked for it: here a
+/// desktop app's, as on Tilo OS a third-party Linux app writes to `/var/workspace`, and an
+/// atomic save (a temporary file renamed over the original) is that app's too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
+    require_fuse!();
+    let endpoint = Endpoint::bind(presets::Minimal)
+        .await
+        .expect("bind endpoint");
+    let store = Arc::new(ContentStore::memory());
+    let namespace = Arc::new(Mutex::new(Namespace::new("writer-peer").unwrap()));
+    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+    // This test process, as a Flatpak app's scope would show it.
+    let fake = tempdir().unwrap();
+    let pid = std::process::id();
+    let proc_dir = fake.path().join("proc").join(pid.to_string());
+    std::fs::create_dir_all(&proc_dir).unwrap();
+    std::fs::write(
+        proc_dir.join("stat"),
+        format!("{pid} (test) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5 0 0"),
+    )
+    .unwrap();
+    std::fs::write(proc_dir.join("environ"), b"HOME=/nowhere\0").unwrap();
+    std::fs::write(
+        proc_dir.join("cgroup"),
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-org.gnome.TextEditor-77.scope\n",
+    )
+    .unwrap();
+    let writers = Arc::new(fs::writer::WriterResolver::new(
+        fake.path().join("proc"),
+        Vec::new(),
+    ));
+    let actor = fs_protocol::FileActor {
+        person: collab_types::Ed25519PublicKey([0x41; 32]),
+        device: collab_types::Ed25519PublicKey([0x52; 32]),
+    };
+    let quick = QuickFS::new(namespace.clone(), hydrator, heuristics)
+        .with_history(actor)
+        .unwrap()
+        .with_writers(writers);
+    let mount_dir = tempdir().unwrap();
+    let mut config = Config::default();
+    config.mount_options = vec![MountOption::FSName("quickfs_writer".into())];
+    let session = fuser::spawn_mount(quick, mount_dir.path(), &config).expect("spawn FUSE session");
+    wait_for_mount(mount_dir.path()).await;
+
+    let notes = mount_dir.path().join("notes.md");
+    let written = notes.clone();
+    let temporary = mount_dir.path().join(".notes.md.swp");
+    let threads = fake.path().join("proc");
+    tokio::task::spawn_blocking(move || {
+        // FUSE names the thread that asks; the resolver finds its process.
+        let tid = rustix::thread::gettid().as_raw_nonzero().get();
+        let thread = threads.join(tid.to_string());
+        std::fs::create_dir_all(&thread).unwrap();
+        std::fs::write(
+            thread.join("status"),
+            format!("Name:\ttest\nTgid:\t{pid}\n"),
+        )
+        .unwrap();
+        std::fs::write(&written, b"# Notes\n").unwrap();
+        std::fs::write(&temporary, b"# Notes\nsaved atomically\n").unwrap();
+        std::fs::rename(&temporary, &written).unwrap();
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read(&notes).unwrap(),
+        b"# Notes\nsaved atomically\n"
+    );
+
+    let attributions = {
+        let mut ns = namespace.lock().unwrap();
+        let ino = ns.resolve_path_ino("/notes.md").expect("the saved file");
+        let record = ns.record_id_for(ino).expect("its record");
+        ns.version_attributions(record)
+    };
+    assert!(
+        !attributions.is_empty(),
+        "the versions carry who wrote them"
+    );
+    for attributed in &attributions {
+        assert_eq!(attributed.attribution.actor, "program:org.gnome.TextEditor");
+        assert_eq!(attributed.attribution.label, "TextEditor");
+    }
+    fs::fuse_session::unmount_and_join(session, mount_dir.path()).expect("unmount");
+    endpoint.close().await;
+}

@@ -1908,6 +1908,9 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         Some(attributions) => fs.with_write_attributions(attributions),
         None => fs,
     };
+    // Who writes, from the process each request comes from: an agent session, an app, another
+    // program, or the person (the same resolver a computer's `tilo login` folder uses).
+    let fs = fs.with_writers(Arc::new(fs::writer::WriterResolver::default()));
     // Bind the capability list, if given, before the mount goes live, so every op is checked from the start.
     let fs = match acl {
         Some((acl, identity)) => fs.with_acl(acl, identity),

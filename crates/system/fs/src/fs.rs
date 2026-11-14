@@ -458,6 +458,34 @@ fn unsaved_copy_name_for(name: &[u8], digest: &blake3::Hash) -> Vec<u8> {
     out
 }
 
+/// Most files whose last writer is remembered; past it all are forgotten at once.
+const LAST_WRITERS: usize = 65_536;
+
+/// Who a request writes for, once noted.
+#[derive(Clone)]
+enum NotedWriter {
+    /// The person at this device: the version's signature names them already.
+    Person,
+    Attributed(fs_protocol::FileAttributionV1),
+}
+
+thread_local! {
+    /// Who the request this thread answers writes for, while it is answered.
+    static CURRENT_WRITER: std::cell::RefCell<Option<NotedWriter>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Clears this thread's writer when the request it was noted for returns.
+struct WriterNote(bool);
+
+impl Drop for WriterNote {
+    fn drop(&mut self) {
+        if self.0 {
+            CURRENT_WRITER.with(|current| *current.borrow_mut() = None);
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct OpenFileHandleState {
     ino: u64,
@@ -655,6 +683,10 @@ pub struct QuickFS {
 
     history: Option<fs_protocol::FileActor>,
     write_attributions: Option<Arc<crate::write_attribution::WriteAttributions>>,
+    /// Who writes, from the process each request names ([`crate::writer`]).
+    writers: Option<Arc<crate::writer::WriterResolver>>,
+    /// The last writer of each file, for versions committed after its request returned.
+    last_writers: Mutex<HashMap<u64, fs_protocol::FileAttributionV1>>,
     namespace_persistence: Option<NamespacePersistence>,
     history_jobs: history_jobs::HistoryJobs,
     checked_history_workspace: Option<uuid::Uuid>,
@@ -722,6 +754,8 @@ impl QuickFS {
 
             history: None,
             write_attributions: None,
+            writers: None,
+            last_writers: Mutex::new(HashMap::new()),
             namespace_persistence: None,
             history_jobs: history_jobs::HistoryJobs::default(),
             checked_history_workspace: None,
@@ -2238,26 +2272,74 @@ impl QuickFS {
         self
     }
 
-    /// Record which agent caused this device's `version`, when a session lease covers
-    /// `path` (or the record's current path), in the record's own history. A failure
-    /// leaves the version the person's and never fails the write.
-    fn attribute_version(&self, version: &fs_protocol::FileVersionV1, path: Option<&str>) {
-        let Some(attributions) = &self.write_attributions else {
-            return;
+    /// Name who writes from the process each request comes from: an agent session, a
+    /// Tilo app, another program, or the person ([`crate::writer`]).
+    #[must_use]
+    pub fn with_writers(mut self, writers: Arc<crate::writer::WriterResolver>) -> Self {
+        self.writers = Some(writers);
+        self
+    }
+
+    /// Note who process `pid` writes for, for the rest of this request on this thread
+    /// and, with `ino`, for the versions of that file committed later.
+    fn note_writer(&self, pid: u32, ino: Option<u64>) -> WriterNote {
+        let Some(writers) = &self.writers else {
+            return WriterNote(false);
         };
-        // Most writes happen with no lease at all: they cost no path lookup.
-        if attributions.is_idle() {
-            return;
+        let attribution = writers.resolve(pid).attribution();
+        if let Some(ino) = ino {
+            let mut last = self.last_writers.lock_recover();
+            if last.len() >= LAST_WRITERS {
+                last.clear();
+            }
+            match &attribution {
+                Some(attribution) => last.insert(ino, attribution.clone()),
+                None => last.remove(&ino),
+            };
         }
-        let path = if let Some(path) = path {
-            Some(path.to_owned())
-        } else {
-            let namespace = self.ns();
-            namespace
-                .ino_for_record_id(version.record_id)
-                .and_then(|ino| namespace.path_for(ino))
-        };
-        let Some(attribution) = path.and_then(|path| attributions.for_path(&path)) else {
+        let noted = attribution.map_or(NotedWriter::Person, NotedWriter::Attributed);
+        CURRENT_WRITER.with(|current| *current.borrow_mut() = Some(noted));
+        WriterNote(true)
+    }
+
+    /// Who wrote `record`'s version: the request being answered on this thread, else
+    /// the last writer of its file.
+    fn writer_of(
+        &self,
+        record: fs_protocol::FileRecordId,
+    ) -> Option<fs_protocol::FileAttributionV1> {
+        self.writers.as_ref()?;
+        match CURRENT_WRITER.with(|current| current.borrow().clone()) {
+            Some(NotedWriter::Person) => return None,
+            Some(NotedWriter::Attributed(attribution)) => return Some(attribution),
+            None => {}
+        }
+        let ino = self.ns().ino_for_record_id(record)?;
+        self.last_writers.lock_recover().get(&ino).cloned()
+    }
+
+    /// Record who caused this device's `version` in the record's own history: the agent
+    /// a session lease names for `path` (or the record's current path), else the writer
+    /// the request came from. A failure leaves the version the person's and never fails
+    /// the write.
+    fn attribute_version(&self, version: &fs_protocol::FileVersionV1, path: Option<&str>) {
+        // Most writes happen with no lease at all: they cost no path lookup.
+        let leased = self
+            .write_attributions
+            .as_ref()
+            .filter(|attributions| !attributions.is_idle())
+            .and_then(|attributions| {
+                let path = if let Some(path) = path {
+                    Some(path.to_owned())
+                } else {
+                    let namespace = self.ns();
+                    namespace
+                        .ino_for_record_id(version.record_id)
+                        .and_then(|ino| namespace.path_for(ino))
+                };
+                path.and_then(|path| attributions.for_path(&path))
+            });
+        let Some(attribution) = leased.or_else(|| self.writer_of(version.record_id)) else {
             return;
         };
         let attributed = fs_protocol::FileVersionAttributionV1 {
@@ -5416,7 +5498,9 @@ impl Filesystem for QuickFS {
         self.heuristics.on_readdir(ino.0);
     }
 
-    fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+    fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+        let _writer = (!matches!(flags.acc_mode(), OpenAccMode::O_RDONLY))
+            .then(|| self.note_writer(req.pid(), Some(ino.0)));
         let opened_path = {
             let ns = self.ns();
             ns.getattr(ino.0).and_then(|_| ns.path_for(ino.0))
@@ -5509,6 +5593,7 @@ impl Filesystem for QuickFS {
         _flags: i32,
         reply: ReplyCreate,
     ) {
+        let mut writer = self.note_writer(req.pid(), None);
         let name_bytes = name.as_bytes();
         if let Err(e) = self.check_new_name(parent.0, name_bytes) {
             reply.error(to_errno(e));
@@ -5556,7 +5641,10 @@ impl Filesystem for QuickFS {
             );
         }
         self.publish();
+        drop(writer);
+        writer = self.note_writer(req.pid(), Some(attr.ino.0));
         self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
+        drop(writer);
         let handle = self.next_file_handle.fetch_add(1, Ordering::Relaxed);
         let opened_path = self.ns().path_for(attr.ino.0);
         if let Some(opened_path) = opened_path {
@@ -5602,12 +5690,13 @@ impl Filesystem for QuickFS {
 
     fn flush(
         &self,
-        _req: &Request,
+        req: &Request,
         ino: INodeNo,
         _fh: FileHandle,
         _lock_owner: LockOwner,
         reply: ReplyEmpty,
     ) {
+        let _writer = self.note_writer(req.pid(), None);
         match self.flush_inode(ino.0) {
             Ok(()) => reply.ok(),
             Err(errno) => reply.error(to_errno(errno)),
@@ -5616,12 +5705,13 @@ impl Filesystem for QuickFS {
 
     fn fsync(
         &self,
-        _req: &Request,
+        req: &Request,
         ino: INodeNo,
         _fh: FileHandle,
         _datasync: bool,
         reply: ReplyEmpty,
     ) {
+        let _writer = self.note_writer(req.pid(), None);
         match self.fsync_inode(ino.0) {
             Ok(()) => reply.ok(),
             Err(errno) => reply.error(to_errno(errno)),
@@ -5692,6 +5782,9 @@ impl Filesystem for QuickFS {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
+        let _writer = size
+            .is_some()
+            .then(|| self.note_writer(req.pid(), Some(ino.0)));
         // Truncation is a write; everything else here is ignored anyway, but a `setattr` on
         // something outside the view must not describe it, so the visibility check runs regardless.
         if !self.ino_in_view(ino.0) {
@@ -5747,6 +5840,7 @@ impl Filesystem for QuickFS {
         umask: u32,
         reply: ReplyEntry,
     ) {
+        let _writer = self.note_writer(req.pid(), None);
         let name = name.as_bytes();
         if let Err(e) = self.check_new_name(parent.0, name) {
             reply.error(to_errno(e));
@@ -5779,17 +5873,19 @@ impl Filesystem for QuickFS {
         }
     }
 
-    fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+    fn unlink(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let _writer = self.note_writer(req.pid(), None);
         self.remove_entry(parent, name, false, reply);
     }
 
-    fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+    fn rmdir(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        let _writer = self.note_writer(req.pid(), None);
         self.remove_entry(parent, name, true, reply);
     }
 
     fn rename(
         &self,
-        _req: &Request,
+        req: &Request,
         parent: INodeNo,
         name: &OsStr,
         newparent: INodeNo,
@@ -5797,6 +5893,11 @@ impl Filesystem for QuickFS {
         flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
+        let moved = self
+            .ns()
+            .lookup(parent.0, name.as_bytes())
+            .map(|attr| attr.ino.0);
+        let _writer = self.note_writer(req.pid(), moved);
         let name = name.as_bytes();
         let newname = newname.as_bytes();
         #[cfg(target_os = "linux")]

@@ -309,7 +309,25 @@ mod tests {
             attributed
         );
 
-        for actor in ["ada", "agent:", "agent: scribe", "agent:sc\u{7}ribe"] {
+        for actor in [
+            "app:org.tilo.notes",
+            "program:org.gnome.TextEditor",
+            "agent:claude:4f2c",
+        ] {
+            let named = FileAttributionV1 {
+                actor: actor.into(),
+                ..scribe.clone()
+            };
+            assert_eq!(named.validate(), Ok(()), "{actor:?}");
+        }
+        for actor in [
+            "ada",
+            "agent:",
+            "agent: scribe",
+            "agent:sc\u{7}ribe",
+            "app:",
+            "person:ada",
+        ] {
             let forged = FileAttributionV1 {
                 actor: actor.into(),
                 ..scribe.clone()
