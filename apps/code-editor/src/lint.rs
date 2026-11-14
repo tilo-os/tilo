@@ -235,48 +235,52 @@ fn scan_line_brackets(
 mod tests {
     use super::*;
 
-    #[test]
-    fn bracket_columns_follow_unicode_scalars_and_skipped_escapes_and_comments() {
-        let prefix = "α\"escaped\\\"text\"/* β */";
-        let source = format!("{prefix}{{]");
-        let diagnostics = lint(&source, Language::Rust, Scope::Full);
-        let unmatched = diagnostics
-            .iter()
-            .find(|item| item.message.contains("Unmatched closing"))
-            .unwrap();
-        let unclosed = diagnostics
-            .iter()
-            .find(|item| item.message.contains("Unclosed"))
-            .unwrap();
-        assert_eq!(unmatched.col, prefix.chars().count().saturating_add(2));
-        assert_eq!(unclosed.col, prefix.chars().count().saturating_add(1));
-        let repeated = "α()[]{}".repeat(100_000);
-        let diagnostics = lint(&repeated, Language::PlainText, Scope::Full);
-        assert!(!diagnostics.iter().any(|item| item.message.contains("Unmatched") || item.message.contains("Unclosed")));
-    }
+    tilo_test_env::scenario! {
+        fn lint_reports_textual_facts_and_real_bracket_imbalance;
 
-    #[test]
-    fn textual_facts_are_reported_and_survive_the_textual_only_scope() {
-        detects_trailing_whitespace();
-        detects_todo_marker();
-        textual_only_drops_structure_and_keeps_facts();
+        phase bracket_columns_follow_unicode_scalars_and_skipped_escapes_and_comments;
+        {
+            let prefix = "α\"escaped\\\"text\"/* β */";
+            let source = format!("{prefix}{{]");
+            let diagnostics = lint(&source, Language::Rust, Scope::Full);
+            let unmatched = diagnostics
+                .iter()
+                .find(|item| item.message.contains("Unmatched closing"))
+                .unwrap();
+            let unclosed = diagnostics
+                .iter()
+                .find(|item| item.message.contains("Unclosed"))
+                .unwrap();
+            assert_eq!(unmatched.col, prefix.chars().count().saturating_add(2));
+            assert_eq!(unclosed.col, prefix.chars().count().saturating_add(1));
+            let repeated = "α()[]{}".repeat(100_000);
+            let diagnostics = lint(&repeated, Language::PlainText, Scope::Full);
+            assert!(!diagnostics.iter().any(|item| item.message.contains("Unmatched") || item.message.contains("Unclosed")));
+        }
+
+        phase textual_facts_are_reported_and_survive_the_textual_only_scope;
+        {
+            detects_trailing_whitespace();
+            detects_todo_marker();
+            textual_only_drops_structure_and_keeps_facts();
+        }
+
+        phase bracket_scan_reports_real_imbalance_and_skips_strings_comments_and_literals;
+        {
+            detects_unclosed_bracket();
+            balanced_brackets_have_no_bracket_diagnostics();
+            ignores_brackets_in_strings();
+            ignores_brackets_after_line_comment();
+            rust_lifetimes_are_not_read_as_char_literals();
+            rust_char_literals_still_hide_their_contents();
+            single_quoted_strings_still_hide_brackets_in_other_languages();
+            real_rust_source_lints_clean();
+        }
     }
 
     fn detects_trailing_whitespace() {
         let d = lint("let x = 1;   \n", Language::Rust, Scope::Full);
         assert!(d.iter().any(|x| x.message.contains("Trailing whitespace")));
-    }
-
-    #[test]
-    fn bracket_scan_reports_real_imbalance_and_skips_strings_comments_and_literals() {
-        detects_unclosed_bracket();
-        balanced_brackets_have_no_bracket_diagnostics();
-        ignores_brackets_in_strings();
-        ignores_brackets_after_line_comment();
-        rust_lifetimes_are_not_read_as_char_literals();
-        rust_char_literals_still_hide_their_contents();
-        single_quoted_strings_still_hide_brackets_in_other_languages();
-        real_rust_source_lints_clean();
     }
 
     fn detects_unclosed_bracket() {

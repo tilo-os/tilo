@@ -350,15 +350,35 @@ mod tests {
         Query::new(n)
     }
 
-    #[test]
-    fn line_matches_use_character_columns_and_honour_query_options() {
-        finds_every_occurrence_in_a_line();
-        overlapping_matches_are_not_double_counted();
-        case_insensitive_by_default_and_exact_when_asked();
-        columns_are_characters_not_bytes();
-        case_folding_that_changes_length_does_not_shift_columns();
-        whole_word_rejects_substrings();
-        an_empty_needle_matches_nothing();
+    tilo_test_env::scenario! {
+        fn search_matches_lines_walks_trees_and_stops_when_told;
+
+        phase line_matches_use_character_columns_and_honour_query_options;
+        {
+            finds_every_occurrence_in_a_line();
+            overlapping_matches_are_not_double_counted();
+            case_insensitive_by_default_and_exact_when_asked();
+            columns_are_characters_not_bytes();
+            case_folding_that_changes_length_does_not_shift_columns();
+            whole_word_rejects_substrings();
+            an_empty_needle_matches_nothing();
+        }
+
+        phase tree_search_reports_source_hits_skips_non_source_and_clips_previews;
+        {
+            searches_the_tree_and_reports_file_line_and_column();
+            build_output_and_vcs_directories_are_never_searched();
+            binary_files_are_skipped();
+            an_empty_query_finishes_immediately_without_walking();
+            a_long_line_is_clipped_around_the_match();
+        }
+
+        phase search_walk_stops_on_cancel_or_closed_receiver_and_streams_in_background;
+        {
+            a_cancelled_walk_stops_early();
+            a_dropped_receiver_ends_the_walk();
+            the_background_job_streams_results_and_finishes();
+        }
     }
 
     fn finds_every_occurrence_in_a_line() {
@@ -441,15 +461,6 @@ mod tests {
         d
     }
 
-    #[test]
-    fn tree_search_reports_source_hits_skips_non_source_and_clips_previews() {
-        searches_the_tree_and_reports_file_line_and_column();
-        build_output_and_vcs_directories_are_never_searched();
-        binary_files_are_skipped();
-        an_empty_query_finishes_immediately_without_walking();
-        a_long_line_is_clipped_around_the_match();
-    }
-
     fn searches_the_tree_and_reports_file_line_and_column() {
         let d = fixture();
         let (hits, done) = run(d.path(), &q("needle"));
@@ -498,13 +509,6 @@ mod tests {
             hits.iter().all(|h| !h.rel.ends_with("blob.bin")),
             "a NUL-bearing file is not text and must not produce hits"
         );
-    }
-
-    #[test]
-    fn search_walk_stops_on_cancel_or_closed_receiver_and_streams_in_background() {
-        a_cancelled_walk_stops_early();
-        a_dropped_receiver_ends_the_walk();
-        the_background_job_streams_results_and_finishes();
     }
 
     fn a_cancelled_walk_stops_early() {

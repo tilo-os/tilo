@@ -191,74 +191,78 @@ mod incremental_tests;
 mod tests {
     use super::*;
 
-    #[test]
-    fn languages_resolve_to_grammars_that_classify_tokens() {
-        for language in [
-            Language::Rust,
-            Language::Toml,
-            Language::Markdown,
-            Language::Json,
-            Language::Yaml,
-            Language::Python,
-            Language::JavaScript,
-            Language::TypeScript,
-            Language::Html,
-            Language::Css,
-            Language::Shell,
-            Language::C,
-            Language::Cpp,
-            Language::Go,
-            Language::Verilog,
-            Language::SystemVerilog,
-        ] {
-            assert_ne!(
-                highlighter(language).name(),
-                "Plain Text",
-                "{language:?} has no grammar"
+    tilo_test_env::scenario! {
+        fn grammars_classify_tokens_keywords_literals_and_comments;
+
+        phase languages_resolve_to_grammars_that_classify_tokens;
+        {
+            for language in [
+                Language::Rust,
+                Language::Toml,
+                Language::Markdown,
+                Language::Json,
+                Language::Yaml,
+                Language::Python,
+                Language::JavaScript,
+                Language::TypeScript,
+                Language::Html,
+                Language::Css,
+                Language::Shell,
+                Language::C,
+                Language::Cpp,
+                Language::Go,
+                Language::Verilog,
+                Language::SystemVerilog,
+            ] {
+                assert_ne!(
+                    highlighter(language).name(),
+                    "Plain Text",
+                    "{language:?} has no grammar"
+                );
+            }
+            assert_eq!(highlighter(Language::PlainText).name(), "Plain Text");
+
+            let mut state = highlighter(Language::Rust).start();
+            let spans = state.highlight_line("let s = \"hello\";");
+            let first = &spans[0];
+            assert_eq!(first.range.start, 0, "rust keyword start");
+            assert_eq!(first.kind, TokenKind::Keyword, "rust keyword kind");
+            assert!(
+                spans.iter().any(|s| s.kind == TokenKind::StringLit),
+                "rust string literal"
+            );
+
+            let mut state = highlighter(Language::PlainText).start();
+            let spans = state.highlight_line("just words here");
+            assert!(
+                spans.iter().all(|s| s.kind == TokenKind::Text),
+                "plain text is all Text"
             );
         }
-        assert_eq!(highlighter(Language::PlainText).name(), "Plain Text");
 
-        let mut state = highlighter(Language::Rust).start();
-        let spans = state.highlight_line("let s = \"hello\";");
-        let first = &spans[0];
-        assert_eq!(first.range.start, 0, "rust keyword start");
-        assert_eq!(first.kind, TokenKind::Keyword, "rust keyword kind");
-        assert!(
-            spans.iter().any(|s| s.kind == TokenKind::StringLit),
-            "rust string literal"
-        );
+        phase hardware_grammars_classify_keywords_literals_and_multiline_comments;
+        {
+            for language in [Language::Verilog, Language::SystemVerilog] {
+                let mut state = highlighter(language).start();
+                let line = "module mac; // multiply and accumulate";
+                let spans = state.highlight_line(line);
+                assert!(
+                    spans.iter().any(|span| {
+                        span.kind == TokenKind::Keyword && &line[span.range.clone()] == "module"
+                    }),
+                    "{language:?} module keyword"
+                );
+                assert!(spans.iter().any(|span| span.kind == TokenKind::Comment));
 
-        let mut state = highlighter(Language::PlainText).start();
-        let spans = state.highlight_line("just words here");
-        assert!(
-            spans.iter().all(|s| s.kind == TokenKind::Text),
-            "plain text is all Text"
-        );
-    }
-
-    #[test]
-    fn hardware_grammars_classify_keywords_literals_and_multiline_comments() {
-        for language in [Language::Verilog, Language::SystemVerilog] {
-            let mut state = highlighter(language).start();
-            let line = "module mac; // multiply and accumulate";
-            let spans = state.highlight_line(line);
-            assert!(
-                spans.iter().any(|span| {
-                    span.kind == TokenKind::Keyword && &line[span.range.clone()] == "module"
-                }),
-                "{language:?} module keyword"
-            );
-            assert!(spans.iter().any(|span| span.kind == TokenKind::Comment));
-
-            let spans = state.highlight_line("localparam WIDTH = 8;");
-            assert!(spans.iter().any(|span| span.kind == TokenKind::Number));
-            state.highlight_line("/* disabled logic");
-            let spans = state.highlight_line("assign out = 8;");
-            assert!(spans.iter().all(|span| span.kind == TokenKind::Comment));
-            let spans = state.highlight_line("*/ assign out = 8;");
-            assert!(spans.iter().any(|span| span.kind == TokenKind::Keyword));
-            assert!(spans.iter().any(|span| span.kind == TokenKind::Number));
+                let spans = state.highlight_line("localparam WIDTH = 8;");
+                assert!(spans.iter().any(|span| span.kind == TokenKind::Number));
+                state.highlight_line("/* disabled logic");
+                let spans = state.highlight_line("assign out = 8;");
+                assert!(spans.iter().all(|span| span.kind == TokenKind::Comment));
+                let spans = state.highlight_line("*/ assign out = 8;");
+                assert!(spans.iter().any(|span| span.kind == TokenKind::Keyword));
+                assert!(spans.iter().any(|span| span.kind == TokenKind::Number));
+            }
         }
     }
 }

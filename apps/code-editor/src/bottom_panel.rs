@@ -634,113 +634,140 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_search_heading_says_how_far_the_search_got() {
-        let hit = |rel: &str| HitRow {
-            rel: rel.into(),
-            line: 1,
-            preview: "fn main()".into(),
-            highlight: (0, 2),
-        };
-        let mut panel = BottomPanel::new();
-        let mut search = SearchState {
-            query: "main".into(),
-            running: true,
-            ..SearchState::default()
-        };
-        panel.set_search(search.clone());
-        assert_eq!(panel.search_summary(), "Searching…");
+    tilo_test_env::scenario! {
+        fn the_bottom_panel_lists_counts_and_reports;
 
-        search.rows = vec![hit("a.rs"), hit("a.rs"), hit("b.rs")];
-        search.running = false;
-        search.files_scanned = 40;
-        panel.set_search(search.clone());
-        assert_eq!(
-            panel.search_summary(),
-            "3 results in 2 files, 40 files scanned"
-        );
+        phase the_search_heading_says_how_far_the_search_got;
+        {
+            let hit = |rel: &str| HitRow {
+                rel: rel.into(),
+                line: 1,
+                preview: "fn main()".into(),
+                highlight: (0, 2),
+            };
+            let mut panel = BottomPanel::new();
+            let mut search = SearchState {
+                query: "main".into(),
+                running: true,
+                ..SearchState::default()
+            };
+            panel.set_search(search.clone());
+            assert_eq!(panel.search_summary(), "Searching…");
 
-        search.truncated = true;
-        panel.set_search(search);
-        assert!(
-            panel
-                .search_summary()
-                .contains("search limit reached after 40 files")
-        );
-    }
+            search.rows = vec![hit("a.rs"), hit("a.rs"), hit("b.rs")];
+            search.running = false;
+            search.files_scanned = 40;
+            panel.set_search(search.clone());
+            assert_eq!(
+                panel.search_summary(),
+                "3 results in 2 files, 40 files scanned"
+            );
 
-    #[test]
-    fn an_empty_body_says_why_through_the_shared_empty_state() {
-        fn said(panel: &mut BottomPanel) -> Option<String> {
-            panel.sync_empty();
-            Widget::children(panel)
-                .into_iter()
-                .find(|child| child.name() == "EmptyState")
-                .and_then(Widget::accessibility)
-                .and_then(|node| node.name)
+            search.truncated = true;
+            panel.set_search(search);
+            assert!(
+                panel
+                    .search_summary()
+                    .contains("search limit reached after 40 files")
+            );
         }
-        let mut panel = BottomPanel::new();
-        assert_eq!(
-            said(&mut panel).as_deref(),
-            Some("No problems in this file")
-        );
-        panel.set_analysis(Some("Checking this file".into()));
-        assert_eq!(
-            said(&mut panel).as_deref(),
-            Some("Checking this file"),
-            "nothing analysed yet is not a clean file"
-        );
-        panel.set_problems(vec![diagnostic(Severity::Error, 3)]);
-        assert_eq!(said(&mut panel), None, "a list has no empty state");
-        panel.set_tab(PanelTab::Terminal);
-        panel.set_terminal_note(Some("No terminal is running".into()));
-        assert_eq!(said(&mut panel).as_deref(), Some("No terminal is running"));
-        panel.set_has_live_terminal(true);
-        assert_eq!(said(&mut panel), None, "a live terminal owns the body");
-    }
 
-    #[test]
-    fn the_problems_tab_counts_what_it_lists() {
-        let mut panel = BottomPanel::new();
-        let titles = |panel: &BottomPanel| {
-            panel
-                .tabs
-                .tabs()
-                .iter()
-                .map(|tab| tab.title.clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(titles(&panel), ["Problems", "Terminal", "Search results"]);
-        panel.set_problems(vec![diagnostic(Severity::Error, 3)]);
-        assert_eq!(
-            titles(&panel),
-            ["Problems (1)", "Terminal", "Search results"]
-        );
-        panel.set_problems(Vec::new());
-        assert_eq!(titles(&panel), ["Problems", "Terminal", "Search results"]);
-    }
+        phase an_empty_body_says_why_through_the_shared_empty_state;
+        {
+            fn said(panel: &mut BottomPanel) -> Option<String> {
+                panel.sync_empty();
+                Widget::children(panel)
+                    .into_iter()
+                    .find(|child| child.name() == "EmptyState")
+                    .and_then(Widget::accessibility)
+                    .and_then(|node| node.name)
+            }
+            let mut panel = BottomPanel::new();
+            assert_eq!(
+                said(&mut panel).as_deref(),
+                Some("No problems in this file")
+            );
+            panel.set_analysis(Some("Checking this file".into()));
+            assert_eq!(
+                said(&mut panel).as_deref(),
+                Some("Checking this file"),
+                "nothing analysed yet is not a clean file"
+            );
+            panel.set_problems(vec![diagnostic(Severity::Error, 3)]);
+            assert_eq!(said(&mut panel), None, "a list has no empty state");
+            panel.set_tab(PanelTab::Terminal);
+            panel.set_terminal_note(Some("No terminal is running".into()));
+            assert_eq!(said(&mut panel).as_deref(), Some("No terminal is running"));
+            panel.set_has_live_terminal(true);
+            assert_eq!(said(&mut panel), None, "a live terminal owns the body");
+        }
 
-    #[test]
-    fn each_problem_is_a_row_and_activating_one_reports_where_it_was_found() {
-        let mut panel = BottomPanel::new();
-        assert!(panel.list.is_none(), "no problems, no list");
-        panel.set_problems(vec![
-            diagnostic(Severity::Error, 3),
-            diagnostic(Severity::Warning, 9),
-        ]);
-        assert!(
-            panel.list.is_none(),
-            "rows wait until the panel is laid out"
-        );
-        panel.build_layout(&mut TaffyTree::new(), &Theme::dark(), &mut HashMap::new());
-        assert!(panel.list.is_some());
-        assert_eq!(panel.take_jump(), None);
-        panel.activated.set(Some(1));
-        assert_eq!(panel.take_jump(), Some((9, 1)));
-        assert_eq!(panel.take_jump(), None, "cleared on read");
-        panel.set_problems(Vec::new());
-        panel.build_layout(&mut TaffyTree::new(), &Theme::dark(), &mut HashMap::new());
-        assert!(panel.list.is_none());
+        phase the_problems_tab_counts_what_it_lists;
+        {
+            let mut panel = BottomPanel::new();
+            let titles = |panel: &BottomPanel| {
+                panel
+                    .tabs
+                    .tabs()
+                    .iter()
+                    .map(|tab| tab.title.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(titles(&panel), ["Problems", "Terminal", "Search results"]);
+            panel.set_problems(vec![diagnostic(Severity::Error, 3)]);
+            assert_eq!(
+                titles(&panel),
+                ["Problems (1)", "Terminal", "Search results"]
+            );
+            panel.set_problems(Vec::new());
+            assert_eq!(titles(&panel), ["Problems", "Terminal", "Search results"]);
+        }
+
+        phase each_problem_is_a_row_and_activating_one_reports_where_it_was_found;
+        {
+            let mut panel = BottomPanel::new();
+            assert!(panel.list.is_none(), "no problems, no list");
+            panel.set_problems(vec![
+                diagnostic(Severity::Error, 3),
+                diagnostic(Severity::Warning, 9),
+            ]);
+            assert!(
+                panel.list.is_none(),
+                "rows wait until the panel is laid out"
+            );
+            panel.build_layout(&mut TaffyTree::new(), &Theme::dark(), &mut HashMap::new());
+            assert!(panel.list.is_some());
+            assert_eq!(panel.take_jump(), None);
+            panel.activated.set(Some(1));
+            assert_eq!(panel.take_jump(), Some((9, 1)));
+            assert_eq!(panel.take_jump(), None, "cleared on read");
+            panel.set_problems(Vec::new());
+            panel.build_layout(&mut TaffyTree::new(), &Theme::dark(), &mut HashMap::new());
+            assert!(panel.list.is_none());
+        }
+
+        phase choosing_a_tab_is_reported_once_and_closing_asks_to_hide_the_panel;
+        {
+            let mut panel = BottomPanel::new();
+            assert_eq!(panel.active_tab(), PanelTab::Problems);
+            panel.set_tab(PanelTab::Terminal);
+            assert_eq!(panel.active_tab(), PanelTab::Terminal);
+            assert!(!panel.take_tab_changed(), "a program's choice is no edge");
+            assert!(!panel.take_close_request());
+            panel.close_requested = true;
+            assert!(panel.take_close_request());
+            assert!(!panel.take_close_request(), "cleared on read");
+        }
+
+        phase the_panel_is_the_tab_strip_plus_a_few_rows_tall;
+        {
+            let theme = Theme::dark();
+            let wanted = BottomPanel::wanted_height(&theme);
+            let row = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s2);
+            assert!(
+                (wanted - (ui::widget::tabs::TAB_BAR_HEIGHT + VISIBLE_ROWS as f64 * row)).abs() < 1e-9
+            );
+        }
     }
 
     #[test]
@@ -760,29 +787,6 @@ mod tests {
             activated.take(),
             None,
             "the native activation is consumed once"
-        );
-    }
-
-    #[test]
-    fn choosing_a_tab_is_reported_once_and_closing_asks_to_hide_the_panel() {
-        let mut panel = BottomPanel::new();
-        assert_eq!(panel.active_tab(), PanelTab::Problems);
-        panel.set_tab(PanelTab::Terminal);
-        assert_eq!(panel.active_tab(), PanelTab::Terminal);
-        assert!(!panel.take_tab_changed(), "a program's choice is no edge");
-        assert!(!panel.take_close_request());
-        panel.close_requested = true;
-        assert!(panel.take_close_request());
-        assert!(!panel.take_close_request(), "cleared on read");
-    }
-
-    #[test]
-    fn the_panel_is_the_tab_strip_plus_a_few_rows_tall() {
-        let theme = Theme::dark();
-        let wanted = BottomPanel::wanted_height(&theme);
-        let row = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s2);
-        assert!(
-            (wanted - (ui::widget::tabs::TAB_BAR_HEIGHT + VISIBLE_ROWS as f64 * row)).abs() < 1e-9
         );
     }
 }

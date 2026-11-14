@@ -64,48 +64,52 @@ mod tests {
         Query::new(n)
     }
 
-    #[test]
-    fn matches_are_found_across_lines_in_document_order() {
-        let text = "let foo = 1;\nfn bar() {}\n// foo again foo\n";
-        let m = matches_in(text, &q("foo"));
-        assert_eq!(
-            m,
-            vec![
-                Match {
-                    line: 0,
-                    col: 4,
-                    len: 3
-                },
-                Match {
-                    line: 2,
-                    col: 3,
-                    len: 3
-                },
-                Match {
-                    line: 2,
-                    col: 13,
-                    len: 3
-                },
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn find_matches_in_document_order_by_character;
 
-    #[test]
-    fn an_empty_query_matches_nothing() {
-        assert!(matches_in("anything at all", &q("")).is_empty());
-    }
+        phase matches_are_found_across_lines_in_document_order;
+        {
+            let text = "let foo = 1;\nfn bar() {}\n// foo again foo\n";
+            let m = matches_in(text, &q("foo"));
+            assert_eq!(
+                m,
+                vec![
+                    Match {
+                        line: 0,
+                        col: 4,
+                        len: 3
+                    },
+                    Match {
+                        line: 2,
+                        col: 3,
+                        len: 3
+                    },
+                    Match {
+                        line: 2,
+                        col: 13,
+                        len: 3
+                    },
+                ]
+            );
+        }
 
-    #[test]
-    fn byte_ranges_follow_characters_not_bytes() {
-        let text = "é foo\nfoo é foo\n";
-        let m = matches_in(text, &q("foo"));
-        assert_eq!(m.len(), 3);
-        let ranges = byte_ranges(text, &m);
-        let found: Vec<&str> = ranges
-            .iter()
-            .map(|r| text.get(r.start..r.end).unwrap_or(""))
-            .collect();
-        assert_eq!(found, ["foo", "foo", "foo"]);
-        assert_eq!(ranges[0].start, "é ".len());
+        phase an_empty_query_matches_nothing;
+        {
+            assert!(matches_in("anything at all", &q("")).is_empty());
+        }
+
+        phase byte_ranges_follow_characters_not_bytes;
+        {
+            let text = "é foo\nfoo é foo\n";
+            let m = matches_in(text, &q("foo"));
+            assert_eq!(m.len(), 3);
+            let ranges = byte_ranges(text, &m);
+            let found: Vec<&str> = ranges
+                .iter()
+                .map(|r| text.get(r.start..r.end).unwrap_or(""))
+                .collect();
+            assert_eq!(found, ["foo", "foo", "foo"]);
+            assert_eq!(ranges[0].start, "é ".len());
+        }
     }
 }

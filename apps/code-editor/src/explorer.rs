@@ -309,35 +309,39 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn rows_stand_in_explorer_order_under_the_folder_they_are_in() {
-        assert_eq!(
-            listed(&sample()),
-            [
-                ("assets".to_owned(), 0),
-                ("src".to_owned(), 0),
-                ("main.rs".to_owned(), 1),
-                ("README.md".to_owned(), 0),
-            ]
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_explorer_lists_rows_in_order_and_folders_as_branches;
 
-    #[test]
-    fn a_folder_is_a_branch_before_its_files_are_read() {
-        let project = sample();
-        let rows = rows(&project);
-        let model = model(rows);
-        let assets = (0..model.len())
-            .find(|index| model.item(*index).is_some_and(|row| row.label == "assets"))
-            .expect("the folder is listed");
-        assert!(model.accepts_children(assets), "the folder opens");
-        let readme = (0..model.len())
-            .find(|index| {
-                model
-                    .item(*index)
-                    .is_some_and(|row| row.label == "README.md")
-            })
-            .expect("the file is listed");
-        assert!(!model.accepts_children(readme), "a file takes none");
+        phase rows_stand_in_explorer_order_under_the_folder_they_are_in;
+        {
+            assert_eq!(
+                listed(&sample()),
+                [
+                    ("assets".to_owned(), 0),
+                    ("src".to_owned(), 0),
+                    ("main.rs".to_owned(), 1),
+                    ("README.md".to_owned(), 0),
+                ]
+            );
+        }
+
+        phase a_folder_is_a_branch_before_its_files_are_read;
+        {
+            let project = sample();
+            let rows = rows(&project);
+            let model = model(rows);
+            let assets = (0..model.len())
+                .find(|index| model.item(*index).is_some_and(|row| row.label == "assets"))
+                .expect("the folder is listed");
+            assert!(model.accepts_children(assets), "the folder opens");
+            let readme = (0..model.len())
+                .find(|index| {
+                    model
+                        .item(*index)
+                        .is_some_and(|row| row.label == "README.md")
+                })
+                .expect("the file is listed");
+            assert!(!model.accepts_children(readme), "a file takes none");
+        }
     }
 }
