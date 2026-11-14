@@ -57,13 +57,12 @@ pub fn connect(config_root: &Path, address: &ServiceAddress) -> Result<AccountId
         .to_value()
         .map_err(|_| ServiceError::InvalidAddress)?;
     account.config["service_source"] = serde_json::Value::Bool(true);
-    crate::account_store::persist(
+    crate::vault::persist(
         config_root,
         || Ok(AccountStore::load_in(config_root)),
         account,
         accounts::Secret::password(address.secret.to_string()),
     )
-    .map_err(|_| ServiceError::Storage)
 }
 
 /// The account itself, as the one thing this source brings.

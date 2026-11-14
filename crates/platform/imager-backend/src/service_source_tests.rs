@@ -6,8 +6,8 @@ use serde_json::{Value, json};
 use test_http::{Reply, Request, Responder};
 use zeroize::Zeroizing;
 
-use super::*;
 use crate::migration_store::MigrationStore;
+use migration_sources::service::*;
 
 const OUTLINE_KEY: &str = "ol_api_secretkey";
 const LINEAR_KEY: &str = "lin_api_secretkey";

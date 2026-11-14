@@ -17,7 +17,7 @@ use tilo_seal::{Context, Frame, FrameError, Label, SymmetricKey, envelope, migra
 use zeroize::Zeroizing;
 
 use crate::account_sources::thunderbird::{
-    FolderKind, ReviewedFolder, ReviewedThunderbird, ThunderbirdAccount, ThunderbirdFolder,
+    FolderFormat, ReviewedFolder, ReviewedThunderbird, ThunderbirdAccount, ThunderbirdFolder,
     read_maildir_files, read_reviewed,
 };
 
@@ -464,8 +464,8 @@ fn read_folder(
     reviewed: &ReviewedThunderbird,
     folder: &ReviewedFolder,
 ) -> Result<BundleFolder, ConnectionError> {
-    let files = match folder.kind {
-        FolderKind::Mbox => vec![BundleData {
+    let files = match folder.format {
+        FolderFormat::Mbox => vec![BundleData {
             name: folder
                 .inventory
                 .hierarchy
@@ -475,7 +475,7 @@ fn read_folder(
             bytes: read_reviewed(reviewed, &folder.relative, MAX_PLAINTEXT as u64)
                 .map_err(|_| ConnectionError::AccountMissing)?,
         }],
-        FolderKind::Maildir => read_maildir_files(reviewed, folder, MAX_PLAINTEXT as u64)
+        FolderFormat::Maildir => read_maildir_files(reviewed, folder, MAX_PLAINTEXT as u64)
             .map_err(|_| ConnectionError::AccountMissing)?
             .into_iter()
             .map(|(name, bytes)| BundleData { name, bytes })

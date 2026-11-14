@@ -12,7 +12,7 @@ capture-worker-applications = ["capture-worker"]
 host-media-writer = []
 native-slack-qualification = ["installation", "dep:zbus"]
 native-capture-qualification = ["installation", "flatpak-media-writer", "launcher/native-home-alias-qualification"]
-test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env", "dep:tilo-oauth"]
+test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env", "dep:tilo-oauth", "migration-sources/test-support"]
 flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]
 # The guided installation's capture of the old system's Discord session from
 # its Chromium Local Storage, the only reader of LevelDB. LevelDB is C++, so it
@@ -58,6 +58,9 @@ browser-continuity = { workspace = true, features = ["native"] }
 blake3.workspace = true
 cap-std = "3.4.6"
 accounts = { path = "../../system/accounts" }
+# The source readers live in a crate a plain laptop can build, so the CLI can
+# drive the same code without this crate's desktop stack.
+migration-sources = { path = "../migration-sources" }
 account-custody = { path = "../../system/account-custody" }
 zeroize.workspace = true
 block-devices = { path = "../../system/block-devices" }
@@ -128,6 +131,8 @@ tilo-files = { path = "../../platform/tilo-files" }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Memory", "Win32_System_Power", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
+# The destination namespace checks recognise the fixture roots the tests build in.
+migration-sources = { path = "../migration-sources", features = ["test-support"] }
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 test-http = { path = "../../dev/test-http" }

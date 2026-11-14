@@ -7572,6 +7572,7 @@ dependencies = [
  "leveldb-sys",
  "libc",
  "mail-parser",
+ "migration-sources",
  "mime_guess",
  "os-actions",
  "package-store",
@@ -9805,6 +9806,38 @@ dependencies = [
  "tilo-test-env",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "migration-sources"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "base64 0.22.1",
+ "blake3",
+ "cap-fs-ext",
+ "cap-primitives",
+ "cap-std",
+ "chrono",
+ "hex",
+ "libc",
+ "mail-parser",
+ "pim-lines",
+ "reqwest 0.13.4",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tilo-net",
+ "tilo-process",
+ "tilo-recurrence",
+ "tilo-test-env",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -28053,6 +28086,7 @@ dependencies = [
  "memmap2",
  "memoffset",
  "messages",
+ "migration-sources",
  "mime",
  "mime_guess",
  "minimal-lexical",

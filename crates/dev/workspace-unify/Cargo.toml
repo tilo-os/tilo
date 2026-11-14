@@ -160,7 +160,6 @@ doc = false
 "chacha20-0_9_1" = { package = "chacha20", version = "^0.9.1", default-features = false, features = ["zeroize"] }
 "chacha20poly1305-0_10_1" = { package = "chacha20poly1305", version = "^0.10.1", default-features = false, features = ["alloc", "default", "getrandom", "rand_core"] }
 "chacha20poly1305-0_11_0" = { package = "chacha20poly1305", version = "^0.11.0", default-features = false, features = ["alloc", "zeroize"] }
-"key-group" = { path = "../../../crates/collab/key-group", default-features = false, features = [] }
 "chat" = { path = "../../../apps/chat", default-features = false, features = ["default", "samples", "video"] }
 "chinese-number-0_7_8" = { package = "chinese-number", version = "^0.7.8", default-features = false, features = ["num-bigint", "num-traits", "number-to-chinese"] }
 "chinese-variant-1_1_6" = { package = "chinese-variant", version = "^1.1.6", default-features = false, features = ["default"] }
@@ -563,6 +562,7 @@ doc = false
 "kamadak-exif-0_6_1" = { package = "kamadak-exif", version = "^0.6.1", default-features = false, features = [] }
 "keccak-0_2_2" = { package = "keccak", version = "^0.2.2", default-features = false, features = [] }
 "kem-0_3_0" = { package = "kem", version = "^0.3.0", default-features = false, features = [] }
+"key-group" = { path = "../../../crates/collab/key-group", default-features = false, features = [] }
 "khronos-egl-6_0_0" = { package = "khronos-egl", version = "^6.0.0", default-features = false, features = ["1_0", "1_1", "1_2", "1_3", "1_4", "1_5", "default", "dynamic", "libloading"] }
 "kio-0_5_9" = { package = "kio", version = "^0.5.9", default-features = false, features = [] }
 "kio-0_6_0" = { package = "kio", version = "^0.6.0", default-features = false, features = [] }
@@ -645,6 +645,7 @@ doc = false
 "memmap2-0_9_11" = { package = "memmap2", version = "^0.9.11", default-features = false, features = [] }
 "memoffset-0_9_1" = { package = "memoffset", version = "^0.9.1", default-features = false, features = ["default"] }
 "messages" = { path = "../../../apps/messages", default-features = false, features = [] }
+"migration-sources" = { path = "../../../crates/platform/migration-sources", default-features = false, features = [] }
 "mime-0_3_17" = { package = "mime", version = "^0.3.17", default-features = false, features = [] }
 "mime_guess-2_0_5" = { package = "mime_guess", version = "^2.0.5", default-features = false, features = ["default", "rev-mappings"] }
 "minimal-lexical-0_2_1" = { package = "minimal-lexical", version = "^0.2.1", default-features = false, features = ["std"] }
@@ -1145,7 +1146,6 @@ doc = false
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-capture" = { path = "../../../crates/platform/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../../crates/session/capture-studio", default-features = false, features = [] }
-"tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-chromium-blocker" = { path = "../../../crates/browser/chromium-blocker", default-features = false, features = [] }
 "tilo-cli-kit" = { path = "../../../crates/runtime/cli", default-features = false, features = [] }
 "tilo-clipboard" = { path = "../../../crates/platform/tilo-clipboard", default-features = false, features = [] }
@@ -1360,6 +1360,7 @@ doc = false
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
+"tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
 "tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
 "tilolang-app" = { path = "../../../apps/tilolang", default-features = false, features = [] }
@@ -1705,7 +1706,6 @@ doc = false
 "chacha20-0_9_1" = { package = "chacha20", version = "^0.9.1", default-features = false, features = ["zeroize"] }
 "chacha20poly1305-0_10_1" = { package = "chacha20poly1305", version = "^0.10.1", default-features = false, features = ["alloc", "default", "getrandom", "rand_core"] }
 "chacha20poly1305-0_11_0" = { package = "chacha20poly1305", version = "^0.11.0", default-features = false, features = ["alloc", "zeroize"] }
-"key-group" = { path = "../../../crates/collab/key-group", default-features = false, features = [] }
 "chrono-0_4_45" = { package = "chrono", version = "^0.4.45", default-features = false, features = ["alloc", "clock", "default", "iana-time-zone", "js-sys", "now", "oldtime", "serde", "std", "wasm-bindgen", "wasmbind", "winapi", "windows-link"] }
 "cipher-0_4_4" = { package = "cipher", version = "^0.4.4", default-features = false, features = ["zeroize"] }
 "cipher-0_5_2" = { package = "cipher", version = "^0.5.2", default-features = false, features = ["alloc", "block-buffer", "block-padding", "rand_core", "stream-wrapper", "zeroize"] }
@@ -2002,6 +2002,7 @@ doc = false
 "k256-0_13_4" = { package = "k256", version = "^0.13.4", default-features = false, features = ["arithmetic", "ecdh"] }
 "keccak-0_2_2" = { package = "keccak", version = "^0.2.2", default-features = false, features = [] }
 "kem-0_3_0" = { package = "kem", version = "^0.3.0", default-features = false, features = [] }
+"key-group" = { path = "../../../crates/collab/key-group", default-features = false, features = [] }
 "khronos-egl-6_0_0" = { package = "khronos-egl", version = "^6.0.0", default-features = false, features = ["1_0", "1_1", "1_2", "1_3", "1_4", "1_5", "default", "dynamic", "libloading"] }
 "khronos_api-3_1_0" = { package = "khronos_api", version = "^3.1.0", default-features = false, features = [] }
 "kio-0_5_9" = { package = "kio", version = "^0.5.9", default-features = false, features = [] }

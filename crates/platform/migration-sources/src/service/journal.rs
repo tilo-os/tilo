@@ -1,6 +1,6 @@
 //! A service migration's journal: the review the person approved and every item its app
-//! already has. The migration store keeps it durably beside the folder copies' operations
-//! ([`crate::migration_store::MigrationStore::save_service`]).
+//! already has. The caller's migration store keeps it durably beside the folder copies'
+//! operations.
 
 use std::collections::BTreeSet;
 

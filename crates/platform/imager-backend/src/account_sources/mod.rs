@@ -6,7 +6,9 @@ mod goa;
 mod nextcloud;
 #[cfg(test)]
 mod tests;
-pub(crate) mod thunderbird;
+#[cfg(test)]
+mod thunderbird_tests;
+pub use migration_sources::thunderbird;
 mod tilo;
 
 #[cfg(target_os = "linux")]
@@ -165,7 +167,7 @@ pub fn discover(roots: &SourceRoots) -> Inventory {
         profile(&roots.config, relative, provider, label, &mut inventory);
     }
     append_home_profiles(&roots.home, &mut inventory);
-    thunderbird::discover(&roots.home, &mut inventory);
+    append_thunderbird(&roots.home, &mut inventory);
     inventory
 }
 
@@ -173,8 +175,19 @@ pub fn discover(roots: &SourceRoots) -> Inventory {
 pub fn discover_home_profiles(home: &Path) -> Inventory {
     let mut inventory = Inventory::default();
     append_home_profiles(home, &mut inventory);
-    thunderbird::discover(home, &mut inventory);
+    append_thunderbird(home, &mut inventory);
     inventory
+}
+
+/// Keep the serializable profile list and the pinned roots the importer reads
+/// through, and name every source that could not be read.
+fn append_thunderbird(home: &Path, inventory: &mut Inventory) {
+    let scan = thunderbird::scan(home);
+    for reviewed in scan.reviewed {
+        inventory.thunderbird.push(reviewed.profile.clone());
+        inventory.thunderbird_reviewed.push(reviewed);
+    }
+    inventory.unreadable_sources.extend(scan.unreadable);
 }
 
 fn append_home_profiles(home: &Path, inventory: &mut Inventory) {

@@ -65,7 +65,7 @@ pub fn read_private_file(path: &std::path::Path, limit: usize) -> io::Result<Vec
     use cap_primitives::fs::{FollowSymlinks, OpenOptions};
     use std::io::Read as _;
 
-    use crate::migration_directory::PinnedDirectory;
+    use crate::pinned::PinnedDirectory;
 
     let parent = PinnedDirectory::open_absolute(
         path.parent()
@@ -85,7 +85,9 @@ pub fn read_private_file(path: &std::path::Path, limit: usize) -> io::Result<Vec
         return Err(io::Error::other("the file exceeds bounds or is not a file"));
     }
     let mut bytes = Vec::new();
-    (&mut file).take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    (&mut file)
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut bytes)?;
     parent.validate()?;
     Ok(bytes)
 }

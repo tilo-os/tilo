@@ -311,6 +311,7 @@ members = [
     "examples/packaging/notes-cli",
 
     # Platform
+    "crates/platform/migration-sources",
     "crates/platform/pc-keyboard-geometry",
     "crates/platform/tilo-app-id",
     "crates/platform/tilo-appearance",

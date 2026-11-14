@@ -112,15 +112,35 @@ mod test_environment {
     use std::os::unix::fs::MetadataExt;
     use std::sync::OnceLock;
 
-    fn above_fixtures() -> io::Result<&'static HashSet<(u64, u64)>> {
+    /// The directory the installer's fixtures root their state in, as
+    /// configured; the checkout itself when nothing names one.
+    #[cfg(target_os = "linux")]
+    fn fixture_root() -> std::path::PathBuf {
+        const ROOT_VAR: &str = "TILO_IMAGER_TEST_CACHE_ROOT";
+        if let Some(root) = std::env::var_os(ROOT_VAR) {
+            return root.into();
+        }
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                exe.ancestors()
+                    .find(|dir| dir.file_name().is_some_and(|name| name == "deps"))
+                    .and_then(|deps| deps.parent())
+                    .and_then(|profile| profile.parent())
+                    .map(|target| target.join("test-fs").join("imager"))
+            })
+            .unwrap_or_else(std::env::temp_dir)
+    }
+
+    fn above_fixtures() -> &'static HashSet<(u64, u64)> {
         static ABOVE: OnceLock<HashSet<(u64, u64)>> = OnceLock::new();
         if let Some(above) = ABOVE.get() {
-            return Ok(above);
+            return above;
         }
         let above = {
             let mut roots = vec![std::env::temp_dir()];
             #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
-            roots.push(crate::test_support::fixture_root());
+            roots.push(fixture_root());
             let mut above = HashSet::new();
             for root in roots {
                 // Canonical, so the mount the checkout really lives on is recognised however the path
@@ -135,12 +155,12 @@ mod test_environment {
             }
             above
         };
-        Ok(ABOVE.get_or_init(|| above))
+        ABOVE.get_or_init(|| above)
     }
 
     pub(super) fn is_above_fixtures(file: &File) -> io::Result<bool> {
         let metadata = file.metadata()?;
-        Ok(above_fixtures()?.contains(&(metadata.dev(), metadata.ino())))
+        Ok(above_fixtures().contains(&(metadata.dev(), metadata.ino())))
     }
 }
 

@@ -1,6 +1,9 @@
 //! Native account custody publication after the caller reviews destination metadata.
 use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
+use migration_sources::vault::VaultError;
 use std::path::Path;
+
+pub use migration_sources::vault::PrivateSecret;
 
 /// Details deliberately omit credentials and provider response bodies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -18,15 +21,9 @@ pub enum ConnectionError {
     DavFilesUnavailable,
 }
 
-/// A private grant whose password and token are cleared on every exit path.
-pub struct PrivateSecret(pub Secret);
-impl Drop for PrivateSecret {
-    fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.0.password.zeroize();
-        if let Some(token) = &mut self.0.token {
-            token.zeroize();
-        }
+impl From<VaultError> for ConnectionError {
+    fn from(_: VaultError) -> Self {
+        Self::StorageUnavailable
     }
 }
 
@@ -66,12 +63,11 @@ pub fn persist_import(
 /// The reader runs only after the secret is protected by zeroizing ownership.
 pub fn persist(
     root: &Path,
-    mut load_store: impl FnMut() -> Result<AccountStore, ConnectionError>,
+    load_store: impl FnMut() -> Result<AccountStore, ConnectionError>,
     account: Account,
     secret: Secret,
 ) -> Result<AccountId, ConnectionError> {
-    let secret = PrivateSecret(secret);
-    persist_private(root, &mut load_store, account, &secret.0)
+    migration_sources::vault::persist(root, load_store, account, secret)
 }
 
 fn persist_private(
@@ -84,14 +80,7 @@ fn persist_private(
     // between writes leaves a sealed orphan, never a plaintext credential
     // or an apparently connected account without its grant.
     let mut store = load_store()?;
-    let mut vault = SecretVault::open_in(root);
-    if vault.recovery_error().is_some() {
-        return Err(ConnectionError::StorageUnavailable);
-    }
-    vault.put(&account.id, secret);
-    vault
-        .try_save()
-        .map_err(|_| ConnectionError::StorageUnavailable)?;
+    migration_sources::vault::seal(root, &account.id, secret)?;
     let id = account.id.clone();
     store.upsert(account);
     store

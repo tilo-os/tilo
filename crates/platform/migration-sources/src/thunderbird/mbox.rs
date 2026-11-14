@@ -7,7 +7,7 @@
 use std::fmt;
 use std::io::{self, Read};
 
-pub(crate) const CHUNK: usize = 64 * 1024;
+pub const CHUNK: usize = 64 * 1024;
 
 const BOUNDARY: &[u8] = b"From ";
 
@@ -16,7 +16,7 @@ const KEEP: usize = 4;
 
 /// Callers distinguish this from an I/O failure and report it in their own terms.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct MessageTooLarge {
+pub struct MessageTooLarge {
     pub limit: usize,
 }
 
@@ -32,14 +32,14 @@ impl fmt::Display for MessageTooLarge {
 
 impl std::error::Error for MessageTooLarge {}
 
-pub(crate) fn is_too_large(error: &io::Error) -> bool {
+pub fn is_too_large(error: &io::Error) -> bool {
     match error.get_ref() {
         Some(inner) => inner.is::<MessageTooLarge>(),
         None => false,
     }
 }
 
-pub(crate) struct MboxMessages<R> {
+pub struct MboxMessages<R> {
     reader: R,
     /// Never larger than one chunk plus the retained line context.
     buffer: Vec<u8>,
@@ -58,7 +58,7 @@ pub(crate) struct MboxMessages<R> {
 }
 
 impl<R: Read> MboxMessages<R> {
-    pub(crate) fn new(reader: R, limit: usize) -> Self {
+    pub fn new(reader: R, limit: usize) -> Self {
         Self {
             reader,
             buffer: Vec::with_capacity(CHUNK),
@@ -78,7 +78,7 @@ impl<R: Read> MboxMessages<R> {
 
     /// `None` once the file is exhausted. Refuses a message beyond the bound or a read failure, and
     /// stays on the next message after a bound refusal.
-    pub(crate) fn next_message(&mut self) -> io::Result<Option<Vec<u8>>> {
+    pub fn next_message(&mut self) -> io::Result<Option<Vec<u8>>> {
         loop {
             if let Some(found) = self.boundary() {
                 if !self.in_message {
@@ -126,11 +126,11 @@ impl<R: Read> MboxMessages<R> {
         }
     }
 
-    pub(crate) fn max_message_bytes(&self) -> usize {
+    pub fn max_message_bytes(&self) -> usize {
         self.peak
     }
 
-    pub(crate) fn max_buffered(&self) -> usize {
+    pub fn max_buffered(&self) -> usize {
         self.max_buffered
     }
 

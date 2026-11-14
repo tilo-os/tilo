@@ -1,5 +1,5 @@
-use super::*;
-use std::path::PathBuf;
+use crate::account_sources::{SourceRoots, discover};
+use std::path::{Path, PathBuf};
 
 const PRIVATE_SENTINEL: &str = "private-account-sentinel@example.test";
 
@@ -109,7 +109,7 @@ user_pref("mail.server.server1.password", launch_a_program());
 #[test]
 fn discovers_accounts_local_folders_hierarchy_counts_flags_and_attachments() {
     let (home, _) = fixture();
-    let inventory = super::super::discover(&super::super::SourceRoots {
+    let inventory = discover(&SourceRoots {
         home: home.path().into(),
         config: home.path().join(".config"),
     });
@@ -190,7 +190,7 @@ tilo_test_env::scenario! {
             "user_pref(\"mail.accountmanager.accounts\", \"account1\");",
         )
         .unwrap();
-        let inventory = super::super::discover(&super::super::SourceRoots {
+        let inventory = discover(&SourceRoots {
             home: home.path().into(),
             config: home.path().join(".config"),
         });
@@ -215,7 +215,7 @@ tilo_test_env::scenario! {
         let inbox = root.join("abc.default/Mail/Local Folders/Inbox");
         std::fs::remove_file(&inbox).unwrap();
         symlink(outside.path().join("Inbox"), &inbox).unwrap();
-        let inventory = super::super::discover(&super::super::SourceRoots {
+        let inventory = discover(&SourceRoots {
             home: home.path().into(),
             config: home.path().join(".config"),
         });

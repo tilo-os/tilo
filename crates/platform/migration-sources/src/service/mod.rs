@@ -14,6 +14,23 @@
 //! opens. A mail account is published into the account store Mail reads, with its password in
 //! the vault.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "page offsets and item counts stay under MAX_REVIEW_ITEMS"
+)]
+#![allow(
+    clippy::format_push_string,
+    reason = "a page's Markdown is built from the source's own small pieces"
+)]
+#![allow(
+    clippy::indexing_slicing,
+    reason = "the fixed keys of this service's own JSON request and answer"
+)]
+#![allow(
+    clippy::struct_field_names,
+    reason = "the result field is named for the thing it holds: pages, issues"
+)]
+
 mod http;
 mod journal;
 pub mod landing;
@@ -124,6 +141,12 @@ impl std::fmt::Display for ServiceError {
 
 impl std::error::Error for ServiceError {}
 
+impl From<crate::vault::VaultError> for ServiceError {
+    fn from(_: crate::vault::VaultError) -> Self {
+        Self::Storage
+    }
+}
+
 /// What the person typed to reach a source. The secret is held only in private memory until
 /// it is sealed into the vault.
 pub struct ServiceAddress {
@@ -225,6 +248,10 @@ pub struct ServiceReport {
 ///
 /// # Errors
 /// The address is invalid, the service refused the key, or the vault could not be written.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the address owns the secret the person typed once"
+)]
 pub fn connect(config_root: &Path, address: ServiceAddress) -> Result<AccountId, ServiceError> {
     match address.kind {
         ServiceKind::Outline => {
@@ -290,13 +317,12 @@ fn persist(
     let mut account = Account::new(id, type_id);
     account.display_name = title.chars().take(256).collect();
     account.config = config;
-    crate::account_store::persist(
+    crate::vault::persist(
         config_root,
         || Ok(AccountStore::load_in(config_root)),
         account,
         accounts::Secret::password(secret.to_owned()),
     )
-    .map_err(|_| ServiceError::Storage)
 }
 
 /// The account, its server and its key as the vault holds them.
@@ -311,7 +337,7 @@ fn reach(
     if vault.recovery_error().is_some() {
         return Err(ServiceError::Storage);
     }
-    let secret = crate::account_store::PrivateSecret(vault.get(&id).ok_or(ServiceError::Storage)?);
+    let secret = crate::vault::PrivateSecret(vault.get(&id).ok_or(ServiceError::Storage)?);
     let key = Zeroizing::new(secret.0.password.clone());
     let server = account
         .config
@@ -443,6 +469,3 @@ fn short_digest(text: &str) -> String {
     let hex = blake3::hash(text.as_bytes()).to_hex();
     hex.get(..16).unwrap_or_default().to_owned()
 }
-
-#[cfg(test)]
-mod tests;

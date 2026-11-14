@@ -1,9 +1,13 @@
 //! Thunderbird profiles, accounts, local mail and personal data inside an already granted home.
 //! `prefs.js` is parsed as data and never executed, folder counts and flags come from the actual
 //! mbox/maildir files, and a folder is read in fixed chunks with one bound per message.
+//!
+//! [`discover`], [`messages`], [`contacts`], [`events`] and [`account_settings`] are what a
+//! laptop command reads through; [`scan`] additionally keeps the pinned profile root the
+//! installer's importer reads in place, so both drive the same reader.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use accounts::thunderbird::{self as metadata, ServerKind};
@@ -12,21 +16,32 @@ use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::migration_directory::{PinnedDirectory, same_snapshot};
-use crate::migration_durability::readable_directory;
-use crate::nofollow::metadata_nofollow;
+use crate::bounded::read_bounded;
+use crate::pinned::nofollow::metadata_nofollow;
+use crate::pinned::{PinnedDirectory, readable_directory, same_snapshot};
 
-use super::Inventory;
+#[cfg(test)]
+mod api_tests;
+pub mod contacts;
+pub mod events;
+#[cfg(any(test, feature = "fixture"))]
+pub mod fixture;
+pub mod mail;
+pub mod mbox;
+pub mod personal_data;
 
-pub(crate) mod mbox;
-
-pub(crate) use mbox::{MboxMessages, MessageTooLarge};
+pub use contacts::contacts;
+pub use events::events;
+pub use mail::{StoredMessage, messages};
+pub use mbox::{MboxMessages, MessageTooLarge};
 
 const MAX_PROFILE_INDEX: u64 = 64 * 1024;
 const MAX_PREFERENCE_BYTES: u64 = 2 * 1024 * 1024;
 /// A larger message is reported, never buffered without limit or silently skipped.
-pub(crate) const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_MESSAGES: u64 = 100_000;
+pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_MESSAGES: u64 = 100_000;
+/// The largest address book or calendar sidecar one profile read keeps.
+pub const MAX_SIDECAR_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_FOLDERS: usize = 4096;
 const MAX_PROFILES: usize = 128;
 const MAX_DEPTH: usize = 8;
@@ -40,6 +55,13 @@ pub struct ThunderbirdProfile {
     pub calendars: Vec<ThunderbirdCalendar>,
 }
 
+/// One sender identity in a profile's `prefs.js`: a display name and an address.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThunderbirdIdentity {
+    pub name: String,
+    pub email: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThunderbirdAccount {
     pub source_id: String,
@@ -47,16 +69,24 @@ pub struct ThunderbirdAccount {
     pub email: Option<String>,
     pub display_name: String,
     pub kind: String,
+    /// Every identity the account sends as, in the order `prefs.js` names them.
+    pub identities: Vec<ThunderbirdIdentity>,
     /// An IMAP cache is still a local copy, not proof that the server holds every message.
     pub local_mail: bool,
     pub needs_reconnect: bool,
     pub folders: Vec<ThunderbirdFolder>,
+    /// The IMAP/SMTP settings a mail app needs, without a password. It is source
+    /// metadata, so it never reaches a serialized status record.
+    #[serde(skip)]
+    pub settings: Option<metadata::AccountMetadata>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThunderbirdFolder {
     pub source_id: String,
     pub hierarchy: Vec<String>,
+    /// What the folder is for, from its name in the tree.
+    pub kind: FolderKind,
     pub format: String,
     pub messages: Option<u64>,
     pub unread: Option<u64>,
@@ -69,12 +99,51 @@ pub struct ThunderbirdFolder {
     pub local_only: bool,
 }
 
+/// What a folder is for, as Thunderbird names it. A folder that is not one of
+/// the well-known ones is [`FolderKind::Other`], and still importable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FolderKind {
+    Inbox,
+    Sent,
+    Drafts,
+    Trash,
+    Junk,
+    Archive,
+    #[default]
+    Other,
+}
+
+impl FolderKind {
+    /// Thunderbird keeps its well-known folders under fixed names, locally or
+    /// on the server whose language it follows.
+    #[must_use]
+    pub fn of(hierarchy: &[String]) -> Self {
+        for name in hierarchy {
+            let name = name.to_ascii_lowercase();
+            let role = match name.as_str() {
+                "inbox" => Self::Inbox,
+                "sent" | "sent mail" | "sent items" | "sent messages" => Self::Sent,
+                "drafts" | "draft" => Self::Drafts,
+                "trash" | "deleted" | "deleted items" | "deleted messages" | "bin" => Self::Trash,
+                "junk" | "spam" | "bulk mail" => Self::Junk,
+                "archives" | "archive" | "all mail" => Self::Archive,
+                _ => continue,
+            };
+            return role;
+        }
+        Self::Other
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ThunderbirdAddressBook {
     pub source_id: String,
     pub name: String,
     pub local: bool,
     pub present: bool,
+    /// How many contacts the book holds, when its file could be read.
+    pub contacts: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -89,6 +158,8 @@ pub struct ThunderbirdCalendar {
     pub read_only: bool,
     pub enabled: bool,
     pub present: bool,
+    /// How many events the calendar holds, when its file could be read.
+    pub events: Option<u64>,
 }
 
 /// It is not serialized into public status records.
@@ -124,12 +195,13 @@ pub struct ReviewedAccount {
 pub struct ReviewedFolder {
     pub inventory: ThunderbirdFolder,
     pub relative: Vec<String>,
-    pub kind: FolderKind,
+    pub format: FolderFormat,
     pub local_only: bool,
 }
 
+/// How a folder is stored on disk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FolderKind {
+pub enum FolderFormat {
     Mbox,
     Maildir,
 }
@@ -143,40 +215,191 @@ pub struct ReviewedFile {
     pub local: bool,
 }
 
-/// The returned `Inventory` carries only serializable metadata; capture uses the separately retained
-/// reviewed profiles.
-pub fn discover(home: &Path, inventory: &mut Inventory) {
-    for (relative, label) in [
-        (".thunderbird", "Thunderbird"),
-        (
-            ".var/app/org.mozilla.Thunderbird/.thunderbird",
-            "Thunderbird (Flatpak)",
-        ),
-    ] {
-        let path = home.join(relative);
+/// Where Thunderbird keeps its profiles in a home, with the label people see.
+fn roots(home: &Path) -> Vec<(&'static str, PathBuf)> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![("Thunderbird", home.join("Library/Thunderbird"))]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        vec![
+            ("Thunderbird", home.join(".thunderbird")),
+            (
+                "Thunderbird (Flatpak)",
+                home.join(".var/app/org.mozilla.Thunderbird/.thunderbird"),
+            ),
+        ]
+    }
+}
+
+/// What one home's Thunderbird profiles are, and which roots could not be read.
+pub struct Scan {
+    /// The profiles with the pinned roots the importer reads through.
+    pub reviewed: Vec<ReviewedThunderbird>,
+    /// The sources that could not be read, named as people see them. A scan with
+    /// any of these is incomplete, never empty.
+    pub unreadable: Vec<&'static str>,
+}
+
+/// Every Thunderbird profile in `home`, with the pinned profile root kept for
+/// an importer that reads mail, address books and calendars from it.
+#[must_use]
+pub fn scan(home: &Path) -> Scan {
+    let mut scan = Scan {
+        reviewed: Vec::new(),
+        unreadable: Vec::new(),
+    };
+    for (label, path) in roots(home) {
         match std::fs::symlink_metadata(&path) {
             Ok(info) if info.is_dir() && !info.is_symlink() => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Ok(_) | Err(_) => {
-                inventory
-                    .unreadable_sources
-                    .push("Thunderbird profile root");
+                scan.unreadable.push("Thunderbird profile root");
                 continue;
             }
         }
         match discover_root(&path, label) {
             Ok((profiles, unreadable)) => {
-                for reviewed in profiles {
-                    inventory.thunderbird.push(reviewed.profile.clone());
-                    inventory.thunderbird_reviewed.push(reviewed);
-                }
+                scan.reviewed.extend(profiles);
                 if unreadable {
-                    inventory.unreadable_sources.push("Thunderbird profile");
+                    scan.unreadable.push("Thunderbird profile");
                 }
             }
-            Err(_) => inventory.unreadable_sources.push("Thunderbird profile"),
+            Err(_) => scan.unreadable.push("Thunderbird profile"),
         }
     }
+    scan
+}
+
+/// Every Thunderbird profile under `home`, with its accounts, folders, address
+/// books and calendars. Counts are filled in from the files that are present.
+///
+/// # Errors
+/// Thunderbird profiles were there but none could be read.
+pub fn discover(home: &Path) -> Result<Vec<ThunderbirdProfile>, String> {
+    let scan = scan(home);
+    if scan.reviewed.is_empty() {
+        return if scan.unreadable.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err("no Thunderbird profile could be read".into())
+        };
+    }
+    Ok(scan
+        .reviewed
+        .iter()
+        .map(|reviewed| {
+            let mut profile = reviewed.profile.clone();
+            count_personal_data(&mut profile, reviewed);
+            profile
+        })
+        .collect())
+}
+
+/// The reviewed profile `name` names by its `source_id`, its label, one of its
+/// accounts' keys or one of its addresses.
+pub fn find_reviewed<'a>(
+    profiles: &'a [ReviewedThunderbird],
+    name: &str,
+) -> Option<&'a ReviewedThunderbird> {
+    for candidate in profiles {
+        if candidate.profile.source_id == name
+            || candidate.profile.label == name
+            || candidate
+                .accounts
+                .iter()
+                .any(|account| account.inventory.source_account == name)
+        {
+            return Some(candidate);
+        }
+    }
+    profiles.iter().find(|candidate| {
+        candidate
+            .accounts
+            .iter()
+            .any(|account| account.inventory.email.as_deref() == Some(name))
+    })
+}
+
+/// The reviewed address book or calendar `name` names by its `source_id` or its
+/// own name.
+#[must_use]
+pub fn find_sidecar<'a>(files: &'a [ReviewedFile], name: &str) -> Option<&'a ReviewedFile> {
+    files
+        .iter()
+        .find(|file| file.source_id == name)
+        .or_else(|| files.iter().find(|file| file.name == name))
+}
+
+/// Fill in how many contacts and events a profile's address books and
+/// calendars hold. A sidecar that cannot be read keeps `None` rather than a
+/// guessed count.
+fn count_personal_data(profile: &mut ThunderbirdProfile, reviewed: &ReviewedThunderbird) {
+    for (book, file) in profile
+        .address_books
+        .iter_mut()
+        .zip(&reviewed.address_books)
+    {
+        book.contacts = Some(0);
+        let Some(relative) = file
+            .relative
+            .as_deref()
+            .filter(|_| file.present && file.local)
+        else {
+            book.contacts = None;
+            continue;
+        };
+        book.contacts = read_reviewed(reviewed, relative, MAX_SIDECAR_BYTES)
+            .ok()
+            .and_then(|bytes| {
+                personal_data::canonical(personal_data::Sidecar::AddressBook, &bytes)
+                    .ok()
+                    .flatten()
+            })
+            .map(|text| count_blocks(&text, "BEGIN:VCARD"));
+    }
+    for (calendar, file) in profile.calendars.iter_mut().zip(&reviewed.calendars) {
+        calendar.events = Some(0);
+        let Some(relative) = file
+            .relative
+            .as_deref()
+            .filter(|_| file.present && file.local)
+        else {
+            calendar.events = None;
+            continue;
+        };
+        calendar.events = read_reviewed(reviewed, relative, MAX_SIDECAR_BYTES)
+            .ok()
+            .and_then(|bytes| {
+                personal_data::canonical(personal_data::Sidecar::Calendar, &bytes)
+                    .ok()
+                    .flatten()
+            })
+            .map(|text| count_blocks(&text, "BEGIN:VEVENT"));
+    }
+}
+
+fn count_blocks(text: &str, begin: &str) -> u64 {
+    u64::try_from(text.matches(begin).count()).unwrap_or(u64::MAX)
+}
+
+/// The connection settings for `account` (its `source_id`, its email or its
+/// Thunderbird account key), so a mail app can be set up without a password.
+#[must_use]
+pub fn account_settings(
+    profile: &ThunderbirdProfile,
+    account: &str,
+) -> Option<metadata::AccountMetadata> {
+    profile
+        .accounts
+        .iter()
+        .find(|candidate| {
+            candidate.source_id == account
+                || candidate.source_account == account
+                || candidate.email.as_deref() == Some(account)
+        })
+        .and_then(|candidate| candidate.settings.clone())
 }
 
 fn discover_root(root: &Path, label: &str) -> std::io::Result<(Vec<ReviewedThunderbird>, bool)> {
@@ -298,6 +521,7 @@ fn discover_profile(
         .map_err(|_| invalid("Thunderbird preferences are not UTF-8"))?;
     let parsed = metadata::parse_profile(text)
         .map_err(|_| invalid("Thunderbird preferences are malformed"))?;
+    let parsed_prefs = preferences(text);
     let profile_id = opaque(
         "thunderbird-profile",
         &[label, &relative.join("/"), &prefs_fingerprint(&prefs)],
@@ -311,8 +535,9 @@ fn discover_profile(
     };
     let mut accounts = Vec::new();
     for account in &parsed.accounts {
+        let identities = identities(&parsed_prefs, account);
         let (inventory, reviewed) =
-            account_inventory(&directory, profile_path, &profile_id, account)?;
+            account_inventory(&directory, profile_path, &profile_id, account, identities)?;
         profile.accounts.push(inventory.clone());
         accounts.push(ReviewedAccount {
             inventory,
@@ -322,41 +547,29 @@ fn discover_profile(
     }
     let mut address_books = Vec::new();
     for book in &parsed.address_books {
-        let relative = book
-            .filename
-            .as_deref()
-            .and_then(|name| safe_relative(Path::new(name)).ok())
-            .filter(|relative| !relative.is_empty());
-        let present = relative.as_ref().is_some_and(|relative| {
-            relative_file(&directory, relative)
-                .is_ok_and(|info| info.is_file() && !info.is_symlink())
-        });
+        let relative = sidecar_relative(&directory, book.filename.as_deref(), &[]);
+        let present = relative.is_some();
         let source_id = opaque("thunderbird-book", &[&profile_id, &book.source_id]);
         profile.address_books.push(ThunderbirdAddressBook {
             source_id: source_id.clone(),
             name: book.name.clone(),
             local: book.local,
             present,
+            contacts: None,
         });
         address_books.push(ReviewedFile {
             source_id,
             name: book.name.clone(),
-            relative: present.then_some(relative).flatten(),
+            relative,
             present,
             local: book.local,
         });
     }
     let mut calendars = Vec::new();
     for calendar in &parsed.calendars {
-        let relative = calendar
-            .filename
-            .as_deref()
-            .and_then(|name| safe_relative(Path::new(name)).ok())
-            .filter(|relative| !relative.is_empty());
-        let present = relative.as_ref().is_some_and(|relative| {
-            relative_file(&directory, relative)
-                .is_ok_and(|info| info.is_file() && !info.is_symlink())
-        });
+        let relative =
+            sidecar_relative(&directory, calendar.filename.as_deref(), &["calendar-data"]);
+        let present = relative.is_some();
         let local = calendar
             .uri
             .as_deref()
@@ -369,11 +582,12 @@ fn discover_profile(
             read_only: calendar.read_only,
             enabled: calendar.enabled,
             present,
+            events: None,
         });
         calendars.push(ReviewedFile {
             source_id,
             name: calendar.name.clone(),
-            relative: present.then_some(relative).flatten(),
+            relative,
             present,
             local,
         });
@@ -392,6 +606,7 @@ fn account_inventory(
     profile_path: &Path,
     profile_id: &str,
     account: &metadata::AccountMetadata,
+    identities: Vec<ThunderbirdIdentity>,
 ) -> std::io::Result<(ThunderbirdAccount, Vec<ReviewedFolder>)> {
     let source_id = opaque(
         "thunderbird-account",
@@ -411,9 +626,11 @@ fn account_inventory(
             ServerKind::Other => "other",
         }
         .into(),
+        identities,
         local_mail,
         needs_reconnect,
         folders: Vec::new(),
+        settings: Some(account.clone()),
     };
     let Some(relative) = mail_directory(profile, profile_path, account)? else {
         return Ok((inventory, Vec::new()));
@@ -583,6 +800,7 @@ fn count_mbox(
     Ok(ReviewedFolder {
         inventory: ThunderbirdFolder {
             source_id: folder_id,
+            kind: FolderKind::of(&hierarchy),
             hierarchy,
             format: "mbox".into(),
             messages: facts.as_ref().map(|facts| facts.messages),
@@ -594,7 +812,7 @@ fn count_mbox(
             local_only: !matches!(kind, ServerKind::Imap),
         },
         relative: relative.to_vec(),
-        kind: FolderKind::Mbox,
+        format: FolderFormat::Mbox,
         local_only: !matches!(kind, ServerKind::Imap),
     })
 }
@@ -649,6 +867,7 @@ fn count_maildir(
     Ok(ReviewedFolder {
         inventory: ThunderbirdFolder {
             source_id: folder_id,
+            kind: FolderKind::of(&hierarchy),
             hierarchy,
             format: "maildir".into(),
             messages: counted.then_some(messages),
@@ -660,7 +879,7 @@ fn count_maildir(
             local_only: !matches!(kind, ServerKind::Imap),
         },
         relative: relative.to_vec(),
-        kind: FolderKind::Maildir,
+        format: FolderFormat::Maildir,
         local_only: !matches!(kind, ServerKind::Imap),
     })
 }
@@ -788,13 +1007,108 @@ fn maildir_flags(name: &str) -> Option<(bool, bool)> {
     Some((flags.contains('S'), flags.contains('F')))
 }
 
-pub(crate) fn maildir_read_flags(name: &str) -> (bool, bool) {
+pub fn maildir_read_flags(name: &str) -> (bool, bool) {
     maildir_flags(name).unwrap_or((false, false))
 }
 
 /// Discovery reports the folder as not fully counted and the import can refuse it by name.
-pub(crate) fn too_large(limit: usize) -> std::io::Error {
+pub fn too_large(limit: usize) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, MessageTooLarge { limit })
+}
+
+/// The relative path of an address book or calendar file, tried where
+/// `prefs.js` names it and then under the directory Thunderbird really keeps
+/// it in. `None` when no such file is present.
+fn sidecar_relative(
+    directory: &Arc<PinnedDirectory>,
+    filename: Option<&str>,
+    fallbacks: &[&str],
+) -> Option<Vec<String>> {
+    let relative = filename
+        .and_then(|name| safe_relative(Path::new(name)).ok())
+        .filter(|relative| !relative.is_empty())?;
+    let present = |relative: &[String]| {
+        relative_file(directory, relative).is_ok_and(|info| info.is_file() && !info.is_symlink())
+    };
+    if present(&relative) {
+        return Some(relative);
+    }
+    let leaf = relative.last()?.clone();
+    for fallback in fallbacks {
+        let candidate = vec![(*fallback).to_owned(), leaf.clone()];
+        if present(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// The string preferences of `prefs.js`, parsed as data: a key and its value,
+/// never an evaluated expression.
+fn preferences(text: &str) -> Vec<(String, String)> {
+    let mut prefs = Vec::new();
+    for line in text.lines() {
+        let Some(body) = line.trim().strip_prefix("user_pref(") else {
+            continue;
+        };
+        let Some(body) = body.trim_end().strip_suffix(");") else {
+            continue;
+        };
+        let body = body.trim();
+        let mut stream = serde_json::Deserializer::from_str(body).into_iter::<String>();
+        let Some(Ok(key)) = stream.next() else {
+            continue;
+        };
+        let Some(rest) = body.get(stream.byte_offset()..) else {
+            continue;
+        };
+        let Some(value) = rest.trim_start().strip_prefix(',').map(str::trim) else {
+            continue;
+        };
+        if let Ok(serde_json::Value::String(value)) =
+            serde_json::from_str::<serde_json::Value>(value)
+        {
+            prefs.push((key, value));
+        }
+        if prefs.len() > 65_536 {
+            break;
+        }
+    }
+    prefs
+}
+
+fn preference<'a>(prefs: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    prefs
+        .iter()
+        .find(|(name, _)| name == key)
+        .map(|(_, value)| value.as_str())
+}
+
+/// Every identity the account sends as, from `mail.account.<id>.identities`.
+fn identities(
+    prefs: &[(String, String)],
+    account: &metadata::AccountMetadata,
+) -> Vec<ThunderbirdIdentity> {
+    let Some(list) = preference(
+        prefs,
+        &format!("mail.account.{}.identities", account.source_account),
+    ) else {
+        return Vec::new();
+    };
+    list.split(',')
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.len() <= 64)
+        .filter_map(|id| {
+            let email = preference(prefs, &format!("mail.identity.{id}.useremail"))?;
+            let name =
+                preference(prefs, &format!("mail.identity.{id}.fullName")).unwrap_or_default();
+            Some(ThunderbirdIdentity {
+                name: name.chars().take(256).collect(),
+                email: email.chars().take(320).collect(),
+            })
+        })
+        .take(64)
+        .collect()
 }
 
 fn prefs_fingerprint(bytes: &[u8]) -> String {
@@ -845,7 +1159,7 @@ fn safe_relative(path: &Path) -> std::io::Result<Vec<String>> {
     components(path)
 }
 
-pub(crate) fn entries(
+pub fn entries(
     directory: &Arc<PinnedDirectory>,
 ) -> std::io::Result<Vec<(String, cap_primitives::fs::Metadata)>> {
     let dir = cap_std::fs::Dir::from_std_file(readable_directory(&directory.file)?);
@@ -862,7 +1176,7 @@ pub(crate) fn entries(
     Ok(output)
 }
 
-pub(crate) fn walk(
+pub fn walk(
     root: &Arc<PinnedDirectory>,
     names: &[String],
 ) -> std::io::Result<Arc<PinnedDirectory>> {
@@ -890,7 +1204,7 @@ fn relative_file(
     Ok(info)
 }
 
-pub(crate) fn read_file(
+pub fn read_file(
     directory: &Arc<PinnedDirectory>,
     name: &str,
     limit: u64,
@@ -906,7 +1220,7 @@ pub(crate) fn read_file(
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No).nonblock(true);
     let mut file = cap_primitives::fs::open(&directory.file, path, &options)?;
-    let bytes = crate::record::read_bounded(&mut file, limit, || {
+    let bytes = read_bounded(&mut file, limit, || {
         too_large(usize::try_from(limit).unwrap_or(usize::MAX))
     })?;
     let after = metadata_nofollow(&directory.file, path)?;
@@ -917,7 +1231,7 @@ pub(crate) fn read_file(
     Ok(bytes)
 }
 
-pub(crate) fn read_reviewed(
+pub fn read_reviewed(
     reviewed: &ReviewedThunderbird,
     relative: &[String],
     limit: u64,
@@ -929,7 +1243,7 @@ pub(crate) fn read_reviewed(
     read_file(&directory, name, limit)
 }
 
-pub(crate) fn read_maildir_files(
+pub fn read_maildir_files(
     reviewed: &ReviewedThunderbird,
     folder: &ReviewedFolder,
     limit: u64,
@@ -953,6 +1267,3 @@ pub(crate) fn read_maildir_files(
 fn invalid(message: &'static str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message)
 }
-
-#[cfg(test)]
-mod tests;

@@ -134,13 +134,17 @@ pub mod model;
 pub mod plan;
 pub mod platform;
 pub mod service_selection;
-pub mod service_sources;
+/// The Outline, Linear and mail account sources live in `migration-sources`,
+/// so the `tilo` CLI can reach them without this crate's desktop stack.
+pub use migration_sources::service as service_sources;
+#[cfg(test)]
+mod service_source_tests;
 pub mod session;
 pub mod setup;
 
 #[cfg(all(feature = "destination", target_os = "linux"))]
 pub mod destination;
-pub mod destination_security;
+pub use migration_sources::destination_security;
 pub mod migration;
 pub mod migration_directory;
 pub mod migration_durability;

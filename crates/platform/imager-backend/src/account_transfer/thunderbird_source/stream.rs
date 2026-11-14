@@ -15,7 +15,7 @@ use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 use uuid::Uuid;
 
 use crate::account_sources::thunderbird::{
-    FolderKind, MAX_MESSAGE_BYTES, MboxMessages, ReviewedAccount, ReviewedFolder,
+    FolderFormat, MAX_MESSAGE_BYTES, MboxMessages, ReviewedAccount, ReviewedFolder,
     ReviewedThunderbird, ThunderbirdAccount, entries, maildir_read_flags, mbox, read_file,
     read_reviewed, walk,
 };
@@ -428,9 +428,9 @@ impl Import<'_> {
         sink: &mut FolderSink<'_>,
         retained: &Path,
     ) -> io::Result<u64> {
-        match folder.kind {
-            FolderKind::Mbox => self.stream_mbox(folder, inventory, sink, retained),
-            FolderKind::Maildir => self.stream_maildir(folder, inventory, sink, retained),
+        match folder.format {
+            FolderFormat::Mbox => self.stream_mbox(folder, inventory, sink, retained),
+            FolderFormat::Maildir => self.stream_maildir(folder, inventory, sink, retained),
         }
     }
 

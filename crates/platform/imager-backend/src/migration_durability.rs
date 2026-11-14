@@ -232,13 +232,7 @@ pub fn sync_directory(file: &File) -> io::Result<()> {
     sync_file(&reopened)
 }
 
-/// The native open error if `.` cannot be reopened relative to the held directory.
-pub fn readable_directory(file: &File) -> io::Result<File> {
-    use cap_fs_ext::OpenOptionsMaybeDirExt;
-    let mut options = cap_primitives::fs::OpenOptions::new();
-    options.read(true).maybe_dir(true);
-    cap_primitives::fs::open(file, std::path::Path::new("."), &options)
-}
+pub use migration_sources::pinned::readable_directory;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
