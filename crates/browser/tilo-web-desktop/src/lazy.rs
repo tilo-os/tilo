@@ -193,6 +193,13 @@ split_code! {
 }
 
 split_code! {
+    /// The PDF engine reading a PDF's words for search: the first PDF among a
+    /// workspace's files asks for it.
+    mod pdf_words: tilo_browser_runtime::PdfWords = tilo_browser_runtime::builtin_pdf_words()
+        => tilo_browser_runtime::PDF_WORDS, module = "pdf_words", hash = "c47e19a2d05b83f6";
+}
+
+split_code! {
     /// The profile card: the first card that opens asks for it.
     mod profile_card: tilo_desktop::profile_card::MakeProfileCard = tilo_desktop::profile_card::builtin_profile_card()
         => tilo_desktop::profile_card::PROFILE_CARD, module = "profile_card", hash = "5f81c2e94a3d07b6";
@@ -324,6 +331,7 @@ pub(crate) fn register() {
     page_view::register();
     settings_keeper::register();
     renderer::register();
+    pdf_words::register();
     prepare_settings_keeper_after_first_frame();
 }
 

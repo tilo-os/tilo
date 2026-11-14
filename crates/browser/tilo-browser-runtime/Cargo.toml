@@ -167,6 +167,10 @@ deferred-settings-keeper = []
 # its own module while the first frames rasterize on the CPU. Without it they
 # are linked in.
 deferred-renderer = []
+# The bundling crate supplies the code that reads a PDF's words for search
+# (`PDF_WORDS`), which the browser desktop fetches as its own module the first
+# time a workspace's file is a PDF. Without it the PDF engine is linked in.
+deferred-pdf-words = []
 
 [dependencies]
 # The host's endpoint address, as the page receives and dials it.

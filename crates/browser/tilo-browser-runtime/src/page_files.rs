@@ -6,8 +6,9 @@
 //! workspace ([`WorkspaceRecords`]) and hands to the palette's source
 //! ([`tilo_desktop_search::providers::tree`]), asking the workspace for the
 //! content of each file it names. What arrives is read for its words — a text
-//! file as it is, a PDF's pages through the engine that draws them — so a
-//! search finds a file by what it says.
+//! file as it is, a PDF's pages through the engine that draws them, fetched
+//! the first time a PDF arrives ([`PDF_WORDS`]) — so a search finds a file by
+//! what it says.
 //!
 //! Reading is lazy and cheap: the page calls [`WorkspaceFiles::refresh`] as it
 //! draws, which walks the tree again only when the record moved and reads only
@@ -130,9 +131,15 @@ impl WorkspaceFiles {
                 // its words are read when it is here.
                 continue;
             };
-            read.read.push(hash.clone());
-            if let Some(text) = words_of(&bytes) {
-                self.source.note_text(hash, text);
+            match words_of(&bytes) {
+                Words::Read(text) => {
+                    read.read.push(hash.clone());
+                    if let Some(text) = text {
+                        self.source.note_text(hash, text);
+                    }
+                }
+                // Read again once the code that reads it is here.
+                Words::Coming => {}
             }
         }
     }
@@ -176,12 +183,51 @@ fn path_of(tree: &Tree, id: &str) -> String {
     names.join("/")
 }
 
+/// What reading a file's content for its words came to.
+enum Words {
+    /// Its words, or `None` for content nothing reads.
+    Read(Option<String>),
+    /// A PDF, whose reader the page has yet to fetch ([`PDF_WORDS`]).
+    Coming,
+}
+
 /// The words `bytes` are, for a search: a text file as it is, a PDF's pages
-/// through the engine that draws them. `None` for content nothing reads.
-fn words_of(bytes: &[u8]) -> Option<String> {
+/// through the engine that draws them.
+fn words_of(bytes: &[u8]) -> Words {
     if let Ok(text) = std::str::from_utf8(bytes) {
-        return Some(text.to_owned());
+        return Words::Read(Some(text.to_owned()));
     }
+    if !bytes.starts_with(b"%PDF-") {
+        return Words::Read(None);
+    }
+    match PDF_WORDS.get() {
+        Some(code) => Words::Read((code.read)(bytes)),
+        None => Words::Coming,
+    }
+}
+
+/// The code that reads a PDF's words: the PDF engine is the largest part of
+/// it, and only a workspace holding a PDF needs it, so the browser desktop
+/// fetches it as its own module the first time one arrives
+/// (`deferred-pdf-words`; linked otherwise).
+#[derive(Clone, Copy)]
+pub struct PdfWords {
+    read: fn(&[u8]) -> Option<String>,
+}
+
+/// The PDF reader this build links.
+#[must_use]
+pub fn builtin_pdf_words() -> PdfWords {
+    PdfWords { read: pdf_words }
+}
+
+ui::lazy_code! {
+    /// The code that reads a PDF's words.
+    pub static PDF_WORDS: PdfWords = builtin_pdf_words, feature = "deferred-pdf-words";
+}
+
+/// A PDF's pages' words, through the engine the viewer draws with.
+fn pdf_words(bytes: &[u8]) -> Option<String> {
     let engine = tilo_pdf::Engine::shared().ok()?;
     let document = engine.open_bytes(bytes).ok()?;
     let mut words = String::new();

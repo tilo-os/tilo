@@ -69,6 +69,8 @@ mod dropped_files;
 pub(crate) mod page_content;
 #[cfg(target_arch = "wasm32")]
 mod page_files;
+#[cfg(target_arch = "wasm32")]
+pub use page_files::{PDF_WORDS, PdfWords, builtin_pdf_words};
 /// Install an already-admitted feedback transport before mounting its desktop.
 /// This Rust host hook is intentionally absent from URL/JSON launch options.
 /// # Errors
