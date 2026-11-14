@@ -840,8 +840,8 @@ doc = false
 "quick-xml-0_39_4" = { package = "quick-xml", version = "^0.39.4", default-features = false, features = ["default", "overlapped-lists", "serde", "serialize"] }
 "quick-xml-0_41_0" = { package = "quick-xml", version = "^0.41.0", default-features = false, features = ["default", "encoding", "encoding_rs", "serde", "serialize"] }
 "quinn-0_11_9" = { package = "quinn", version = "^0.11.9", default-features = false, features = ["bloom", "platform-verifier", "ring", "runtime-tokio", "rustls-ring"] }
-"quinn-proto-0_11_18" = { package = "quinn-proto", version = "^0.11.18", default-features = false, features = ["bloom", "platform-verifier", "ring", "rustls-ring"] }
-"quinn-udp-0_5_14" = { package = "quinn-udp", version = "^0.5.14", default-features = false, features = ["tracing"] }
+"quinn-proto-0_11_19" = { package = "quinn-proto", version = "^0.11.19", default-features = false, features = ["bloom", "platform-verifier", "ring", "rustls-ring"] }
+"quinn-udp-0_5_16" = { package = "quinn-udp", version = "^0.5.16", default-features = false, features = ["tracing"] }
 "quote-1_0_45" = { package = "quote", version = "^1.0.45", default-features = false, features = ["default", "proc-macro"] }
 "rand-0_10_3" = { package = "rand", version = "^0.10.3", default-features = false, features = ["alloc", "default", "std", "std_rng", "sys_rng", "thread_rng"] }
 "rand-0_8_8" = { package = "rand", version = "^0.8.8", default-features = false, features = ["alloc", "default", "getrandom", "libc", "rand_chacha", "std", "std_rng"] }
@@ -2195,8 +2195,8 @@ doc = false
 "quick-xml-0_39_4" = { package = "quick-xml", version = "^0.39.4", default-features = false, features = ["default", "overlapped-lists", "serde", "serialize"] }
 "quick-xml-0_41_0" = { package = "quick-xml", version = "^0.41.0", default-features = false, features = ["default", "encoding", "encoding_rs", "serde", "serialize"] }
 "quinn-0_11_9" = { package = "quinn", version = "^0.11.9", default-features = false, features = ["bloom", "platform-verifier", "ring", "runtime-tokio", "rustls-ring"] }
-"quinn-proto-0_11_18" = { package = "quinn-proto", version = "^0.11.18", default-features = false, features = ["bloom", "platform-verifier", "ring", "rustls-ring"] }
-"quinn-udp-0_5_14" = { package = "quinn-udp", version = "^0.5.14", default-features = false, features = ["tracing"] }
+"quinn-proto-0_11_19" = { package = "quinn-proto", version = "^0.11.19", default-features = false, features = ["bloom", "platform-verifier", "ring", "rustls-ring"] }
+"quinn-udp-0_5_16" = { package = "quinn-udp", version = "^0.5.16", default-features = false, features = ["tracing"] }
 "quote-1_0_45" = { package = "quote", version = "^1.0.45", default-features = false, features = ["default", "proc-macro"] }
 "rand-0_10_3" = { package = "rand", version = "^0.10.3", default-features = false, features = ["alloc", "default", "std", "std_rng", "sys_rng", "thread_rng"] }
 "rand-0_8_8" = { package = "rand", version = "^0.8.8", default-features = false, features = ["alloc", "default", "getrandom", "libc", "rand_chacha", "std", "std_rng"] }
@@ -3463,8 +3463,8 @@ doc = false
 "quick-xml-0_39_4" = { package = "quick-xml", version = "^0.39.4", default-features = false, features = ["default", "overlapped-lists", "serde", "serialize"] }
 "quick-xml-0_41_0" = { package = "quick-xml", version = "^0.41.0", default-features = false, features = ["default", "encoding", "encoding_rs", "serde", "serialize"] }
 "quinn-0_11_9" = { package = "quinn", version = "^0.11.9", default-features = false, features = ["bloom", "platform-verifier", "ring", "runtime-tokio", "rustls-ring"] }
-"quinn-proto-0_11_18" = { package = "quinn-proto", version = "^0.11.18", default-features = false, features = ["bloom", "platform-verifier", "ring", "rustls-ring"] }
-"quinn-udp-0_5_14" = { package = "quinn-udp", version = "^0.5.14", default-features = false, features = ["tracing"] }
+"quinn-proto-0_11_19" = { package = "quinn-proto", version = "^0.11.19", default-features = false, features = ["bloom", "platform-verifier", "ring", "rustls-ring"] }
+"quinn-udp-0_5_16" = { package = "quinn-udp", version = "^0.5.16", default-features = false, features = ["tracing"] }
 "quote-1_0_45" = { package = "quote", version = "^1.0.45", default-features = false, features = ["default", "proc-macro"] }
 "rand-0_10_3" = { package = "rand", version = "^0.10.3", default-features = false, features = ["alloc", "default", "std", "std_rng", "sys_rng", "thread_rng"] }
 "rand-0_8_8" = { package = "rand", version = "^0.8.8", default-features = false, features = ["alloc", "default", "getrandom", "libc", "rand_chacha", "std", "std_rng"] }
@@ -4805,8 +4805,8 @@ doc = false
 "quick-xml-0_39_4" = { package = "quick-xml", version = "^0.39.4", default-features = false, features = ["default", "overlapped-lists", "serde", "serialize"] }
 "quick-xml-0_41_0" = { package = "quick-xml", version = "^0.41.0", default-features = false, features = ["default", "encoding", "encoding_rs", "serde", "serialize"] }
 "quinn-0_11_9" = { package = "quinn", version = "^0.11.9", default-features = false, features = ["bloom", "platform-verifier", "ring", "runtime-tokio", "rustls-ring"] }
-"quinn-proto-0_11_18" = { package = "quinn-proto", version = "^0.11.18", default-features = false, features = ["bloom", "platform-verifier", "ring", "rustls-ring"] }
-"quinn-udp-0_5_14" = { package = "quinn-udp", version = "^0.5.14", default-features = false, features = ["tracing"] }
+"quinn-proto-0_11_19" = { package = "quinn-proto", version = "^0.11.19", default-features = false, features = ["bloom", "platform-verifier", "ring", "rustls-ring"] }
+"quinn-udp-0_5_16" = { package = "quinn-udp", version = "^0.5.16", default-features = false, features = ["tracing"] }
 "quote-1_0_45" = { package = "quote", version = "^1.0.45", default-features = false, features = ["default", "proc-macro"] }
 "rand-0_10_3" = { package = "rand", version = "^0.10.3", default-features = false, features = ["alloc", "default", "std", "std_rng", "sys_rng", "thread_rng"] }
 "rand-0_8_8" = { package = "rand", version = "^0.8.8", default-features = false, features = ["alloc", "default", "getrandom", "libc", "rand_chacha", "std", "std_rng"] }

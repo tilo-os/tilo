@@ -23,7 +23,7 @@ serde.workspace = true
 # Google's search element answers with JSON.
 serde_json.workspace = true
 # `fixture-servers`: the test's own server, shared with the rest of the tree.
-test-http = { path = "../../dev/test-http", optional = true }
+test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
 url.workspace = true
 # Bing wraps result links in base64url.
 base64.workspace = true
