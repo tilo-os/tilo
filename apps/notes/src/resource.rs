@@ -65,6 +65,11 @@ impl ResourceApp for NotesShell {
         Box::new(app)
     }
 
+    /// Pages a migration brought from Outline join the notebook when it opens.
+    fn import_record(context: &ui::application::HostContext) -> Result<(), String> {
+        crate::import_inbox::import(context)
+    }
+
     /// A Markdown file the app is launched on becomes a note.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Notebook>> {
         let Some((page, file)) = launched_note(input) else {
@@ -132,6 +137,9 @@ impl ResourceApp for NotesShell {
 
     #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Notebook>> {
+        if name == Some("migrated") {
+            return crate::import_inbox::migrated_scenario();
+        }
         crate::scenario::actions(name)
             .iter()
             .filter_map(|action| Invoke::apply(action).ok())

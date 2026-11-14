@@ -62,6 +62,7 @@ pub const SCENARIOS: &[&str] = &[
     "scrolled",
     "sidebar_scroll",
     "page_tree",
+    "migrated",
     "mention",
     "reactions",
 ];
@@ -120,6 +121,7 @@ pub fn shown_note(scenario: Option<&str>) -> Option<&'static str> {
         Some("formula") => Some("Formula notebook"),
         Some("import_success") => Some("Project brief"),
         Some("page_tree") => Some(HANDBOOK),
+        Some("migrated") => Some("Onboarding checklist"),
         _ if types_into_new_note(scenario) => Some(WRITING),
         _ => Some(LAUNCH),
     }
@@ -224,7 +226,7 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
 
 /// The image the image scenarios show: a checked-in PNG, so the real decoder
 /// draws it without network access.
-const IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png"));
+pub(crate) const IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/settings.png"));
 
 /// What the scenario's launch checklist says, when it differs from the
 /// sample's.
@@ -307,7 +309,7 @@ fn launch_body(scenario: Option<&str>) -> String {
 /// note a typing scenario types into.
 #[must_use]
 pub fn actions(scenario: Option<&str>) -> Vec<Action> {
-    if scenario == Some("first_note") {
+    if matches!(scenario, Some("first_note" | "migrated")) {
         return Vec::new();
     }
     if scenario == Some("page_tree") {

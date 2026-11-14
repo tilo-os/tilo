@@ -1692,14 +1692,17 @@ impl NotesApp {
             // The page-tree shot shows the whole tree, so it keeps every note that holds
             // others open rather than only the ancestors of the note it shows.
             let mut expanded = ancestors;
-            if scenario == Some("page_tree") {
+            if matches!(scenario, Some("page_tree" | "migrated")) {
                 expanded = self.workspace.pages().iter().map(|page| page.id).collect();
             }
             self.sidebar
                 .restore_expanded_pages(&expanded, &self.workspace);
             self.navigate_to(page);
         }
-        if matches!(scenario, Some("image" | "image_edit" | "image_sized")) {
+        if matches!(
+            scenario,
+            Some("image" | "image_edit" | "image_sized" | "migrated")
+        ) {
             self.load_images_for_capture();
         }
         if scenario == Some("import_success") {
