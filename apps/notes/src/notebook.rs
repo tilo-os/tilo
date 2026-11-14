@@ -151,7 +151,7 @@ impl Page {
                 .author()
                 .filter(|author| !author.is_empty())
                 .map(|author| Atom(author.to_owned())),
-            creator_name: tilo_resource::acting_name(cx),
+            creator_name: cx.acting_name(),
             ..self
         }
     }

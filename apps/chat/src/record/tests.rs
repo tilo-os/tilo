@@ -2165,9 +2165,8 @@ fn a_moved_message_shows_its_author_there_at_its_time_and_stays_the_movers() {
         message
             .acting
             .as_ref()
-            .and_then(|acting| acting.name.as_ref())
-            .map(|name| name.0.as_str()),
-        Some("Company mover")
+            .and_then(ui::tilo_resource::Acting::acted_for_person),
+        Some(ADA)
     );
     let row = crate::projection::message_row(message_id, message);
     assert_eq!(

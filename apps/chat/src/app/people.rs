@@ -110,9 +110,9 @@ impl ChatApp {
         crate::identity::unnamed_label(id)
     }
 
-    /// What to call the agent or app `id`, by what `acting` kept of it where it wrote, else by
-    /// who is here: the workspace's name for it, else the name it went by, with the person it
-    /// acts for ("Helper for Ada"), after it left too. `None` for anyone else.
+    /// What to call the agent or app `id`: the workspace's name for it, with the person it acted
+    /// for as `acting` kept it where it wrote, else as presence says ("Helper for Ada"), after it
+    /// left too. `None` for anyone else.
     pub(crate) fn acting_name(
         &self,
         id: &str,
@@ -122,11 +122,9 @@ impl ChatApp {
         let name = MemberId::parse(id)
             .filter(|member| !member.is_person())
             .and_then(|member| self.known_agent_name(member.id()))
-            .or_else(|| self.agent_authors.get(id).cloned())
-            .or_else(|| acting?.name.as_ref().map(|name| name.0.clone()))?;
+            .or_else(|| self.agent_authors.get(id).cloned())?;
         let person = acting
-            .and_then(|acting| acting.person.as_ref())
-            .map(|person| person.0.as_str())
+            .and_then(ui::tilo_resource::Acting::acted_for_person)
             .or_else(|| self.agent_people.get(id).map(String::as_str));
         Some(crate::identity::acting_label(
             &name,

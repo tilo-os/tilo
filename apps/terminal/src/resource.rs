@@ -448,12 +448,16 @@ impl Terminal {
             .pane
             .clone()
             .ok_or("the session is not running anywhere yet")?;
+        let by = cx.invoked_by().filter(|by| !by.is_person());
         let request = RunRequest {
             command: Atom(command.to_owned()),
             requested_by: Atom(cx.author().unwrap_or_default().to_owned()),
-            for_person: cx.acting().and_then(|acting| acting.person),
+            for_person: by
+                .as_ref()
+                .and_then(|by| by.acted_for_person())
+                .map(|person| Atom(person.to_owned())),
             pane,
-            agent: cx.invoked_by().is_some_and(|by| by.is_agent()),
+            agent: by.as_ref().is_some_and(ui::tilo_actions::Acting::is_agent),
         };
         requests.push(cx.id(), request);
         Ok(())

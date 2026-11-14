@@ -184,7 +184,7 @@ impl ChatPart {
                 mentions: posting.mentions,
                 attachments: posting.attachments,
                 appearance: posting.appearance.map(Into::into),
-                acting: cx.acting(),
+                acting: cx.invoked_by().filter(|acting| !acting.is_person()),
                 origin: posting.origin,
                 share: posting.share,
                 ..Message::default()

@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@285e342c43975c1d";
+export const SURFACE = "so.tilo.chat@e1508f1a7fdf402f";
 
 export interface Category {
   name: string;
@@ -247,11 +247,6 @@ export interface WorkspaceFiles {
   member_hourly: number;
 }
 
-export interface Acting {
-  name: string | null;
-  person: string | null;
-}
-
 /** One of "complete", "truncated", "refused", "cancelled", "failed". */
 export type AgentFinish = "complete" | "truncated" | "refused" | "cancelled" | "failed";
 
@@ -313,7 +308,7 @@ export interface Message {
   pinned: boolean;
   work: Work | null;
   appearance: ShownAs | null;
-  acting: Acting | null;
+  acting: unknown | null;
   share: WindowShare | null;
   attempts: number;
 }

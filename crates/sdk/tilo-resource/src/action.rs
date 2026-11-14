@@ -38,16 +38,6 @@ pub struct ActionCx {
     invocation: Option<tilo_actions::InvocationId>,
 }
 
-/// Software that acted for someone, as what it wrote keeps it ([`ActionCx::acting`]): the
-/// same invoker History names a change by, so a reader names it the same after it left.
-#[derive(crate::Model, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Acting {
-    /// The name the host that admitted it knew it by.
-    pub name: Option<crate::Atom>,
-    /// The person it acted for.
-    pub person: Option<crate::Atom>,
-}
-
 /// Who invoked the action applying now, as its envelope pinned it.
 fn invoking_author() -> Option<String> {
     tilo_actions::invoking_context()
@@ -162,23 +152,16 @@ impl ActionCx {
         uuid
     }
 
-    /// Software acting for someone (an agent, an app), as the envelope pinned it: the name the
-    /// host that admitted it knew it by and the person it acted for. `None` for a person acting
-    /// for themselves.
+    /// The name software acting for someone (an agent, an app) acted under, as
+    /// the host that admitted it named it; empty for a person.
     #[must_use]
-    pub fn acting(&self) -> Option<Acting> {
-        let invoker = tilo_actions::invoking_context()?.invoker?;
-        let acting = Acting {
-            name: invoker
-                .name
-                .filter(|name| !name.trim().is_empty())
-                .map(crate::Atom),
-            person: invoker
-                .acting
-                .acted_for_person()
-                .map(|person| crate::Atom(person.to_owned())),
-        };
-        (!invoker.acting.is_person() && acting != Acting::default()).then_some(acting)
+    pub fn acting_name(&self) -> String {
+        tilo_actions::invoking_context()
+            .and_then(|context| context.invoker)
+            .filter(|invoker| !invoker.acting.is_person())
+            .and_then(|invoker| invoker.name)
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_default()
     }
 
     /// The name and avatar a bot showed for this action instead of its own,

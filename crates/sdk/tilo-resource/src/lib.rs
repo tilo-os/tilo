@@ -169,7 +169,7 @@ pub mod words;
 
 pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{
-    Acting, ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
+    ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
     Outcome, Params, Refusal, Reverting, Stamped, TryMapped, Undoing, fresh_uuid, minted_ids,
     minted_keys, reverting_type, take_minted,
 };
@@ -194,7 +194,7 @@ pub use model::{
 };
 pub use non_blank::{Blank, NonBlank};
 pub use ordered::{Arranged, Ordered};
-pub use origin::{Origin, acting_name};
+pub use origin::Origin;
 pub use path::{
     At, Edit, EditOp, OP_ARGUMENTS, Operations, Path, Segment, Settable, op_argument_schema,
     op_arguments, op_usage, outbox_settle_arguments,
@@ -220,8 +220,8 @@ pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use surface::Surface;
 pub use text::{PlainText, TextEdit};
 pub use tilo_action_policy::edits::Weaker;
-pub use tilo_actions::Availability;
 pub use tilo_actions::surface::{FieldType, TypeSet};
+pub use tilo_actions::{Acting, Availability};
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, resource};
 pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};

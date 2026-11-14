@@ -453,14 +453,14 @@ impl Channel {
         let shown = roster
             .map(|person| person.name.trim().to_owned())
             .filter(|name| !name.is_empty())
-            .or_else(|| agent_name(chat, names, author, acting))
+            .or_else(|| agent_name(chat, names, author))
             .or_else(|| (author == me).then(|| names.me.trim().to_owned()))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| crate::identity::unnamed_label(author));
         let name = match acting.filter(|_| agent) {
             Some(acting) => crate::identity::acting_label(
                 &shown,
-                acting.person.as_ref().map(|person| person.0.as_str()),
+                acting.acted_for_person(),
                 crate::identity::RoleWord::InName,
                 |person| {
                     chat.people
@@ -568,29 +568,19 @@ pub(crate) fn is_agent(author: &str) -> bool {
 }
 
 /// The name an agent author shows, as the record or the workspace names it: the name the
-/// workspace keeps for it (Chat's own `agent_names`, or the workspace agents record the reading
-/// carries), else the name it went by where it wrote, and otherwise what Chat calls an agent it
-/// has not been told the name of. An author that is not an agent has no agent's name.
-fn agent_name(
-    chat: &crate::record::Chat,
-    names: &Names,
-    author: &str,
-    acting: Option<&sdk::tilo_resource::Acting>,
-) -> Option<String> {
+/// workspace keeps for it (Chat's own `agent_names`, or the workspace's member record the
+/// reading carries), and otherwise what Chat calls an agent it has not been told the name of. An
+/// author that is not an agent has no agent's name.
+fn agent_name(chat: &crate::record::Chat, names: &Names, author: &str) -> Option<String> {
     if !is_agent(author) {
         return None;
     }
-    // Every name the record, the workspace or what it wrote under keeps for it, the first that
-    // names it.
     let called = [
         chat.agent_names.get(author).map(|name| name.trim()),
         MemberId::parse(author)
             .filter(|member| !member.is_person())
             .and_then(|member| names.agents.get(member.id()))
             .map(|name| name.trim()),
-        acting
-            .and_then(|acting| acting.name.as_ref())
-            .map(|name| name.0.trim()),
     ]
     .into_iter()
     .flatten()
@@ -1565,9 +1555,9 @@ mod tests {
 
         phase a_departed_agents_answer_is_named_with_the_person_it_wrote_for;
         {
-            // Ada's agent answered and left: neither the record nor the workspace names it any more,
-            // and its answer keeps what its send pinned — the name it went by and the person it
-            // acted for — so Bob reads it named with her, as Chat's own window names it.
+            // Ada's agent answered and left: the workspace's member row still names it, and its
+            // answer keeps the person it acted for, so Bob reads it named with her, as Chat's own
+            // window names it.
             const ADA: &str = "ba944082ab57230fec2b518bd058a677d056dc648ac5c766f392f5f69fc1ee8c";
             const BOB: &str = "7f3c0f9bb4ed0e42f1a2d0e5a3c1b0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3";
             let mut chat = crate::record::Chat::default();
@@ -1577,12 +1567,16 @@ mod tests {
                 ..crate::record::Person::default()
             });
             let mut said = row("c_ask", "m_reply", "agent:helper", 1_782_470_460, "Hi");
-            said.acting = Some(sdk::tilo_resource::Acting {
-                name: Some(sdk::tilo_resource::Atom("Helper".to_owned())),
-                person: Some(sdk::tilo_resource::Atom(ADA.to_owned())),
-            });
+            said.acting =
+                Some(sdk::tilo_resource::Acting::agent("helper").acting_for(
+                    sdk::tilo_resource::Acting::person(ADA),
+                ));
             let rows = vec![row("c_ask", "m_ask", ADA, 1_782_470_400, "hello"), said];
-            let channel = Channel::read(&chat, &rows, "c_ask", BOB, &Names::default());
+            let names = Names {
+                agents: [("helper".to_owned(), "Helper".to_owned())].into(),
+                ..Names::default()
+            };
+            let channel = Channel::read(&chat, &rows, "c_ask", BOB, &names);
             let agent = channel.person("agent:helper").expect("the agent is named");
             assert_eq!(
                 agent.name,

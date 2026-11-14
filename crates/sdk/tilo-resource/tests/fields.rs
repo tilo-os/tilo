@@ -112,17 +112,18 @@ impl Board {
     #[action]
     pub fn add_card_for(&mut self, cx: &mut ActionCx) {
         self.cards = self.cards.saturating_add(1);
+        let acting = cx.invoked_by();
         self.author = format!(
             "{} for {}",
-            if cx.invoked_by().is_some_and(|acting| acting.is_agent()) {
+            if acting.as_ref().is_some_and(tilo_actions::Acting::is_agent) {
                 "Agent"
             } else {
                 "Person"
             },
-            cx.acting()
-                .and_then(|acting| acting.person)
+            acting
+                .as_ref()
+                .and_then(tilo_actions::Acting::acted_for_person)
                 .unwrap_or_default()
-                .0
         );
     }
 

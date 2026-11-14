@@ -326,8 +326,8 @@ impl ChatApp {
                     message
                         .acting
                         .iter()
-                        .filter_map(|by| by.person.clone())
-                        .map(|p| p.0),
+                        .filter_map(|by| by.acted_for_person())
+                        .map(str::to_owned),
                 );
                 // A member who writes only from a linked account on a
                 // bridged service is still this workspace's person: their

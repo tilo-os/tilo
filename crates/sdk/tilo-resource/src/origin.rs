@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ActionCx, Model, Refusal};
+use crate::{Model, Refusal};
 
 /// The longest name, handle, source or link an origin keeps.
 pub const MAX_ORIGIN_CHARS: usize = 2048;
@@ -96,16 +96,4 @@ impl Origin {
     pub fn checked_option(origin: Option<Self>) -> Result<Option<Self>, Refusal> {
         origin.map(Self::checked).transpose()
     }
-}
-
-/// The name the actor of `cx` acted under, when it is software acting for
-/// someone (an agent, an app) and the host named it: what a record keeps
-/// beside the actor's id, so a view names the agent ("Company mover") even
-/// when the workspace's roster no longer lists it, and never shows its key.
-#[must_use]
-pub fn acting_name(cx: &ActionCx) -> String {
-    cx.acting()
-        .and_then(|acting| acting.name)
-        .map(|name| name.0)
-        .unwrap_or_default()
 }

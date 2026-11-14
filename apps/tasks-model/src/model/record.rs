@@ -232,7 +232,7 @@ impl Tracker {
         let origin = Origin::checked_option(origin)?;
         let assignee = checked_assignee(assignee)?;
         let author = author(cx)?;
-        let author_name = tilo_resource::acting_name(cx);
+        let author_name = cx.acting_name();
         let number = self.next_number();
         let mut kept_labels = tilo_resource::Set::new();
         for label in labels.unwrap_or_default() {
@@ -448,7 +448,7 @@ impl Tracker {
             return Err(Refusal::new("An attachment's name fits on a line"));
         }
         let author = author(cx)?;
-        let author_name = tilo_resource::acting_name(cx);
+        let author_name = cx.acting_name();
         let at_ms = cx.now_ms();
         let id = cx.id();
         self.issue_mut(issue)?.attachments.push(
@@ -527,7 +527,7 @@ impl Tracker {
         let text = message_text(text)?;
         let origin = Origin::checked_option(origin)?;
         let author = author(cx)?;
-        let author_name = tilo_resource::acting_name(cx);
+        let author_name = cx.acting_name();
         let agent = by_agent(cx);
         let at_ms = cx.now_ms();
         let target = self.issue_mut(issue)?;

@@ -180,8 +180,13 @@ macro_rules! value_model {
 }
 
 // The action addresses and parameter declarations other apps publish, as a
-// Shortcut step stores them: types of the action protocol, below this crate.
-value_model!(tilo_actions::ActionKey, tilo_actions::ActionParam);
+// Shortcut step stores them, and who acted, as a change keeps it: types of the
+// action protocol, below this crate.
+value_model!(
+    tilo_actions::ActionKey,
+    tilo_actions::ActionParam,
+    tilo_actions::Acting
+);
 
 #[cfg(test)]
 mod tests {
