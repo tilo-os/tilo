@@ -293,6 +293,7 @@ impl Sync {
                 }
             }
         };
+        let shared = record_heads(&heads);
         self.merged = Some(heads);
         self.founded = true;
         self.standing.lock_recover().opened = true;
@@ -302,9 +303,15 @@ impl Sync {
                 &DocumentMutation::Incremental(resolution),
             );
         }
-        // What the record brought is not this device's to send again.
+        // What the record holds is not this device's to send again; what only
+        // this namespace holds is. A namespace makes changes of its own before
+        // it ever merged the record (the tree it starts as, a file copied in
+        // while the host had not answered), and a record whose document holds
+        // no tree yet is not merged into it at all: counted as sent, those
+        // changes never reach the host, which then leaves out every later
+        // write of this device as building on changes it never got.
         if self.sent.is_empty() {
-            self.sent = self.namespace.lock_recover().heads();
+            self.sent = shared;
         }
     }
 
@@ -346,8 +353,10 @@ impl Sync {
             let mut files = 0_usize;
             let mut bytes = 0_u64;
             for id in namespace.live_node_ids() {
+                // A text document (a `.md`, an `.odt`) is a file whose content
+                // the tree holds itself, by no hash: a file all the same.
                 if let Some(entry) = namespace.entry_for_node(&id)
-                    && entry.hash.is_some()
+                    && entry.kind == tilo_fs::namespace::NodeKind::File
                 {
                     files = files.saturating_add(1);
                     bytes = bytes.saturating_add(entry.size);
@@ -388,8 +397,67 @@ impl Sync {
     }
 }
 
+/// The record's heads as the namespace's change hashes: the same changes,
+/// since the namespace and the record are one Automerge document.
+fn record_heads(heads: &[[u8; 32]]) -> Vec<automerge::ChangeHash> {
+    heads
+        .iter()
+        .map(|head| automerge::ChangeHash(*head))
+        .collect()
+}
+
 impl Drop for Sync {
     fn drop(&mut self) {
         self.keep();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A namespace that changed before it merged the record (its own start, a
+    /// file copied in while the host had not answered) sends those changes
+    /// with its next write: the record then holds every file, with nothing a
+    /// write of this device builds on missing.
+    #[test]
+    fn what_a_namespace_made_before_the_record_arrived_goes_out() {
+        // The record as a page that opened Files founded it: no tree yet.
+        let mut founding = automerge::AutoCommit::new();
+        let _ = founding.commit();
+        let founded = founding.save();
+        let heads: Vec<[u8; 32]> = founding.get_heads().iter().map(|head| head.0).collect();
+
+        let mut namespace = Namespace::new("laptop").unwrap();
+        namespace
+            .adopt_or_merge_remote_and_resolve(&founded)
+            .unwrap();
+        let sent = record_heads(&heads);
+        let hash = iroh_blobs::Hash::new(b"net 30");
+        namespace
+            .create_file(
+                tilo_fs::namespace::ROOT_INO,
+                "contract.txt",
+                Some(&hash),
+                6,
+                1,
+            )
+            .unwrap();
+
+        // What the host keeps: the record as founded, then this device's write.
+        let mut record =
+            automerge::AutoCommit::load(&[founded, namespace.changes_since(&sent)].concat())
+                .unwrap();
+        assert!(
+            record.get_missing_deps(&[]).is_empty(),
+            "every change the record took builds on changes it holds"
+        );
+        let tree = fs_protocol::tree::Tree::of_record(&record.save()).unwrap();
+        assert!(
+            tree.nodes
+                .values()
+                .any(|node| node.name.as_bytes() == b"contract.txt" && node.hash.is_some()),
+            "{tree:?}"
+        );
     }
 }

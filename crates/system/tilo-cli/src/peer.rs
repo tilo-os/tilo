@@ -41,6 +41,10 @@ struct Held {
     _content: Arc<content::SessionContent>,
 }
 
+/// A file of a folder: its content's hash, `None` for a text document whose
+/// content the tree holds itself, and its size.
+type FileBytes = (Option<iroh_blobs::Hash>, u64);
+
 /// What `tilo status` and `tilo folders` say of one workspace's folder.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Mounted {
@@ -316,7 +320,7 @@ impl Peer {
 
     /// What this peer shows, and where each stands.
     pub(crate) async fn mounted(&self) -> Vec<Mounted> {
-        let shown: Vec<(Mounted, Vec<(iroh_blobs::Hash, u64)>)> = self
+        let shown: Vec<(Mounted, Vec<FileBytes>)> = self
             .held
             .lock()
             .await
@@ -327,11 +331,13 @@ impl Peer {
                     .namespace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // A text document's content is the tree's own, so always here.
                 let hashes = namespace
                     .live_node_ids()
                     .iter()
                     .filter_map(|id| namespace.entry_for_node(id))
-                    .filter_map(|entry| Some((entry.hash?, entry.size)))
+                    .filter(|entry| entry.kind == tilo_fs::namespace::NodeKind::File)
+                    .map(|entry| (entry.hash, entry.size))
                     .collect();
                 drop(namespace);
                 let mounted = Mounted {
@@ -349,7 +355,11 @@ impl Peer {
         let mut mounted = Vec::with_capacity(shown.len());
         for (mut folder, hashes) in shown {
             for (hash, size) in hashes {
-                if self.store.has(hash).await {
+                let here = match hash {
+                    Some(hash) => self.store.has(hash).await,
+                    None => true,
+                };
+                if here {
                     folder.local_bytes = folder.local_bytes.saturating_add(size);
                 }
             }
