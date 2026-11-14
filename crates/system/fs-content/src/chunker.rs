@@ -383,69 +383,136 @@ pub fn build_reader(
     len: u64,
     previous_tier: Option<ChunkTier>,
 ) -> io::Result<(Manifest, ChunkStats)> {
-    let tier = ChunkTier::sticky(previous_tier, len);
-    let mut stats = ChunkStats::default();
-    let Some(cutter) = Cutter::for_tier(tier) else {
-        // One chunk of at most 64 KiB.
-        let mut data = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
-        reader
-            .by_ref()
-            .take(len.saturating_add(1))
-            .read_to_end(&mut data)?;
-        check_len(data.len() as u64, len)?;
-        return Ok(build_in_tier(&data, tier));
-    };
-    let capacity = STREAM_BLOCK.saturating_add(cutter.max());
-    let mut buf = vec![0_u8; capacity];
-    let mut filled = 0_usize;
-    let mut total = 0_u64;
-    let mut eof = false;
-    let mut chunks = Vec::new();
+    let mut stream = Streamed::new(len, previous_tier);
+    let mut buf = vec![0_u8; STREAM_BLOCK.min(usize::try_from(len).unwrap_or(STREAM_BLOCK).max(1))];
     loop {
-        while !eof && filled < capacity {
-            let n = match reader.read(buf.get_mut(filled..).unwrap_or_default()) {
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                result => result?,
-            };
-            if n == 0 {
-                eof = true;
-            }
-            filled = filled.saturating_add(n);
-            total = total.saturating_add(n as u64);
-            if total > len {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "source grew while read",
-                ));
-            }
+        let n = match reader.read(&mut buf) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if n == 0 {
+            break;
         }
+        stream.push(buf.get(..n).unwrap_or_default(), &mut |_, _| {})?;
+    }
+    stream.finish(&mut |_, _| {})
+}
+
+/// [`build`] over bytes that arrive a piece at a time, in bounded memory: a
+/// file read from where it is kept (a browser's `File`, a socket) in pieces
+/// of any size, each chunk handed on with its bytes the moment its cut is
+/// known, so the caller keeps chunks as they come and never the whole file.
+/// The manifest equals [`build`] over the same bytes.
+pub struct Streamed {
+    tier: ChunkTier,
+    cutter: Option<Cutter>,
+    /// Bytes that arrived but are not in a chunk yet.
+    pending: Vec<u8>,
+    /// The bytes said to come.
+    len: u64,
+    /// The bytes that came.
+    total: u64,
+    chunks: Vec<ChunkRef>,
+    stats: ChunkStats,
+}
+
+impl Streamed {
+    /// Chunking of `len` bytes, in the tier `previous_tier` and `len` keep.
+    #[must_use]
+    pub fn new(len: u64, previous_tier: Option<ChunkTier>) -> Self {
+        let tier = ChunkTier::sticky(previous_tier, len);
+        Self {
+            tier,
+            cutter: Cutter::for_tier(tier),
+            pending: Vec::new(),
+            len,
+            total: 0,
+            chunks: Vec::new(),
+            stats: ChunkStats::default(),
+        }
+    }
+
+    /// The bytes that came so far.
+    #[must_use]
+    pub const fn received(&self) -> u64 {
+        self.total
+    }
+
+    /// Take the next `bytes`, handing every chunk they complete to
+    /// `on_chunk` with its bytes.
+    ///
+    /// # Errors
+    ///
+    /// More bytes than the stream said would come.
+    pub fn push(
+        &mut self,
+        bytes: &[u8],
+        on_chunk: &mut dyn FnMut(&ChunkRef, &[u8]),
+    ) -> io::Result<()> {
+        self.total = self.total.saturating_add(bytes.len() as u64);
+        if self.total > self.len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "source grew while read",
+            ));
+        }
+        self.pending.extend_from_slice(bytes);
+        self.cut(false, on_chunk);
+        Ok(())
+    }
+
+    /// Cut what is pending: every chunk whose end is known, all of it at
+    /// `eof`. A cut needs a chunk's largest length ahead of where it starts
+    /// (or the end), so the cuts are those [`build`] makes.
+    fn cut(&mut self, eof: bool, on_chunk: &mut dyn FnMut(&ChunkRef, &[u8])) {
+        let Some(cutter) = &self.cutter else {
+            return;
+        };
         let mut spans = Vec::new();
         let mut start = 0_usize;
-        while start < filled {
-            let remaining = filled.saturating_sub(start);
+        while start < self.pending.len() {
+            let remaining = self.pending.len().saturating_sub(start);
             if remaining < cutter.max() && !eof {
                 break;
             }
-            let n = cutter.cut(buf.get(start..filled).unwrap_or_default());
+            let n = cutter.cut(self.pending.get(start..).unwrap_or_default());
             spans.push((start, n));
             start = start.saturating_add(n);
         }
-        for ((_, n), hash) in spans.iter().zip(hash_spans(&buf, &spans)) {
-            chunks.push(ChunkRef {
+        for ((at, n), hash) in spans.iter().zip(hash_spans(&self.pending, &spans)) {
+            let chunk = ChunkRef {
                 hash,
                 len: to_len(*n),
-            });
-            stats.chunks_hashed = stats.chunks_hashed.saturating_add(1);
-            stats.bytes_hashed = stats.bytes_hashed.saturating_add(*n as u64);
+            };
+            on_chunk(&chunk, span(&self.pending, *at, *n));
+            self.chunks.push(chunk);
+            self.stats.chunks_hashed = self.stats.chunks_hashed.saturating_add(1);
+            self.stats.bytes_hashed = self.stats.bytes_hashed.saturating_add(*n as u64);
         }
-        if eof && start >= filled {
-            break;
-        }
-        buf.copy_within(start..filled, 0);
-        filled = filled.saturating_sub(start);
+        self.pending.drain(..start.min(self.pending.len()));
     }
-    check_len(total, len)?;
-    Ok((Manifest::new(tier, chunks), stats))
+
+    /// The manifest of everything that came, the last chunks handed to
+    /// `on_chunk`.
+    ///
+    /// # Errors
+    ///
+    /// Fewer bytes than the stream said would come.
+    pub fn finish(
+        mut self,
+        on_chunk: &mut dyn FnMut(&ChunkRef, &[u8]),
+    ) -> io::Result<(Manifest, ChunkStats)> {
+        check_len(self.total, self.len)?;
+        if self.cutter.is_none() {
+            let (manifest, stats) = build_in_tier(&self.pending, self.tier);
+            for chunk in manifest.chunks() {
+                on_chunk(chunk, &self.pending);
+            }
+            return Ok((manifest, stats));
+        }
+        self.cut(true, on_chunk);
+        Ok((Manifest::new(self.tier, self.chunks), self.stats))
+    }
 }
 
 fn check_len(got: u64, want: u64) -> io::Result<()> {
@@ -661,6 +728,33 @@ mod tests {
         let data = pseudo_random(1000, 1);
         assert!(build_reader(&data[..], 1001, None).is_err());
         assert!(build_reader(&data[..], 999, None).is_err());
+    }
+
+    #[test]
+    fn pieces_of_any_size_chunk_as_the_whole_does_and_hand_over_every_byte() {
+        for (len, piece) in [
+            (0, 7),
+            (3000, 1000),
+            (60_000, 4096),
+            (5 * 1024 * 1024 + 3, 333_333),
+        ] {
+            let data = pseudo_random(len, len as u64 + 5);
+            let mut stream = Streamed::new(len as u64, None);
+            let mut handed = Vec::new();
+            let mut keep = |chunk: &ChunkRef, bytes: &[u8]| {
+                assert_eq!(blake3::hash(bytes).as_bytes(), &chunk.hash);
+                handed.extend_from_slice(bytes);
+            };
+            for part in data.chunks(piece) {
+                stream.push(part, &mut keep).unwrap();
+            }
+            let (manifest, _) = stream.finish(&mut keep).unwrap();
+            assert_eq!(manifest, build(&data, None).0, "{len}");
+            assert_eq!(handed, data, "{len}");
+        }
+        let mut stream = Streamed::new(2, None);
+        assert!(stream.push(b"abc", &mut |_, _| {}).is_err());
+        assert!(Streamed::new(2, None).finish(&mut |_, _| {}).is_err());
     }
 
     #[test]
