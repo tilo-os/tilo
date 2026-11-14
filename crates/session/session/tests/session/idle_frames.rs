@@ -63,25 +63,37 @@ fn a_held_frame_takes_the_turns_of_a_gesture() {
     let mut session = session();
     settle(&mut session, 30);
     let drawn = session.compositor().frames_presented();
-    let window = Duration::from_millis(120);
-    let started = Instant::now();
-    let mut turns = 0_u32;
-    while started.elapsed() < window {
+    let desk = session.handle().revision();
+    // The gesture's samples are all in the desk's hands before the frame it draws: the desk takes
+    // the gesture in one turn, not one per event.
+    let events = 120_u32;
+    for sample in 0..events {
         session
             .compositor()
-            .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+            .input(InputEvent::PointerMotion {
+                x: 320.0 + f64::from(sample),
+                y: 240.0,
+            })
             .expect("input");
-        session.step(Duration::from_millis(1)).expect("step");
-        turns += 1;
     }
-    // One turn per refresh of the session's 60 Hz output: nine in this window. A turn drawn at once
-    // for every event is twenty-one, the desk laid out for each of them.
-    assert!(
-        turns <= 14,
-        "a held frame takes the gesture's turns with it: {turns} in {window:?}"
+    assert_eq!(
+        session.compositor().pointer_location(),
+        (320.0 + f64::from(events - 1), 240.0),
+        "the desk took every sample of the gesture as it came"
     );
+    session.step(Duration::from_millis(1)).expect("step");
+    // One turn for the gesture: the frame the desk draws is the gesture's, however many events it
+    // brought, and the desk is laid out for it once.
+    let frames = session.compositor().frames_presented() - drawn;
     assert!(
-        session.compositor().frames_presented() > drawn,
-        "the frames the desk drew are shown"
+        frames <= 2,
+        "a gesture is drawn once, not once per event: {frames} frames for {events} events"
+    );
+    assert!(frames > 0, "the frame the desk drew is shown");
+    assert!(
+        session.handle().revision() <= desk + 1,
+        "the desk is laid out once for the gesture's events, not once per event: it stood at \
+         {desk} and is at {}",
+        session.handle().revision()
     );
 }
