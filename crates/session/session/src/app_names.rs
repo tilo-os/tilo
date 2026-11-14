@@ -80,14 +80,32 @@ pub(crate) fn window_name(app_id: &str, title: &str) -> String {
 /// and the app it shows, the app's name alone where the title only names the app under another
 /// spelling (`chat` is `Chat`), and the title itself for a stand-in that runs no app.
 pub(crate) fn tab_name(tab: &tilo_desktop_model::Tab) -> String {
+    match tile_app_id(tab) {
+        Some(app_id) => window_name(app_id, &tab.title),
+        None => tab.title.clone(),
+    }
+}
+
+/// The title a surface shows for the window of `tab` beside the app's own mark: its title, or the
+/// app's name where the title only names the app under another spelling. The mark already says the
+/// app, so the title never repeats it.
+pub(crate) fn tab_title(tab: &tilo_desktop_model::Tab) -> String {
+    match tile_app_id(tab) {
+        Some(app_id) => {
+            tilo_desktop_search::names::window_title_of(app_id, &app_name(app_id), &tab.title)
+        }
+        None => tab.title.clone(),
+    }
+}
+
+/// The app a window of `tab` shows, when it runs one.
+fn tile_app_id(tab: &tilo_desktop_model::Tab) -> Option<&str> {
     match &tab.tile {
         tilo_desktop_model::TileContent::Foreign { app_id, .. }
         | tilo_desktop_model::TileContent::LocalApp { app_id, .. }
-        | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => {
-            window_name(app_id, &tab.title)
-        }
+        | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => Some(app_id),
         tilo_desktop_model::TileContent::AppPlaceholder { .. }
-        | tilo_desktop_model::TileContent::Stub { .. } => tab.title.clone(),
+        | tilo_desktop_model::TileContent::Stub { .. } => None,
     }
 }
 

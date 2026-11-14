@@ -1107,7 +1107,7 @@ impl Panel {
         let titled: BTreeMap<String, String> = crate::sync::layout::bindings_of(&tree, &windows)
             .into_iter()
             .filter_map(|(tab, _app, digest)| {
-                let title = crate::app_names::tab_name(tree.tab(tab)?);
+                let title = crate::app_names::tab_title(tree.tab(tab)?);
                 (!title.trim().is_empty()).then_some((digest, title))
             })
             .collect();

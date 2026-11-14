@@ -47,5 +47,6 @@ pub use surface::{
     PersonalAsk, SearchHost, SearchHostFeed, SearchRow, StripSlot, TileSource, TypedField,
     TypedInsertion, TypedRefusal, WorkspaceShare, WorkspaceShares, display_rect, host_action_key,
     is_escape, is_host_offer, is_search_chord, open_activity, published_selection,
-    search_chord_keys, seed_tree, seed_tree_in, tile_app_kind, window_name, working_display,
+    search_chord_keys, seed_tree, seed_tree_in, tile_app_kind, window_name, window_title,
+    working_display,
 };

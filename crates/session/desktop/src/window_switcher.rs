@@ -977,9 +977,9 @@ pub struct Picture {
     pub rect: Rect,
 }
 
-/// The words a card shows for its window, named as every surface names it: its title and the app
-/// it shows, the app's name alone where the title only names the app (`chat` is `Chat`), and an
-/// untitled one where it has neither.
+/// The words a card shows for its window, by the one rule every surface names a window by: its
+/// title, or the app's name where the title only names the app (`chat` is `Chat`) — the app's mark
+/// leads the line, so the name is not repeated in it — and an untitled one where it has neither.
 fn title_of(card: &SwitcherCard) -> String {
     if card.app_key.trim().is_empty() {
         if card.title.trim().is_empty() {
@@ -988,7 +988,12 @@ fn title_of(card: &SwitcherCard) -> String {
             card.title.clone()
         }
     } else {
-        tilo_desktop_search::names::window_name(&card.app_key, &card.title)
+        let title = tilo_desktop_search::names::window_title(&card.app_key, &card.title);
+        if title.trim().is_empty() {
+            t("window-switcher-untitled")
+        } else {
+            title
+        }
     }
 }
 
@@ -1455,7 +1460,11 @@ mod tests {
             let mut slug = card("chat", Some(1));
             slug.app_key = "so.tilo.chat".to_owned();
             assert_eq!(title_of(&slug), "Chat", "the app is said once, never its slug");
-            assert_eq!(title_of(&card("Groceries", Some(1))), "Groceries — Notes");
+            assert_eq!(
+                title_of(&card("Groceries", Some(1))),
+                "Groceries",
+                "the app's mark leads the line, so the name is not repeated in it"
+            );
             assert_eq!(
                 title_of(&card("", None)),
                 "Notes",

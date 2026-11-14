@@ -119,11 +119,12 @@ pub struct WorkspaceShare {
     pub writable: bool,
 }
 
-/// What the overview calls the window `tab`: named by the one rule every surface names a window by,
-/// so a window that calls itself its app under another spelling (`chat`) reads as the app's name,
-/// never as a slug, and a window with nothing to say for itself is untitled.
+/// What the overview calls the window `tab`: its title by the one rule every surface names a
+/// window by, so a window that calls itself its app under another spelling (`chat`) reads as the
+/// app's name, never as a slug — the app's mark stands beside it, so its name is not repeated —
+/// and a window with nothing to say for itself is untitled.
 fn window_title(tab: &tilo_desktop_model::Tab) -> String {
-    let name = tilo_desktop_surface::window_name(tab);
+    let name = tilo_desktop_surface::window_title(tab);
     if name.trim().is_empty() {
         t("overview-untitled")
     } else {

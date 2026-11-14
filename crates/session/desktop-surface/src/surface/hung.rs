@@ -511,7 +511,7 @@ impl DesktopSurface {
                         }
                         Some(Hung {
                             tab: tab.id,
-                            title: super::window_name(tab),
+                            title: super::window_title(tab),
                             over: shared.shown_tabs.window_rect(tab.id)?,
                         })
                     })

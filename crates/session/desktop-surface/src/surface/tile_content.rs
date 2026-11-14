@@ -50,6 +50,16 @@ pub fn window_name(tab: &Tab) -> String {
     )
 }
 
+/// The title a surface shows for the window `tab` beside the app's own mark: the window's title,
+/// or the app's name where the title only names the app under another spelling (`chat` is `Chat`).
+/// The mark already says the app, so the title never repeats it.
+pub fn window_title(tab: &Tab) -> String {
+    tile_app_id(&tab.tile).map_or_else(
+        || tab.title.clone(),
+        |app| tilo_desktop_search::names::window_title(app, &tab.title),
+    )
+}
+
 /// The app showing `tab`, named as a person knows it — the name the app is listed under, never the
 /// id it installs under ("Notes", not "so.tilo.notes"). `None` for a tile that runs no app: a
 /// stand-in, or a window whose app has not arrived.

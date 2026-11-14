@@ -97,7 +97,7 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
     fn resolve(&mut self, request: TileRequest<'_>) -> TileResolution {
         // The window's name, as every surface names it, stands on the card that says the app could
         // not open.
-        let name = tilo_desktop_surface::window_name(request.tab);
+        let name = tilo_desktop_surface::window_title(request.tab);
         let Some(id) = tilo_desktop_model::apps::canonical_app_id(&request.tab.tile) else {
             return TileResolution::Unavailable {
                 title: name,

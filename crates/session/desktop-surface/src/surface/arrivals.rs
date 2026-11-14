@@ -448,5 +448,5 @@ fn title_of(tree: &Layout, tab: TabId) -> Option<String> {
         .flat_map(|s| &s.window_groups)
         .flat_map(|g| &g.tabs)
         .find(|t| t.id == tab)
-        .map(super::window_name)
+        .map(super::window_title)
 }

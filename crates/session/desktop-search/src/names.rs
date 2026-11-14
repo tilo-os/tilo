@@ -39,6 +39,26 @@ pub fn window_name_of(app_id: &str, app: &str, title: &str) -> String {
     ui::window_name::named(app, title)
 }
 
+/// The title a surface shows for the window `app_id` beside the app's own
+/// mark: the window's own title, or the app's name where the title is only
+/// the app under another spelling (`chat` is `Chat`) — said once, never the
+/// name joined to a slug. A surface with the app's mark already beside the
+/// title does not repeat the app's name in it.
+#[must_use]
+pub fn window_title(app_id: &str, title: &str) -> String {
+    window_title_of(app_id, &app_name(app_id), title)
+}
+
+/// [`window_title`] for a host that names the app itself.
+#[must_use]
+pub fn window_title_of(app_id: &str, app: &str, title: &str) -> String {
+    if title.trim().is_empty() || is_name_of(app_id, app, title) {
+        app.to_owned()
+    } else {
+        title.trim().to_owned()
+    }
+}
+
 /// Whether `said` is a name of the app rather than a place in it: the name
 /// the app is listed under, the id written as words or the id itself, which
 /// is what a window bar says for an app run without its list
@@ -206,6 +226,25 @@ mod tests {
                 window_name("so.tilo.notes", "Notes"),
                 "Notes",
                 "the app's name is not said twice"
+            );
+        }
+
+        phase a_title_beside_the_apps_mark_never_repeats_the_app;
+        {
+            // A surface with the app's mark beside the title shows the title
+            // alone, and a title that is the app under another spelling is the
+            // app's name: never "chat", never "Groceries — Notes" beside the
+            // Notes mark.
+            assert_eq!(window_title("so.tilo.chat", "chat"), "Chat");
+            assert_eq!(window_title("so.tilo.notes", "Groceries"), "Groceries");
+            assert_eq!(
+                window_title("so.tilo.notes", ""),
+                "Notes",
+                "a window with no title of its own is its app"
+            );
+            assert_eq!(
+                window_title_of("so.tilo.file-explorer", "Dateien", "dateien"),
+                "Dateien"
             );
         }
     }
