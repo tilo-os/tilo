@@ -295,7 +295,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
     assert!(
         before
             .iter()
-            .any(|path| path.extension().is_some_and(|ext| ext == "room")),
+            .any(|path| path.extension().is_some_and(|ext| ext == "workspace")),
         "the relay keeps the workspace's record: {before:?}"
     );
     assert!(
