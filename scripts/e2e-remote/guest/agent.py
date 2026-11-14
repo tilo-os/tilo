@@ -16,7 +16,8 @@ Scenarios:
   stop        initialize, tools/list, `tilo_devices`, `tilo_ls`; then E2E_READY is written
               and `tilo_ls` asked once a second until the connection ends (or E2E_WAIT_S)
   work        initialize, tools/list, `tilo_devices`, `tilo_ls`, Notes opened with
-              `notes#open`, a note titled E2E_TITLE made with `notes#new-note` once
+              `notes#open`, a link opened with `notes#open-link` (a step a device asks
+              about), a note titled E2E_TITLE made with `notes#new-note` once
               E2E_GO exists, found again with `tilo_find`
   refused     initialize, then what follows the answer
 """
@@ -217,6 +218,10 @@ def work(client: Client, out: dict) -> None:
     out["open_notes"] = client.tool("tilo_do", {"path": "notes#open"})
     out["notes_listing"] = until(client, "tilo_ls", {"path": "notes"},
                                  lambda text: "#new-note" in text, 30)
+    # A step that reaches outside the app, which a device asks its person about unless they let
+    # their other devices' agents act without asking.
+    out["open_link"] = client.tool("tilo_do", {"path": "notes#open-link",
+                                               "args": {"url": "https://tilo.so/"}})
     go = os.path.expandvars(os.environ["E2E_GO"])
     touch(os.path.expandvars(os.environ["E2E_READY"]))
     deadline = time.monotonic() + WAIT_S

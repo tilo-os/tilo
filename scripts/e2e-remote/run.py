@@ -18,8 +18,8 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    admitted; the person approving B's sheet admits it; their Stop on B ends A's connection.
 5. With the setting on (turned on through its own action), the agent is let in on B without a
    question: it lists B's apps, opens Notes and makes a note there, attributed on B to
-   `claude-code@<A>-<id>`. Its step `notes#open` is still put to B's person on the run's sheet,
-   who allows it once.
+   `claude-code@<A>-<id>`. Its step `notes#open-link`, which reaches outside the app, is still put
+   to B's person on the run's sheet, who allows it once.
 6. With B's second setting "Let them act without asking" on as well, the same work goes through
    with no sheet ever up on B.
 7. C, another person's device, is refused at B's door.
@@ -419,7 +419,7 @@ class Run:
             self.step("E07", "Approving B's sheet admits it; B's Stop ends A's connection",
                       lambda res: self.approve_and_stop(a, b, res, facts), "E05")
             self.step("E08", "With B's setting on, the agent is let in unasked, attributed to A; "
-                      "its notes#open is asked about",
+                      "its notes#open-link is asked about",
                       lambda res: self.work(a, b, res, facts), "E05")
             self.step("E08b", "With B's second setting on too, the agent's steps go unasked",
                       lambda res: self.work_unasked(a, b, res, facts), "E05")
@@ -640,8 +640,9 @@ class Run:
             raise Failed(f"B still seats the agent after its Stop: {self.seated(b)}")
 
     def work(self, a: Box, b: Box, res: Result, facts: dict) -> None:
-        """Only the first setting on: the agent is let in unasked, but its `notes#open` is put to
-        B's person, who allows it once; every later step it asks about is allowed once too."""
+        """Only the first setting on: the agent is let in unasked, but its `notes#open-link`, a step
+        that reaches outside the app, is put to B's person, who allows it once; every later step it
+        asks about is allowed once too."""
         self.no_sheet_before(b)
         res.facts["setting"] = self.set_accept(b, True)
         res.facts["unasked"] = self.set_unasked(b, False)
@@ -656,18 +657,18 @@ class Run:
             names = [t.get("name") for t in self.targets(b)]
             raise Failed("B seats no agent although its setting lets the person's devices in; "
                          f"its screen names {names}")
-        # Its first step that asks is `notes#open`: the sheet goes up while the agent waits on it,
-        # before it got as far as saying it is ready.
+        # Its first step that asks is `notes#open-link` (opening Notes it does unasked): the sheet
+        # goes up while the agent waits on it, before it got as far as saying it is ready.
         asked = wait_until(lambda: self.sheet_targets(b), 50, 0.5)
         res.facts["asked"] = bool(asked)
         if not asked:
-            raise Failed("B never asked its person about the agent's notes#open")
+            raise Failed("B never asked its person about the agent's notes#open-link")
         if "yes" in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'):
-            raise Failed("the agent went on past notes#open while B's person was being asked")
+            raise Failed("the agent went on past notes#open-link while B's person was being asked")
         self.allow_step_once(b, res)
         if not wait_until(lambda: "yes" in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'),
                           120, 1.0):
-            raise Failed("the agent never got past notes#open after B's person allowed it")
+            raise Failed("the agent never got past notes#open-link after B's person allowed it")
         a.vm.exec(f'touch "{go}"')
         # Whatever else it asks about (making the note) the person allows once, until it is done.
         while thread.is_alive():
