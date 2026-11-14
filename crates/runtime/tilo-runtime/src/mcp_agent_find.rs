@@ -56,6 +56,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // named as the listing names it, type and all: the same program form.
         let (_, running) = self.providers().await?;
         let forms = self.program_forms().await.unwrap_or_default();
+        // Every directory this find reads once, for all the hits that name it: a search answers
+        // many rows from one app's directory, and reading it again for each of them is what an
+        // agent's find spends its time on.
+        let mut levels = Levels::new();
         let mut lines: Vec<String> = Vec::new();
         let mut hits: Vec<Value> = Vec::new();
         for hit in &found {
@@ -77,16 +81,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 }
                 continue;
             }
-            let Some(line) = self.found_line(hit, &running, &forms).await else {
+            let Some((line, path, kind)) =
+                self.found_line(hit, &running, &forms, &mut levels).await
+            else {
                 continue;
             };
             if !lines.contains(&line) {
                 // One hit per resource, by the path it reads at: the search
                 // ranks a resource and each action on it apart, and a caller
                 // acts on the resource.
-                if let Some((path, kind)) = self.locate(hit.app.as_deref(), hit, &running).await
-                    && !hits.iter().any(|hit: &Value| hit["path"] == path)
-                {
+                if !hits.iter().any(|hit: &Value| hit["path"] == path) {
                     hits.push(json!({
                         "path": path,
                         "kind": forms.kind(&kind).unwrap_or(&kind),
@@ -150,26 +154,29 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// One result as the line an agent reads: the path `tilo_ls` names the
-    /// resource by, then what it is, or the action it offers after `#`.
-    /// `forms` names the type as the listing does (`tasks.Task`), so a row
-    /// here reads back the same as a row there.
+    /// resource by, then what it is, or the action it offers after `#`, and
+    /// the path and kind it stands at. `forms` names the type as the listing
+    /// does (`tasks.Task`), so a row here reads back the same as a row there.
     pub(super) async fn found_line(
         &self,
         found: &Found,
         running: &[(String, Value)],
         forms: &ProgramForms,
-    ) -> Option<String> {
-        let located = self.locate(found.app.as_deref(), found, running).await;
+        levels: &mut Levels,
+    ) -> Option<(String, String, String)> {
+        let located = self
+            .locate(found.app.as_deref(), found, running, levels)
+            .await;
         // No directory of an app this workspace lists holds it (a setting's
         // page, a file): a path `tilo_ls` cannot read names nothing, so the
         // result is left out rather than answered as a path that fails.
         //
         // The path is `locate`'s, which is the one `tilo_ls` lists the
         // resource at: a search row and a listing name it the same way.
-        let (named, kind) = located?;
-        let kind = forms.kind(&kind).unwrap_or(&kind);
+        let (named, written) = located?;
+        let kind = forms.kind(&written).unwrap_or(&written);
         let label = found.label.trim();
-        Some(match found.open.as_deref() {
+        let line = match found.open.as_deref() {
             // The resource's own `open` names the resource itself, with what
             // it is called when the path does not say it (a note named by its
             // id, a file whose name holds a slash); any other action is
@@ -183,7 +190,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 }
             }
             Some(action) => format!("{named}#{action}  {label}"),
-        })
+        };
+        Some((line, named, written))
     }
 
     /// The path and kind of `resource` in the directories of the apps that
@@ -197,6 +205,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         hint: Option<&str>,
         found: &Found,
         running: &[(String, Value)],
+        levels: &mut Levels,
     ) -> Option<(String, String)> {
         // Only the apps `tilo_ls` lists, by the name it lists them by: a
         // path it cannot read names nothing. The app the search said the row
@@ -233,7 +242,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         {
             let (name, provider) = providers.remove(at);
             let several = providers.iter().any(|(other, _)| *other == name);
-            let (path, kind) = self.ls_path(&provider, found).await?;
+            let (path, kind) = self.ls_path(&provider, found, levels).await?;
             let app = if several {
                 format!("{name}@{provider}")
             } else {
@@ -242,7 +251,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return Some((format!("{app}/{path}"), kind));
         }
         for (name, provider) in providers {
-            let Some((path, kind)) = self.ls_path(&provider, found).await else {
+            let Some((path, kind)) = self.ls_path(&provider, found, levels).await else {
                 continue;
             };
             return Some((format!("{name}/{path}"), kind));
@@ -317,9 +326,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         clippy::too_many_lines,
         reason = "one walk from a result up to the app's root, its steps in order"
     )]
-    pub(super) async fn ls_path(&self, provider: &str, found: &Found) -> Option<(String, String)> {
-        let mut levels = Levels::new();
-        let node = self.find_node(provider, found, &mut levels).await?;
+    pub(super) async fn ls_path(
+        &self,
+        provider: &str,
+        found: &Found,
+        levels: &mut Levels,
+    ) -> Option<(String, String)> {
+        let node = self.find_node(provider, found, levels).await?;
         let kind = node.kind.clone();
         // The name of each step from the hit up, best last.
         let mut names: Vec<String> = Vec::new();
@@ -331,7 +344,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 // top level does not list (a body published beside its note)
                 // hangs under the container that feeds it, found by the key
                 // its own key extends.
-                let Ok(top) = self.level(provider, "", &mut levels).await else {
+                let Ok(top) = self.level(provider, "", levels).await else {
                     return None;
                 };
                 if top.children.iter().any(|node| node.id == here.id) {
@@ -369,7 +382,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // Asked by the name the row goes by: the rows holding it, not
             // the whole level, whose size the container's contents decide.
             let Ok(level) = self
-                .level_named(provider, &parent, here.label.trim(), &mut levels)
+                .level_named(provider, &parent, here.label.trim(), levels)
                 .await
             else {
                 return None;
@@ -396,7 +409,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let Some(holder) = holder else {
                 // Not a row of this level: the top level lists it, and
                 // names `here` in the level the parent read.
-                let Ok(top) = self.level(provider, "", &mut levels).await else {
+                let Ok(top) = self.level(provider, "", levels).await else {
                     return None;
                 };
                 let top_holder = top.children.iter().find(|node| node.id == parent).cloned();
@@ -408,7 +421,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     // `parent` is an id, not a name a program types a type with: it is found
                     // by the id alone, so no program form is read into it.
                     None => self
-                        .deep(provider, &parent, None, &mut levels, None)
+                        .deep(provider, &parent, None, levels, None)
                         .await
                         .ok()
                         .flatten(),
@@ -418,7 +431,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 // it holds this row alone.
                 if let Some(owner) = top_holder {
                     let held = self
-                        .level_named(provider, &owner.id, here.label.trim(), &mut levels)
+                        .level_named(provider, &owner.id, here.label.trim(), levels)
                         .await
                         .unwrap_or_else(|_| level.clone());
                     let mut siblings = held.children.clone();
@@ -435,7 +448,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // a field labelled with its record's title is told apart from
             // the record, and falls back to its own key's name (`body`).
             let held = self
-                .level_named(provider, &holder.id, here.label.trim(), &mut levels)
+                .level_named(provider, &holder.id, here.label.trim(), levels)
                 .await
                 .unwrap_or_else(|_| level.clone());
             let mut siblings = held.children.clone();
