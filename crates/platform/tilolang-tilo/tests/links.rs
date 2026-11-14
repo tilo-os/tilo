@@ -269,8 +269,10 @@ fn what_links_to_a_note_is_read_at_the_same_cost_at_any_size() {
         ada.commit();
         reads_of(&ada, "links_of", vec![Value::resource(&source)])
     };
+    // A thousand notes span two index pages of 512 entries, four thousand eight: what links to
+    // a note is read from its own list at either size.
     let small = work(1_000);
-    let large = work(10_000);
+    let large = work(4_000);
     assert_eq!(
         small, large,
         "what links to a note is read from its own list, not the workspace: {small:?} then {large:?}"

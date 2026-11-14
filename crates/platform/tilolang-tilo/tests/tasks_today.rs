@@ -155,37 +155,38 @@ fn rendered(replica: &Replica) -> ((u64, u64, u64, u64), i64) {
 #[test]
 fn today_reads_the_same_at_any_size_and_each_person_their_own() {
     // Three tasks are due today whoever looks, and two more are Ada's whenever they are due.
-    let mut measured = Vec::new();
-    for n in [1_000usize, 10_000] {
-        let ada = seeded(n);
-        let (read, today) = rendered(&ada);
-        assert_eq!(
-            today, 5,
-            "{n} tasks: the three due today and the two Ada holds"
-        );
-        measured.push(read);
-    }
+    // A thousand tasks span two index pages and four thousand eight: the same today is read
+    // whatever the list holds. The thousand is Ada's too, for the part below.
+    let mut small = seeded(1_000);
+    let (hers, today) = rendered(&small);
     assert_eq!(
-        measured[0], measured[1],
-        "the same today costs the same whether the workspace holds a thousand tasks or ten \
+        today, 5,
+        "a thousand tasks: the three due today and the two Ada holds"
+    );
+    let large = seeded(4_000);
+    let (theirs, today) = rendered(&large);
+    assert_eq!(
+        today, 5,
+        "four thousand tasks: the three due today and the two Ada holds"
+    );
+    assert_eq!(
+        hers, theirs,
+        "the same today costs the same whether the workspace holds a thousand tasks or four \
          thousand: the filter's run is read, not the tasks"
     );
 
     // Each person's Today is their own, read from the same column: the tasks due today are
     // everyone's, and the ones Ada holds are not Ben's.
-    let mut ada = seeded(1_000);
-    let (hers, today) = rendered(&ada);
-    assert_eq!(today, 5);
-    let ben = ada.fork("ben", PACKAGES);
+    let ben = small.fork("ben", PACKAGES);
     ben.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
     ben.host.sync_from(&ben.doc);
-    let (theirs, today) = rendered(&ben);
+    let (his, today) = rendered(&ben);
     assert_eq!(
         today, 3,
         "what Ada holds stands in her own Today: Ben's is the day's tasks alone"
     );
     assert_eq!(
-        theirs.0, hers.0,
+        his.0, hers.0,
         "the assignee column is one column, read for the run of the person looking"
     );
 }

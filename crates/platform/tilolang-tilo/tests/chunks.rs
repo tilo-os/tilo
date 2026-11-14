@@ -538,22 +538,24 @@ pub(crate) fn fill(host: &Host, docs: &mut Docs, meta: &Meta, root: &str, n: usi
         .collect()
 }
 
-/// One board of five thousand cards, filled once as the door fills it: where its cards live and
-/// how they are read, and then what a change to a card in the last chunk writes. The first part
-/// reads the board and writes nothing, so the change meets the board as the fill left it.
+/// One board of two full runs and a card or two past them, filled once as the door fills it:
+/// where its cards live and how they are read, and then what a change to a card in the last
+/// chunk writes. The first part reads the board and writes nothing, so the change meets the
+/// board as the fill left it.
 #[test]
-fn five_thousand_cards_live_in_three_chunks_in_order_and_a_change_writes_only_its_chunk() {
+fn cards_past_two_full_runs_live_in_three_chunks_in_order_and_a_change_writes_only_its_chunk() {
     let (host, mut docs, meta, root, _) = board();
-    let inserted = fill(&host, &mut docs, &meta, &root, 5000);
+    let size = usize::try_from(chunk::ITEMS).unwrap();
+    let cards = 2 * size + 4;
+    let inserted = fill(&host, &mut docs, &meta, &root, cards);
     docs.sync(&host);
 
-    let size = usize::try_from(chunk::ITEMS).unwrap();
     assert_eq!(docs.chunks().numbers().collect::<Vec<_>>(), [0, 1, 2]);
     let chunks = docs.chunks();
     let schema = lookup(&meta.types.iter().find(|t| t.name == "Board").unwrap().id).unwrap();
     assert_eq!(
         [0, 1, 2].map(|n| held_in(&chunks, n, &root, schema)),
-        [size, size, 5000 - 2 * size],
+        [size, size, cards - 2 * size],
         "each run fills its chunk before the next opens"
     );
 
@@ -576,7 +578,7 @@ fn five_thousand_cards_live_in_three_chunks_in_order_and_a_change_writes_only_it
     assert_eq!(chunk_of(size), Some("1".to_owned()));
     assert_eq!(chunk_of(2 * size - 1), Some("1".to_owned()));
     assert_eq!(chunk_of(2 * size), Some("2".to_owned()));
-    assert_eq!(chunk_of(4999), Some("2".to_owned()));
+    assert_eq!(chunk_of(cards - 1), Some("2".to_owned()));
     let card_ty = meta
         .types
         .iter()
@@ -589,7 +591,7 @@ fn five_thousand_cards_live_in_three_chunks_in_order_and_a_change_writes_only_it
     // A change to a card in the last chunk writes only that chunk.
     let before = counts(&host);
 
-    let card = format!("{root}/{}", inserted[4899]);
+    let card = format!("{root}/{}", inserted[cards - 1]);
     let action = act(
         &host,
         &meta,
@@ -617,7 +619,7 @@ fn five_thousand_cards_live_in_three_chunks_in_order_and_a_change_writes_only_it
         "the last chunk holds the write: {before:?} then {after:?}"
     );
     let card_schema = lookup(&meta.types.iter().find(|t| t.name == "Card").unwrap().id).unwrap();
-    let card_record = copy_in(&docs.chunks(), 2, &root, card_schema, &inserted[4899])
+    let card_record = copy_in(&docs.chunks(), 2, &root, card_schema, &inserted[cards - 1])
         .expect("the card is read in the last chunk");
     assert_eq!(card_record.chunk, 2);
 
@@ -636,8 +638,11 @@ fn five_thousand_cards_live_in_three_chunks_in_order_and_a_change_writes_only_it
         let at = ResourceRef::root(&root, id_of("Board")).item(&inserted[i], id_of("Card"));
         host.store().record_at(&at).unwrap().get(&text).cloned()
     };
-    assert_eq!(read(4899), Some(DynValue::Text("changed".into())));
-    assert_eq!(read(4898), Some(DynValue::Text("t4898".into())));
+    assert_eq!(read(cards - 1), Some(DynValue::Text("changed".into())));
+    assert_eq!(
+        read(cards - 2),
+        Some(DynValue::Text(format!("t{}", cards - 2)))
+    );
     let indexed = host.store().index_contents(BOARD_APP).unwrap();
     assert_eq!(
         indexed
@@ -834,8 +839,10 @@ fn cards_in(host: &Host, meta: &Meta, root: &str) -> Vec<String> {
 fn a_chunk_this_device_lacks_is_waited_for_and_read_when_it_arrives() {
     let (earlier, mut docs, meta, root, ids) = board();
     drop(earlier);
-    let cards = fill_bulk(&mut docs, &meta, &root, 3_000);
+    // A run full in the record's own chunk and two cards past it: the chunk above is the one
+    // this device lacks.
     let per_run = first_run();
+    let cards = fill_bulk(&mut docs, &meta, &root, per_run + 2);
     assert!(
         cards.len() > per_run,
         "the cards fill the record's own run and one above it"

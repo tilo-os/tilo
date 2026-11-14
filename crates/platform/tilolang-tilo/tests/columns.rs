@@ -846,30 +846,30 @@ fn inbox_page(ada: &Replica, meta: &Meta, mail: &ResourceRef) -> (Vec<String>, u
 
 #[test]
 fn a_filter_of_a_run_and_a_clock_conjunct_pages_at_the_first_page_and_lists_what_holds() {
-    // The workspace of 10k conversations: the inbox run, and the two conjuncts checked as its
-    // pages fill, cost the page read, not the workspace.
-    let (ada, meta, mail) = inbox_workspace(10_000);
+    // The workspace of four thousand conversations: the inbox run, and the two conjuncts checked
+    // as its pages fill, cost the page read, not the workspace.
+    let (ada, meta, mail) = inbox_workspace(4_000);
     let (items, checked) = inbox_page(&ada, &meta, &mail);
-    assert_eq!(items.len(), 40, "a first page of the 10k");
+    assert_eq!(items.len(), 40, "a first page of the 4,000");
     assert!(
         checked <= 60,
-        "filling the first page checked {checked} of 10,000"
+        "filling the first page checked {checked} of 4,000"
     );
-    // Every third conversation is muted (3,334) and every fifth snoozed (2,000), 667 of them
-    // both: 4,667 out of the inbox's 10,000, which leaves 5,333. The filter is a column like
+    // Every third conversation is muted (1,334) and every fifth snoozed (800), 267 of them
+    // both: 1,867 out of the inbox's 4,000, which leaves 2,133. The filter is a column like
     // any other, written at the clock it is asked at, so the listing is sized by its count:
     // it is that many, and a badge reads that without reading the workspace.
     let listing = inbox_listing(&ada, &meta, &mail);
-    assert_eq!(listing.len(), 5_333);
+    assert_eq!(listing.len(), 2_133);
     assert!(listing.len_is_exact(), "the list says how many it holds");
-    assert_eq!(listing.count(), 5_333);
+    assert_eq!(listing.count(), 2_133);
 }
 
 #[test]
 fn a_clock_filtered_count_is_exact_at_every_size() {
-    // The same inbox at 1k and at 10k, its count read from the filter's column: the
+    // The same inbox at 1k and at 4k, its count read from the filter's column: the
     // conversations neither muted (every third) nor snoozed (every fifth).
-    for n in [1_000usize, 10_000] {
+    for n in [1_000usize, 4_000] {
         let held = (0..n).filter(|i| i % 3 != 0 && i % 5 != 0).count();
         let (ada, meta, mail) = inbox_workspace(n);
         let listing = inbox_listing(&ada, &meta, &mail);

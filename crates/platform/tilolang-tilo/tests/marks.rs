@@ -5,6 +5,7 @@
 
 use automerge::AutoCommit;
 use tilolang_runtime::{Principal, ResourceRef, UiNode, Value, ViewEvent, ViewInstance};
+use tilolang_tilo::host::Host;
 
 use crate::fixtures::Replica;
 use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call};
@@ -843,16 +844,25 @@ fn a_day_aways_catch_up_marks_all_seen_at_once_and_undo_brings_them_back() {
     );
 }
 
-/// The header's mark reads what changed, not the workspace: at ten thousand items, three changes
+/// The header's mark reads what changed, not the workspace: at four thousand items, three changes
 /// cost what three changes cost at a thousand.
 #[test]
 fn the_headers_mark_reads_the_changes_not_the_items() {
-    fn away(n: usize) -> (ViewInstance, usize) {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
-        let compiled = tilolang_tilo::bench::compile(&dir).expect("the tasks package compiles");
-        let doc = tilolang_tilo::bench::seeded_record_by(&compiled, n, "ada")
+    fn away(compiled: &[tilolang::Compiled], n: usize) -> (ViewInstance, usize) {
+        let doc = tilolang_tilo::bench::seeded_record_by(compiled, n, "ada")
             .expect("the workspace seeds");
-        let (mut ada, _) = Replica::new("ada", doc, crate::tasks::PACKAGES);
+        // The packages the record was seeded from, loaded as a workspace loads them: from the
+        // compilation both sizes share, not compiled again per size.
+        let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
+        for package in compiled {
+            host.load_compiled(package).expect("the package loads");
+        }
+        let mut ada = Replica {
+            name: "ada".to_owned(),
+            doc,
+            host,
+            log: Vec::new(),
+        };
         let root = ada.host.root_of(crate::legibility::TASKS_APP).unwrap();
         let items = match ada.host.runtime().read(&root, "items").unwrap() {
             Value::List(items) => items,
@@ -871,14 +881,20 @@ fn the_headers_mark_reads_the_changes_not_the_items() {
         let view = ada.view(crate::legibility::TASKS_APP);
         (view, items.len())
     }
-    let (small, small_items) = away(1_000);
-    let (large, large_items) = away(10_000);
+    // Compiled once: the same package seeds the record at both sizes and runs its window.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
+    let compiled = tilolang_tilo::bench::compile(&dir).expect("the tasks package compiles");
+    // The larger workspace is seeded in seventeen actions to the thousand's four, and holds nine
+    // index pages of items to its two: longer than the sixteen versions a catch-up reads at a
+    // time, and over the index pages both already span.
+    let (small, small_items) = away(&compiled, 1_000);
+    let (large, large_items) = away(&compiled, 4_100);
     assert_eq!(small_items, 1_000);
-    assert_eq!(large_items, 10_000);
+    assert_eq!(large_items, 4_100);
     let (small, large) = (small.stats(), large.stats());
     assert_eq!(
         small.reads, large.reads,
-        "the header's reads at ten thousand items ({large:?}) are the reads at a thousand ({small:?})"
+        "the header's reads at four thousand items ({large:?}) are the reads at a thousand ({small:?})"
     );
 }
 
