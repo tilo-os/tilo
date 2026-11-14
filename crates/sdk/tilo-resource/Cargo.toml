@@ -15,7 +15,8 @@ description = "The Tilo resource layer: typed, hierarchical app resources."
 # document-generic history; `tilo-app` binds resources to views.
 
 [features]
-test-support = []
+# The store a replica without a window records into is the actions' own.
+test-support = ["tilo-actions/test-support"]
 # Dates and times of `chrono` as model values.
 chrono = ["dep:chrono"]
 
