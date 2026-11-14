@@ -148,7 +148,9 @@ impl SessionFabric {
 
     /// One of the person's devices proved itself on its session with this one. What it proves is
     /// the grant to tell it this device's fabric, so it is told at once: both sides announce on the
-    /// session's start and neither has to ask first.
+    /// session's start and neither has to ask first. Two devices can bring up a connection each and
+    /// keep one of them, so what either said on the other is lost: each asks the other for its
+    /// fabric again, and the answer comes whether or not anything changed.
     pub(crate) fn sibling(
         &self,
         peer: EndpointId,
@@ -159,6 +161,7 @@ impl SessionFabric {
             .lock_recover()
             .sibling(peer, certs, revocations);
         self.announce(false);
+        self.publish(Some(peer), PersonalFabricPayload::Request);
     }
 
     /// The session with one of the person's devices ended: it is no longer here, and what it said
