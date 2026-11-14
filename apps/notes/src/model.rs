@@ -295,7 +295,15 @@ fn project_bodies(
                     std::sync::Arc::clone(blocks)
                 }
                 _ => {
-                    let read = crate::actions::stored_blocks(page);
+                    let read = before
+                        .zip(previous.body_cursors.get(&meta.id).copied().flatten())
+                        .and_then(|(blocks, at)| changed_blocks(page, blocks, at))
+                        .unwrap_or_else(|| {
+                            crate::actions::stored_blocks(page)
+                                .into_iter()
+                                .map(std::sync::Arc::new)
+                                .collect()
+                        });
                     match before {
                         Some(blocks) if **blocks == *read => std::sync::Arc::clone(blocks),
                         _ => {
@@ -309,6 +317,22 @@ fn project_bodies(
         })
         .collect();
     (bodies, cursors, changed)
+}
+
+/// `blocks`, what `page` said when its body's history stood at `at`, with
+/// the paragraphs changed since read again and the others shared: `None`
+/// when what changed cannot be told and the body is read whole.
+fn changed_blocks(
+    page: &crate::notebook::Page,
+    blocks: &[std::sync::Arc<crate::actions::StoredBlock>],
+    at: ChangeCursor,
+) -> Option<Vec<std::sync::Arc<crate::actions::StoredBlock>>> {
+    let changed = page.blocks_changed_since(at, blocks.len())?;
+    let mut read = blocks.to_vec();
+    for (index, block) in changed {
+        *read.get_mut(index)? = std::sync::Arc::new(crate::actions::stored_block(block));
+    }
+    Some(read)
 }
 
 /// Whether `page`'s chain of parents comes back to itself.

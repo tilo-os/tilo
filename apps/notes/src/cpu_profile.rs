@@ -82,7 +82,7 @@ fn mounted_typing_observes_canonical_projection_scaling() {
                     .collect::<String>()
             });
             assert_eq!(text, "a".repeat(sample + 1), "real editor mutation");
-            for phase in ["surface_sync", "search_blocks"] {
+            for phase in ["surface_sync", "backlinks"] {
                 assert!(rows.iter().any(|row| row.phase == phase), "{phase}");
             }
             assert!(!frames.is_empty(), "actual frame-pass observations");

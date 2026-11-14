@@ -501,32 +501,34 @@ pub struct StoredBlock {
 }
 
 /// What every note says, by page. A note's blocks are shared between the
-/// workspaces that show the same body, so projecting a changed notebook
-/// copies only the notes that changed.
-pub type Bodies = HashMap<PageId, std::sync::Arc<[StoredBlock]>>;
+/// workspaces that show the same body, and each block between the bodies
+/// that hold it, so projecting a changed notebook copies only the blocks
+/// that changed.
+pub type Bodies = HashMap<PageId, std::sync::Arc<[std::sync::Arc<StoredBlock>]>>;
 
 /// Every block of `page` with its Notes formatting and page links, in order.
 #[must_use]
 pub fn stored_blocks(page: &Page) -> Vec<StoredBlock> {
-    page.blocks()
-        .into_iter()
-        .map(|block| {
-            let mut marks = block
-                .marks
-                .iter()
-                .map(InlineMarkSpan::from_ui)
-                .collect::<Vec<_>>();
-            marks.sort_by_key(|span| (span.start, span.end, span.rank()));
-            StoredBlock {
-                id: block.id,
-                kind: block.kind,
-                text: block.text,
-                marks,
-                nesting: block.nesting,
-                code_group: block.code_group,
-            }
-        })
-        .collect()
+    page.blocks().into_iter().map(stored_block).collect()
+}
+
+/// `block` with its Notes formatting and page links.
+#[must_use]
+pub fn stored_block(block: BlockContent) -> StoredBlock {
+    let mut marks = block
+        .marks
+        .iter()
+        .map(InlineMarkSpan::from_ui)
+        .collect::<Vec<_>>();
+    marks.sort_by_key(|span| (span.start, span.end, span.rank()));
+    StoredBlock {
+        id: block.id,
+        kind: block.kind,
+        text: block.text,
+        marks,
+        nesting: block.nesting,
+        code_group: block.code_group,
+    }
 }
 
 /// Note `page` as Markdown, as the notebook holds it.

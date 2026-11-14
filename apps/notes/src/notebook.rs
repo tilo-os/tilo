@@ -167,13 +167,38 @@ impl Page {
             .body()
             .all()
             .filter_map(|id| state.block(id))
-            .map(|view| {
-                #[cfg(test)]
-                tests::MATERIALIZED_BLOCKS.with(|count| count.set(count.get() + 1));
-                tilo_rich_text::content_of(view)
-            })
+            .map(materialize)
             .collect()
     }
+
+    /// The paragraphs changed since the body's history stood at `cursor`,
+    /// each with where it is in the body of `len` paragraphs: `None` when
+    /// that cannot be told (the body was reordered, grew or shrank, or was
+    /// read whole again), and every paragraph must be read.
+    #[must_use]
+    pub fn blocks_changed_since(
+        &self,
+        cursor: tilo_document::ChangeCursor,
+        len: usize,
+    ) -> Option<Vec<(usize, BlockContent)>> {
+        let state = self.body.state()?;
+        let order = state.body();
+        if order.len() != len {
+            return None;
+        }
+        state
+            .changed_since(cursor)?
+            .iter()
+            .map(|id| Some((order.position(id)?, materialize(state.block(id)?))))
+            .collect()
+    }
+}
+
+/// A paragraph as the editor shows it.
+fn materialize(view: &std::rc::Rc<tilo_doc::snapshot::BlockView>) -> BlockContent {
+    #[cfg(test)]
+    tests::MATERIALIZED_BLOCKS.with(|count| count.set(count.get() + 1));
+    tilo_rich_text::content_of(view)
 }
 
 /// The id a note is stored under.

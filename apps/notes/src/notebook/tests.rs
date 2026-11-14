@@ -1148,3 +1148,57 @@ fn every_notebook_action_publishes_what_it_reads() {
         ui::tilo_resource::schema_check::unstated_arguments::<Notebook>(&notebook.state().unwrap());
     assert!(unstated.is_empty(), "{unstated:#?}");
 }
+
+/// Blocks read again to show a keystroke typed into the middle of a note of
+/// `paragraphs` paragraphs.
+fn read_for_a_keystroke(paragraphs: usize) -> usize {
+    use std::fmt::Write as _;
+    let mut notebook = Replica::<Notebook>::new();
+    let page = crate::PageId::new_v4();
+    notebook
+        .apply_action(&crate::actions::create_page_action(page, None, "Long"))
+        .unwrap();
+    let mut body = String::new();
+    for index in 0..paragraphs {
+        write!(body, "Paragraph {index} of a long note.\n\n").unwrap();
+    }
+    let blocks = crate::MainPanel::seed_blocks(&body, |_| None);
+    notebook
+        .apply(Invoke::apply(&crate::actions::write_body_action(page, &blocks)).unwrap())
+        .unwrap();
+    let shown = crate::Workspace::of(
+        &notebook.live().unwrap().clone(),
+        &crate::Workspace::default(),
+    );
+    let middle = paragraphs / 2;
+    let splice = tilo_document::RichTextAction::SpliceText {
+        region: RegionKind::Body,
+        block: shown.bodies[&page][middle].id.clone(),
+        at: 0,
+        del: 0,
+        ins: "a".into(),
+    };
+    notebook
+        .apply(Invoke::apply(&crate::actions::edit_body_action(page, &splice)).unwrap())
+        .unwrap();
+    MATERIALIZED_BLOCKS.with(|count| count.set(0));
+    let typed = crate::Workspace::of(&notebook.live().unwrap().clone(), &shown);
+    let read = MATERIALIZED_BLOCKS.with(std::cell::Cell::get);
+    assert_eq!(typed.changed, vec![page]);
+    assert!(typed.bodies[&page][middle].text.starts_with("aParagraph"));
+    for at in [0, paragraphs - 1] {
+        assert!(
+            std::sync::Arc::ptr_eq(&typed.bodies[&page][at], &shown.bodies[&page][at]),
+            "a paragraph the keystroke left alone is shared, not copied"
+        );
+    }
+    read
+}
+
+#[test]
+fn a_keystroke_reads_the_paragraph_it_changed_not_the_note() {
+    let short = read_for_a_keystroke(60);
+    let long = read_for_a_keystroke(600);
+    assert_eq!(short, 1, "the typed paragraph alone is read again");
+    assert_eq!(short, long);
+}

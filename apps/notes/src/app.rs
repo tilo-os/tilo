@@ -82,13 +82,6 @@ fn canonical_image_store(
 
 type ImportedAssets = Vec<(String, Vec<u8>)>;
 
-/// One block of a note as the window's index keeps it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SearchBlock {
-    pub(crate) id: String,
-    pub(crate) text: String,
-}
-
 /// The notebook `doc` holds.
 fn read_notebook(doc: &AutoCommit) -> Result<crate::Notebook, String> {
     <crate::Notebook as ui::tilo_resource::Resource>::read(doc).map_err(|error| error.to_string())
@@ -493,14 +486,11 @@ pub struct NotesApp {
     pending_block_reveal: Option<(PageId, String)>,
     /// Validated against current text again after the editor binds.
     pending_block_range: Option<(PageId, String, String, usize, usize)>,
-    /// Search/resource snapshot keyed by each block's durable Automerge Text
-    /// object id, refreshed from the collaborative document on every sync.
-    search_blocks: HashMap<PageId, Vec<SearchBlock>>,
-    /// Notes whose bodies changed since the index above was built.
+    /// Notes whose bodies changed since the backlink index was built.
     unindexed: std::collections::HashSet<PageId>,
     /// Local index of incoming `[[Page]]` marks, rebuilt for the notes whose
-    /// bodies changed, alongside the full-text catalogue; drawing a selected
-    /// note therefore never scans a large notebook.
+    /// bodies changed; drawing a selected note therefore never scans a large
+    /// notebook.
     backlink_index: HashMap<PageId, Vec<(PageId, u32)>>,
     prepared_local_focus: Option<crate::local_view::PreparedFocus>,
     // The first measured width resolves the saved drawer and Sidebar intent once.
@@ -837,7 +827,6 @@ impl NotesApp {
             history_target: None,
             pending_block_reveal: None,
             pending_block_range: None,
-            search_blocks: HashMap::new(),
             unindexed: std::collections::HashSet::new(),
             backlink_index: HashMap::new(),
             prepared_local_focus: None,
@@ -1102,7 +1091,7 @@ impl NotesApp {
     }
 
     /// Present only the selected page's incoming-link row. The complete index
-    /// is built from canonical native marks in `refresh_search_blocks`; this
+    /// is built from canonical native marks in `refresh_backlinks`; this
     /// projection is local presentation, while the page references and open
     /// operation remain canonical resources/actions.
     fn selected_backlink_chips(&self) -> Vec<BacklinkChip> {
@@ -1898,7 +1887,6 @@ impl NotesApp {
             // every note is indexed again; what is gone leaves the index now.
             let known: std::collections::HashSet<PageId> =
                 workspace.pages().iter().map(|page| page.id).collect();
-            self.search_blocks.retain(|page, _| known.contains(page));
             self.backlink_index.retain(|target, sources| {
                 sources.retain(|(source, _)| known.contains(source));
                 known.contains(target) && !sources.is_empty()
@@ -1909,9 +1897,9 @@ impl NotesApp {
         self.workspace = workspace;
     }
 
-    fn refresh_search_blocks(&mut self) {
+    fn refresh_backlinks(&mut self) {
         #[cfg(test)]
-        let _profile = ui::tilo_resource::profiling::Phase::start("search_blocks");
+        let _profile = ui::tilo_resource::profiling::Phase::start("backlinks");
         if self.unindexed.is_empty() {
             return;
         }
@@ -1930,7 +1918,7 @@ impl NotesApp {
             if !known_pages.contains(&source) {
                 continue;
             }
-            self.index_search_page(
+            self.index_backlinks(
                 source,
                 bodies.get(&source).map(AsRef::as_ref).unwrap_or_default(),
                 &known_pages,
@@ -1938,26 +1926,20 @@ impl NotesApp {
         }
     }
 
-    fn index_search_page(
+    /// Replace `source`'s outgoing links in the backlink index with those
+    /// its blocks `stored` hold, preserving every other source's and
+    /// dropping targets whose last link disappeared.
+    fn index_backlinks(
         &mut self,
         source: PageId,
-        stored: &[crate::actions::StoredBlock],
+        stored: &[std::sync::Arc<crate::actions::StoredBlock>],
         known_pages: &std::collections::HashSet<PageId>,
     ) {
-        // Replace this source's outgoing contributions, preserving all other
-        // sources and dropping targets whose last contribution disappeared.
-        if self.search_blocks.contains_key(&source) {
-            self.backlink_index.retain(|_, sources| {
-                sources.retain(|(page, _)| *page != source);
-                !sources.is_empty()
-            });
-        }
-        let mut blocks = Vec::with_capacity(stored.len());
+        self.backlink_index.retain(|_, sources| {
+            sources.retain(|(page, _)| *page != source);
+            !sources.is_empty()
+        });
         for block in stored {
-            blocks.push(SearchBlock {
-                id: block.id.clone(),
-                text: block.text.clone(),
-            });
             for mark in &block.marks {
                 let actions::InlineMark::Link { page } = &mark.mark else {
                     continue;
@@ -1979,7 +1961,6 @@ impl NotesApp {
                 }
             }
         }
-        self.search_blocks.insert(source, blocks);
     }
 
     /// Canonical synchronization is a projection, never an attempt to replay
@@ -2773,7 +2754,8 @@ impl NotesApp {
             .pending_block_range
             .as_ref()
             .is_some_and(|(page, block, text, _, _)| {
-                self.search_blocks
+                self.workspace
+                    .bodies
                     .get(page)
                     .and_then(|blocks| blocks.iter().find(|current| current.id == *block))
                     .is_none_or(|current| current.text != *text)
@@ -2785,7 +2767,8 @@ impl NotesApp {
         if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
             && self.bound_page == Some(*page)
             && let Some(index) = self
-                .search_blocks
+                .workspace
+                .bodies
                 .get(page)
                 .and_then(|blocks| blocks.iter().position(|block| block.id == *block_id))
             && self.main.reveal_block(index)
@@ -2793,7 +2776,8 @@ impl NotesApp {
             self.pending_block_reveal = None;
             if let Some((page, block, text, start, end)) = self.pending_block_range.take()
                 && let Some(current) = self
-                    .search_blocks
+                    .workspace
+                    .bodies
                     .get(&page)
                     .and_then(|blocks| blocks.get(index))
                 && current.id == block
@@ -3022,7 +3006,7 @@ impl Widget for NotesApp {
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
         self.drain_transclusion_opens();
-        self.refresh_search_blocks();
+        self.refresh_backlinks();
         self.main.set_backlinks(self.selected_backlink_chips());
         self.finish_block_reveal();
         refresh_outline(self);
@@ -4229,7 +4213,7 @@ mod tests {
     #[test]
     fn a_block_edit_before_binding_discards_the_pending_range() {
         let (mut app, mut state, _tmp, page) = app_seeded_into_doc();
-        let block = app.search_blocks[&page][0].id.clone();
+        let block = app.workspace.bodies[&page][0].id.clone();
         let shown = shown(&state.doc);
         app.open_block_range(&shown, page, block.clone(), (0, 1, "Chars"))
             .unwrap();
@@ -4526,13 +4510,13 @@ mod tests {
             assert_ne!(edited.0, counted.0, "the revision moved with the edit");
         }
 
-        eprintln!("phase an_unchanged_notebook_skips_search_index_work");
+        eprintln!("phase an_unchanged_notebook_skips_backlink_index_work");
         {
-            let (mut app, _state, _tmp, _welcome) = app_seeded_into_doc();
-            app.search_blocks.clear();
+            let (mut app, _state, _tmp, welcome) = app_seeded_into_doc();
+            app.backlink_index.insert(welcome, Vec::new());
             assert!(app.unindexed.is_empty());
-            app.refresh_search_blocks();
-            assert!(app.search_blocks.is_empty());
+            app.refresh_backlinks();
+            assert_eq!(app.backlink_index.get(&welcome), Some(&Vec::new()));
         }
     }
 
@@ -4561,9 +4545,9 @@ mod tests {
     }
 
     fn assert_search_snapshot_matches_canonical(app: &NotesApp, doc: &AutoCommit) {
-        assert_eq!(app.search_blocks.len(), app.workspace.pages().len());
+        assert_eq!(app.workspace.bodies.len(), app.workspace.pages().len());
         for page in app.workspace.pages() {
-            let actual = app.search_blocks[&page.id]
+            let actual = app.workspace.bodies[&page.id]
                 .iter()
                 .map(|block| (block.id.clone(), block.text.clone()))
                 .collect::<Vec<_>>();
@@ -4646,7 +4630,7 @@ mod tests {
         state.doc.merge_incoming(&mut peer).unwrap();
         app.frame(&mut state.doc, &state.root);
         assert_search_snapshot_matches_canonical(&app, &state.doc);
-        assert!(!app.search_blocks.contains_key(&target));
+        assert!(!app.workspace.bodies.contains_key(&target));
         assert!(!app.backlink_index.contains_key(&target));
         assert_eq!(
             crate::read::page_stored_blocks(&state.doc, source),
@@ -4671,7 +4655,7 @@ mod tests {
             );
             app.frame(&mut state.doc, &state.root);
             assert_ne!(source, target);
-            let source_block = app.search_blocks[&source][0].id.clone();
+            let source_block = app.workspace.bodies[&source][0].id.clone();
             let action = crate::actions::set_mark_action(
                 source,
                 &source_block,
@@ -4740,7 +4724,7 @@ mod tests {
                 app.main.editor().blocks().len() > 1,
                 "welcome has several blocks"
             );
-            let block_id = app.search_blocks[&welcome][1].id.clone();
+            let block_id = app.workspace.bodies[&welcome][1].id.clone();
             let shown = shown(&state.doc);
             assert!(
                 app.open_block(&shown, welcome, Some("no-such-block".into()))
@@ -4762,7 +4746,7 @@ mod tests {
         eprintln!("phase canonical_inline_marks_rehydrate_after_a_collaborative_rebind");
         {
             let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-            let block = app.search_blocks[&welcome][0].id.clone();
+            let block = app.workspace.bodies[&welcome][0].id.clone();
             let original = app
                 .main
                 .editor()
@@ -4875,17 +4859,17 @@ mod tests {
             use tilo_actions::Action as _;
 
             let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-            let original = app.search_blocks[&welcome][1].clone();
+            let original = app.workspace.bodies[&welcome][1].clone();
             let block = original.id.clone();
 
             // A collaborator inserts an identical-text block before the target.
             // Content and index cannot distinguish them; block identity can.
-            let last = app.search_blocks[&welcome].last().unwrap().id.clone();
+            let last = app.workspace.bodies[&welcome].last().unwrap().id.clone();
             crate::actions::edit_body_action(
                 welcome,
                 tilo_document::RichTextAction::InsertParagraph {
                     after: last.clone(),
-                    text: original.text,
+                    text: original.text.clone(),
                 },
             )
             .apply(&mut state.doc)

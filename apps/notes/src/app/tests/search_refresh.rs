@@ -71,7 +71,7 @@ impl Fixture {
 fn a_peer_edit_reindexes_only_the_note_it_changed() {
     let mut f = Fixture::new();
     let [source, target, untouched] = f.pages;
-    let old_untouched = f.app.search_blocks[&untouched].clone();
+    let old_untouched = f.app.workspace.bodies[&untouched].clone();
     f.peer(&f.splice(source, "Peer é😀 "));
     f.app.adopt_resource_state(f.reader.state());
     assert_eq!(
@@ -81,12 +81,12 @@ fn a_peer_edit_reindexes_only_the_note_it_changed() {
     );
     f.present();
     assert!(
-        f.app.search_blocks[&source][0]
+        f.app.workspace.bodies[&source][0]
             .text
             .starts_with("Peer é😀 ")
     );
-    assert_eq!(f.app.search_blocks[&untouched], old_untouched);
-    let block = f.app.search_blocks[&source][0].id.clone();
+    assert_eq!(f.app.workspace.bodies[&untouched], old_untouched);
+    let block = f.app.workspace.bodies[&source][0].id.clone();
     f.peer(&actions::set_mark_action(
         source,
         &block,
@@ -107,10 +107,10 @@ fn a_peer_edit_reindexes_only_the_note_it_changed() {
         f.app.backlink_index.get(&untouched),
         Some(&vec![(source, 1)])
     );
-    assert_eq!(f.app.search_blocks[&untouched], old_untouched);
+    assert_eq!(f.app.workspace.bodies[&untouched], old_untouched);
     f.peer(&actions::delete_page_action(untouched));
     f.present();
-    assert!(!f.app.search_blocks.contains_key(&untouched));
+    assert!(!f.app.workspace.bodies.contains_key(&untouched));
     assert!(!f.app.backlink_index.contains_key(&untouched));
 }
 
@@ -123,8 +123,16 @@ fn changes_presented_together_are_all_indexed() {
     f.app.adopt_resource_state(f.reader.state());
     f.peer(&f.splice(target, "Second "));
     f.present();
-    assert!(f.app.search_blocks[&source][0].text.starts_with("First "));
-    assert!(f.app.search_blocks[&target][0].text.starts_with("Second "));
+    assert!(
+        f.app.workspace.bodies[&source][0]
+            .text
+            .starts_with("First ")
+    );
+    assert!(
+        f.app.workspace.bodies[&target][0]
+            .text
+            .starts_with("Second ")
+    );
 }
 
 /// A notebook whose notes were replaced wholesale indexes from nothing.
@@ -132,7 +140,7 @@ fn changes_presented_together_are_all_indexed() {
 fn replacing_the_notes_drops_their_search_and_backlink_rows() {
     let mut f = Fixture::new();
     let [source, target, _] = f.pages;
-    let block = f.app.search_blocks[&source][0].id.clone();
+    let block = f.app.workspace.bodies[&source][0].id.clone();
     f.peer(&actions::set_mark_action(
         source,
         &block,
@@ -149,6 +157,6 @@ fn replacing_the_notes_drops_their_search_and_backlink_rows() {
     f.state.doc.merge_incoming(&mut peer).unwrap();
     assert!(f.reader.sync(&f.state.doc).unwrap());
     f.present();
-    assert!(f.app.search_blocks.is_empty());
+    assert!(f.app.workspace.bodies.is_empty());
     assert!(f.app.backlink_index.is_empty());
 }
