@@ -387,11 +387,12 @@ fn undo(place: &Place, named: &str) -> Result<Value> {
             RunInHistory::Absent => {}
         }
     }
-    let brought = journal.runs.get(&run).is_some_and(|keys| !keys.is_empty());
-    if !named && brought {
+    // A run History does not know is not taken back, whatever this computer kept of it: what it
+    // brought stays in the workspace, so this computer goes on counting it.
+    if !named {
         bail!(
-            "History has no change of run {run}, though it brought items: they stay, and this \
-             computer still counts them"
+            "History has no change of run {run} in {}: nothing was taken back",
+            records_of(&source).join(", ")
         );
     }
     let forgotten = journal.runs.remove(&run).unwrap_or_default();
