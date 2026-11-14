@@ -369,9 +369,9 @@ mod release_seed {
             serde_json::json!({"role": "editor", "invitee_name": INVITED_ADDRESS}),
         );
         let addressed_invitation = hex::decode(
-            addressed["invite"]
+            addressed["invitation"]
                 .as_str()
-                .expect("the address invitation's id"),
+                .expect("the signed invitation the address was mailed at"),
         )
         .unwrap();
         owner.close();
