@@ -63,6 +63,40 @@ pub struct ExecCtx {
     pub suggested_by: Option<Principal>,
 }
 
+impl ExecCtx {
+    /// What `run` asks a person about `aref`, for this invocation.
+    fn asking(&self, run: &RunId, aref: &ActionRef) -> Suggestion {
+        Suggestion {
+            run: run.clone(),
+            action: aref.action.clone(),
+            args: aref.args.clone(),
+            invoker: self.invoker.clone(),
+            chain: self.chain.clone(),
+        }
+    }
+
+    /// The journal of a run of `aref` for this invocation, belonging to `invocation`, before it
+    /// did anything.
+    fn journal(&self, aref: &ActionRef, invocation: RunId) -> Journal {
+        Journal {
+            action: Some(aref.action.clone()),
+            args: aref.args.clone(),
+            invoker: self.invoker.clone(),
+            chain: self.chain.clone(),
+            from: self.from.clone(),
+            at: self.at.clone(),
+            suggested_by: self.suggested_by.as_ref().map(|p| p.0.clone()),
+            entries: Vec::new(),
+            pending: None,
+            finished: false,
+            approved_by: self.approved_by.clone(),
+            effects: 0,
+            parent: None,
+            invocation,
+        }
+    }
+}
+
 /// How an action ended.
 #[derive(Debug)]
 pub enum ActionOutcome {
@@ -662,34 +696,7 @@ impl Core {
                 Ok(InvokeOutcome::Done(Value::Unit))
             }
             Decision::Deny => Ok(InvokeOutcome::Denied),
-            Decision::Ask => {
-                let run = self.store.borrow_mut().fresh_id("s");
-                let suggestion = Suggestion {
-                    run: run.clone(),
-                    action: aref.action.clone(),
-                    args: aref.args.clone(),
-                    invoker: ctx.invoker.clone(),
-                    chain: ctx.chain.clone(),
-                };
-                let journal = Journal {
-                    action: None,
-                    args: aref.args.clone(),
-                    invoker: ctx.invoker,
-                    chain: ctx.chain,
-                    from: ctx.from,
-                    at: ctx.at,
-                    suggested_by: ctx.suggested_by.map(|who| who.0),
-                    entries: Vec::new(),
-                    pending: Some(Pending::Ask(suggestion.clone())),
-                    finished: false,
-                    approved_by: None,
-                    effects: 0,
-                    parent: None,
-                    invocation: run.clone(),
-                };
-                self.store.borrow_mut().save_journal(&run, &journal)?;
-                Ok(InvokeOutcome::Suggested(suggestion))
-            }
+            Decision::Ask => self.wait_on_person(&ctx, aref),
         }
     }
 
@@ -704,22 +711,7 @@ impl Core {
     fn many_run(&self, ctx: &ExecCtx, first: &ActionRef) -> RunState {
         let run = self.run_id(ctx);
         RunState {
-            journal: Journal {
-                action: Some(first.action.clone()),
-                args: first.args.clone(),
-                invoker: ctx.invoker.clone(),
-                chain: ctx.chain.clone(),
-                from: ctx.from.clone(),
-                at: ctx.at.clone(),
-                suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
-                entries: Vec::new(),
-                pending: None,
-                finished: false,
-                approved_by: ctx.approved_by.clone(),
-                effects: 0,
-                parent: None,
-                invocation: run.clone(),
-            },
+            journal: ctx.journal(first, run.clone()),
             run,
             cursor: 0,
             invoker: ctx.invoker.clone(),
@@ -838,41 +830,18 @@ impl Core {
         invoker: &Principal,
         aref: &ActionRef,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_from(invoker, aref, aref.from.as_ref())
+        self.invoke_direct_as(None, invoker, aref, aref.from.as_ref())
     }
 
-    /// [`Core::invoke_direct`] of an invocation made from the resource `from`: what the
+    /// [`Core::invoke_direct`] as the run `identity` when every replica can name it the same
+    /// way (a trigger, run for a record at an instant, on whichever device comes to run it), so
+    /// what it queues and writes is held once; and made from the resource `from`, what the
     /// resources it creates were made from, recorded in the change it makes.
     ///
     /// # Errors
     ///
     /// As [`Core::invoke_direct`].
-    pub fn invoke_direct_from(
-        &self,
-        invoker: &Principal,
-        aref: &ActionRef,
-        from: Option<&ResourceRef>,
-    ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as(None, invoker, aref, from)
-    }
-
-    /// [`Core::invoke_direct_from`] as the run `run`: an invocation whose run every replica can
-    /// name the same way (a trigger, run for a record at an instant, on whichever device comes
-    /// to run it) runs as that run on each of them, so what it queues and writes is held once.
-    ///
-    /// # Errors
-    ///
-    /// As [`Core::invoke_direct`].
-    pub fn invoke_direct_named(
-        &self,
-        run: &RunId,
-        invoker: &Principal,
-        aref: &ActionRef,
-    ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as(Some(run), invoker, aref, aref.from.as_ref())
-    }
-
-    fn invoke_direct_as(
+    pub(crate) fn invoke_direct_as(
         &self,
         identity: Option<&RunId>,
         invoker: &Principal,
@@ -914,35 +883,26 @@ impl Core {
                 ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
             },
             Decision::Deny => Ok(InvokeOutcome::Denied),
-            Decision::Ask => {
-                let run = self.store.borrow_mut().fresh_id("s");
-                let suggestion = Suggestion {
-                    run: run.clone(),
-                    action: aref.action.clone(),
-                    args: aref.args.clone(),
-                    invoker: ctx.invoker.clone(),
-                    chain: ctx.chain.clone(),
-                };
-                let journal = Journal {
-                    action: None,
-                    args: aref.args.clone(),
-                    invoker: ctx.invoker,
-                    chain: ctx.chain,
-                    from: ctx.from,
-                    at: ctx.at,
-                    suggested_by: ctx.suggested_by.map(|who| who.0),
-                    entries: Vec::new(),
-                    pending: Some(Pending::Ask(suggestion.clone())),
-                    finished: false,
-                    approved_by: None,
-                    effects: 0,
-                    parent: None,
-                    invocation: run.clone(),
-                };
-                self.store.borrow_mut().save_journal(&run, &journal)?;
-                Ok(InvokeOutcome::Suggested(suggestion))
-            }
+            Decision::Ask => self.wait_on_person(&ctx, aref),
         }
+    }
+
+    /// `aref`, which the authority asks a person about before it runs, as a run of its own that
+    /// waits on their answer.
+    fn wait_on_person(
+        &self,
+        ctx: &ExecCtx,
+        aref: &ActionRef,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let run = self.store.borrow_mut().fresh_id("s");
+        let suggestion = ctx.asking(&run, aref);
+        let journal = Journal {
+            action: None,
+            pending: Some(Pending::Ask(suggestion.clone())),
+            ..ctx.journal(aref, run.clone())
+        };
+        self.store.borrow_mut().save_journal(&run, &journal)?;
+        Ok(InvokeOutcome::Suggested(suggestion))
     }
 
     /// Whether `action` is an action of an app this runtime does not run: one the host invokes
@@ -1092,22 +1052,7 @@ impl Core {
     /// for a person. Nothing is written until it does.
     fn start_ctx(&self, ctx: &ExecCtx, aref: &ActionRef) -> Result<RunOutcome, RuntimeError> {
         let run = self.run_id(ctx);
-        let journal = Journal {
-            action: Some(aref.action.clone()),
-            args: aref.args.clone(),
-            invoker: ctx.invoker.clone(),
-            chain: ctx.chain.clone(),
-            from: ctx.from.clone(),
-            at: ctx.at.clone(),
-            suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
-            entries: Vec::new(),
-            pending: None,
-            finished: false,
-            approved_by: ctx.approved_by.clone(),
-            effects: 0,
-            parent: None,
-            invocation: run.clone(),
-        };
+        let journal = ctx.journal(aref, run.clone());
         self.drive_chain(&run, journal)
     }
 
@@ -1441,31 +1386,25 @@ impl Core {
         // A verb the resource's app publishes without a package loading here: the same door,
         // sent as a step of the run that asked for it.
         if let Some(invocation) = self.published_invocation(&aref) {
-            let invocation = invocation?;
-            match self.invoke_published(&invocation) {
-                Ok(InvokeOutcome::Done(result)) => {
-                    journal.entries.push(JournalEntry::Invoked {
-                        action: aref.action.clone(),
-                        result,
-                    });
-                    Ok(None)
+            let entry = match self.invoke_published(&invocation?) {
+                Ok(InvokeOutcome::Done(result)) => JournalEntry::Invoked {
+                    action: aref.action.clone(),
+                    result,
+                },
+                Ok(InvokeOutcome::Denied) => JournalEntry::Denied {
+                    action: step.action.clone(),
+                    reason: "denied by authority".to_owned(),
+                },
+                Ok(InvokeOutcome::Suggested(_)) => {
+                    return Ok(Some(Self::ask(run, journal, &ctx, &aref)));
                 }
-                Ok(InvokeOutcome::Denied) => {
-                    journal.entries.push(JournalEntry::Denied {
-                        action: step.action.clone(),
-                        reason: "denied by authority".to_owned(),
-                    });
-                    Ok(None)
-                }
-                Ok(InvokeOutcome::Suggested(_)) => Ok(Some(Self::ask(run, journal, &ctx, &aref))),
-                Err(error) => {
-                    journal.entries.push(JournalEntry::Failed {
-                        action: aref.action.clone(),
-                        reason: error.to_string(),
-                    });
-                    Ok(None)
-                }
-            }
+                Err(error) => JournalEntry::Failed {
+                    action: aref.action.clone(),
+                    reason: error.to_string(),
+                },
+            };
+            journal.entries.push(entry);
+            Ok(None)
         // An action of an app this runtime does not run goes to that app; a host that holds
         // no records sends every invocation on to the app that does.
         } else if self.invoker.borrow().is_some()
@@ -1501,13 +1440,7 @@ impl Core {
 
     /// Record that `run` waits for a person's answer to `aref`, and hand the suggestion out.
     fn ask(run: &RunId, journal: &mut Journal, ctx: &ExecCtx, aref: &ActionRef) -> Suggestion {
-        let suggestion = Suggestion {
-            run: run.clone(),
-            action: aref.action.clone(),
-            args: aref.args.clone(),
-            invoker: ctx.invoker.clone(),
-            chain: ctx.chain.clone(),
-        };
+        let suggestion = ctx.asking(run, aref);
         journal.pending = Some(Pending::Ask(suggestion.clone()));
         suggestion
     }
@@ -1527,20 +1460,8 @@ impl Core {
         // call does is held under the keys the first device used.
         let child = format!("{run}/{}", journal.entries.len());
         let child_journal = Journal {
-            action: Some(aref.action.clone()),
-            args: aref.args.clone(),
-            invoker: ctx.invoker.clone(),
-            chain: ctx.chain.clone(),
-            from: ctx.from.clone(),
-            at: ctx.at.clone(),
-            suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
-            entries: Vec::new(),
-            pending: None,
-            finished: false,
-            approved_by: ctx.approved_by.clone(),
-            effects: 0,
             parent: Some(run.clone()),
-            invocation: journal.invocation.clone(),
+            ..ctx.journal(aref, journal.invocation.clone())
         };
         match self.drive(&child, child_journal)? {
             RunEnd::Done { value, .. } => {

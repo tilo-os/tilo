@@ -59,13 +59,29 @@ pub struct InvocationRecord {
     pub state: String,
     pub result: String,
     pub run: String,
-    /// The resource the action is about: the one it names first, which a proposal is attached
-    /// to while it waits. `None` for an action that names no resource.
+    /// The resource a suggestion waits on: the one its action names first. `None` for an
+    /// action that names no resource, and for one that waits on nobody.
     pub subject: Option<ResourceRef>,
     /// Whether this is a proposal a person decides, rather than one the authority asked about
     /// as the action was applied: accepting one runs it as the accepting person, attributed to
     /// whoever proposed it.
     pub proposed: bool,
+}
+
+impl InvocationRecord {
+    /// The action's arguments, as it is invoked with them.
+    ///
+    /// # Errors
+    ///
+    /// `BadArgs` when the record's arguments do not read as a list of values.
+    pub fn arguments(&self) -> Result<Vec<Value>, RuntimeError> {
+        let bad = |why: String| RuntimeError::BadArgs(format!("the invocation's arguments: {why}"));
+        let json = serde_json::from_str(&self.args).map_err(|e| bad(e.to_string()))?;
+        match from_json(&json).map_err(bad)? {
+            Value::List(args) => Ok(args),
+            _ => Err(bad("not a list".to_owned())),
+        }
+    }
 }
 
 fn field_id(name: &str) -> String {
@@ -159,13 +175,8 @@ impl Core {
         aref: &ActionRef,
     ) -> Result<ResourceRef, RuntimeError> {
         let aref = &self.completed(aref)?;
-        let subject = aref.args.iter().find_map(|v| match v {
-            Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
-            _ => None,
-        });
         let mut record = self.record_of(proposer, Some(aref), "suggested", "", "");
         record.proposed = true;
-        record.subject = subject;
         let identity = ModuleHash::principal(&proposer.0);
         self.create_invocation(&record, &note(proposer, &identity, "$suggest", None))
     }
@@ -287,14 +298,11 @@ impl Core {
         // A proposal is recorded as it stands: the record the message card draws is the one a
         // person decides, so accepting it there applies it.
         if block.block.suggested {
-            return match self.propose(invoker, &aref) {
-                Ok(inv) => match self.read_invocation(&inv) {
-                    Ok(record) => (record, Some(inv)),
-                    Err(e) => (
-                        self.record_of(invoker, Some(&aref), "failed", &e.to_string(), ""),
-                        None,
-                    ),
-                },
+            let proposed = self
+                .propose(invoker, &aref)
+                .and_then(|inv| Ok((self.read_invocation(&inv)?, inv)));
+            return match proposed {
+                Ok((record, inv)) => (record, Some(inv)),
                 Err(e) => (
                     self.record_of(invoker, Some(&aref), "failed", &e.to_string(), ""),
                     None,
@@ -348,7 +356,14 @@ impl Core {
             state: state.to_owned(),
             result: result.to_owned(),
             run: run.to_owned(),
-            subject: None,
+            // A suggestion waits on the resource its action names first, where a person finds
+            // it and decides it, whether someone proposed it or the authority asked about it.
+            subject: aref.filter(|_| state == "suggested").and_then(|a| {
+                a.args.iter().find_map(|v| match v {
+                    Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                    _ => None,
+                })
+            }),
             proposed: false,
         }
     }
@@ -594,11 +609,7 @@ impl Core {
                 Err(e) => return Err(e),
             }
         }
-        let parsed: serde_json::Value = serde_json::from_str(&rec.args)
-            .map_err(|e| RuntimeError::BadArgs(format!("the invocation's arguments: {e}")))?;
-        let Value::List(args) = from_json(&parsed).map_err(RuntimeError::BadArgs)? else {
-            return Err(RuntimeError::BadArgs("the invocation's arguments".into()));
-        };
+        let args = rec.arguments()?;
         // A proposal runs as the person accepting it, and its change says who proposed it. A
         // suggestion the authority asked about runs as the person who asked, for them to allow.
         let (invoker, suggested_by) = if rec.proposed {

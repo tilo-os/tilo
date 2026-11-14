@@ -593,9 +593,9 @@ impl Runtime {
             .resolve_invocation(invocation, approver, resolution)
     }
 
-    /// The proposals waiting on `resource`: each the `Invocation` it waits in and what it says,
-    /// with the person or agent who proposed it. Empty when nobody proposed anything that is
-    /// still undecided.
+    /// The suggestions waiting on `resource`: each the `Invocation` it waits in and what it
+    /// says, with the person or agent who proposed or asked it. Empty when nothing that waits on
+    /// it is still undecided.
     ///
     /// # Errors
     ///
@@ -730,8 +730,9 @@ impl Runtime {
         principal: &Principal,
         action: impl Into<ActionRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        let action = action.into();
         self.core
-            .invoke_direct_named(run, principal, &action.into())
+            .invoke_direct_as(Some(run), principal, &action, action.from.as_ref())
     }
 
     /// [`Runtime::invoke_action`] made from the resource `from`: what the resources the action
@@ -749,7 +750,7 @@ impl Runtime {
         from: &crate::value::ResourceRef,
     ) -> Result<InvokeOutcome, RuntimeError> {
         self.core
-            .invoke_direct_from(principal, &action.into(), Some(from))
+            .invoke_direct_as(None, principal, &action.into(), Some(from))
     }
 
     /// The arguments of an invocation of `action` with those left out (`None`) given their

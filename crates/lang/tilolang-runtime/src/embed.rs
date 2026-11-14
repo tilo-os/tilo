@@ -32,7 +32,7 @@ use crate::ids::{ModuleHash, Principal};
 use crate::project::{ProjectOptions, project};
 use crate::registry::Package;
 use crate::render::{Acc, Build, ViewTarget, scope};
-use crate::value::{ResourceRef, Value, from_json};
+use crate::value::{ResourceRef, Value};
 use crate::view::UiNode;
 use crate::written::diagnostic_line;
 
@@ -378,11 +378,8 @@ impl Core {
                 "can_resolve",
                 Value::Bool(self.may_decide(cx.offer.viewer, &rec.action)),
             ));
-            let args = serde_json::from_str::<serde_json::Value>(&rec.args)
-                .ok()
-                .and_then(|j| from_json(&j).ok());
-            if let Some(Value::List(args)) = args
-                && let (_, _, Some((view, view_args))) = self.action_facts(&rec.action, &args)
+            if let (_, _, Some((view, view_args))) =
+                self.action_facts(&rec.action, &rec.arguments().unwrap_or_default())
             {
                 let target = self.view_target(&view)?;
                 let nested = self.render_at(&target, &view_args, cx.offer.deeper(), None)?;
@@ -394,9 +391,9 @@ impl Core {
         Ok(node("invocation", card_key, &props, children))
     }
 
-    /// The proposals waiting on `of`: invocation records a person proposed that nobody has
-    /// accepted or dismissed yet, with what each says, in the order the store keeps what links
-    /// to `of`. Reading them reads what links to `of`, so a view that draws them runs again when
+    /// The suggestions waiting on `of`: invocation records nobody has accepted or dismissed
+    /// yet — what someone proposed, and what the authority asked a person about as an action
+    /// ran — with what each says, in the order the store keeps what links to `of`. Reading them reads what links to `of`, so a view that draws them runs again when
     /// one arrives.
     pub(crate) fn proposals_of(
         &self,
@@ -411,17 +408,9 @@ impl Core {
             .map(|link| link.of)
             .filter(|at| at.ty == INVOCATION_TYPE)
             .filter_map(|at| match self.read_invocation(&at) {
-                Ok(rec) if rec.proposed && rec.state == "suggested" => Some((at, rec)),
+                Ok(rec) if rec.state == "suggested" => Some((at, rec)),
                 _ => None,
             })
-            .collect()
-    }
-
-    /// The proposals waiting on `of`, as the resources that hold them.
-    pub(crate) fn pending_proposals(&self, of: &ResourceRef) -> Vec<ResourceRef> {
-        self.proposals_of(of)
-            .into_iter()
-            .map(|(inv, _)| inv)
             .collect()
     }
 
@@ -431,20 +420,12 @@ impl Core {
         &self,
         cx: &Build<'_>,
         key: &str,
-        inv: &ResourceRef,
+        (inv, rec): &(ResourceRef, crate::InvocationRecord),
         acc: &mut Acc,
     ) -> Result<UiNode, RuntimeError> {
-        let rec = self.read_invocation(inv)?;
         let mut card = self.invocation_card(cx, key, Some(inv), acc)?;
         card.props.insert("proposed".to_owned(), Value::Bool(true));
-        let args = serde_json::from_str::<serde_json::Value>(&rec.args)
-            .ok()
-            .and_then(|json| from_json(&json).ok())
-            .and_then(|value| match value {
-                Value::List(args) => Some(args),
-                _ => None,
-            })
-            .unwrap_or_default();
+        let args = rec.arguments().unwrap_or_default();
         // When the action declares no view of what it would do, its arguments say it: the
         // words a change to them reads with, and each value as its type shows it (a day in
         // the person's format), so a sentence carries no identifier and no stored text.
@@ -477,9 +458,9 @@ impl Core {
             return;
         };
         let mut cards = Vec::new();
-        for (i, inv) in self.pending_proposals(&of.target).iter().enumerate() {
+        for (i, waiting) in self.proposals_of(&of.target).iter().enumerate() {
             let key = format!("{}/{i}", node.key);
-            if let Ok(card) = self.proposal_card(cx, &key, inv, acc) {
+            if let Ok(card) = self.proposal_card(cx, &key, waiting, acc) {
                 cards.push(card);
             }
         }

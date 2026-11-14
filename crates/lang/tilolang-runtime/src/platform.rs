@@ -709,20 +709,9 @@ impl Core {
     pub(crate) fn proposal_note(&self, r: i32) -> HResult<Value> {
         let target = self.ref_arg(r)?;
         let mut says: Vec<String> = Vec::new();
-        for inv in self.pending_proposals(&target.target) {
-            let Ok(rec) = self.read_invocation(&inv) else {
-                continue;
-            };
-            let args = serde_json::from_str::<serde_json::Value>(&rec.args)
-                .ok()
-                .and_then(|json| crate::value::from_json(&json).ok())
-                .and_then(|value| match value {
-                    Value::List(args) => Some(args),
-                    _ => None,
-                })
-                .unwrap_or_default();
+        for (_, rec) in self.proposals_of(&target.target) {
             let mut lines: Vec<String> = self
-                .proposal_lines(&rec.action, &args)
+                .proposal_lines(&rec.action, &rec.arguments().unwrap_or_default())
                 .into_iter()
                 .map(|line| match line.value {
                     Some(value) => format!("{} {}", line.words, self.said(&value)),

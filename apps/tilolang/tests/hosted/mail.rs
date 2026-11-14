@@ -1400,3 +1400,96 @@ fn a_reply_with_nothing_said_sends_nothing() {
     }
     assert!(servers.smtp.sent().is_empty(), "and none goes");
 }
+
+// USER REQUIREMENT: each account signs what it writes with the person's own signature, above
+// what a reply quotes, as every mail client does.
+#[test]
+fn a_new_message_and_an_answer_carry_the_accounts_signature() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let account = session.accounts().remove(0);
+    assert_eq!(
+        session.text(&account, "signature"),
+        "",
+        "an account starts without a signature"
+    );
+    session.call(
+        "set_signature",
+        &account,
+        &json!({ "signature": "Sam\nhttps://rivera.example" }),
+    );
+    assert_eq!(
+        session.text(&account, "signature"),
+        "Sam\nhttps://rivera.example"
+    );
+
+    // A new message starts with it.
+    let draft = session.made("new_message", &account, &json!({}));
+    assert_eq!(
+        session.text(&draft, "body"),
+        "Sam\nhttps://rivera.example",
+        "a new message carries the signature"
+    );
+
+    // An answer puts it over the quotation it answers.
+    session.hold_for(0);
+    let plan = session.thread("Launch plan");
+    let reply = session.made("reply", &plan, &json!({}));
+    let body = session.text(&reply, "body");
+    assert!(
+        body.starts_with("Sam\nhttps://rivera.example\n\nOn "),
+        "the signature comes before the quotation: {body:?}"
+    );
+
+    // A message typed in the conversation goes with it, over the quotation too.
+    session.call("answer", &plan, &json!({ "body": "Thursday suits me." }));
+    session.until("the server to take the answer", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    let said = sent
+        .find("Thursday suits me.")
+        .expect("it says what was typed");
+    let signature = sent
+        .find("https://rivera.example")
+        .expect("it carries the signature");
+    let quotation = sent.find("On 2026-").expect("it quotes what it answers");
+    assert!(
+        said < signature && signature < quotation,
+        "the answer, its signature, then what it quotes: {sent}"
+    );
+}
+
+// USER REQUIREMENT: replying from the conversation itself, with what was typed, quoting what it
+// answers — the answer daily mail is, without going through a separate draft window.
+#[test]
+fn a_reply_typed_in_the_conversation_goes_out_once_quoting_the_message_it_answers() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    session.hold_for(0);
+    let plan = session.thread("Launch plan");
+    session.call("answer", &plan, &json!({ "body": "Thursday suits me." }));
+    session.until("the server to take the answer", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("Thursday suits me."), "{sent}");
+    assert!(
+        sent.contains("Ada Lovelace") && sent.contains("Agreed on the twelfth."),
+        "it quotes the message it answers: {sent}"
+    );
+    assert!(
+        sent.contains("Subject: Re: Launch plan"),
+        "it answers under the subject: {sent}"
+    );
+    assert!(
+        sent.contains("ada@analytical.example"),
+        "it goes to whoever wrote the newest: {sent}"
+    );
+    for _ in 0..20 {
+        session.settle();
+    }
+    assert_eq!(servers.smtp.sent().len(), 1, "it goes once");
+}
