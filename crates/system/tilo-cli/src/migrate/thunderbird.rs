@@ -6,10 +6,19 @@
 //! (or some of its folders), and the address books and calendars only if they choose them.
 //!
 //! What comes over lands through the apps' own actions as the agent's run: each message in the
-//! workspace's Mail, in its folder with its read state and its conversation (Mail's
-//! `deliver-message`, which knows a message it already holds), each contact and event in
+//! workspace's Mail as it was sent, its MIME bytes whole (HTML, attachments, headers), in its
+//! folder with its read state and its conversation (Mail's `deliver-message`, which keeps it
+//! under the id its `Message-ID` names and knows a message it already holds), each contact and
+//! event in
 //! Contacts and Calendar under an id the source decides, so running it again names the same
 //! records and adds nothing.
+//!
+//! A chosen account itself joins the person's accounts: its server settings and the other names
+//! and addresses it sends as, through Mail's `add-account`, which their tab puts to them before
+//! it runs. The password Thunderbird saved for it goes from Thunderbird's store straight into
+//! this computer's account vault, where Tilo's Mail here signs in with it; it is never printed,
+//! answered or sent to the workspace. An account Thunderbird saved no password for asks the
+//! person for it when Mail first signs in.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -27,6 +36,8 @@ pub const SOURCE: &str = "thunderbird";
 const DELIVER: &str = "mail/mail.mailbox#deliver-message";
 const ADD_CONTACTS: &str = "contacts/contacts.book#add-contacts";
 const NEW_EVENT: &str = "calendar/calendar.calendar#new-event";
+/// Where an email account joins the person's accounts (Mail's, which the person allows).
+const ADD_ACCOUNT: &str = "mail#add-account";
 
 /// How many contacts one action carries.
 const CONTACTS_PER_ACTION: usize = 100;
@@ -174,11 +185,28 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
         .into_iter()
         .map(|item| item.key.as_str())
         .collect();
+    let mut saved: Option<Vec<migration_sources::thunderbird::SavedLogin>> = None;
     for account in &profile.accounts {
         let key = account_key(account);
         if !chosen.contains(key.as_str()) {
             continue;
         }
+        if saved.is_none() {
+            saved = Some(
+                match migration_sources::thunderbird::saved_logins(home, &profile.source_id) {
+                    Ok(logins) => logins,
+                    Err(migration_sources::thunderbird::LoginsError::NoneSaved) => Vec::new(),
+                    Err(why) => {
+                        (lander.progress)(&format!(
+                            "{why}: the accounts wait for the person to sign them in, in Settings"
+                        ));
+                        Vec::new()
+                    }
+                },
+            );
+        }
+        let logins = saved.as_deref().unwrap_or_default();
+        land_account(account, logins, lander)?;
         let address = account
             .email
             .clone()
@@ -230,6 +258,105 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
     Ok(())
 }
 
+/// The settings of `account` (its servers, and the other names and addresses it sends as) and
+/// the password Thunderbird saved for it, into the person's accounts. An account with no server
+/// settings Mail can use (a local or POP one) keeps only its mail.
+fn land_account(
+    account: &migration_sources::thunderbird::ThunderbirdAccount,
+    logins: &[migration_sources::thunderbird::SavedLogin],
+    lander: &mut Lander<'_>,
+) -> Result<()> {
+    let Some((arguments, password)) = account_arguments(account, logins) else {
+        return Ok(());
+    };
+    lander.open("mail");
+    let vault = lander.vault.clone();
+    lander.once(
+        &format!("account:{}", account_key(account)),
+        "accounts",
+        |workspace, run| {
+            let added = match workspace.act(run, ADD_ACCOUNT, arguments.clone()) {
+                Ok(_) => Landed::One,
+                Err(error) if format!("{error:#}").contains("already") => Landed::Already,
+                Err(error) => return Err(error),
+            };
+            if let Some(password) = password {
+                seal(&vault, text(&arguments, "email"), password)?;
+            }
+            Ok(added)
+        },
+    )
+}
+
+/// Keep `password` for the account `email` in this computer's account vault: where Tilo's Mail
+/// on this computer signs in with it. Nothing prints or answers it.
+fn seal(root: &Path, email: &str, password: &str) -> Result<()> {
+    migration_sources::vault::seal(
+        root,
+        &accounts::AccountId::new(email),
+        &accounts::Secret::password(password.to_owned()),
+    )
+    .map_err(|error| anyhow!("{email}: {error}"))
+}
+
+/// What Mail's `add-account` takes for `account`, and the password Thunderbird saved for it:
+/// `None` for an account Mail cannot reach (local folders, POP) or whose settings do not check.
+fn account_arguments<'a>(
+    account: &migration_sources::thunderbird::ThunderbirdAccount,
+    logins: &'a [migration_sources::thunderbird::SavedLogin],
+) -> Option<(Value, Option<&'a str>)> {
+    use accounts::email::AuthMethod;
+    let candidate = account.settings.as_ref()?.candidate.as_ref()?;
+    let config = candidate
+        .reviewed_config(AuthMethod::Password)
+        .or_else(|_| candidate.reviewed_config(AuthMethod::OAuth))
+        .ok()?;
+    let password = (config.auth == AuthMethod::Password)
+        .then(|| {
+            migration_sources::thunderbird::password_for(
+                logins,
+                "imap",
+                &config.imap_host,
+                &config.username,
+            )
+        })
+        .flatten();
+    let identities: Vec<String> = account
+        .identities
+        .iter()
+        .filter(|identity| !identity.email.eq_ignore_ascii_case(&config.email))
+        .map(|identity| {
+            if identity.name.trim().is_empty() {
+                identity.email.clone()
+            } else {
+                format!("{} <{}>", identity.name.trim(), identity.email)
+            }
+        })
+        .collect();
+    let name = account
+        .identities
+        .iter()
+        .find(|identity| identity.email.eq_ignore_ascii_case(&config.email))
+        .map(|identity| identity.name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(account.display_name.as_str());
+    let mut arguments = json!({
+        "display_name": name,
+        "email": config.email,
+        "username": config.username,
+        "imap_host": config.imap_host,
+        "imap_port": config.imap_port,
+        "smtp_host": config.smtp_host,
+        "smtp_port": config.smtp_port,
+    });
+    if let Some(fields) = arguments.as_object_mut()
+        && !identities.is_empty()
+    {
+        fields.insert("identities".into(), json!(identities));
+    }
+    Some((arguments, password.map(|password| password.as_str())))
+}
+
 /// Each message of `folder`, delivered to the workspace's Mail as the account received it.
 fn land_folder(
     home: &Path,
@@ -275,6 +402,16 @@ fn land_message(
         &format!("message:{address}:{name}"),
         "messages",
         |workspace, run| {
+            // The message as it was sent travels whole, so its HTML, attachments and headers
+            // are what Mail keeps; the words beside it are for whoever reads the record alone.
+            let original = workspace.put(&message.bytes)?;
+            let mut delivery = delivery;
+            if let Some(fields) = delivery.as_object_mut() {
+                fields.insert("original".into(), json!(original));
+                if let Some(id) = &message.message_id {
+                    fields.insert("message_id".into(), json!(id));
+                }
+            }
             match workspace.act(run, DELIVER, delivery) {
                 Ok(_) => Ok(Landed::One),
                 // Mail holds it already: an earlier run, or another computer's, brought it.

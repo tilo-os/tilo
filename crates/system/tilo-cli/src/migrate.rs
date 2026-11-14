@@ -12,6 +12,7 @@
 //! tilo migrate choose thunderbird ada@work.example
 //! tilo migrate start thunderbird               bring the chosen things over
 //! tilo migrate status / stop
+//! tilo migrate undo <run>                      take a run back
 //! ```
 //!
 //! What comes over is the agent's run in the workspace (see [`workspace`]): one History entry
@@ -42,23 +43,27 @@ use workspace::{Run, Workspace};
 
 #[derive(Subcommand)]
 pub enum MigrateCmd {
-    /// What can come over: Thunderbird on this computer, and Outline and Linear.
+    /// What can come over: Thunderbird on this computer, Outline, Linear and a mail account on
+    /// its server.
     Sources,
-    /// Connect Outline or Linear. Its key is typed at a hidden prompt (or read from
-    /// --key-file) and kept in this computer's vault; it is never printed.
+    /// Connect Outline, Linear or a mail account (IMAP). Its key or password is typed at a hidden
+    /// prompt (or read from --key-file) and kept in this computer's vault; it is never printed.
     Connect {
-        /// outline or linear.
+        /// outline, linear or mail.
         service: String,
         /// The service's address (Outline's site; Linear's API when not its own).
         #[arg(long)]
         url: Option<String>,
-        /// A file holding the key, which the person made.
+        /// A mail account's address (`tilo migrate connect mail --login you@example.com`).
+        #[arg(long)]
+        login: Option<String>,
+        /// A file holding the key or password, which the person made.
         #[arg(long, value_name = "FILE")]
         key_file: Option<PathBuf>,
     },
     /// List what a source holds, with counts, and keep the review for `choose` and `start`.
     Review {
-        /// thunderbird, outline or linear.
+        /// thunderbird, outline, linear or mail.
         source: String,
         /// The Thunderbird profile, when this computer has several.
         #[arg(long)]
@@ -66,7 +71,7 @@ pub enum MigrateCmd {
     },
     /// Choose what of a reviewed source comes over (or, with --leave-out, what stays).
     Choose {
-        /// thunderbird, outline or linear.
+        /// thunderbird, outline, linear or mail.
         source: String,
         /// Items by the key the review lists: an account's address, a folder, `contacts/…`,
         /// `calendar/…`, an Outline collection, a Linear team.
@@ -81,7 +86,7 @@ pub enum MigrateCmd {
     },
     /// Bring the chosen things over, as one run in the workspace; resumes a stopped run.
     Start {
-        /// thunderbird, outline or linear.
+        /// thunderbird, outline, linear or mail.
         source: String,
     },
     /// How each source's migration stands.
@@ -91,8 +96,14 @@ pub enum MigrateCmd {
     },
     /// Stop a running migration after the item it is on; `start` resumes it.
     Stop {
-        /// thunderbird, outline or linear.
+        /// thunderbird, outline, linear or mail.
         source: String,
+    },
+    /// Take a run back: everything it brought leaves the workspace, as undoing its History
+    /// entry does, and a later `start` brings it again.
+    Undo {
+        /// The run, by the id `status` names (`migrate-linear-…`), or a source for its last run.
+        run: String,
     },
 }
 
@@ -105,8 +116,15 @@ pub fn run(cmd: MigrateCmd, json: bool) -> Result<ExitCode> {
         MigrateCmd::Connect {
             service,
             url,
+            login,
             key_file,
-        } => services::connect(&service, url.as_deref(), key_file.as_deref())?,
+        } => services::connect(
+            &place,
+            &source_name(&service)?,
+            url.as_deref(),
+            login.as_deref(),
+            key_file.as_deref(),
+        )?,
         MigrateCmd::Review { source, profile } => {
             let review = review(&place, &home, &source, profile.as_deref())?;
             place.keep_review(&review)?;
@@ -131,6 +149,7 @@ pub fn run(cmd: MigrateCmd, json: bool) -> Result<ExitCode> {
         }
         MigrateCmd::Start { source } => start(&place, &home, &source_name(&source)?, json)?,
         MigrateCmd::Status { source } => status(&place, source.as_deref())?,
+        MigrateCmd::Undo { run } => undo(&place, &run)?,
         MigrateCmd::Stop { source } => {
             let source = source_name(&source)?;
             let journal = place.journal(&source)?;
@@ -175,9 +194,9 @@ fn home() -> Result<PathBuf> {
 fn source_name(source: &str) -> Result<String> {
     let source = source.trim().to_ascii_lowercase();
     match source.as_str() {
-        thunderbird::SOURCE | services::OUTLINE | services::LINEAR => Ok(source),
+        thunderbird::SOURCE | services::OUTLINE | services::LINEAR | services::MAIL => Ok(source),
         other => bail!(
-            "{other:?} is not a source; the sources are thunderbird, outline and linear (`tilo migrate sources`)"
+            "{other:?} is not a source; the sources are thunderbird, outline, linear and mail (`tilo migrate sources`)"
         ),
     }
 }
@@ -303,6 +322,8 @@ fn start(place: &Place, home: &Path, source: &str, json: bool) -> Result<Value> 
             place,
             source,
             progress: &mut progress,
+            vault: migration_sources::service::config_root()
+                .ok_or_else(|| anyhow!("this account has no Tilo config directory"))?,
         };
         if source == thunderbird::SOURCE {
             thunderbird::land(home, &review, &mut lander)
@@ -322,7 +343,138 @@ fn start(place: &Place, home: &Path, source: &str, json: bool) -> Result<Value> 
         .filter(|error| !error.is::<Stopped>())
         .map(|error| format!("{error:#}"));
     place.keep_journal(source, &journal)?;
-    Ok(status_of(source, &review, &journal))
+    let landed = in_workspace(place, source, &journal)?;
+    Ok(status_of(source, &review, &journal, landed))
+}
+
+/// How many of a source's items the workspace has: Thunderbird's journal counts them, a service
+/// source's own journal does.
+fn in_workspace(place: &Place, source: &str, journal: &Journal) -> Result<usize> {
+    if source == thunderbird::SOURCE {
+        return Ok(journal.landed.len());
+    }
+    services::landed(place, source)
+}
+
+/// The records a source's runs change, where their History entries are taken back.
+fn records_of(source: &str) -> &'static [&'static str] {
+    match source {
+        thunderbird::SOURCE => &[
+            "mail/mail.mailbox",
+            "contacts/contacts.book",
+            "calendar/calendar.calendar",
+        ],
+        services::OUTLINE => &["notes/notes.notebook"],
+        services::LINEAR => &["tasks/tasks.tracker"],
+        _ => &[],
+    }
+}
+
+/// How many times one record is asked to take a run back: a run's changes are one step unless
+/// someone else's fell between them.
+const UNDO_ROUNDS: usize = 16;
+
+/// `tilo migrate undo`: take the run `named` back in every record it changed.
+fn undo(place: &Place, named: &str) -> Result<Value> {
+    let (source, run) = run_named(place, named)?;
+    let mut held = workspace::Held::connect()?;
+    let mut taken = Vec::new();
+    for record in records_of(&source) {
+        let undone = undo_in(&mut held, record, &run)?;
+        if undone > 0 {
+            taken.push(json!({"record": record, "steps": undone}));
+        }
+    }
+    let mut journal = place.journal(&source)?;
+    let forgotten = journal.runs.remove(&run).unwrap_or_default();
+    for key in &forgotten {
+        journal.landed.remove(key);
+    }
+    if source != thunderbird::SOURCE {
+        services::forget(place, &source, &run, &forgotten)?;
+    }
+    if journal.run_id.as_deref() == Some(run.as_str()) {
+        journal.state = RunState::Reviewed;
+        journal.brought.clear();
+        journal.already_there = 0;
+    }
+    place.keep_journal(&source, &journal)?;
+    let said = if taken.is_empty() {
+        format!("run {run} has nothing left to take back in the workspace")
+    } else {
+        format!(
+            "run {run} is taken back: what it brought left the workspace; `tilo migrate start {source}` brings it again"
+        )
+    };
+    Ok(json!({"source": source, "run_id": run, "undone": taken, "said": said}))
+}
+
+/// The source and run id `named` names: a run id a journal knows, or a source's last run.
+fn run_named(place: &Place, named: &str) -> Result<(String, String)> {
+    if let Ok(source) = source_name(named) {
+        let journal = place.journal(&source)?;
+        let run = journal
+            .run_id
+            .ok_or_else(|| anyhow!("{source} has no run to take back"))?;
+        return Ok((source, run));
+    }
+    for source in place.sources() {
+        let journal = place.journal(&source)?;
+        if journal.run_id.as_deref() == Some(named) || journal.runs.contains_key(named) {
+            return Ok((source, named.to_owned()));
+        }
+    }
+    bail!("no run {named:?}: `tilo migrate status` names each source's last run")
+}
+
+/// Take the run `run` back in `record`: its own `undo` of the step each of the run's changes
+/// still in effect is part of, newest first. How many steps it took back.
+fn undo_in(workspace: &mut dyn Workspace, record: &str, run: &str) -> Result<usize> {
+    let mut undone = 0_usize;
+    for _ in 0..UNDO_ROUNDS {
+        let answer = match workspace.ask(&format!("{record}#history"), json!({"last": 200})) {
+            Ok(answer) => answer,
+            // An app the run never opened keeps no history of it.
+            Err(_) if undone == 0 => return Ok(0),
+            Err(error) => return Err(error),
+        };
+        let Some(change) = newest_of_run(&answer, run) else {
+            return Ok(undone);
+        };
+        workspace
+            .ask(&format!("{record}#undo"), json!({"step": change}))
+            .with_context(|| format!("{record} did not take the run back"))?;
+        undone = undone.saturating_add(1);
+    }
+    Ok(undone)
+}
+
+/// The newest change of `run` still in effect in a record's `history` answer. An entry names
+/// its run only where a run begins; the entries after it are that run's until another is named.
+fn newest_of_run(history: &str, run: &str) -> Option<String> {
+    let body = history.get(history.find('{')?..)?;
+    let value: Value = serde_json::from_str(body).ok()?;
+    let entries = ["versions", "history"]
+        .iter()
+        .find_map(|key| value.get(*key))
+        .and_then(Value::as_array)?;
+    let mut current: Option<&str> = None;
+    let mut newest = None;
+    for entry in entries {
+        if let Some(named) = entry.get("run_id").and_then(Value::as_str) {
+            current = Some(named);
+        } else if entry.get("run").is_some_and(Value::is_null) {
+            current = None;
+        }
+        let undone = entry.get("undone").and_then(Value::as_bool) == Some(true);
+        if current == Some(run) && !undone {
+            newest = entry
+                .get("change")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+    }
+    newest
 }
 
 fn status(place: &Place, source: Option<&str>) -> Result<Value> {
@@ -340,7 +492,8 @@ fn status(place: &Place, source: Option<&str>) -> Result<Value> {
             // Its process ended without saying how: what it brought is kept, start resumes.
             journal.state = RunState::Stopped;
         }
-        all.push(status_of(&source, &review, &journal));
+        let landed = in_workspace(place, &source, &journal)?;
+        all.push(status_of(&source, &review, &journal, landed));
     }
     Ok(match source {
         Some(_) => all.into_iter().next().unwrap_or(Value::Null),
@@ -348,7 +501,8 @@ fn status(place: &Place, source: Option<&str>) -> Result<Value> {
     })
 }
 
-fn status_of(source: &str, review: &Review, journal: &Journal) -> Value {
+/// How `source`'s migration stands; `landed` is how many of its items the workspace has.
+fn status_of(source: &str, review: &Review, journal: &Journal, landed: usize) -> Value {
     let next = match journal.state {
         RunState::Reviewed | RunState::Stopped | RunState::Failed => {
             Some(format!("tilo migrate start {source}"))
@@ -364,7 +518,7 @@ fn status_of(source: &str, review: &Review, journal: &Journal) -> Value {
         "chosen": review.chosen().iter().map(|item| item.key.as_str()).collect::<Vec<_>>(),
         "brought": journal.brought,
         "already_there": journal.already_there,
-        "in_workspace": journal.landed.len(),
+        "in_workspace": landed,
         "failure": journal.failure,
         "next": next,
     })
@@ -413,6 +567,8 @@ pub struct Lander<'a> {
     place: &'a Place,
     source: &'a str,
     progress: &'a mut dyn FnMut(&str),
+    /// The account vault passwords a run reads go to: this computer's.
+    vault: std::path::PathBuf,
 }
 
 impl Lander<'_> {
@@ -510,6 +666,12 @@ impl Lander<'_> {
         kind: &str,
         count: usize,
     ) -> Result<()> {
+        let keys: Vec<String> = keys.into_iter().collect();
+        self.journal
+            .runs
+            .entry(self.run.id.clone())
+            .or_default()
+            .extend(keys.iter().cloned());
         self.journal.landed.extend(keys);
         let line = (count > 0).then(|| {
             let total = self.journal.brought.entry(kind.to_owned()).or_default();
@@ -539,6 +701,20 @@ impl Lander<'_> {
     pub fn count(&mut self, kind: &str, count: usize, already_there: usize) -> Result<()> {
         self.journal.already_there = self.journal.already_there.saturating_add(already_there);
         self.landed(std::iter::empty(), kind, count)
+    }
+
+    /// Note that this run brought `key` of a source that keeps its own journal, so taking the
+    /// run back forgets it there too.
+    ///
+    /// # Errors
+    /// The journal could not be kept.
+    pub fn note(&mut self, key: &str) -> Result<()> {
+        self.journal
+            .runs
+            .entry(self.run.id.clone())
+            .or_default()
+            .insert(key.to_owned());
+        self.place.keep_journal(self.source, self.journal)
     }
 
     /// Whether the run was asked to stop.

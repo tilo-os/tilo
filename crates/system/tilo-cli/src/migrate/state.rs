@@ -147,6 +147,10 @@ pub struct Journal {
     pub already_there: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+    /// What each run brought, by its id: the keys of what it landed, so `undo` forgets
+    /// exactly those once the workspace took the run back.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub runs: std::collections::BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Where one workspace's migrations are kept on this computer.

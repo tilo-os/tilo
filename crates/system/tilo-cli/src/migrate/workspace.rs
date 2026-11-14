@@ -31,6 +31,12 @@ pub trait Workspace {
     /// The workspace refused it or could not be reached.
     fn act(&mut self, run: &Run, action: &str, args: Value) -> Result<String>;
 
+    /// Run `action` with `args` outside any run: a read, or taking a run back.
+    ///
+    /// # Errors
+    /// The workspace refused it or could not be reached.
+    fn ask(&mut self, action: &str, args: Value) -> Result<String>;
+
     /// Keep `bytes` in the workspace's content; the `tilo.content:` reference actions name them
     /// by.
     ///
@@ -200,6 +206,22 @@ impl Workspace for Held {
         }
         // Anything but `ok` is the workspace saying why it did not run it (an app not running, a
         // path it does not have).
+        if !answer.starts_with("ok") {
+            bail!("{action}: {answer}");
+        }
+        Ok(answer)
+    }
+
+    fn ask(&mut self, action: &str, args: Value) -> Result<String> {
+        let wait = u64::try_from(ACTION_WAIT.as_millis()).unwrap_or(u64::MAX);
+        let answer = self.tool(
+            "tilo_do",
+            &json!({"path": action, "args": args, "wait_ms": wait}),
+            None,
+        )?;
+        if let Some(why) = answer.strip_prefix("failed:") {
+            bail!("{action}: {}", why.trim());
+        }
         if !answer.starts_with("ok") {
             bail!("{action}: {answer}");
         }

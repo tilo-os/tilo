@@ -24,6 +24,11 @@ impl Workspace for Recorded {
         Ok("ok".into())
     }
 
+    fn ask(&mut self, action: &str, args: Value) -> Result<String> {
+        self.actions.push((String::new(), action.to_owned(), args));
+        Ok("ok".into())
+    }
+
     fn put(&mut self, bytes: &[u8]) -> Result<String> {
         self.puts.push(bytes.to_vec());
         Ok(format!("tilo.content:{}", blake3::hash(bytes).to_hex()))
@@ -60,6 +65,7 @@ fn run_once(home: &Path, place: &Place, workspace: &mut Recorded) -> Result<Jour
             place,
             source: thunderbird::SOURCE,
             progress: &mut progress,
+            vault: place.path("vault", ""),
         };
         thunderbird::land(home, &review, &mut lander)
     };
@@ -157,9 +163,23 @@ fn one_thunderbird_account_of_two_comes_over_once() {
             .all(|message| !message.to_string().contains("ada.home@example.org")),
         "nothing of the home account's mail is read into the workspace"
     );
+    // Each message travels as it was sent, its bytes kept as content the delivery names.
+    assert_eq!(
+        workspace.puts.len(),
+        4,
+        "each message's bytes are kept whole"
+    );
     assert!(
-        workspace.puts.is_empty(),
-        "a message's words travel in its action"
+        delivered.iter().all(|message| message["original"]
+            .as_str()
+            .is_some_and(|original| original.starts_with("tilo.content:"))),
+        "{delivered:#?}"
+    );
+    assert!(
+        delivered
+            .iter()
+            .all(|message| message["message_id"].as_str().is_some()),
+        "a message keeps its own Message-ID"
     );
     assert_eq!(workspace.of("mail#open").len(), 1, "Mail is started once");
     // Contacts and calendars were not chosen.
@@ -173,6 +193,32 @@ fn one_thunderbird_account_of_two_comes_over_once() {
             .of("calendar/calendar.calendar#new-event")
             .is_empty()
     );
+    // The account joins the person's accounts with its servers, the other address it sends
+    // as and the password Thunderbird saved; the home account does not.
+    let added = workspace.of("mail#add-account");
+    assert_eq!(added.len(), 1, "{added:#?}");
+    assert_eq!(added[0]["email"], "ada@example.com");
+    assert_eq!(added[0]["imap_host"], "imap.example.com");
+    assert_eq!(added[0]["smtp_host"], "smtp.example.com");
+    assert!(
+        !added[0]
+            .to_string()
+            .contains(migration_sources::thunderbird::fixture::WORK_PASSWORD),
+        "the password never travels to the workspace"
+    );
+    assert!(
+        added[0].get("identities").is_none(),
+        "the work account sends as itself only"
+    );
+    // Its saved password went to the vault, under the account.
+    let vault = accounts::SecretVault::open_read_only_in(&place.path("vault", ""));
+    assert_eq!(
+        vault
+            .get(&accounts::AccountId::new("ada@example.com"))
+            .map(|secret| secret.password),
+        Some(migration_sources::thunderbird::fixture::WORK_PASSWORD.to_owned())
+    );
+    assert_eq!(journal.brought.get("accounts"), Some(&1));
     // Every action is a step of the one run.
     assert!(workspace.actions.iter().all(|(run, _, _)| run == "run-1"));
 
@@ -182,7 +228,10 @@ fn one_thunderbird_account_of_two_comes_over_once() {
     assert!(again.actions.is_empty(), "{:?}", again.actions);
     assert!(again.puts.is_empty());
     assert!(journal.brought.is_empty());
-    assert_eq!(journal.already_there, 4);
+    assert_eq!(
+        journal.already_there, 5,
+        "its four messages and the account"
+    );
 }
 
 #[test]
@@ -246,4 +295,25 @@ fn a_stopped_run_resumes_where_it_stopped() {
             .iter()
             .all(|message| message.to_string().contains("ada.home@example.org"))
     );
+}
+
+#[test]
+fn a_runs_newest_change_in_effect_is_found_in_a_records_history() {
+    let history = r#"ok {"versions": [
+        {"change": "a1", "run": "From Linear", "run_id": "migrate-linear-1"},
+        {"change": "a2"},
+        {"change": "b1", "run": null},
+        {"change": "c1", "run": "From Linear", "run_id": "migrate-linear-2"},
+        {"change": "c2", "undone": true}
+    ]}"#;
+    assert_eq!(
+        super::newest_of_run(history, "migrate-linear-1").as_deref(),
+        Some("a2")
+    );
+    assert_eq!(
+        super::newest_of_run(history, "migrate-linear-2").as_deref(),
+        Some("c1"),
+        "a change undone already is not taken back again"
+    );
+    assert_eq!(super::newest_of_run(history, "migrate-linear-3"), None);
 }

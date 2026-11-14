@@ -99,6 +99,8 @@ unicode-normalization = "0.1.25"
 # `tilo migrate`: the migration sources the Tilo OS installer reads (Thunderbird, Outline,
 # Linear), brought into the workspace from this computer.
 migration-sources = { path = "../../platform/migration-sources" }
+# An email account's settings as Mail keeps them, for the person's accounts.
+accounts = { path = "../accounts" }
 blake3.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
