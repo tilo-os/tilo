@@ -538,7 +538,8 @@ mod tests {
     #[test]
     fn cleartext_admitted_before_the_channel_required_encryption_stays_admitted() {
         use std::sync::Arc;
-        let route = CrdtRoute::record("so.tilo.chat", "workspace-1", "");
+        // A workspace by the id it is known by: the gate is registered under it.
+        let route = CrdtRoute::record("so.tilo.chat", "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b", "");
         let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
         let op = SignedOp::new_unsigned(
             DocumentMutation::Incremental(b"general".to_vec())

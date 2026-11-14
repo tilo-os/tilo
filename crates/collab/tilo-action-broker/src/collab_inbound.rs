@@ -303,9 +303,12 @@ mod tests {
     use super::*;
     use collab_types::{document_artifact_id, document_attestation_id};
 
+    /// The workspace every fixture writes in, by the id a workspace is known by.
+    const WORKSPACE: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
+
     /// An editor of the workspace the ops are written in.
     fn editor() -> Standing {
-        let mut policy = tilo_action_policy::WorkspacePolicy::new("workspace", "owner");
+        let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "owner");
         policy
             .members
             .insert("editor".into(), tilo_action_policy::Role::Editor);
@@ -331,9 +334,9 @@ mod tests {
             let (mutation, _) = collab_types::field_edit_mutation("note", "title", "old").unwrap();
             let mut op = SignedOp::new_unsigned(
                 mutation.encode().unwrap(),
-                document_artifact_id("notes", "workspace", "record"),
+                document_artifact_id("notes", WORKSPACE, "record"),
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-                document_attestation_id("notes", "workspace", "record"),
+                document_attestation_id("notes", WORKSPACE, "record"),
                 OpKind::Change,
                 an_hour_ago,
                 1,
@@ -342,7 +345,7 @@ mod tests {
             let now = tilo_clock::wall();
             let channel = || {
                 let mut state = InboundState {
-                    workspace: "workspace".into(),
+                    workspace: WORKSPACE.into(),
                     ..InboundState::default()
                 };
                 state.artifacts.insert(op.artifact, ArtifactKind::Note);
@@ -373,9 +376,9 @@ mod tests {
                 let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
                 let mut op = SignedOp::new_unsigned(
                     mutation.encode().unwrap(),
-                    document_artifact_id("notes", "workspace", "record"),
+                    document_artifact_id("notes", WORKSPACE, "record"),
                     collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-                    document_attestation_id("notes", "workspace", "record"),
+                    document_attestation_id("notes", WORKSPACE, "record"),
                     OpKind::Change,
                     tilo_clock::wall(),
                     1,
@@ -385,7 +388,7 @@ mod tests {
             };
             let document = |envelope: SignedOp, replayed: bool| RemoteDocument {
                 app_id: "notes".into(),
-                cluster_id: "workspace".into(),
+                cluster_id: WORKSPACE.into(),
                 record_id: "record".into(),
                 author: editor(),
                 replayed,
@@ -396,7 +399,7 @@ mod tests {
             let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let seen = Arc::clone(&delivered);
             let _app = fanout.subscribe_workspaces(
-                vec!["workspace".into()],
+                vec![WORKSPACE.into()],
                 Box::new(move |event, _| {
                     if matches!(event, CollabEvent::Document { .. }) {
                         seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -449,9 +452,9 @@ mod tests {
             let now = tilo_clock::wall();
             let mut op = SignedOp::new_unsigned_with_encryption(
                 change,
-                document_artifact_id("notes", "workspace", "record"),
+                document_artifact_id("notes", WORKSPACE, "record"),
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-                document_attestation_id("notes", "workspace", "record"),
+                document_attestation_id("notes", WORKSPACE, "record"),
                 OpKind::Change,
                 now,
                 collab_types::next_unordered_document_sequence(now),
@@ -480,15 +483,15 @@ mod tests {
     /// the writes it was shown in the order it was shown them.
     fn member_takes(writes: &[SignedOp]) -> MemberTook {
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels.lock().unwrap().register_gate(
-            collab_types::WorkspaceId::parse("workspace").unwrap(),
-            gate(),
-        );
+        channels
+            .lock()
+            .unwrap()
+            .register_gate(collab_types::WorkspaceId::parse(WORKSPACE).unwrap(), gate());
         let fanout = FanoutState::new();
         let shown = Arc::new(Mutex::new(Vec::new()));
         let app = Arc::clone(&shown);
         let _app = fanout.subscribe_workspaces(
-            vec!["workspace".into()],
+            vec![WORKSPACE.into()],
             Box::new(move |event, _| {
                 if let CollabEvent::Document { envelope, .. } = event {
                     app.lock().unwrap().push((**envelope).clone());
@@ -503,7 +506,7 @@ mod tests {
                     &fanout,
                     RemoteDocument {
                         app_id: "notes".into(),
-                        cluster_id: "workspace".into(),
+                        cluster_id: WORKSPACE.into(),
                         record_id: "record".into(),
                         author: editor(),
                         replayed: false,
@@ -546,9 +549,9 @@ mod tests {
             let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
             let mut op = SignedOp::new_unsigned(
                 mutation.encode().unwrap(),
-                document_artifact_id("notes", "workspace", "record"),
+                document_artifact_id("notes", WORKSPACE, "record"),
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-                document_attestation_id("notes", "workspace", "record"),
+                document_attestation_id("notes", WORKSPACE, "record"),
                 OpKind::Change,
                 tilo_clock::wall(),
                 seq,
@@ -557,15 +560,15 @@ mod tests {
             op
         };
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels.lock().unwrap().register_gate(
-            collab_types::WorkspaceId::parse("workspace").unwrap(),
-            gate(),
-        );
+        channels
+            .lock()
+            .unwrap()
+            .register_gate(collab_types::WorkspaceId::parse(WORKSPACE).unwrap(), gate());
         let fanout = FanoutState::new();
         let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let app = Arc::clone(&delivered);
         let _app = fanout.subscribe_workspaces(
-            vec!["workspace".into()],
+            vec![WORKSPACE.into()],
             Box::new(move |event, _| {
                 if matches!(event, CollabEvent::Document { .. }) {
                     app.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -579,7 +582,7 @@ mod tests {
                 &fanout,
                 RemoteDocument {
                     app_id: "notes".into(),
-                    cluster_id: "workspace".into(),
+                    cluster_id: WORKSPACE.into(),
                     record_id: "record".into(),
                     author: editor(),
                     replayed,
@@ -627,9 +630,9 @@ mod tests {
             let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
             let mut op = SignedOp::new_unsigned(
                 mutation.encode().unwrap(),
-                document_artifact_id("so.tilo.chat", "workspace", record),
+                document_artifact_id("so.tilo.chat", WORKSPACE, record),
                 collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-                document_attestation_id("so.tilo.chat", "workspace", record),
+                document_attestation_id("so.tilo.chat", WORKSPACE, record),
                 OpKind::Change,
                 tilo_clock::wall(),
                 sequence,
@@ -642,7 +645,7 @@ mod tests {
         let told = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&told);
         let _app = fanout.subscribe_workspaces(
-            vec!["workspace".into()],
+            vec![WORKSPACE.into()],
             Box::new(move |event, origin| {
                 if let CollabEvent::RecordsArrived { records } = event {
                     sink.lock().unwrap().push((origin.clone(), records.clone()));
@@ -655,7 +658,7 @@ mod tests {
                 &fanout,
                 RemoteDocument {
                     app_id: "so.tilo.chat".into(),
-                    cluster_id: "workspace".into(),
+                    cluster_id: WORKSPACE.into(),
                     record_id: record.into(),
                     author: editor(),
                     replayed: false,
@@ -668,7 +671,7 @@ mod tests {
         assert_eq!(
             told.lock().unwrap().as_slice(),
             &[(
-                CrdtRoute::app("so.tilo.chat", "workspace"),
+                CrdtRoute::app("so.tilo.chat", WORKSPACE),
                 vec![part.clone()]
             )],
             "the window is told the part, on the app's route"
