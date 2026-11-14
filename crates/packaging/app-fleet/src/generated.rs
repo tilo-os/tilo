@@ -625,7 +625,7 @@ pub(super) const APPS: &[FleetApp] = &[
         id: "so.tilo.file-explorer",
         name: "Files",
         category: "System",
-        platforms: &["linux", "macos"],
+        platforms: &["linux", "macos", "web"],
         tagline: "Browses, organizes and shares files in your workspaces",
         names: &["Dateien"],
         keywords: &[
@@ -794,7 +794,7 @@ pub(super) const APPS: &[FleetApp] = &[
         id: "so.tilo.mail",
         name: "Mail",
         category: "Office",
-        platforms: &["linux", "macos"],
+        platforms: &["linux", "macos", "web"],
         tagline: "Email over IMAP and SMTP",
         names: &[],
         keywords: &[
