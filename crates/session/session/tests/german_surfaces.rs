@@ -61,6 +61,21 @@ fn named(session: &tilo_session::Session, kind: &str) -> Option<String> {
     find(&session.resources(), kind)
 }
 
+/// The label the session publishes the resource `id` under, wherever it stands in the tree it
+/// offers.
+fn named_by_id(session: &tilo_session::Session, id: &str) -> Option<String> {
+    fn find(specs: &[ResourceSpec], id: &str) -> Option<String> {
+        specs.iter().find_map(|spec| {
+            if spec.id.0 == id {
+                Some(spec.label.clone())
+            } else {
+                find(&spec.children, id)
+            }
+        })
+    }
+    find(&session.resources(), id)
+}
+
 /// Sets the desktop's language for everything resolved from here on.
 fn speak(locale: &str) {
     ui::i18n::I18nManager::set_locale(locale);
@@ -180,4 +195,30 @@ fn sheets_name_themselves(session: &tilo_session::Session) {
             "a German desktop reads `{kind}` in German"
         );
     }
+}
+
+/// The arrangement and its history are the person's layout: both name themselves in the person's
+/// language, not only the rows and places of it.
+#[test]
+fn the_arrangement_names_itself_in_the_persons_language() {
+    let root = private_home();
+    let session = seeded_session(root.path());
+    speak("de-DE");
+    assert_eq!(
+        named_by_id(&session, "shell:arrangement").as_deref(),
+        Some("Layout")
+    );
+    assert_eq!(
+        named_by_id(&session, "shell:arrangement-record").as_deref(),
+        Some("Layoutverlauf")
+    );
+    speak("en-US");
+    assert_eq!(
+        named_by_id(&session, "shell:arrangement").as_deref(),
+        Some("Layout")
+    );
+    assert_eq!(
+        named_by_id(&session, "shell:arrangement-record").as_deref(),
+        Some("Layout history")
+    );
 }

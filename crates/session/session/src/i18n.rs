@@ -13,6 +13,17 @@ const CATALOGUES: &[(&str, &str)] = &[
 
 ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
+/// The message `key` in the person's language with `args`, and `source` where the catalogue holds
+/// no such message: what a host says for a thing the catalogue has no word for.
+pub(crate) fn word(key: &str, args: &[(&str, String)], source: &str) -> String {
+    let args: Vec<(&str, ui::i18n::ArgValue)> = args
+        .iter()
+        .map(|(name, value)| (*name, value.clone().into()))
+        .collect();
+    let said = t_args(key, &args);
+    if said == key { source.to_owned() } else { said }
+}
+
 /// Load the copy a notice or a query resolves on this thread.
 ///
 /// A catalogue's first use lists the installed language packs and stats the
@@ -161,5 +172,33 @@ mod tests {
         ui::i18n::I18nManager::set_locale("en-US");
         assert_eq!(english, "Storage is full");
         assert_eq!(german, "Der Speicher ist voll");
+    }
+
+    /// What the arrangement publishes reads in the person's language, and a key its catalogue
+    /// lacks keeps the source words a host names it with.
+    #[test]
+    fn the_arrangement_words_resolve_in_the_persons_language() {
+        // A catalogue installs itself on its first use, and selecting a language before that
+        // would be replaced by the desktop's own.
+        assert_eq!(
+            word("session-resource-layout-history", &[], "Layout history"),
+            "Layout history"
+        );
+        ui::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(
+            word("session-resource-layout-history", &[], "Layout history"),
+            "Layoutverlauf"
+        );
+        assert_eq!(
+            word(
+                "session-strip-width",
+                &[("width", "40".to_owned())],
+                "Strip, 40% wide"
+            ),
+            "Leiste, 40 % breit"
+        );
+        assert_eq!(word("no-such-word", &[], "Source"), "Source");
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(word("session-resource-layout", &[], "Layout"), "Layout");
     }
 }

@@ -422,6 +422,10 @@ session-resource-diagnostics = Sitzungsdiagnose
 session-resource-window-menu = Fenstermenü
 session-resource-surfaces = Oberflächen
 session-resource-keyboard-focus = Tastaturfokus
+session-resource-layout = Layout
+session-resource-layout-history = Layoutverlauf
+session-strip-width = Leiste, { $width } % breit
+session-place = Fenster
 
 ## Actions
 

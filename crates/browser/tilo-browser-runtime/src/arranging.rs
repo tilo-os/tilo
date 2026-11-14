@@ -32,6 +32,7 @@ impl Arranging {
             handle,
             desk,
             Rc::new(tilo_desktop_search::names::window_name),
+            tilo_session_core::arrangement::source_words(),
         )));
         // Nothing here answers a search or has an agent to ask, so both seams are honestly empty: a
         // place made by text is the page's palette's to open, never a second index of its own. The

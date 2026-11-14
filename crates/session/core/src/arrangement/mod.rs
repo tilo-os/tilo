@@ -531,6 +531,16 @@ impl Busy {
 /// device, the registry's names on the page.
 pub type Names = Rc<dyn Fn(&str, &str) -> String>;
 
+/// What a host calls what the arrangement publishes, in the person's language: the message `key`
+/// of its catalogue with `args`, and `source` where its catalogue holds none.
+pub type Words = Rc<dyn Fn(&str, &[(&str, String)], &str) -> String>;
+
+/// The words of a host that keeps no catalogue: what each source says.
+#[must_use]
+pub fn source_words() -> Words {
+    Rc::new(|_, _, source| source.to_owned())
+}
+
 /// Where a host keeps a desk's layout: the document its changes are written in, and the history a
 /// step of it is taken back from. The session keeps the workspace's layout, which every member
 /// shows; a page keeps its own copy of the desk.
@@ -613,6 +623,8 @@ pub struct Arrangement {
     layouts: Rc<dyn Layouts>,
     /// What the host calls a window, by [`Names`].
     names: Names,
+    /// What the host calls what the arrangement publishes, by [`Words`].
+    words: Words,
     /// The resources the session publishes now, by id: what a place made from a resource reads its
     /// app and views from ([`Catalog`]).
     catalog: Rc<RefCell<Catalog>>,
@@ -632,20 +644,22 @@ pub struct Arrangement {
 
 impl Arrangement {
     /// `person` 's arrangement of `handle` 's desk, whose layout `layouts` keeps, naming windows
-    /// through `names`. A host brings over whatever an older build kept of the arrangement before
-    /// it makes one: what it holds is the desk.
+    /// through `names` and what it publishes through `words`. A host brings over whatever an older
+    /// build kept of the arrangement before it makes one: what it holds is the desk.
     #[must_use]
     pub fn new(
         person: &str,
         handle: DesktopHandle,
         layouts: Rc<dyn Layouts>,
         names: Names,
+        words: Words,
     ) -> Self {
         Self {
             person: person.to_owned(),
             handle,
             layouts,
             names,
+            words,
             catalog: Rc::new(RefCell::new(Catalog::default())),
             waiting: RefCell::new(VecDeque::new()),
             queries: RefCell::new(BTreeMap::new()),
@@ -1296,7 +1310,7 @@ impl Arrangement {
                 ResourceSpec::new(
                     Item::Strip.resource(&strip.key),
                     STRIP_KIND,
-                    strip_label(strip),
+                    strip_label(&self.words, strip),
                 ),
                 ResourceSpec::with_action,
             )
@@ -1306,7 +1320,7 @@ impl Arrangement {
                 ResourceSpec::new(
                     Item::Place.resource(&place.key),
                     PLACE_KIND,
-                    place_label(place),
+                    place_label(&self.words, place),
                 ),
                 ResourceSpec::with_action,
             )
@@ -1315,8 +1329,9 @@ impl Arrangement {
         // so an open place draws it and its rows may be pressed (`query_resource`).
         let queries = reading.queries.iter().map(query_resource);
         vec![
-            arrangement_resource().with_children(rows.chain(strips).chain(places).chain(queries)),
-            record_resource(),
+            arrangement_resource(&self.words)
+                .with_children(rows.chain(strips).chain(places).chain(queries)),
+            record_resource(&self.words),
         ]
     }
 
@@ -2105,16 +2120,20 @@ pub fn verb(action: &ArrangementAction) -> &'static str {
 /// palette, a script and an agent all arrange through them, and the catalogue lists them. What is
 /// already arranged is published per place, strip and row by [`Arrangement::resources`].
 #[must_use]
-pub fn resources() -> Vec<ResourceSpec> {
-    vec![arrangement_resource(), record_resource()]
+pub fn resources(words: &Words) -> Vec<ResourceSpec> {
+    vec![arrangement_resource(words), record_resource(words)]
 }
 
 /// What puts a resource on the canvas and steps the arrangement's history.
-fn arrangement_resource() -> ResourceSpec {
+fn arrangement_resource(words: &Words) -> ResourceSpec {
     placing_actions()
         .into_iter()
         .fold(
-            ResourceSpec::new(RESOURCE, "shell", "The person's arrangement"),
+            ResourceSpec::new(
+                RESOURCE,
+                "shell",
+                words("session-resource-layout", &[], "Layout"),
+            ),
             ResourceSpec::with_action,
         )
         .with_action(step_action("undo", "Undo the last arranging step"))
@@ -2122,10 +2141,14 @@ fn arrangement_resource() -> ResourceSpec {
 }
 
 /// The record itself, whose actions step its history.
-fn record_resource() -> ResourceSpec {
-    ResourceSpec::new(RECORD_RESOURCE, "shell", "The person's arrangement record")
-        .with_action(step_action("undo", "Undo the last arranging step"))
-        .with_action(step_action("redo", "Redo the last undone arranging step"))
+fn record_resource(words: &Words) -> ResourceSpec {
+    ResourceSpec::new(
+        RECORD_RESOURCE,
+        "shell",
+        words("session-resource-layout-history", &[], "Layout history"),
+    )
+    .with_action(step_action("undo", "Undo the last arranging step"))
+    .with_action(step_action("redo", "Redo the last undone arranging step"))
 }
 
 /// The resource a place's own actions are published on, for the package the session describes: no
@@ -2379,14 +2402,19 @@ fn row_label(row: &RowReading) -> String {
 }
 
 /// What a strip is called where its own actions are listed: how wide it is.
-fn strip_label(strip: &StripReading) -> String {
-    format!("Strip, {}% wide", strip.width / 10)
+fn strip_label(words: &Words, strip: &StripReading) -> String {
+    let width = (strip.width / 10).to_string();
+    words(
+        "session-strip-width",
+        &[("width", width.clone())],
+        &format!("Strip, {width}% wide"),
+    )
 }
 
 /// What a place is called where its own actions are listed: the window it holds.
-fn place_label(place: &PlaceReading) -> String {
+fn place_label(words: &Words, place: &PlaceReading) -> String {
     if place.name.is_empty() {
-        "Place".to_owned()
+        words("session-place", &[], "Place")
     } else {
         place.name.clone()
     }

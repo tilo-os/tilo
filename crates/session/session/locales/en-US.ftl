@@ -418,6 +418,10 @@ session-resource-diagnostics = Session diagnostics
 session-resource-window-menu = Window menu
 session-resource-surfaces = Surfaces
 session-resource-keyboard-focus = Keyboard focus
+session-resource-layout = Layout
+session-resource-layout-history = Layout history
+session-strip-width = Strip, { $width }% wide
+session-place = Place
 
 ## Actions
 

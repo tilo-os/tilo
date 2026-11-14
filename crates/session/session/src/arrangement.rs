@@ -22,10 +22,17 @@ pub use tilo_session_core::arrangement::{
     Answer, AnswerRef, Arrangement, ArrangementAction, ArrangementQueryReading,
     ArrangementRefReading, Ask, AskOrigin, Busy, Catalog, Find, FindDone, Found, Item, OPERATION,
     PLACE_KIND, PlaceReading, QUERY_KIND, RECORD_RESOURCE, RESOURCE, ROW_KIND, Reading, RowReading,
-    STRIP_KIND, StripReading, Surface, Target, WorkspaceReading, canvas_find_within,
+    STRIP_KIND, StripReading, Surface, Target, Words, WorkspaceReading, canvas_find_within,
     found_resource, place_kind_resource, placed, resources, row_kind_resource, strip_kind_resource,
     tab_app,
 };
+
+/// What this session calls what the arrangement publishes, in the person's language: its own
+/// catalogue's words, and what a source says where the catalogue holds none.
+#[must_use]
+pub(crate) fn words() -> Words {
+    Rc::new(crate::i18n::word)
+}
 
 /// `person` 's arrangement of `handle` 's desk, whose layout `layouts` keeps.
 #[cfg(target_os = "linux")]
@@ -37,7 +44,7 @@ pub(crate) fn open(
 ) -> Arrangement {
     let names = Rc::new(crate::app_names::window_name);
     let steps = crate::shared_desktop::Steps::new(layouts, handle.clone());
-    Arrangement::new(person, handle, Rc::new(steps), names)
+    Arrangement::new(person, handle, Rc::new(steps), names, words())
 }
 
 /// What this session's compositor knows of the person's gesture and typing, as the arrangement's
