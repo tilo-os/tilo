@@ -30,7 +30,7 @@ use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::ClockSnapshot;
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::Overlays;
-use tilo_desktop::overview_tilo::{AccountLine, TiloDesk};
+use tilo_desktop::overview_tilo::TiloDesk;
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop::window_flight::WindowFlight;
 use tilo_desktop_model::{
@@ -168,10 +168,6 @@ fn tilo_desk(build_box: &str) -> TiloDesk {
                 ..Grant::default()
             }],
             ..Door::default()
-        }),
-        account: Some(AccountLine {
-            name: "Ada Lovelace".into(),
-            detail: Some("ada@tilo.sh".into()),
         }),
         ..TiloDesk::default()
     }

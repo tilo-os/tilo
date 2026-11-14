@@ -155,6 +155,29 @@ fn a_hint_the_person_has_not_learned_shows_over_the_desktop() {
     });
 }
 
+/// The overview covers the desk: a hint pointing at a window's edge or bar goes with the windows,
+/// and none stands over the overview.
+#[test]
+fn a_hint_leaves_when_the_overview_covers_the_desk() {
+    let feed = HintsFeed::default();
+    feed.set_record(record_learning_all_but("resize-window"));
+    feed.set_context(None, true, Vec::new());
+    let mut frame = chrome_with_hints(2, &feed);
+    assert!(with_chrome(&mut frame, |chrome| chrome
+        .hints()
+        .is_showing()));
+    with_chrome(&mut frame, DesktopChrome::toggle_overview);
+    frame.relayout();
+    draw_chrome(&mut frame);
+    with_chrome(&mut frame, |chrome| {
+        assert!(chrome.overview_open());
+        assert!(
+            !chrome.hints().is_showing(),
+            "the resize hint leaves with the windows the overview covers"
+        );
+    });
+}
+
 #[test]
 fn nothing_is_taught_while_the_person_may_not_learn() {
     // Each case leaves the feed as a host would before a frame.

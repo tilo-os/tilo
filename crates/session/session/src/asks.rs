@@ -128,10 +128,6 @@ impl Shared {
                         .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::ForceQuit);
                 }
                 DesktopAsk::ReportProblem => self.report_problem(),
-                // Billing is the person's account: Settings holds it, beside who they are.
-                DesktopAsk::AccountSettings => {
-                    crate::quick_settings::open_settings(self, "settings://billing");
-                }
                 // Settings at the page a panel or a card names: the desk's own
                 // search, run here where the workspaces are.
                 DesktopAsk::OpenSettings(link) => {

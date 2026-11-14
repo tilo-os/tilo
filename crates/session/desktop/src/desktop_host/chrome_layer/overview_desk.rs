@@ -30,12 +30,6 @@ impl DesktopChrome {
                 .filter(|action| action.source == Some(HostActionSource::Workspaces))
                 .map(|action| (action.id.clone(), action.title.clone()))
                 .collect(),
-            actions: self
-                .tilo_menu_actions()
-                .into_iter()
-                .map(|action| (action.id, action.label))
-                .collect(),
-            feedback: self.tilo_menu.offers_feedback(),
             ..self.tilo.clone()
         };
         desk

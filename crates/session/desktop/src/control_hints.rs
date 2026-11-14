@@ -351,10 +351,12 @@ impl ControlHints {
         self.layer.access_node()
     }
 
-    /// Whether a hint is on screen.
+    /// Whether a hint stands on screen, not on its way out.
     #[must_use]
     pub fn is_showing(&self) -> bool {
-        self.layer.coach().current().is_some()
+        self.layer.coach().current().is_some_and(|current| {
+            matches!(current.phase, ui::control_hints::coach::Phase::Shown(_))
+        })
     }
 
     /// Everything the hint's last draw painted ([`HintLayer::painted_rect`]).

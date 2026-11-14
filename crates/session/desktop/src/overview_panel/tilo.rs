@@ -92,7 +92,7 @@ impl OverviewPanel {
         match self.tilo_rows.get(index) {
             Some(TiloRow::Caption(_)) => self.metrics.section_gap + self.metrics.caption_h,
             Some(TiloRow::Item(item)) => {
-                self.metrics.tilo_row_h
+                self.tilo_head_h(item)
                     + if self.tilo_asks(item) {
                         self.metrics.s2 + self.tilo_question_h + self.metrics.s2 + ACTION_HEIGHT
                     } else {
@@ -115,18 +115,21 @@ impl OverviewPanel {
         }
     }
 
-    /// How many of the list's slots the rows fill, so the list scrolls to the last of them.
-    pub(super) fn tilo_slots(&self) -> usize {
-        let m = self.metrics;
-        let pitch = m.workspace_row_h + m.workspace_row_gap;
-        let height: f64 = (0..self.tilo_rows.len())
-            .map(|index| self.tilo_height(index))
-            .sum();
-        // Whole slots, rounded up: a fraction left over is air under the last row.
-        if pitch <= 0.0 {
-            return 0;
+    /// A row's own height, before any question it asks: two lines where it says facts under its
+    /// title, the toolkit's one-line row where it says only its title.
+    fn tilo_head_h(&self, item: &TiloItem) -> f64 {
+        if item.facts.is_empty() {
+            self.metrics.action_row_h
+        } else {
+            self.metrics.tilo_row_h
         }
-        ui::num::usize_of_f64((height / pitch).ceil())
+    }
+
+    /// How tall the rows stand together, so the list scrolls to the last of them.
+    pub(super) fn tilo_height_total(&self) -> f64 {
+        (0..self.tilo_rows.len())
+            .map(|index| self.tilo_height(index))
+            .sum()
     }
 
     /// The column the rows stand in, whatever their heights: from the first row's place to the
@@ -266,11 +269,12 @@ impl OverviewPanel {
             return None;
         }
         let row = self.tilo_rect(index);
+        let head = self.tilo_head_h(item);
         let question = Rect::new(
             self.tilo_text_x(index),
-            row.y0 + self.metrics.tilo_row_h + self.metrics.s2,
+            row.y0 + head + self.metrics.s2,
             self.tilo_question_right(index),
-            row.y0 + self.metrics.tilo_row_h + self.metrics.s2 + self.tilo_question_h,
+            row.y0 + head + self.metrics.s2 + self.tilo_question_h,
         );
         let buttons = Rect::new(
             question.x0,
@@ -458,7 +462,7 @@ impl OverviewPanel {
         // A row that asks keeps its name where it stands, and its question under it: the name
         // is drawn in the room a row takes, not centred in the taller row the question makes.
         let head = if asking {
-            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + self.metrics.tilo_row_h)
+            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + self.tilo_head_h(item))
         } else {
             rect
         };

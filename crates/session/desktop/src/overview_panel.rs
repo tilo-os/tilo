@@ -72,8 +72,8 @@ pub struct OverviewDesk {
     /// The picture of the workspace you are in is left out (the host shows its windows elsewhere
     /// for now).
     pub hide_windows: bool,
-    /// What the overview of the person's Tilo shows below the workspaces: their hosts, agents and
-    /// account ([`crate::overview_tilo`]).
+    /// What the overview of the person's Tilo shows below the workspaces: their workspaces
+    /// elsewhere, hosts and agents ([`crate::overview_tilo`]).
     pub tilo: crate::overview_tilo::TiloDesk,
 }
 
@@ -127,17 +127,11 @@ pub enum OverviewPick {
     OpenPage(String),
     /// Run one of the session's own actions (lock, sign out, …) by the id it published.
     HostAction(String),
-    /// Send feedback, about the window in front.
-    Feedback,
     /// Take back the agent door's grant by its id; the overview stays to show it go.
     RevokeGrant(String),
     /// Open an agent's own card, by its client's name, as its face anywhere else does: the same
     /// ask Console answers, which brings the card forward beside the work. The overview goes.
     OpenAgent(String),
-    /// Open the person's account in Settings, where billing is too.
-    AccountSettings,
-    /// Say what this Tilo is.
-    AboutTilo,
 }
 
 impl OverviewPick {
@@ -150,10 +144,7 @@ impl OverviewPick {
                 | Self::NewWorkspace
                 | Self::JoinWorkspace
                 | Self::Dismiss
-                | Self::AccountSettings
-                | Self::AboutTilo
                 | Self::HostAction(_)
-                | Self::Feedback
                 | Self::OpenAgent(_)
         )
     }
@@ -1023,6 +1014,46 @@ mod tests {
         panel.key(&Key::Named(key), ModifiersState::empty())
     }
 
+    /// The panel reads at the shell's scale: the workspace's name is a detail title, not a hero
+    /// line, and New workspace and Join are the toolkit's one-line rows, one under the other, as
+    /// every other list's are.
+    #[test]
+    fn the_panel_keeps_the_toolkits_row_and_title_scale() {
+        let theme = Theme::dark();
+        let tokens = &theme.tokens;
+        let panel = opened_in(WIDE, desk());
+        let title = f64::from(
+            tokens
+                .typography
+                .style(ui::TextRole::Title)
+                .line_height_px(),
+        );
+        assert!(
+            (panel.metrics.name_lh - title).abs() < 0.5,
+            "the name is a title: {} vs {title}",
+            panel.metrics.name_lh
+        );
+        let add = panel.add_rect().expect("New workspace");
+        let join = panel.join_rect().expect("Join a workspace");
+        let row = f64::from(tokens.metrics.row_single);
+        for (what, rect) in [("New workspace", add), ("Join", join)] {
+            assert!(
+                rect.height() <= row + 8.0,
+                "{what} is a one-line row: {} px tall",
+                rect.height()
+            );
+        }
+        assert!(
+            (join.y0 - add.y1).abs() < 0.5,
+            "Join follows New workspace without air between"
+        );
+        let last = panel.row_rect(2);
+        assert!(
+            add.y0 - last.y1 <= panel.metrics.s2 + 0.5,
+            "New workspace follows the last workspace"
+        );
+    }
+
     /// A desk whose Tilo let one agent in, working now, with what the overview measured of it.
     fn desk_with_an_agent() -> OverviewDesk {
         use tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
@@ -1039,10 +1070,6 @@ mod tests {
                 ..Grant::default()
             }],
             ..Door::default()
-        });
-        desk.tilo.account = Some(crate::overview_tilo::AccountLine {
-            name: "Ada".into(),
-            ..crate::overview_tilo::AccountLine::default()
         });
         desk
     }
@@ -1173,20 +1200,23 @@ mod tests {
 
         phase a_face_leads_its_row_in_the_column_every_other_row_keeps;
         // The faces and glyphs that lead these rows stand in one slot, so the rows below the
-        // workspaces keep one text column: the agent's name starts where the account's does, on a
+        // workspaces keep one text column: the agent's name starts where a host's does, on a
         // desk and on a phone, and where the list row itself puts it.
         {
+            use tilo_actions::remote::host_account::{HostAccount, HostKind};
             ui::i18n::I18nManager::init("en-US");
             let theme = Theme::dark();
+            let mut desk = desk_with_an_agent();
+            desk.tilo.hosts = vec![HostAccount::sells_nothing("Ada's server", HostKind::SelfHosted)];
             for area in [TALL, PHONE] {
-                let panel = drawn(area, desk_with_an_agent());
+                let panel = drawn(area, desk.clone());
                 let index = |key: &str| {
                     (0..panel.tilo_rows.len())
                         .find(|&index| panel.tilo_item(index).is_some_and(|item| item.key == key))
                         .expect("the row is on the desk")
                 };
                 let agent = index("overview-agent:g1");
-                let account = index("overview-account");
+                let host = index("overview-host:0");
                 let mut text = ui::text_render::TextRenderer::new();
                 let mut drawn_x = |index: usize| {
                     let item = panel.tilo_item(index).expect("a row of the list");
@@ -1197,10 +1227,10 @@ mod tests {
                     face.text_column(panel.tilo_rect(index), &mut text, &theme)
                 };
                 let agent_x = drawn_x(agent);
-                let account_x = drawn_x(account);
+                let host_x = drawn_x(host);
                 assert!(
-                    (agent_x - account_x).abs() < 0.01,
-                    "the agent's face leads in the glyph's slot on {area:?}: {agent_x} and {account_x}"
+                    (agent_x - host_x).abs() < 0.01,
+                    "the agent's face leads in the glyph's slot on {area:?}: {agent_x} and {host_x}"
                 );
                 assert!(
                     (panel.tilo_text_x(agent) - agent_x).abs() < 0.01,
@@ -1287,8 +1317,7 @@ mod tests {
 
         phase hosts_stand_below_the_workspaces_and_manage_billing_opens_the_providers_page;
         // Below the workspaces, the person's Tilo Cloud account: its row says the plan and what it
-        // used, its Manage billing opens the provider's page and leaves the overview up, and the
-        // account's About zooms back in.
+        // used, and its Manage billing opens the provider's page and leaves the overview up.
         {
             use tilo_actions::remote::host_account::{
                 HostAccount, HostKind, PaymentMethod, PlanOffer, Standing,
@@ -1324,11 +1353,6 @@ mod tests {
                 panel.is_open(),
                 "the overview stays up behind the provider's page"
             );
-            panel.scroll_y = panel.max_scroll_y();
-            let rects: HashMap<String, Rect> = panel.test_rects().into_iter().collect();
-            panel.click_at(rects["overview-about"].center());
-            assert_eq!(panel.take_pick(), Some(OverviewPick::AboutTilo));
-            assert!(OverviewPick::AboutTilo.closes());
         }
     }
 

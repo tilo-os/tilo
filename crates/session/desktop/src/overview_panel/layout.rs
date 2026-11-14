@@ -72,6 +72,9 @@ pub(super) struct Metrics {
     pub share_row_h: f64,
     pub workspace_row_h: f64,
     pub workspace_row_gap: f64,
+    /// A one-line row (New workspace, Join, a row that says nothing under its title): the
+    /// toolkit's list row, as tall as every other list's.
+    pub action_row_h: f64,
     pub row_pad: f64,
     /// Where a row's text starts past its left edge: the list row's content edge, the slot its
     /// leading mark takes and the gap to the text.
@@ -103,7 +106,8 @@ impl Metrics {
         let s3 = f64::from(spacing.s3);
         let s4 = f64::from(spacing.s4);
         let s6 = f64::from(spacing.s6);
-        let name_lh = lh(TextRole::Display);
+        // The workspace's name is a detail title, in scale with the shell's other panels.
+        let name_lh = lh(TextRole::Title);
         Self {
             margin: f64::from(spacing.s12),
             panel_width: f64::from(tokens.metrics.readable_width),
@@ -121,8 +125,11 @@ impl Metrics {
             caption_h: s2 + lh(TextRole::Caption) + s1,
             caption_text_dy: s2,
             share_row_h: lh(TextRole::Body) + s3,
-            workspace_row_h: lh(TextRole::Heading) + s1 + lh(TextRole::Caption) + 2.0 * s3,
+            workspace_row_h: f64::from(tokens.metrics.row_double)
+                .max(lh(TextRole::Heading) + s1 + lh(TextRole::Caption) + 2.0 * s2),
             workspace_row_gap: s2,
+            action_row_h: f64::from(tokens.metrics.row_single)
+                .max(lh(TextRole::Body) + 2.0 * f64::from(spacing.rhythm.tight)),
             row_pad: s4,
             row_text_inset: ui::widget::mark_text_inset(theme),
             tilo_row_h: lh(TextRole::Body) + s1 + lh(TextRole::Caption) + 2.0 * s2,
@@ -284,17 +291,28 @@ impl OverviewPanel {
         self.metrics.here_h + self.windows_row_height() + self.shares_height()
     }
 
-    /// Rows of the list: every workspace but the one you are in, then "New workspace" and
-    /// "Join a workspace…", then the person's hosts, agents and account.
-    pub(super) fn list_slots(&self) -> usize {
-        self.go_to_slots().saturating_add(self.tilo_slots())
+    /// Where list slot `slot` starts below the list's top, and how tall it is: every workspace but
+    /// the one you are in is a two-line row with air below it, New workspace and Join are one-line
+    /// toolkit rows after them.
+    pub(super) fn slot_span(&self, slot: usize) -> (f64, f64) {
+        let m = self.metrics;
+        let workspaces = self.workspaces_in_list();
+        let pitch = m.workspace_row_h + m.workspace_row_gap;
+        if slot < workspaces {
+            (f64_of_usize(slot) * pitch, m.workspace_row_h)
+        } else {
+            let past = f64_of_usize(slot.saturating_sub(workspaces));
+            (
+                f64_of_usize(workspaces) * pitch + past * m.action_row_h,
+                m.action_row_h,
+            )
+        }
     }
 
-    /// Height of the list if nothing clipped it.
+    /// Height of the list if nothing clipped it: the "go to" rows, then the person's workspaces
+    /// elsewhere, hosts and agents.
     pub(super) fn content_height(&self) -> f64 {
-        let m = self.metrics;
-        let k = f64_of_usize(self.list_slots());
-        (k * (m.workspace_row_h + m.workspace_row_gap) - m.workspace_row_gap).max(0.0)
+        self.slot_span(self.go_to_slots()).0 + self.tilo_height_total()
     }
 
     /// The display is too small for a floating panel: the overview is a page filling it.
@@ -474,10 +492,9 @@ impl OverviewPanel {
     /// List slot `slot` , panned by the scroll.
     pub(super) fn list_slot_rect(&self, slot: usize) -> Rect {
         let c = self.content_rect();
-        let m = self.metrics;
-        let y0 = self.list_top() - self.pan()
-            + f64_of_usize(slot) * (m.workspace_row_h + m.workspace_row_gap);
-        Rect::new(c.x0, y0, c.x1, y0 + m.workspace_row_h)
+        let (top, height) = self.slot_span(slot);
+        let y0 = self.list_top() - self.pan() + top;
+        Rect::new(c.x0, y0, c.x1, y0 + height)
     }
 
     /// The list slot workspace `idx` occupies: the workspace you are in has none (it is the block
@@ -589,10 +606,10 @@ impl OverviewPanel {
             self.slot_of(idx)
         };
         let (top, height) = match slot {
-            Some(slot) => (
-                header + f64_of_usize(slot) * (m.workspace_row_h + m.workspace_row_gap),
-                m.workspace_row_h,
-            ),
+            Some(slot) => {
+                let (top, height) = self.slot_span(slot);
+                (header + top, height)
+            }
             None if whole => (0.0, m.here_h + self.windows_row_height()),
             None => return,
         };

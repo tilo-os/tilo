@@ -1,6 +1,6 @@
 //! The overview's picture of a workspace: every strip, top to bottom, with its windows left to
-//! right in the order the strip holds them, each at its share of the size it has on the display,
-//! under the strip's name.
+//! right in the order the strip holds them, each at its share of the size it has on the display
+//! under its app's mark and its title, under the strip's name.
 //! One picture for every desktop: the native shell flies its windows into these places on the
 //! overview's zoom, and the browser desktop's overview panel draws the same places, wells, titles
 //! and names, so both read the same way. The layout is plain geometry ([`layout_strips`]); painting
@@ -30,10 +30,12 @@ const TILE_FACES_MAX: usize = 3;
 pub struct GridMetrics {
     /// A strip's name line, with the air below it.
     pub label_h: f64,
-    /// Air between a pictured window and its title.
+    /// Air between a window's title and its picture below it.
     pub title_gap: f64,
-    /// Line height of a window's title.
+    /// A window's title line: its app's mark and its title.
     pub title_lh: f64,
+    /// Side of the app's mark leading a window's title.
+    pub mark: f64,
     pub row_gap: f64,
     /// Air between two windows of a strip.
     pub window_gap: f64,
@@ -57,8 +59,9 @@ impl GridMetrics {
         let control = ControlSize::Small.height(theme);
         Self {
             label_h: control.max(lh(TextRole::Label)) + f64::from(spacing.s2),
-            title_gap: f64::from(spacing.s1),
-            title_lh: lh(TextRole::Caption),
+            title_gap: f64::from(spacing.s2),
+            title_lh: lh(TextRole::Label).max(f64::from(tokens.metrics.icon_md)),
+            mark: f64::from(tokens.metrics.icon_md),
             row_gap: f64::from(spacing.s6),
             window_gap: f64::from(spacing.s4),
             tab_gap: f64::from(spacing.s1),
@@ -69,7 +72,7 @@ impl GridMetrics {
         }
     }
 
-    /// A window's title line under its picture, with the air above it.
+    /// A window's title line over its picture, with the air below it.
     pub fn title_h(&self) -> f64 {
         self.title_gap + self.title_lh
     }
@@ -82,7 +85,7 @@ pub struct StripPlace {
     pub label: Rect,
     /// Each window's picture, in strip order.
     pub wells: Vec<Rect>,
-    /// Each window's title line, under its picture.
+    /// Each window's title line, over its picture.
     pub titles: Vec<Rect>,
     /// The slot a strip with no windows shows instead.
     pub empty: Option<Rect>,
@@ -204,12 +207,12 @@ pub fn layout_strips(
             if wi > 0 {
                 x += gap(si, wi);
             }
-            let well = Rect::new(x, y, x + size.width * scale, y + size.height * scale);
-            let title_y = well.y1 + m.title_gap;
+            let top = y + m.title_h();
+            let well = Rect::new(x, top, x + size.width * scale, top + size.height * scale);
             place.wells.push(well);
             place
                 .titles
-                .push(Rect::new(well.x0, title_y, well.x1, title_y + m.title_lh));
+                .push(Rect::new(well.x0, y, well.x1, y + m.title_lh));
             x = well.x1;
         }
         y += band_h + m.title_h() + m.row_gap;
@@ -223,30 +226,25 @@ pub struct Tile<'a> {
     pub window: &'a SwitcherWindow,
     /// The tab its window shows (the others stand beside it).
     pub front: bool,
-    /// Where its picture rests, and its title line under it.
+    /// Where its picture rests, and its title line over it.
     pub well: Rect,
     pub title: Rect,
     /// The people in it: their initial and colour.
     pub faces: &'a [(char, Color)],
 }
 
-/// A pictured window's title under its picture at `rect` , and the faces of the people in it at the
-/// title's end.
-pub fn draw_tile_title(
-    ctx: &mut ui::paint::PaintCtx<'_>,
-    tile: &Tile<'_>,
-    rect: Rect,
-    (alpha, active): (f32, bool),
-) {
+/// A pictured window's title over its picture at `rect` : its app's mark, its title, and the faces
+/// of the people in it at the title's end, as the switcher's cards name their windows.
+pub fn draw_tile_title(ctx: &mut ui::paint::PaintCtx<'_>, tile: &Tile<'_>, rect: Rect, alpha: f32) {
     let (scene, transform, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
     let g = GridMetrics::for_theme(theme);
     let colors = &theme.tokens.colors;
-    let style = theme.tokens.typography.style(TextRole::Caption);
+    let style = theme.text(TextRole::Label);
     let line = Rect::new(
         rect.x0,
-        rect.y1 + g.title_gap,
+        rect.y0 - g.title_gap - g.title_lh,
         rect.x1,
-        rect.y1 + g.title_gap + g.title_lh,
+        rect.y0 - g.title_gap,
     );
     scene.push_layer(
         Fill::NonZero,
@@ -255,33 +253,47 @@ pub fn draw_tile_title(
         transform,
         &line.inflate(g.title_lh, g.title_lh),
     );
-    let face = g.title_lh;
+    let face = g.mark;
     let shown = tile.faces.len().min(TILE_FACES_MAX);
     let faces_w = if shown == 0 {
         0.0
     } else {
         face * (1.0 + 0.6 * f64_of_usize(shown.saturating_sub(1)))
     };
-    let text_w = (line.width() - faces_w - f64::from(theme.tokens.spacing.s1)).max(0.0);
+    let gap = f64::from(theme.tokens.spacing.s2);
+    let app = &tile.window.app;
+    let mark_top = line.center().y - g.mark / 2.0;
+    ui::widget::draw_app_mark(
+        scene,
+        transform,
+        Rect::new(line.x0, mark_top, line.x0 + g.mark, mark_top + g.mark),
+        app.icon.as_ref(),
+        app.kind,
+        colors.text_primary,
+    );
+    let text_x = line.x0 + g.mark + gap;
+    let text_w = (line.x1 - text_x - faces_w - gap).max(0.0);
     let shown_title =
         ctx.text
             .elide_to_width_style(&tile.window.title, ui::num::f32_of_f64(text_w), &style);
+    let (_, text_h) = ctx.text.measure_style(&shown_title, None, &style);
     ctx.text.draw_style(
         scene,
         &shown_title,
-        if active {
-            colors.text_primary
-        } else {
-            colors.text_dim
-        },
-        transform.pre_translate((line.x0, line.y0).into()),
+        colors.text_primary,
+        transform.pre_translate((text_x, line.center().y - f64::from(text_h) / 2.0).into()),
         None,
         &style,
     );
     let ground = ui::chrome::shell::desktop_ground(theme);
     let mut x1 = line.x1;
     for (initial, color) in tile.faces.iter().take(shown).rev() {
-        let disc = Rect::new(x1 - face, line.y0, x1, line.y0 + face);
+        let disc = Rect::new(
+            x1 - face,
+            line.center().y - face / 2.0,
+            x1,
+            line.center().y + face / 2.0,
+        );
         ui::widget::AvatarFace::new(&initial.to_string(), "")
             .presence(*color)
             .ringed_on(ground)
@@ -391,7 +403,11 @@ mod tests {
             assert!((ratio - 2.0).abs() < 1e-6, "sizes stay relative: {ratio}");
             assert!(places[1].empty.is_some(), "an empty strip keeps its row");
             assert!(places[0].label.y1 <= first.wells[0].y0);
-            assert!(first.titles[0].y0 > first.wells[0].y1);
+            assert!(
+                first.titles[0].y1 <= first.wells[0].y0,
+                "a window's title stands over its picture"
+            );
+            assert!(places[0].label.y1 <= first.titles[0].y0);
             for pair in places.windows(2) {
                 assert!(pair[0].bounds().y1 <= pair[1].label.y0, "top to bottom");
             }

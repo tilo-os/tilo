@@ -1351,13 +1351,6 @@ impl BrowserShell {
                 }
                 DesktopAsk::HostAction(id) => self.host_action(id),
                 DesktopAsk::ReportProblem => self.report_problem(),
-                // The person's account, billing beside who they are, is Settings' Billing page.
-                DesktopAsk::AccountSettings => {
-                    self.requests.borrow_mut().push(HostRequest::ShowInApp {
-                        app: "so.tilo.settings".into(),
-                        resource: "settings.section:billing".into(),
-                    });
-                }
                 // An agent's grant is the device the person runs it on, and it is taken back
                 // at the door, as Console's card takes it back: the root this page holds
                 // signs the revocation, as it revokes any of their devices.

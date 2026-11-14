@@ -1,6 +1,7 @@
-//! The overview of the person's Tilo below their workspaces: where their
-//! workspaces run (Hosts & compute), the agents they let in, and their
-//! account.
+//! The overview of the person's Tilo below their workspaces: their workspaces
+//! elsewhere, where their workspaces run (Hosts & compute) and the agents they
+//! let in. Their account and the session's own actions (lock, log out, restart,
+//! shut down) are quick settings' and their own card's, not the overview's.
 //!
 //! Hosting is not a dashboard of its own. A host is a place a workspace
 //! runs; what a host offers the person's account, and what it used, is its
@@ -38,14 +39,6 @@ use ui::widget::{Fact, Tone};
 use crate::i18n::{t, t_args};
 use crate::overview_panel::OverviewPick;
 
-/// The person, as their account line names them.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AccountLine {
-    pub name: String,
-    /// What else says who they are: their handle, or where they signed in.
-    pub detail: Option<String>,
-}
-
 /// What the overview shows below the workspaces, as the host knows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TiloDesk {
@@ -57,11 +50,6 @@ pub struct TiloDesk {
     pub hosts: Vec<HostAccount>,
     /// The agent door's answer, when one answers ([`agent_door::DOOR`]).
     pub door: Option<agent_door::Door>,
-    pub account: Option<AccountLine>,
-    /// The session's own actions the Tilo mark offered (lock, sign out, …), as `(id, label)`.
-    pub actions: Vec<(String, String)>,
-    /// The host has somewhere to send feedback.
-    pub feedback: bool,
 }
 
 /// One row below the workspaces.
@@ -323,8 +311,8 @@ fn agent_row(grant: &agent_door::Grant) -> TiloItem {
     }
 }
 
-/// The rows below the workspaces: Hosts & compute once it is relevant, the
-/// agents let in when any are, and the account.
+/// The rows below the workspaces: the person's workspaces elsewhere, Hosts & compute once it is
+/// relevant, and the agents let in when any are.
 #[must_use]
 pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
     let mut rows = Vec::new();
@@ -355,49 +343,6 @@ pub fn rows(desk: &TiloDesk) -> Vec<TiloRow> {
                 .iter()
                 .map(|grant| TiloRow::Item(agent_row(grant))),
         );
-    }
-    rows.push(TiloRow::Caption(t("overview-tilo-account")));
-    if let Some(account) = &desk.account {
-        rows.push(TiloRow::Item(TiloItem {
-            key: "overview-account".into(),
-            mark: Some(TiloMark::Icon(Icon::User)),
-            title: account.name.clone(),
-            facts: account.detail.clone().map(Fact::text).into_iter().collect(),
-            press: Some(OverviewPick::AccountSettings),
-            action: None,
-            confirm: None,
-        }));
-    }
-    rows.extend(desk.actions.iter().map(|(id, label)| {
-        TiloRow::Item(TiloItem {
-            key: format!("overview-action:{id}"),
-            mark: None,
-            title: label.clone(),
-            facts: Vec::new(),
-            press: Some(OverviewPick::HostAction(id.clone())),
-            action: None,
-            confirm: None,
-        })
-    }));
-    rows.push(TiloRow::Item(TiloItem {
-        key: "overview-about".into(),
-        mark: Some(TiloMark::Icon(Icon::Info)),
-        title: t("overview-tilo-about"),
-        facts: Vec::new(),
-        press: Some(OverviewPick::AboutTilo),
-        action: None,
-        confirm: None,
-    }));
-    if desk.feedback {
-        rows.push(TiloRow::Item(TiloItem {
-            key: "overview-feedback".into(),
-            mark: None,
-            title: t("tilo-menu-feedback"),
-            facts: Vec::new(),
-            press: Some(OverviewPick::Feedback),
-            action: None,
-            confirm: None,
-        }));
     }
     rows
 }

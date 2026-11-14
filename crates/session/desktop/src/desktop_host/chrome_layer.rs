@@ -25,7 +25,7 @@ mod shortcut_actions;
 mod tests;
 
 use super::{PlainOverview, close_tab, column, fill, grow, wake_deadline};
-use crate::about::{TiloMenu, TiloMenuAction};
+use crate::about::TiloMenu;
 use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::control_hints::{ControlHints, HintFrame, HintsFeed};
 use crate::desk_verbs::chrome_resource;
@@ -385,7 +385,13 @@ impl DesktopChrome {
             .unwrap_or_default();
         let avatar = self.bar.own_avatar_rect();
         HintFrame {
-            row: self.handle.hint_places(),
+            // The overview covers the desk: none of its windows' bars or edges is on screen, so no
+            // hint anchored to them stands, and one showing leaves.
+            row: if self.overview.is_open() {
+                ui::widget::HintPlaces::default()
+            } else {
+                self.handle.hint_places()
+            },
             area,
             hint_room: self.bar.hint_room(),
             search_keys,
@@ -928,7 +934,7 @@ impl DesktopChrome {
                 }
             }
             // The Tilo mark zooms out of the workspace to the overview of the person's Tilo, and
-            // back in: what its menu offered stands in the overview's account section.
+            // back in.
             ChromeIntent::ToggleTiloMenu => {
                 self.workspace_menu.close();
                 self.toggle_overview();
@@ -954,20 +960,6 @@ impl DesktopChrome {
             }
             other => self.ask(DesktopAsk::Intent(other)),
         }
-    }
-
-    /// What the Tilo menu offers of the session's own actions, in the order the host publishes
-    /// them: locking, logging out, restarting and shutting down.
-    fn tilo_menu_actions(&self) -> Vec<TiloMenuAction> {
-        self.handle
-            .host_actions()
-            .into_iter()
-            .filter(|action| action.source == Some(HostActionSource::Session))
-            .map(|action| TiloMenuAction {
-                id: action.id,
-                label: action.title,
-            })
-            .collect()
     }
 
     /// Whether the workspace menu offers joining another workspace: the host published the action
@@ -1219,20 +1211,8 @@ impl DesktopChrome {
                 self.ask(DesktopAsk::OpenAgent(client.clone()));
                 None
             }
-            OverviewPick::AccountSettings => {
-                self.ask(DesktopAsk::AccountSettings);
-                None
-            }
             OverviewPick::HostAction(id) => {
                 self.ask(DesktopAsk::HostAction(id.clone()));
-                None
-            }
-            OverviewPick::AboutTilo => {
-                self.tilo_menu.set_about_open(true);
-                None
-            }
-            OverviewPick::Feedback => {
-                self.tilo_menu.ask_feedback();
                 None
             }
         };
@@ -2031,7 +2011,7 @@ impl DesktopChrome {
                 }
                 ChromeIntent::ToggleTiloMenu
             }
-            // The About sheet, as the menu's own entry and the overview's About show it.
+            // The About sheet, as the chrome's `about` verb shows it.
             ChromeEffect::About { open } => {
                 let open = open.unwrap_or(!self.tilo_menu.is_about_open());
                 if self.tilo_menu.is_about_open() != open {
@@ -2288,10 +2268,6 @@ impl Widget for DesktopChrome {
             changed = true;
         }
         changed |= self.tilo_menu.settle();
-        if let Some(action) = self.tilo_menu.take_action() {
-            self.ask(DesktopAsk::HostAction(action));
-            changed = true;
-        }
         if let Some(choice) = self.workspace_menu.take_choice() {
             self.apply_workspace_choice(choice);
             changed = true;

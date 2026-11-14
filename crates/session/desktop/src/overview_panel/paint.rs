@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use ui::TextRole;
 use ui::num::{f32_of_f64, f64_of_usize};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, ControlSize, FieldFace, IconButton, TextInput, Widget as _};
 use vello::Scene;
@@ -275,7 +275,7 @@ impl OverviewPanel {
                 ctx.transform
                     .pre_translate((content.x0, here_rect.y0).into()),
                 None,
-                &theme.text(TextRole::Display).with_weight(TextWeight::Bold),
+                &theme.text(TextRole::Title),
             );
             return;
         };
@@ -330,7 +330,7 @@ impl OverviewPanel {
         let anchor = (faces_left - m.s4, here_rect.y0 + m.name_lh / 2.0);
         let marks_left = paint_app_marks(scene, transform, theme, anchor, &card.apps());
         let name_avail = (marks_left - m.s4 - content.x0 - chip_w - m.s3).max(60.0);
-        let name_style = theme.text(TextRole::Display).with_weight(TextWeight::Bold);
+        let name_style = theme.text(TextRole::Title);
         let name = text.elide_to_width_style(&card.name, f32_of_f64(name_avail), &name_style);
         let (name_w, name_h) = text.measure_style(&name, None, &name_style);
         text.draw_style(
@@ -876,7 +876,7 @@ impl OverviewPanel {
                 &mut ui::paint::PaintCtx::new(scene, transform, &mut *ctx.text, theme),
                 tile,
                 rect,
-                (ui::motion::unit_opacity(chrome), state.active),
+                ui::motion::unit_opacity(chrome),
             );
         }
         if layered {

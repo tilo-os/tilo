@@ -215,20 +215,9 @@ pub fn about_view(variant: AboutVariant, links: &AboutLinks) -> Column {
     column.push(Box::new(row))
 }
 
-/// One of the session's own actions, offered above About: what only the session can carry out
-/// (locking the screen, logging out, restarting the computer, shutting it down), by the id the host
-/// published it under.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TiloMenuAction {
-    pub id: String,
-    pub label: String,
-}
-
 /// Which entry of the menu was chosen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Entry {
-    /// The session action at this place among [`TiloMenu::actions`].
-    Action(usize),
     About,
     Feedback,
 }
@@ -239,12 +228,8 @@ pub struct TiloMenu {
     about: ModalDialog<Column>,
     /// Set by the sheet's close control, Escape or a click outside it.
     dismissed: Rc<Cell<bool>>,
-    /// The session's own rows, above About.
-    actions: Vec<TiloMenuAction>,
     /// The row chosen since the host last settled the menu.
     chosen: Rc<Cell<Option<Entry>>>,
-    /// The session action chosen, until the host takes it.
-    picked: Option<String>,
     /// The menu offers Feedback: the host has a destination for it.
     offers_feedback: bool,
     /// Feedback was chosen and the host has not yet opened it.
@@ -267,9 +252,7 @@ impl TiloMenu {
                 .with_max_width(440.0)
                 .on_dismiss(move || dismiss.set(true)),
             dismissed,
-            actions: Vec::new(),
             chosen: Rc::new(Cell::new(None)),
-            picked: None,
             offers_feedback: false,
             feedback: false,
             about_label: variant_menu,
@@ -295,29 +278,9 @@ impl TiloMenu {
         self.rebuild();
     }
 
-    /// List the session's own actions above About, in the order the host publishes them; About and
-    /// Feedback follow behind a separator.
-    pub fn set_actions(&mut self, actions: Vec<TiloMenuAction>) {
-        if self.actions == actions {
-            return;
-        }
-        self.actions = actions;
-        self.rebuild();
-    }
-
-    /// Lay the menu's rows out again: the session's actions, About, and Feedback where the host has
-    /// somewhere to send it.
+    /// Lay the menu's rows out again: About, and Feedback where the host has somewhere to send it.
     fn rebuild(&mut self) {
-        let mut items = Vec::with_capacity(self.actions.len().saturating_add(3));
-        for (index, action) in self.actions.iter().enumerate() {
-            let chosen = Rc::clone(&self.chosen);
-            items.push(MenuItem::action(action.label.clone(), move || {
-                chosen.set(Some(Entry::Action(index)));
-            }));
-        }
-        if !self.actions.is_empty() {
-            items.push(MenuItem::separator());
-        }
+        let mut items = Vec::with_capacity(2);
         let chosen = Rc::clone(&self.chosen);
         let about_label = self.about_label.clone();
         items.push(MenuItem::action(about_label, move || {
@@ -332,26 +295,10 @@ impl TiloMenu {
         self.menu.set_items(items);
     }
 
-    /// Whether the menu offers Feedback: the host has somewhere to send it.
-    pub fn offers_feedback(&self) -> bool {
-        self.offers_feedback
-    }
-
-    /// Ask for Feedback as choosing it in the menu does: the next [`Self::take_feedback`] says so.
-    pub fn ask_feedback(&mut self) {
-        self.feedback = self.offers_feedback;
-    }
-
     /// Whether Feedback was chosen since the last call; the host opens it about the window in
     /// front.
     pub fn take_feedback(&mut self) -> bool {
         std::mem::take(&mut self.feedback)
-    }
-
-    /// The session action chosen since the last call, by the id its host published it under: the
-    /// host carries it out.
-    pub fn take_action(&mut self) -> Option<String> {
-        self.picked.take()
     }
 
     /// Open the menu under `anchor` (the mark) within `viewport` , or close it when it is open.
@@ -364,8 +311,7 @@ impl TiloMenu {
         }
     }
 
-    /// Show the About sheet, or take it away: the chrome's own `about` verb, and the menu's entry
-    /// and the overview's About, all here.
+    /// Show the About sheet, or take it away: the chrome's own `about` verb and the menu's entry.
     pub fn set_about_open(&mut self, open: bool) {
         if open {
             // The menu goes at once: fading out under the sheet's scrim it showed through it, over
@@ -406,13 +352,6 @@ impl TiloMenu {
                 self.menu.close();
                 self.feedback = true;
                 changed = true;
-            }
-            Some(Entry::Action(index)) => {
-                if let Some(action) = self.actions.get(index) {
-                    self.picked = Some(action.id.clone());
-                    self.menu.close();
-                    changed = true;
-                }
             }
             Some(Entry::Feedback) | None => {}
         }
@@ -588,39 +527,6 @@ mod tests {
                 !menu.take_feedback(),
                 "a menu without feedback never asks for it"
             );
-        }
-
-        phase session_actions_lead_the_menu_and_come_back_by_id;
-        // The session's own rows lead, About and Feedback follow behind a separator, and choosing one
-        // hands its id back once.
-        {
-            ui::i18n::I18nManager::init("en-US");
-            let mut menu = TiloMenu::new(AboutVariant::Native, &AboutLinks::default());
-            let lock = TiloMenuAction {
-                id: "session-lock".to_owned(),
-                label: "Lock".to_owned(),
-            };
-            let restart = TiloMenuAction {
-                id: "session-restart".to_owned(),
-                label: "Restart".to_owned(),
-            };
-            menu.set_actions(vec![lock, restart]);
-            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-            menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
-            menu.menu.click_item(0);
-            assert!(menu.settle());
-            assert!(!menu.is_open(), "choosing an action takes the menu away");
-            assert_eq!(menu.take_action().as_deref(), Some("session-lock"));
-            assert!(
-                menu.take_action().is_none(),
-                "an action is carried out once"
-            );
-            // About follows the actions and the separator after them.
-            menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
-            menu.menu.click_item(3);
-            assert!(menu.settle());
-            assert!(menu.is_about_open());
-            assert!(menu.take_action().is_none(), "About is not an action");
         }
 
         phase choosing_feedback_closes_the_menu_and_asks_the_host_once;

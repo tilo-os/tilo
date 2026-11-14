@@ -101,7 +101,7 @@ tilo_test_env::scenario! {
         };
         assert!(!hosting_relevant(&desk.hosts));
         let rows = rows(&desk);
-        assert_eq!(captions(&rows), ["Account"]);
+        assert!(captions(&rows).is_empty(), "nothing below the workspaces");
         assert_eq!(usage_line(&desk.hosts, "ws-build"), None);
     }
 
@@ -116,7 +116,7 @@ tilo_test_env::scenario! {
             ..TiloDesk::default()
         };
         let rows = rows(&desk);
-        assert_eq!(captions(&rows), ["Hosts & compute", "Account"]);
+        assert_eq!(captions(&rows), ["Hosts & compute"]);
         let host = items(&rows)[0];
         assert_eq!(host.title, "Ada's server");
         assert_eq!(facts(host), ["Your own host"]);
@@ -202,7 +202,7 @@ tilo_test_env::scenario! {
             ..TiloDesk::default()
         };
         let rows = rows(&desk);
-        assert_eq!(captions(&rows), ["Agents", "Account"]);
+        assert_eq!(captions(&rows), ["Agents"]);
         let agent = items(&rows)[0];
         assert_eq!(agent.title, "Claude Code");
         assert_eq!(
@@ -293,40 +293,28 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_account_holds_what_the_tilo_mark_offered;
+    phase the_overview_offers_workspaces_not_the_session_or_the_account;
+    // Locking, logging out, restarting and shutting down are quick settings' power menu's, the
+    // account the person's own card's: the overview below the workspaces only goes to the
+    // person's other workspaces.
     {
         en();
         let desk = TiloDesk {
-            account: Some(AccountLine {
-                name: "Ada".into(),
-                detail: Some("ada@tilo.sh".into()),
-            }),
             elsewhere: vec![("host-ws-3".into(), "Garden".into())],
-            actions: vec![("session-lock".into(), "Lock".into())],
-            feedback: true,
             ..TiloDesk::default()
         };
         let rows = rows(&desk);
-        assert_eq!(captions(&rows), ["More workspaces", "Account"]);
+        assert_eq!(captions(&rows), ["More workspaces"]);
         let picks: Vec<(&str, Option<&OverviewPick>)> = items(&rows)
             .iter()
             .map(|item| (item.title.as_str(), item.press.as_ref()))
             .collect();
         assert_eq!(
             picks,
-            [
-                (
-                    "Garden",
-                    Some(&OverviewPick::HostAction("host-ws-3".into()))
-                ),
-                ("Ada", Some(&OverviewPick::AccountSettings)),
-                (
-                    "Lock",
-                    Some(&OverviewPick::HostAction("session-lock".into()))
-                ),
-                ("About Tilo", Some(&OverviewPick::AboutTilo)),
-                ("Give feedback…", Some(&OverviewPick::Feedback)),
-            ]
+            [(
+                "Garden",
+                Some(&OverviewPick::HostAction("host-ws-3".into()))
+            )]
         );
     }
 }
