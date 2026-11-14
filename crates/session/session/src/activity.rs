@@ -25,6 +25,7 @@ use tilo_desktop_surface::activity::{
     ActivityHost, ActivitySnapshot, DetachedRecordHistory, HistoryOrigin, TaskRunDocument,
     TaskRunUndo, WorkspaceDeparture, WorkspaceSeenFrontier, morning,
 };
+#[cfg(target_os = "linux")]
 use tilo_desktop_surface::history_log;
 use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
 use tilo_lock::MutexRecover as _;
@@ -118,7 +119,9 @@ struct Inner {
     person: String,
     maps: HistoryMaps,
     apps: Option<Arc<dyn Apps>>,
-    /// Who a principal is, as presence shows them.
+    /// Who a principal is, as presence shows them: the names the devices that answered a boot go
+    /// by.
+    #[cfg(target_os = "linux")]
     people: People,
     writers: Writers,
     /// Where the activity model's code is.
@@ -240,7 +243,10 @@ impl Activity {
             store,
             state,
             apps,
+            #[cfg(target_os = "linux")]
             people,
+            #[cfg(not(target_os = "linux"))]
+                people: _,
             writers,
             pane,
             models,
@@ -258,6 +264,7 @@ impl Activity {
             unlock,
             maps: HistoryMaps::load(store.clone(), state.as_deref()),
             apps,
+            #[cfg(target_os = "linux")]
             people,
             writers,
             pane,
@@ -688,7 +695,6 @@ impl HistorySource for Activity {
     fn register_authors(&self, authors: &mut ui::AuthorDirectory) {
         // Who this host's own mounts write as: a record's changes by the person who made them.
         (self.0.writers.register)(authors);
-        let people = &*self.0.people;
         // A change of a workspace's layout is the person's: the record is written as them, so it
         // reads as presence shows them here and never as another participant.
         authors.register_local_identity(
@@ -700,7 +706,7 @@ impl HistorySource for Activity {
         #[cfg(target_os = "linux")]
         {
             let unlock = &self.0.unlock;
-            history_log::register_authors(authors, &unlock.authors(), people);
+            history_log::register_authors(authors, &unlock.authors(), &*self.0.people);
             if let Some(actor) = unlock.local_actor() {
                 authors.register_local_identity(&actor);
             }
