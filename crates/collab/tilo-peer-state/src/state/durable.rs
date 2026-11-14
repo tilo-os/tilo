@@ -497,12 +497,18 @@ impl StatePeer {
         // Which base layout: the three integers both begin with, read before
         // anything that differs. Never decode one and retry another.
         let base = durable_base_version(bytes)?;
+        // Which layout failed to read, and in what: a durable state a release
+        // wrote that no longer reads names the part of it that changed.
+        let layout = |envelope: u32, error: postcard::Error| {
+            format!("durable state version {envelope}, base version {base}: {error}")
+        };
         if base != DURABLE_BASE_VERSION && base != GOVERNANCE_LAYOUT_BEFORE {
             return Err(format!("unsupported durable base version {base}"));
         }
         let (durable, pending, pending_bytes, exact, sealed) = match version {
             4 => {
-                let value: DurableV4 = postcard::from_bytes(bytes).map_err(err)?;
+                let value: DurableV4 =
+                    postcard::from_bytes(bytes).map_err(|error| layout(4, error))?;
                 (
                     value.base,
                     value.pending,
@@ -513,7 +519,7 @@ impl StatePeer {
             }
             5 => {
                 let (value, tail): (DurableV5<'_>, _) =
-                    postcard::take_from_bytes(bytes).map_err(err)?;
+                    postcard::take_from_bytes(bytes).map_err(|error| layout(5, error))?;
                 if !tail.is_empty() || value.version != 5 || value.base.version != 4 {
                     return Err("invalid native v5 durable envelope".into());
                 }
@@ -521,13 +527,14 @@ impl StatePeer {
                     value.base.base,
                     value.base.pending,
                     value.base.pending_bytes,
-                    ExactAdmissions::decode(value.exact).map_err(err)?,
+                    ExactAdmissions::decode(value.exact)
+                        .map_err(|error| format!("exact admissions: {error}"))?,
                     Vec::new(),
                 )
             }
             6 => {
                 let (value, tail): (DurableV6<'_>, _) =
-                    postcard::take_from_bytes(bytes).map_err(err)?;
+                    postcard::take_from_bytes(bytes).map_err(|error| layout(6, error))?;
                 if !tail.is_empty()
                     || value.version != 6
                     || value.base.version != 4
@@ -539,7 +546,8 @@ impl StatePeer {
                     value.base.base,
                     value.base.pending,
                     value.base.pending_bytes,
-                    ExactAdmissions::decode(value.exact).map_err(err)?,
+                    ExactAdmissions::decode(value.exact)
+                        .map_err(|error| format!("exact admissions: {error}"))?,
                     value.sealed,
                 )
             }

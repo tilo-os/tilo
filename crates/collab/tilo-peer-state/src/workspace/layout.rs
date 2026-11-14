@@ -17,7 +17,7 @@
 //! certificates, signatures and receipts, decide as they did.
 use automerge::hydrate::{Map, Value};
 use automerge::{ActorId, AutoCommit, ScalarValue};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tilo_user_identity::DeviceCert;
 
@@ -50,10 +50,31 @@ struct ReceiptBefore {
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
     request_id: [u8; 32],
-    role: crate::join::Role,
+    role: RoleBefore,
     /// The signed invitation as base64 text, in the ledger's copy.
     #[serde(default)]
     invitation: Option<String>,
+}
+
+/// A member's role as the earlier layout named it: each variant by its own
+/// name, where [`crate::join::Role`] names it in snake case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum RoleBefore {
+    Viewer,
+    Commenter,
+    Editor,
+    Moderator,
+}
+
+impl From<RoleBefore> for crate::join::Role {
+    fn from(role: RoleBefore) -> Self {
+        match role {
+            RoleBefore::Viewer => Self::Viewer,
+            RoleBefore::Commenter => Self::Commenter,
+            RoleBefore::Editor => Self::Editor,
+            RoleBefore::Moderator => Self::Moderator,
+        }
+    }
 }
 
 impl ReceiptBefore {
@@ -63,7 +84,7 @@ impl ReceiptBefore {
             user_public_key: self.user_public_key,
             device_public_key: self.device_public_key,
             request_id: self.request_id,
-            role: self.role,
+            role: self.role.into(),
         }
     }
 }

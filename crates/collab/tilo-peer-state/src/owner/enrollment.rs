@@ -25,8 +25,7 @@ pub(crate) fn restore(
     record: &StoredWorkspace,
     now: SystemTime,
 ) -> Result<NativeCommittedView, String> {
-    if !matches!(record.version, 2 | 3)
-        || (record.version == 3) != record.effect_history_root.is_some()
+    if record.version != crate::owner::record::WORKSPACE_VERSION
         || workspace != record.workspace
         || record.generation == 0
         || record.continuity == 0
@@ -422,7 +421,7 @@ impl NativeWorkspaceOwner {
         }
 
         let record = StoredWorkspace {
-            version: 2,
+            version: crate::owner::record::WORKSPACE_VERSION,
             workspace,
             workspace_host: bootstrap.host.clone(),
             device: enrollment.local_device().clone(),

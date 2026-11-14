@@ -566,6 +566,37 @@ pub fn author_of(message: &NeighbourMsg) -> Option<[u8; 32]> {
 
 const WORKSPACES: &str = "workspaces";
 
+/// Bring up the frames the 0.1 releases kept in the store at `root` for each
+/// of `workspaces`, before the store opens. Those releases named a
+/// workspace's directory by the hex of the number they derived from its id
+/// ([`WorkspaceId::released_number`]); its frames name no workspace, so the
+/// directory moves to the one this build names by the id, unless that one is
+/// already there. A workspace not named here keeps its released directory,
+/// which no open reads.
+///
+/// # Errors
+///
+/// Returns an error when a directory cannot be moved.
+pub fn bring_up_released(
+    root: &Path,
+    workspaces: impl IntoIterator<Item = WorkspaceId>,
+) -> io::Result<()> {
+    let dir = root.join(WORKSPACES);
+    let mut moved = false;
+    for workspace in workspaces {
+        let released = dir.join(format!("{:016x}", workspace.released_number()));
+        let current = workspace_dir(root, workspace);
+        if released.is_dir() && !current.exists() {
+            fs::rename(&released, &current)?;
+            moved = true;
+        }
+    }
+    if moved {
+        fs::File::open(&dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
 fn workspace_dir(root: &Path, workspace: WorkspaceId) -> PathBuf {
     root.join(WORKSPACES).join(workspace.to_string())
 }
@@ -780,6 +811,30 @@ mod tests {
     fn workspace() -> WorkspaceId {
         WorkspaceId::from_u128(7)
     }
+
+    /// The frames a 0.1 release kept under the hex of the workspace's
+    /// released number are the store's for the workspace once it is named.
+    #[test]
+    fn frames_a_release_kept_are_read_under_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let frame = frame(&key, 1, ContentRetention::Delta);
+        Store::open(dir.path(), Appetite::StoreAll)
+            .unwrap()
+            .retain(workspace(), &frame)
+            .unwrap();
+        let workspaces = dir.path().join(WORKSPACES);
+        fs::rename(
+            workspace_dir(dir.path(), workspace()),
+            workspaces.join(format!("{:016x}", workspace().released_number())),
+        )
+        .unwrap();
+        bring_up_released(dir.path(), [workspace()]).unwrap();
+        let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
+        assert_eq!(replay.frames, vec![frame.message]);
+    }
+
     const APP: &str = "test.app";
     const CLUSTER: &str = "workspace";
     const RECORD: &str = "tab:1";

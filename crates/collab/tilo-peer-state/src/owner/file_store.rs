@@ -27,7 +27,7 @@ use crate::owner::journal;
 use crate::owner::{
     Change, LimitedWriter, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, NativeWorkspaceOwner,
     Store,
-    record::{StoredPendingEnrollment, StoredWorkspace},
+    record::{StoredPendingEnrollment, StoredWorkspace, format},
 };
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -174,6 +174,18 @@ fn part_name(name: &OsStr) -> Option<(WorkspaceId, u64)> {
     Some((WorkspaceId::parse(workspace)?, revision.parse().ok()?))
 }
 
+/// Whether `path` is a workspace file as an older build wrote it, kept beside
+/// the file it came up into ([`format::FORMAT`]): never pruned, so going back
+/// to that build loses nothing.
+fn is_kept_layout(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .and_then(|name| name.rsplit_once(".json.v"))
+        .is_some_and(|(_, version)| {
+            !version.is_empty() && version.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
 fn provision(parts: &Path) -> Result<(), String> {
     if parts.is_dir() {
         return Ok(());
@@ -225,9 +237,9 @@ fn read_record(path: &Path) -> Result<(NativeAuthorityStorage, Layout), String> 
         ));
     };
     // A record written as one file, by a build before the split: read whole,
-    // and kept beside it from here on, leaving this file as it is.
-    let mut record: NativeAuthorityStorage =
-        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    // and kept beside it from here on, leaving this file as it is. Its
+    // workspaces come up to this build's layout as they are read.
+    let mut record = format::read_whole(&bytes)?;
     drop_recovery_projections(&mut record);
     Ok((record, Layout::Whole))
 }
@@ -246,14 +258,29 @@ fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage
         let part = part_of(&parts, workspace, revision);
         let bytes = read_bounded(&part)?
             .ok_or_else(|| format!("the record names {workspace}'s file and it is missing"))?;
-        let mut stored: StoredWorkspace =
-            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         // A journal holds at most its snapshot's size past the larger of
         // that and its floor, and one entry, itself within the cap.
         let journal_cap = MAX_AUTHORITY_BYTES
             .saturating_mul(2)
             .saturating_add(JOURNAL_FLOOR);
-        if let Some(log) = read_within(&log_of(&parts, workspace, revision), journal_cap)? {
+        let log = read_within(&log_of(&parts, workspace, revision), journal_cap)?;
+        // A file an older build wrote comes up to this build's layout, the
+        // file as it was kept beside it. A journal is a delta of the bytes
+        // its snapshot's layout writes, so one that continues an older
+        // layout is not replayed over this one: no release wrote one.
+        let version = format::stored_version(&bytes)?;
+        if version != format::FORMAT.version && log.as_ref().is_some_and(|log| !log.is_empty()) {
+            return Err(format!(
+                "{workspace}'s journal continues a record of version {version}, which this build \
+                 does not replay"
+            ));
+        }
+        let bytes = format::FORMAT
+            .bring_up(&part, bytes, version)
+            .map_err(|error| error.to_string())?;
+        let mut stored: StoredWorkspace =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        if let Some(log) = log {
             let (replayed, last) = journal::replay(stored, &log, MAX_AUTHORITY_BYTES)?;
             stored = replayed;
             latest = latest.max(last.unwrap_or(0));
@@ -287,7 +314,7 @@ fn drop_recovery_projections(record: &mut NativeAuthorityStorage) {
 }
 
 /// Compact JSON of one workspace's record, within its file's cap.
-fn part_bytes(stored: &StoredWorkspace) -> Result<Vec<u8>, String> {
+pub(super) fn part_bytes(stored: &StoredWorkspace) -> Result<Vec<u8>, String> {
     crate::owner::limits::preflight_record(stored, MAX_AUTHORITY_BYTES)
         .map_err(|error| error.to_string())?;
     let mut bytes = LimitedWriter::new(Vec::new(), MAX_AUTHORITY_BYTES);
@@ -557,7 +584,7 @@ impl FileStore {
             .collect();
         for entry in entries.flatten() {
             let path = entry.path();
-            if path == index || runs.contains(&path) {
+            if path == index || runs.contains(&path) || is_kept_layout(&path) {
                 continue;
             }
             if path

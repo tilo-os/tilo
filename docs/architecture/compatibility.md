@@ -168,8 +168,30 @@ who may have written it.
   are kept beside it as a golden fixture (`assert_golden_bytes`), read by
   today's types and written back exactly, so a field added to, removed from or
   moved in a persisted type fails a test instead of leaving stored files
-  unreadable. The host's governed workspace record (versions 2 to 4), its wait
-  list, its door, its revocation log and its governed access are such formats.
+  unreadable. The host's governed workspace record (versions 3, which the 0.1
+  releases wrote, and 4), its wait list, its door, its revocation log and its
+  governed access are such formats. A format's oldest version only falls: it
+  is written out as a number, and `tools/policy/check_format_migrations.py`
+  fails a change that raises it.
+- **Signed bytes are never rewritten.** An invitation, a delegation and the
+  rows a workspace's governance hashes are kept as their signer wrote them,
+  since their ids and signatures are over those bytes. Their own version names
+  their layout: a change to one takes a new version, and the reader of the
+  old one stays.
+- **What the live relay holds is tested.** `t test relay-upgrade` builds the
+  release the live tilo.sh relay runs (`tools/relay-upgrade/<release>`), has
+  that release's relay keep a Lounge (its owner and moderator, people at their
+  roles, an open invitation, a member's own workspace, a chat message), and
+  starts this checkout's relay on the state it left. A refusal, or anyone or
+  anything missing, fails it. It is one of the regular checks, so a change to
+  a stored layout either keeps it passing or adds the step that does. Moving
+  the live relay to a new release adds a directory there and moves the two
+  checks to it.
+- **Directories named by an old id move once.** The 0.1 releases named a
+  workspace's relay store and link store by a number derived from its id;
+  this build names them by the id. Opening such a store moves it to the id
+  (the relay store's frames written as this build writes them), and keeps the
+  relay store's old directory beside it as `<number>.kept`.
 - **A file only this build writes** names the one version it writes and
   refuses every other, saying which version it holds, instead of reading its
   rows under rules written for another layout: the state a device keeps of a

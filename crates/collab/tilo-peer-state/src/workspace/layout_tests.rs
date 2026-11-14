@@ -31,7 +31,7 @@ struct ReceiptJson {
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
     request_id: [u8; 32],
-    role: Role,
+    role: RoleBefore,
     #[serde(skip_serializing_if = "Option::is_none")]
     invitation: Option<String>,
 }
@@ -42,7 +42,12 @@ fn receipt_json(receipt: &RedemptionReceipt, invitation: Option<String>) -> Rece
         user_public_key: receipt.user_public_key,
         device_public_key: receipt.device_public_key,
         request_id: receipt.request_id,
-        role: receipt.role,
+        role: match receipt.role {
+            Role::Viewer => RoleBefore::Viewer,
+            Role::Commenter => RoleBefore::Commenter,
+            Role::Editor => RoleBefore::Editor,
+            Role::Moderator | Role::Owner => RoleBefore::Moderator,
+        },
         invitation,
     }
 }
@@ -270,4 +275,32 @@ fn every_admission_reads_back_after_the_governance_comes_up() {
         );
     }
     let _ = now;
+}
+
+/// A receipt the 0.1 releases wrote names its role by the variant's own name
+/// ("Editor"), not as this build's role does ("editor"): read with this
+/// build's role, every row and receipt of a released workspace was kept as
+/// JSON nothing reads, and the relay refused the workspace at start.
+#[test]
+fn a_released_receipt_reads_with_its_role_as_it_was_written() {
+    let key = |byte: u8| format!("[{}]", vec![byte.to_string(); 32].join(","));
+    let released = format!(
+        r#"{{"invite_id":{},"user_public_key":{},"device_public_key":{},"request_id":{},"role":"Editor"}}"#,
+        key(1),
+        key(2),
+        key(3),
+        key(4)
+    );
+    let before: ReceiptBefore = serde_json::from_str(&released).unwrap();
+    let receipt = before.receipt();
+    assert_eq!(receipt.role, Role::Editor);
+    assert_eq!((receipt.invite_id, receipt.request_id), ([1; 32], [4; 32]));
+    for (role, name) in [
+        (RoleBefore::Viewer, "Viewer"),
+        (RoleBefore::Commenter, "Commenter"),
+        (RoleBefore::Editor, "Editor"),
+        (RoleBefore::Moderator, "Moderator"),
+    ] {
+        assert_eq!(serde_json::to_string(&role).unwrap(), format!("\"{name}\""));
+    }
 }

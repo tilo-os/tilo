@@ -9,9 +9,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 use super::{index_of, part_bytes, parts_of};
-use crate::owner::{
-    NativeAuthorityStorage, NativeWorkspaceOwner, WorkspaceId, open_file, read_file, testing,
-};
+use crate::owner::{NativeWorkspaceOwner, WorkspaceId, open_file, read_file, testing};
 use ed25519_dalek::SigningKey;
 use futures::executor::block_on;
 use std::{
@@ -340,10 +338,11 @@ async fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
         .unwrap();
     drop(owner);
 
-    // A build before the split reads the file it wrote, whole, and holds two
-    // workspaces: the split wrote the record beside that file, not over it.
-    let older: NativeAuthorityStorage =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    // A build before the split finds the file it wrote as it wrote it, with
+    // its two workspaces: the split wrote the record beside that file, not
+    // over it.
+    assert_eq!(std::fs::read(&path).unwrap(), predecessor());
+    let older = super::format::read_whole(&predecessor()).unwrap();
     assert_eq!(older.revision(), 3);
     assert_eq!(older.held().count(), 2);
 
@@ -351,7 +350,9 @@ async fn a_split_record_leaves_the_file_it_came_from_for_an_older_build() {
     // does not take the record with it: this build reads its index.
     let split = read_file(&path).unwrap();
     assert_eq!(split.held().count(), 3);
-    std::fs::write(&path, serde_json::to_vec(&older).unwrap()).unwrap();
+    let mut rolled_back: serde_json::Value = serde_json::from_slice(&predecessor()).unwrap();
+    rolled_back["revision"] = 4.into();
+    std::fs::write(&path, serde_json::to_vec(&rolled_back).unwrap()).unwrap();
     let reread = read_file(&path).unwrap();
     assert_eq!(reread.revision(), split.revision());
     assert_eq!(reread.held().count(), 3);
@@ -506,4 +507,66 @@ async fn an_index_before_journals_reads_and_gains_them() {
             })
             .unwrap()
     );
+}
+
+/// The record as a release kept it split: the index before journals and each
+/// workspace's file in the releases' layout, the predecessor's entries.
+fn released_split(path: &Path) {
+    let whole: serde_json::Value = serde_json::from_slice(&predecessor()).unwrap();
+    let parts = parts_of(path);
+    std::fs::create_dir_all(&parts).unwrap();
+    let mut held = serde_json::Map::new();
+    for (workspace, entry) in whole["rooms"].as_object().unwrap() {
+        std::fs::write(
+            parts.join(format!("{workspace}.3.json")),
+            serde_json::to_vec(entry).unwrap(),
+        )
+        .unwrap();
+        held.insert(workspace.clone(), 3.into());
+    }
+    let index = serde_json::json!({
+        "version": 1,
+        "revision": 3,
+        "held": held,
+        "pending": whole["pending"],
+    });
+    std::fs::write(index_path(path), serde_json::to_vec(&index).unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn a_split_record_a_release_wrote_comes_up_with_its_files_kept_beside() {
+    let directory = directory();
+    let path = record_path(&directory);
+    released_split(&path);
+    let released = part_files(&path);
+
+    let owner = open_file(&path).unwrap();
+    assert_eq!(
+        name(&owner, workspace(FOUNDERS)).as_deref(),
+        Some("Founders")
+    );
+    assert!(owner.storage().requires(workspace(JOINING)));
+    // Each file is in this build's layout now, and the file as the release
+    // wrote it is beside it.
+    for (name, bytes) in &released {
+        let kept = std::fs::read(parts_of(&path).join(format!("{name}.v2"))).unwrap();
+        assert_eq!(&kept, bytes);
+        let now: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(parts_of(&path).join(name)).unwrap()).unwrap();
+        assert_eq!(now["version"], 4);
+        assert!(now.get("room").is_none());
+    }
+
+    // A publication moves past those files; the kept ones stay.
+    let (key, device) = device();
+    testing::founded(&owner, "Third", &device, &key, SystemTime::now())
+        .await
+        .unwrap();
+    drop(owner);
+    for name in released.keys() {
+        assert!(parts_of(&path).join(format!("{name}.v2")).is_file());
+    }
+    let (reopened, replaced) = replacements(|| open_file(&path));
+    assert_eq!(replaced, 0, "a record already brought up is read as it is");
+    assert_eq!(reopened.unwrap().storage().held().count(), 3);
 }

@@ -607,7 +607,7 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
                     160
                 );
                 assert_eq!(view.generation(), 161);
-                assert_eq!(view.record.version, 3);
+                assert_eq!(view.record.version, crate::owner::record::WORKSPACE_VERSION);
                 assert!(
                     !view
                         .record
@@ -682,17 +682,9 @@ fn assert_archived_file_layout(path: &std::path::Path) {
     assert!(crate::owner::publication::validate_file_layout(4, &storage).is_ok());
     assert!(crate::owner::publication::validate_file_layout(5, &storage).is_ok());
     assert!(crate::owner::publication::validate_file_layout(3, &storage).is_err());
-    let mut mismatched = storage.clone();
-    mismatched.workspaces.values_mut().next().unwrap().version = 2;
+    let mut mismatched = storage;
+    mismatched.workspaces.values_mut().next().unwrap().version = 3;
     assert!(crate::owner::publication::validate_file_layout(4, &mismatched).is_err());
-    let mut missing = storage;
-    missing
-        .workspaces
-        .values_mut()
-        .next()
-        .unwrap()
-        .effect_history_root = None;
-    assert!(crate::owner::publication::validate_file_layout(4, &missing).is_err());
 }
 
 #[test]

@@ -26,6 +26,7 @@ pub(crate) use tilo_relay_store::bounded;
 pub mod compaction;
 pub(crate) mod governed_access;
 pub(crate) mod record_sync;
+pub(crate) mod released;
 pub(crate) mod replay;
 pub(crate) mod resume;
 #[doc(hidden)]
@@ -225,9 +226,11 @@ impl WorkspaceStore {
         pinned: bool,
         payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
     ) -> Result<Self, StoreError> {
-        let root = state_root.join("workspaces").join(workspace_id.to_string());
+        let workspaces = state_root.join("workspaces");
+        let root = workspaces.join(workspace_id.to_string());
         #[cfg(test)]
         test_barrier::pause(&root, "open");
+        released::bring_up(&workspaces, &root, workspace_id)?;
         fs::create_dir_all(&root)?;
         fs::create_dir_all(root.join("pending"))?;
         fs::create_dir_all(root.join(RETAINED_DIR))?;

@@ -151,10 +151,10 @@ fn archive_one(
     let device = view.device.clone();
     peer.workspace_mut()
         .set_workspace_effect_history_root(&device, root, now)?;
+    // A build that read no effect history root ignored the index and minted
+    // a different original receipt for a UUID it already knew; the record's
+    // version is one such a build refuses ([`crate::owner::record::WORKSPACE_VERSION`]).
     view.effect_history_root = Some(root);
-    // Older readers must refuse an archived owner record, not ignore the
-    // index and mint a different original receipt for an already-known UUID.
-    view.version = 3;
     view.effect_receipts.remove(&id);
     Ok(())
 }

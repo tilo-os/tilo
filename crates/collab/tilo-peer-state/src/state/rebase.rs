@@ -11,6 +11,74 @@ impl StatePeer {
         self.brought_up
     }
 
+    /// Bring the membership log a 0.1 release kept up into this layout's, as
+    /// the device that governs the workspace, the owner's, with `key`
+    /// ([`crate::members::earlier`]). Whether it did: a document with no
+    /// earlier log, or one this layout's log already holds, is left as it is.
+    /// Brought up, the governance is published anew like any other brought up
+    /// ([`Self::governance_brought_up`]), and the earlier log is in no
+    /// history its base keeps.
+    ///
+    /// # Errors
+    ///
+    /// `key`'s device holds no certificate here, an operation cannot be
+    /// written, or the log written does not give the earlier one's people at
+    /// their roles; the document is then unchanged.
+    pub fn carry_earlier_membership(
+        &mut self,
+        key: &dyn collab_types::signer::DeviceSigner,
+        now: super::SystemTime,
+    ) -> Result<bool, String> {
+        use crate::members::earlier;
+        use automerge::transaction::Transactable as _;
+        let Some(held) = self.core.workspace_doc.as_deref() else {
+            return Ok(false);
+        };
+        if !earlier::holds_earlier_log(held) {
+            return Ok(false);
+        }
+        let workspace = self.core.workspace.clone();
+        let Some(membership) = earlier::membership(held, &workspace) else {
+            return Ok(false);
+        };
+        let device = self
+            .certificate(&key.device_public_key(), now)
+            .map_err(|error| error.to_string())?
+            .clone();
+        let mut doc = held.clone();
+        doc.set_actor(self.workspace_actor_of(key));
+        let written = earlier::found(
+            &mut doc,
+            &workspace,
+            &membership,
+            (&device, key),
+            super::now_ns(now),
+        )?;
+        let founded = crate::members::replay(&doc, &workspace);
+        if earlier::roles(&founded) != earlier::roles(&membership) {
+            return Err(format!(
+                "the membership log the workspace kept before reads as {:?}, and the one written \
+                 for it as {:?}",
+                earlier::roles(&membership),
+                earlier::roles(&founded)
+            ));
+        }
+        for key in earlier::earlier_keys(&doc) {
+            doc.delete(automerge::ROOT, key.as_str())
+                .map_err(|error| error.to_string())?;
+        }
+        doc.commit();
+        tracing::info!(
+            workspace = %workspace,
+            people = founded.members.len(),
+            operations = written,
+            "the membership log an earlier release kept is brought up"
+        );
+        self.core.workspace_doc = Some(super::CachedDocument::from(doc));
+        self.brought_up = true;
+        Ok(true)
+    }
+
     /// Start the workspace's document over from a base, as its authority
     /// does when the workspace admits someone new. Returns whether it did: a
     /// document holding nothing past its base stays as it is.

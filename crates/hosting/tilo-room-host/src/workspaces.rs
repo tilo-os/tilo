@@ -109,7 +109,7 @@ use tilo_peer_state::replica::PeerGuard;
 
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::{GovernedAccess, StatePeer};
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
@@ -467,7 +467,7 @@ impl GovernedWorkspace {
         // to start on the workspaces it had been serving.
         if record.authority.device_public_key != authority.device_public_key
             || record.authority.user_public_key != authority.user_public_key
-            || record.authority.capabilities != authority.capabilities
+            || granted(&record.authority.capabilities) != granted(&authority.capabilities)
             || record.authority.expires_at_ns != authority.expires_at_ns
         {
             return Err("workspace is governed by a different device".into());
@@ -476,13 +476,16 @@ impl GovernedWorkspace {
             return Err("workspace record is inconsistent".into());
         }
         let mut peer = StatePeer::restore(
-            &parts.load(&record.peer)?,
+            &parts
+                .load(&record.peer)
+                .map_err(|error| format!("peer state parts: {error}"))?,
             &record.workspace,
             record.authority.clone(),
             vec![record.authority.clone()],
             RevocationList::new(),
             tilo_clock::wall(),
-        )?;
+        )
+        .map_err(|error| format!("peer state: {error}"))?;
         select_exact_admission(&mut peer)?;
         if !peer.has_governance() {
             return Err("restored room has no governance".into());
@@ -490,9 +493,11 @@ impl GovernedWorkspace {
         // Parts an interrupted write left behind.
         parts.collect(&record.peer);
         Ok(Self {
-            admissions: admissions::Admissions::open(&path)?,
-            wait_list: wait_list::WaitList::open(&path)?,
-            door: door::Door::open(&path)?,
+            admissions: admissions::Admissions::open(&path)
+                .map_err(|error| format!("admissions: {error}"))?,
+            wait_list: wait_list::WaitList::open(&path)
+                .map_err(|error| format!("wait list: {error}"))?,
+            door: door::Door::open(&path).map_err(|error| format!("door: {error}"))?,
             record,
             peer: Replica::new(peer),
             parts,
@@ -739,15 +744,20 @@ impl GovernedWorkspace {
     /// earlier stored layout as it opened: its document starts over from a
     /// base newer than any a member's device brought up for itself, and what
     /// the relay retains of the earlier layout is archived as it settles.
-    /// Whether it was: the workspace's records were written under that layout
-    /// too.
+    /// Whether a membership a 0.1 release kept was carried into this layout:
+    /// that workspace's records were written by such a release too.
     fn publish_brought_up(&mut self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
-        if !self.peer().governance_brought_up() {
-            return Ok(false);
-        }
+        let brought_up = self.peer().governance_brought_up();
         let shared = self.peer.shared();
         let mut replica = shared.lock();
-        let candidate = replica.clone();
+        let mut candidate = replica.clone();
+        // A membership log a 0.1 release kept is written anew in this
+        // layout's by this host, the device that governs the workspace, before
+        // the governance is published.
+        let carried = candidate.carry_earlier_membership(key, now)?;
+        if !brought_up && !carried {
+            return Ok(false);
+        }
         let committed = self.commit_held(
             &mut replica,
             candidate,
@@ -756,7 +766,7 @@ impl GovernedWorkspace {
             |record, _| Ok(record.collaboration.clone()),
         );
         drop(replica);
-        committed.map(|_| true)
+        committed.map(|_| carried)
     }
 
     /// The people the workspace's governance admits, without the person whose
@@ -1071,6 +1081,25 @@ impl WorkspaceAuthority {
     }
 }
 
+/// The workspaces whose records are in `dir`, by the name of each record.
+fn governed_here(dir: &Path) -> Vec<WorkspaceId> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "room")
+        })
+        .filter_map(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(WorkspaceId::parse)
+        })
+        .collect()
+}
+
 /// `host`, serving with the certificate the workspace records under `dir`
 /// name, when they are the same device: the record's authority is the one the
 /// workspace was made with, and every comparison a host makes for its
@@ -1088,7 +1117,7 @@ fn host_serving(mut host: WorkspaceServices, dir: &Path) -> WorkspaceServices {
         };
         if authority.device_public_key == host.cert.device_public_key
             && authority.user_public_key == host.cert.user_public_key
-            && authority.capabilities == host.cert.capabilities
+            && granted(&authority.capabilities) == granted(&host.cert.capabilities)
         {
             host.cert = authority;
         }
@@ -1097,18 +1126,40 @@ fn host_serving(mut host: WorkspaceServices, dir: &Path) -> WorkspaceServices {
     host
 }
 
+/// What `capabilities` let a device do: without the retired flags
+/// ([`tilo_user_identity::RetiredFlags`]), which grant nothing. A 0.1
+/// release's host certified itself with them each start, and the record it
+/// kept names that certificate; the same device certified without them now
+/// is still the device that governs the workspace.
+fn granted(capabilities: &DeviceCapabilities) -> DeviceCapabilities {
+    DeviceCapabilities {
+        retired: tilo_user_identity::RetiredFlags::default(),
+        ..capabilities.clone()
+    }
+}
+
 /// The certificate a workspace record names as its authority, read from the
-/// record's own bytes: a version 2 or 3 record starts with the same five
-/// fields, and the authority is the fifth.
+/// record's own bytes: every version starts with its version, the workspace's
+/// UUID text, the workspace's id and its name, and the authority is the fifth
+/// field. Version 3 (the 0.1 releases') wrote the id as a 64-bit number,
+/// version 4 as the UUID's bytes.
 fn record_authority(path: &Path) -> Result<DeviceCert, String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let mut rest: &[u8] = &bytes;
-    let (_, tail) = postcard::take_from_bytes::<u32>(rest).map_err(|error| error.to_string())?;
+    let (version, tail) =
+        postcard::take_from_bytes::<u32>(rest).map_err(|error| error.to_string())?;
     rest = tail;
     let (_, tail) = postcard::take_from_bytes::<String>(rest).map_err(|error| error.to_string())?;
     rest = tail;
-    let (_, tail) = postcard::take_from_bytes::<u64>(rest).map_err(|error| error.to_string())?;
-    rest = tail;
+    rest = if version <= 3 {
+        postcard::take_from_bytes::<u64>(rest)
+            .map_err(|error| error.to_string())?
+            .1
+    } else {
+        postcard::take_from_bytes::<WorkspaceId>(rest)
+            .map_err(|error| error.to_string())?
+            .1
+    };
     let (_, tail) = postcard::take_from_bytes::<String>(rest).map_err(|error| error.to_string())?;
     rest = tail;
     let (cert, _) =
@@ -1183,6 +1234,10 @@ impl Workspaces {
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
         let (plane, jobs) =
             device_plane::plane(Arc::clone(&workspaces), host.key.clone(), host.work.clone());
+        // The frames a 0.1 release kept for the workspaces governed here are
+        // under the numbers it named them by: they move to their ids first.
+        tilo_peer_state::store::bring_up_released(&store, governed_here(&dir))
+            .map_err(|error| error.to_string())?;
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         let this = Self {
@@ -1256,6 +1311,7 @@ impl Workspaces {
         // workspace learns an address this host must rename.
         await_relay(&this.inner.host.endpoint).await;
         this.serve_kept(workspaces).await?;
+        this.adopt_listings_file().await?;
         this.start_following().await;
         Ok(this)
     }

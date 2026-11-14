@@ -6055,7 +6055,9 @@ timeout_secs = 5400
 [[check]]
 name = "relay-upgrade"
 run = "bash tools/relay-upgrade/run.sh upgrade v0.1.5 /target/relay-upgrade/v0.1.5/kept"
-needs = ["relay-upgrade-release"]
-env = { RUST_BACKTRACE = "1" }
+# The relay with its agents links every app, and some apps embed image fixtures whose build
+# script fetches them: this check has no network, so the seeded cache is their only source.
+needs = ["relay-upgrade-release", "test-assets"]
+env = { RUST_BACKTRACE = "1", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
 timeout_secs = 3600

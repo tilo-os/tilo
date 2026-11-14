@@ -4,6 +4,14 @@ use std::collections::BTreeMap;
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_user_identity::DeviceCert;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod format;
+
+/// The layout of a workspace's entry this build writes ([`StoredWorkspace`]):
+/// the workspace named once, by its id. The entries the 0.1 releases wrote
+/// are versions 2 and 3, read through [`format`].
+pub(crate) const WORKSPACE_VERSION: u32 = 4;
+
 /// Native-only state-file envelope. Its fields cannot be authored by UI callers.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NativeAuthorityStorage {
