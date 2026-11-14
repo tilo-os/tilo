@@ -308,6 +308,22 @@ fn a_nintendo_pad_confirms_with_the_button_its_legend_calls_a() {
         Some(&(KEY_ENTER, true)),
         "the button printed A activates"
     );
+
+    // The mirror's other half: the button Nintendo prints B is south, where an Xbox pad has A,
+    // and it backs out. The press before it is let go first, so the keys read are this one's.
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.len() >= 2
+    });
+    client.seen.keys.clear();
+    fake.press(GamepadButton::South);
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.len() >= 2
+    });
+    assert_eq!(
+        client.seen.keys.clone(),
+        vec![(KEY_ESCAPE, true), (KEY_ESCAPE, false)],
+        "the button printed B goes back"
+    );
 }
 
 #[test]
