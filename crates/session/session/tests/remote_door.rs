@@ -1357,7 +1357,7 @@ fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person()
     );
     assert!(desk.asked().is_empty(), "let in without a question");
 
-    agent.send(tool(2, "tilo_do", &json!({"path": "notes#open"})));
+    agent.send(tool(2, "tilo_do", &json!({"path": "notes/Notebook#open"})));
     crate::common::until(&mut desk.session, "the person asked about the step", |_| {
         !desk.questions.pending().is_empty()
     });
@@ -1417,7 +1417,7 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
         "{introduced}"
     );
 
-    agent.send(tool(2, "tilo_do", &json!({"path": "notes#open"})));
+    agent.send(tool(2, "tilo_do", &json!({"path": "notes/Notebook#open"})));
     let opened = answer(&mut desk.session, &agent);
     assert_eq!(opened["result"]["isError"], false, "{opened}");
     assert!(desk.asked().is_empty(), "nobody was asked");
@@ -1454,7 +1454,7 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
         introduced.pointer("/result/serverInfo").is_some(),
         "{introduced}"
     );
-    local.send(tool(2, "tilo_do", &json!({"path": "notes#open"})));
+    local.send(tool(2, "tilo_do", &json!({"path": "notes/Notebook#open"})));
     crate::common::until(&mut desk.session, "the person asked about its step", |_| {
         !desk.questions.pending().is_empty()
     });
