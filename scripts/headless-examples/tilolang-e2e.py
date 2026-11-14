@@ -197,20 +197,6 @@ def toolkit_word(name: str, key: str) -> str:
     return say("crates/sdk/ui-core", key, window_language(name))
 
 
-def doing(name: str, ty: str, action: str, on: str | None = None) -> str:
-    """What the app `name`'s action `action`, run on records of the app `on`'s type `ty`, is known
-    by: the record kind it acts on and the operation, in the apps' own ids, which no composition
-    and no language changes.
-
-    `ty` is the type as its app declares it (`Tasks`, `Notebook`): the kind that app publishes the
-    records under is `tl.` and the app's id before it. `on` names the app holding those records,
-    when it is not the one declaring the action (`today`'s cleanup runs on `tasks`' tasks). `action`
-    is looked up in the ids lock of the app that declares it (`apps/tl/<name>/app.ids`), as every
-    declaration there is named (`new_task = qymo5lg2`)."""
-    kind = f"tl.{app_id(on or name)}.{ty}"
-    return "\x1f".join((kind, app_id_of(name, action)))
-
-
 def app_word(name: str, declared: str, attribute: str | None = None, **args) -> str:
     """What a window of the tilolang app `name` calls its declaration `declared` (an action, a
     view), or one of the words it says there (`attribute`, `w-<slug>`), with `args` placed."""
@@ -619,8 +605,7 @@ def check_record_open(session: Session, out: Path) -> dict:
     before = tasks_windows()
     if [w.get("title") for w in before] != [tasks_place("today")] * len(before):
         raise Failed(f"Tasks' windows do not all stand on Today: {before}")
-    new_task = doing("tasks", "Tasks", "new_task")
-    made = until(new_task, lambda: app_action(session, tasks, "new_task", "Document"))
+    made = until("Tasks' new_task", lambda: app_action(session, tasks, "new_task", "Document"))
     invoke_found(session, made, {"title": title})
     search_beside(session, title, beside=False)
     shown = until(f"a window of Tasks named {title!r}", lambda: next(
@@ -645,6 +630,19 @@ def check_record_open(session: Session, out: Path) -> dict:
             "titles": tasks_titles(session)}
 
 
+def window_of(session: Session, app: str, title: str | None = None) -> dict:
+    """The first window of `app` on the desk, the one titled `title` when given; a failure that
+    names the windows the desk holds instead."""
+    shown = session.windows()
+    found = next((w for w in shown if w.get("app_id") == app
+                  and (title is None or w.get("title") == title)), None)
+    if found is None:
+        held = [(w.get("app_id"), w.get("title")) for w in shown]
+        raise Failed(f"no window of {app}" + (f" titled {title!r}" if title else "")
+                     + f" on the desk, which holds {held!r}")
+    return found
+
+
 def check_places(session: Session, out: Path) -> dict:
     """A window grouped beside another is too narrow for Tasks' sidebar, and still reaches its
     places: its own sidebar toggle shows them — pressed by name, as a tool presses a control, even
@@ -652,8 +650,7 @@ def check_places(session: Session, out: Path) -> dict:
     Inbox while the other stays where it was."""
     tasks = app_id("tasks")
     inbox, today = tasks_place("inbox"), tasks_place("today")
-    window = next(w for w in session.windows()
-                  if w.get("app_id") == tasks and w.get("title") == today)
+    window = window_of(session, tasks, today)
     def tabs() -> dict[str, str]:
         return {w["tab"]: w.get("title") for w in session.windows() if w.get("app_id") == tasks}
 
@@ -699,7 +696,7 @@ def window_controls(session: Session, window: dict) -> list[str]:
 def today_shown(session: Session, out: Path, name: str) -> bytes:
     """Today's window in front, as it shows now, captured as today-`name`.png: its pixels."""
     today = app_id("today")
-    window = next(w for w in session.windows() if w.get("app_id") == today)
+    window = window_of(session, today)
     focus(session, window)
     until(f"window {window['tab']} drawn on the desk to be read",
           lambda: drawn_window(session, window["tab"]), 30)
@@ -737,11 +734,10 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     held = ["Water the plants", "Call the plumber"]
     # What Today's window offers by name: the card's rows, read off Tasks' record, and the
     # cleanup its header shows.
-    focus(session, next(w for w in session.windows() if w.get("app_id") == today))
+    focus(session, window_of(session, today))
     until("Tasks' tasks in Today's card", lambda: (lambda shown: shown if all(
         title in shown for title in held) else None)(named(session)), 30)
-    cleanup = doing("today", "Tasks", "morning_cleanup", on="tasks")
-    session.wait_doing(cleanup)
+    cleanup = doing(session, "today", "morning_cleanup")
     done = mark_done(session, held[0])
     menu = menu_complete(session, held[1])
     # The tasks the two checks above finished: what the cleanup counts, in the words Today files
@@ -794,8 +790,7 @@ def keep_task(session: Session) -> dict:
     """Type a task into the window of Tasks on Today, due there and not done, and see it list it:
     what Tasks' record holds when the session stops."""
     tasks = app_id("tasks")
-    window = next(w for w in session.windows()
-                  if w.get("app_id") == tasks and w.get("title") == tasks_place("today"))
+    window = window_of(session, tasks, tasks_place("today"))
     focus(session, window)
     time.sleep(0.5)
     session.control({"op": "type", "text": KEPT_TASK})
@@ -821,7 +816,7 @@ def mark_done(session: Session, title: str) -> dict:
     or an agent presses it: the box is a checkbox of its own, named for what it does. The workspace
     takes the change, so it stands in Tasks' history; a change it refused would leave none."""
     tasks = app_id("tasks")
-    focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
+    focus(session, window_of(session, tasks))
     box = say("crates/sdk/ui-core", "list-row-check", window_language("tasks"), title=title)
     session.wait_target(box)
     before = history_total(session, "tasks")
@@ -843,7 +838,7 @@ def menu_complete(session: Session, title: str) -> dict:
     Complete before the menu opens, so the press reaches the menu's command and no button of a
     page that says the same word."""
     tasks = app_id("tasks")
-    focus(session, next(w for w in session.windows() if w.get("app_id") == tasks))
+    focus(session, window_of(session, tasks))
     session.wait_target(title)
     # A row's own command: every task's menu offers it, so its identity names the action and not
     # the row it stands on. It is pressed here where the one open menu draws it, by the words it
@@ -927,6 +922,20 @@ def app_action(session: Session, app: str, declared: str, kind: str | None = Non
                 and kind in (None, action.get("operation_kind"))):
             return action
     return None
+
+
+def doing(session: Session, name: str, declared: str) -> str:
+    """The identity of the control in a window of the tilolang app `name` that runs its action
+    `declared` (`morning_cleanup`), as an agent finds it: the app lists the action on the resource
+    that publishes it, and the control names that resource and the id the app keeps the action
+    under (`app.ids`), wherever the window's composition draws it and in whatever language."""
+    app = app_id(name)
+    listed = until(f"{app}'s {declared}", lambda: app_action(session, app, declared))
+    wanted = [listed["resource"], app_id_of(name, declared)]
+    target = until(f"a control doing {app}'s {declared} on {listed['resource']}", lambda: next(
+        (t for t in session.targets()
+         if (t.get("identity") or "").split("\x1f")[-2:] == wanted), None), 30)
+    return target["identity"]
 
 
 def focus(session: Session, window: dict) -> None:
