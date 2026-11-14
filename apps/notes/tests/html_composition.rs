@@ -18,6 +18,13 @@ fn find<'a>(node: &'a Composed, widget: &str) -> Vec<&'a Composed> {
     found
 }
 
+/// Whether `path` is `node` or stands somewhere under it.
+fn holds(node: &Composed, path: &str) -> bool {
+    node.children
+        .iter()
+        .any(|child| child.path == path || holds(child, path))
+}
+
 #[test]
 fn a_note_renders_as_its_own_elements() {
     let mut app = notes();
@@ -288,11 +295,6 @@ fn the_page_tree_composes_as_a_tree() {
     };
     let parent_row = row("Handbook");
     let child_row = row("Engineering");
-    fn holds(node: &Composed, path: &str) -> bool {
-        node.children
-            .iter()
-            .any(|child| child.path == path || holds(child, path))
-    }
     assert!(
         holds(parent_row, &child_row.path),
         "the note inside stands inside the row of the note it is under"
