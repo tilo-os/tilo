@@ -3688,6 +3688,30 @@ impl AppBrokerState {
     ) -> (crate::collab_broker::AppActionBroker, impl Fn()) {
         let (state, bridge_rx) = Self::test_state(Some(membership), services);
         let broker = crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&state));
+        // What the journal's writer hands the broker's turn (an admission answered once it is
+        // durable) runs as the live loop runs it: woken by the turn, with the state, while the
+        // broker lives.
+        let work = Arc::clone(&state.turn_work);
+        let owner = Arc::downgrade(&state);
+        std::thread::Builder::new()
+            .name("tilo-broker-turn".into())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .expect("the turn's runtime");
+                runtime.block_on(async move {
+                    loop {
+                        work.turn.notified().await;
+                        let Some(state) = owner.upgrade() else {
+                            return;
+                        };
+                        for task in std::mem::take(&mut *work.handed.lock_recover()) {
+                            task(&state);
+                        }
+                    }
+                });
+            })
+            .expect("the broker's turn thread");
         let turn = move || {
             let first =
                 tilo_test_env::recv("the certified invocation at the broker turn", &bridge_rx);
