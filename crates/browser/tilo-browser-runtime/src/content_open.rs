@@ -25,11 +25,19 @@ pub(crate) fn opened_file(
         .read(hash)
         .filter(|bytes| !bytes.is_empty())
         .ok_or_else(gone)?;
-    let bytes = if fs_content::is_manifest(&bytes) {
-        whole(&bytes, content).ok_or_else(gone)??
-    } else {
-        bytes
-    };
+    if fs_content::is_manifest(&bytes)
+        && fs_content::Manifest::decode(&bytes)
+            .is_ok_and(|manifest| manifest.total_len() > MAX_OPEN_FILE_BYTES as u64)
+    {
+        return Err(format!(
+            "The file is larger than the {} an app may be handed",
+            ui::format::memory(MAX_OPEN_FILE_BYTES as u64)
+        ));
+    }
+    let bytes = fs_content::whole(bytes, MAX_OPEN_FILE_BYTES as u64, |chunk| {
+        content.read(&hex::encode(chunk))
+    })
+    .ok_or_else(gone)?;
     let (extension, media_type) = tilo_content::opened_as(&bytes);
     // Bytes say a file is text, not which: its name says it is notes, and plain text reads as
     // the Markdown it is.
@@ -45,23 +53,6 @@ pub(crate) fn opened_file(
     };
     let name = name.map_or_else(|| format!("{hash}.{extension}"), str::to_owned);
     OpenFile::new(&name, media_type, bytes)
-}
-
-/// The file the manifest `bytes` names, its chunks read from `content`:
-/// `None` while a chunk is not here, refused past what an app may be handed.
-fn whole(bytes: &[u8], content: &ContentStore) -> Option<Result<Vec<u8>, String>> {
-    let manifest = fs_content::Manifest::decode(bytes).ok()?;
-    if manifest.total_len() > MAX_OPEN_FILE_BYTES as u64 {
-        return Some(Err(format!(
-            "The file is larger than the {} an app may be handed",
-            ui::format::memory(MAX_OPEN_FILE_BYTES as u64)
-        )));
-    }
-    let mut file = Vec::with_capacity(usize::try_from(manifest.total_len()).unwrap_or(0));
-    for chunk in manifest.chunks() {
-        file.extend_from_slice(&content.read(&hex::encode(chunk.hash))?);
-    }
-    Some(Ok(file))
 }
 
 #[cfg(test)]

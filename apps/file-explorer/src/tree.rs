@@ -134,8 +134,14 @@ pub struct TreeBrowser {
 
 impl TreeBrowser {
     fn new(cx: &ViewCx<FilesWindow>) -> Self {
+        // A node names its file by the hash of the file's content manifest: the file is the
+        // chunks the manifest lists, each read (and asked for) by its own hash.
         let read: Option<Reads> = cx.content().map(|content| {
-            Rc::new(move |hash: &str| content.read(hash)) as Rc<dyn Fn(&str) -> Option<Vec<u8>>>
+            Rc::new(move |hash: &str| {
+                content.read(hash).and_then(|bytes| {
+                    fs_content::whole(bytes, u64::MAX, |chunk| content.read(&hex::encode(chunk)))
+                })
+            }) as Rc<dyn Fn(&str) -> Option<Vec<u8>>>
         });
         let mut browser = Self {
             live: cx.live().clone(),

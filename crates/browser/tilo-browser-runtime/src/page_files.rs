@@ -120,7 +120,12 @@ impl WorkspaceFiles {
                 read.read.push(hash.clone());
                 continue;
             }
-            let Some(bytes) = self.content.read(hash) else {
+            let content = &self.content;
+            let Some(bytes) = content.read(hash).and_then(|bytes| {
+                fs_content::whole(bytes, MAX_READ_BYTES, |chunk| {
+                    content.read(&hex::encode(chunk))
+                })
+            }) else {
                 // Reading content the page lacks asks the workspace for it;
                 // its words are read when it is here.
                 continue;

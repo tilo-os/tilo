@@ -51,6 +51,33 @@ pub fn is_manifest(bytes: &[u8]) -> bool {
         && bytes.get(HEADER_MAGIC.len()) == Some(&FORMAT)
 }
 
+/// The bytes of the file whose content is `content`, as a workspace's tree names a file by the
+/// hash of its manifest: the chunks the manifest lists, each read with `chunk` by its hash and
+/// put together in order, or `content` itself when it is not a manifest (content kept whole).
+/// `None` while a chunk is not here, or when the file is longer than `max` bytes.
+pub fn whole(
+    content: Vec<u8>,
+    max: u64,
+    mut chunk: impl FnMut(&[u8; 32]) -> Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    if !is_manifest(&content) {
+        return (content.len() as u64 <= max).then_some(content);
+    }
+    let manifest = Manifest::decode(&content).ok()?;
+    if manifest.total_len() > max {
+        return None;
+    }
+    let mut file = Vec::with_capacity(usize::try_from(manifest.total_len()).unwrap_or(0));
+    for part in manifest.chunks() {
+        let bytes = chunk(&part.hash)?;
+        if bytes.len() != part.len as usize {
+            return None;
+        }
+        file.extend_from_slice(&bytes);
+    }
+    Some(file)
+}
+
 fn ends_of(chunks: &[ChunkRef]) -> Vec<u64> {
     let mut end = 0_u64;
     chunks
@@ -305,5 +332,38 @@ mod tests {
         assert_eq!(m.chunk_of_child(4), Some(2));
         assert_eq!(m.chunk_of_child(1), None);
         assert_eq!(m.chunk_of_child(5), None);
+    }
+
+    #[test]
+    fn a_manifest_reads_whole_from_its_chunks_and_other_content_as_it_is() {
+        let parts: [&[u8]; 3] = [b"first ", b"second ", b"third"];
+        let chunks: Vec<ChunkRef> = parts
+            .iter()
+            .map(|part| ChunkRef {
+                hash: *blake3::hash(part).as_bytes(),
+                len: part.len() as u32,
+            })
+            .collect();
+        let manifest = Manifest::new(ChunkTier::Small, chunks).encode();
+        let read = |hash: &[u8; 32]| {
+            parts
+                .iter()
+                .find(|part| blake3::hash(part).as_bytes() == hash)
+                .map(|part| part.to_vec())
+        };
+        assert_eq!(
+            whole(manifest.clone(), 100, read).unwrap(),
+            b"first second third"
+        );
+        assert_eq!(
+            whole(manifest.clone(), 10, read),
+            None,
+            "longer than asked for"
+        );
+        assert_eq!(whole(manifest, 100, |_| None), None, "a chunk not here yet");
+        assert_eq!(
+            whole(b"kept whole".to_vec(), 100, |_| None).unwrap(),
+            b"kept whole"
+        );
     }
 }

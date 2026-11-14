@@ -42,6 +42,8 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 # File records: the tree a workspace's files are, and the kinds of node in it.
 fs-protocol = { path = "../../crates/system/fs-protocol" }
+# A file of the workspace's tree is its content manifest and the chunks it lists.
+fs-content = { path = "../../crates/system/fs-content" }
 # Which app opens what a file's bytes are, as the workspace's landing decides it.
 tilo-content-types = { path = "../../crates/system/content-types" }
 # The id a workspace's tree record has on every device.
