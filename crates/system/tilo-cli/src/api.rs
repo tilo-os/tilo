@@ -155,26 +155,6 @@ pub struct Client {
     transport: Transport,
 }
 
-/// A run of several calls: one task in History, one step for undo, named by
-/// the words a person reads.
-#[derive(Clone, Debug)]
-pub struct Run {
-    id: String,
-    title: String,
-}
-
-impl Run {
-    /// A new run. Every call made in it carries this id, so History groups
-    /// them and one undo takes them back.
-    #[must_use]
-    pub fn new(title: &str) -> Self {
-        Self {
-            id: fresh_key(),
-            title: title.to_owned(),
-        }
-    }
-}
-
 enum Transport {
     /// An API server, reached over HTTPS with a key.
     Http {
@@ -271,42 +251,6 @@ impl Client {
         );
         let said = args.to_string();
         let headers = titled(title);
-        let answer = self
-            .call(
-                Method::Post,
-                &path,
-                said.as_bytes(),
-                &headers,
-                Waiting::ForPerson,
-            )
-            .await?;
-        if !answer.ok() && answer.status != 202 {
-            return Err(answer.refused());
-        }
-        Ok(answer.json())
-    }
-
-    /// Run `action` on `resource` in `workspace` as the next step of `run`:
-    /// History names every step of the run together, and undo takes the
-    /// whole of it back in one step.
-    pub async fn act_in(
-        &self,
-        workspace: &str,
-        resource: &str,
-        action: &str,
-        args: &Value,
-        run: &Run,
-    ) -> Result<Value> {
-        let path = format!(
-            "/v1/workspaces/{workspace}/resources/{}/actions/{action}",
-            encode_path(resource)
-        );
-        let said = args.to_string();
-        let headers = [
-            ("tilo-run", run.id.clone()),
-            ("tilo-run-title", run.title.clone()),
-            ("idempotency-key", fresh_key()),
-        ];
         let answer = self
             .call(
                 Method::Post,
