@@ -392,7 +392,6 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_door() {
                 std::os::fd::OwnedFd::from(plane),
                 std::os::fd::AsFd::as_fd(&identity),
                 collaboration::RouteSpec::app(TASKS.to_owned(), workspace_id),
-                Some(person.clone()),
             )
             .map_err(|error| format!("the window joins: {error:?}"))?
             .finish_join()
