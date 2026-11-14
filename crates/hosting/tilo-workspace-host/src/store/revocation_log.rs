@@ -1,27 +1,19 @@
 //! The host's revocation log: every root-signed revocation it is bound to
 //! refuse, kept across restarts.
 //!
-//! The log was one JSON array the host read and wrote whole for each entry it
-//! took in, so each revocation cost a write of every one before it, and the
-//! host capped how many a root could keep; a revocation past the cap was
-//! refused only until the next restart. It is now appended to: a header
-//! (`MAGIC`, then the format's version, four bytes little-endian), then
-//! frames, each its length (four bytes, little-endian), the postcard
-//! [`RevocationEntry`] and the first eight bytes of the entry's BLAKE3 digest.
-//! A write appends the entries the log does not hold as early and syncs its
-//! data, so the log grows with the revocations themselves and nothing else.
-//! What a root may put here is bounded where entries are taken in: only a
-//! root the host serves has its entries kept.
+//! The log is appended to: a header (`MAGIC`, then the format's version, four
+//! bytes little-endian), then frames, each its length (four bytes,
+//! little-endian), the postcard [`RevocationEntry`] and the first eight bytes
+//! of the entry's BLAKE3 digest. A write appends the entries the log does not
+//! hold as early and syncs its data, so the log grows with the revocations
+//! themselves and nothing else. What a root may put here is bounded where
+//! entries are taken in: only a root the host serves has its entries kept.
 //!
 //! A frame whose length or digest does not hold was cut short by a crash: a
 //! read stops before it, and the next write cuts it off before appending. A
 //! log holding more than twice the frames it has distinct entries (a root
-//! that revoked a key again, earlier) is written anew, whole.
-//!
-//! Version 1 was the JSON array (`revocations.json`). Reading or writing a
-//! state root that holds one brings it up through [`FORMAT`] into
-//! [`REVOCATIONS_FILE`], keeping the old file beside it as the migration's
-//! snapshot.
+//! that revoked a key again, earlier) is written anew, whole. A log of another
+//! version is refused, naming the version it holds.
 
 use std::collections::HashMap;
 use std::fs;
@@ -36,21 +28,18 @@ use super::{StoreError, atomic_write};
 
 /// Root-signed device revocations enforced during relay authentication.
 pub const REVOCATIONS_FILE: &str = "revocations.log";
-/// The version 1 file, read only to bring it up.
-pub(crate) const V1_FILE: &str = "revocations.json";
-
 /// What every revocation log starts with, before its version.
 const MAGIC: &[u8; 8] = b"tilorev\0";
 const HEADER: usize = MAGIC.len() + 4;
 /// The bytes of a frame beside its entry: its length and its digest.
 const FRAMING: usize = 4 + 8;
 
-/// Version 1 (one JSON array) and 2 (this log).
+/// The log this build writes and reads.
 pub(crate) const FORMAT: Format = Format {
     name: "relay revocation log",
     version: 2,
-    oldest: 1,
-    steps: &[v1_to_v2],
+    oldest: 2,
+    steps: &[],
 };
 
 /// One writer at a time in this process: a write reads where the log's last
@@ -118,26 +107,32 @@ impl Held {
     }
 }
 
-/// What a log's `bytes` hold, and the length of their frames that hold
-/// together: a frame a crash cut short ends the log.
-fn read(bytes: &[u8]) -> Result<(Held, usize), StoreError> {
+/// The version a log's header names.
+fn stored_version(bytes: &[u8]) -> Result<u32, StoreError> {
     let refused = |reason: &str| StoreError::Json(format!("revocation log: {reason}"));
     let (magic, rest) = bytes
         .split_first_chunk::<8>()
         .ok_or_else(|| refused("no header"))?;
-    let (version, mut rest) = rest
+    let (version, _) = rest
         .split_first_chunk::<4>()
         .ok_or_else(|| refused("no version"))?;
     if magic != MAGIC {
         return Err(refused("not a revocation log"));
     }
-    let version = u32::from_le_bytes(*version);
+    Ok(u32::from_le_bytes(*version))
+}
+
+/// What a log's `bytes` hold, and the length of their frames that hold
+/// together: a frame a crash cut short ends the log.
+fn read(bytes: &[u8]) -> Result<(Held, usize), StoreError> {
+    let version = stored_version(bytes)?;
     if version != FORMAT.version {
-        return Err(refused(&format!(
-            "version {version}, not {}",
+        return Err(StoreError::Json(format!(
+            "revocation log: version {version}, not {}",
             FORMAT.version
         )));
     }
+    let mut rest = bytes.get(HEADER..).unwrap_or_default();
     let mut held = Held::default();
     let mut valid = HEADER;
     while let Some((len, tail)) = rest.split_first_chunk::<4>() {
@@ -163,60 +158,19 @@ fn read(bytes: &[u8]) -> Result<(Held, usize), StoreError> {
     Ok((held, valid))
 }
 
-/// Version 1 to 2: the JSON array's entries as frames of the log.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "a migration step takes the bytes it brings up"
-)]
-fn v1_to_v2(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    let entries: Vec<RevocationEntry> =
-        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    whole(&entries).map_err(|error| error.to_string())
-}
-
-/// Bring a version 1 file in `state_root` up to the log, keeping it beside
-/// the log as the migration's snapshot. Nothing to do when there is none.
-fn bring_up(state_root: &Path) -> Result<(), StoreError> {
-    let old = state_root.join(V1_FILE);
-    let bytes = match fs::read(&old) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    FORMAT
-        .bring_up_moved(&old, &state_root.join(REVOCATIONS_FILE), bytes, 1)
-        .map_err(|error| StoreError::Json(error.to_string()))?;
-    Ok(())
-}
-
 /// The log's bytes, `None` when the state root holds none.
 fn log_bytes(state_root: &Path) -> Result<Option<Vec<u8>>, StoreError> {
     let path = state_root.join(REVOCATIONS_FILE);
-    match fs::read(&path) {
-        // A log an older build wrote comes up on disk before it is read, its
-        // old bytes kept beside it.
-        Ok(bytes) => match bytes
-            .strip_prefix(MAGIC.as_slice())
-            .and_then(|rest| rest.first_chunk::<4>())
-            .map(|version| u32::from_le_bytes(*version))
-            .filter(|stored| *stored < FORMAT.version)
-        {
-            Some(stored) => FORMAT
-                .bring_up(&path, bytes, stored)
-                .map(Some)
-                .map_err(|error| StoreError::Json(error.to_string())),
-            None => Ok(Some(bytes)),
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            bring_up(state_root)?;
-            match fs::read(&path) {
-                Ok(bytes) => Ok(Some(bytes)),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-                Err(error) => Err(error.into()),
-            }
-        }
-        Err(error) => Err(error.into()),
-    }
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let stored = stored_version(&bytes)?;
+    FORMAT
+        .bring_up(&path, bytes, stored)
+        .map(Some)
+        .map_err(|error| StoreError::Json(error.to_string()))
 }
 
 /// Load the root-signed revocation entries the relay's log holds: for each
@@ -242,7 +196,6 @@ pub fn load_revocations(state_root: &Path) -> Result<Vec<RevocationEntry>, Store
 pub fn save_revocations(state_root: &Path, entries: &[RevocationEntry]) -> Result<(), StoreError> {
     let _writing = WRITING.lock_recover();
     fs::create_dir_all(state_root)?;
-    bring_up(state_root)?;
     atomic_write(&state_root.join(REVOCATIONS_FILE), &whole(entries)?)?;
     Ok(())
 }
@@ -322,26 +275,6 @@ mod tests {
         };
         sign_revocation_entry(&mut entry, root).unwrap();
         entry
-    }
-
-    #[test]
-    fn the_json_array_comes_up_as_the_log() {
-        let root = SigningKey::from_bytes(&[1; 32]);
-        let entries = vec![revocation(&root, 2, 10), revocation(&root, 3, 20)];
-        let v1 = serde_json::to_vec_pretty(&entries).unwrap();
-        tilo_files::native::migration::assert_step_reads_previous(&FORMAT, &v1, |bytes| {
-            assert_eq!(read(bytes).unwrap().0.entries, entries);
-        });
-
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(V1_FILE), &v1).unwrap();
-        assert_eq!(load_revocations(dir.path()).unwrap(), entries);
-        assert!(!dir.path().join(V1_FILE).exists());
-        assert_eq!(
-            fs::read(Format::snapshot_path(&dir.path().join(REVOCATIONS_FILE), 1)).unwrap(),
-            v1,
-            "the version 1 file is kept as the migration's snapshot"
-        );
     }
 
     /// The log this build writes: one root's revocation of two of its
