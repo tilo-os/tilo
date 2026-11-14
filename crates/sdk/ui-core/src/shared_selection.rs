@@ -411,6 +411,71 @@ pub fn take_send_to() -> Vec<SendToRequest> {
     PENDING.with(|pending| pending.borrow_mut().drain(..).collect())
 }
 
+/// What [`SEND_TO_RESOURCE`] calls sending.
+pub const SEND: &str = "send";
+
+/// Send what a box held: the session's one send action ([`SEND_TO_RESOURCE`]), with `attached`
+/// resolved by the process that holds the window, in `workspace` when one is named. Off the frame
+/// thread, since the call waits for the session to take it.
+pub fn deliver_send(
+    request: SendToRequest,
+    attached: Vec<tilo_reference::Attached>,
+    workspace: Option<String>,
+) {
+    let arguments = send_arguments(&request, &attached, workspace);
+    #[cfg(test)]
+    DELIVERED.with(|delivered| delivered.borrow_mut().push(arguments.clone()));
+    let spawned = crate::background::Background::current().spawn("send", move || {
+        if let Err(error) = crate::collaboration::SessionResource::invoke_without_watching(
+            SEND_TO_RESOURCE,
+            SEND,
+            &arguments,
+        ) {
+            tracing::warn!(%error, "a send was not taken");
+        }
+    });
+    if spawned.is_err() {
+        tracing::warn!("nothing here runs the work that sends what a box holds");
+    }
+}
+
+/// `request` as the session's send action takes it.
+fn send_arguments(
+    request: &SendToRequest,
+    attached: &[tilo_reference::Attached],
+    workspace: Option<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let to =
+        serde_json::to_value(&request.to).unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
+    let attached = attached
+        .iter()
+        .filter_map(|attached| serde_json::to_value(attached).ok())
+        .collect();
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("to".to_owned(), to);
+    arguments.insert("attached".to_owned(), serde_json::Value::Array(attached));
+    arguments.insert(
+        "text".to_owned(),
+        serde_json::Value::String(request.text.clone()),
+    );
+    if let Some(workspace) = workspace {
+        arguments.insert("workspace".to_owned(), serde_json::Value::String(workspace));
+    }
+    arguments
+}
+
+#[cfg(test)]
+thread_local! {
+    static DELIVERED: RefCell<Vec<serde_json::Map<String, serde_json::Value>>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// The sends this process handed the session since the last call, oldest first.
+#[cfg(test)]
+pub(crate) fn take_delivered() -> Vec<serde_json::Map<String, serde_json::Value>> {
+    DELIVERED.with(|delivered| delivered.borrow_mut().drain(..).collect())
+}
+
 /// Whether a shell is connected that can send what a box holds, so a menu offers it.
 #[must_use]
 pub fn send_host_available() -> bool {
@@ -868,6 +933,30 @@ mod tests {
         for ch in text.chars() {
             crate::testing::dispatch(menu, &crate::synthetic_input::char_key(&ch.to_string()));
         }
+    }
+
+    #[test]
+    fn a_send_goes_as_the_sessions_one_send_action() {
+        let _ = take_delivered();
+        let request = SendToRequest {
+            to: vec![Recipient::new_agent("Ada")],
+            about: vec![SharedSelection::of_text("Notes")],
+            text: "have a look".into(),
+        };
+        let attached = request
+            .about
+            .iter()
+            .filter_map(|about| about.to_attached(None, None))
+            .collect();
+        deliver_send(request, attached, None);
+        let arguments = take_delivered()
+            .pop()
+            .expect("the send reaches the session");
+        assert_eq!(arguments["text"], "have a look");
+        assert_eq!(arguments["to"][0]["name"], "Ada");
+        assert_eq!(arguments["to"][0]["kind"], "new-agent");
+        assert_eq!(arguments["attached"][0]["kind"], "text");
+        assert_eq!(arguments["attached"][0]["text"], "Notes");
     }
 
     #[test]

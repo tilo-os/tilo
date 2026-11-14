@@ -139,11 +139,10 @@ CHAT_MESSAGES = "derived:part.0@derived:messages@derived:default@tab:00000000000
 # (apps/agent/src/tools.rs, `PLAN`).
 FINISH = "plan"
 # What the session and its apps log when the ask or the run's own steps are refused
-# (crates/session/session/src/send_to.rs, app_tabs.rs, apps.rs, apps/agent/src/session).
+# (crates/session/session/src/send_to.rs, apps.rs, apps/agent/src/session).
 RUN_REFUSALS = [
     "an app action was not delivered",
     "a send did not land",
-    "a window's send was not taken",
     "an agent did not start",
     "refused a run that answers no turn",
     "the conversation refused the run's report",

@@ -357,8 +357,8 @@ pub enum FloatingSurfaceClientMessage {
         background: bool,
         instance: Option<u64>,
     },
-    /// Open another window of this app as a window of the shell, floating over it where the box of this
-    /// window last sent from stood ([`Self::SendTo`]), showing `anchor`: the item that send landed in.
+    /// Open another window of this app as a window of the shell, floating over it, showing `anchor`:
+    /// the item the send just made landed in.
     OpenFloated {
         /// The item the window opens on, as the resource that names it.
         anchor: String,
@@ -404,18 +404,6 @@ pub enum FloatingSurfaceClientMessage {
     /// [`FloatingSurfaceHostMessage::PointAt`] (sent once). An app that never
     /// says so is never asked.
     SelectionCapable,
-    /// The person sent what the box beside this app's context menu held: a
-    /// message to these recipients about these subjects. The shell makes a
-    /// new agent when one recipient is one, opens or makes the one
-    /// conversation they share, and posts the message there — as the person.
-    /// The app's identity is the launcher's, never the message's.
-    SendTo {
-        to: Vec<Recipient>,
-        /// What the message has besides its words, as the chips named it.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        attached: Vec<tilo_reference::Attached>,
-        text: String,
-    },
     /// The resource this window shows (the first it publishes), sent when it changes: the shell menus
     /// for the window (its window menu) attach it, as the app menus do.
     WindowResource {
@@ -542,8 +530,8 @@ pub enum FloatingSurfaceHostMessage {
     /// Nobody watches the window any more: stop capturing the page.
     PaintStop,
     /// The person pressed the shell's "ask an agent" chord over this app's focused window: answer
-    /// with [`FloatingSurfaceClientMessage::SendTo`] for what the box shows, or nothing when it shows
-    /// none. Sent only to an app that announced
+    /// with a send through the session's send action for what the box shows, or nothing when it
+    /// shows none. Sent only to an app that announced
     /// [`FloatingSurfaceClientMessage::SelectionCapable`].
     ///
     /// `to` is whom the box opens to when the session names it — the people here, the one place a

@@ -27,7 +27,7 @@ mode = "off"
 
 [sandbox.services]
 collab = "optional@25"
-shell-ui = "optional@30"
+shell-ui = "optional@31"
 # The person's Signal, WhatsApp, SMS and Tilo accounts (tilo-messaging).
 messaging = "optional@1"
 

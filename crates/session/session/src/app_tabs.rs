@@ -162,9 +162,6 @@ pub struct AppTabs {
     /// The listener the apps connect to, taken off on the session's own pass,
     /// and the socket's path, which goes when the session ends.
     socket: Socket,
-    /// What the windows' boxes sent on this pass, carried out once every ask of theirs is
-    /// answered: it reaches the session's records, which the answers themselves do not.
-    sent: Vec<Sent>,
 }
 
 /// An open shell-ui connection: the app it vouches for, the launch whose
@@ -261,7 +258,6 @@ impl AppTabs {
             launches,
             host_shell: HostShellAsks::default(),
             socket,
-            sent: Vec::new(),
         })
     }
 
@@ -300,7 +296,6 @@ impl AppTabs {
                 links: &mut self.links,
                 cards: &self.cards,
                 launches: &self.launches,
-                sent: &mut self.sent,
                 pages: &shared.pages,
             };
             for request in self.requests.try_iter() {
@@ -316,9 +311,6 @@ impl AppTabs {
         // What the members' desks show of these windows' pages, and what the
         // apps sent of them since the last pass.
         self.follow_pages(shared);
-        // What the windows' boxes sent, now that every ask of theirs is
-        // answered: a send is one action on the person's behalf.
-        self.deliver_sends(shared);
         self.deliver_box(shared, desktop, compositor);
         // Where each app's own card stands this pass: the floating layer's place, which the desk
         // lays the app's window out by.
@@ -349,27 +341,6 @@ impl AppTabs {
             };
             tell(&link.writer, &message, &link.app);
         }
-    }
-
-    /// Send what the windows' boxes sent, each through the session's one send action as the app
-    /// whose window it was, for the person at it: the action every agent and script runs too.
-    fn deliver_sends(&mut self, shared: &crate::Shared) {
-        for sent in std::mem::take(&mut self.sent) {
-            let by = tilo_actions::ActionInvoker::admitted(
-                &tilo_actions::Acting::person(String::new()).in_app(sent.app.clone()),
-            );
-            let taken = shared.services.borrow_mut().invoke_as(
-                &by,
-                None,
-                crate::send_to::RESOURCE,
-                "send",
-                &sent.arguments,
-            );
-            if let Err(error) = taken {
-                tracing::warn!(%error, app = %sent.app, "a window's send was not taken");
-            }
-        }
-        shared.deliver_sends();
     }
 
     /// Ask the window in front to open its box, as the shell's send keys do
@@ -629,18 +600,8 @@ struct Answers<'a> {
     links: &'a mut BTreeMap<u64, Link>,
     cards: &'a crate::cards::Cards,
     launches: &'a Launches,
-    /// The messages windows sent from their own boxes, carried out after the pass has every ask:
-    /// they reach the session's records, which the answers themselves do not touch.
-    sent: &'a mut Vec<Sent>,
     /// The windows whose apps hand their page over as a paint stream.
     pages: &'a Rc<RefCell<PageTracks>>,
-}
-
-/// A message a window's box sent: the app whose window it was, and the arguments of the session's
-/// one send action ([`crate::send_to::RESOURCE`]) it runs.
-struct Sent {
-    app: String,
-    arguments: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Answers<'_> {
@@ -918,19 +879,6 @@ impl Answers<'_> {
             | FloatingSurfaceClientMessage::Pointed { .. }
             | FloatingSurfaceClientMessage::PickAnswered { .. } => {
                 refuse(&reply, &app, &name, NO_AGENT);
-            }
-            // The message its box sent reaches the session's records, so it is carried out after
-            // this pass has every ask.
-            FloatingSurfaceClientMessage::SendTo { to, attached, text } => {
-                let arguments = serde_json::json!({
-                    "to": to,
-                    "attached": attached,
-                    "text": text,
-                    "workspace": workspace,
-                });
-                if let serde_json::Value::Object(arguments) = arguments {
-                    self.sent.push(Sent { app, arguments });
-                }
             }
             // The app's send landed on `anchor`: a window of the desk showing it, beside the
             // window that sent.

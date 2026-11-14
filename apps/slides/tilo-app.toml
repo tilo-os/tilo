@@ -59,7 +59,7 @@ file-chooser = "via-host"
 [sandbox.services]
 collab = "optional@25"
 tilo-fs = "optional@25"
-shell-ui = "optional@30"
+shell-ui = "optional@31"
 
 [entrypoint]
 bin             = "bin/slides"

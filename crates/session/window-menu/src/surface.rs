@@ -29,13 +29,6 @@ use crate::resource::WindowMenu;
 /// The session's resource this view draws.
 pub const WINDOW_MENU: &str = "desktop:window-menu";
 
-/// The resource every sender runs a send through: the session's one send action, the same an
-/// app's box, the canvas and an agent run.
-const SEND_TO: &str = "session:send-to";
-
-/// What that resource calls sending.
-const SEND: &str = "send";
-
 /// How long to wait before asking the session again for a reading it did
 /// not answer: the menu is up for a moment, so a view that gives up is a
 /// menu nobody sees.
@@ -366,14 +359,12 @@ impl WindowMenuSurface {
     /// every sender runs (`session:send-to#send`), carrying the window or tab the menu stands on.
     fn deliver() {
         for request in ui::shared_selection::take_send_to() {
-            let arguments = send_arguments(request);
-            std::thread::spawn(move || {
-                if let Err(error) =
-                    SessionResource::invoke_without_watching(SEND_TO, SEND, &arguments)
-                {
-                    tracing::warn!(%error, "the window menu's send was not taken");
-                }
-            });
+            let attached = request
+                .about
+                .iter()
+                .filter_map(|about| about.to_attached(None, None))
+                .collect();
+            ui::shared_selection::deliver_send(request, attached, None);
         }
     }
 
@@ -448,23 +439,6 @@ fn item_of(row: &Row) -> (MenuItem, Option<String>) {
     }
     let choice = row.children.is_empty().then(|| row.id.clone());
     (item, choice)
-}
-
-/// The arguments of the session's one send action for what the box held: whom it goes to, what it
-/// carries — the window or tab the menu stands on, as words — and the message.
-fn send_arguments(request: ui::shared_selection::SendToRequest) -> serde_json::Map<String, Value> {
-    let attached: Vec<Value> = request
-        .about
-        .iter()
-        .filter_map(|about| about.to_attached(None, None))
-        .filter_map(|attached| serde_json::to_value(attached).ok())
-        .collect();
-    let to = serde_json::to_value(&request.to).unwrap_or_else(|_| Value::Array(Vec::new()));
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("to".to_owned(), to);
-    arguments.insert("attached".to_owned(), Value::Array(attached));
-    arguments.insert("text".to_owned(), Value::String(request.text));
-    arguments
 }
 
 impl Widget for WindowMenuSurface {
@@ -991,24 +965,5 @@ mod tests {
                 .is_some_and(MenuItem::is_separator),
             "set off from the window's own rows by its rule"
         );
-    }
-
-    /// Sending is the session's own send: the recipients, the window the menu stands on as what the
-    /// message carries, and its words.
-    #[test]
-    fn sending_carries_the_window_and_the_words_to_the_sessions_send() {
-        let arguments = send_arguments(ui::shared_selection::SendToRequest {
-            to: vec![ui::floating_surface::Recipient::new_agent("Ada")],
-            about: vec![ui::shared_selection::SharedSelection::of_text("Notes")],
-            text: "have a look".into(),
-        });
-        assert_eq!(arguments["text"], "have a look");
-        assert_eq!(arguments["to"][0]["name"], "Ada");
-        assert_eq!(arguments["to"][0]["kind"], "new-agent");
-        assert_eq!(
-            arguments["attached"][0]["kind"], "text",
-            "the window is carried as words"
-        );
-        assert_eq!(arguments["attached"][0]["text"], "Notes");
     }
 }

@@ -750,18 +750,13 @@ impl App {
                 },
             )?;
         }
-        // What this window's send-to boxes hold: the session acts on each as
-        // the person, making an agent, opening the conversation and posting
-        // the message.
+        // What this window's send-to boxes hold: each goes to the session's one send action, which
+        // acts on it as the person, making an agent, opening the conversation and posting the
+        // message.
         for request in crate::shared_selection::take_send_to() {
-            let (to, attached, text) = self.send_reference(request);
-            client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::SendTo {
-                    to,
-                    attached,
-                    text,
-                },
-            )?;
+            let attached = self.send_attached(&request);
+            let workspace = crate::host::environment().identity.workspace_id.clone();
+            crate::shared_selection::deliver_send(request, attached, workspace);
             *changed = true;
         }
         // While a box is open, what the window has selected now is what its
@@ -1397,26 +1392,19 @@ fn publishing_app<'a>(
 }
 
 impl App {
-    /// What `request` is about, as the shell is told: a typed reference
-    /// and where in this window it is drawn.
+    /// What a box holds carries, as the session reads it: each subject as
+    /// the record and part it names.
     #[cfg(feature = "native")]
-    /// What a box holds, as the session reads it: whom it goes to, what the
-    /// message carries (each subject as the record and part it names), its
-    /// words and where the box stood.
-    fn send_reference(
+    fn send_attached(
         &self,
-        request: crate::shared_selection::SendToRequest,
-    ) -> (
-        Vec<crate::floating_surface::Recipient>,
-        Vec<tilo_reference::Attached>,
-        String,
-    ) {
+        request: &crate::shared_selection::SendToRequest,
+    ) -> Vec<tilo_reference::Attached> {
         let published = self.collect_resources();
         let focused = crate::shared_selection::subtree_selection(self.root_widget.as_ref());
         let mut attached = Vec::with_capacity(request.about.len());
-        for (index, about) in request.about.into_iter().enumerate() {
+        for (index, about) in request.about.iter().enumerate() {
             let (subject, _) = crate::shared_selection::resolve_selection(
-                Some(about),
+                Some(about.clone()),
                 None,
                 // What the box added after its first chip was not what the
                 // person pointed at: it is named in its own right.
@@ -1433,7 +1421,7 @@ impl App {
                 attached.push(sent);
             }
         }
-        (request.to, attached, request.text)
+        attached
     }
 
     /// Without a shell tab model, another instance is another window of

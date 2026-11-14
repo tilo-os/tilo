@@ -352,23 +352,21 @@ fn the_sends_send_is_pressed_through_the_target_and_sends_what_the_box_holds() {
         TargetAction::Activate,
     );
     app.pump_floating_surface_service();
-    let mut sent_message = None;
+    let mut delivered = None;
     for _ in 0..4 {
         drawn(&mut app);
         app.pump_floating_surface_service();
-        sent_message = sent(&mut shell)
-            .into_iter()
-            .find_map(|message| match message {
-                FloatingSurfaceClientMessage::SendTo { to, text, .. } => Some((to, text)),
-                _ => None,
-            });
-        if sent_message.is_some() {
+        delivered = crate::shared_selection::take_delivered().into_iter().next();
+        if delivered.is_some() {
             break;
         }
     }
-    let (to, text) = sent_message.expect("the window sent what the box held");
-    assert_eq!(text, "Ship the launch notes");
-    assert_eq!(to, [adalovelace], "to whom the box was addressed");
+    let arguments = delivered.expect("the window sent what the box held");
+    assert_eq!(arguments["text"], "Ship the launch notes");
+    assert_eq!(
+        arguments["to"][0]["name"], "Ada",
+        "to whom the box was addressed"
+    );
 }
 
 /// The box the shell asks a window for stands on the first menu drawn that carries one, never on
@@ -452,21 +450,19 @@ fn the_box_a_frame_stands_is_told_and_pressed_with_no_input_since() {
 
     press(&mut shell, &send, "Button", TargetAction::Activate);
     app.pump_floating_surface_service();
-    let mut sent_message = None;
+    let mut delivered = None;
     for _ in 0..4 {
         drawn(&mut app);
         app.pump_floating_surface_service();
-        sent_message = sent(&mut shell)
-            .into_iter()
-            .find_map(|message| match message {
-                FloatingSurfaceClientMessage::SendTo { to, text, .. } => Some((to, text)),
-                _ => None,
-            });
-        if sent_message.is_some() {
+        delivered = crate::shared_selection::take_delivered().into_iter().next();
+        if delivered.is_some() {
             break;
         }
     }
-    let (to, text) = sent_message.expect("the window sent what the box held");
-    assert_eq!(text, "Ship the launch notes");
-    assert_eq!(to, [ada], "to whom the box was addressed");
+    let arguments = delivered.expect("the window sent what the box held");
+    assert_eq!(arguments["text"], "Ship the launch notes");
+    assert_eq!(
+        arguments["to"][0]["name"], "Ada",
+        "to whom the box was addressed"
+    );
 }
