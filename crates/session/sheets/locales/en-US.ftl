@@ -517,6 +517,7 @@ mcp-server-workspace-gone = The workspace this program asked to work in is gone.
 mcp-server-withdrawn = The request was withdrawn before anyone answered it.
 mcp-server-declined = You didn’t let this program work here as an agent.
 mcp-server-no-run = This agent’s work here could not start
+mcp-server-unlisted = This workspace doesn’t list this program’s agent on this device yet, so its work here can’t start. Connect again in a moment.
 mcp-server-person-from-device = Only a program on this device can act as you; an agent from another of your devices works here as an agent.
 mcp-server-admission-person = Act as you in “{ $workspace }”
 mcp-server-admission-person-detail = Everything it does is yours: it runs what you type as you, attributed to you, with everything you may do here. Allow only a program you started yourself, such as a terminal.
