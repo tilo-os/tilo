@@ -1486,10 +1486,17 @@ impl TextInput {
         self
     }
 
+    /// Where a value the field is handed, rather than typed into, puts the caret: after it, where
+    /// typing goes on, unless the field is only read, where the value is shown from its start —
+    /// a caret at the end would drag the view to a link's meaningless tail.
+    fn caret_for_value(&self) -> usize {
+        if self.read_only { 0 } else { self.text.len() }
+    }
+
     #[must_use]
     pub fn with_initial_value(mut self, s: &str) -> Self {
         self.text = s.to_string();
-        self.core.set_caret(self.text.len());
+        self.core.set_caret(self.caret_for_value());
         self.dirty = false;
         self.last_notified_text.clone_from(&self.text);
         self.publish_local_state();
@@ -1508,7 +1515,7 @@ impl TextInput {
         }
         self.text = s.to_string();
         self.core.collapse();
-        self.core.set_caret(self.text.len());
+        self.core.set_caret(self.caret_for_value());
         self.clamp_to_text();
         self.scroll_x = 0.0;
         self.dirty = false;
@@ -3854,6 +3861,14 @@ impl TextInput {
             self.pending_paste = None;
             self.drop_shaped_layouts();
             self.layout_dirty = true;
+            if read_only && !self.is_focused {
+                // A value set while the field was still editable sat its caret at the end: shown
+                // for reading it starts at the beginning, where the person reads it. A field the
+                // person is in keeps its caret, so a lock that lifts puts them back where they
+                // were typing.
+                self.core.set_caret(0);
+                self.scroll_x = 0.0;
+            }
         }
     }
 

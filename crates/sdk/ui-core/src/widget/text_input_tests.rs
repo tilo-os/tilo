@@ -275,4 +275,52 @@ tilo_test_env::scenario! {
             "narrower than its room, the field scrolls to the caret"
         );
     }
+
+    phase a_value_shown_for_reading_starts_at_its_beginning;
+    // The add-a-device sheet shows the pairing link in a read-only field and hands the field the
+    // keyboard: the person reads the link from where it starts, not from the meaningless tail its
+    // caret would drag into view.
+    {
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::dark();
+        let link = "https://tilo.coffee/#/@eu1.tilo.coffee/w/\
+                    0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c?pair=abababababababababababab\
+                    abababababababababababababababab0123456789abcdef0123456789abcdef";
+        let drawn = |mut field: TextInput| {
+            field.set_focus(true);
+            field.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 40.0));
+            draw_with_theme(&mut field, &theme);
+            field
+        };
+        let at_start = |field: &TextInput, what: &str| {
+            assert!(
+                field.char_x_positions().last().copied().unwrap_or(0.0) > 320.0,
+                "{what}: fixture, the link is longer than the field"
+            );
+            assert_eq!(field.scroll_x(), 0.0, "{what}: the value shows from its start");
+            assert_eq!(field.cursor_pos(), 0, "{what}: the caret is where reading starts");
+        };
+        // The sheet's own order: the value, then that the field is one to read.
+        at_start(
+            &drawn(TextInput::local().with_initial_value(link).with_read_only(true)),
+            "a link put in before the field was read-only",
+        );
+        at_start(
+            &drawn(TextInput::local().with_read_only(true).with_initial_value(link)),
+            "a link put in after",
+        );
+        // A link that changes while the sheet is up arrives the same way.
+        let mut arrived = TextInput::local().with_read_only(true);
+        arrived.set_focus(true);
+        arrived.set_text(link);
+        arrived.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 40.0));
+        draw_with_theme(&mut arrived, &theme);
+        at_start(&arrived, "a refreshed link");
+        // A field the person types in keeps its caret at the end, where typing goes on.
+        let typed = drawn(TextInput::local().with_initial_value(link));
+        assert!(
+            typed.scroll_x() > 0.0,
+            "an editable field follows the caret to the end of what was typed"
+        );
+    }
 }
