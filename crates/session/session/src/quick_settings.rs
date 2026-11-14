@@ -241,6 +241,8 @@ impl crate::Session {
             self.quick_settings_keyboard = PanelKeys::Settled;
             self.shared.panel_asks.borrow_mut().clear();
             self.shared.panel_back.set(None);
+            // What was asked of this opening is answered for it alone, or not at all.
+            self.quick_settings_asked = None;
             self.run_quick_settings(false);
             return;
         }
@@ -267,10 +269,10 @@ impl crate::Session {
                     .outcome(id)
                     .is_some_and(|state| !state.update.is_terminal()) =>
             {
-                // Not answered yet by an app that runs: it stays out of sight, waiting.
-                self.compositor
-                    .set_layer_pose(SURFACE_NAMESPACE, self.quick_settings_panel.pose());
-                return;
+                // Not answered yet by an app that runs: shown but held back behind every frame it
+                // drew, so the frames it is owed keep it drawing until it answers. A hidden surface
+                // hears no frames, and an app whose swap waits for one answers nothing.
+                Some(u64::MAX)
             }
             Some(_) => {
                 self.quick_settings_asked = None;
@@ -425,11 +427,13 @@ impl crate::Session {
     fn show_quick_settings(&mut self, after: Option<u64>) {
         self.compositor
             .set_layer_pose(SURFACE_NAMESPACE, self.quick_settings_panel.pose());
-        if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true) {
-            match after {
-                Some(after) => self.compositor.show_layer_after(SURFACE_NAMESPACE, after),
-                None => self.compositor.show_layer(SURFACE_NAMESPACE, true),
+        match after {
+            // Held back until a frame after `after` , or now told which frame that is.
+            Some(after) => self.compositor.show_layer_after(SURFACE_NAMESPACE, after),
+            None if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true) => {
+                self.compositor.show_layer(SURFACE_NAMESPACE, true);
             }
+            None => {}
         }
     }
 

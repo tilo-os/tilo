@@ -382,15 +382,9 @@ impl State {
         // The frame it committed is at the size its app asks for, and it was drawn after what the
         // session last asked of it: the one the person may see.
         let settled = self.layers.surfaces.get(index).and_then(|placed| {
-            let at_asked = placed.buffer_size().is_some_and(|size| {
-                (size.w - placed.rect.size.w).abs() <= 1 && (size.h - placed.rect.size.h).abs() <= 1
-            });
-            let after = self
-                .layers
-                .settling
-                .get(&placed.namespace)
-                .is_some_and(|(_, after)| placed.frames > *after);
-            (at_asked && after).then(|| placed.namespace.clone())
+            let (_, after) = self.layers.settling.get(&placed.namespace)?;
+            self.layer_drew_after(&placed.namespace, *after)
+                .then(|| placed.namespace.clone())
         });
         if let Some(namespace) = settled {
             self.layers.settling.remove(&namespace);
@@ -431,6 +425,17 @@ impl State {
         after: Option<u64>,
     ) {
         if self.layers.shown(namespace) == Some(shown) {
+            // Shown and still held back: it now waits for a frame after `after` instead, by the
+            // same deadline.
+            if let (true, Some(after)) = (shown, after)
+                && let Some((_, waits_for)) = self.layers.settling.get_mut(namespace)
+            {
+                *waits_for = after;
+                if self.layer_drew_after(namespace, after) {
+                    self.layers.settling.remove(namespace);
+                    self.mark_redraw_all();
+                }
+            }
             return;
         }
         self.layers.visibility.insert(namespace.to_owned(), shown);
@@ -440,17 +445,7 @@ impl State {
             // back until that frame is the size it asked for.
             // Only a show that names the commit it waits for can find its frame already drawn; one
             // that names none waits for the next, as it always has.
-            let ready = after.is_some_and(|after| {
-                self.layers.surfaces.iter().any(|placed| {
-                    placed.namespace == namespace
-                        && placed.frames > after
-                        && placed.buffer_size().is_some_and(|size| {
-                            (size.w - placed.rect.size.w).abs() <= 1
-                                && (size.h - placed.rect.size.h).abs() <= 1
-                        })
-                })
-            });
-            if !ready {
+            if !after.is_some_and(|after| self.layer_drew_after(namespace, after)) {
                 let after = after.unwrap_or(0);
                 self.layers
                     .settling
@@ -461,6 +456,19 @@ impl State {
             self.return_layer_keyboard(namespace);
         }
         self.mark_redraw_all();
+    }
+
+    /// Whether the app of the layer surface `namespace` has committed a frame after its `after`th,
+    /// at the size it asked for.
+    fn layer_drew_after(&self, namespace: &str, after: u64) -> bool {
+        self.layers.surfaces.iter().any(|placed| {
+            placed.namespace == namespace
+                && placed.frames > after
+                && placed.buffer_size().is_some_and(|size| {
+                    (size.w - placed.rect.size.w).abs() <= 1
+                        && (size.h - placed.rect.size.h).abs() <= 1
+                })
+        })
     }
 
     /// Hand the keyboard to the shown layer surface `namespace` , which takes it on demand: a panel

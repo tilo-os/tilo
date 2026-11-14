@@ -868,3 +868,53 @@ fn an_idle_session_draws_nothing() {
     assert_eq!(frame.pixel(320, 10), Some([255, 0, 0, 255]), "the bar");
     assert_eq!(frame.pixel(320, 200), Some([0, 0, 255, 255]), "the window");
 }
+
+/// A panel the session keeps hidden between openings, opened on a page its app has yet to answer:
+/// held back, it hears its frames, so an app whose swap waits for one keeps drawing; told which
+/// frame answers, it shows with that frame.
+#[test]
+fn a_held_back_layer_hears_its_frames_and_shows_the_frame_it_was_told_of() {
+    const OLD: [u8; 4] = [255, 0, 0, 255];
+    const ASKED: [u8; 4] = [0, 255, 0, 255];
+    let mut compositor = headless();
+    compositor.place_layer_in("test", Some((100, 100, 200, 100)), false);
+    compositor.show_layer("test", false);
+    let mut panel = layer_client(
+        &mut compositor,
+        zwlr_layer_shell_v1::Layer::Overlay,
+        zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left,
+        (200, 100),
+        0,
+        OLD,
+    );
+    pump(&mut compositor, &mut [&mut panel], |compositor, _| {
+        compositor.layer_frames("test") > 0
+    });
+    let shown = |compositor: &mut Compositor| {
+        compositor.draw_frame().expect("a frame");
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(200, 150)
+    };
+    assert_eq!(shown(&mut compositor), Some(BACKGROUND), "hidden");
+    assert_eq!(panel.seen.frames, 0, "a hidden surface hears no frames");
+
+    // Opened, but held back behind every frame it drew: it hears its frame, and stays unseen.
+    compositor.show_layer_after("test", u64::MAX);
+    assert_eq!(shown(&mut compositor), Some(BACKGROUND), "held back");
+    pump(&mut compositor, &mut [&mut panel], |_, clients| {
+        clients[0].seen.frames > 0
+    });
+
+    // It answered: the frame it draws next is the page it was asked for, and that one shows.
+    compositor.show_layer_after("test", compositor.layer_frames("test"));
+    assert_eq!(
+        shown(&mut compositor),
+        Some(BACKGROUND),
+        "not the frame before"
+    );
+    let surface = panel.surface.clone().expect("the panel's surface");
+    panel.show(&surface, 200, 100, ASKED);
+    pump(&mut compositor, &mut [&mut panel], |compositor, _| {
+        compositor.layer_visible("test")
+    });
+    assert_eq!(shown(&mut compositor), Some(ASKED));
+}
