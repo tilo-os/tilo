@@ -331,4 +331,68 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
             .unwrap(),
         lasting
     );
+    // The day is the boundary itself: one ending exactly a day from now is certified anew, one
+    // ending a nanosecond after that still serves.
+    let day = 86_400_000_000_000_u64;
+    let at_the_day = DeviceCert {
+        expires_at_ns: Some(now + day),
+        ..cert.clone()
+    };
+    let anew = choose(held(at_the_day.clone(), &host), Some(&bob))
+        .await
+        .unwrap();
+    assert_ne!(anew, at_the_day);
+    assert_eq!(anew.expires_at_ns, None, "certified anew, by the root");
+    let past_the_day = DeviceCert {
+        expires_at_ns: Some(now + day + 1),
+        ..cert.clone()
+    };
+    assert_eq!(
+        choose(held(past_the_day.clone(), &host), Some(&bob))
+            .await
+            .unwrap(),
+        past_the_day
+    );
+    // Ending within a day with no root at hand: nothing held serves, and nothing certifies.
+    assert_eq!(
+        choose(held(ending, &host), None).await.unwrap_err().code,
+        HostRefusal::NO_CERTIFICATE
+    );
+    // Kept without the host it was kept for: it serves no host, so only a root enters.
+    let hostless = |cert: DeviceCert| Held {
+        cert,
+        host_cert: None,
+    };
+    assert_eq!(
+        choose(hostless(cert.clone()), None).await.unwrap_err().code,
+        HostRefusal::NO_CERTIFICATE
+    );
+    assert_eq!(
+        choose(hostless(lasting.clone()), Some(&bob))
+            .await
+            .unwrap()
+            .expires_at_ns,
+        None,
+        "a certificate kept for no host is not entered with: the root certifies anew"
+    );
+    // Nothing held at all: the root certifies this very key, and without one there is nothing.
+    let first = entering_certificate(
+        None,
+        &host,
+        &page,
+        Some(&bob as &dyn tilo_relay_client::DeviceSigner),
+        "Firefox on Linux",
+        now,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.device_public_key, page.verifying_key().to_bytes());
+    assert_eq!(first.user_public_key, bob.verifying_key().to_bytes());
+    assert_eq!(
+        entering_certificate(None, &host, &page, None, "Firefox on Linux", now)
+            .await
+            .unwrap_err()
+            .code,
+        HostRefusal::NO_CERTIFICATE
+    );
 }
