@@ -59,7 +59,6 @@ pub mod folder_counts;
 pub mod framework_history;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod history_control;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod i18n;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod identity_directory;
@@ -103,8 +102,7 @@ pub mod views;
 
 /// A folder of the workspace's files as one `.zip` a page downloads.
 pub mod store_zip;
-/// The workspace's files, as the page shows them.
-#[cfg(target_arch = "wasm32")]
+/// The workspace's files, as a page shows them.
 pub mod tree;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -117,7 +115,6 @@ mod unavailable_projection_tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub use resource::{FileExplorer, FileExplorerShell};
 
-#[cfg(target_arch = "wasm32")]
 pub use tree::FilesTreeShell;
 
 #[cfg(not(target_arch = "wasm32"))]

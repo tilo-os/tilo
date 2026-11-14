@@ -28,12 +28,7 @@ use ui::widget::{
     ActionEmitter, Button, Column, Decorator, Element, EmptyState, ListRow, Row, Text, Widget as _,
 };
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
-
-/// The catalogue's text for `key`.
-fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
+use crate::i18n::{format_bytes, format_datetime, t};
 
 /// The window's own record: the folder of the workspace's tree it shows, so a
 /// window comes back to where the person left it.
@@ -73,7 +68,7 @@ impl ResourceApp for FilesTreeShell {
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&crate::i18n::CATALOG)
     }
 }
 
@@ -105,6 +100,14 @@ struct Shown {
     folder: String,
     tree: Option<Rc<Tree>>,
     names: u64,
+}
+
+/// The app that opens the file `name`, whose first bytes are `head`: the
+/// bytes decide, as they do wherever a workspace lands a file in an app, and
+/// the name only says which of them are text.
+fn opening_app(head: &[u8], name: &str) -> Option<String> {
+    let landing = tilo_content_types::landing(head, name)?;
+    Some(format!("so.tilo.{}", landing.app))
 }
 
 /// The window: the folder it shows and the entries in it.
@@ -397,12 +400,12 @@ impl TreeBrowser {
     fn details(node: &TreeEntry) -> String {
         let mut parts: Vec<String> = Vec::new();
         if node.kind == FileNodeKind::File {
-            parts.push(ui::format::memory(node.size));
+            parts.push(format_bytes(node.size));
         }
         if let Some(at) =
             chrono::DateTime::from_timestamp_millis(i64::try_from(node.mtime).unwrap_or(i64::MAX))
         {
-            parts.push(ui::format::timestamp(&at.with_timezone(&chrono::Local)));
+            parts.push(format_datetime(at.with_timezone(&chrono::Local)));
         }
         parts.join(" · ")
     }
@@ -449,11 +452,10 @@ impl TreeBrowser {
         let head = bytes
             .get(..bytes.len().min(tilo_content_types::HEAD_BYTES))
             .unwrap_or(bytes);
-        let Some(landing) = tilo_content_types::landing(head, &ask.name) else {
+        let Some(app) = opening_app(head, &ask.name) else {
             tracing::info!("no app in this page opens {}", ask.name);
             return;
         };
-        let app = format!("so.tilo.{}", landing.app);
         let mut handoffs = self.handoffs.borrow_mut();
         if let std::collections::hash_map::Entry::Vacant(slot) = handoffs.entry(app.clone()) {
             let Some(built) = Self::handoff(&app, &t("files-tree-open")) else {
@@ -529,5 +531,152 @@ impl ActionControls for TreeBrowser {
             .borrow_mut()
             .values_mut()
             .find_map(ActionEmitter::take)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ui::automerge::transaction::Transactable as _;
+    use ui::automerge::{AutoCommit, ObjId, ObjType, ROOT};
+
+    use super::*;
+    use fs_protocol::files::FileNameV1;
+    use fs_protocol::tree::{
+        AUTHOR_KEY, HASH_KEY, KIND_KEY, MTIME_KEY, NAME_KEY, NODES_KEY, PARENT_KEY, RECORD_ID_KEY,
+        SIZE_KEY,
+    };
+
+    /// A node of the tree `doc` holds: `id` under `parent`, called `name`.
+    fn node(
+        doc: &mut AutoCommit,
+        nodes: &ObjId,
+        id: &str,
+        parent: &str,
+        name: &str,
+        file: Option<(&str, u64)>,
+    ) {
+        let entry = doc.put_object(nodes, id, ObjType::Map).unwrap();
+        doc.put(&entry, PARENT_KEY, parent).unwrap();
+        doc.put(&entry, NAME_KEY, name.as_bytes().to_vec()).unwrap();
+        doc.put(&entry, RECORD_ID_KEY, uuid::Uuid::new_v4().to_string())
+            .unwrap();
+        doc.put(&entry, AUTHOR_KEY, "ada".to_owned()).unwrap();
+        doc.put(&entry, MTIME_KEY, 1_767_225_600_000_u64).unwrap();
+        match file {
+            Some((hash, size)) => {
+                doc.put(&entry, KIND_KEY, "file").unwrap();
+                doc.put(&entry, HASH_KEY, hash).unwrap();
+                doc.put(&entry, SIZE_KEY, size).unwrap();
+            }
+            None => {
+                doc.put(&entry, KIND_KEY, "dir").unwrap();
+                doc.put(&entry, SIZE_KEY, 0_u64).unwrap();
+            }
+        }
+    }
+
+    /// A workspace's tree: `docs/` holding `plan.md` and `scan.pdf`, and
+    /// `notes.txt` beside it, written by Ada.
+    fn workspace() -> Tree {
+        let mut doc = AutoCommit::new();
+        let nodes = doc.put_object(&ROOT, NODES_KEY, ObjType::Map).unwrap();
+        node(&mut doc, &nodes, "docs", ROOT_ID, "docs", None);
+        let (plan, scan, notes) = ("ab".repeat(32), "cd".repeat(32), "ef".repeat(32));
+        node(
+            &mut doc,
+            &nodes,
+            "plan",
+            "docs",
+            "plan.md",
+            Some((plan.as_str(), 2048)),
+        );
+        node(
+            &mut doc,
+            &nodes,
+            "scan",
+            "docs",
+            "scan.pdf",
+            Some((scan.as_str(), 4096)),
+        );
+        node(
+            &mut doc,
+            &nodes,
+            "notes",
+            ROOT_ID,
+            "notes.txt",
+            Some((notes.as_str(), 12)),
+        );
+        <fs_protocol::tree::FilesTree as ui::tilo_resource::Resource>::read(&doc)
+            .expect("the tree reads")
+    }
+
+    #[test]
+    fn a_folder_lists_its_entries_with_their_size_and_who_wrote_them() {
+        let tree = workspace();
+        let names: Vec<String> = tree
+            .children("docs")
+            .into_iter()
+            .map(|(_, node)| String::from_utf8_lossy(node.name.as_bytes()).into_owned())
+            .collect();
+        assert_eq!(names, ["plan.md", "scan.pdf"]);
+        let (_, plan) = tree.children("docs")[0];
+        assert_eq!(plan.kind, FileNodeKind::File);
+        assert_eq!(plan.size, 2048);
+        assert_eq!(plan.author.as_deref(), Some("ada"));
+        let details = TreeBrowser::details(plan);
+        assert!(details.starts_with("2 kB"), "{details}");
+        assert!(
+            details.contains(" · "),
+            "the size, then when it changed: {details}"
+        );
+        assert_eq!(
+            TreeBrowser::name_of(&TreeEntry {
+                name: FileNameV1(b"stra\xc3\x9fe.txt".to_vec()),
+                ..plan.clone()
+            }),
+            "straße.txt"
+        );
+    }
+
+    #[test]
+    fn the_path_of_a_folder_reads_from_the_root() {
+        let tree = workspace();
+        assert_eq!(TreeBrowser::path_of(&tree, "docs"), "docs");
+        assert_eq!(TreeBrowser::path_of(&tree, ROOT_ID), "");
+    }
+
+    #[test]
+    fn a_files_bytes_say_which_app_opens_it() {
+        assert_eq!(
+            opening_app(b"%PDF-1.7\n", "scan.pdf").as_deref(),
+            Some("so.tilo.pdf-viewer")
+        );
+        assert_eq!(
+            opening_app(b"# Plan\n\n- one\n", "plan.md").as_deref(),
+            Some("so.tilo.notes")
+        );
+        assert_eq!(
+            opening_app(b"plain words\n", "notes.txt").as_deref(),
+            Some("so.tilo.notes")
+        );
+        assert_eq!(
+            opening_app(b"\x89PNG\r\n\x1a\n....", "shot.txt").as_deref(),
+            Some("so.tilo.photos")
+        );
+        assert_eq!(opening_app(&[0_u8, 1, 2, 3], "blob.bin"), None);
+    }
+
+    #[test]
+    fn the_handoff_opens_the_app_the_bytes_name_with_the_files_content() {
+        let handoff = TreeBrowser::handoff("so.tilo.notes", "Open").expect("the handoff binds");
+        let hash = "ab".repeat(32);
+        let invocation = handoff
+            .binding()
+            .invoke(hash.clone())
+            .expect("the row's click is one invocation");
+        assert_eq!(invocation.address.resource.as_str(), "so.tilo.notes.app");
+        assert_eq!(invocation.address.action.as_str(), "open");
+        let arguments = serde_json::Value::Object(invocation.arguments);
+        assert_eq!(arguments["content_hash"].as_str(), Some(hash.as_str()));
     }
 }
