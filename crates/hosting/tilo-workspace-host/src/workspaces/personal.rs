@@ -733,16 +733,18 @@ mod tests {
         let desktop = key_of(&root, "studio");
         let first = key_of(&root, "Claude Code on laptop");
         let second = key_of(&root, "Claude Code on laptop");
-        let mut list = PersonalList::default();
-        list.devices = vec![PersonalDevice {
-            cert: first.clone(),
-            name: None,
-            revoked: false,
-            browser: None,
-            agent: None,
-            last_active_ms: None,
-            online: false,
-        }];
+        let list = PersonalList {
+            devices: vec![PersonalDevice {
+                cert: first.clone(),
+                name: None,
+                revoked: false,
+                browser: None,
+                agent: None,
+                last_active_ms: None,
+                online: false,
+            }],
+            ..PersonalList::default()
+        };
         lists.keep(&desktop, list, 1).unwrap();
         lists.add_devices(&person, vec![second.clone()]).unwrap();
 
