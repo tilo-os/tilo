@@ -140,7 +140,8 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 requires = ["arch={arch}"]
 wrapper = ["bash", "tools/ci/nextest.sh"]
-args = ["--locked", "--profile", "ci", "--tests"]
+# tilolang-tilo's budget gates are test-bench's, below.
+args = ["--locked", "--profile", "ci", "--tests", "-E", "not (package(tilolang-tilo) & (binary(budgets) | test(/^bench::costs::/)))"]
 unify = "workspace-unify"
 packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "install",
@@ -171,6 +172,23 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
 packages = ["canvas", "music", "pdf-viewer", "tilo-ui"]
+env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
+heavy = true
+on = ["dispatch", "idle"]
+
+# tilolang-tilo's budget gates: each app's views read at a thousand and at ten thousand records,
+# asserting they do the same work at both. Seeding ten thousand records in a test build makes them
+# 10.4 of the package's 39.6 test-minutes a run (11-14), at every head of main; their counts are
+# deterministic, so main's newest head with room bisects a gate a commit breaks as surely.
+[[cargo]]
+name = "test-bench"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+tool = "nextest"
+requires = ["arch=x86_64"]
+wrapper = ["bash", "tools/ci/nextest.sh"]
+args = ["--locked", "--profile", "ci", "--tests", "-E", "binary(budgets) | test(/^bench::costs::/)"]
+unify = "workspace-unify"
+packages = ["tilolang-tilo"]
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 heavy = true
 on = ["dispatch", "idle"]
