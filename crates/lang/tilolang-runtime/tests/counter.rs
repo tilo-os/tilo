@@ -72,41 +72,6 @@ mod cases {
             assert!(v.poll_patches().unwrap().is_empty());
         }
 
-        phase a_view_carries_on_the_same_once_its_module_runs_compiled;
-        // On the tiered engine a view opened while its module may still run on wasmi carries on
-        // on Cranelift, between presses, with the same tree and patches.
-        {
-            let w = World::new();
-            if w.rt.engine().kind() != tilolang_runtime::EngineKind::Tiered {
-                return;
-            }
-            let c = w.counter();
-            let mut v =
-                w.rt.open_view(&w.me, "vc", vec![Value::resource(&c)])
-                    .unwrap();
-            let press = |v: &mut tilolang_runtime::ViewInstance, value: i64| {
-                assert!(matches!(v.press("btn").unwrap(), InvokeOutcome::Done(_)));
-                assert_eq!(
-                    v.poll_patches().unwrap(),
-                    vec![Patch::SetProp {
-                        path: vec!["col".into(), "txt".into()],
-                        name: "text".into(),
-                        value: Some(Value::Int(value)),
-                    }]
-                );
-            };
-            press(&mut v, 1);
-            w.rt.engine().settle_compile(&w.counter);
-            press(&mut v, 2);
-            assert_eq!(
-                w.rt.engine().tier(&w.counter),
-                Some(tilolang_runtime::EngineKind::Cranelift)
-            );
-            press(&mut v, 3);
-            assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(3));
-            assert_eq!(v.tree().find("txt").unwrap().props["text"], Value::Int(3));
-        }
-
         phase the_suite_runs_on_the_engine_it_names;
         // The suites run on each engine by naming it in `TILOLANG_ENGINE`; a run that names an
         // engine this build lacks fails here instead of passing on the default one.
@@ -199,6 +164,41 @@ mod cases {
             );
             assert!(plain.poll_patches().unwrap().is_empty());
         }
+    }
+
+    /// On the tiered engine a view opened while its module may still run on wasmi carries on
+    /// on Cranelift, between presses, with the same tree and patches.
+    #[test]
+    fn a_view_carries_on_the_same_once_its_module_runs_compiled() {
+        let w = World::new();
+        if w.rt.engine().kind() != tilolang_runtime::EngineKind::Tiered {
+            return;
+        }
+        let c = w.counter();
+        let mut v =
+            w.rt.open_view(&w.me, "vc", vec![Value::resource(&c)])
+                .unwrap();
+        let press = |v: &mut tilolang_runtime::ViewInstance, value: i64| {
+            assert!(matches!(v.press("btn").unwrap(), InvokeOutcome::Done(_)));
+            assert_eq!(
+                v.poll_patches().unwrap(),
+                vec![Patch::SetProp {
+                    path: vec!["col".into(), "txt".into()],
+                    name: "text".into(),
+                    value: Some(Value::Int(value)),
+                }]
+            );
+        };
+        press(&mut v, 1);
+        w.rt.engine().settle_compile(&w.counter);
+        press(&mut v, 2);
+        assert_eq!(
+            w.rt.engine().tier(&w.counter),
+            Some(tilolang_runtime::EngineKind::Cranelift)
+        );
+        press(&mut v, 3);
+        assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(3));
+        assert_eq!(v.tree().find("txt").unwrap().props["text"], Value::Int(3));
     }
 
     tilo_test_env::scenario! {
