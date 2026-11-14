@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::application_view::InstanceViewStore;
-use ui::permissions::{SharedPermissions, UserId};
+use ui::permissions::{MemberId, SharedPermissions};
 use ui::record::{RecordOwners, RecordStore};
 use wasm_bindgen::JsValue;
 
@@ -131,7 +131,7 @@ impl AppPage {
             device_id: config.device.clone(),
             instance_id: config.instance,
             permissions: self.permissions.clone(),
-            author: UserId(config.author()),
+            author: MemberId::person(config.author()),
             action_context: tilo_actions::ActionContext::default(),
         };
         let prepared = match named_new {

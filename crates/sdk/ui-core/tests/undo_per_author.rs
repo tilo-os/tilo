@@ -1,6 +1,6 @@
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
-use tilo_ui::permissions::UserId;
+use tilo_ui::permissions::MemberId;
 use tilo_ui::state::State;
 
 tilo_test_env::scenario! {
@@ -19,42 +19,42 @@ tilo_test_env::scenario! {
         {
             let mut state = State::new();
             state.doc.put(&state.root, "v", 1).unwrap();
-            state.commit_action_authored(None, None, Some(UserId("alice".into())));
+            state.commit_action_authored(None, None, Some(MemberId::person("alice")));
             let last = state.peek_last_undo().expect("undo entry");
-            assert_eq!(last.author, Some(UserId("alice".into())));
+            assert_eq!(last.author, Some(MemberId::person("alice")));
         }
 
         {
             fn undo_for_author_skips_entries_owned_by_other_users() {
                 let mut state = State::new();
                 state.doc.put(&state.root, "v", 1).unwrap();
-                state.commit_action_authored(None, None, Some(UserId("alice".into())));
+                state.commit_action_authored(None, None, Some(MemberId::person("alice")));
                 state.doc.put(&state.root, "v", 2).unwrap();
-                state.commit_action_authored(None, None, Some(UserId("bob".into())));
+                state.commit_action_authored(None, None, Some(MemberId::person("bob")));
                 state.doc.put(&state.root, "v", 3).unwrap();
-                state.commit_action_authored(None, None, Some(UserId("alice".into())));
+                state.commit_action_authored(None, None, Some(MemberId::person("alice")));
 
                 // Pops the top entry (alice's own, v=3 becomes v=2). Caret state is
                 // irrelevant here, hence None/None throughout this file.
                 let popped = state
-                    .undo_as(Some(&UserId("alice".into())), None, None)
+                    .undo_as(Some(&MemberId::person("alice")), None, None)
                     .expect("alice entry");
-                assert_eq!(popped.author, Some(UserId("alice".into())));
+                assert_eq!(popped.author, Some(MemberId::person("alice")));
                 // Next alice undo: must skip bob's entry and pop the earlier alice entry.
                 let popped = state
-                    .undo_as(Some(&UserId("alice".into())), None, None)
+                    .undo_as(Some(&MemberId::person("alice")), None, None)
                     .expect("alice entry again");
-                assert_eq!(popped.author, Some(UserId("alice".into())));
+                assert_eq!(popped.author, Some(MemberId::person("alice")));
                 // No more alice entries: return None (bob's remains untouched).
                 assert!(
                     state
-                        .undo_as(Some(&UserId("alice".into())), None, None)
+                        .undo_as(Some(&MemberId::person("alice")), None, None)
                         .is_none()
                 );
                 let popped = state
-                    .undo_as(Some(&UserId("bob".into())), None, None)
+                    .undo_as(Some(&MemberId::person("bob")), None, None)
                     .expect("bob entry");
-                assert_eq!(popped.author, Some(UserId("bob".into())));
+                assert_eq!(popped.author, Some(MemberId::person("bob")));
             }
             undo_for_author_skips_entries_owned_by_other_users();
         }
@@ -64,8 +64,8 @@ tilo_test_env::scenario! {
         // and leaves theirs standing.
         {
             let mut state = State::new();
-            let me = UserId("me".into());
-            let them = UserId("them".into());
+            let me = MemberId::person("me");
+            let them = MemberId::person("them");
 
             let before = state.doc.get_heads();
             state.doc.put(&state.root, "mine", 1).unwrap();
@@ -103,7 +103,7 @@ tilo_test_env::scenario! {
         // author-scoped undo has to claim it rather than walk past.
         {
             let mut state = State::new();
-            let me = UserId("someone".into());
+            let me = MemberId::person("someone");
 
             let before = state.doc.get_heads();
             state.doc.put(&state.root, "v", 1).unwrap();
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
         // The mirror: having undone it, Ctrl+Shift+Z puts it back.
         {
             let mut state = State::new();
-            let me = UserId("someone".into());
+            let me = MemberId::person("someone");
 
             let before = state.doc.get_heads();
             state.doc.put(&state.root, "v", 1).unwrap();
@@ -149,7 +149,7 @@ tilo_test_env::scenario! {
         // Here the move happens on an empty commit (a selection drag, a focus move).
         {
             let mut state = State::new();
-            let me = UserId("someone".into());
+            let me = MemberId::person("someone");
             let root = state.root.clone();
             tilo_doc::model::init(&mut state.doc, &root);
 
@@ -179,7 +179,7 @@ tilo_test_env::scenario! {
         // before it is otherwise inside the next action's bracket.
         {
             let mut state = State::new();
-            let me = UserId("someone".into());
+            let me = MemberId::person("someone");
             let root = state.root.clone();
             tilo_doc::model::init(&mut state.doc, &root);
 

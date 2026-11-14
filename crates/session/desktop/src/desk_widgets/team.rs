@@ -97,7 +97,7 @@ pub fn status_line(
     row: &RosterRow,
     now: SystemTime,
 ) -> Option<RosterStatus> {
-    let direct = ui::permissions::UserId(row.id.clone());
+    let direct = ui::permissions::MemberId::person(row.id.clone());
     let id = presence
         .status_for(&direct, now)
         .map(|_| direct.clone())
@@ -124,8 +124,8 @@ pub fn presence_id(
     presence: &PresenceCtx,
     workspace: Option<&str>,
     row: &RosterRow,
-) -> Option<ui::permissions::UserId> {
-    let direct = ui::permissions::UserId(row.id.clone());
+) -> Option<ui::permissions::MemberId> {
+    let direct = ui::permissions::MemberId::person(row.id.clone());
     let said = match workspace {
         Some(workspace) => presence.has_availability_in(workspace, &direct),
         None => presence.has_availability(&direct),

@@ -4,7 +4,7 @@ use crate::application_view::{
     validate_identity,
 };
 use crate::launch::LaunchError;
-use crate::permissions::{PermissionContext, PermissionScope, SharedPermissions, UserId};
+use crate::permissions::{MemberId, PermissionContext, PermissionScope, SharedPermissions};
 use crate::record::{
     RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordReservation, RecordStore,
 };
@@ -101,7 +101,7 @@ pub struct HostContextInputs {
     pub instance_id: InstanceId,
     pub permissions: SharedPermissions,
     /// The trusted local person, retained independently of later action attribution.
-    pub author: UserId,
+    pub author: MemberId,
     pub action_context: tilo_actions::ActionContext,
 }
 
@@ -116,8 +116,8 @@ pub struct HostContext {
     record: RecordCheckout,
     reservation: Option<RecordReservation>,
     permissions: SharedPermissions,
-    author: UserId,
-    host_person: UserId,
+    author: MemberId,
+    host_person: MemberId,
     action_context: tilo_actions::ActionContext,
     /// See [`Self::write_as_author`].
     writes_as_author: bool,
@@ -354,13 +354,13 @@ impl PendingReplacement {
 /// authority and services as the record it shows, for another record.
 #[derive(Clone)]
 pub struct Reopener {
-    host_person: UserId,
+    host_person: MemberId,
     records: RecordStore,
     views: Rc<InstanceViewStore>,
     device_id: String,
     instance_id: InstanceId,
     permissions: SharedPermissions,
-    author: UserId,
+    author: MemberId,
     action_context: tilo_actions::ActionContext,
     writes_as_author: bool,
     services: crate::host::HostServices,
@@ -539,7 +539,7 @@ impl HostContext {
         validate_identity(definition.app_id()).map_err(LaunchError::Restore)?;
         validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
-        validate_identity(&author.0).map_err(LaunchError::Restore)?;
+        validate_identity(&author.key()).map_err(LaunchError::Restore)?;
         let (profile, package, workspace) = records
             .canonical_namespace()
             .ok_or_else(|| mismatch("the record store names no namespace"))?;
@@ -759,12 +759,12 @@ impl HostContext {
     pub fn app_id(&self) -> &str {
         &self.app_id
     }
-    pub fn author(&self) -> &UserId {
+    pub fn author(&self) -> &MemberId {
         &self.author
     }
     /// The immutable local person supplied at host preparation, not the author currently attributed to
     /// an action.
-    pub fn host_person(&self) -> &UserId {
+    pub fn host_person(&self) -> &MemberId {
         &self.host_person
     }
     /// A snapshot of the participant's permissions at this moment.
@@ -971,9 +971,9 @@ impl ApplicationDefinition {
     /// The record a window of `author` opens when it names none, when the app keeps each member
     /// ([`Self::member_record`]): their own record of the workspace.
     #[must_use]
-    pub fn member_record_of(&self, author: &UserId) -> Option<RecordCheckout> {
+    pub fn member_record_of(&self, author: &MemberId) -> Option<RecordCheckout> {
         self.member_record
-            .then(|| RecordId::of_member(&author.0, self.record_kind.as_str()))
+            .then(|| RecordId::of_member(&author.key(), self.record_kind.as_str()))
             .flatten()
             .map(|id| RecordCheckout::new(id, self.record_kind.clone()))
     }
@@ -2342,7 +2342,7 @@ mod bound_lifetime_tests {
                         permissions: crate::permissions::SharedPermissions::new(
                             PermissionContext::permissive(),
                         ),
-                        author: UserId("probe-author".into()),
+                        author: MemberId::person("probe-author"),
                         action_context: tilo_actions::ActionContext::default(),
                     },
                     target,
@@ -2392,7 +2392,7 @@ mod bound_lifetime_tests {
                         permissions: crate::permissions::SharedPermissions::new(
                             PermissionContext::permissive(),
                         ),
-                        author: UserId("probe-author".into()),
+                        author: MemberId::person("probe-author"),
                         action_context: tilo_actions::ActionContext::default(),
                     },
                     &LaunchTarget::Record {
@@ -2456,7 +2456,7 @@ mod bound_lifetime_tests {
                             permissions: crate::permissions::SharedPermissions::new(
                                 PermissionContext::permissive(),
                             ),
-                            author: UserId("probe-author".into()),
+                            author: MemberId::person("probe-author"),
                             action_context: tilo_actions::ActionContext::default(),
                         },
                         target,
@@ -2546,7 +2546,7 @@ mod bound_lifetime_tests {
                         permissions: crate::permissions::SharedPermissions::new(
                             PermissionContext::permissive(),
                         ),
-                        author: UserId("probe-author".into()),
+                        author: MemberId::person("probe-author"),
                         action_context: tilo_actions::ActionContext::default(),
                     },
                     &LaunchTarget::New,
@@ -2686,14 +2686,14 @@ mod portable_tests {
                 &LaunchTarget::New,
             )
             .unwrap();
-            context.author = UserId("agent".into());
+            context.author = MemberId::person("agent");
             assert_eq!(context.host_person(), &probe::author());
             assert_eq!(context.callback_binding().host_person, probe::author());
             let (reopened, _) = context
                 .reopener()
                 .prepare(&definition, RecordId::minted())
                 .unwrap();
-            assert_eq!(reopened.author(), &UserId("agent".into()));
+            assert_eq!(reopened.author(), &MemberId::person("agent"));
             assert_eq!(reopened.host_person(), &probe::author());
             assert_eq!(reopened.callback_binding().host_person, probe::author());
         }

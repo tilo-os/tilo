@@ -256,13 +256,13 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
             );
             let HostFrame::Event {
                 subscription: delivered,
-                event: Event::Presence { user_id, presence },
+                event: Event::Presence { member, presence },
             } = watcher.frame().await
             else {
                 panic!("the watcher receives the author's presence");
             };
             assert_eq!(delivered, subscription);
-            assert_eq!(user_id, principal(2), "the host attributes the update");
+            assert_eq!(member, collab_types::MemberId::person(principal(2)), "attributed");
             assert_eq!(postcard::from_bytes::<PresenceKey>(&presence.key).unwrap(), key);
             assert_eq!(
                 presence.payload,
@@ -803,11 +803,11 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
                     .await,
                 Ok(Reply::Done)
             );
-            let Some(Delivery::Event(Event::Presence { user_id, .. })) = presence.next().await
+            let Some(Delivery::Event(Event::Presence { member, .. })) = presence.next().await
             else {
                 panic!("the client routes the subscription's event");
             };
-            assert_eq!(user_id, principal(12));
+            assert_eq!(member, collab_types::MemberId::person(principal(12)));
             assert!(
                 watcher
                     .call(Operation::Close { handle: Handle(99) })

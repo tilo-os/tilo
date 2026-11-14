@@ -981,7 +981,7 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
         ..Default::default()
     }));
     app.service_idle_model();
-    let actor = app.collaboration.local_author.0.clone();
+    let actor = app.collaboration.local_author.key();
     let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
     let invocation = tilo_actions::InvocationId::new();
     assert_eq!(

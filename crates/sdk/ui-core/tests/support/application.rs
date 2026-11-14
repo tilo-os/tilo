@@ -10,7 +10,7 @@ use tilo_ui::application_view::InstanceViewStore;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::local_state::LocalState;
 use tilo_ui::permissions::{
-    ActionKind, PermissionContext, PermissionScope, SharedPermissions, UserId,
+    ActionKind, MemberId, PermissionContext, PermissionScope, SharedPermissions,
 };
 use tilo_ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
 use tilo_ui::view::ViewContribution;
@@ -243,8 +243,8 @@ pub fn editor_permissions() -> SharedPermissions {
             .at_unix_time(100),
     )
 }
-pub fn author() -> UserId {
-    UserId("probe-author".into())
+pub fn author() -> MemberId {
+    MemberId::person("probe-author")
 }
 pub fn provenance() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext::default().with_app(APP, "Probe")

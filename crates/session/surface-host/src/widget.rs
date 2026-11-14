@@ -247,7 +247,7 @@ impl WidgetHost {
             placement.size,
             ui::Theme::dark(),
             ui::TextRenderer::new(),
-            ui::permissions::UserId(String::new()),
+            ui::permissions::MemberId::person(String::new()),
         );
         host.set_caller_palette_enabled(false);
         // This host presents on its own frame clock, the compositor's, as a

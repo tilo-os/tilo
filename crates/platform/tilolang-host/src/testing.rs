@@ -133,7 +133,7 @@ impl Bus {
                 inbox
                     .borrow_mut()
                     .push_back(CollabEvent::RemotePresenceUpdate {
-                        user_id: person.to_owned(),
+                        member: ui::permissions::MemberId::person(person),
                         key: key.clone(),
                         payload: payload.clone(),
                     });

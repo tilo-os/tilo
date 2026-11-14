@@ -37,9 +37,8 @@ fn field(edits: &crate::Intents<Fired>) -> RichInput {
         .line
         .inner_mut()
         .set_mention_candidates(vec![MentionCandidate::new(
-            "u_ada",
+            MemberId::person("u_ada"),
             "Ada Lovelace",
-            false,
             crate::tokens::PresenceHue::of_identity("u_ada"),
         )]);
     Widget::set_focus(&mut input, true);
@@ -138,8 +137,7 @@ tilo_test_env::scenario! {
             submit: Event::None,
         };
         assert!(input.set_props(given), "the people change in place");
-        let mut presence = PresenceCtx::default();
-        presence.set_participant_kind(UserId("agent:planner".into()), ParticipantKind::Agent);
+        let presence = PresenceCtx::default();
         Decorator::draw(
             &mut input,
             &mut Scene::new(),

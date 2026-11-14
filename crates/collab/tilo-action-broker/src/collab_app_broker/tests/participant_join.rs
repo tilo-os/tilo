@@ -113,8 +113,8 @@ async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
                     .unwrap();
                 let event = event_rx.try_recv().unwrap();
                 assert!(matches!(event,
-                    CollabEvent::RemotePresenceUpdate { user_id, key: delivered, payload: PresencePayload::Arrived }
-                        if user_id == format!("agent:{expected}") && delivered == key));
+                    CollabEvent::RemotePresenceUpdate { member, key: delivered, payload: PresencePayload::Arrived }
+                        if member == collab_types::MemberId::agent(expected) && delivered == key));
             }
         })
         .await;
@@ -181,8 +181,8 @@ async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback()
                 .await
                 .unwrap();
             assert!(matches!(event_rx.try_recv().unwrap(),
-                CollabEvent::RemotePresenceUpdate { user_id, payload: PresencePayload::Arrived, .. }
-                    if user_id == fixture.principal));
+                CollabEvent::RemotePresenceUpdate { member, payload: PresencePayload::Arrived, .. }
+                    if member == collab_types::MemberId::person(fixture.principal.clone())));
         })
         .await;
 }

@@ -2,7 +2,7 @@
 //! The optional catalogue is the existing screenshot fixture, never live data.
 
 use ui::headless::FrameHarness;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::text_render::TextRenderer;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (868, 772),
         ui::Theme::dark(),
         text,
-        UserId("isolated-startup-layout-probe".into()),
+        MemberId::person("isolated-startup-layout-probe"),
     );
     let first_frame_ms = start.elapsed().as_secs_f64() * 1000.0;
     let rect = frame.root_widget().get_rect();

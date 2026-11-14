@@ -45,7 +45,7 @@ impl TileSource for Readers {
                 device_id: "device".into(),
                 instance_id: tab.id,
                 permissions,
-                author: ui::permissions::UserId("reader".into()),
+                author: ui::permissions::MemberId::person("reader"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,

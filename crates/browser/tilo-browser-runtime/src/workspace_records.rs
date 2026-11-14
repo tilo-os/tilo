@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::record::workspace::WorkspaceRecords;
 use ui::record::{RecordOwners, RecordStore};
 
@@ -21,7 +21,7 @@ pub(crate) fn in_page(
     replicated: bool,
 ) -> WorkspaceRecords {
     let (owners, stores, workspace) = (owners.clone(), Rc::clone(stores), workspace.to_owned());
-    WorkspaceRecords::new(UserId(author), move |owner| {
+    WorkspaceRecords::new(MemberId::person(author), move |owner| {
         let home = (owner.to_owned(), workspace.clone());
         if let Some(store) = stores
             .borrow()

@@ -20,8 +20,8 @@ pub use hue::{
     agent_rgb, assign_peer_colors, assign_peer_colors_from, identity_rgb, user_color,
 };
 pub use key::{
-    AppKind, DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange, UserId,
-    ViewRect, ViewSubset,
+    AppKind, DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange, ViewRect,
+    ViewSubset,
 };
 pub use payload::{Availability, IDLE_AFTER, PresencePayload};
 pub use said::{DESKTOP_APP, Presence, stand_in};

@@ -56,7 +56,7 @@ impl Carets {
                     // A local app's presence names the app it came from; what this session
                     // hands the apps of someone else's names only the workspace.
                     let CollabEvent::RemotePresenceUpdate {
-                        user_id,
+                        member,
                         key,
                         payload,
                     } = event
@@ -64,7 +64,7 @@ impl Carets {
                         return;
                     };
                     if route.app_id.is_empty()
-                        || person.lock_recover().as_deref() != Some(user_id.as_str())
+                        || person.lock_recover().as_deref() != member.person_id()
                     {
                         return;
                     }
@@ -169,7 +169,7 @@ impl Carets {
     /// Hand one person's presence in `workspace` to the apps there, as any member's reaches them.
     fn hand(&self, workspace: &str, user: String, key: PresenceKey, payload: PresencePayload) {
         let event = CollabEvent::RemotePresenceUpdate {
-            user_id: user,
+            member: collab_types::MemberId::person(user),
             key,
             payload,
         };

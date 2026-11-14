@@ -82,7 +82,7 @@ impl PresenceSession {
         self.state
             .publish_presence(&self.full_route(), &key, &payload);
         let event = CollabEvent::RemotePresenceUpdate {
-            user_id: AppBrokerState::participant_id(&self.verified_identity),
+            member: AppBrokerState::member_id(&self.verified_identity),
             key,
             payload,
         };
@@ -137,7 +137,7 @@ pub(in crate::collab_app_broker) fn presence_event(envelope: PresenceEnvelope) -
         return None;
     }
     Some(Event::Presence {
-        user_id: envelope.user_id,
+        member: envelope.member,
         presence: collab_types::PeerPresence {
             key: envelope.key_bytes,
             payload: crate::collab_presence::payload_to_peer(&envelope.payload)?,

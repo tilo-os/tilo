@@ -228,7 +228,7 @@ fn mounted_fixture(author: &str) -> MountedFixture {
             device_id: "device".into(),
             instance_id: 42,
             permissions: permissions.clone(),
-            author: ui::permissions::UserId(author.into()),
+            author: ui::permissions::MemberId::person(author),
             action_context: tilo_actions::ActionContext::default(),
         },
         &target,

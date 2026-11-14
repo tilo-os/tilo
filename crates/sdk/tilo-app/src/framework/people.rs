@@ -18,7 +18,7 @@ use std::rc::Rc;
 use tilo_resource::{ActionKey, Binds, Resource};
 use ui_core::LocalState;
 use ui_core::icons::Icon;
-use ui_core::presence::{ParticipantKind, PresenceCtx};
+use ui_core::presence::PresenceCtx;
 use ui_core::tokens::PresenceHue;
 use ui_core::widget::mention_picker::{MentionCandidate, merged_roster};
 use ui_core::widget::{Button, ButtonRole, Element, Stack, Tone};
@@ -233,9 +233,11 @@ impl People {
 
     /// Whether another person is in the workspace with this window now.
     pub fn others_here(&self) -> bool {
-        self.roster.borrow().members.iter().any(|member| {
-            !member.is_self && member.kind == ui_core::presence::ParticipantKind::Person
-        })
+        self.roster
+            .borrow()
+            .members
+            .iter()
+            .any(|member| !member.is_self && member.id.is_person())
     }
 
     /// Whether `id` is the participant this window is for.
@@ -255,12 +257,12 @@ impl People {
             names: presence
                 .names
                 .keys()
-                .map(|user| (user.0.clone(), presence.display_name(user)))
+                .map(|user| (user.key(), presence.display_name(user)))
                 .collect(),
             hues: presence
                 .names
                 .keys()
-                .map(|user| (user.0.clone(), presence.hue_of(&user.0)))
+                .map(|user| (user.key(), presence.hue_for(user)))
                 .collect(),
             own: presence.self_label(),
             members: merged_roster(presence, &[]),
@@ -338,11 +340,11 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                         continue;
                     };
                     choices = choices.push(cx.person_choice(
-                        &format!("{id}-{}", member.id),
+                        &format!("{id}-{}", member.id.key()),
                         &member.name,
                         Some(value),
-                        Some((&member.name, &member.id)),
-                        member.kind == ParticipantKind::Agent,
+                        Some((&member.name, &member.id.key())),
+                        member.id.is_agent(),
                         held_action.clone(),
                     ));
                 }
@@ -437,7 +439,7 @@ impl std::fmt::Debug for People {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui_core::permissions::UserId;
+    use ui_core::permissions::MemberId;
 
     tilo_test_env::scenario! {
         fn a_participant_reads_as_the_name_the_workspace_gives;
@@ -457,8 +459,8 @@ mod tests {
             );
 
             let mut presence = PresenceCtx::default();
-            presence.set_display_name(UserId("peer-id".into()), "Bob");
-            presence.set_self_participant(UserId("me-id".into()), "Ada");
+            presence.set_display_name(MemberId::person("peer-id"), "Bob");
+            presence.set_self_participant(MemberId::person("me-id"), "Ada");
             assert!(people.follow(&presence));
             assert!(
                 !people.follow(&presence),
@@ -469,7 +471,7 @@ mod tests {
             assert!(people.is_me("me-id"));
             assert_eq!(people.revision().get(), 1);
 
-            presence.set_display_name(UserId("peer-id".into()), "ada");
+            presence.set_display_name(MemberId::person("peer-id"), "ada");
             assert!(people.follow(&presence));
             assert_eq!(people.name("me-id"), "Ada (1)");
             assert_eq!(people.name("peer-id"), "ada (2)");
@@ -479,9 +481,8 @@ mod tests {
         {
             let people = People::new(None);
             let mut presence = PresenceCtx::default();
-            presence.set_display_name(UserId("bob".into()), "Bob");
-            presence.set_display_name(UserId("agent:scribe".into()), "Scribe");
-            presence.set_participant_kind(UserId("agent:scribe".into()), ParticipantKind::Agent);
+            presence.set_display_name(MemberId::person("bob"), "Bob");
+            presence.set_display_name(MemberId::agent("scribe"), "Scribe");
             assert!(people.follow(&presence));
 
             assert_eq!(

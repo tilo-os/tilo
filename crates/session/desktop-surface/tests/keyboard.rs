@@ -664,7 +664,7 @@ impl TileSource for Source {
                 device_id: "device".into(),
                 instance_id: tab.id,
                 permissions,
-                author: ui::permissions::UserId("keyboard-author".into()),
+                author: ui::permissions::MemberId::person("keyboard-author"),
                 action_context: tilo_actions::ActionContext::default().with_app(APP, "Keyboard"),
             },
             &LaunchTarget::New,
@@ -825,7 +825,7 @@ impl Desk {
             (1200, 800),
             ui::Theme::dark(),
             ui::TextRenderer::new(),
-            ui::permissions::UserId("keyboard-author".into()),
+            ui::permissions::MemberId::person("keyboard-author"),
         );
         driver.set_caller_palette_enabled(false);
         driver.attach_owner_wake_queue(queue).unwrap();

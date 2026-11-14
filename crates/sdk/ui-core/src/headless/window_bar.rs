@@ -990,7 +990,7 @@ mod tests {
             (800, 600),
             theme,
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         assert!(!crate::window_toolbar::is_hosted());
         harness.present_in_window_bar();
@@ -1117,7 +1117,7 @@ mod tests {
             (800, 600),
             crate::theme::Theme::dark().with_reduce_motion(true),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         )
     }
 
@@ -2107,7 +2107,7 @@ mod tests {
             (420, 800),
             theme,
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         harness.present_in_window_bar();
         crate::window_toolbar::declare(Some(crate::window_toolbar::WindowToolbar {

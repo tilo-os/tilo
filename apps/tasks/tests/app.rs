@@ -418,12 +418,8 @@ tilo_test_env::scenario! {
             .expect("open the issue");
         {
             let presence = app.harness().presence_mut();
-            presence.set_display_name(ui::permissions::UserId("bob".into()), "Bob");
-            presence.set_display_name(ui::permissions::UserId("agent:scribe".into()), "Scribe");
-            presence.set_participant_kind(
-                ui::permissions::UserId("agent:scribe".into()),
-                ui::presence::ParticipantKind::Agent,
-            );
+            presence.set_display_name(ui::permissions::MemberId::person("bob"), "Bob");
+            presence.set_display_name(ui::permissions::MemberId::agent("scribe"), "Scribe");
         }
         app.settle();
 

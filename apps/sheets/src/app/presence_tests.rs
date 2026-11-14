@@ -18,7 +18,7 @@ fn cell_presence_follows_insertions_and_rename_without_moving_the_local_selectio
     );
     app.adopt_resource_state(&Rc::new(workbook));
 
-    let peer = ui::permissions::UserId("ada".into());
+    let peer = ui::permissions::MemberId::person("ada");
     let mut presence = PresenceCtx::default();
     presence.register_presence(&key, peer.clone());
     presence.set_display_name(peer, "Ada");

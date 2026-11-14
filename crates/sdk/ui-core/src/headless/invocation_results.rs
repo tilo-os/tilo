@@ -128,7 +128,7 @@ impl FrameHarness {
     /// Retain outcomes from subsequent explicit scenario invocations.
     pub fn retain_invocation_results(&mut self) {
         self.invalidate_local();
-        self.invocation_results = Some(InvocationResults::new(self.author.0.clone()));
+        self.invocation_results = Some(InvocationResults::new(self.author.key()));
     }
     /// Serialize retained actual Completed/Accepted/Refused outcomes in invocation order. Accepted
     /// means only admission, never successful completion of a background job.
@@ -171,7 +171,7 @@ mod tests {
             (640, 480),
             crate::Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         )
     }
     fn invoke(address: ActionAddress, arguments: Value, expected: Option<&str>) -> Action {

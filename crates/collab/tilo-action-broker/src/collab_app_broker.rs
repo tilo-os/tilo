@@ -723,7 +723,7 @@ struct OpEnvelope {
 /// every presence variant; the cursor stream filters to pointers.
 #[derive(Clone, Debug)]
 struct PresenceEnvelope {
-    user_id: String,
+    member: collab_types::MemberId,
     key_bytes: Vec<u8>,
     payload: PresencePayload,
 }
@@ -5827,13 +5827,21 @@ impl AppBrokerState {
         if interaction.validate().is_err() {
             return;
         }
+        let Some(member) = shown
+            .actor
+            .members()
+            .first()
+            .map(|member| (*member).clone())
+        else {
+            return;
+        };
         let key = PresenceKey::resource(&route.app_id, &shown.resource.id, &shown.resource.kind);
         let payload = PresencePayload::Interaction(Box::new(interaction));
         // Peers see it too; their ingress keeps the actor only as far as
         // this device's certified person vouches for it.
         self.publish_presence(route, &key, &payload);
         let event = CollabEvent::RemotePresenceUpdate {
-            user_id: shown.actor.by.key(),
+            member,
             key,
             payload,
         };
@@ -6883,14 +6891,14 @@ impl AppBrokerState {
                     admission,
                 );
             }
-            CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                Self::fanout_cursor_moved(channels, except, user_id, *x, *y);
+            CollabEvent::RemoteCursorMoved { member, x, y } => {
+                Self::fanout_cursor_moved(channels, except, member, *x, *y);
             }
             CollabEvent::RemotePresenceUpdate {
-                user_id,
+                member,
                 key,
                 payload,
-            } => Self::fanout_presence_update(channels, except, user_id, key, payload),
+            } => Self::fanout_presence_update(channels, except, member, key, payload),
             CollabEvent::Context {
                 members,
                 permissions,
@@ -6980,13 +6988,13 @@ impl AppBrokerState {
     fn fanout_cursor_moved<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
-        user_id: &str,
+        member: &collab_types::MemberId,
         x: f32,
         y: f32,
     ) {
         let key_bytes = default_pointer_key_bytes();
         let presence_env = PresenceEnvelope {
-            user_id: user_id.to_owned(),
+            member: member.clone(),
             key_bytes,
             payload: PresencePayload::Pointer { x, y },
         };
@@ -7005,7 +7013,7 @@ impl AppBrokerState {
     fn fanout_presence_update<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
-        user_id: &str,
+        member: &collab_types::MemberId,
         key: &PresenceKey,
         payload: &PresencePayload,
     ) {
@@ -7022,7 +7030,7 @@ impl AppBrokerState {
             }
         };
         let env = PresenceEnvelope {
-            user_id: user_id.to_owned(),
+            member: member.clone(),
             key_bytes,
             payload: payload.clone(),
         };
@@ -13433,7 +13441,7 @@ pub mod tests {
         for agent in roster.iter().filter(|row| !row.id.is_person()) {
             assert_eq!(
                 agent.colour,
-                ui::presence::participant_hue(&agent.id.key(), true, Some(&person)),
+                ui::presence::member_hue(&agent.id, Some(&person)),
                 "{}",
                 agent.id.key()
             );

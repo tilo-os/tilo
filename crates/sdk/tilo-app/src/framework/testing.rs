@@ -12,7 +12,7 @@
 use ui_core::application::{ApplicationHost, ComponentRunnerInputs};
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::{Role, UserId};
+use ui_core::permissions::{MemberId, Role};
 use ui_core::record::RecordId;
 
 use tilo_resource::Resource;
@@ -153,7 +153,7 @@ pub fn drive_live_window_writing_after<A: ResourceApp, T>(
         )),
         "test-device".into(),
         TEST_WORKSPACE,
-        UserId(AUTHOR.into()),
+        MemberId::person(AUTHOR),
         role_permissions(AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
     )?;
@@ -214,7 +214,7 @@ pub fn live_window_in_workspace<A: ResourceApp>(
         profile.path().join("state"),
         "test-device".into(),
         workspace,
-        UserId(AUTHOR.into()),
+        MemberId::person(AUTHOR),
         role_permissions(AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
     )?;
@@ -263,7 +263,7 @@ pub fn drive_live_embedded<A: ResourceApp, T>(
         profile.path().join("state"),
         "test-device".into(),
         TEST_WORKSPACE,
-        UserId(AUTHOR.into()),
+        MemberId::person(AUTHOR),
         role_permissions(AUTHOR, Role::Owner),
         tilo_actions::ActionContext::default(),
     )?;

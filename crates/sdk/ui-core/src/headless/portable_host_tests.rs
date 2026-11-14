@@ -30,7 +30,7 @@ fn frame(root: Box<dyn Widget>) -> FrameHarness {
         (400, 240),
         Theme::dark(),
         crate::font_catalog::fixture_renderer(),
-        crate::permissions::UserId("portable-review".into()),
+        crate::permissions::MemberId::person("portable-review"),
     )
 }
 
@@ -1110,7 +1110,7 @@ fn note_frame(text: &str) -> FrameHarness {
 /// typing those characters lights up — and not on the rest of the block.
 #[test]
 fn an_agents_written_text_glows_on_exactly_those_characters() {
-    use crate::permissions::UserId;
+    use crate::permissions::MemberId;
     use crate::presence::SelectionRange;
     let text = "The quick brown fox jumps";
     let key = crate::widget::block_editor::block_presence_key("b1");
@@ -1122,7 +1122,7 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
     let plain = typed_frame.render_rgba();
     typed_frame.update_presence(|presence| {
         presence.record_peer_typing(
-            UserId("reviewer".into()),
+            MemberId::person("reviewer"),
             key,
             SelectionRange {
                 start: bytes.0,
@@ -1145,10 +1145,9 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
         .expect("the clock is later than a second ago");
     let mut label = String::new();
     agent_frame.update_presence(|presence| {
-        presence.names.insert(
-            crate::permissions::UserId("agent:scribe".into()),
-            "Ada".into(),
-        );
+        presence
+            .names
+            .insert(MemberId::agent("scribe"), "Ada".into());
         let applied = presence
             .apply_interaction_at(event.clone(), at)
             .expect("a well-formed interaction applies");
@@ -1191,7 +1190,7 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
 /// the same words.
 #[test]
 fn an_agent_writing_wears_one_tag_at_its_caret() {
-    use crate::permissions::UserId;
+    use crate::permissions::MemberId;
     let text = "The quick brown fox jumps";
     let key = crate::widget::block_editor::block_presence_key("b1");
     let mut frame = note_frame(text);
@@ -1202,8 +1201,8 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
     frame.update_presence(|presence| {
         presence
             .names
-            .insert(UserId("agent:scribe".into()), "Ada".into());
-        presence.set_caret(&key, UserId("agent:scribe".into()), 9);
+            .insert(MemberId::agent("scribe"), "Ada".into());
+        presence.set_caret(&key, MemberId::agent("scribe"), 9);
         presence
             .apply_interaction_at(event.clone(), at)
             .expect("a well-formed interaction applies")
@@ -1215,7 +1214,7 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
         .presence()
         .caret_tags()
         .into_iter()
-        .filter(|tag| tag.user == UserId("agent:scribe".into()))
+        .filter(|tag| tag.user == MemberId::agent("scribe"))
         .map(|tag| tag.label)
         .collect();
     assert_eq!(

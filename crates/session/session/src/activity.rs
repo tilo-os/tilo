@@ -2023,7 +2023,7 @@ mod tests {
     #[test]
     fn a_change_of_the_layout_is_one_step_of_the_persons_in_its_history() {
         use tilo_desktop_model::shared_record;
-        use ui::permissions::UserId;
+        use ui::permissions::MemberId;
         use ui::state::UndoLog;
 
         let mut doc = ui::automerge::AutoCommit::new();
@@ -2047,11 +2047,11 @@ mod tests {
             before,
             None,
             None,
-            Some(UserId("ada".to_owned()))
+            Some(MemberId::person("ada"))
         ));
 
-        let ada = UserId("ada".to_owned());
-        let bob = UserId("bob".to_owned());
+        let ada = MemberId::person("ada");
+        let bob = MemberId::person("bob");
         assert!(
             log.can_undo_as(&doc, Some(&ada)),
             "the person takes it back"

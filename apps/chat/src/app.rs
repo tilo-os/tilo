@@ -366,10 +366,6 @@ pub struct ChatApp {
     /// presence at all (a chat on this device alone) reads the recorded
     /// status instead.
     pub(crate) workspace_presence_answers: bool,
-    /// The person each of the workspace's devices belongs to, where presence
-    /// says: a call's roster names people, presence names their devices,
-    /// and `workspace_names` carries both so either reads as the same name.
-    pub(crate) workspace_persons: HashMap<Id, Id>,
     /// Who the workspace's presence places in each voice channel.
     pub(crate) workspace_voice: HashMap<Id, Vec<Id>>,
     /// The numbers people who share a name are told apart by, as the workspace
@@ -791,7 +787,6 @@ impl ChatApp {
             me: LocalIdentity::demo(),
             workspace_names: HashMap::new(),
             workspace_presence_answers: false,
-            workspace_persons: HashMap::new(),
             workspace_voice: HashMap::new(),
             workspace_labels: ui::presence::ParticipantLabels::default(),
             own_label: None,

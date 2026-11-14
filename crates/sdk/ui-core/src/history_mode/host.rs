@@ -2438,7 +2438,7 @@ pub(crate) trait HistoryChromeApi: Widget {
         &mut self,
         state: &mut crate::State,
         authority: &crate::permissions::PermissionContext,
-        author: &crate::permissions::UserId,
+        author: &crate::permissions::MemberId,
     ) -> bool;
     #[cfg(test)]
     fn set_clock(&mut self, clock: fn() -> Option<u64>);
@@ -2449,7 +2449,7 @@ pub(crate) trait HistoryChromeApi: Widget {
         state: &mut crate::State,
         root: &dyn Widget,
         authority: &crate::permissions::PermissionContext,
-        author: &crate::permissions::UserId,
+        author: &crate::permissions::MemberId,
     ) -> bool;
     fn build_composition(
         &mut self,
@@ -2805,7 +2805,7 @@ impl HistoryChromeApi for HistoryHost {
         &mut self,
         state: &mut crate::State,
         authority: &crate::permissions::PermissionContext,
-        author: &crate::permissions::UserId,
+        author: &crate::permissions::MemberId,
     ) -> bool {
         HistoryHost::service_descriptions(self, state, authority, author)
     }
@@ -2824,7 +2824,7 @@ impl HistoryChromeApi for HistoryHost {
         state: &mut crate::State,
         root: &dyn Widget,
         authority: &crate::permissions::PermissionContext,
-        author: &crate::permissions::UserId,
+        author: &crate::permissions::MemberId,
     ) -> bool {
         HistoryHost::service_restore(self, state, root, authority, author)
     }

@@ -1,5 +1,5 @@
 //! The host's live view of a person's authority over one app's actions.
-use super::{PermissionContext, TreePath, UserId};
+use super::{MemberId, PermissionContext, TreePath};
 
 use std::sync::Arc;
 
@@ -39,10 +39,10 @@ impl ActionAuthoritySampler {
         if asker.standing.acting.delegated() {
             return Err("host action authority is not a delegation's".into());
         }
-        let person: &UserId = &asker.user;
+        let person: &MemberId = &asker.user;
         let current = (self.sample)()?;
         if current.user != *person
-            || current.standing.person_id() != Some(person.0.as_str())
+            || current.standing.person_id() != Some(person.key().as_str())
             || current.standing.acting.delegated()
             || current.action_authority.is_some()
         {

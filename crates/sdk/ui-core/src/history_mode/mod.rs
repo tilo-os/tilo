@@ -316,7 +316,7 @@ impl HistoryController {
         let mut roster: Vec<(String, String)> = presence
             .names
             .iter()
-            .map(|(crate::permissions::UserId(id), name)| (id.clone(), name.clone()))
+            .map(|(id, name)| (id.key(), name.clone()))
             .collect();
         roster.compact_sort();
         if roster == self.roster {

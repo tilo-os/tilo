@@ -240,9 +240,9 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
 }
 
 /// The colour every face of an agent wears: the one its own id is known by
-/// ([`ui::presence::participant_hue`]), the same its face on the bar, its card and its marks wear.
+/// ([`ui::presence::member_hue`]), the same its face on the bar, its card and its marks wear.
 fn agent_hue(grant: &agent_door::Grant) -> PresenceHue {
-    ui::presence::participant_hue(&grant.agent, true, None)
+    ui::presence::member_hue(&ui::permissions::MemberId::agent(&grant.agent), None)
 }
 
 /// What a grant may reach: the words its row says it with, and the same words inside the

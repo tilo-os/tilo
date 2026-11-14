@@ -397,7 +397,7 @@ pub(crate) fn service_reviews(
     root: &mut dyn Widget,
     state: &mut crate::State,
     authority: &crate::permissions::PermissionContext,
-    author: &crate::permissions::UserId,
+    author: &crate::permissions::MemberId,
 ) -> Vec<HistorySourceRegistration> {
     let mut restored = vec![];
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {

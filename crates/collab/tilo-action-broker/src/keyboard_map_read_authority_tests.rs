@@ -128,7 +128,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
                     device_id: "device".into(),
                     instance_id: 1,
                     permissions,
-                    author: ui::permissions::UserId(principal.clone()),
+                    author: ui::permissions::MemberId::person(principal.clone()),
                     action_context: tilo_actions::ActionContext::default(),
                 },
                 &target,

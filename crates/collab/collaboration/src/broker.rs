@@ -6875,7 +6875,7 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
     let key: PresenceKey = match postcard::from_bytes(&evt.key_bytes) {
         Ok(key) => key,
         Err(error) => {
-            tracing::warn!(user = %evt.user_id, %error, "collab: refused presence whose key does not decode");
+            tracing::warn!(member = %evt.member, %error, "collab: refused presence whose key does not decode");
             return None;
         }
     };
@@ -6908,7 +6908,7 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
                 }) {
                 Ok(update) => update,
                 Err(error) => {
-                    tracing::warn!(user = %evt.user_id, %error, "collab: refused a presence interaction");
+                    tracing::warn!(member = %evt.member, %error, "collab: refused a presence interaction");
                     return None;
                 }
             };
@@ -6926,7 +6926,7 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
         runtime_collab::PresencePayload::Pointer { x, y } => PresencePayload::Pointer { x, y },
     };
     Some(CollabEvent::RemotePresenceUpdate {
-        user_id: evt.user_id,
+        member: evt.member,
         key,
         payload,
     })

@@ -303,7 +303,7 @@ mod tests {
             (640, 480),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("caller".into()),
+            crate::permissions::MemberId::person("caller"),
         );
         frame.set_platform_conventions(crate::platform::PlatformConventions::new(
             crate::platform::Platform::Linux,

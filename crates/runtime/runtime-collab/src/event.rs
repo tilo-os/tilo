@@ -95,12 +95,12 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
         request: collab_types::handoff::HandoffRequest,
     },
     RemoteCursorMoved {
-        user_id: String,
+        member: collab_types::MemberId,
         x: f32,
         y: f32,
     },
     RemotePresenceUpdate {
-        user_id: String,
+        member: collab_types::MemberId,
         key: PresenceKey,
         payload: PresencePayload,
     },

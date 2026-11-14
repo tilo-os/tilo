@@ -137,11 +137,9 @@ impl ChatApp {
             .filter(|channel| channel.kind == model::ChannelKind::Voice)
             .filter_map(|channel| {
                 let key = Self::voice_presence_key(&channel.id);
-                // As people: a call's roster names each person once, and
-                // where presence names their devices, each is its person.
                 let mut people: Vec<Id> = Vec::new();
                 for (user, _) in presence.carets.get(&key).into_iter().flatten() {
-                    let person = presence.person_of(user).unwrap_or(user).0.clone();
+                    let person = user.key();
                     if !people.contains(&person) {
                         people.push(person);
                     }
@@ -149,43 +147,26 @@ impl ChatApp {
                 (!people.is_empty()).then(|| (channel.id.clone(), people))
             })
             .collect();
-        self.workspace_persons.clear();
         self.agent_people = presence
             .names
             .keys()
-            .filter_map(|id| Some((id.0.clone(), presence.acting_for(id)?.0.clone())))
+            .filter_map(|id| Some((id.key(), presence.acting_for(id)?.key())))
             .collect();
-        self.workspace_names.retain(|id, _| {
-            presence
-                .names
-                .contains_key(&ui::permissions::UserId(id.clone()))
-        });
-        self.workspace_colors.retain(|id, _| {
-            presence
-                .names
-                .contains_key(&ui::permissions::UserId(id.clone()))
-        });
+        let named = |id: &Id| {
+            ui::permissions::MemberId::parse(id).is_some_and(|id| presence.names.contains_key(&id))
+        };
+        self.workspace_names.retain(|id, _| named(id));
+        self.workspace_colors.retain(|id, _| named(id));
         for (id, name) in &presence.names {
             let name = name.trim();
             if name.is_empty() {
                 continue;
             }
-            self.workspace_names.insert(id.0.clone(), name.to_string());
+            self.workspace_names.insert(id.key(), name.to_string());
             // A colour is the same kind of answer: assigned per workspace so two
             // people never collide, and shared with the caret pill and cursor.
             self.workspace_colors
-                .insert(id.0.clone(), presence.color_for(id));
-            // Where presence names a person's device, the person (as a
-            // call's roster names them) goes by the same name and colour,
-            // told apart from a namesake as the device is.
-            if let Some(person) = presence.person_of(id) {
-                self.workspace_persons
-                    .insert(id.0.clone(), person.0.clone());
-                self.workspace_names
-                    .insert(person.0.clone(), self.workspace_labels.label(&id.0, name));
-                self.workspace_colors
-                    .insert(person.0.clone(), presence.color_for(id));
-            }
+                .insert(id.key(), presence.color_for(id));
         }
     }
 
@@ -200,10 +181,10 @@ impl ChatApp {
         self.workspace_labels.clone_from(presence.labels());
         self.own_label = presence.self_label();
         if let Some(self_id) = presence.self_id()
-            && self_id.0 != self.me.id
-            && !self.former_ids.contains(&self_id.0)
+            && self_id.key() != self.me.id
+            && !self.former_ids.contains(&self_id.key())
         {
-            self.former_ids.push(self_id.0.clone());
+            self.former_ids.push(self_id.key());
         }
         if let Some(name) = presence.self_name()
             && name != self.me.name

@@ -142,9 +142,8 @@ impl Session {
                     // gives it, never the run it works in, and clear of the colour of the person it
                     // works for — the one rule and the one key every surface asks (the workspace's
                     // member list keys it so for its card in a window and its marks).
-                    let (r, g, b) = ui::presence::participant_color(
-                        &seated.agent,
-                        true,
+                    let (r, g, b) = ui::presence::member_color(
+                        &ui::permissions::MemberId::agent(&seated.agent),
                         Some(&self.shared.person),
                     );
                     let face = tilo_session_client::presence::view(

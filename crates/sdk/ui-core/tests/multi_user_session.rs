@@ -1,7 +1,9 @@
 use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
 use std::time::SystemTime;
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
-use tilo_ui::permissions::{ActionKind, AppKind, PermissionContext, PermissionScope, Role, UserId};
+use tilo_ui::permissions::{
+    ActionKind, AppKind, MemberId, PermissionContext, PermissionScope, Role,
+};
 use tilo_ui::presence::{PathSegment, PresenceKey};
 use tilo_ui::widget::{TextInput, Widget};
 
@@ -53,10 +55,10 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
             events.iter().any(|e| matches!(
                 e,
                 CollabEvent::RemotePresenceUpdate {
-                    user_id,
+                    member,
                     payload: PresencePayload::Caret { pos: 42 },
                     ..
-                } if user_id == "alice"
+                } if *member == tilo_ui::permissions::MemberId::person("alice")
             )),
             "bob must receive alice's caret presence attributed to alice, got {events:?}"
         );
@@ -94,14 +96,14 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
         assert_eq!(
             bob_app
                 .presence_ctx()
-                .caret_for(&key, &UserId("alice".into())),
+                .caret_for(&key, &MemberId::person("alice")),
             Some(9),
             "alice's broadcast caret must reach bob's PresenceCtx attributed to alice"
         );
         assert_eq!(
             alice_app
                 .presence_ctx()
-                .caret_for(&key, &UserId("alice".into())),
+                .caret_for(&key, &MemberId::person("alice")),
             None,
         );
     }
@@ -137,7 +139,7 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
         }
         let received = bob_app
             .presence_ctx()
-            .status_for(&UserId("alice".into()), SystemTime::now())
+            .status_for(&MemberId::person("alice"), SystemTime::now())
             .expect("remote status reaches the workspace presence context");
         assert_eq!(received.text, "Reconciling forecast against actuals");
         assert!(matches!(
@@ -257,14 +259,14 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
         // The relay itself does not yet translate a Presence mutation to an
         // event, so bypass polling and apply directly via the test-only hook.
         bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 7 },
         });
 
         let caret = bob_app
             .presence_ctx()
-            .caret_for(&key, &UserId("alice".into()));
+            .caret_for(&key, &MemberId::person("alice"));
         assert_eq!(caret, Some(7));
     }
 
@@ -277,7 +279,7 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
 
         let ws_key = PresenceKey::Workspace { id: "ws".into() };
         bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: ws_key.clone(),
             payload: PresencePayload::Pointer { x: 100.0, y: 50.0 },
         });
@@ -285,12 +287,12 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
         assert_eq!(
             bob_app
                 .presence_ctx()
-                .pointer_for(&ws_key, &UserId("alice".into())),
+                .pointer_for(&ws_key, &MemberId::person("alice")),
             Some((100.0, 50.0))
         );
 
         bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: ws_key.clone(),
             payload: PresencePayload::Pointer { x: 200.0, y: 70.0 },
         });
@@ -298,7 +300,7 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
         assert_eq!(
             bob_app
                 .presence_ctx()
-                .pointer_for(&ws_key, &UserId("alice".into())),
+                .pointer_for(&ws_key, &MemberId::person("alice")),
             Some((200.0, 70.0))
         );
     }
@@ -314,7 +316,7 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
             path: vec![PathSegment::Field("doc".into())],
         };
         bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 5 },
         });
@@ -336,7 +338,7 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
         assert_eq!(
             bob_app
                 .presence_ctx()
-                .caret_for(&key, &UserId("alice".into())),
+                .caret_for(&key, &MemberId::person("alice")),
             Some(5)
         );
     }
@@ -352,10 +354,10 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
 
         let tab_a = PresenceKey::Tab { id: "aaaa".into() };
         let tab_b = PresenceKey::Tab { id: "bbbb".into() };
-        let alice = UserId("alice".into());
+        let alice = MemberId::person("alice");
 
         bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: tab_a.clone(),
             payload: PresencePayload::Arrived,
         });
@@ -366,7 +368,7 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
         assert!(bob_app.presence_ctx().peers_on(&tab_b).is_empty());
 
         bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: tab_b.clone(),
             payload: PresencePayload::Arrived,
         });
@@ -418,7 +420,10 @@ fn roles_and_permission_changes_apply_across_the_session() {
 
         alice_app.set_permission_ctx(member_ctx("alice", Role::Editor));
         assert!(alice_app.permission_ctx().check(&terminal_write()));
-        assert_eq!(alice_app.permission_ctx().user(), &UserId("alice".into()));
+        assert_eq!(
+            alice_app.permission_ctx().user(),
+            &MemberId::person("alice")
+        );
 
         // Confirms the two-App harness is exercised; bob's context is
         // independent of alice's.

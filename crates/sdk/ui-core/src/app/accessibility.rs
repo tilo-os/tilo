@@ -451,7 +451,7 @@ impl App {
     /// answer a late joiner with full state).
     fn apply_remote_presence(
         &mut self,
-        user_id: String,
+        member: crate::permissions::MemberId,
         key: crate::presence::PresenceKey,
         payload: crate::collaboration::PresencePayload,
     ) {
@@ -464,7 +464,7 @@ impl App {
         };
         match self
             .presence_ctx
-            .apply_remote_presence(user_id, key, payload)
+            .apply_remote_presence(member, key, payload)
         {
             RemotePresenceEffect::None | RemotePresenceEffect::PeerArrived => {}
             RemotePresenceEffect::PeerViewChanged => self.apply_follow(),
@@ -1182,7 +1182,7 @@ impl App {
         if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
             return self.open_action_palette_at(address);
         }
-        let actor = self.collaboration.local_author.0.clone();
+        let actor = self.collaboration.local_author.key();
         let accepted = self
             .invoke_resource_action(ResourceInvocation::new(address, &actor).argument(argument))
             .is_ok();
@@ -1653,7 +1653,7 @@ impl App {
         target: &crate::bound_dispatch::BoundActionTarget,
         arg: Option<&str>,
     ) -> Result<bool, String> {
-        let actor = self.collaboration.local_author.0.clone();
+        let actor = self.collaboration.local_author.key();
         let invocation = ResourceInvocation::new(&target.address.address, &actor).argument(arg);
         match self.invoke_bound_target(target, &invocation) {
             Ok(_) => Ok(true),
@@ -1731,7 +1731,7 @@ impl App {
                 if arg.is_some() {
                     return Err("Deferred action accepts no argument".into());
                 }
-                let actor = self.collaboration.local_author.0.clone();
+                let actor = self.collaboration.local_author.key();
                 match self.invoke_resource_action(ResourceInvocation::new(&address, &actor)) {
                     Ok(_) => {
                         self.needs_sync = true;

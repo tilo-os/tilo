@@ -4,7 +4,7 @@
 //! reader — and anything reading a frame's semantics — finds the peer writing
 //! where the eye finds their caret.
 
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 use vello::kurbo::Rect;
 
 /// One peer's caret or selection a text widget drew, in scene coordinates:
@@ -12,7 +12,7 @@ use vello::kurbo::Rect;
 #[derive(Clone, Debug, PartialEq)]
 pub struct PresenceMark {
     /// Whose caret or selection this is.
-    pub user: UserId,
+    pub user: MemberId,
     /// The caret's bar, or one band of a selection.
     pub rect: Rect,
     /// Whether it spans a selection rather than resting as a caret.

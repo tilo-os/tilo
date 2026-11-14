@@ -595,7 +595,7 @@ pub use animation::Lerp;
 pub use collaboration::PresencePayload;
 pub use permissions::{
     Access, Acting, ActionKind, CapDecision, CapOverride, Grantee, MemberId, PermissionContext,
-    PermissionScope, ResourceRef, Role, Scope as CapScope, UserId,
+    PermissionScope, ResourceRef, Role, Scope as CapScope,
 };
 pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
 pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};

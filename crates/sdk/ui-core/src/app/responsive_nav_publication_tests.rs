@@ -87,7 +87,7 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
             device_id: "fixture-device".into(),
             instance_id: 92,
             permissions: crate::application_test_support::runner_permissions(),
-            author: crate::permissions::UserId("probe-author".into()),
+            author: crate::permissions::MemberId::person("probe-author"),
             action_context: tilo_actions::ActionContext::default(),
         },
         &LaunchTarget::New,

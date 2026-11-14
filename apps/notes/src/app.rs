@@ -625,13 +625,13 @@ impl NotesApp {
     /// Rejects an invalid canonical notebook or a missing selected page's block list.
     pub fn from_document(
         doc: &AutoCommit,
-        author: &ui::permissions::UserId,
+        author: &ui::permissions::MemberId,
     ) -> Result<Self, String> {
         let workspace = Self::project_workspace(doc, None)?;
         let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&workspace);
         let mut main = MainPanel::new();
-        main.set_local_author(Some(author.0.clone()));
+        main.set_local_author(Some(author.key()));
         let mut app = Self::build_widget(workspace, sidebar, main);
         // The pictures are read like any later ones, without waiting here.
         app.refresh_canonical_assets();
@@ -1657,13 +1657,13 @@ impl NotesApp {
     /// Empty window for the framework's view; it shows the notebook it
     /// follows from its first sync ([`Self::follow`]).
     pub(crate) fn empty_surface(
-        author: &ui::permissions::UserId,
+        author: &ui::permissions::MemberId,
         save_status: ui::LocalState<ui::record::RecordSaveStatus>,
     ) -> Self {
         let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&Workspace::default());
         let mut main = MainPanel::new();
-        main.set_local_author(Some(author.0.clone()));
+        main.set_local_author(Some(author.key()));
         let mut app = Self::build_widget(Workspace::default(), sidebar, main);
         app.follow_save_status(save_status);
         app
@@ -4262,7 +4262,7 @@ mod tests {
     fn hosted(doc: &AutoCommit) -> NotesApp {
         let mut app = NotesApp::from_document(
             doc,
-            &ui::permissions::UserId("notes-app-test-author".into()),
+            &ui::permissions::MemberId::person("notes-app-test-author"),
         )
         .unwrap();
         let (dispatcher, actions, live) = framework_dispatcher();

@@ -258,7 +258,7 @@ pub type SharedCaptures = std::sync::Arc<std::sync::Mutex<Captures>>;
 
 #[derive(Clone)]
 pub struct SeedPresence {
-    user_id: String,
+    member: collab_types::MemberId,
     key_bytes: Vec<u8>,
     payload: collab_types::PeerPresencePayload,
 }
@@ -638,7 +638,7 @@ impl FakeHost {
                 Box::pin(async move {
                     for seed in backlog {
                         feed.send(Event::Presence {
-                            user_id: seed.user_id,
+                            member: seed.member,
                             presence: collab_types::PeerPresence {
                                 key: seed.key_bytes,
                                 payload: seed.payload,
@@ -4475,7 +4475,7 @@ tilo_test_env::scenario! {
             "admitted work must wake the owner instead of waiting for its 60Hz poll"
         );
         assert!(inbound.send_presence(CollabEvent::RemoteCursorMoved {
-            user_id: "peer".into(),
+            member: collab_types::MemberId::person("peer"),
             x: 1.0,
             y: 2.0,
         }));
@@ -4522,7 +4522,7 @@ tilo_test_env::scenario! {
 
         for _ in 0..10_000 {
             assert!(inbound.send_presence(CollabEvent::RemoteCursorMoved {
-                user_id: "peer".to_owned(),
+                member: collab_types::MemberId::person("peer"),
                 x: 1.0,
                 y: 2.0,
             }));
@@ -5516,32 +5516,32 @@ tilo_test_env::scenario! {
         let key_bytes = postcard::to_stdvec(&key).unwrap();
         let presence_backlog = vec![
             SeedPresence {
-                user_id: "peer-bob".to_owned(),
+                member: collab_types::MemberId::person("peer-bob"),
                 key_bytes: key_bytes.clone(),
                 payload: collab_types::PeerPresencePayload::Pointer { x: 6.0, y: 9.0 },
             },
             SeedPresence {
-                user_id: "peer-bob".to_owned(),
+                member: collab_types::MemberId::person("peer-bob"),
                 key_bytes: key_bytes.clone(),
                 payload: collab_types::PeerPresencePayload::Caret { pos: 7 },
             },
             SeedPresence {
-                user_id: "peer-bob".to_owned(),
+                member: collab_types::MemberId::person("peer-bob"),
                 key_bytes: key_bytes.clone(),
                 payload: collab_types::PeerPresencePayload::Selection { start: 1, end: 3 },
             },
             SeedPresence {
-                user_id: "peer-bob".to_owned(),
+                member: collab_types::MemberId::person("peer-bob"),
                 key_bytes: key_bytes.clone(),
                 payload: collab_types::PeerPresencePayload::Typing { start: 2, end: 5 },
             },
             SeedPresence {
-                user_id: "peer-bob".to_owned(),
+                member: collab_types::MemberId::person("peer-bob"),
                 key_bytes: key_bytes.clone(),
                 payload: collab_types::PeerPresencePayload::Arrived,
             },
             SeedPresence {
-                user_id: "peer-bob".to_owned(),
+                member: collab_types::MemberId::person("peer-bob"),
                 key_bytes,
                 payload: collab_types::PeerPresencePayload::Left,
             },
@@ -5670,7 +5670,7 @@ tilo_test_env::scenario! {
         let key_bytes = postcard::to_stdvec(&key).unwrap();
 
         let e = translate_presence_event(runtime_collab::PresenceEvent {
-            user_id: "peer".into(),
+            member: collab_types::MemberId::person("peer"),
             key_bytes,
             payload: runtime_collab::PresencePayload::Caret { pos: 3 },
         })
@@ -5686,7 +5686,7 @@ tilo_test_env::scenario! {
         }
 
         let e = translate_presence_event(runtime_collab::PresenceEvent {
-            user_id: "peer".into(),
+            member: collab_types::MemberId::person("peer"),
             key_bytes: vec![0xFF, 0xFF, 0xFF],
             payload: runtime_collab::PresencePayload::Arrived,
         });

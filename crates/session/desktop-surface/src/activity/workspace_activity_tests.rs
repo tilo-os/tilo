@@ -127,7 +127,7 @@ mod workspace_activity {
         pane.author = None;
         pane.reinstall_filter();
         let mut presence = PresenceCtx::empty();
-        let ada = ui::permissions::UserId("ada".into());
+        let ada = MemberId::person("ada");
         presence.names.insert(ada.clone(), "Ada".into());
         presence.set_pointer(
             &ui::presence::PresenceKey::shell_pointer("design-workspace"),

@@ -19,7 +19,7 @@ use automerge::transaction::Transactable as _;
 use tilo_actions::ActionContext;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_model::{Layout, STATE_SCHEMA_VERSION, TabId, desktop_doc, shared_record};
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
 /// How long a drag or a burst of switches waits for its last frame before how the desk looks is
@@ -334,6 +334,6 @@ pub fn authors_on(desktop: &Layout, authors: &Authors) -> Authors {
 }
 
 /// The person `person`, as the history names them.
-fn user(person: &str) -> UserId {
-    UserId(person.to_owned())
+fn user(person: &str) -> MemberId {
+    MemberId::person(person.to_owned())
 }

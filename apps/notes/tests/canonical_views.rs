@@ -118,7 +118,7 @@ fn owned_views_restore_selection_and_clamp_utf8_offsets() {
                     .line
                     .author_runs()
                     .iter()
-                    .any(|(_, _, author)| author == &f.author.0)
+                    .any(|(_, _, author)| author == &f.author.key())
             );
         }
         for focus in ["None", "Sidebar", "Title", "Editor"] {
@@ -237,7 +237,7 @@ fn stamp_current_runs(
                         end: body.chars().count(),
                     }],
                     name: tilo_doc::schema::MARK_AUTHOR.to_owned(),
-                    value: Some(tilo_document::action::MarkVal::Str(f.author.0.clone())),
+                    value: Some(tilo_document::action::MarkVal::Str(f.author.key())),
                     also_clear: Vec::new(),
                 },
             );
@@ -429,7 +429,7 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
             .line
             .author_runs()
             .iter()
-            .any(|(_, _, author)| author == &f.author.0)
+            .any(|(_, _, author)| author == &f.author.key())
     );
     let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
     let mut a = FrameHarness::from_component(component, (1000, 500), runner_inputs()).unwrap();

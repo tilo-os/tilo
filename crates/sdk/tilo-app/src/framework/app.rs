@@ -27,7 +27,7 @@ use {
     },
     ui_core::headless::FrameHarness,
     ui_core::launch::{LaunchArgs, LaunchSpec},
-    ui_core::permissions::{PermissionContext, Role, UserId},
+    ui_core::permissions::{MemberId, PermissionContext, Role},
     ui_core::record::RecordCheckout,
 };
 
@@ -989,7 +989,7 @@ fn new_record<A: ResourceApp>(
             .with_options(options)
             .with_content(context.content()),
     );
-    let author = context.author().0.clone();
+    let author = context.author().key();
     let seed = A::seed(&SeedCx {
         me: &author,
         device: context.device_id(),
@@ -1153,7 +1153,7 @@ pub(crate) fn hosted(context: &HostContext) -> super::settings::Hosted {
         device: Some(context.device_id().to_owned()),
         records: Some((
             context.records().clone(),
-            context.author().0.clone(),
+            context.author().key(),
             context.live_permissions(),
         )),
         workspace: context
@@ -1214,7 +1214,7 @@ fn create_component(
     // before it, and opens as below once the record is had.
     if let Some(record) = context.record_opening() {
         let opening = OpeningCx {
-            me: &context.author().0,
+            me: &context.author().key(),
             device: context.device_id(),
             workspace: context.records().home(),
             files: context.files(),
@@ -1315,7 +1315,7 @@ fn start_record(
         );
     let editing = Editing::Live {
         permissions: context.live_permissions(),
-        me: context.author().0.clone(),
+        me: context.author().key(),
         run,
     };
     Ok(Starting {
@@ -1468,8 +1468,11 @@ fn prepare_capture<A: ResourceApp>(
     context: &mut HostContext,
     scenario: Option<&str>,
 ) -> Result<Run, LaunchError> {
-    let mut fixture =
-        Fixture::<A::Resource>::new(scenario, &context.author().0, context.content().cloned());
+    let mut fixture = Fixture::<A::Resource>::new(
+        scenario,
+        &context.author().key(),
+        context.content().cloned(),
+    );
     A::fixture(&mut fixture);
     if context.content().is_none()
         && let Some(content) = fixture.lent_content()
@@ -1819,7 +1822,7 @@ fn prepare_named(
             root,
             "capture-device".into(),
             &workspace,
-            UserId("capture-author".into()),
+            MemberId::person("capture-author"),
             role_permissions("capture-author", Role::Owner),
             tilo_actions::ActionContext::default(),
             Rc::new(profile),
@@ -1860,7 +1863,7 @@ fn prepare_named(
         let mut host = super::headless::data_dir_host(
             std::path::Path::new(directory),
             &author,
-            role_permissions(&author.0, Role::Owner),
+            role_permissions(&author.key(), Role::Owner),
         )?;
         let mut prepared = prepare_on(
             &mut host,

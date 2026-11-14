@@ -270,7 +270,7 @@ tilo_test_env::scenario! {
         fixture.assert_idle();
         let before = fixture.app.state.doc.save();
         let address = tilo_actions::ActionAddress::new("probe:0", "inspect:0");
-        let actor = fixture.app.collaboration.local_author.0.clone();
+        let actor = fixture.app.collaboration.local_author.key();
         let started = fixture
             .app
             .invoke_resource_action(ResourceInvocation::new(&address, &actor))
@@ -494,7 +494,7 @@ tilo_test_env::scenario! {
                 device_id: "D".into(),
                 instance_id: 82,
                 permissions: permissions.clone(),
-                author: crate::permissions::UserId("fixture-user".into()),
+                author: crate::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
@@ -596,7 +596,7 @@ tilo_test_env::scenario! {
                 permissions: crate::permissions::SharedPermissions::new(
                     crate::permissions::PermissionContext::permissive(),
                 ),
-                author: crate::permissions::UserId("fixture-user".into()),
+                author: crate::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,

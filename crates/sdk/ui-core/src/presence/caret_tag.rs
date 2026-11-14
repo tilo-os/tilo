@@ -145,7 +145,7 @@ const CARET_CHIP_GAP: f64 = 2.0;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaretTag {
     /// Whose name it carries.
-    pub user: crate::permissions::UserId,
+    pub user: crate::permissions::MemberId,
     pub label: String,
     pub rect: Rect,
 }
@@ -215,7 +215,7 @@ fn pointer_tag_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::UserId;
+    use crate::permissions::MemberId;
     use crate::presence::PresenceCtx;
     use crate::text_render::TextRenderer;
     use crate::theme::Theme;
@@ -346,7 +346,7 @@ mod tests {
                 &theme,
                 &mut text,
                 Affine::scale(2.0),
-                &UserId("ada".into()),
+                &MemberId::person("ada"),
                 "Ada",
                 caret.clone(),
             );
@@ -354,7 +354,7 @@ mod tests {
             assert_eq!(
                 ctx.caret_tags(),
                 vec![CaretTag {
-                    user: crate::permissions::UserId("ada".into()),
+                    user: MemberId::person("ada"),
                     label: "Ada".into(),
                     rect: Affine::scale(2.0).transform_rect_bbox(caret.chip_rect(w, h)),
                 }]
@@ -369,7 +369,7 @@ mod tests {
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
             let theme = Theme::default();
-            let user = UserId("claude".into());
+            let user = MemberId::person("claude");
             ctx.set_display_name(user.clone(), "Claude Code");
             let caret = Rect::new(30.0, 40.0, 32.0, 60.0);
             ctx.draw_action_caret_labeled_in(
@@ -412,7 +412,7 @@ mod tests {
     fn first_line_tag(label: &str, x: f64) -> CaretTag {
         let caret = LabeledCaret::within(Rect::new(x, 100.0, x + 2.0, 120.0), 100.0);
         CaretTag {
-            user: crate::permissions::UserId(label.to_owned()),
+            user: crate::permissions::MemberId::person(label.to_owned()),
             label: label.into(),
             rect: caret.chip_rect(90.0, 20.0),
         }

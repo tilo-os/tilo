@@ -507,7 +507,7 @@ impl BoundNotes {
         assert!(handled);
     }
 
-    pub fn into_driver(self, author: ui::permissions::UserId) -> ui::headless::FrameHarness {
+    pub fn into_driver(self, author: ui::permissions::MemberId) -> ui::headless::FrameHarness {
         drop(self.bindings);
         drop(self.nodes);
         drop(self.tree);

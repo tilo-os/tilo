@@ -30,7 +30,7 @@ use super::{
 };
 use crate::history_mode::HistoryOwner;
 use crate::history_mode::owner::RecordOwnerLifetime;
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 
 #[cfg(test)]
 #[path = "person_owner_tests.rs"]
@@ -59,7 +59,7 @@ pub struct PersonRecords {
     /// Another window of this app holds the stored records: these are a
     /// replica that syncs with it and stores nothing.
     replica: bool,
-    author: UserId,
+    author: MemberId,
     /// Where the person's records of other apps are kept, when not beside
     /// these: a host that holds them itself lends them to the apps it shows
     /// ([`Self::sharing`]).
@@ -80,10 +80,10 @@ impl PersonRecords {
     pub fn open(
         owners: &mut RecordOwners,
         app_id: &str,
-        author: UserId,
+        author: MemberId,
     ) -> Result<Self, RecordOpenError> {
         Ok(Self {
-            store: owners.open_personal(app_id, &author.0)?,
+            store: owners.open_personal(app_id, &author.key())?,
             owners: owners.clone(),
             replica: false,
             author,
@@ -99,15 +99,15 @@ impl PersonRecords {
     ///
     /// # Errors
     /// Rejects an invalid package.
-    pub fn replica(app_id: &str, author: UserId) -> Result<Self, RecordOpenError> {
+    pub fn replica(app_id: &str, author: MemberId) -> Result<Self, RecordOpenError> {
         Self::replica_in(app_id, PERSONAL_SCOPE, author)
     }
 
     /// [`Self::replica`], of the records kept in `scope`.
-    fn replica_in(app_id: &str, scope: &str, author: UserId) -> Result<Self, RecordOpenError> {
+    fn replica_in(app_id: &str, scope: &str, author: MemberId) -> Result<Self, RecordOpenError> {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         let store = if scope == PERSONAL_SCOPE {
-            owners.open_personal(app_id, &author.0)?
+            owners.open_personal(app_id, &author.key())?
         } else {
             owners.open_person(app_id, scope)?
         };
@@ -138,7 +138,7 @@ impl PersonRecords {
         }
         let mut owners = self.others.clone().unwrap_or_else(|| self.owners.clone());
         Ok(Self {
-            store: owners.open_personal(app_id, &self.author.0)?,
+            store: owners.open_personal(app_id, &self.author.key())?,
             owners,
             replica: self.replica,
             author: self.author.clone(),
@@ -160,7 +160,7 @@ impl PersonRecords {
     /// # Errors
     /// Rejects an invalid workspace.
     pub fn in_workspace(&self, workspace: &str) -> Result<Self, RecordOpenError> {
-        if RecordId::of_member(&self.author.0, "kind").is_none() {
+        if RecordId::of_member(&self.author.key(), "kind").is_none() {
             return Ok(Self {
                 others: None,
                 ..self.clone()
@@ -193,7 +193,7 @@ impl PersonRecords {
     /// alike.
     fn id_of(&self, kind: &RecordKind) -> RecordId {
         self.member
-            .then(|| RecordId::of_member(&self.author.0, kind.as_str()))
+            .then(|| RecordId::of_member(&self.author.key(), kind.as_str()))
             .flatten()
             .unwrap_or_else(|| record_id(kind))
     }
@@ -229,7 +229,7 @@ impl PersonRecords {
     }
 
     #[must_use]
-    pub fn author(&self) -> &UserId {
+    pub fn author(&self) -> &MemberId {
         &self.author
     }
 
@@ -365,7 +365,7 @@ pub(super) fn open_in(
 pub struct StoredRecord {
     store: RecordStore,
     checkout: RecordCheckout,
-    author: UserId,
+    author: MemberId,
     /// Whether this app publishes the record's changes on its route: the
     /// records of its own package, and the workspace's shared ones. Another
     /// app's records are joined and merged from their route, never
@@ -379,7 +379,7 @@ impl StoredRecord {
     pub(super) fn new(
         store: RecordStore,
         checkout: RecordCheckout,
-        author: UserId,
+        author: MemberId,
         publishes: bool,
     ) -> Self {
         Self {
@@ -492,7 +492,7 @@ impl StoredRecord {
 
     fn step(
         &self,
-        step: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog, &UserId) -> bool,
+        step: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog, &MemberId) -> bool,
     ) -> bool {
         let stepped = self
             .store

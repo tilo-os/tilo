@@ -18,7 +18,7 @@ use iroh::Endpoint;
 use std::time::Duration;
 use tilo_peer_state::{PERSONAL_ALPN, PersonalStore, PersonalSync, RefusalReason};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationReason};
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::record::RecordKind;
 use ui::record::person::PersonRecords;
 use web_time::SystemTime;
@@ -143,7 +143,7 @@ async fn two_devices_of_one_person_converge_on_their_own_documents() {
 fn app_record(person: &str) -> ui::record::person::StoredRecord {
     let mut owners =
         ui::record::RecordOwners::with_store(std::rc::Rc::new(durable_store::MemoryStore::new()));
-    PersonRecords::open(&mut owners, NOTES, UserId(person.to_owned()))
+    PersonRecords::open(&mut owners, NOTES, MemberId::person(person.to_owned()))
         .unwrap()
         .open_record(RecordKind::new(KIND), &|_| Ok(()))
         .unwrap()
@@ -371,7 +371,7 @@ async fn carries_to_the_other_device(
             )
             .unwrap();
         let mut owners = ui::record::RecordOwners::with_store(phone.clone());
-        let on_b = PersonRecords::open(&mut owners, NOTES, UserId(person.to_owned()))
+        let on_b = PersonRecords::open(&mut owners, NOTES, MemberId::person(person.to_owned()))
             .unwrap()
             .open_record(RecordKind::new(KIND), &|_| Ok(()))
             .unwrap();
@@ -410,10 +410,14 @@ async fn carries_to_the_other_device(
             )
             .unwrap();
         let mut fresh_owners = ui::record::RecordOwners::with_store(fresh);
-        let on_c = PersonRecords::open(&mut fresh_owners, NOTES, UserId(person.to_owned()))
-            .unwrap()
-            .open_record(RecordKind::new(KIND), &|_| Ok(()))
-            .unwrap();
+        let on_c = PersonRecords::open(
+            &mut fresh_owners,
+            NOTES,
+            MemberId::person(person.to_owned()),
+        )
+        .unwrap()
+        .open_record(RecordKind::new(KIND), &|_| Ok(()))
+        .unwrap();
         assert_eq!(&on_c.checkout().id, id);
         assert_eq!(chapter(&on_c).as_deref(), Some("three"));
     }
@@ -448,7 +452,8 @@ async fn a_record_kept_before_the_store_reads_on_the_persons_other_device() {
     // The app opens its record as it does on any device: the same id, now in
     // the person's own scope, with what the person had in it.
     let mut owners = ui::record::RecordOwners::with_store(store.clone());
-    let records = PersonRecords::open(&mut owners, NOTES, UserId(person.clone())).unwrap();
+    let records =
+        PersonRecords::open(&mut owners, NOTES, MemberId::person(person.clone())).unwrap();
     let on_a = records
         .open_record(RecordKind::new(KIND), &|_| Ok(()))
         .unwrap();
@@ -499,7 +504,7 @@ async fn a_record_kept_before_the_store_reads_on_the_persons_other_device() {
         )
         .unwrap();
     let mut reopened = ui::record::RecordOwners::with_store(store.clone());
-    let again = PersonRecords::open(&mut reopened, NOTES, UserId(person.clone()))
+    let again = PersonRecords::open(&mut reopened, NOTES, MemberId::person(person.clone()))
         .unwrap()
         .open_record(RecordKind::new(KIND), &|_| Ok(()))
         .unwrap();

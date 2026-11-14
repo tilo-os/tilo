@@ -7,7 +7,7 @@ use super::{
 };
 use crate::application_view::InstanceViewStore;
 use crate::launch::LaunchError;
-use crate::permissions::{PermissionContext, SharedPermissions, UserId};
+use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
 
 /// Prepare `definition` as one of the shell surface apps (the
 /// bar, the banners, Quick Settings, a sheet): as `person` on `device`, its
@@ -45,7 +45,7 @@ pub fn prepare_private_surface(
                 person,
                 crate::permissions::Role::Owner,
             )),
-            author: UserId(person.to_owned()),
+            author: MemberId::person(person),
             action_context: tilo_actions::ActionContext::default(),
         },
         &target,

@@ -203,7 +203,7 @@ impl App {
             self.actions.local_invocations.keys().copied().collect();
         let broker_request = self.actions.next_broker_request_id;
         let connected = self.collaboration.manager.is_connected();
-        let actor = self.collaboration.local_author.0.clone();
+        let actor = self.collaboration.local_author.key();
         // Do not supply an invocation or claim broker admission. This is the
         // ordinary local canonical action door, including permissions/effects.
         let result = self.invoke_resource_action(ResourceInvocation::new(&document.save, &actor));

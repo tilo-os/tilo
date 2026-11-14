@@ -16,13 +16,13 @@ use std::collections::HashMap;
 use collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::value::ResourceRef;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
 /// What an instance heard of the record's participants, and what it last said of its own.
 pub struct Presence {
     app: String,
-    me: String,
+    me: MemberId,
     heard: PresenceCtx,
     /// Where the instance last said its person is.
     said_at: Option<PresenceKey>,
@@ -39,10 +39,10 @@ impl Presence {
         let mut heard = PresenceCtx::default();
         // Frames of the person's own other windows are theirs, never someone else here. Their
         // name is the member list's to say.
-        heard.set_self_participant(UserId(me.to_owned()), "");
+        heard.set_self_participant(MemberId::person(me), "");
         Self {
             app: app.to_owned(),
-            me: me.to_owned(),
+            me: MemberId::person(me),
             heard,
             said_at: None,
             said_composing: None,
@@ -56,19 +56,19 @@ impl Presence {
     pub fn take(&mut self, event: &CollabEvent) -> bool {
         match event {
             CollabEvent::RemotePresenceUpdate {
-                user_id,
+                member,
                 key,
                 payload,
             } => {
                 self.heard
-                    .apply_remote_presence(user_id.clone(), key.clone(), payload.clone());
+                    .apply_remote_presence(member.clone(), key.clone(), payload.clone());
                 true
             }
             CollabEvent::Context { members, .. } => {
                 self.heard.apply_members(members.clone());
                 if self.heard.self_id().is_none() {
                     // A list without the person: their own frames are still theirs.
-                    self.heard.set_self_participant(UserId(self.me.clone()), "");
+                    self.heard.set_self_participant(self.me.clone(), "");
                 }
                 self.renamed = true;
                 false
@@ -99,7 +99,7 @@ impl Presence {
                 .heard
                 .names
                 .keys()
-                .map(|user| (user.0.clone(), self.heard.display_name(user)))
+                .map(|user| (user.key(), self.heard.display_name(user)))
                 .collect();
             instance.name_people(me, others);
         }
@@ -109,7 +109,7 @@ impl Presence {
             self.heard
                 .composing_at(&self.key(target), now)
                 .into_iter()
-                .map(|user| user.0)
+                .map(|user| user.key())
                 .collect()
         });
         instance.set_peers_and_composers(self.peers(), &composing);
@@ -163,8 +163,8 @@ impl Presence {
             .filter_map(|(key, at)| match key {
                 PresenceKey::Resource { app, id, .. } if *app == self.app => at
                     .iter()
-                    .find(|(user, _)| user.0 != self.me)
-                    .map(|(user, _)| (id.clone(), user.0.clone())),
+                    .find(|(user, _)| *user != self.me)
+                    .map(|(user, _)| (id.clone(), user.key())),
                 _ => None,
             })
             .collect()

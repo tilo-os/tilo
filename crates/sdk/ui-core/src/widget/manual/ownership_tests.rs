@@ -2,7 +2,7 @@ use super::*;
 use crate::application::{ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget};
 use crate::application_view::InstanceViewStore;
 use crate::bound_dispatch::CallbackBinding;
-use crate::permissions::{PermissionContext, UserId};
+use crate::permissions::{MemberId, PermissionContext};
 use crate::record::{RecordKind, RecordOwners};
 use crate::widget::{IconDescriptor, Text};
 use std::cell::RefCell;
@@ -66,7 +66,7 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
                 permissions: crate::permissions::SharedPermissions::new(
                     PermissionContext::permissive(),
                 ),
-                author: UserId("tester".into()),
+                author: MemberId::person("tester"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,

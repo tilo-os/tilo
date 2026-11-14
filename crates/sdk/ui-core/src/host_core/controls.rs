@@ -13,7 +13,7 @@ pub(crate) type Started = Result<ResourceOperationStart, DoorError>;
 
 pub(crate) trait ControlHost: HostCore {
     /// The person at this device.
-    fn local_author(&self) -> &crate::permissions::UserId;
+    fn local_author(&self) -> &crate::permissions::MemberId;
 
     /// How the host publishes its components' resources to the workspace.
     fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication;
@@ -161,7 +161,7 @@ pub(crate) trait ControlHost: HostCore {
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
     ) -> Started {
         let argument = json_argument(&prepared.invocation.arguments);
-        let actor = self.local_author().0.clone();
+        let actor = self.local_author().key();
         self.invoke_local_target(
             &prepared.target,
             &ResourceInvocation::new(&prepared.invocation.address, &actor)
@@ -335,10 +335,9 @@ pub(crate) trait ControlHost: HostCore {
             return result.is_ok();
         }
         let json = json_argument(&intent.arguments);
-        let actor = acting.as_ref().map_or_else(
-            || self.local_author().0.clone(),
-            |acting| acting.invoker.key(),
-        );
+        let actor = acting
+            .as_ref()
+            .map_or_else(|| self.local_author().key(), |acting| acting.invoker.key());
         let scopes = acting
             .as_ref()
             .map(crate::invocation_scope::Continuation::enter);
@@ -425,10 +424,9 @@ pub(crate) trait ControlHost: HostCore {
             self.bound_control_settled(target, on_behalf_of, &result);
             return result.is_ok();
         }
-        let actor = acting.as_ref().map_or_else(
-            || self.local_author().0.clone(),
-            |acting| acting.invoker.key(),
-        );
+        let actor = acting
+            .as_ref()
+            .map_or_else(|| self.local_author().key(), |acting| acting.invoker.key());
         let scopes = acting
             .as_ref()
             .map(crate::invocation_scope::Continuation::enter);

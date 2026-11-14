@@ -6,7 +6,7 @@
 //! as on every host.
 
 use tilo_desktop::here::LiveMember;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::presence::PresenceKey;
 use wasm_bindgen::prelude::*;
 
@@ -22,9 +22,9 @@ pub(crate) struct Presence {
     /// How many times the board's contents had changed when it was last read.
     pub(crate) revision: u64,
     /// Who was here, by publisher.
-    pub(crate) seen: Vec<String>,
+    pub(crate) seen: Vec<MemberId>,
     /// Who a caret is drawn for, by publisher: a member who stops selecting has theirs taken away.
-    pub(crate) carets: Vec<String>,
+    pub(crate) carets: Vec<MemberId>,
 }
 
 impl Mount {
@@ -207,12 +207,17 @@ impl Mount {
     /// workspace's to settle, never the one the member publishes, so two
     /// people here at once are never drawn alike.
     fn names_from(&mut self, view: &BoardView) {
-        let present: Vec<String> = view.members.iter().map(|m| m.publisher.clone()).collect();
-        let gone: Vec<String> = self
+        let members: Vec<(MemberId, &collab_types::presence::Shown)> = view
+            .members
+            .iter()
+            .filter_map(|member| Some((member.member_id()?, member)))
+            .collect();
+        let present: Vec<MemberId> = members.iter().map(|(id, _)| id.clone()).collect();
+        let gone: Vec<MemberId> = self
             .presence
             .seen
             .iter()
-            .filter(|publisher| !present.contains(publisher))
+            .filter(|member| !present.contains(member))
             .cloned()
             .collect();
         self.presence.seen = present;
@@ -223,14 +228,12 @@ impl Mount {
         let mut carets = Vec::new();
         let mut cleared = !gone.is_empty();
         self.frame.update_presence(|presence| {
-            for publisher in &gone {
-                presence.unregister_peer(publisher);
+            for member in &gone {
+                presence.unregister_peer(member);
             }
-            for member in &view.members {
-                let user = UserId(member.publisher.clone());
-                presence.set_participant_kind(&user, member.agent);
+            for (user, member) in &members {
                 if !member.label.is_empty() {
-                    presence.set_display_name(user, member.label.clone());
+                    presence.set_display_name(user.clone(), member.label.clone());
                 }
                 match selection_anchors(member.selection.as_ref()) {
                     Some((key, start, end)) => {
@@ -240,14 +243,14 @@ impl Mount {
                         } else {
                             PresencePayload::Selection { start, end }
                         };
-                        presence.apply_remote_presence(member.publisher.clone(), key, payload);
-                        carets.push(member.publisher.clone());
+                        presence.apply_remote_presence(user.clone(), key, payload);
+                        carets.push(user.clone());
                     }
                     // Their caret went away: forgetting it costs their whole
                     // record, so the roster names them again next frame. Who
                     // they are is not theirs to lose by stopping.
-                    None if had_caret.contains(&member.publisher) => {
-                        presence.unregister_peer(&member.publisher);
+                    None if had_caret.contains(user) => {
+                        presence.unregister_peer(user);
                         cleared = true;
                     }
                     None => {}
@@ -343,7 +346,7 @@ pub fn set_people(id: u64, people: &str) -> Result<(), JsValue> {
             for person in people {
                 let name = person.name.trim();
                 if !person.id.is_empty() && !name.is_empty() {
-                    presence.set_display_name(UserId(person.id), name);
+                    presence.set_display_name(MemberId::person(person.id), name);
                 }
             }
             true

@@ -313,7 +313,7 @@ fn scroll(
     .painting_peers();
     if let Some((x, y)) = surface.peer {
         app.presence_ctx_mut().upsert_remote_cursor(
-            "ada".into(),
+            collab_types::MemberId::person("ada"),
             [x as f32, y as f32],
             Some("Ada Lovelace"),
         );

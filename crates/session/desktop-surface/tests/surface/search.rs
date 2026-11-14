@@ -81,7 +81,7 @@ fn every_open_from_the_search_in_a_row_shows_its_window_and_the_desk_keeps_drawi
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.set_caller_palette_enabled(false);
     driver.relayout();

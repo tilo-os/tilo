@@ -360,7 +360,7 @@ pub fn prepare(
             device_id: device.to_owned(),
             instance_id: instance,
             permissions,
-            author: crate::permissions::UserId(author.to_owned()),
+            author: crate::permissions::MemberId::person(author.to_owned()),
             action_context: tilo_actions::ActionContext::default(),
         },
         &target,

@@ -1331,7 +1331,7 @@ mod tests {
                     durable_store::MemoryStore::new(),
                 )),
                 workspace.to_owned(),
-                ui::permissions::UserId("ada".to_owned()),
+                ui::permissions::MemberId::person("ada"),
             )
             .open_record(CHAT, EMOJI, &|doc| {
                 doc.put(automerge::ROOT, "body", "")

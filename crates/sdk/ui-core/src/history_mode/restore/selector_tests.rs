@@ -1904,7 +1904,7 @@ fn accepted_selector_and_protected_codec_boundaries_inner() {
 }
 
 fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner() {
-    use crate::permissions::{PermissionContext, UserId};
+    use crate::permissions::{MemberId, PermissionContext};
     use crate::state::{State, owned_restore::OwnedRestoreError};
 
     let authority = PermissionContext::permissive();
@@ -1945,7 +1945,7 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
     let entry = state.peek_last_undo().unwrap();
     assert_eq!(entry.before, current);
     assert_eq!(entry.after, receipt.after);
-    assert_eq!(entry.author, Some(UserId("ada".into())));
+    assert_eq!(entry.author, Some(MemberId::person("ada")));
     assert_eq!(entry.instance_id, None);
     let change = &state.doc.get_changes(&current)[0];
     assert_eq!(change.deps(), current);
@@ -1972,7 +1972,7 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
         Some("target")
     );
     state
-        .undo_as(Some(&UserId("ada".into())), None, None)
+        .undo_as(Some(&MemberId::person("ada")), None, None)
         .unwrap();
     assert_eq!(
         string_at(&state.doc, &deepest, "leaf").as_deref(),

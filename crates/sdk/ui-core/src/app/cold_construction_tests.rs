@@ -72,7 +72,7 @@ tilo_test_env::scenario! {
                     directory.path().into(),
                     "device".into(),
                     "workspace",
-                    crate::permissions::UserId(crate::permissions::LOCAL_USER.into()),
+                    crate::permissions::MemberId::person(crate::permissions::LOCAL_USER),
                     crate::permissions::SharedPermissions::new(
                         crate::permissions::PermissionContext::permissive(),
                     ),

@@ -63,7 +63,7 @@ mod tests {
             (400, 300),
             crate::Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("isolation-test".into()),
+            crate::permissions::MemberId::person("isolation-test"),
         )
     }
 

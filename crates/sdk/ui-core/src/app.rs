@@ -614,7 +614,7 @@ struct AppConstructionInputs {
     watch_system_settings: bool,
     debug_mode: fn() -> bool,
     theme_store_stamp: fn() -> Option<settings_store::SettingsStamp>,
-    local_author: ConstructionValue<crate::permissions::UserId>,
+    local_author: ConstructionValue<crate::permissions::MemberId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
     /// The person's colour before a host says it: the stored choice where
@@ -656,7 +656,7 @@ impl AppConstructionInputs {
         services.palette_source = PaletteSource::Host;
         services.local_author = ConstructionValue::Ready(binding.author.clone());
         let mut presence = services.presence_ctx.resolve();
-        presence.add_own_identity(&binding.author.0);
+        presence.add_own_identity(binding.author.clone());
         services.presence_ctx = ConstructionValue::Ready(presence);
         services
     }
@@ -666,7 +666,7 @@ impl AppConstructionInputs {
         binding: &crate::bound_dispatch::CallbackBinding,
     ) -> Self {
         let mut presence = PresenceCtx::empty();
-        presence.set_own_identity([binding.author.0.clone()]);
+        presence.set_own_identity([binding.author.clone()]);
         Self {
             control_domain: None,
             collab_manager: CollaborationManager::disabled(),
@@ -766,11 +766,11 @@ impl AppConstructionInputs {
             debug_mode: || false,
             theme_store_stamp: || None,
             local_author: ConstructionValue::Lazy(|| {
-                crate::permissions::UserId("fixture-user".into())
+                crate::permissions::MemberId::person("fixture-user")
             }),
             presence_ctx: ConstructionValue::Lazy(|| {
                 let mut presence = PresenceCtx::empty();
-                presence.set_own_identity(["fixture-user".to_owned()]);
+                presence.set_own_identity([crate::permissions::MemberId::person("fixture-user")]);
                 presence
             }),
             screen_reader: || None,
@@ -1011,10 +1011,10 @@ impl App {
 
     fn initial_presence_context() -> PresenceCtx {
         let mut context = PresenceCtx::empty();
-        let own = crate::collaboration::local_user_id().0;
+        let own = crate::collaboration::local_user_id();
         context.set_own_identity(std::iter::once(own.clone()));
         if let Some(hue) = crate::local_identity::own_colour() {
-            context.set_presence_hue(crate::permissions::UserId(own), hue);
+            context.set_presence_hue(own, hue);
         }
         context
     }
@@ -3258,7 +3258,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         (900, 650),
                         Theme::dark(),
                         crate::font_catalog::fixture_renderer(),
-                        crate::permissions::UserId("fixture".into()),
+                        crate::permissions::MemberId::person("fixture"),
                     )
                     .unwrap(),
                 ))
@@ -3703,7 +3703,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 (900, 650),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("fixture".into()),
+                crate::permissions::MemberId::person("fixture"),
             )
             .unwrap();
             driver
@@ -3952,7 +3952,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("Run fixture");
                 let author = match &host {
                     Host::Native(app) => app.collaboration.local_author.clone(),
-                    Host::FrameHarness(_) => crate::permissions::UserId("fixture".into()),
+                    Host::FrameHarness(_) => MemberId::person("fixture"),
                 };
                 let state = state(&mut host);
                 assert_eq!(

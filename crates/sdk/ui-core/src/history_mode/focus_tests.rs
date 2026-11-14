@@ -90,7 +90,7 @@ fn headless_focus_order_enumerates_history_once() {
         (900, 650),
         crate::Theme::dark(),
         crate::font_catalog::fixture_renderer(),
-        crate::permissions::UserId("fixture".into()),
+        crate::permissions::MemberId::person("fixture"),
     );
     visits.set(0);
     let order = frame.focus_order();
@@ -111,7 +111,7 @@ fn headless_relayout_and_focus_moves_enumerate_history_independently_of_rows() {
             (900, 650),
             crate::Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         visits.set(0);
         frame.relayout();

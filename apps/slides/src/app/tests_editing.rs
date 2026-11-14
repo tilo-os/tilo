@@ -710,7 +710,7 @@ fn collaborators_carets_show_in_the_boxes_they_are_in() {
     let key = render::words_presence_key(&first_paragraph(&bench, &id));
     let alone = drawn_paths(&mut bench);
     let mut presence = ui::PresenceCtx::empty();
-    presence.set_remote_caret("ana".into(), key.clone(), 3);
+    presence.set_caret(&key.clone(), ui::permissions::MemberId::person("ana"), 3);
     bench.app.harness().set_presence_context(presence.clone());
     assert!(
         drawn_paths(&mut bench) > alone,

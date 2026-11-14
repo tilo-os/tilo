@@ -411,7 +411,7 @@ impl Connection {
                 tokio::task::spawn_local(async move {
                     while let Some(presence) = rx.recv().await {
                         deliver(Event::Presence {
-                            user_id: presence.author,
+                            member: tilo_ui::permissions::MemberId::person(presence.author),
                             presence: presence.presence,
                         });
                     }

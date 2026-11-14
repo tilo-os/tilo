@@ -490,7 +490,7 @@ fn instance_history_selects_only_its_own_attributed_entries() {
         assert!(history.next_undo_in(&doc, &author(), 11).is_none());
         assert!(
             history
-                .next_undo_in(&doc, &tilo_ui::permissions::UserId("other".into()), 12)
+                .next_undo_in(&doc, &tilo_ui::permissions::MemberId::person("other"), 12)
                 .is_none()
         );
         assert_eq!(

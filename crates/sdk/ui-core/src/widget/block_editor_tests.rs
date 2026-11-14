@@ -1677,7 +1677,7 @@ tilo_test_env::scenario! {
         assert_eq!(receiver.blocks[2].id, target);
         let empty = presence_paths(&mut receiver, &PresenceCtx::empty());
         let mut presence = PresenceCtx::empty();
-        presence.set_caret(&published, crate::permissions::UserId("peer".into()), 4);
+        presence.set_caret(&published, crate::permissions::MemberId::person("peer"), 4);
         assert!(
             presence_paths(&mut receiver, &presence) > empty,
             "the caret is drawn"
@@ -1685,7 +1685,7 @@ tilo_test_env::scenario! {
         let mut stranger = PresenceCtx::empty();
         stranger.set_caret(
             &block_presence_key("missing"),
-            crate::permissions::UserId("peer".into()),
+            crate::permissions::MemberId::person("peer"),
             4,
         );
         assert_eq!(presence_paths(&mut receiver, &stranger), empty);
@@ -1702,7 +1702,7 @@ tilo_test_env::scenario! {
         ]);
         let start = ed.blocks[1].id.clone();
         let mut presence = PresenceCtx::empty();
-        let user = crate::permissions::UserId("peer".into());
+        let user = crate::permissions::MemberId::person("peer");
         presence.set_selection(
             &document_selection_presence_key(&start, 1),
             user.clone(),
@@ -1717,12 +1717,12 @@ tilo_test_env::scenario! {
         // A span past the end is clamped; an unknown start is ignored.
         presence.set_selection(
             &document_selection_presence_key(&start, 40),
-            crate::permissions::UserId("p2".into()),
+            crate::permissions::MemberId::person("p2"),
             crate::presence::SelectionRange { start: 0, end: 1 },
         );
         presence.set_selection(
             &document_selection_presence_key("gone", 1),
-            crate::permissions::UserId("p3".into()),
+            crate::permissions::MemberId::person("p3"),
             crate::presence::SelectionRange { start: 0, end: 1 },
         );
         drop(user);

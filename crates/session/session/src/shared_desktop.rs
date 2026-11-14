@@ -32,7 +32,7 @@ use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, OpenedBy};
 use tilo_desktop_model::person_view::{self, PersonView};
 use tilo_desktop_model::shared_record::{self, device};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId, peer_salt_of};
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
 use tilo_broker_core::custody::OwnerCustody as _;
@@ -41,8 +41,8 @@ use crate::engine::{Engine, SealKeys};
 use tilo_desktop_surface::DesktopHandle;
 
 /// The person `person`, as a history names them.
-fn user(person: &str) -> UserId {
-    UserId(person.to_owned())
+fn user(person: &str) -> MemberId {
+    MemberId::person(person.to_owned())
 }
 
 /// A layout's history as this session drives it: every change of it a person made, on any of

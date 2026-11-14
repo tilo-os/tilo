@@ -32,7 +32,7 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
         app_b.pump_collab_presence();
         app_b
             .presence_ctx()
-            .pointer_for(&key, &tilo_ui::permissions::UserId("peer-a".into()))
+            .pointer_for(&key, &tilo_ui::permissions::MemberId::person("peer-a"))
             == Some((320.0, 240.0))
     });
 
@@ -40,11 +40,11 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
     let alice = presence
         .remote_cursors
         .iter()
-        .find(|c| c.user_id == "peer-a")
+        .find(|c| c.member == tilo_ui::permissions::MemberId::person("peer-a"))
         .expect("peer-a's pointer populates App B's remote cursors");
     assert_eq!(alice.position, [320.0, 240.0]);
     assert_eq!(
-        presence.pointer_for(&key, &tilo_ui::permissions::UserId("peer-a".into())),
+        presence.pointer_for(&key, &tilo_ui::permissions::MemberId::person("peer-a")),
         Some((320.0, 240.0)),
     );
 
@@ -55,6 +55,6 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
             .presence_ctx()
             .remote_cursors
             .iter()
-            .all(|c| c.user_id != "peer-a")
+            .all(|c| c.member != tilo_ui::permissions::MemberId::person("peer-a"))
     });
 }

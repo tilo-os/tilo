@@ -173,7 +173,7 @@ tilo_test_env::scenario! {
                     .events
                     .borrow_mut()
                     .push(CollabEvent::RemotePresenceUpdate {
-                        user_id: "peer".into(),
+                        member: crate::permissions::MemberId::person("peer"),
                         key: PresenceKey::Widget {
                             path: vec![PathSegment::Field("probe".into())],
                         },

@@ -124,7 +124,7 @@ impl TileSource for Source {
                 device_id: "device".into(),
                 instance_id: tab.id,
                 permissions,
-                author: ui::permissions::UserId("retained-author".into()),
+                author: ui::permissions::MemberId::person("retained-author"),
                 action_context: tilo_actions::ActionContext::default()
                     .with_app(APP, "Retained owner"),
             },
@@ -183,7 +183,7 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("retained-author".into()),
+        ui::permissions::MemberId::person("retained-author"),
     );
     driver.attach_owner_wake_queue(queue.clone()).unwrap();
     driver.relayout();
@@ -256,7 +256,7 @@ fn dragging_the_edge_of_a_window_with_a_checked_component_resizes_it() {
         (1440, 900),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("retained-author".into()),
+        ui::permissions::MemberId::person("retained-author"),
     );
     driver.attach_owner_wake_queue(queue).unwrap();
     driver.relayout();

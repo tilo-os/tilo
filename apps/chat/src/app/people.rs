@@ -164,7 +164,7 @@ impl ChatApp {
 
     /// The presence hue `id` wears: an agent's is the one its own record gives it (its keeper's
     /// choice, else the one rule's), a person's the one the workspace announced for them, else
-    /// the one rule every surface draws a participant by ([`ui::presence::participant_hue`]) —
+    /// the one rule every surface draws a participant by ([`ui::presence::member_hue`]) —
     /// so a face, a chip and a byline are one colour, here as in every app of the workspace.
     pub(crate) fn participant_hue(&self, id: &str) -> ui::tokens::PresenceHue {
         MemberId::parse(id)
@@ -178,7 +178,12 @@ impl ChatApp {
                         ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
                     })
             })
-            .unwrap_or_else(|| ui::presence::participant_hue(id, crate::views::is_agent(id), None))
+            .unwrap_or_else(|| {
+                MemberId::parse(id).map_or_else(
+                    || ui::tokens::PresenceHue::of_identity(id),
+                    |member| ui::presence::member_hue(&member, None),
+                )
+            })
     }
 
     /// The participant's own colour, in the shared presence vocabulary: the workspace's assignment
@@ -201,12 +206,13 @@ impl ChatApp {
     pub(crate) fn mention_people(&self) -> Vec<ui::widget::MentionCandidate> {
         self.users
             .iter()
-            .map(|user| ui::widget::MentionCandidate {
-                id: user.id.clone(),
-                name: self.display_name(&user.id),
-                kind: ui::presence::ParticipantKind::from(user.is_agent),
-                hue: self.participant_hue(&user.id),
-                is_self: self.is_me(&user.id),
+            .filter_map(|user| {
+                Some(ui::widget::MentionCandidate {
+                    id: MemberId::parse(&user.id)?,
+                    name: self.display_name(&user.id),
+                    hue: self.participant_hue(&user.id),
+                    is_self: self.is_me(&user.id),
+                })
             })
             .collect()
     }
@@ -237,19 +243,8 @@ impl ChatApp {
             .iter()
             .map(|u| (u.id.as_str(), u.is_agent))
             .collect();
-        // Each person once: a device stands for its person, so neither the
-        // person's alias in `workspace_names` nor a device whose person already
-        // wrote themselves in is a second candidate.
-        let aliases: std::collections::HashSet<&Id> = self.workspace_persons.values().collect();
         for id in self.workspace_names.keys() {
-            let person_listed = self
-                .workspace_persons
-                .get(id)
-                .is_some_and(|person| out.iter().any(|(listed, _)| listed == person));
-            if !aliases.contains(id)
-                && !person_listed
-                && !out.iter().any(|(listed, _)| *listed == id.as_str())
-            {
+            if !out.iter().any(|(listed, _)| *listed == id.as_str()) {
                 out.push((id.as_str(), false));
             }
         }

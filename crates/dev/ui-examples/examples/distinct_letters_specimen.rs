@@ -8,7 +8,7 @@ use tilo_ui::State;
 use tilo_ui::font_catalog::FontCatalog;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::UserId;
+use tilo_ui::permissions::MemberId;
 use tilo_ui::text_render::{OpenTypeTag, TextRenderer, TextWeight};
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
@@ -151,7 +151,7 @@ fn sheet(
             viewport,
             theme,
             TextRenderer::with_font_catalog(catalog)?,
-            UserId("specimen".into()),
+            MemberId::person("specimen"),
         );
         let rgba = OffscreenRenderer::new(width, height).render_resilient(harness.scene(), ground);
         let side = image::RgbaImage::from_raw(width, height, rgba).ok_or("short frame")?;

@@ -440,15 +440,15 @@ fn workspace_people(cx: &ViewCx<Messages>) -> Vec<WorkspacePerson> {
     cx.people()
         .members()
         .into_iter()
-        .filter(|member| {
-            member.kind == ui::presence::ParticipantKind::Person
-                && !member.is_self
-                && member.id.len() == 64
-                && member.id.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
-        .map(|member| WorkspacePerson {
-            root: member.id,
-            name: member.name,
+        .filter(|member| !member.is_self)
+        .filter_map(|member| {
+            let root = member.id.person_id()?;
+            (root.len() == 64 && root.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| {
+                WorkspacePerson {
+                    root: root.to_owned(),
+                    name: member.name,
+                }
+            })
         })
         .collect()
 }

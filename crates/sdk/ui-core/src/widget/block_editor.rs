@@ -2897,7 +2897,7 @@ impl BlockEditor {
         let typed = self.mention_picker.typed();
         self.mention_picker.close();
         self.select_before_caret(typed);
-        if self.insert_mention(&who.id, &who.label()) {
+        if self.insert_mention(&who.id.key(), &who.label()) {
             self.commit_pending = true;
             self.edit_pending = true;
         }
@@ -10820,7 +10820,7 @@ impl BlockEditor {
     ) -> Vec<(
         usize,
         usize,
-        &'p crate::permissions::UserId,
+        &'p crate::permissions::MemberId,
         crate::presence::SelectionRange,
     )> {
         let mut out = Vec::new();

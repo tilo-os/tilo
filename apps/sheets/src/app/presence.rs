@@ -95,10 +95,7 @@ impl SheetsApp {
             if rect.intersect(body).is_zero_area() {
                 continue;
             }
-            for peer in peers
-                .iter()
-                .filter(|peer| !presence.is_own_identity(&peer.0))
-            {
+            for peer in peers.iter().filter(|peer| !presence.is_own_identity(peer)) {
                 presence.draw_peer_outline_labeled_within(
                     &mut ctx,
                     peer,

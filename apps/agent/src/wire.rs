@@ -546,7 +546,7 @@ mod tests {
             };
             self.events.push(reply);
             self.events.push(CollabEvent::RemoteCursorMoved {
-                user_id: format!("after-{request_id}"),
+                member: collab_types::MemberId::person(format!("after-{request_id}")),
                 x: 0.0,
                 y: 0.0,
             });
@@ -592,17 +592,17 @@ mod tests {
                 &mut pending,
                 vec![
                     CollabEvent::RemoteCursorMoved {
-                        user_id: "one".into(),
+                        member: ui::permissions::MemberId::person("one"),
                         x: 1.0,
                         y: 0.0,
                     },
                     CollabEvent::RemoteCursorMoved {
-                        user_id: "two".into(),
+                        member: ui::permissions::MemberId::person("two"),
                         x: 2.0,
                         y: 0.0,
                     },
                     CollabEvent::RemoteCursorMoved {
-                        user_id: "three".into(),
+                        member: ui::permissions::MemberId::person("three"),
                         x: 3.0,
                         y: 0.0,
                     },
@@ -644,7 +644,7 @@ mod tests {
             let mut seen = Vec::new();
             while let Some(event) = link.recv(Duration::ZERO).unwrap() {
                 seen.push(match event {
-                    CollabEvent::RemoteCursorMoved { user_id, .. } => user_id,
+                    CollabEvent::RemoteCursorMoved { member, .. } => member.key(),
                     CollabEvent::TaskRunCancellation { request_id, .. } => {
                         format!("reply-{request_id}")
                     }
@@ -678,7 +678,7 @@ mod tests {
                 Courier {
                     events: vec![
                         CollabEvent::RemoteCursorMoved {
-                            user_id: "one".into(),
+                            member: ui::permissions::MemberId::person("one"),
                             x: 1.0,
                             y: 0.0,
                         },
@@ -697,7 +697,7 @@ mod tests {
             assert!(
                 matches!(
                     link.recv(Duration::ZERO).unwrap(),
-                    Some(CollabEvent::RemoteCursorMoved { user_id, .. }) if user_id == "one"
+                    Some(CollabEvent::RemoteCursorMoved { member: user_id, .. }) if user_id == ui::permissions::MemberId::person("one")
                 ),
                 "the other event keeps its place for the session loop"
             );

@@ -7,7 +7,7 @@
 use super::PresenceCtx;
 use crate::offscreen::OffscreenRenderer;
 use crate::paint::PaintCtx;
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use vello::Scene;
@@ -20,7 +20,7 @@ use vello::peniko::Color;
 #[test]
 fn an_action_label_stands_clear_of_the_words_a_frame_shows() {
     let presence = PresenceCtx::empty();
-    let user = UserId("charlie".into());
+    let user = MemberId::person("charlie");
     let theme = Theme::default();
     let viewport = Rect::new(20.0, 20.0, 480.0, 180.0);
     let control = Rect::new(100.0, 60.0, 200.0, 90.0);

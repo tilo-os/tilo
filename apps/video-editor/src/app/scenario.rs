@@ -546,7 +546,7 @@ impl VideoEditorApp {
     /// in through [`PresenceCtx::apply_remote_presence`], the one decoder every inbound
     /// frame goes through. What the capture shows is what a real peer produces.
     pub(super) fn seed_shot_collaborators(&mut self) {
-        use ui::permissions::UserId;
+        use ui::permissions::MemberId;
         let mut ctx = PresenceCtx::empty();
         // Clips to hand out, one per track walked from the top, so the pick is the same on
         // every run and two participants are never stacked on one lane. The first lands on
@@ -569,12 +569,13 @@ impl VideoEditorApp {
             .into_iter()
             .enumerate()
         {
-            ctx.names.insert(UserId(id.to_string()), name.to_string());
+            let member = MemberId::person(id);
+            ctx.names.insert(member.clone(), name.to_string());
             let (k, p) = crate::presence::point_frame(None, at);
-            ctx.apply_remote_presence(id.to_string(), k, p);
+            ctx.apply_remote_presence(member.clone(), k, p);
             if let Some((cid, start, end)) = clips.get(i).copied() {
                 let (k, p) = crate::presence::range_frame(Some((cid, start, end)));
-                ctx.apply_remote_presence(id.to_string(), k, p);
+                ctx.apply_remote_presence(member, k, p);
             }
         }
         self.capture.presence = Some(ctx);

@@ -599,7 +599,7 @@ pub struct FrameHarness {
     focus_trap_node: Option<NodeId>,
     /// Identity the driver's commits and undos are attributed to, mirroring [`crate::app::App`]'s
     /// `local_author`.
-    author: crate::permissions::UserId,
+    author: crate::permissions::MemberId,
     /// Same decoder and transport doors used by the live application host.
     action_registry: tilo_actions::ActionRegistry,
     action_transport: Box<dyn tilo_actions::ActionTransport>,
@@ -1226,7 +1226,7 @@ impl FrameHarness {
         viewport: (u32, u32),
         theme: Theme,
         text: TextRenderer,
-        author: crate::permissions::UserId,
+        author: crate::permissions::MemberId,
     ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
         Self::from_managed_root_with_constructor(
             state,
@@ -1388,7 +1388,7 @@ impl FrameHarness {
         viewport: (u32, u32),
         theme: Theme,
         text: TextRenderer,
-        author: crate::permissions::UserId,
+        author: crate::permissions::MemberId,
     ) -> Self {
         Self::with_inputs(state, root, viewport, theme, text, || author, None)
     }
@@ -1419,7 +1419,7 @@ impl FrameHarness {
         viewport: (u32, u32),
         theme: Theme,
         text: TextRenderer,
-        author: impl FnOnce() -> crate::permissions::UserId,
+        author: impl FnOnce() -> crate::permissions::MemberId,
         component_wake: Option<ComponentRunnerWakeState>,
     ) -> Self {
         Self::with_inputs_and_host(
@@ -1440,7 +1440,7 @@ impl FrameHarness {
         viewport: (u32, u32),
         mut theme: Theme,
         mut text: TextRenderer,
-        author: impl FnOnce() -> crate::permissions::UserId,
+        author: impl FnOnce() -> crate::permissions::MemberId,
         component_wake: Option<ComponentRunnerWakeState>,
         host: HostLayout,
     ) -> Self {
@@ -5119,13 +5119,13 @@ impl FrameHarness {
                 mark.saying = self
                     .drawn_action_markers
                     .iter()
-                    .find(|marker| marker.interaction.actor.by.key() == mark.user.0)
+                    .find(|marker| marker.interaction.actor.by.key() == mark.user.key())
                     .map(|marker| self.presence.interaction_status_label(&marker.interaction));
             }
-            let path = format!("presence-mark-{}", mark.user.0);
+            let path = format!("presence-mark-{}", mark.user.key());
             let name = self.presence.mark_words(&mark);
             peers.push(Self::presence_node(&path, Some(mark.rect), name));
-            written.push(mark.user.0);
+            written.push(mark.user.key());
         }
         for marker in &self.drawn_action_markers {
             let actor = &marker.interaction.actor.by.key();
@@ -5139,12 +5139,12 @@ impl FrameHarness {
         for (index, tag) in self.presence.caret_tags().into_iter().enumerate() {
             let rect = to_surface.transform_rect_bbox(tag.rect);
             let mut node = Self::presence_node(
-                &format!("presence-tag-{}-{index}", tag.user.0),
+                &format!("presence-tag-{}-{index}", tag.user.key()),
                 None,
                 tag.label,
             );
             node.widget = crate::presence::TAG_WIDGET.into();
-            node.test_id = Some(format!("presence-tag-{}", tag.user.0));
+            node.test_id = Some(format!("presence-tag-{}", tag.user.key()));
             node.rect = [rect.x0, rect.y0, rect.width(), rect.height()];
             node.semantics = None;
             peers.push(node);
@@ -7101,7 +7101,7 @@ impl FrameHarness {
     {
         let (invocation, actor) =
             delivered.unwrap_or_else(|| (tilo_actions::InvocationId::new(), None));
-        let author = self.author.0.clone();
+        let author = self.author.key();
         let actor = actor.unwrap_or(&author);
         let translated = self.bound_publication.target(&address.address)?;
         if translated
@@ -7241,7 +7241,7 @@ impl FrameHarness {
                     }
                     crate::bound_dispatch::ControlContinuationArguments::Immediate => None,
                 };
-                let author = self.author.0.clone();
+                let author = self.author.key();
                 self.invoke_local_target(
                     &request.target,
                     &crate::host_core::ResourceInvocation::new(&request.address, &author)
@@ -8230,7 +8230,7 @@ impl FrameHarness {
         .and_then(|snapshots| crate::bound_dispatch::select_bound_target(&snapshots, address, None))
         .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
         let argument = crate::host_core::json_argument(arguments);
-        let author = self.author.0.clone();
+        let author = self.author.key();
         let request = crate::host_core::ResourceInvocation::new(address, &author)
             .argument(Some(&argument))
             .confirmed(confirmed);
@@ -8686,7 +8686,7 @@ impl crate::host_core::KeyHost for FrameHarness {
 }
 
 impl crate::host_core::ControlHost for FrameHarness {
-    fn local_author(&self) -> &crate::permissions::UserId {
+    fn local_author(&self) -> &crate::permissions::MemberId {
         &self.author
     }
 
@@ -8799,7 +8799,7 @@ impl crate::host_core::ControlHost for FrameHarness {
         let argument = request.argument;
         let confirmed = request.confirmation_satisfied;
         let invocation = request.invocation.unwrap_or_default();
-        let resources = self.outer_resources(address, request.actor == self.author.0);
+        let resources = self.outer_resources(address, request.actor == self.author.key());
         let (arguments, resource, spec) = crate::bound_dispatch::resolve_resource_invocation(
             &resources, address, argument, None, confirmed,
         )?;
@@ -8835,7 +8835,7 @@ impl crate::host_core::ControlHost for FrameHarness {
                 spec,
                 encoded,
                 actor: request.actor,
-                local_author: &self.author.0,
+                local_author: &self.author.key(),
                 broker_admitted: request.broker_admitted,
                 invocation,
                 source_invocation: None,
@@ -8849,7 +8849,7 @@ impl crate::host_core::ControlHost for FrameHarness {
                 before,
                 None,
                 None,
-                Some(crate::permissions::UserId(request.actor.to_owned())),
+                crate::permissions::MemberId::parse(request.actor),
             );
         }
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
@@ -8945,7 +8945,7 @@ mod tests {
             (400, 200),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("reader".into()),
+            crate::permissions::MemberId::person("reader"),
         );
         assert!(
             frame.component_record().is_none(),
@@ -9122,7 +9122,7 @@ mod tests {
         let key = crate::presence::capability::presence_key(&field)
             .expect("a text field publishes where its caret is");
         let mut frame = FrameHarness::for_root(State::new(), field, (480, 160), Theme::default());
-        let peer = crate::permissions::UserId("claude".into());
+        let peer = crate::permissions::MemberId::person("claude");
         frame
             .presence_mut()
             .set_display_name(peer.clone(), "Claude Code");
@@ -9198,7 +9198,7 @@ mod tests {
             (900, 650),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         frame.focus_trap_active = true;
         visits.set(0);
@@ -9221,7 +9221,7 @@ mod tests {
             (900, 650),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         let live_rows = |order: Vec<NodeId>| {
             order
@@ -9381,7 +9381,7 @@ mod tests {
             (400, 200),
             Theme::dark(),
             TextRenderer::with_browser_font_system(fonts),
-            crate::permissions::UserId("font-test".into()),
+            crate::permissions::MemberId::person("font-test"),
         );
         assert_eq!(
             driver.take_browser_font_demands(),
@@ -9442,7 +9442,7 @@ mod tests {
 
     #[test]
     fn controlled_managed_root_installs_history_and_explicit_author() {
-        let author = crate::permissions::UserId("controlled-history-author".into());
+        let author = crate::permissions::MemberId::person("controlled-history-author");
         let mut state = State::new();
         state
             .doc
@@ -9479,7 +9479,7 @@ mod tests {
             (640, 480),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         frame.set_platform_conventions(crate::platform::PlatformConventions::new(
             crate::platform::Platform::Linux,
@@ -9510,7 +9510,7 @@ mod tests {
             (320, 180),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         frame.set_platform_conventions(crate::platform::PlatformConventions::new(
             crate::platform::Platform::Linux,
@@ -9559,7 +9559,7 @@ mod tests {
             (320, 180),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         frame.set_platform_conventions(crate::platform::PlatformConventions::new(
             crate::platform::Platform::MacOs,
@@ -9663,7 +9663,7 @@ mod tests {
             (320, 180),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         frame
             .perform_named("name", &crate::a11y::Action::Focus)
@@ -9784,7 +9784,7 @@ mod tests {
             (320, 180),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         frame
             .action_registry_mut()
@@ -9822,7 +9822,7 @@ mod tests {
                 (600, 400),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("anonymous-test".into()),
+                crate::permissions::MemberId::person("anonymous-test"),
             );
             let old = driver.focused.unwrap();
             // A plain relayout retains the composition; force the rebuild this scenario is about,
@@ -9861,7 +9861,7 @@ mod tests {
                 (600, 400),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("fixture".into()),
+                crate::permissions::MemberId::person("fixture"),
             );
             assert!(driver.focused.is_none());
             driver.relayout();
@@ -10215,7 +10215,7 @@ mod tests {
             (600, 400),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("retired-node-test".into()),
+            crate::permissions::MemberId::person("retired-node-test"),
         );
         let before = driver
             .node_map
@@ -10254,7 +10254,7 @@ mod tests {
             (600, 400),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("structure-focus-test".into()),
+            crate::permissions::MemberId::person("structure-focus-test"),
         );
         driver
             .perform_named(
@@ -11048,7 +11048,7 @@ mod tests {
                 (400, 200),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("fixture-user".into()),
+                crate::permissions::MemberId::person("fixture-user"),
             );
             let rect = driver.targets()["field"];
             let (x, y) = (rect.x0 + 24.0, rect.center().y);
@@ -11087,7 +11087,7 @@ mod tests {
                 (400, 200),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("fixture-user".into()),
+                crate::permissions::MemberId::person("fixture-user"),
             );
 
             driver
@@ -11124,7 +11124,7 @@ mod tests {
                 (400, 200),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("task-4-fixture-author".into()),
+                crate::permissions::MemberId::person("task-4-fixture-author"),
             );
 
             driver
@@ -11345,7 +11345,7 @@ mod tests {
                     (400, 200),
                     Theme::dark(),
                     crate::font_catalog::fixture_renderer(),
-                    crate::permissions::UserId("reader".into()),
+                    crate::permissions::MemberId::person("reader"),
                 );
                 if closed {
                     host.close_components();
@@ -11415,7 +11415,7 @@ mod tests {
                 (400, 200),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("reader".into()),
+                crate::permissions::MemberId::person("reader"),
             );
             observed.enqueue("run");
             host.dispatch_control_invocations();
@@ -11436,7 +11436,7 @@ mod tests {
                     (400, 200),
                     Theme::dark(),
                     crate::font_catalog::fixture_renderer(),
-                    crate::permissions::UserId("reader".into()),
+                    crate::permissions::MemberId::person("reader"),
                 );
                 observed.enqueue("run");
                 host.dispatch_control_invocations();
@@ -11468,7 +11468,7 @@ mod tests {
                 (400, 200),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("reader".into()),
+                crate::permissions::MemberId::person("reader"),
             );
             observed.enqueue("run");
             let readonly = crate::permissions::PermissionContext::member(
@@ -11565,7 +11565,7 @@ mod tests {
             (400, 200),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
+            crate::permissions::MemberId::person("fixture-user"),
         );
         let order = driver.focus_order();
         assert_eq!(order.len(), 2);
@@ -11589,7 +11589,7 @@ mod tests {
             (400, 200),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
+            crate::permissions::MemberId::person("fixture-user"),
         );
         let enabled = driver.named_target_nodes()["enabled"];
         let disabled = driver.named_target_nodes()["disabled"];
@@ -11637,7 +11637,7 @@ mod tests {
             (800, 800),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
+            crate::permissions::MemberId::person("fixture-user"),
         );
         driver
             .perform_named("background", &crate::a11y::Action::Focus)
@@ -11701,7 +11701,7 @@ mod tests {
             (400, 200),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
+            crate::permissions::MemberId::person("fixture-user"),
         );
         driver
             .perform_named("background", &crate::a11y::Action::Focus)
@@ -11739,7 +11739,7 @@ mod tests {
             (400, 200),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
+            crate::permissions::MemberId::person("fixture-user"),
         );
         driver
             .perform_named("second", &crate::a11y::Action::Focus)
@@ -11805,7 +11805,7 @@ mod tests {
             (400, 200),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
+            crate::permissions::MemberId::person("fixture-user"),
         );
         assert!(
             driver
@@ -11944,7 +11944,7 @@ mod a11y_driver_tests {
                 (800, 600),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("fixture-user".into()),
+                crate::permissions::MemberId::person("fixture-user"),
             ),
             activated,
             items,
@@ -12200,7 +12200,7 @@ mod undo_driver_tests {
             (400, 120),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("task-4-fixture-author".into()),
+            crate::permissions::MemberId::person("task-4-fixture-author"),
         )
     }
 
@@ -12477,7 +12477,7 @@ mod dispatched_action_driver_tests {
             (400, 120),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("task-4-fixture-author".into()),
+            crate::permissions::MemberId::person("task-4-fixture-author"),
         )
     }
 
@@ -12494,7 +12494,7 @@ mod dispatched_action_driver_tests {
     fn dispatched_actions_are_undoable_through_every_input_path() {
         {
             use automerge::transaction::Transactable;
-            let author = crate::permissions::UserId("lazy-status-author".into());
+            let author = crate::permissions::MemberId::person("lazy-status-author");
             let mut state = State::new();
             state.doc.put(automerge::ROOT, "value", "first").unwrap();
             assert!(state.commit_action_authored(None, None, Some(author.clone())));
@@ -12751,7 +12751,7 @@ mod ordinary_confirmation_owner_tests {
                 (900, 650),
                 crate::Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("fixture".into()),
+                crate::permissions::MemberId::person("fixture"),
             )
             .unwrap();
             driver

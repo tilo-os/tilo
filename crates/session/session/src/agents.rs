@@ -238,9 +238,10 @@ impl Agents {
         }
         let opened = open.entry(workspace.to_owned()).or_insert_with(|| Opened {
             policy: policy.clone(),
-            records: self
-                .records
-                .in_workspace(workspace, ui::permissions::UserId(person.to_owned())),
+            records: self.records.in_workspace(
+                workspace,
+                ui::permissions::MemberId::person(person.to_owned()),
+            ),
             record: None,
         });
         if opened.record.is_none() {

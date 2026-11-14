@@ -557,7 +557,7 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
             device_id: DEVICE.into(),
             instance_id: 41,
             permissions: runner_permissions(),
-            author: collab_types::presence::UserId("probe-author".into()),
+            author: collab_types::MemberId::person("probe-author"),
             action_context: tilo_actions::ActionContext::default(),
         },
         shown,

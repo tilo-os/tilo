@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use js_sys::{Function, Reflect};
 use ui::application::{ComponentRunnerInputs, HostContext};
 use ui::headless::FrameHarness;
-use ui::permissions::{PermissionContext, SharedPermissions, UserId};
+use ui::permissions::{MemberId, PermissionContext, SharedPermissions};
 use ui::record::{RecordCheckout, RecordStore};
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::event::{ElementState, WindowEvent};
@@ -302,7 +302,7 @@ impl Config {
     fn author(&self) -> String {
         self.author
             .clone()
-            .unwrap_or_else(|| ui::collaboration::local_user_id().0)
+            .unwrap_or_else(|| ui::collaboration::local_user_id().key())
     }
 
     /// Carry the agent-door asks of `session` to the person's host, through
@@ -1695,7 +1695,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 viewport.logical_size(),
                 crate::page_theme::current(),
                 text_renderer,
-                UserId(config.author()),
+                MemberId::person(config.author()),
             );
             frame.host_window_slots();
             frame
@@ -1712,7 +1712,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 viewport.logical_size(),
                 crate::page_theme::current(),
                 text_renderer,
-                UserId(config.author()),
+                MemberId::person(config.author()),
             )
         }
     };

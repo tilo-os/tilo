@@ -90,7 +90,7 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
         .content()
         .cloned()
         .unwrap_or_else(tilo_content::ContentStore::memory);
-    let author = context.author().0.clone();
+    let author = context.author().key();
     context.migrate_record(move |doc| apply(doc, entries, &store, &author))?;
     for name in names {
         let _ = tilo_files::blocking::remove(&data, &name);

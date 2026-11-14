@@ -6,7 +6,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
-use ui::permissions::{PermissionContext, Role, SharedPermissions, UserId};
+use ui::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
 use ui::portable_storage::PortableStorage;
 use ui::record::{RecordCheckout, RecordStore};
 
@@ -93,7 +93,7 @@ impl Fixture {
                 device_id: DEVICE.into(),
                 instance_id: instance,
                 permissions: self.authority.clone(),
-                author: UserId("reader".into()),
+                author: MemberId::person("reader"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,

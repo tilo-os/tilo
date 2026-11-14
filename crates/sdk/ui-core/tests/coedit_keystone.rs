@@ -26,7 +26,7 @@ use collab_types::CommitNamed as _;
 
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::UserId;
+use tilo_ui::permissions::MemberId;
 use tilo_ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -375,10 +375,10 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
             &mut b,
             |ev| match ev {
                 CollabEvent::RemotePresenceUpdate {
-                    user_id,
+                    member,
                     payload: PresencePayload::Caret { pos },
                     ..
-                } if user_id == "alice" => Some(*pos),
+                } if *member == MemberId::person("alice") => Some(*pos),
                 _ => None,
             },
         );
@@ -395,10 +395,10 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
             &mut a,
             |ev| match ev {
                 CollabEvent::RemotePresenceUpdate {
-                    user_id,
+                    member,
                     payload: PresencePayload::Caret { pos },
                     ..
-                } if user_id == "bob" => Some(*pos),
+                } if *member == MemberId::person("bob") => Some(*pos),
                 _ => None,
             },
         );
@@ -412,7 +412,7 @@ fn peers_co_edit_converge_share_carets_and_gate_signed_edits() {
         let baseline = render_presence_probe(path.clone(), &no_presence);
 
         let mut with_peer = PresenceCtx::empty();
-        with_peer.set_caret(&key, UserId("alice".into()), 4);
+        with_peer.set_caret(&key, MemberId::person("alice"), 4);
         let with_caret = render_presence_probe(path, &with_peer);
 
         assert_ne!(

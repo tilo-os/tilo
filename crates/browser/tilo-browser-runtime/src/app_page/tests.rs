@@ -243,7 +243,7 @@ tilo_test_env::scenario! {
                     permissions: ui::permissions::SharedPermissions::new(
                         ui::permissions::PermissionContext::permissive(),
                     ),
-                    author: ui::permissions::UserId("ada".into()),
+                    author: ui::permissions::MemberId::person("ada"),
                     action_context: tilo_actions::ActionContext::default(),
                 },
                 &LaunchTarget::Record {

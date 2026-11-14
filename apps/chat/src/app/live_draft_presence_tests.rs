@@ -2,7 +2,7 @@
 
 use super::*;
 use ui::PresencePayload;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 
 fn focused_app(text: &str) -> ChatApp {
     let mut app = ChatApp::new_ephemeral();
@@ -70,8 +70,8 @@ fn someone_writing_here_shows_as_typing() {
         None
     );
     let mut presence = PresenceCtx::empty();
-    presence.set_display_name(UserId("ada".into()), "Ada");
-    presence.set_caret(&key, UserId("ada".into()), 0);
+    presence.set_display_name(MemberId::person("ada"), "Ada");
+    presence.set_caret(&key, MemberId::person("ada"), 0);
     assert_eq!(
         crate::render_chat::typing_line(&presence, &key).as_deref(),
         Some("Ada is typing…")
@@ -79,7 +79,7 @@ fn someone_writing_here_shows_as_typing() {
     let mut elsewhere = PresenceCtx::empty();
     elsewhere.set_caret(
         &ChatApp::draft_presence_key("other"),
-        UserId("ada".into()),
+        MemberId::person("ada"),
         0,
     );
     assert_eq!(crate::render_chat::typing_line(&elsewhere, &key), None);

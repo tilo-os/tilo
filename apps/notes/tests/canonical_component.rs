@@ -149,7 +149,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         doc.commit();
         let before = (doc.base_heads(), doc.pending_ops());
         let mut app =
-            notes::NotesApp::from_document(&doc, &ui::permissions::UserId("same-author".into()))
+            notes::NotesApp::from_document(&doc, &ui::permissions::MemberId::person("same-author"))
                 .unwrap();
         let saved = ui::LocalState::new(RecordSaveStatus::Saved);
         app.follow_save_status(saved.clone());

@@ -18,7 +18,7 @@ use crate::common::{WORKSPACE, catalogue};
 use ui::accesskit;
 use ui::application::{ApplicationHost, ComponentRunnerInputs};
 use ui::headless::FrameHarness;
-use ui::permissions::{PermissionContext, Role, SharedPermissions, UserId};
+use ui::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
 use ui::record::{RecordCheckout, RecordId};
 use ui::widget::empty_state::{PaintedAction, record_painted_actions, take_painted_actions};
 
@@ -39,7 +39,7 @@ fn open(app_id: &str) -> (FrameHarness, tempfile::TempDir) {
         directory.path().join("state"),
         "empty-state-device".into(),
         WORKSPACE,
-        UserId(PERSON.into()),
+        MemberId::person(PERSON),
         permissions,
         tilo_actions::ActionContext::default(),
     )

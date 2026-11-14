@@ -182,7 +182,7 @@ impl crate::host_core::HostCore for App {
             tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::Value::Object(prepared.invocation.arguments.clone())
         );
-        let actor = self.collaboration.local_author.0.clone();
+        let actor = self.collaboration.local_author.key();
         match prepared.target {
             LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(
                 &target,

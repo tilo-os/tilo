@@ -517,16 +517,16 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             "KeyAccess"
         }
-        CollabEvent::RemoteCursorMoved { user_id, .. } => {
-            meter.string_capacity(user_id);
+        CollabEvent::RemoteCursorMoved { member, .. } => {
+            meter.string_capacity(member_string(member));
             "RemoteCursorMoved"
         }
         CollabEvent::RemotePresenceUpdate {
-            user_id,
+            member,
             key,
             payload,
         } => {
-            meter.string_capacity(user_id);
+            meter.string_capacity(member_string(member));
             serialized_bytes(key, &mut meter);
             presence_payload_bytes(payload, &mut meter);
             "RemotePresenceUpdate"
@@ -711,4 +711,11 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         }
     };
     (kind, meter.finish())
+}
+
+fn member_string(member: &collab_types::MemberId) -> &String {
+    let (collab_types::MemberId::Person(id)
+    | collab_types::MemberId::Agent(id)
+    | collab_types::MemberId::Bot(id)) = member;
+    id
 }

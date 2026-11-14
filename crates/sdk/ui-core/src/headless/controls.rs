@@ -175,7 +175,8 @@ impl FrameHarness {
     /// Where this frame shows `actor`'s caret or selection in text: the widget that draws it and its
     /// box, when a text widget here reports it.
     fn text_locus(&self, actor: &str) -> Option<(*const dyn Widget, Rect)> {
-        let (key, range) = crate::presence::capability::actor_text_range(&self.presence, actor)?;
+        let actor = crate::permissions::MemberId::parse(actor)?;
+        let (key, range) = crate::presence::capability::actor_text_range(&self.presence, &actor)?;
         crate::presence::capability::range_locus(self.root.as_ref(), &self.theme, key, range)
     }
 
@@ -970,10 +971,9 @@ mod locus_tests {
             .expect("the clock is later than a second ago");
         let mut label = String::new();
         frame.update_presence(|presence| {
-            presence.names.insert(
-                crate::permissions::UserId("agent:scribe".into()),
-                "Ada".into(),
-            );
+            presence
+                .names
+                .insert(crate::permissions::MemberId::agent("scribe"), "Ada".into());
             let applied = presence
                 .apply_interaction_at(event.clone(), at)
                 .expect("a well-formed interaction applies");
@@ -1354,7 +1354,11 @@ mod locus_tests {
         let written = 13;
         let block = crate::widget::block_editor::block_presence_key("p-33");
         frame.update_presence(|presence| {
-            presence.set_remote_caret("agent:scribe".into(), block.clone(), written);
+            presence.set_caret(
+                &block.clone(),
+                crate::permissions::MemberId::agent("scribe"),
+                written,
+            );
             true
         });
         let viewport = Rect::new(0.0, 0.0, 400.0, 240.0);
@@ -1401,7 +1405,7 @@ mod locus_tests {
         let event = agent_acting(&mut frame, "notes.document:root");
         frame.update_presence(|presence| {
             let block = crate::widget::block_editor::block_presence_key("p-33");
-            presence.set_remote_caret("agent:scribe".into(), block, 13);
+            presence.set_caret(&block, crate::permissions::MemberId::agent("scribe"), 13);
             true
         });
         let said = crate::presence::capability::subtree_presence(frame.root.as_ref());
@@ -1508,7 +1512,7 @@ mod locus_tests {
             first[0].marker, arrived[0].marker,
             "published bounds follow the animated paint, not the target"
         );
-        presence.unregister_peer(&event.actor.by.key());
+        presence.unregister_peer(event.actor.member_id().unwrap());
         let retired = crate::action_locus::draw_action_presence(
             &mut crate::paint::PaintCtx::new(
                 &mut scene,

@@ -8,7 +8,6 @@
 
 use collab_types::presence::Shown;
 use tilo_live::presence::{KEEPALIVE_MS, Tile, tile};
-use ui::permissions::UserId;
 use ui::presence::{CursorChats, PeerCursor, PlacedPointer, PresenceCtx};
 use ui::time::Instant;
 use ui::tokens::EffectiveMotion;
@@ -80,7 +79,9 @@ pub fn pointers<S: std::hash::BuildHasher>(
         pointers.leaving = Some(pointers.leaving.map_or(heard + POINTER_STALE_MS, |asked| {
             asked.min(heard + POINTER_STALE_MS)
         }));
-        let user = UserId(member.publisher.clone());
+        let Some(user) = member.member_id() else {
+            continue;
+        };
         chats.say(
             &user,
             member
@@ -100,7 +101,6 @@ pub fn pointers<S: std::hash::BuildHasher>(
             user,
             at: tile.point((x, y)),
             name: Some(member.label.clone()),
-            agent: member.agent,
             activity: member.activity.clone(),
             chat,
             reaction,
@@ -209,6 +209,7 @@ mod tests {
     fn pointing(publisher: &str, label: &str, tab: u64, age_ms: f64) -> Shown {
         Shown {
             publisher: publisher.to_owned(),
+            user: Some(format!("{publisher}-person")),
             label: label.to_owned(),
             pointer: Some(ShownPoint {
                 tab: tab.to_string(),

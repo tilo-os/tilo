@@ -1344,7 +1344,7 @@ mod tests {
                 WorkspaceRecords::in_workspace(
                     RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new())),
                     workspace.into(),
-                    crate::permissions::UserId("ada".into()),
+                    crate::permissions::MemberId::person("ada"),
                 )
             };
             let emoji = |doc: &AutoCommit| {

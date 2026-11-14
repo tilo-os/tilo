@@ -1657,11 +1657,11 @@ impl TabBar {
 
     /// Who a pill's faces show: on the tab in front, everyone in the window; on a tab behind, the
     /// people in that tab, so it shows faces only while someone is in it.
-    fn pill_people(&self, tab: u64, presence: &PresenceCtx) -> Vec<crate::permissions::UserId> {
+    fn pill_people(&self, tab: u64, presence: &PresenceCtx) -> Vec<crate::permissions::MemberId> {
         if tab != self.active_id() {
             return presence.peers_on(&tab_presence_key(tab)).to_vec();
         }
-        let mut people: Vec<crate::permissions::UserId> = Vec::new();
+        let mut people: Vec<crate::permissions::MemberId> = Vec::new();
         for id in std::iter::once(tab).chain(self.tabs.iter().map(|t| t.id)) {
             for user in presence.peers_on(&tab_presence_key(id)) {
                 if !people.contains(user) {
@@ -1763,7 +1763,13 @@ impl TabBar {
             }
             let (red, green, blue) = presence.color_for(user);
             let colour = vello::peniko::Color::from_rgb8(red, green, blue);
-            if presence.is_agent(user) {
+            if user.is_person() {
+                let name = presence.names.get(user).map_or(user.id(), String::as_str);
+                crate::widget::AvatarFace::new(name, "")
+                    .presence(colour)
+                    .ringed_on(ring)
+                    .paint(ctx, rect);
+            } else {
                 let theme = ctx.theme;
                 let ring_px = f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0;
                 ctx.scene.fill(
@@ -1784,15 +1790,6 @@ impl TabBar {
                     theme,
                     crate::agent_identity::AgentIdentityStyle::Solid,
                 );
-            } else {
-                let name = presence
-                    .names
-                    .get(user)
-                    .map_or(user.0.as_str(), String::as_str);
-                crate::widget::AvatarFace::new(name, "")
-                    .presence(colour)
-                    .ringed_on(ring)
-                    .paint(ctx, rect);
             }
             if dimmed {
                 ctx.scene.pop_layer();
@@ -7200,8 +7197,8 @@ mod tests {
                     let mut presence = PresenceCtx::default();
                     if with_peer {
                         presence.register_peer_at(
-                            "ada".to_string(),
-                            PresenceKey::Tab {
+                            crate::permissions::MemberId::person("ada"),
+                            &PresenceKey::Tab {
                                 id: "2".to_string(),
                             },
                         );
@@ -7254,13 +7251,12 @@ mod tests {
                     let mut presence = PresenceCtx::default();
                     for peer in ["ada", "bot", "cy", "dee", "eve"] {
                         presence.register_peer_at(
-                            peer.to_string(),
-                            PresenceKey::Tab {
+                            crate::permissions::MemberId::person(peer),
+                            &PresenceKey::Tab {
                                 id: "2".to_string(),
                             },
                         );
                     }
-                    presence.set_participant_kind(crate::permissions::UserId("bot".into()), true);
                     b.draw(
                         &mut Scene::new(),
                         Affine::IDENTITY,
@@ -7315,11 +7311,11 @@ mod tests {
                 );
                 let mut presence = PresenceCtx::default();
                 presence.register_peer_at(
-                    "ada".to_string(),
-                    PresenceKey::Tab {
-                        id: "2".to_string(),
-                    },
-                );
+                            crate::permissions::MemberId::person("ada"),
+                            &PresenceKey::Tab {
+                                id: "2".to_string(),
+                            },
+                        );
                 assert_eq!(
                     bar.pill_people(1, &presence).len(),
                     1,
@@ -7372,11 +7368,11 @@ mod tests {
                 let content = PILL_PAD_X + b.leading_zone(1) + b.shaped_title_width(1) + reserve;
                 let mut presence = PresenceCtx::default();
                 presence.register_peer_at(
-                    "ada".to_string(),
-                    PresenceKey::Tab {
-                        id: "2".to_string(),
-                    },
-                );
+                            crate::permissions::MemberId::person("ada"),
+                            &PresenceKey::Tab {
+                                id: "2".to_string(),
+                            },
+                        );
                 draw_at(&mut b, content.max(PILL_MIN_PX), &presence);
                 assert!(b.face_demand_stale, "a new peer asks for a relayout");
                 let one = PillFaces {

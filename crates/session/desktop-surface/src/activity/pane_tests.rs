@@ -1867,7 +1867,7 @@ mod tests {
         assert_eq!(pane.serve_replay().frames.len(), pane.replay_frames.len());
 
         let mut presence = PresenceCtx::empty();
-        let ada = ui::permissions::UserId("ada".into());
+        let ada = MemberId::person("ada");
         presence.names.insert(ada.clone(), "Ada".into());
         presence.set_pointer(
             &ui::presence::PresenceKey::shell_pointer("design-workspace"),

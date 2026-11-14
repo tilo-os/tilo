@@ -4,21 +4,19 @@
 //! and colour a native shell draws them with, never by a second renderer.
 
 use super::{ChatBubble, PeerCursor, PresenceCtx, ReactionFloat};
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 use vello::peniko::Color;
 
 /// One placed pointer as the host hands it over.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlacedPointer {
-    /// Who points: the id presence names them by (their live publisher).
-    pub user: UserId,
+    /// Who points.
+    pub user: MemberId,
     /// Where, in the surface's logical pixels.
     pub at: (f64, f64),
     /// The name their own presence gives, for someone presence does not
     /// name yet.
     pub name: Option<String>,
-    /// Whether their presence says they are an agent.
-    pub agent: bool,
     /// What an agent is doing, shown after its name.
     pub activity: Option<String>,
     /// What they are saying beside their pointer.
@@ -34,13 +32,13 @@ impl PresenceCtx {
     /// own presence gives, else a guest: never their key.
     #[must_use]
     pub fn placed_cursor(&self, placed: PlacedPointer) -> PeerCursor {
-        let is_agent = placed.agent || self.is_agent(&placed.user);
+        let is_agent = !placed.user.is_person();
         // An agent's tag carries the agent mark, so its name stands alone.
         let known = if is_agent {
-            super::stored(&self.names, &placed.user).cloned()
+            self.names.get(&placed.user).cloned()
         } else {
-            super::stored(&self.names, &placed.user)
-                .is_some()
+            self.names
+                .contains_key(&placed.user)
                 .then(|| self.display_name(&placed.user))
         };
         let name = known
@@ -76,10 +74,9 @@ mod tests {
 
     fn placed(user: &str) -> PlacedPointer {
         PlacedPointer {
-            user: UserId(user.into()),
+            user: MemberId::person(user),
             at: (40.0, 50.0),
             name: None,
-            agent: false,
             activity: Some("Reading the notes".into()),
             chat: None,
             reaction: None,
@@ -94,7 +91,7 @@ mod tests {
         // it reads as the same person as their avatar.
         {
             let mut presence = PresenceCtx::empty();
-            let ada = UserId("ada-device".into());
+            let ada = MemberId::person("ada-device");
             presence.set_display_name(ada.clone(), "Ada");
             presence.set_color_override(ada.clone(), "#38b8f6");
             let cursor = presence.placed_cursor(placed("ada-device"));
@@ -110,10 +107,12 @@ mod tests {
         phase an_agent_says_what_it_does_and_an_unnamed_member_is_not_a_raw_key;
         {
             let mut presence = PresenceCtx::empty();
-            let bot = UserId("bot".into());
+            let bot = MemberId::agent("bot");
             presence.set_display_name(bot.clone(), "Scribe");
-            presence.set_participant_kind(&bot, true);
-            let cursor = presence.placed_cursor(placed("bot"));
+            let cursor = presence.placed_cursor(PlacedPointer {
+                user: bot,
+                ..placed("bot")
+            });
             assert_eq!(cursor.label, "Scribe · Reading the notes");
             assert!(cursor.is_agent);
 
@@ -126,8 +125,8 @@ mod tests {
             });
             assert_eq!(keyed.label, "Guest", "a key their presence says is no name");
             let named = presence.placed_cursor(PlacedPointer {
+                user: MemberId::agent(key),
                 name: Some("Ada".into()),
-                agent: true,
                 ..placed(key)
             });
             assert_eq!(
@@ -143,9 +142,9 @@ mod tests {
                 },
                 "without a colour from the workspace, the identity's own"
             );
-            presence.set_display_name(UserId(key.into()), key);
+            presence.set_display_name(MemberId::person(key), key);
             assert_eq!(
-                presence.display_name(&UserId(key.into())),
+                presence.display_name(&MemberId::person(key)),
                 "Guest",
                 "nor is a key the roster says"
             );

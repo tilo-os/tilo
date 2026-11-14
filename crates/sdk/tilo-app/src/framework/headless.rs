@@ -19,7 +19,7 @@ use ui_core::application::{
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::{PermissionContext, Role, SharedPermissions, UserId};
+use ui_core::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
 
 pub(super) const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordId, RecordStore};
@@ -112,7 +112,7 @@ pub const DATA_DIR_WORKSPACE: &str = "a7d3e1f4-6b28-4c05-9e3a-71f2b8c4d590";
 /// way the app does.
 pub(crate) fn data_dir_host(
     directory: &std::path::Path,
-    author: &UserId,
+    author: &MemberId,
     permissions: SharedPermissions,
 ) -> Result<ApplicationHost, LaunchError> {
     ApplicationHost::new(
@@ -2147,7 +2147,7 @@ struct Opened {
 /// takes.
 fn profile_host(
     profile: &Profile,
-    author: UserId,
+    author: MemberId,
     permissions: &SharedPermissions,
 ) -> Result<(ApplicationHost, u64), LaunchError> {
     Ok(match profile {
@@ -2188,7 +2188,7 @@ fn open_app(
         split_command_line(&private_arguments, opening.options, opening.flags);
     let arguments = arguments.as_slice();
     let person = launch.author.to_owned();
-    let author = UserId(person.clone());
+    let author = MemberId::person(person.clone());
     let permissions = role_permissions(&person, launch.role);
     let host_phase = tilo_resource::profiling::Phase::start("start.host");
     let (mut host, instance) = profile_host(&profile, author, &permissions)?;

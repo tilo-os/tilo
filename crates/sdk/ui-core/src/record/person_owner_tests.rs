@@ -23,7 +23,7 @@ tilo_test_env::scenario! {
     phase cross_app_person_records_read_current_original_writer_without_replica_or_file_reopen;
     {
         let root = std::env::temp_dir().join(format!("tilo-person-owner-{}", uuid::Uuid::new_v4()));
-        let author = UserId("11".repeat(32));
+        let author = MemberId::person("11".repeat(32));
         let mut owners = RecordOwners::new(root.clone());
         let settings = PersonRecords::open(&mut owners, "so.tilo.settings", author.clone()).unwrap();
         let kind = RecordKind::new("synthetic.accounts");
@@ -86,7 +86,7 @@ tilo_test_env::scenario! {
 
     phase canonical_edit_refuses_a_replica_without_initializing_shadow_state;
     {
-        let records = PersonRecords::replica("so.tilo.settings", UserId("11".repeat(32))).unwrap();
+        let records = PersonRecords::replica("so.tilo.settings", MemberId::person("11".repeat(32))).unwrap();
         let initialized = std::cell::Cell::new(0);
         let result = records.open_original_record(RecordKind::new("synthetic.accounts"), |_| {
             initialized.set(initialized.get() + 1);

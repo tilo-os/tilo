@@ -1,5 +1,5 @@
 use crate::application::InstanceId;
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 use automerge::{ActorId, AutoCommit, ChangeHash, ObjId};
 use std::collections::HashSet;
 use tilo_automerge::ApplyIncoming;
@@ -296,7 +296,7 @@ impl State {
         &mut self,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: Option<UserId>,
+        author: Option<MemberId>,
     ) -> bool {
         self.undo
             .commit_action_authored(&mut self.doc, focused_node_idx, metadata, author)
@@ -306,7 +306,7 @@ impl State {
         &mut self,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: Option<UserId>,
+        author: Option<MemberId>,
         context: Option<tilo_actions::ActionContext>,
     ) -> bool {
         self.undo.commit_action_authored_with_message(
@@ -329,17 +329,17 @@ impl State {
     }
 
     /// Whether `author` has anything to undo / redo.
-    pub fn can_undo_as(&self, author: Option<&UserId>) -> bool {
+    pub fn can_undo_as(&self, author: Option<&MemberId>) -> bool {
         self.undo.can_undo_as(&self.doc, author)
     }
 
-    pub fn can_redo_as(&self, author: Option<&UserId>) -> bool {
+    pub fn can_redo_as(&self, author: Option<&MemberId>) -> bool {
         self.undo.can_redo_as(&self.doc, author)
     }
 
     /// What the history can do for `author` right now, ready to hand to a widget — see
     /// [`UndoStatus`](crate::undo::UndoStatus).
-    pub fn undo_status(&self, author: Option<&UserId>) -> crate::undo::UndoStatus {
+    pub fn undo_status(&self, author: Option<&MemberId>) -> crate::undo::UndoStatus {
         crate::undo::status_snapshot(&self.doc, &self.undo, author)
     }
 
@@ -364,7 +364,7 @@ impl State {
         before: Vec<ChangeHash>,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: Option<UserId>,
+        author: Option<MemberId>,
     ) -> bool {
         self.undo.record_committed_action_authored(
             &mut self.doc,
@@ -384,7 +384,7 @@ impl State {
         target_heads: &[ChangeHash],
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: Option<UserId>,
+        author: Option<MemberId>,
     ) -> bool {
         self.undo.restore_to_heads(
             &mut self.doc,
@@ -410,7 +410,7 @@ impl State {
     /// the plain LIFO behaviour.
     pub fn undo_as(
         &mut self,
-        author: Option<&UserId>,
+        author: Option<&MemberId>,
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
@@ -422,7 +422,7 @@ impl State {
     /// re-apply an action the local user never undid.
     pub fn redo_as(
         &mut self,
-        author: Option<&UserId>,
+        author: Option<&MemberId>,
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
@@ -1066,7 +1066,7 @@ mod tests {
             assert!(state.commit_action_authored_with_context(
                 None,
                 None,
-                Some(UserId("ada".into())),
+                Some(MemberId::person("ada")),
                 Some(context.clone()),
             ));
             let changes = state.doc.get_changes(&[]);
@@ -1138,7 +1138,7 @@ mod tests {
         }
     }
 
-    use crate::permissions::UserId;
+    use crate::permissions::MemberId;
     use automerge::{ObjType, ROOT};
 
     fn text_body(state: &State, obj: &ObjId) -> String {
@@ -1254,16 +1254,16 @@ mod tests {
             let mut state = State::new();
             // Alice sets a=1.
             state.doc.put(&ROOT, "a", 1).unwrap();
-            state.commit_action_authored(None, None, Some(UserId("alice".into())));
+            state.commit_action_authored(None, None, Some(MemberId::person("alice")));
             // Bob sets b=1.
             state.doc.put(&ROOT, "b", 1).unwrap();
-            state.commit_action_authored(None, None, Some(UserId("bob".into())));
+            state.commit_action_authored(None, None, Some(MemberId::person("bob")));
 
             // Alice undoes — only "a" is reverted; Bob's "b" stays in the doc.
             let popped = state
-                .undo_as(Some(&UserId("alice".into())), None, None)
+                .undo_as(Some(&MemberId::person("alice")), None, None)
                 .expect("alice's entry");
-            assert_eq!(popped.author, Some(UserId("alice".into())));
+            assert_eq!(popped.author, Some(MemberId::person("alice")));
             assert!(
                 state.doc.get(&ROOT, "a").unwrap().is_none(),
                 "alice's change reverted in the live doc"
@@ -1280,8 +1280,8 @@ mod tests {
         // to the local user's own — not like plain LIFO undo.
         {
             let mut state = State::new();
-            let alice = UserId("alice".into());
-            let bob = UserId("bob".into());
+            let alice = MemberId::person("alice");
+            let bob = MemberId::person("bob");
 
             state.doc.put(&ROOT, "a", 1).unwrap();
             state.commit_action_authored(None, None, Some(alice.clone()));
@@ -1329,8 +1329,8 @@ mod tests {
         // Alice's Ctrl+Y.
         {
             let mut state = State::new();
-            let alice = UserId("alice".into());
-            let bob = UserId("bob".into());
+            let alice = MemberId::person("alice");
+            let bob = MemberId::person("bob");
 
             state.doc.put(&ROOT, "a", 1).unwrap();
             state.commit_action_authored(None, None, Some(alice.clone()));
@@ -1413,15 +1413,20 @@ mod tests {
         }
     }
 
-    fn alice() -> crate::permissions::UserId {
-        crate::permissions::UserId("alice".into())
+    fn alice() -> crate::permissions::MemberId {
+        MemberId::person("alice")
     }
 
-    fn bob() -> crate::permissions::UserId {
-        crate::permissions::UserId("bob".into())
+    fn bob() -> crate::permissions::MemberId {
+        MemberId::person("bob")
     }
 
-    fn type_action(state: &mut State, key: &str, text: &str, author: &crate::permissions::UserId) {
+    fn type_action(
+        state: &mut State,
+        key: &str,
+        text: &str,
+        author: &crate::permissions::MemberId,
+    ) {
         let obj = state
             .doc
             .put_object(&automerge::ROOT, key, automerge::ObjType::Text)

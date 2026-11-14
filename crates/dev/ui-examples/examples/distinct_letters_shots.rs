@@ -12,7 +12,7 @@ use vello::kurbo::Affine;
 use tilo_ui::font_catalog::FontCatalog;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::UserId;
+use tilo_ui::permissions::MemberId;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::{TextRole, UiFace};
@@ -183,7 +183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 viewport,
                 theme,
                 TextRenderer::with_font_catalog(&catalog)?,
-                UserId("specimen".into()),
+                MemberId::person("specimen"),
             );
             let state = if on { "on" } else { "off" };
             let out = dir.join(format!("{stem}-{face_name}-{state}.png"));

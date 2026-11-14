@@ -27,7 +27,7 @@ mod ordinary_confirmation;
 use deferred_intent::validate_deferred_arguments;
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
 
-use crate::permissions::{PermissionContext, SharedPermissions, UserId};
+use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
 use crate::published::SharedResource;
 use crate::record::{RecordCheckout, RecordOpenError, RecordStore};
 use crate::wake::{WakeHandle, WakeScopeGuard};
@@ -3026,7 +3026,7 @@ pub(crate) fn invoke_resource_action(
                     if spec.kind == tilo_actions::OperationKind::View
                         && !crate::invocation_scope::view_operation_permitted(
                             actor,
-                            binding.author.0.as_str(),
+                            binding.author.key().as_str(),
                             &spec.contract,
                         )
                     {
@@ -3075,7 +3075,7 @@ pub(crate) fn invoke_resource_action(
                         argument,
                     )?;
                     let execute = |widget: &mut dyn Widget, doc: &mut AutoCommit, path: &ObjId| {
-                        with_native_text(if actor == binding.author.0 && crate::history_source::authors::agent_principal_name(actor).is_none() { target.input } else { Input::Discrete }, || execute_resource_operation(
+                        with_native_text(if actor == binding.author.key() && crate::history_source::authors::agent_principal_name(actor).is_none() { target.input } else { Input::Discrete }, || execute_resource_operation(
                             widget,
                             doc,
                             path,
@@ -3088,7 +3088,7 @@ pub(crate) fn invoke_resource_action(
                                 spec,
                                 encoded,
                                 actor,
-                                local_author: &binding.author.0,
+                                local_author: &binding.author.key(),
                                 broker_admitted,
                                 invocation,
                                 source_invocation,
@@ -3352,11 +3352,11 @@ pub struct CallbackBinding {
     /// Executing device supplied by the component's HostContext, never its caller.
     pub(crate) device_id: String,
     /// Immutable local person supplied at host preparation, not the action author.
-    pub(crate) host_person: UserId,
+    pub(crate) host_person: MemberId,
     pub(crate) records: RecordStore,
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: SharedPermissions,
-    pub(crate) author: UserId,
+    pub(crate) author: MemberId,
     pub(crate) operation_context: Rc<tilo_actions::ActionContext>,
     /// Edits commit as the author writer on the record
     /// ([`crate::application::HostContext::write_as_author`]).
@@ -3536,7 +3536,7 @@ pub(crate) struct PendingRecordAction {
     instance_id: crate::application::InstanceId,
     owner: Rc<Cell<bool>>,
     before: Vec<ChangeHash>,
-    author: UserId,
+    author: MemberId,
     metadata: Option<String>,
     context: tilo_actions::ActionContext,
     native_text: Option<NativeTextSpan>,
@@ -3557,11 +3557,11 @@ pub(crate) struct RecordActionState {
     pub(crate) invocation_provenance: Rc<RefCell<crate::invocation_scope::InvocationProvenance>>,
     pending: Option<PendingRecordAction>,
     pub(crate) generation: Option<u64>,
-    statuses: HashMap<(UserId, crate::application::InstanceId), crate::undo::UndoStatus>,
+    statuses: HashMap<(MemberId, crate::application::InstanceId), crate::undo::UndoStatus>,
     /// The status last answered per author's window, with where the document, the history and the
     /// pending action stood: a frame asks every time, and it changes only when one of them moves.
     answered: HashMap<
-        (UserId, crate::application::InstanceId),
+        (MemberId, crate::application::InstanceId),
         (
             crate::state::HistoryMoment,
             bool,
@@ -3605,7 +3605,7 @@ impl RecordActionState {
         let mut statuses = self
             .statuses
             .iter()
-            .map(|((author, instance), status)| (author.0.clone(), *instance, status.clone()))
+            .map(|((author, instance), status)| (author.key(), *instance, status.clone()))
             .collect::<Vec<_>>();
         statuses.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
         statuses
@@ -4069,7 +4069,7 @@ impl ActionFrame {
     fn status(
         &mut self,
         doc: &AutoCommit,
-        author: &UserId,
+        author: &MemberId,
         instance: crate::application::InstanceId,
     ) -> crate::undo::UndoStatus {
         let key = (author.clone(), instance);
@@ -4096,7 +4096,7 @@ impl ActionFrame {
     fn pending_undo(
         &self,
         doc: &AutoCommit,
-        author: &UserId,
+        author: &MemberId,
         instance: crate::application::InstanceId,
     ) -> bool {
         self.state.pending.as_ref().is_some_and(|pending| {
@@ -4113,7 +4113,7 @@ impl ActionFrame {
     fn status_now(
         &mut self,
         doc: &AutoCommit,
-        author: &UserId,
+        author: &MemberId,
         instance: crate::application::InstanceId,
     ) -> crate::undo::UndoStatus {
         let undo = self.history.next_undo_in(doc, author, instance);
@@ -4184,7 +4184,7 @@ impl ActionFrame {
 
     fn writer_of(&self, binding: &CallbackBinding) -> automerge::ActorId {
         if binding.writes_as_author {
-            crate::record::author_writer(&self.writer, &binding.author.0)
+            crate::record::author_writer(&self.writer, &binding.author.key())
         } else {
             self.writer.clone()
         }
@@ -4336,7 +4336,7 @@ impl CallbackBinding {
     pub(crate) fn authored_context(&self) -> tilo_actions::ActionContext {
         let mut context = (*self.operation_context).clone();
         if context.invoker.is_none() {
-            context.invoker = Some(tilo_actions::ActionInvoker::person(self.author.0.clone()));
+            context.invoker = Some(tilo_actions::ActionInvoker::person(self.author.key()));
         }
         context
     }
@@ -4715,7 +4715,7 @@ impl CallbackBinding {
             _scope: ExecutingHostScope::enter(self.lifetime_id),
             _actor: tilo_resource::action::RecordActorScope::enter(
                 crate::invocation_scope::current_invoker()
-                    .map_or_else(|| self.author.0.clone(), |invoker| invoker.key()),
+                    .map_or_else(|| self.author.key(), |invoker| invoker.key()),
             ),
         })
     }

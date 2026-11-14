@@ -127,7 +127,7 @@ fn mount_page(apps: &[PageApp]) -> (ui::headless::FrameHarness, DesktopHandle) {
         DESK,
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     desk.set_caller_palette_enabled(false);
     desk.relayout();

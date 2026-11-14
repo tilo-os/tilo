@@ -534,7 +534,7 @@ pub enum Receipt {
 pub enum Event {
     /// Another participant's presence, attributed by the host.
     Presence {
-        user_id: String,
+        member: collab_types::MemberId,
         presence: PeerPresence,
     },
     /// A signed document change, as the postcard bytes of its
@@ -647,7 +647,7 @@ mod tests {
             let event = HostFrame::Event {
                 subscription: 7,
                 event: Event::Presence {
-                    user_id: "peer".into(),
+                    member: collab_types::MemberId::person("peer"),
                     presence: PeerPresence {
                         key: vec![],
                         payload: PeerPresencePayload::Left,

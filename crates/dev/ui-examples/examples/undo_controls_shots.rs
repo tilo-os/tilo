@@ -12,7 +12,7 @@ use vello::kurbo::{Affine, Point};
 
 use tilo_ui::State;
 use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::permissions::UserId;
+use tilo_ui::permissions::MemberId;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -30,8 +30,8 @@ enum Case {
     Hovered,
 }
 
-fn author() -> UserId {
-    UserId("shots".into())
+fn author() -> MemberId {
+    MemberId::person("shots")
 }
 
 /// One real edit, committed as one action — so the history under test is a

@@ -80,7 +80,7 @@ fn desk() -> (FrameHarness, DesktopHandle, TabId) {
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.set_caller_palette_enabled(false);
     driver.relayout();

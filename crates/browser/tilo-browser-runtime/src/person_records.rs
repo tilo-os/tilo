@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use durable_store::DurableStore;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::record::RecordOwners;
 use ui::record::person::PersonRecords;
 
@@ -52,8 +52,12 @@ pub(crate) fn of(
         if let Some(records) = kept.records.get(&held) {
             return Ok(records.clone());
         }
-        let records = PersonRecords::open(&mut kept.owners, app_id, UserId(author.to_owned()))
-            .map_err(|error| error.to_string())?;
+        let records = PersonRecords::open(
+            &mut kept.owners,
+            app_id,
+            MemberId::person(author.to_owned()),
+        )
+        .map_err(|error| error.to_string())?;
         kept.records.insert(held, records.clone());
         Ok(records)
     })
@@ -71,7 +75,7 @@ pub(crate) fn provide(
     if context.is_private() {
         return Ok(());
     }
-    let records = of(store, context.app_id(), &context.author().0)?;
+    let records = of(store, context.app_id(), &context.author().key())?;
     context.provide_person_records(records);
     Ok(())
 }
@@ -192,7 +196,7 @@ mod tests {
                 permissions: ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::permissive(),
                 ),
-                author: UserId(PERSON.into()),
+                author: MemberId::person(PERSON),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
@@ -264,7 +268,7 @@ mod tests {
             // The page closes; the next one reads what its profile stored.
             KEPT.with_borrow_mut(HashMap::clear);
             let mut owners = RecordOwners::with_store(Rc::clone(&store));
-            let reloaded = PersonRecords::open(&mut owners, APP, UserId(PERSON.into())).unwrap();
+            let reloaded = PersonRecords::open(&mut owners, APP, MemberId::person(PERSON)).unwrap();
             assert_eq!(read(&reloaded).as_deref(), Some("on my way"));
         }
     }

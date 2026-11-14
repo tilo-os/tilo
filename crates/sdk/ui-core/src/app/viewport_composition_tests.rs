@@ -623,7 +623,7 @@ fn harness(state: State, root: ResponsiveRoot, width: u32) -> crate::headless::F
         (width, 400),
         Theme::dark(),
         crate::font_catalog::fixture_renderer(),
-        crate::permissions::UserId("resize-test".into()),
+        crate::permissions::MemberId::person("resize-test"),
     )
 }
 

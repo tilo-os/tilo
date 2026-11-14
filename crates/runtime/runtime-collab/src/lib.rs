@@ -962,12 +962,12 @@ pub enum PresencePayload {
     Left,
 }
 
-/// A single remote presence update: `user_id` is the broker's
+/// A single remote presence update: `member` is the broker's
 /// attribution, `key_bytes` is the postcard of a `ui::PresenceKey`
 /// (opaque to the SDK), `payload` discriminates the variant.
 #[derive(Debug, Clone)]
 pub struct PresenceEvent {
-    pub user_id: String,
+    pub member: collab_types::MemberId,
     pub key_bytes: Vec<u8>,
     pub payload: PresencePayload,
 }

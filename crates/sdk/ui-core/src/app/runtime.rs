@@ -680,7 +680,7 @@ pub(super) struct CollaborationRuntime {
     /// Keeps the workspace record index subscribed while `manager` follows a
     /// checked-out record route.
     pub(super) workspace_manager: Option<CollaborationManager>,
-    pub(super) local_author: crate::permissions::UserId,
+    pub(super) local_author: crate::permissions::MemberId,
     /// A record checkout asks its new route for the current document once
     /// that route is acknowledged.
     pub(super) snapshot_on_ready: bool,
@@ -698,9 +698,9 @@ pub(super) struct CollaborationRuntime {
 impl CollaborationRuntime {
     pub(super) fn new(
         manager: CollaborationManager,
-        local_author: crate::permissions::UserId,
+        local_author: crate::permissions::MemberId,
     ) -> Self {
-        crate::history_source::authors::read_as(&local_author.0);
+        crate::history_source::authors::read_as(&local_author.key());
         Self {
             manager,
             workspace_manager: None,
@@ -724,7 +724,7 @@ impl CollaborationRuntime {
 pub(super) struct PresenceRuntime {
     pub(super) broadcast_scope: Option<PresenceKey>,
     pub(super) pointer_space: Option<crate::presence::PointerSpace>,
-    pub(super) followed_peer: Option<String>,
+    pub(super) followed_peer: Option<crate::permissions::MemberId>,
     pub(super) last_pointer_broadcast: Option<Instant>,
     pub(super) last_focus: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     pub(super) last_location: Option<(PresenceKey, crate::collaboration::PresencePayload)>,

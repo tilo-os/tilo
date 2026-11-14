@@ -43,7 +43,8 @@ fn sidebar_survives_remote_page_added_between_layout_and_draw() {
             parent: None,
         },
     );
-    let app = NotesApp::from_document(&state.doc, &ui::permissions::UserId("me".into())).unwrap();
+    let app =
+        NotesApp::from_document(&state.doc, &ui::permissions::MemberId::person("me")).unwrap();
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
 

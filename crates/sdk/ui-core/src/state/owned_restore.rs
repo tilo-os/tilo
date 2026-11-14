@@ -1,5 +1,5 @@
 //! Exclusive content restore ownership; host admission is supplied separately.
-use super::{InstanceId, State, UndoLog, UserId};
+use super::{InstanceId, MemberId, State, UndoLog};
 use crate::history_mode::restore::{
     PreparedContentRestore, RestoreError, RestoreOutcome, apply_prepared_content_restore,
 };
@@ -11,14 +11,14 @@ pub(crate) use collaboration::state::{OwnedActionAttribution, OwnedActionReceipt
 /// authority grant.
 pub(crate) struct ConfirmedRestore<'a> {
     _authority: &'a PermissionContext,
-    author: UserId,
+    author: MemberId,
     context: tilo_actions::ActionContext,
 }
 impl ConfirmedRestore<'_> {
     #[cfg(test)]
     pub(crate) fn for_test(
         authority: &PermissionContext,
-        author: UserId,
+        author: MemberId,
         context: tilo_actions::ActionContext,
     ) -> ConfirmedRestore<'_> {
         ConfirmedRestore {
@@ -42,7 +42,7 @@ pub(crate) struct ReviewedRestore<'a> {
 pub(crate) fn restore_reviewed_history(
     state: &mut State,
     restore: &ReviewedRestore<'_>,
-    (authority, author): (&PermissionContext, &UserId),
+    (authority, author): (&PermissionContext, &MemberId),
     now: u64,
     extent: RestoreExtent<'_>,
 ) -> Result<OwnedActionReceipt, String> {
@@ -129,7 +129,10 @@ pub(crate) fn restore_reviewed_history(
         title,
     )
     .with_app(&review.resource().app_id, title);
-    let apply = |authority: &PermissionContext, author: &UserId, file: bool, state: &mut State| {
+    let apply = |authority: &PermissionContext,
+                 author: &MemberId,
+                 file: bool,
+                 state: &mut State| {
         let current = authority.clone().at_unix_time(now);
         if let Err(refusal) = check_restore_authority(
             &current,
@@ -201,7 +204,7 @@ enum RestoreRefusal {
 /// already stamped at the caller's policy time.
 fn check_restore_authority(
     current: &PermissionContext,
-    author: &UserId,
+    author: &MemberId,
     app_id: &str,
     record: Option<&crate::record::RecordId>,
 ) -> Result<(), RestoreRefusal> {
@@ -214,7 +217,7 @@ fn check_restore_authority(
         .into_iter()
         .filter_map(|node| node.by.member_id())
         .any(|member| match member {
-            MemberId::Person(id) => *id == author.0 || id == crate::permissions::LOCAL_USER,
+            MemberId::Person(id) => *id == author.key() || id == crate::permissions::LOCAL_USER,
             MemberId::Agent(_) | MemberId::Bot(_) => false,
         });
     if !mapped
@@ -244,7 +247,7 @@ pub(crate) fn describe_history(
     state: &mut State,
     source: &crate::history_mode::HistorySourceRegistration,
     title: &str,
-    (authority, author): (&PermissionContext, &UserId),
+    (authority, author): (&PermissionContext, &MemberId),
     now: u64,
     described: &[(crate::HistoryEntryId, String, String)],
 ) -> Result<OwnedActionReceipt, OwnedRestoreError> {
@@ -263,7 +266,7 @@ pub(crate) fn describe_history(
     let context =
         tilo_actions::ActionContext::for_resource(resource.record_id.as_str(), "document", title)
             .with_app(&resource.app_id, title);
-    let apply = |authority: &PermissionContext, author: &UserId, state: &mut State| {
+    let apply = |authority: &PermissionContext, author: &MemberId, state: &mut State| {
         check_restore_authority(
             &authority.clone().at_unix_time(now),
             author,
@@ -523,7 +526,10 @@ impl State {
 }
 
 impl State {
-    pub(crate) fn undo_status_snapshot(&self, author: Option<&UserId>) -> crate::undo::UndoStatus {
+    pub(crate) fn undo_status_snapshot(
+        &self,
+        author: Option<&MemberId>,
+    ) -> crate::undo::UndoStatus {
         crate::undo::status_snapshot(&self.doc, &self.undo, author)
     }
 }

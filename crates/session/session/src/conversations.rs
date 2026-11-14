@@ -23,7 +23,7 @@ use tilo_app::framework::WorkspaceRecord;
 use tilo_broker_core::services::{NativeTaskActionRequirement, TrackerRun, TrackerRuns};
 use tilo_clock::wall;
 use tilo_resource::{Id, Resource as _};
-use ui::permissions::{LivePermissions, PermissionContext, UserId};
+use ui::permissions::{LivePermissions, MemberId, PermissionContext};
 use ui::record::RecordId;
 use ui::record::workspace::WorkspaceRecords;
 
@@ -386,7 +386,7 @@ impl Conversations {
         let open = self.open.borrow();
         open.values()
             .next()
-            .map(|opened| opened.records.author().0.clone())
+            .map(|opened| opened.records.author().key())
             .unwrap_or_default()
     }
 
@@ -415,7 +415,7 @@ impl Conversations {
         }
         let standing = tilo_action_policy::Standing::person(
             opened.policy.clone(),
-            opened.records.author().0.clone(),
+            opened.records.author().key(),
         );
         let permissions = PermissionContext::from_standing(standing)
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
@@ -587,7 +587,7 @@ impl Conversations {
             policy: workspace.policy.clone(),
             records: self
                 .records
-                .in_workspace(&workspace.workspace, UserId(person.to_owned())),
+                .in_workspace(&workspace.workspace, MemberId::person(person.to_owned())),
             chat: None,
             part: None,
         });

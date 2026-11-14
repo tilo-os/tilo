@@ -15,7 +15,7 @@ use automerge::AutoCommit;
 
 use super::person::StoredRecord;
 use super::{RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners, RecordStore};
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 
 impl RecordOwners {
     /// The owner of `app_id`'s records in `workspace` that a window of
@@ -49,14 +49,14 @@ type OpenStore = dyn Fn(&str) -> Result<RecordStore, RecordOpenError>;
 #[derive(Clone)]
 pub struct WorkspaceRecords {
     open: Rc<OpenStore>,
-    author: UserId,
+    author: MemberId,
 }
 
 impl WorkspaceRecords {
     /// The records of `workspace` that `owners` keep: one writer per app and
     /// workspace, shared with the owner's own windows in this process.
     #[must_use]
-    pub fn in_workspace(owners: RecordOwners, workspace: String, author: UserId) -> Self {
+    pub fn in_workspace(owners: RecordOwners, workspace: String, author: MemberId) -> Self {
         Self::new(author, move |owner| {
             owners.clone().open_beside(owner, &workspace)
         })
@@ -67,7 +67,7 @@ impl WorkspaceRecords {
     /// notes it there.
     #[must_use]
     pub fn new(
-        author: UserId,
+        author: MemberId,
         open: impl Fn(&str) -> Result<RecordStore, RecordOpenError> + 'static,
     ) -> Self {
         Self {
@@ -77,7 +77,7 @@ impl WorkspaceRecords {
     }
 
     #[must_use]
-    pub fn author(&self) -> &UserId {
+    pub fn author(&self) -> &MemberId {
         &self.author
     }
 
@@ -208,7 +208,7 @@ mod tests {
         WorkspaceRecords::in_workspace(
             RecordOwners::with_store(Rc::clone(store) as Rc<dyn durable_store::DurableStore>),
             "00000000-0000-4000-8000-0000000000aa".into(),
-            UserId(author.into()),
+            MemberId::person(author),
         )
     }
 
@@ -278,8 +278,8 @@ mod tests {
                 RecordOwners::with_store(Rc::clone(&store) as Rc<dyn durable_store::DurableStore>);
             let workspace = "00000000-0000-4000-8000-0000000000aa".to_owned();
             let notes =
-                WorkspaceRecords::in_workspace(owners.clone(), workspace.clone(), UserId("a".into()));
-            let chat = WorkspaceRecords::in_workspace(owners, workspace, UserId("a".into()));
+                WorkspaceRecords::in_workspace(owners.clone(), workspace.clone(), MemberId::person("a"));
+            let chat = WorkspaceRecords::in_workspace(owners, workspace, MemberId::person("a"));
             let written = notes
                 .open_record("so.tilo.chat", "tilo.workspace.emoji", &|_| Ok(()))
                 .unwrap();

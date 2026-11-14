@@ -115,7 +115,7 @@ fn mount_with(titles: &[&str]) -> (ui::headless::FrameHarness, DesktopHandle, Rc
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.set_caller_palette_enabled(false);
     driver.relayout();
@@ -403,7 +403,7 @@ fn only_the_focused_window_is_built_before_the_first_frame() {
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     for _ in 0..5 {
         driver.relayout();
@@ -457,7 +457,7 @@ fn a_restored_strip_opens_on_its_focused_window() {
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.relayout();
     let mut rects = Vec::new();
@@ -767,7 +767,7 @@ fn mount_apps(titles: &[&str]) -> (ui::headless::FrameHarness, DesktopHandle, Ro
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     for _ in 0..titles.len() {
         driver.relayout();
@@ -1503,7 +1503,7 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.relayout();
     let entries = handle.snapshot("g", vec![]).entries;
@@ -1579,7 +1579,7 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.relayout();
     let last = handle.snapshot("g", vec![]).entries[3].route.clone();
@@ -2228,7 +2228,7 @@ fn a_window_is_built_under_its_tab_for_a_panic_hook() {
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.relayout();
     let built = built.borrow();
@@ -2380,7 +2380,7 @@ fn mount_wide() -> (ui::headless::FrameHarness, DesktopHandle) {
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     for _ in 0..3 {
         driver.relayout();
@@ -2532,7 +2532,7 @@ fn personal_desk(seed: u16, width: u32) -> (ui::headless::FrameHarness, DesktopH
         (width, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     for _ in 0..3 {
         driver.relayout();
@@ -2686,7 +2686,7 @@ fn search_fits_a_phone_screen() {
         (390, 844),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.set_caller_palette_enabled(false);
     driver.relayout();
@@ -2802,7 +2802,7 @@ fn a_settled_idle_desk_of_arriving_windows_repaints_nothing() {
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.set_caller_palette_enabled(false);
     driver.relayout();

@@ -30,7 +30,7 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
         return 0;
     };
     let permissions = LivePermissions::fixed(role_permissions("dev", Role::Owner).borrow().clone());
-    let me = ui_core::collaboration::local_user_id().0;
+    let me = ui_core::collaboration::local_user_id().key();
     let root = build_root::<A>(
         reader,
         Editing::Live {

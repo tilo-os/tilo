@@ -1901,7 +1901,7 @@ impl PresenceStream {
     pub async fn read(&self) -> Result<PresenceEvent, NotAvailable> {
         use collab_types::PeerPresencePayload as P;
         loop {
-            let Event::Presence { user_id, presence } = self.0.event().await? else {
+            let Event::Presence { member, presence } = self.0.event().await? else {
                 continue;
             };
             let payload = match presence.payload {
@@ -1918,7 +1918,7 @@ impl PresenceStream {
                 _ => continue,
             };
             return Ok(PresenceEvent {
-                user_id,
+                member,
                 key_bytes: presence.key,
                 payload,
             });

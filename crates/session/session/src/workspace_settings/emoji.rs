@@ -74,7 +74,7 @@ pub(crate) struct Emoji {
 /// The record as the tab opened it.
 struct Open {
     workspace: String,
-    person: ui::permissions::UserId,
+    person: ui::permissions::MemberId,
     /// The grants it was opened with: they decide its actions, so a workspace whose grants changed
     /// opens the record again.
     policy: tilo_action_policy::WorkspacePolicy,
@@ -219,7 +219,7 @@ impl Emoji {
         let Some(open) = held
             .as_ref()
             .filter(|open| open.workspace == workspace.id().to_string())
-            .filter(|open| open.person.0 == *person)
+            .filter(|open| open.person.key() == *person)
         else {
             return false;
         };
@@ -240,7 +240,7 @@ impl Emoji {
     ) -> Option<WorkspaceRecord<Record>> {
         let workspace = workspace?;
         let workspace_id = workspace.id().to_string();
-        let author = ui::permissions::UserId(person.clone());
+        let author = ui::permissions::MemberId::person(person.clone());
         let held = self.open.borrow();
         let current = held.as_ref().filter(|open| {
             open.workspace == workspace_id

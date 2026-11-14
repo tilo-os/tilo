@@ -147,7 +147,7 @@ impl ComponentContextSource for Host {
                         ui::permissions::Role::Owner,
                     ),
                 ),
-                author: ui::permissions::UserId("author".into()),
+                author: ui::permissions::MemberId::person("author"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             target,

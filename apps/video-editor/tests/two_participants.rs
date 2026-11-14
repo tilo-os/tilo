@@ -23,7 +23,7 @@
 //! document, which is what a late joiner receives.
 
 use ui::offscreen::OffscreenRenderer;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::prelude::TestApp;
 use ui::presence::PresenceCtx;
 use ui::theme::Theme;
@@ -104,7 +104,7 @@ impl Participant {
             if Some(&frame) == last.as_ref() {
                 break; // settled: nothing left to say
             }
-            to.apply_remote_presence(as_user.to_string(), frame.0.clone(), frame.1.clone());
+            to.apply_remote_presence(MemberId::person(as_user), frame.0.clone(), frame.1.clone());
             last = Some(frame);
             sent = sent
                 .checked_add(1)
@@ -133,7 +133,7 @@ fn drawn_colour(ctx: &PresenceCtx, who: &str) -> (u8, u8, u8) {
         .tokens
         .colors
         .presence
-        .of_rgb(ctx.color_for(&UserId(who.to_string())))
+        .of_rgb(ctx.color_for(&MemberId::person(who.to_string())))
         .to_rgba8();
     (colour.r, colour.g, colour.b)
 }
@@ -177,7 +177,7 @@ fn participants_locate_and_track_each_other() {
 
         let heads = vp::peer_playheads(&ctx);
         assert_eq!(heads.len(), 1, "exactly one other participant: {heads:?}");
-        assert_eq!(heads[0].user, UserId("ada".to_string()));
+        assert_eq!(heads[0].user, MemberId::person("ada"));
         let end = duration(&ada);
         assert!(
             (heads[0].at - end).abs() < 0.01,
@@ -251,8 +251,8 @@ fn participants_locate_and_track_each_other() {
             "they are in different places: {heads:?}",
         );
         assert_ne!(
-            ctx.color_for(&UserId("ada".to_string())),
-            ctx.color_for(&UserId("cass".to_string())),
+            ctx.color_for(&MemberId::person("ada")),
+            ctx.color_for(&MemberId::person("cass")),
             "two people must not be drawn in one colour",
         );
     }
@@ -290,7 +290,7 @@ fn participants_locate_and_track_each_other() {
             "Ada's caret should be in the title's words, keyed to the title the \
          document holds; found {carets:?}",
         );
-        assert_eq!(carets[0].0, UserId("ada".to_string()));
+        assert_eq!(carets[0].0, MemberId::person("ada"));
         assert!(
             vp::peer_playheads(&ctx).is_empty(),
             "and her ghost playhead steps aside while she types -- a person has \
@@ -317,8 +317,7 @@ fn participants_presence_reaches_the_other_screen() {
         ada.press("Home");
         ada.frame(&PresenceCtx::empty());
         let mut ctx = PresenceCtx::empty();
-        ctx.names
-            .insert(UserId("ada".to_string()), "Ada".to_string());
+        ctx.names.insert(MemberId::person("ada"), "Ada".to_string());
         ada.relay(&mut ctx, "ada");
         assert_eq!(vp::peer_playheads(&ctx).len(), 1, "Ada is in the workspace");
 
@@ -358,8 +357,7 @@ fn participants_presence_reaches_the_other_screen() {
         ada.press("Escape");
         ada.frame(&PresenceCtx::empty());
         let mut ctx = PresenceCtx::empty();
-        ctx.names
-            .insert(UserId("ada".to_string()), "Ada".to_string());
+        ctx.names.insert(MemberId::person("ada"), "Ada".to_string());
         ada.relay(&mut ctx, "ada");
         assert_eq!(vp::peer_playheads(&ctx).len(), 1, "she has a playhead");
         assert!(vp::peer_clips(&ctx).is_empty(), "and nothing selected");
@@ -392,10 +390,9 @@ fn participants_presence_reaches_the_other_screen() {
             .expect("the shared project has clips");
 
         let mut ctx = PresenceCtx::empty();
-        ctx.names
-            .insert(UserId("ada".to_string()), "Ada".to_string());
+        ctx.names.insert(MemberId::person("ada"), "Ada".to_string());
         let (key, payload) = vp::range_frame(Some((clip.id, clip.start, clip.end())));
-        ctx.apply_remote_presence("ada".to_string(), key, payload);
+        ctx.apply_remote_presence(MemberId::person("ada"), key, payload);
         assert_eq!(vp::peer_clips(&ctx).len(), 1, "she is holding a clip");
         assert!(vp::peer_playheads(&ctx).is_empty(), "and nothing else");
 

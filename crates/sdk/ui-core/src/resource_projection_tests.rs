@@ -97,7 +97,7 @@ fn lazy_control_projection_defers_semantics_and_preserves_surface_state() {
         app.refresh_control_action_availability();
         assert!(app.root_widget.children()[0].is_enabled());
         assert_eq!(counts[1].get(), 1, "rejected empty is cached, not unbuilt");
-        let actor = app.collaboration.local_author.0.clone();
+        let actor = app.collaboration.local_author.key();
         let address = tilo_actions::ActionAddress::new("test.obj:1", "flip");
         let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(

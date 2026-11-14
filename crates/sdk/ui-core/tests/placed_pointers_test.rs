@@ -11,7 +11,7 @@
 
 use tilo_ui::State;
 use tilo_ui::headless::FrameHarness;
-use tilo_ui::permissions::UserId;
+use tilo_ui::permissions::MemberId;
 use tilo_ui::presence::{PlacedPointer, PresenceCtx};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Spacer;
@@ -25,14 +25,13 @@ fn frame_with_pointer_at(at: (f64, f64)) -> (FrameHarness, usize) {
     let mut harness =
         FrameHarness::new_with_theme(State::new(), Box::new(Spacer::new()), SIZE, Theme::dark());
     let mut presence = PresenceCtx::empty();
-    let ada = UserId("ada-device".into());
+    let ada = MemberId::person("ada-device");
     presence.set_display_name(ada.clone(), "Eager Dolphin");
     presence.set_color_override(ada.clone(), "#ee83af");
     let cursor = presence.placed_cursor(PlacedPointer {
         user: ada,
         at,
         name: None,
-        agent: false,
         activity: None,
         chat: None,
         reaction: None,
@@ -78,10 +77,9 @@ fn pointers_outside_the_surface_or_taken_away_are_not_drawn() {
     );
     let presence = PresenceCtx::empty();
     let outside = presence.placed_cursor(PlacedPointer {
-        user: UserId("far".into()),
+        user: MemberId::person("far"),
         at: (f64::from(SIZE.0) + 50.0, 10.0),
         name: None,
-        agent: false,
         activity: None,
         chat: None,
         reaction: None,
@@ -117,7 +115,7 @@ impl tilo_ui::Widget for AdasCaret {
             theme,
             text_renderer,
             transform,
-            &UserId("ada-device".into()),
+            &MemberId::person("ada-device"),
             "Eager Dolphin",
             vello::kurbo::Rect::new(100.0, 70.0, 102.0, 90.0),
         );
@@ -134,10 +132,9 @@ fn pointers_over_adas_caret(at: (f64, f64)) -> Vec<tilo_ui::presence::PeerCursor
         FrameHarness::new_with_theme(State::new(), Box::new(AdasCaret), SIZE, Theme::dark());
     let presence = PresenceCtx::empty();
     let cursor = presence.placed_cursor(PlacedPointer {
-        user: UserId("ada-device".into()),
+        user: MemberId::person("ada-device"),
         at,
         name: Some("Eager Dolphin".into()),
-        agent: false,
         activity: None,
         chat: None,
         reaction: None,

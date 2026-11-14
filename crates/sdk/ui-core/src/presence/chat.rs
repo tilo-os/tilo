@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use crate::motion::{Float, Transient};
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 use crate::time::{Duration, Instant};
 use crate::tokens::EffectiveMotion;
 
@@ -66,18 +66,18 @@ pub struct ReactionFloat {
 /// Everyone's cursor chat and reactions in one presence store.
 #[derive(Clone, Debug, Default)]
 pub struct CursorChats {
-    said: HashMap<UserId, Said>,
-    reactions: HashMap<UserId, Reaction>,
+    said: HashMap<MemberId, Said>,
+    reactions: HashMap<MemberId, Reaction>,
     /// The last reaction counter heard from each person, kept after the
     /// reaction is over so a restated frame does not play it again.
-    reaction_seen: HashMap<UserId, u32>,
+    reaction_seen: HashMap<MemberId, u32>,
 }
 
 impl CursorChats {
     /// `user` says `text` beside their pointer (`sent` once they pressed
     /// Enter), or stops saying anything with `None`. Returns whether what is
     /// shown changed.
-    pub fn say(&mut self, user: &UserId, said: Option<(&str, bool)>, now: Instant) -> bool {
+    pub fn say(&mut self, user: &MemberId, said: Option<(&str, bool)>, now: Instant) -> bool {
         let Some((text, sent)) = said.filter(|(text, _)| !text.trim().is_empty()) else {
             return self.said.remove(user).is_some();
         };
@@ -111,7 +111,7 @@ impl CursorChats {
 
     /// `user` reacted with `emoji`, their `seq`th reaction. Plays once per
     /// new counter; returns whether it started.
-    pub fn react(&mut self, user: &UserId, seq: u32, emoji: &str, now: Instant) -> bool {
+    pub fn react(&mut self, user: &MemberId, seq: u32, emoji: &str, now: Instant) -> bool {
         if emoji.is_empty() || self.reaction_seen.get(user) == Some(&seq) {
             return false;
         }
@@ -129,7 +129,7 @@ impl CursorChats {
 
     /// Forget everything `user` said and reacted: they left, or are no
     /// longer shown to this person.
-    pub fn forget(&mut self, user: &UserId) -> bool {
+    pub fn forget(&mut self, user: &MemberId) -> bool {
         let said = self.said.remove(user).is_some();
         let reacted = self.reactions.remove(user).is_some();
         self.reaction_seen.remove(user);
@@ -140,7 +140,7 @@ impl CursorChats {
     #[must_use]
     pub fn bubble(
         &self,
-        user: &UserId,
+        user: &MemberId,
         now: Instant,
         motion: EffectiveMotion,
     ) -> Option<ChatBubble> {
@@ -170,7 +170,7 @@ impl CursorChats {
     #[must_use]
     pub fn reaction(
         &self,
-        user: &UserId,
+        user: &MemberId,
         now: Instant,
         motion: EffectiveMotion,
     ) -> Option<ReactionFloat> {
@@ -186,7 +186,7 @@ impl CursorChats {
     /// Whether `user` is saying something at `now`: their pointer stays and
     /// keeps its name while they do.
     #[must_use]
-    pub fn talking(&self, user: &UserId, now: Instant) -> bool {
+    pub fn talking(&self, user: &MemberId, now: Instant) -> bool {
         self.said
             .get(user)
             .is_some_and(|said| said.sent.is_none_or(|sent| now < sent + CURSOR_CHAT_LINGER))
@@ -262,8 +262,8 @@ mod tests {
         EffectiveMotion::new(Motion::default(), false)
     }
 
-    fn ada() -> UserId {
-        UserId("peer@1".into())
+    fn ada() -> MemberId {
+        MemberId::person("peer@1")
     }
 
     tilo_test_env::scenario! {

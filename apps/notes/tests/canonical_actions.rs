@@ -533,8 +533,11 @@ fn registry_authority_and_stale_page_views_keep_other_instances_live() {
         assert_eq!(revision(&f, &checkout), 2);
         let stale = id;
         f.authority.set(
-            ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
-                .at_unix_time(100),
+            ui::permissions::PermissionContext::member(
+                f.author.key(),
+                ui::permissions::Role::Viewer,
+            )
+            .at_unix_time(100),
         );
         let before = f
             .records
@@ -1140,7 +1143,7 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         .unwrap();
     a.relayout();
     f.authority.set(
-        ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
+        ui::permissions::PermissionContext::member(f.author.key(), ui::permissions::Role::Viewer)
             .at_unix_time(100),
     );
     assert!(

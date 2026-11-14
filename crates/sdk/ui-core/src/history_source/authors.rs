@@ -415,7 +415,10 @@ impl AuthorDirectory {
             let author = if software {
                 let painted = self.color_overrides.get(agent).copied();
                 author.with_rgb(painted.unwrap_or_else(|| {
-                    crate::presence::participant_color(agent, true, on_behalf_of.as_deref())
+                    crate::presence::member_color(
+                        &crate::permissions::MemberId::agent(agent),
+                        on_behalf_of.as_deref(),
+                    )
                 }))
             } else {
                 author
@@ -710,7 +713,7 @@ mod tests {
             assert_eq!(first.name, "Claude Code #1");
             assert_eq!(
                 first.rgb(),
-                crate::presence::participant_color("agent:claude-code", true, Some("ada"))
+                crate::presence::member_color(&crate::permissions::MemberId::agent("claude-code"), Some("ada"))
             );
             let second = of("Claude Code #2");
             assert_eq!(second.rgb(), first.rgb(), "one agent, one colour");
@@ -719,7 +722,7 @@ mod tests {
 
         phase history_and_presence_pick_the_same_colour_for_the_same_identity;
         {
-            use crate::permissions::UserId;
+            use crate::permissions::MemberId;
             use crate::presence::{PresenceCtx, user_color};
 
             for id in [
@@ -731,7 +734,7 @@ mod tests {
             ] {
                 let hex = automerge::ActorId::from(id.as_bytes()).to_hex_string();
                 let history = AuthorDirectory::new().resolve(&hex);
-                let presence = PresenceCtx::default().color_for(&UserId(id.to_string()));
+                let presence = PresenceCtx::default().color_for(&MemberId::person(id.to_string()));
                 assert_eq!(
                     history.rgb(),
                     presence,
@@ -748,18 +751,18 @@ mod tests {
             let history = AuthorDirectory::new().resolve(unknown);
             assert_eq!(
                 history.rgb(),
-                PresenceCtx::default().color_for(&UserId(unknown.into())),
+                PresenceCtx::default().color_for(&MemberId::person(unknown)),
                 "unknown people share the palette slot keyed by that identity"
             );
 
             let mut ctx = PresenceCtx::default();
-            ctx.set_color_override(UserId("carol".into()), "#112233");
+            ctx.set_color_override(MemberId::person("carol"), "#112233");
             let mut dir = AuthorDirectory::new();
             dir.set_color_override("carol", (0x11, 0x22, 0x33));
             let hex = automerge::ActorId::from("carol".as_bytes()).to_hex_string();
             assert_eq!(
                 dir.resolve(&hex).rgb(),
-                ctx.color_for(&UserId("carol".into())),
+                ctx.color_for(&MemberId::person("carol")),
                 "a person's own colour must win on history and presence together"
             );
             assert_eq!(dir.resolve(&hex).rgb(), (0x11, 0x22, 0x33));

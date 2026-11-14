@@ -8,7 +8,7 @@ use std::time::{Instant, SystemTime};
 
 use tilo_ui::app::App;
 use tilo_ui::collaboration::{CollabEvent, PresencePayload};
-use tilo_ui::permissions::UserId;
+use tilo_ui::permissions::MemberId;
 use tilo_ui::presence::PresenceKey;
 use tilo_ui::state::State;
 use tilo_ui::widget::Container;
@@ -32,14 +32,14 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
         };
 
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: contacts.clone(),
             payload: PresencePayload::Arrived,
         });
 
         assert_eq!(
             a.presence_ctx().peers_on(&contacts),
-            &[UserId("alice".into())],
+            &[MemberId::person("alice")],
             "the nav item Alice is on must be flagged"
         );
         assert!(
@@ -49,7 +49,7 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
 
         // Alice switches screens: the flag moves, it doesn't accumulate.
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: calendar.clone(),
             payload: PresencePayload::Arrived,
         });
@@ -59,7 +59,7 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
         );
         assert_eq!(
             a.presence_ctx().peers_on(&calendar),
-            &[UserId("alice".into())]
+            &[MemberId::person("alice")]
         );
     }
 
@@ -70,7 +70,7 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
         // A 100x100 visible area; the peer's cursor is far to the right.
         let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
         a.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
-            user_id: "bob".into(),
+            member: MemberId::person("bob"),
             x: 260.0,
             y: 50.0,
         });
@@ -79,7 +79,7 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
 
         let hit = a.try_follow_click(viewport, Point::new(98.0, 50.0));
         assert!(hit, "clicking the mist band should select the peer");
-        assert_eq!(a.followed_peer(), Some("bob"));
+        assert_eq!(a.followed_peer(), Some(&MemberId::person("bob")));
         assert_eq!(
             a.followed_peer_target(),
             Some([260.0, 50.0]),
@@ -91,7 +91,7 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
         assert!(!miss);
         assert_eq!(
             a.followed_peer(),
-            Some("bob"),
+            Some(&MemberId::person("bob")),
             "a miss must not drop the follow"
         );
     }
@@ -103,9 +103,9 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
         let workspace = PresenceKey::Workspace {
             id: "finance-workspace".into(),
         };
-        let bob = UserId("bob".into());
+        let bob = MemberId::person("bob");
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: bob.0.clone(),
+            member: bob.clone(),
             key: workspace.clone(),
             payload: PresencePayload::Status {
                 text: "Reconciling forecast against actuals".into(),
@@ -123,7 +123,7 @@ fn workspace_arrivals_status_and_follow_reach_the_right_surface() {
         ));
 
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: bob.0.clone(),
+            member: bob.clone(),
             key: workspace,
             payload: PresencePayload::Status {
                 text: String::new(),
@@ -153,7 +153,7 @@ fn remote_writing_tints_once_per_run() {
             path: vec![tilo_ui::presence::PathSegment::Index(2)],
         };
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: key.clone(),
             payload: PresencePayload::Typing { start: 4, end: 11 },
         });
@@ -161,7 +161,7 @@ fn remote_writing_tints_once_per_run() {
         let now = Instant::now();
         let marks = a
             .presence_ctx()
-            .active_typing(&UserId("alice".into()), &key, now);
+            .active_typing(&MemberId::person("alice"), &key, now);
         assert_eq!(marks.len(), 1, "the typing event must record one span");
         assert_eq!((marks[0].0.start, marks[0].0.end), (4, 11));
         assert!(marks[0].1 > 0.5, "a just-typed span is near full opacity");
@@ -190,13 +190,13 @@ fn remote_writing_tints_once_per_run() {
         // Caret before the edit, then after it; the delta between them is what
         // tells the advance apart from somebody reading.
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "agent".into(),
+            member: MemberId::person("agent"),
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 0 },
         });
         a.presence_ctx_mut().note_remote_text_edit(Instant::now());
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "agent".into(),
+            member: MemberId::person("agent"),
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 11 },
         });
@@ -204,7 +204,7 @@ fn remote_writing_tints_once_per_run() {
         let now = Instant::now();
         let marks = a
             .presence_ctx()
-            .active_typing(&UserId("agent".into()), &key, now);
+            .active_typing(&MemberId::person("agent"), &key, now);
         assert_eq!(marks.len(), 1, "the advanced caret must record one span");
         assert_eq!(
             (marks[0].0.start, marks[0].0.end),
@@ -223,25 +223,25 @@ fn remote_writing_tints_once_per_run() {
             path: vec![tilo_ui::presence::PathSegment::Index(7)],
         };
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 4 },
         });
         // The order `App::broadcast_focus_presence` sends them in.
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: key.clone(),
             payload: PresencePayload::Typing { start: 4, end: 9 },
         });
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 9 },
         });
 
-        let marks = a
-            .presence_ctx()
-            .active_typing(&UserId("alice".into()), &key, Instant::now());
+        let marks =
+            a.presence_ctx()
+                .active_typing(&MemberId::person("alice"), &key, Instant::now());
         assert_eq!(
             marks.len(),
             1,
@@ -258,13 +258,13 @@ fn remote_writing_tints_once_per_run() {
             path: vec![tilo_ui::presence::PathSegment::Index(5)],
         };
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: MemberId::person("alice"),
             key: key.clone(),
             payload: PresencePayload::Typing { start: 0, end: 6 },
         });
         assert_eq!(
             a.presence_ctx()
-                .active_typing(&UserId("alice".into()), &key, Instant::now())
+                .active_typing(&MemberId::person("alice"), &key, Instant::now())
                 .len(),
             1,
             "a peer that says it typed is believed"
@@ -284,14 +284,14 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
         };
         for pos in [9usize, 4] {
             a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-                user_id: "bob".into(),
+                member: MemberId::person("bob"),
                 key: key.clone(),
                 payload: PresencePayload::Caret { pos },
             });
         }
         assert!(
             a.presence_ctx()
-                .active_typing(&UserId("bob".into()), &key, Instant::now())
+                .active_typing(&MemberId::person("bob"), &key, Instant::now())
                 .is_empty(),
             "a retreating caret is a deletion or a move, not a write"
         );
@@ -310,14 +310,14 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
         // document change anywhere near it.
         for pos in [0usize, 12, 30, 64, 90] {
             a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-                user_id: "reader".into(),
+                member: MemberId::person("reader"),
                 key: key.clone(),
                 payload: PresencePayload::Caret { pos },
             });
         }
         assert!(
             a.presence_ctx()
-                .active_typing(&UserId("reader".into()), &key, Instant::now())
+                .active_typing(&MemberId::person("reader"), &key, Instant::now())
                 .is_empty(),
             "a caret moving through an unedited document must not paint a marker"
         );
@@ -336,19 +336,19 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
             path: vec![tilo_ui::presence::PathSegment::Index(4)],
         };
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "bob".into(),
+            member: MemberId::person("bob"),
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 0 },
         });
         a.presence_ctx_mut().note_remote_text_edit(Instant::now());
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "bob".into(),
+            member: MemberId::person("bob"),
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 4000 },
         });
         assert!(
             a.presence_ctx()
-                .active_typing(&UserId("bob".into()), &key, Instant::now())
+                .active_typing(&MemberId::person("bob"), &key, Instant::now())
                 .is_empty(),
             "nobody typed 4000 characters between two presence frames"
         );
@@ -361,27 +361,28 @@ fn caret_motion_that_is_not_writing_marks_nothing() {
     // nothing even with an edit pulse armed and a caret running forward.
     {
         let mut a = app();
-        a.presence_ctx_mut().set_own_identity(["me"]);
+        a.presence_ctx_mut()
+            .set_own_identity([MemberId::person("me")]);
         let key = PresenceKey::Widget {
             path: vec![tilo_ui::presence::PathSegment::Index(9)],
         };
 
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "me".into(),
+            member: MemberId::person("me"),
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 0 },
         });
         // Arm the pulse — a real edit really did land — and advance anyway.
         a.presence_ctx_mut().note_remote_text_edit(Instant::now());
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "me".into(),
+            member: MemberId::person("me"),
             key: key.clone(),
             payload: PresencePayload::Caret { pos: 14 },
         });
 
         assert!(
             a.presence_ctx()
-                .active_typing(&UserId("me".into()), &key, Instant::now())
+                .active_typing(&MemberId::person("me"), &key, Instant::now())
                 .is_empty(),
             "your own writing must not be highlighted back at you"
         );

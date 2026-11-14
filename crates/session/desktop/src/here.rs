@@ -16,7 +16,6 @@ use tilo_sort::CompactSort as _;
 use collab_types::presence::{PresenceHue, Shown};
 use collab_types::{Member, MemberId, PersonId, assigned_colour};
 use tilo_desktop_model::{Layout, Present, Status, TabId, TileContent, Workspace};
-use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
 mod agent_work;
@@ -194,6 +193,26 @@ pub struct Person {
 }
 
 impl Person {
+    /// The member this is: an agent by its workspace key, a person by the root their device's
+    /// certificate names. `None` for a device whose person is not known yet.
+    #[must_use]
+    pub fn member_id(&self) -> Option<MemberId> {
+        if self.agent {
+            return Some(
+                self.member
+                    .as_deref()
+                    .or(Some(self.id.as_str()))
+                    .and_then(MemberId::parse)
+                    .filter(|member| !member.is_person())
+                    .unwrap_or_else(|| MemberId::agent(&self.id)),
+            );
+        }
+        self.user
+            .as_deref()
+            .filter(|user| !user.is_empty())
+            .map(MemberId::person)
+    }
+
     /// The app following them brings forward where no window here shows their record: the app their
     /// presence focuses, as their screen's front window says it.
     #[must_use]
@@ -218,8 +237,8 @@ pub struct HereState {
     watching: u32,
     /// Bumped on every change, for the bar's snapshot revision.
     revision: u64,
-    /// The ids last registered on window presence, to forget who left.
-    registered: Vec<String>,
+    /// The members last registered on window presence, to forget who left.
+    registered: Vec<MemberId>,
     /// What this page's person lets their device say about them: only
     /// [`ui::StatusSharing::Automatic`] publishes what it read off their steps.
     sharing: ui::StatusSharing,
@@ -1026,7 +1045,14 @@ impl HereState {
                     id,
                     key,
                     claimed,
-                    ui::presence::participant_color(key, agent, person),
+                    ui::presence::member_color(
+                        &if agent {
+                            MemberId::agent(key)
+                        } else {
+                            MemberId::person(key)
+                        },
+                        person,
+                    ),
                 ))
             })
             .collect();
@@ -1186,11 +1212,13 @@ impl HereState {
     pub fn show_waves(&mut self, presence: &mut PresenceCtx) {
         let now = ui::time::now();
         for wave in self.take_waves() {
-            presence.bounce(
-                UserId(wave.id.clone()),
-                ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
-                now,
-            );
+            if let Some(person) = self.user_of(&wave.id) {
+                presence.bounce(
+                    MemberId::person(person),
+                    ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
+                    now,
+                );
+            }
             self.notice = Some(crate::chrome::WaveNotice {
                 from: wave.name,
                 at: now,
@@ -1204,44 +1232,34 @@ impl HereState {
     }
 
     pub fn register_windows(&mut self, people: &[Person], presence: &mut PresenceCtx) {
-        for gone in self
-            .registered
+        let here: Vec<(MemberId, &Person)> = people
             .iter()
-            .filter(|id| !people.iter().any(|p| p.id == **id && p.tab.is_some()))
-        {
-            let user = UserId(gone.clone());
+            .filter_map(|person| Some((person.member_id()?, person)))
+            .collect();
+        for gone in self.registered.iter().filter(|id| {
+            !here
+                .iter()
+                .any(|(member, p)| member == *id && p.tab.is_some())
+        }) {
             for list in presence
                 .here
                 .iter_mut()
                 .filter_map(|(key, list)| matches!(key, PresenceKey::Tab { .. }).then_some(list))
             {
-                list.retain(|u| *u != user);
+                list.retain(|u| u != gone);
             }
         }
         self.registered.clear();
-        // Every device here, not only the one each person is listed by: the pointer of someone's
-        // second tab wears their colour too, and a person id from elsewhere (a call's roster) finds
-        // it.
-        let colors = self.colors();
-        presence.set_persons(colors.keys().filter_map(|publisher| {
-            let person = self.user_of(publisher)?;
-            Some((UserId(publisher.clone()), UserId(person.to_owned())))
-        }));
-        for (publisher, (r, g, b)) in colors {
-            presence.set_color_override(UserId(publisher), &format!("#{r:02x}{g:02x}{b:02x}"));
-        }
-        for person in people {
-            let user = UserId(person.id.clone());
+        for (user, person) in here {
             let (r, g, b) = person.rgb;
             presence.set_color_override(user.clone(), &format!("#{r:02x}{g:02x}{b:02x}"));
             presence.set_display_name(user.clone(), &person.label);
-            presence.set_participant_kind(&user, person.agent);
             if let Some(tab) = person.tab {
                 let key = PresenceKey::Tab {
                     id: format!("{tab:x}"),
                 };
-                presence.set_tab_focus(&key, user);
-                self.registered.push(person.id.clone());
+                presence.set_tab_focus(&key, user.clone());
+                self.registered.push(user);
             }
         }
     }
@@ -2066,7 +2084,7 @@ mod tests {
             let worn = here.colors().get(helper).copied();
             assert_eq!(
                 worn,
-                Some(ui::presence::participant_color(helper, true, Some(&person)))
+                Some(ui::presence::member_color(&ui::permissions::MemberId::agent(helper), Some(&person)))
             );
             assert_ne!(
                 worn,
@@ -2078,7 +2096,7 @@ mod tests {
         phase an_agent_wears_one_colour_on_every_surface;
         {
             let helper = "agent:helper@host";
-            let (r, g, b) = ui::presence::participant_color(helper, true, None);
+            let (r, g, b) = ui::presence::member_color(&ui::permissions::MemberId::agent(helper), None);
             let announced = format!("#{r:02x}{g:02x}{b:02x}");
             let me = LiveMember {
                 user: Some("me-root".into()),
@@ -2105,8 +2123,8 @@ mod tests {
                 (
                     here.colors().get(helper).copied(),
                     listed.rgb,
-                    presence.color_for(&UserId(helper.into())),
-                    ui::presence::participant_color(helper, true, None),
+                    presence.color_for(&MemberId::agent("helper@host")),
+                    ui::presence::member_color(&ui::permissions::MemberId::agent(helper), None),
                 ),
                 (Some((r, g, b)), (r, g, b), (r, g, b), (r, g, b)),
                 "the board, its people row, the windows and every app settle one colour"
@@ -2182,10 +2200,8 @@ mod tests {
         }
 
         phase a_face_is_neutral_until_the_workspace_knows_whose_it_is;
-        // Someone whose device is live here before its certificate pairs it with their person is drawn
-        // neutral, never in a colour their device would key that changes once their person is known:
-        // the face on the bar, the People list's and the windows' all wear their workspace colour from
-        // the first frame it is known, and none before.
+        // A device live here before its certificate names its person is drawn grey, and its windows
+        // get no colour, until the person is known.
         {
             use ui::ColorCompat as _;
             let me = LiveMember {
@@ -2202,11 +2218,14 @@ mod tests {
                 let people = here.people(&tree, &[], &|_| None);
                 let mut presence = PresenceCtx::empty();
                 here.register_windows(&people, &mut presence);
-                (people[0].rgb, presence.color_for(&UserId("ben-tab".into())))
+                (
+                    people[0].rgb,
+                    presence.color_overrides.get(&MemberId::person("ben-root")).copied(),
+                )
             };
             assert_eq!(
                 shown(&mut here),
-                (ui::presence::UNSETTLED_RGB, ui::presence::UNSETTLED_RGB),
+                (ui::presence::UNSETTLED_RGB, None),
                 "not yet known whose device it is"
             );
             assert!(!here.colors().contains_key("ben-tab"));
@@ -2226,7 +2245,7 @@ mod tests {
                 ]),
             );
             let settled = ui::presence::assign_peer_colors(&["me-root", "ben-root"], &[]);
-            assert_eq!(shown(&mut here), (settled["ben-root"], settled["ben-root"]));
+            assert_eq!(shown(&mut here), (settled["ben-root"], Some(settled["ben-root"])));
             // A neutral face paints grey, not a ring colour.
             let palette = ui::tokens::colors::Colors::dark().presence;
             let painted = palette.of_rgb(ui::presence::UNSETTLED_RGB);
@@ -2236,8 +2255,7 @@ mod tests {
 
         phase a_persons_devices_share_their_colour_in_presence;
         // A person's devices wear one colour (the person's, once each device's certificate names
-        // them), and the presence every window draws from learns it for each device, so a second tab's
-        // pointer matches too.
+        // them), and the presence every window draws from learns it for the person.
         {
             let mut here = HereState::default();
             here.set_members(
@@ -2257,17 +2275,10 @@ mod tests {
             let people = here.people(&tree, &[], &|_| None);
             let mut presence = PresenceCtx::empty();
             here.register_windows(&people, &mut presence);
-            for device in ["ada-laptop", "ada-phone"] {
-                assert_eq!(
-                    presence.color_for(&UserId(device.into())),
-                    colors["ada-laptop"]
-                );
-                assert_eq!(
-                    presence.person_of(&UserId(device.into())),
-                    Some(&UserId("ada-root".into())),
-                    "each device is known as its person's"
-                );
-            }
+            assert_eq!(
+                presence.color_for(&MemberId::person("ada-root")),
+                colors["ada-laptop"]
+            );
         }
     }
 

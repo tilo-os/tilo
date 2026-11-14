@@ -59,7 +59,7 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     if entries.is_empty() {
         return Ok(());
     }
-    let author = context.author().0.clone();
+    let author = context.author().key();
     context.migrate_record(move |doc| apply(doc, &entries, &author))?;
     for name in names {
         let _ = tilo_files::blocking::remove(&data, &name);

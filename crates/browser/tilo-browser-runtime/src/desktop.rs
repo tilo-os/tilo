@@ -29,7 +29,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::automerge::{AutoCommit, transaction::Transactable as _};
-use ui::permissions::{SharedPermissions, UserId};
+use ui::permissions::{MemberId, SharedPermissions};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 use ui::window_share::ResourceView;
@@ -972,7 +972,7 @@ impl Tiles {
             device_id: self.inputs.device.clone(),
             instance_id: instance,
             permissions: self.inputs.permissions.clone(),
-            author: UserId(self.inputs.author.clone()),
+            author: MemberId::person(self.inputs.author.clone()),
             action_context: tilo_actions::ActionContext::default(),
         };
         let mut context = match named_new {

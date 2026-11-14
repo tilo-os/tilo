@@ -122,9 +122,8 @@ fn an_agents_colour_follows_the_rule_every_surface_draws_it_by() {
         let state = record.state().unwrap();
         state.agents[0].clone()
     };
-    let hue = collab_types::presence::PresenceHue::of_participant(
-        &format!("agent:{}", agent.id.0),
-        true,
+    let hue = collab_types::presence::PresenceHue::of_member(
+        &collab_types::MemberId::agent(&agent.id.0),
         Some(&agent.keeper),
     );
     assert_eq!(agent.colour, None, "nothing chosen, so the rule's");

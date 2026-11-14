@@ -341,7 +341,7 @@ async fn copy(
         reason = "the clock reads whole, non-negative milliseconds"
     )]
     let mtime = js_sys::Date::now().max(0.0) as u64;
-    let author = page.records().author().0.clone();
+    let author = page.records().author().key();
     let (placed, folder_name) = record.edit(false, |doc| {
         let mut tree = Tree::of_record(&doc.save()).map_err(|error| error.to_string())?;
         let folder = into

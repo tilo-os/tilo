@@ -1046,7 +1046,7 @@ mod tests {
         let applied = staged.harness_mut().update_presence(|presence| {
             presence
                 .names
-                .insert(ui::permissions::UserId("scribe".into()), "Ada".into());
+                .insert(ui::permissions::MemberId::person("scribe"), "Ada".into());
             presence
                 .apply_interaction(event.clone())
                 .expect("a well-formed interaction applies")

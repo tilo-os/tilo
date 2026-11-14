@@ -10,8 +10,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::permissions::UserId;
-use crate::presence::{ParticipantKind, PresenceCtx};
+use crate::presence::PresenceCtx;
 use crate::search::FieldWeight;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -19,31 +18,24 @@ use crate::tokens::PresenceHue;
 use crate::widget::autocomplete::{Suggestion, SuggestionList, SuggestionPerson};
 use collab_types::{Member, MemberId};
 
-/// Someone a field can mention: a participant of the workspace.
+/// Someone a field can mention: a member of the workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MentionCandidate {
-    pub id: String,
+    pub id: MemberId,
     pub name: String,
-    pub kind: ParticipantKind,
     pub hue: PresenceHue,
     pub is_self: bool,
 }
 
 impl MentionCandidate {
-    /// A participant an owner knows of: a person unless `agent`, in the presence `hue` the
-    /// workspace gives them ([`PresenceCtx::hue_of`]).
+    /// A member an owner knows of, in the presence `hue` the workspace gives them
+    /// ([`PresenceCtx::hue_for`]).
     #[must_use]
-    pub fn new(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        agent: bool,
-        hue: PresenceHue,
-    ) -> Self {
+    pub fn new(id: MemberId, name: impl Into<String>, hue: PresenceHue) -> Self {
         Self {
             hue,
-            id: id.into(),
+            id,
             name: name.into(),
-            kind: ParticipantKind::from(agent),
             is_self: false,
         }
     }
@@ -57,13 +49,8 @@ impl MentionCandidate {
 
 impl MentionCandidate {
     fn of(presence: &PresenceCtx, member: Member) -> Self {
-        let id = UserId(member.id.key());
-        let kind = match member.id {
-            MemberId::Person(_) => ParticipantKind::Person,
-            MemberId::Agent(_) => ParticipantKind::Agent,
-            MemberId::Bot(_) => ParticipantKind::Bot,
-        };
-        let name = if kind == ParticipantKind::Person {
+        let id = member.id;
+        let name = if id.is_person() {
             member.name
         } else {
             presence
@@ -75,9 +62,8 @@ impl MentionCandidate {
         };
         Self {
             is_self: member.is_self,
-            id: id.0,
+            id,
             name,
-            kind,
             hue: member.colour,
         }
     }
@@ -135,7 +121,7 @@ pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a Ment
         candidates.iter().map(|candidate| {
             [
                 (candidate.name.as_str(), FieldWeight::TITLE),
-                (candidate.id.as_str(), FieldWeight::IDENTITY),
+                (candidate.id.id(), FieldWeight::IDENTITY),
             ]
         }),
     )
@@ -238,7 +224,7 @@ impl MentionPicker {
                     let keep = self
                         .list
                         .highlighted()
-                        .and_then(|row| ranked.iter().position(|c| c.id == row.value));
+                        .and_then(|row| ranked.iter().position(|c| c.id.key() == row.value));
                     self.list.set_rows(ranked.iter().map(suggestion).collect());
                     self.list.set_highlight(Some(keep.unwrap_or(0)));
                     self.shown = ranked;
@@ -392,33 +378,33 @@ impl MentionPicker {
 /// who is not simply a person, what they are. Its value is the participant
 /// id, because a document's mention records who it is.
 pub(crate) fn suggestion(candidate: &MentionCandidate) -> Suggestion {
-    suggestion_with_value(candidate, candidate.id.clone())
+    suggestion_with_value(candidate, candidate.id.key())
 }
 
 /// A participant as a completion offers them: their avatar and name; a pick writes `@name`
 /// and, in rich text, a mention of their participant id.
 pub(crate) fn candidate(candidate: &MentionCandidate) -> crate::widget::completion::Candidate {
     let row = suggestion_with_value(candidate, candidate.label());
-    let mut out =
-        crate::widget::completion::Candidate::reference(&candidate.name, row.value, &candidate.id);
+    let mut out = crate::widget::completion::Candidate::reference(
+        &candidate.name,
+        row.value,
+        candidate.id.key(),
+    );
     out.person = row.person;
     out.label = row.detail;
     out
 }
 
 fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggestion {
-    let detail = match candidate.kind {
-        ParticipantKind::Person => None,
-        ParticipantKind::Agent => Some(widget_text("widget-mention-agent")),
-        ParticipantKind::Shortcut => Some(widget_text("widget-mention-shortcut")),
-        ParticipantKind::App => Some(widget_text("widget-mention-app")),
-        ParticipantKind::Program => Some(widget_text("widget-mention-program")),
-        ParticipantKind::Bot => Some(widget_text("widget-mention-bot")),
+    let detail = match candidate.id {
+        MemberId::Person(_) => None,
+        MemberId::Agent(_) => Some(widget_text("widget-mention-agent")),
+        MemberId::Bot(_) => Some(widget_text("widget-mention-bot")),
     };
     let row = Suggestion::labelled(value, candidate.name.clone()).with_person(SuggestionPerson {
-        identity: candidate.id.clone(),
+        identity: candidate.id.key(),
         hue: candidate.hue,
-        agent: candidate.kind != ParticipantKind::Person,
+        agent: !candidate.id.is_person(),
     });
     match detail {
         Some(detail) => row.with_detail(detail),
@@ -433,21 +419,18 @@ mod tests {
     fn workspace() -> Vec<MentionCandidate> {
         vec![
             MentionCandidate::new(
-                "u_ada",
+                MemberId::person("u_ada"),
                 "Ada Lovelace",
-                false,
                 PresenceHue::of_identity("u_ada"),
             ),
             MentionCandidate::new(
-                "u_alan",
+                MemberId::person("u_alan"),
                 "Alan Turing",
-                false,
                 PresenceHue::of_identity("u_alan"),
             ),
             MentionCandidate::new(
-                "agent:tide",
+                MemberId::agent("tide"),
                 "Tide",
-                true,
                 PresenceHue::of_identity("agent:tide"),
             ),
         ]
@@ -461,9 +444,9 @@ mod tests {
         // derived from their id here.
         {
             let mut presence = PresenceCtx::empty();
-            presence.set_display_name(UserId("u_ada".into()), "Ada");
-            presence.set_presence_hue(UserId("u_ada".into()), PresenceHue::Violet);
-            let announced = presence.hue_of("u_ada");
+            presence.set_display_name(MemberId::person("u_ada"), "Ada");
+            presence.set_presence_hue(MemberId::person("u_ada"), PresenceHue::Violet);
+            let announced = presence.hue_for(&crate::permissions::MemberId::person("u_ada"));
             assert_ne!(
                 announced,
                 PresenceHue::of_identity("u_ada"),
@@ -528,26 +511,33 @@ mod tests {
 #[cfg(test)]
 mod roster_tests {
     use super::*;
-    use crate::permissions::UserId;
+    use crate::permissions::MemberId;
 
     #[test]
     fn the_workspace_and_an_owners_candidates_merge_once_by_id_sorted_by_name() {
         let mut presence = crate::presence::PresenceCtx::empty();
         presence
             .names
-            .insert(UserId("u_ada".into()), "Ada Lovelace".into());
+            .insert(MemberId::person("u_ada"), "Ada Lovelace".into());
         presence
             .names
-            .insert(UserId("u_alan".into()), "Alan Turing".into());
+            .insert(MemberId::person("u_alan"), "Alan Turing".into());
         let extra = vec![
-            MentionCandidate::new("u_ada", "Ada L.", false, PresenceHue::of_identity("u_ada")),
             MentionCandidate::new(
-                "u_old",
+                MemberId::person("u_ada"),
+                "Ada L.",
+                PresenceHue::of_identity("u_ada"),
+            ),
+            MentionCandidate::new(
+                MemberId::person("u_old"),
                 "Zoe Zebra",
-                false,
                 PresenceHue::of_identity("u_old"),
             ),
-            MentionCandidate::new("u_blank", "   ", false, PresenceHue::of_identity("u_blank")),
+            MentionCandidate::new(
+                MemberId::person("u_blank"),
+                "   ",
+                PresenceHue::of_identity("u_blank"),
+            ),
         ];
         let merged = merged_roster(&presence, &extra);
         let names: Vec<_> = merged

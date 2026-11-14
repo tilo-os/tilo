@@ -117,7 +117,7 @@ mod shell {
     use super::*;
     use crate::State;
     use crate::floating_surface::HistoryChangeDescription;
-    use crate::permissions::{PermissionContext, UserId};
+    use crate::permissions::{MemberId, PermissionContext};
     use crate::widget::history_group::from_hex16;
 
     impl HistoryHost {
@@ -174,7 +174,7 @@ mod shell {
             &mut self,
             state: &mut State,
             authority: &PermissionContext,
-            author: &UserId,
+            author: &MemberId,
         ) -> bool {
             let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {
                 return false;

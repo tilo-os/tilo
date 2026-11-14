@@ -5,14 +5,14 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT};
-use collab_types::presence::UserId;
+use collab_types::MemberId;
 
 use super::{READ, UndoLog};
 
 const WINDOW: super::InstanceId = 1;
 
 /// Write and close one step of `author`'s.
-fn step(doc: &mut AutoCommit, history: &mut UndoLog, author: &UserId, word: usize) {
+fn step(doc: &mut AutoCommit, history: &mut UndoLog, author: &MemberId, word: usize) {
     let before = doc.get_heads();
     doc.put(ROOT, "word", word.to_string()).unwrap();
     doc.commit();
@@ -32,7 +32,7 @@ fn step(doc: &mut AutoCommit, history: &mut UndoLog, author: &UserId, word: usiz
 /// How many changes asking for the next undo reads after one more step,
 /// once `steps` steps were taken and asked about.
 fn read_for_next_step(steps: usize) -> usize {
-    let author = UserId("ada".into());
+    let author = MemberId::person("ada");
     let mut doc = AutoCommit::new();
     let mut history = UndoLog::new(&mut doc);
     for word in 0..steps {
@@ -56,7 +56,7 @@ fn asking_for_the_next_undo_reads_what_came_since_not_the_session() {
 
 #[test]
 fn a_change_no_step_closed_over_stays_out_of_every_step() {
-    let author = UserId("ada".into());
+    let author = MemberId::person("ada");
     let mut doc = AutoCommit::new();
     let mut history = UndoLog::new(&mut doc);
     step(&mut doc, &mut history, &author, 0);

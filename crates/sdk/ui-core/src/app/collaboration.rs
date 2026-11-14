@@ -179,12 +179,12 @@ impl App {
         &mut self.presence_ctx
     }
 
-    pub fn followed_peer(&self) -> Option<&str> {
-        self.presence.followed_peer.as_deref()
+    pub fn followed_peer(&self) -> Option<&crate::permissions::MemberId> {
+        self.presence.followed_peer.as_ref()
     }
 
     pub fn followed_peer_target(&self) -> Option<[f32; 2]> {
-        let id = self.presence.followed_peer.as_deref()?;
+        let id = self.presence.followed_peer.as_ref()?;
         self.presence_ctx.peer_pointer(id)
     }
 
@@ -474,9 +474,9 @@ impl App {
     /// Following a peer who hasn't published a View yet latches the intent
     /// without moving anything; the viewport snaps to them once their first
     /// View arrives.
-    pub fn follow(&mut self, peer_id: impl Into<String>) {
+    pub fn follow(&mut self, peer: crate::permissions::MemberId) {
         let _entry = self.enter_wake_scope();
-        self.presence.followed_peer = Some(peer_id.into());
+        self.presence.followed_peer = Some(peer);
         self.apply_follow();
     }
 
@@ -489,11 +489,7 @@ impl App {
         let Some(id) = self.presence.followed_peer.clone() else {
             return;
         };
-        let Some(view) = self
-            .presence_ctx
-            .peer_view(&crate::permissions::UserId(id))
-            .cloned()
-        else {
+        let Some(view) = self.presence_ctx.peer_view(&id).cloned() else {
             return;
         };
         crate::view::capability::restore_view_state(
@@ -947,10 +943,15 @@ impl App {
             }
             CollabEvent::RecordsArrived { records } => self.records_arrived(&records),
             CollabEvent::RecordUnavailable { route } => self.record_unavailable(&route),
-            CollabEvent::FollowChanged { peer_id } => match peer_id {
-                Some(peer_id) => self.follow(peer_id),
-                None => self.unfollow(),
-            },
+            CollabEvent::FollowChanged { peer_id } => {
+                match peer_id
+                    .as_deref()
+                    .and_then(crate::permissions::MemberId::parse)
+                {
+                    Some(peer) => self.follow(peer),
+                    None => self.unfollow(),
+                }
+            }
             CollabEvent::DocumentSnapshotRequested { route } => {
                 self.respond_document_snapshot(&route);
             }
@@ -967,16 +968,15 @@ impl App {
                     lane.stands(hash.clone(), state);
                 }
             }
-            CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                self.presence_ctx
-                    .upsert_remote_cursor(user_id, [x, y], None);
+            CollabEvent::RemoteCursorMoved { member, x, y } => {
+                self.presence_ctx.upsert_remote_cursor(member, [x, y], None);
             }
             CollabEvent::RemotePresenceUpdate {
-                user_id,
+                member,
                 key,
                 payload,
             } => {
-                self.apply_remote_presence(user_id, key, payload);
+                self.apply_remote_presence(member, key, payload);
             }
             event @ (CollabEvent::Document { .. } | CollabEvent::ScrollbackBatch { .. }) => {
                 self.apply_document_collab_event(event);
@@ -1280,7 +1280,7 @@ impl App {
         }
     }
 
-    pub fn local_author(&self) -> &crate::permissions::UserId {
+    pub fn local_author(&self) -> &crate::permissions::MemberId {
         &self.collaboration.local_author
     }
 }

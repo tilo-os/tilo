@@ -647,8 +647,11 @@ fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool, peer: bool) -> S
     }
     .painting_peers();
     if peer {
-        app.presence_ctx_mut()
-            .upsert_remote_cursor("ada".into(), PEER_AT, Some("Ada Lovelace"));
+        app.presence_ctx_mut().upsert_remote_cursor(
+            tilo_app::permissions::MemberId::person("ada"),
+            PEER_AT,
+            Some("Ada Lovelace"),
+        );
     }
     app.init_layout();
     let mut scene = tilo_app::advanced::Scene::new();

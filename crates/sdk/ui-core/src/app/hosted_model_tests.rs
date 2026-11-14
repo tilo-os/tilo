@@ -449,7 +449,7 @@ tilo_test_env::scenario! {
                 permissions: crate::permissions::SharedPermissions::new(
                     crate::permissions::PermissionContext::permissive(),
                 ),
-                author: crate::permissions::UserId("fixture-user".into()),
+                author: crate::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
@@ -771,7 +771,7 @@ tilo_test_env::scenario! {
             if is_self { row.claiming_self() } else { row }
         }
         let mut app = hosted_directory_fixture();
-        let first = crate::permissions::UserId("person:m".into());
+        let first = crate::permissions::MemberId::person("m");
         app.apply_collab_event_for_test(CollabEvent::Context {
             members: vec![
                 person("person:m", 2_000, true),
@@ -780,7 +780,7 @@ tilo_test_env::scenario! {
             permissions: vec![],
             apps: Vec::new(),
         });
-        let second = crate::permissions::UserId("person:z".into());
+        let second = crate::permissions::MemberId::person("z");
         assert_eq!(app.presence_ctx.self_label().as_deref(), Some("Ada (1)"));
         assert_eq!(app.presence_ctx.display_name(&second), "Ada (2)");
 
@@ -793,7 +793,7 @@ tilo_test_env::scenario! {
             permissions: vec![],
             apps: Vec::new(),
         });
-        let newcomer = crate::permissions::UserId("person:a".into());
+        let newcomer = crate::permissions::MemberId::person("a");
         assert_eq!(app.presence_ctx.display_name(&first), "Ada (1)");
         assert_eq!(app.presence_ctx.display_name(&second), "Ada (2)");
         assert_eq!(app.presence_ctx.display_name(&newcomer), "Ada (3)");
@@ -818,11 +818,7 @@ tilo_test_env::scenario! {
             permissions: vec![],
             apps: Vec::new(),
         });
-        let helper = crate::permissions::UserId("agent:build-helper".into());
-        assert_eq!(
-            app.presence_ctx.participant_kind(&helper),
-            crate::presence::ParticipantKind::Agent
-        );
+        let helper = crate::permissions::MemberId::agent("build-helper");
 
         app.apply_collab_event_for_test(CollabEvent::Context {
             members: vec![
@@ -836,10 +832,6 @@ tilo_test_env::scenario! {
             apps: Vec::new(),
         });
         assert!(!app.presence_ctx.names.contains_key(&helper));
-        assert_eq!(
-            app.presence_ctx.participant_kind(&helper),
-            crate::presence::ParticipantKind::Person
-        );
 
         app.apply_collab_event_for_test(CollabEvent::Context {
             members: vec![],

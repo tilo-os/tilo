@@ -32,7 +32,7 @@ use ui_core::application::{
 use ui_core::application_view::InstanceViewStore;
 use ui_core::collaboration::DocumentMutation;
 use ui_core::headless::FrameHarness;
-use ui_core::permissions::{PermissionContext, SharedPermissions, UserId};
+use ui_core::permissions::{MemberId, PermissionContext, SharedPermissions};
 use ui_core::portable_storage::{PortableStorage, StorageKey};
 use ui_core::record::{RecordCheckout, RecordOwners, RecordStore, RecordSync};
 
@@ -256,7 +256,7 @@ impl AttachedView {
                 device_id: DEVICE.into(),
                 instance_id: INSTANCE,
                 permissions: permissions.clone(),
-                author: UserId(me.to_owned()),
+                author: MemberId::person(me.to_owned()),
                 action_context: tilo_actions::ActionContext::default()
                     .with_invoker(invoker.clone()),
             },

@@ -3,7 +3,7 @@ use super::caret_tag::{CaretTag, LabeledCaret};
 use crate::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -82,7 +82,7 @@ fn marker_pigment(c: Color) -> Color {
 /// chroma, so every participant is equally loud on every material. Every
 /// collab affordance resolves through this so they all agree on a peer's
 /// colour.
-pub(crate) fn color_for(ctx: &PresenceCtx, user: &UserId, theme: &Theme) -> Color {
+pub(crate) fn color_for(ctx: &PresenceCtx, user: &MemberId, theme: &Theme) -> Color {
     theme.tokens.colors.presence.of_rgb(ctx.color_for(user))
 }
 
@@ -95,7 +95,7 @@ impl PresenceCtx {
         scene: &mut Scene,
         theme: &Theme,
         transform: Affine,
-        user: &UserId,
+        user: &MemberId,
         rect: Rect,
     ) {
         let color = color_for(self, user, theme);
@@ -108,7 +108,7 @@ impl PresenceCtx {
             selection: false,
             saying: None,
         });
-        if self.is_agent(user) {
+        if !user.is_person() {
             draw_agent_identity_mark(
                 scene,
                 transform,
@@ -130,7 +130,7 @@ impl PresenceCtx {
         scene: &mut Scene,
         theme: &Theme,
         transform: Affine,
-        user: &UserId,
+        user: &MemberId,
         rect: Rect,
     ) {
         let color = color_for(self, user, theme).with_alpha_factor(0.35);
@@ -153,7 +153,7 @@ impl PresenceCtx {
         &self,
         scene: &mut Scene,
         theme: &Theme,
-        user: &UserId,
+        user: &MemberId,
         rects: &[Rect],
     ) {
         let color = color_for(self, user, theme).with_alpha_factor(0.20);
@@ -165,7 +165,7 @@ impl PresenceCtx {
     /// Draw a soft "indicative mist" glow over `rect` in the peer's colour —
     /// wayfinding to where a peer currently is. Two translucent fills
     /// approximate a radial glow without an actual gradient.
-    pub fn draw_peer_mist(&self, scene: &mut Scene, theme: &Theme, user: &UserId, rect: Rect) {
+    pub fn draw_peer_mist(&self, scene: &mut Scene, theme: &Theme, user: &MemberId, rect: Rect) {
         let color = color_for(self, user, theme);
         scene.fill(
             Fill::NonZero,
@@ -198,7 +198,7 @@ impl PresenceCtx {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         transform: Affine,
-        user: &UserId,
+        user: &MemberId,
         name: &str,
         caret_rect: Rect,
     ) {
@@ -223,7 +223,7 @@ impl PresenceCtx {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         transform: Affine,
-        user: &UserId,
+        user: &MemberId,
         name: &str,
         caret: LabeledCaret,
     ) {
@@ -231,7 +231,7 @@ impl PresenceCtx {
         let color = color_for(self, user, theme);
         scene.fill(Fill::NonZero, transform, color, None, &caret_rect);
 
-        let is_agent = self.is_agent(user);
+        let is_agent = !user.is_person();
         let (chip_w, chip_h) = peer_pill_size_for(text_renderer, theme, name, is_agent);
         let chip_rect = caret.chip_rect(chip_w, chip_h);
         draw_peer_pill_kind(
@@ -269,7 +269,7 @@ impl PresenceCtx {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
         transform: Affine,
-        user: &UserId,
+        user: &MemberId,
         words: &str,
         caret: LabeledCaret,
     ) {
@@ -297,7 +297,7 @@ impl PresenceCtx {
         scene: &mut Scene,
         theme: &Theme,
         transform: Affine,
-        user: &UserId,
+        user: &MemberId,
         rect: Rect,
         radius: f64,
     ) {
@@ -313,7 +313,7 @@ impl PresenceCtx {
         scene: &mut Scene,
         theme: &Theme,
         transform: Affine,
-        user: &UserId,
+        user: &MemberId,
         rect: Rect,
         radius: f64,
         fill: f32,
@@ -338,7 +338,7 @@ impl PresenceCtx {
     pub fn draw_peer_outline_labeled(
         &self,
         ctx: &mut PaintCtx<'_>,
-        user: &UserId,
+        user: &MemberId,
         name: &str,
         rect: Rect,
         radius: f64,
@@ -365,7 +365,7 @@ impl PresenceCtx {
     pub fn draw_peer_outline_labeled_within(
         &self,
         ctx: &mut PaintCtx<'_>,
-        user: &UserId,
+        user: &MemberId,
         name: &str,
         rect: Rect,
         radius: f64,
@@ -399,7 +399,7 @@ impl PresenceCtx {
     pub(crate) fn draw_action_label_within(
         &self,
         ctx: &mut PaintCtx<'_>,
-        user: &UserId,
+        user: &MemberId,
         label: &str,
         rect: Rect,
         bounds: Rect,
@@ -479,7 +479,7 @@ impl PresenceCtx {
         &self,
         scene: &mut Scene,
         theme: &Theme,
-        user: &UserId,
+        user: &MemberId,
         spans: &[(Rect, f32)],
     ) {
         let color = marker_pigment(color_for(self, user, theme));
@@ -498,7 +498,7 @@ impl PresenceCtx {
         }
     }
 
-    pub fn draw_peer_focus(&self, scene: &mut Scene, theme: &Theme, user: &UserId, rect: Rect) {
+    pub fn draw_peer_focus(&self, scene: &mut Scene, theme: &Theme, user: &MemberId, rect: Rect) {
         let color = color_for(self, user, theme);
         let strip = Rect::new(rect.x0 - 4.0, rect.y0, rect.x0 - 1.0, rect.y1);
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &strip);
@@ -1441,7 +1441,7 @@ pub fn draw_remote_cursors(
         .remote_cursors
         .iter()
         .filter(|c| c.painted_by_window())
-        .map(|cursor| peer_of(presence, cursor))
+        .map(|cursor| peer_of(cursor))
         .collect();
     if peers.is_empty() {
         return;
@@ -1461,7 +1461,7 @@ pub fn draw_remote_cursors(
     clippy::cast_sign_loss,
     reason = "each channel is clamped to 0.0..=1.0 above, so the scaled result is 0.0..=255.0"
 )]
-fn peer_of(ctx: &PresenceCtx, cursor: &super::RemoteCursor) -> PeerCursor {
+fn peer_of(cursor: &super::RemoteCursor) -> PeerCursor {
     PeerCursor {
         pos: (f64::from(cursor.position[0]), f64::from(cursor.position[1])),
         label: cursor.label.clone(),
@@ -1471,7 +1471,7 @@ fn peer_of(ctx: &PresenceCtx, cursor: &super::RemoteCursor) -> PeerCursor {
             (cursor.color[2].clamp(0.0, 1.0) * 255.0) as u8,
             255,
         ),
-        is_agent: ctx.is_agent(&UserId(cursor.user_id.clone())),
+        is_agent: !cursor.member.is_person(),
         opacity: 1.0,
         name_opacity: 1.0,
         chat: None,
@@ -1918,7 +1918,7 @@ pub fn draw_remote_presence(
         // arrives (apply_remote_presence, upsert_remote_cursor_owned), but
         // those depend on knowing our own id, which has several spellings —
         // checked again here as the one place that catches every door.
-        if presence.is_own_identity(&cursor.user_id) {
+        if presence.is_own_identity(&cursor.member) {
             continue;
         }
         // A window only places pointers measured in its own coordinates. A
@@ -1929,7 +1929,7 @@ pub fn draw_remote_presence(
             continue;
         }
         let target = Point::new(f64::from(cursor.position[0]), f64::from(cursor.position[1]));
-        let peer = peer_of(presence, cursor);
+        let peer = peer_of(cursor);
         match super::geom::edge_mist_for(viewport, target) {
             Some(mist) => {
                 // Drawn untransformed, inside the band (as in
@@ -1963,12 +1963,12 @@ pub fn draw_remote_presence(
 mod tests {
     use super::*;
     use crate::offscreen::OffscreenRenderer;
-    use crate::permissions::UserId;
+    use crate::permissions::MemberId;
 
     #[test]
     fn action_labels_preserve_the_notice_above_the_actual_control() {
         let presence = PresenceCtx::empty();
-        let user = UserId("charlie".into());
+        let user = MemberId::person("charlie");
         let viewport = Rect::new(20.0, 20.0, 480.0, 180.0);
         for theme in [Theme::default(), Theme::dark().with_text_scale(2.0)] {
             for control in [
@@ -2039,7 +2039,13 @@ mod tests {
 
             let paint = |owner: PointerOwner| {
                 let mut ctx = PresenceCtx::empty();
-                ctx.upsert_remote_cursor_owned("alice".into(), at, Some("Alice"), 1.0, owner);
+                ctx.upsert_remote_cursor_owned(
+                    MemberId::person("alice"),
+                    at,
+                    Some("Alice"),
+                    1.0,
+                    owner,
+                );
                 let mut scene = Scene::new();
                 let mut tr = TextRenderer::new();
                 draw_remote_presence(
@@ -2076,7 +2082,7 @@ mod tests {
             let ctx = PresenceCtx::empty();
             let theme = Theme::default();
             let mut scene = Scene::new();
-            let user = UserId("charlie".to_string());
+            let user = MemberId::person("charlie");
             ctx.draw_peer_caret(
                 &mut scene,
                 &theme,
@@ -2097,21 +2103,17 @@ mod tests {
         // phase: agent_caret_has_the_shared_non_text_identity_marker
         {
             let theme = Theme::default();
-            let agent = UserId("peer@agent".to_string());
-            let mut agent_ctx = PresenceCtx::empty();
-            agent_ctx.set_participant_kind(agent.clone(), super::super::ParticipantKind::Agent);
-            let mut person_ctx = PresenceCtx::empty();
-            person_ctx.set_participant_kind(agent.clone(), super::super::ParticipantKind::Person);
+            let ctx = PresenceCtx::empty();
             let caret = Rect::new(30.0, 40.0, 32.0, 60.0);
 
-            let render = |ctx: &PresenceCtx| {
+            let render = |member: &MemberId| {
                 let mut scene = Scene::new();
-                ctx.draw_peer_caret(&mut scene, &theme, Affine::IDENTITY, &agent, caret);
+                ctx.draw_peer_caret(&mut scene, &theme, Affine::IDENTITY, member, caret);
                 let mut renderer = OffscreenRenderer::new(80, 80);
                 renderer.render(&scene, Color::BLACK)
             };
-            let agent_pixels = render(&agent_ctx);
-            let person_pixels = render(&person_ctx);
+            let agent_pixels = render(&MemberId::agent("peer"));
+            let person_pixels = render(&MemberId::person("peer"));
 
             // Three pixels above the ordinary caret, only the agent's processor
             // marker occupies this point. This remains distinguishable without
@@ -2131,7 +2133,7 @@ mod tests {
             let theme = Theme::default();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            let user = UserId("charlie".to_string());
+            let user = MemberId::person("charlie");
             // Caret bar from y=60..80 at x=30..32. The chip sits a line above it.
             ctx.draw_peer_caret_labeled(
                 &mut scene,
@@ -2169,7 +2171,7 @@ mod tests {
         // a flat fill does not.
         {
             let theme = Theme::default();
-            let user = UserId("alice".to_string());
+            let user = MemberId::person("alice");
             let ctx = PresenceCtx::empty();
             let mut tr = crate::text_render::TextRenderer::new();
             let (w, h) = peer_pill_size(&mut tr, &theme, "alice");
@@ -2225,7 +2227,7 @@ mod tests {
             let ctx = PresenceCtx::empty();
             let theme = Theme::default();
             let mut scene = Scene::new();
-            let user = UserId("bob".to_string());
+            let user = MemberId::person("bob");
             ctx.draw_peer_mist(&mut scene, &theme, &user, Rect::new(10.0, 10.0, 70.0, 30.0));
 
             let mut r = OffscreenRenderer::new(80, 80);
@@ -2248,7 +2250,7 @@ mod tests {
             let ctx = PresenceCtx::empty();
             let theme = Theme::default();
             let mut scene = Scene::new();
-            let user = UserId("charlie".to_string());
+            let user = MemberId::person("charlie");
             ctx.draw_peer_outline(
                 &mut scene,
                 &theme,
@@ -2287,7 +2289,7 @@ mod tests {
             let theme = Theme::default();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            let user = UserId("charlie".to_string());
+            let user = MemberId::person("charlie");
             ctx.draw_peer_outline_labeled(
                 &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 &user,
@@ -2326,7 +2328,7 @@ mod tests {
             let ctx = PresenceCtx::empty();
             let theme = Theme::default();
             let mut tr = TextRenderer::new();
-            let user = UserId("charlie".to_string());
+            let user = MemberId::person("charlie");
             // The lane area starts at y=20; the object sits 2px inside its top,
             // so a chip hung above would start above y=20 and be cut off.
             let bounds = Rect::new(0.0, 20.0, 200.0, 120.0);
@@ -2375,7 +2377,7 @@ mod tests {
             let ctx = PresenceCtx::empty();
             let theme = Theme::default();
             let mut tr = TextRenderer::new();
-            let user = UserId("charlie".to_string());
+            let user = MemberId::person("charlie");
             let bounds = Rect::new(0.0, 0.0, 200.0, 140.0);
             let object = Rect::new(10.0, 60.0, 160.0, 120.0);
 
@@ -2406,7 +2408,7 @@ mod tests {
             let ctx = PresenceCtx::empty();
             let theme = Theme::default();
             let mut scene = Scene::new();
-            let user = UserId("bob".to_string());
+            let user = MemberId::person("bob");
             ctx.draw_peer_typing(
                 &mut scene,
                 &theme,
@@ -2451,7 +2453,7 @@ mod tests {
             let mut ctx = PresenceCtx::empty();
             // "bob" (orange) at x=180 — well past a 100-wide viewport's right
             // edge — at mid height.
-            ctx.upsert_remote_cursor("bob".to_string(), [180.0, 50.0], None);
+            ctx.upsert_remote_cursor(MemberId::person("bob"), [180.0, 50.0], None);
             let theme = Theme::default();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
@@ -2490,12 +2492,12 @@ mod tests {
             let viewport = Rect::new(0.0, 0.0, 320.0, 240.0);
 
             let mut ctx = PresenceCtx::empty();
-            ctx.set_own_identity(["me"]);
-            ctx.set_display_name(UserId("peer@7".to_string()), "Bob");
+            ctx.set_own_identity([MemberId::person("me")]);
+            ctx.set_display_name(MemberId::person("peer@7"), "Bob");
             // The frame a workspace sends: a pointer keyed by the workspace, the
             // same key the compositor overlay and broker use.
             let _ = ctx.apply_remote_presence(
-                "peer@7".to_string(),
+                MemberId::person("peer@7"),
                 crate::presence::PresenceKey::Workspace {
                     id: "workspace-1".to_string(),
                 },
@@ -2548,12 +2550,12 @@ mod tests {
             let viewport = Rect::new(0.0, 0.0, 320.0, 240.0);
 
             let mut ctx = PresenceCtx::empty();
-            ctx.set_own_identity(["me"]);
-            ctx.set_display_name(UserId("peer@7".to_string()), "Bob");
+            ctx.set_own_identity([MemberId::person("me")]);
+            ctx.set_display_name(MemberId::person("peer@7"), "Bob");
             // A widget scope is a position in this window's content, so this
             // window is the only layer that can place it.
             let _ = ctx.apply_remote_presence(
-                "peer@7".to_string(),
+                MemberId::person("peer@7"),
                 crate::presence::PresenceKey::Widget {
                     path: vec![crate::presence::PathSegment::Index(0)],
                 },
@@ -2583,7 +2585,7 @@ mod tests {
             );
             assert_eq!(
                 ctx.hit_test_offscreen_mist(viewport, Point::new(318.0, 120.0)),
-                Some("peer@7".to_string()),
+                Some(MemberId::person("peer@7")),
                 "the band that was painted does not answer a click on it",
             );
         }
@@ -2592,11 +2594,11 @@ mod tests {
         // follow; a click in open space selects nobody.
         {
             let mut ctx = PresenceCtx::empty();
-            ctx.upsert_remote_cursor("bob".to_string(), [180.0, 50.0], None);
+            ctx.upsert_remote_cursor(MemberId::person("bob"), [180.0, 50.0], None);
             let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
             assert_eq!(
                 ctx.hit_test_offscreen_mist(viewport, Point::new(98.0, 50.0)),
-                Some("bob".to_string())
+                Some(MemberId::person("bob"))
             );
             // A point in the middle of the canvas hits no band.
             assert_eq!(
@@ -2931,7 +2933,7 @@ mod tests {
                 ctx.draw_peer_typing(
                     &mut scene,
                     theme,
-                    &UserId("alice".to_string()),
+                    &MemberId::person("alice"),
                     &[(Rect::new(0.0, 0.0, 40.0, 40.0), 0.25)],
                 );
                 let mut r = OffscreenRenderer::new(40, 40);
@@ -3025,7 +3027,7 @@ mod tests {
         ctx.draw_peer_typing(
             &mut scene,
             theme,
-            &UserId(user.to_string()),
+            &MemberId::person(user.to_string()),
             &[(Rect::new(0.0, 0.0, 40.0, 40.0), 1.0)],
         );
         let mut r = OffscreenRenderer::new(40, 40);
@@ -3040,7 +3042,7 @@ mod tests {
     /// shell uses, so this is still the production painter.
     fn marker_band_for(rgb: (u8, u8, u8), paper: Color, theme: &Theme) -> (u8, u8, u8) {
         let mut ctx = PresenceCtx::empty();
-        let user = UserId("peer".to_string());
+        let user = MemberId::person("peer");
         ctx.set_color_override(
             user.clone(),
             &format!("#{:02x}{:02x}{:02x}", rgb.0, rgb.1, rgb.2),
@@ -3226,7 +3228,7 @@ mod tests {
             let theme = Theme::default();
             let mut tr = TextRenderer::new();
             tr.set_text_scale(2.0);
-            let user = UserId("charlie".to_string());
+            let user = MemberId::person("charlie");
             // The surface ends at x=200; the canvas continues to 260 so paint
             // past the edge is observable.
             let bounds = Rect::new(0.0, 0.0, 200.0, 160.0);

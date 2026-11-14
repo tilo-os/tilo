@@ -51,8 +51,8 @@ fn typed_socket_fans_out_on_its_own_route_only() {
         tilo_test_env::wait_until("peer A's typed presence at peer B", || {
             peer_b.poll().iter().any(|event| matches!(
                 event,
-                CollabEvent::RemotePresenceUpdate { user_id, key: PresenceKey::Workspace { id }, payload: PresencePayload::Arrived }
-                    if user_id == "peer-a" && id == "77"
+                CollabEvent::RemotePresenceUpdate { member, key: PresenceKey::Workspace { id }, payload: PresencePayload::Arrived }
+                    if *member == tilo_ui::permissions::MemberId::person("peer-a") && id == "77"
             ))
         });
     }

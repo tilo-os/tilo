@@ -71,13 +71,13 @@ fn n_peer_fanout_and_per_peer_attribution() {
         key: PresenceKey::Workspace { id: "2".into() },
         payload: PresencePayload::Pointer { x: 2.0, y: 2.0 },
     });
-    let uid_for = |evs: &[CollabEvent], ws: &str| -> Option<String> {
+    let uid_for = |evs: &[CollabEvent], ws: &str| -> Option<tilo_ui::permissions::MemberId> {
         evs.iter().find_map(|e| match e {
             CollabEvent::RemotePresenceUpdate {
-                user_id,
+                member,
                 key: PresenceKey::Workspace { id },
                 ..
-            } if id == ws => Some(user_id.clone()),
+            } if id == ws => Some(member.clone()),
             _ => None,
         })
     };
@@ -93,8 +93,16 @@ fn n_peer_fanout_and_per_peer_attribution() {
     let uid_b = uid_for(&c_evs, "2").expect("C sees B's Workspace-2 presence");
     // Asserts the exact announced ids, not just `uid_a != uid_b` — that
     // weaker check would still pass if the broker swapped them.
-    assert_eq!(uid_a, "peer-a", "A's presence must be attributed to A");
-    assert_eq!(uid_b, "peer-b", "B's presence must be attributed to B");
+    assert_eq!(
+        uid_a,
+        tilo_ui::permissions::MemberId::person("peer-a"),
+        "A's presence must be attributed to A"
+    );
+    assert_eq!(
+        uid_b,
+        tilo_ui::permissions::MemberId::person("peer-b"),
+        "B's presence must be attributed to B"
+    );
     assert_ne!(uid_a, uid_b, "A and B must be attributed distinct user ids");
 
     // A must NOT receive its own Workspace-1 presence, but SHOULD see

@@ -429,7 +429,7 @@ tilo_test_env::scenario! {
                 permissions: crate::permissions::SharedPermissions::new(
                     crate::permissions::PermissionContext::permissive(),
                 ),
-                author: crate::permissions::UserId("fixture-user".into()),
+                author: crate::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,

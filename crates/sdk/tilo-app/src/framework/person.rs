@@ -422,7 +422,7 @@ impl PersonState {
         app_id: &'static str,
         app_title: &'static str,
     ) -> Self {
-        let me = records.author().0.clone();
+        let me = records.author().key();
         Self::named(Some(records), own, me, Vec::new(), app_id, app_title)
     }
 

@@ -6173,7 +6173,7 @@ fn the_window_bar_names_its_commands_for_assistive_technology() {
     );
 }
 
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::presence::SelectionRange;
 
 fn first_block_id(wp: &Editor) -> String {
@@ -6559,14 +6559,15 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
         let peer = "peer@5537458103208628978";
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
-        presence.set_display_name(ui::permissions::UserId(peer.into()), "Bob");
+        presence.set_caret(&block_presence_key(&block_id), MemberId::person(peer), 3);
+        presence.set_display_name(ui::permissions::MemberId::person(peer), "Bob");
 
         let (carets, _) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 1);
         assert_eq!(carets[0].label, "Bob");
         assert_eq!(
-            carets[0].user.0, peer,
+            carets[0].user.key(),
+            peer,
             "the id stays the identity — it is what the caret is coloured by",
         );
     }
@@ -6578,7 +6579,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
         let peer = "peer@5537458103208628978";
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
+        presence.set_caret(&block_presence_key(&block_id), MemberId::person(peer), 3);
 
         let (carets, _) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 1);
@@ -6587,7 +6588,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
             ui::presence::guest_label(),
             "a person nobody named is a guest, never their key",
         );
-        assert_eq!(carets[0].user.0, peer, "the id stays the identity");
+        assert_eq!(carets[0].user.key(), peer, "the id stays the identity");
     }
 }
 
@@ -6599,7 +6600,11 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
         let block_id = first_block_id(wp);
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret("alice".into(), block_presence_key(&block_id), 3);
+        presence.set_caret(
+            &block_presence_key(&block_id),
+            ui::permissions::MemberId::person("alice"),
+            3,
+        );
 
         let (carets, selections) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 1, "one remote caret resolved");
@@ -6608,7 +6613,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
             "a bare caret yields no selection rects"
         );
         let c = &carets[0];
-        assert_eq!(c.user, UserId("alice".into()));
+        assert_eq!(c.user, MemberId::person("alice"));
         let block = wp.laid.iter().find(|l| l.id == block_id).unwrap();
         assert!(
             (c.rect.width() - CARET_WIDTH).abs() < 1e-6,
@@ -6636,13 +6641,17 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
         let block_id = first_block_id(wp);
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_selection("bob".into(), block_presence_key(&block_id), 0, 4);
+        presence.set_selection(
+            &block_presence_key(&block_id),
+            ui::permissions::MemberId::person("bob"),
+            ui::presence::SelectionRange { start: 0, end: 4 },
+        );
 
         let (carets, selections) = wp.remote_presence_overlays(&presence);
         assert!(carets.is_empty(), "a selection yields no bare caret");
         assert_eq!(selections.len(), 1, "one remote selection resolved");
         let s = &selections[0];
-        assert_eq!(s.user, UserId("bob".into()));
+        assert_eq!(s.user, MemberId::person("bob"));
         assert!(
             !s.rects.is_empty(),
             "the selection produced at least one highlight rect"
@@ -6663,7 +6672,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
         let mut presence = PresenceCtx::empty();
         presence.selections.insert(
             block_presence_key(&block_id),
-            vec![(UserId("bob".into()), SelectionRange { start: 2, end: 2 })],
+            vec![(MemberId::person("bob"), SelectionRange { start: 2, end: 2 })],
         );
 
         let (_carets, selections) = wp.remote_presence_overlays(&presence);
@@ -6687,18 +6696,36 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
         let b1 = wp.laid[1].id.clone();
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret("alice".into(), block_presence_key(&b0), 1);
-        presence.set_remote_caret("bob".into(), block_presence_key(&b1), 1);
+        presence.set_caret(
+            &block_presence_key(&b0),
+            ui::permissions::MemberId::person("alice"),
+            1,
+        );
+        presence.set_caret(
+            &block_presence_key(&b1),
+            ui::permissions::MemberId::person("bob"),
+            1,
+        );
 
         let (carets, _selections) = wp.remote_presence_overlays(&presence);
         assert_eq!(carets.len(), 2, "both peers' carets resolved");
-        let users: Vec<&str> = carets.iter().map(|c| c.user.0.as_str()).collect();
+        let users: Vec<&str> = carets.iter().map(|c| c.user.id()).collect();
         assert!(
             users.contains(&"alice") && users.contains(&"bob"),
             "got {users:?}"
         );
-        let ya = carets.iter().find(|c| c.user.0 == "alice").unwrap().rect.y0;
-        let yb = carets.iter().find(|c| c.user.0 == "bob").unwrap().rect.y0;
+        let ya = carets
+            .iter()
+            .find(|c| c.user.key() == "alice")
+            .unwrap()
+            .rect
+            .y0;
+        let yb = carets
+            .iter()
+            .find(|c| c.user.key() == "bob")
+            .unwrap()
+            .rect
+            .y0;
         assert!(
             (ya - yb).abs() > 1.0,
             "carets in different blocks have distinct y positions"
@@ -6710,7 +6737,11 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
         let block_id = first_block_id(editor(&mut framed));
 
         let mut presence = PresenceCtx::empty();
-        presence.set_remote_caret("charlie".into(), block_presence_key(&block_id), 2);
+        presence.set_caret(
+            &block_presence_key(&block_id),
+            ui::permissions::MemberId::person("charlie"),
+            2,
+        );
 
         Framed::harness_mut(&mut framed).set_presence_context(presence.clone());
         let (wp, _) = pipeline_draw(&mut framed, 1100, 760);
@@ -6721,7 +6752,7 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
             1,
             "the production draw consumed the remote caret"
         );
-        assert_eq!(carets[0].user, UserId("charlie".into()));
+        assert_eq!(carets[0].user, MemberId::person("charlie"));
     }
 }
 
@@ -7408,19 +7439,19 @@ fn a_digest_addressed_remote_caret_resolves_to_its_block() {
     assert!(is_scope_digest_key(&digest));
     let peer = "agent-publisher";
     let mut presence = PresenceCtx::empty();
-    presence.set_remote_caret(peer.into(), digest.clone(), 3);
+    presence.set_caret(&digest.clone(), MemberId::person(peer), 3);
     presence.set_selection(
         &digest,
-        UserId(peer.into()),
+        MemberId::person(peer),
         SelectionRange { start: 0, end: 2 },
     );
     let (carets, selections) = wp.remote_presence_overlays(&presence);
     assert_eq!(carets.len(), 1, "digest caret drawn once, in its block");
     assert_eq!(selections.len(), 1);
     let mut stray = PresenceCtx::empty();
-    stray.set_remote_caret(
-        peer.into(),
-        ui::presence::PresenceKey::from_scope_digest([7; 16]),
+    stray.set_caret(
+        &ui::presence::PresenceKey::from_scope_digest([7; 16]),
+        MemberId::person(peer),
         1,
     );
     assert!(wp.remote_presence_overlays(&stray).0.is_empty());
@@ -7481,7 +7512,7 @@ fn face_presence_cannot_escape_the_canvas() {
     let framed = editor(&mut framed);
     let block = framed.laid.last().expect("a laid block").clone();
     let mut presence = PresenceCtx::empty();
-    let user = UserId("ada".into());
+    let user = MemberId::person("ada");
     let key = block_presence_key(&block.id);
     presence.set_display_name(user.clone(), "Ada");
     presence.carets.insert(key.clone(), vec![(user.clone(), 0)]);

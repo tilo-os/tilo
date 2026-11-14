@@ -12,8 +12,8 @@ use winit::event::WindowEvent;
 
 use crate::component::{Bound, Component, Described, Event, Person, Value};
 use crate::i18n::I18nManager;
-use crate::permissions::UserId;
-use crate::presence::{ParticipantKind, PresenceCtx};
+use crate::permissions::MemberId;
+use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -91,8 +91,8 @@ pub struct RichInput {
 struct DrawerPeople {
     speakers: Vec<Person>,
     members: Vec<Person>,
-    /// The kind and colour of each, in order, as the source was built with; `None` until built.
-    built: Option<Vec<(ParticipantKind, crate::tokens::PresenceHue)>>,
+    /// Who each is and their colour, in order, as the source was built with; `None` until built.
+    built: Option<Vec<(MemberId, crate::tokens::PresenceHue)>>,
 }
 
 impl DrawerPeople {
@@ -115,35 +115,38 @@ impl DrawerPeople {
             return None;
         }
         let said = |person: &Person| {
-            let user = UserId(person.identity.clone());
-            (presence.participant_kind(&user), presence.hue_for(&user))
+            let user = MemberId::parse(&person.identity)?;
+            let hue = presence.hue_for(&user);
+            Some((user, hue))
         };
         let now: Vec<_> = self
             .speakers
             .iter()
             .chain(&self.members)
-            .map(said)
+            .filter_map(said)
             .collect();
         if self.built.as_ref() == Some(&now) {
             return None;
         }
         let candidate = |person: &Person| {
-            let (kind, hue) = said(person);
-            mention_picker::candidate(&MentionCandidate {
-                id: person.identity.clone(),
+            let (id, hue) = said(person)?;
+            Some(mention_picker::candidate(&MentionCandidate {
+                is_self: presence.is_own_identity(&id),
+                id,
                 name: person.name.clone(),
-                kind,
                 hue,
-                is_self: presence.is_own_identity(&person.identity),
-            })
+            }))
         };
         let first: Vec<&Person> = self.speakers.iter().take(SPEAKERS).collect();
-        let speakers = first.iter().map(|person| candidate(person)).collect();
+        let speakers = first
+            .iter()
+            .filter_map(|person| candidate(person))
+            .collect();
         let members = self
             .members
             .iter()
             .filter(|person| !first.iter().any(|said| said.identity == person.identity))
-            .map(candidate)
+            .filter_map(candidate)
             .collect();
         self.built = Some(now);
         Some(CompletionSource::new(

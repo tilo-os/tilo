@@ -644,7 +644,7 @@ tilo_test_env::scenario! {
 
         let rows = roster_rows(&desktop, "local");
         let scribe = rows.iter().find(|row| row.id == "scribe").unwrap();
-        let assigned = ui::presence::participant_color("agent:scribe", true, Some("owner"));
+        let assigned = ui::presence::member_color(&ui::permissions::MemberId::agent("agent:scribe"), Some("owner"));
         assert_eq!(
             scribe.color,
             Color::from_rgb8(assigned.0, assigned.1, assigned.2),

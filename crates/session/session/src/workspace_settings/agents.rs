@@ -417,9 +417,10 @@ impl Agents {
             person.clone(),
         ))
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        let records = self
-            .records
-            .in_workspace(&workspace_id, ui::permissions::UserId(person.clone()));
+        let records = self.records.in_workspace(
+            &workspace_id,
+            ui::permissions::MemberId::person(person.clone()),
+        );
         let record = WorkspaceRecord::<Record>::open(
             &records,
             OWNER,

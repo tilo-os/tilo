@@ -209,9 +209,9 @@ fn stage_with(
     if !collaborators.is_empty() {
         harness.update_presence(|presence| {
             for (name, key, payload) in collaborators {
-                let user = ui_core::permissions::UserId(name.clone());
-                presence.set_display_name(user, name.clone());
-                presence.apply_remote_presence(name, key, payload);
+                let user = ui_core::permissions::MemberId::person(name.clone());
+                presence.set_display_name(user.clone(), name);
+                presence.apply_remote_presence(user, key, payload);
             }
             true
         });

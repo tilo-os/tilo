@@ -71,9 +71,6 @@ pub const LOCAL_WORKSPACE: &str = "local";
 /// Which system app a presence key or a permission scope refers to.
 pub use collab_types::presence::AppKind;
 
-/// A person's stable id, as apps and presence spell it.
-pub use collab_types::presence::UserId;
-
 /// What a widget or a launch asks permission for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionScope {
@@ -202,7 +199,7 @@ pub enum Denial {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionContext {
     /// The acting person's id. Empty when no person is named.
-    user: UserId,
+    user: MemberId,
     /// Who reaches sandboxed resources.
     acting: Acting,
     sandbox: Vec<CapOverride>,
@@ -231,7 +228,7 @@ pub struct PermissionContext {
 /// Inert directory cache identity. It cannot make a permission decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DirectoryPermissionWitness {
-    user: UserId,
+    user: MemberId,
     acting: Acting,
     sandbox: Vec<CapOverride>,
     standing: Arc<Standing>,
@@ -246,7 +243,7 @@ impl PermissionContext {
     /// reached as `actor`.
     pub fn new(acting: Acting, sandbox: Vec<CapOverride>, standing: Standing) -> Self {
         Self {
-            user: UserId(standing.person_id().unwrap_or_default().to_owned()),
+            user: MemberId::person(standing.person_id().unwrap_or_default()),
             acting,
             sandbox,
             standing: Arc::new(standing),
@@ -406,7 +403,7 @@ impl PermissionContext {
     #[must_use]
     pub fn permitted_at(self, relative: &TreePath, kinds: policy::KindSet) -> Self {
         let grant = local_grant(
-            policy::Grantee::person(self.user.0.clone()),
+            policy::Grantee::person(self.user.key()),
             relative,
             kinds,
             None,
@@ -434,8 +431,7 @@ impl PermissionContext {
     /// version offers whoever holds it.
     #[must_use]
     pub fn read_only(&self) -> Self {
-        let mut context =
-            Self::member_of(self.standing.workspace(), self.user.0.clone(), Role::Viewer);
+        let mut context = Self::member_of(self.standing.workspace(), self.user.key(), Role::Viewer);
         context.acting = self.acting.clone();
         context.now = self.now;
         context.policy_time.clone_from(&self.policy_time);
@@ -527,7 +523,7 @@ impl PermissionContext {
     /// learned of a change.
     #[must_use]
     pub fn with_standing(mut self, standing: Standing) -> Self {
-        self.user = UserId(standing.person_id().unwrap_or_default().to_owned());
+        self.user = MemberId::person(standing.person_id().unwrap_or_default());
         self.standing = Arc::new(standing);
         self
     }
@@ -633,7 +629,7 @@ impl PermissionContext {
     }
 
     /// The acting person's id.
-    pub fn user(&self) -> &UserId {
+    pub fn user(&self) -> &MemberId {
         &self.user
     }
 

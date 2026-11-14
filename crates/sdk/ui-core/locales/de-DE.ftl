@@ -582,8 +582,6 @@ relative-compact-years = { $count } J.
 history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Kurzbefehl
-participant-app = { $name } · App
-participant-program = { $name } (Programm)
 participant-bot = { $name } · Bot
 # Zwei oder mehr Personen in einem Arbeitsbereich tragen denselben Namen: jede
 # wird nummeriert, für alle im Arbeitsbereich gleich.
@@ -685,9 +683,6 @@ find-bar-replace-all = Alle ersetzen
 find-bar-position = { $current } von { $total }
 find-bar-no-matches = Keine Treffer
 widget-mention-agent = Agent
-widget-mention-shortcut = Kurzbefehl
-widget-mention-app = App
-widget-mention-program = Programm
 widget-mention-bot = Bot
 widget-mention-list = Personen zum Erwähnen
 rich-text-reference-unreadable = Nicht mit dir geteilt

@@ -123,20 +123,19 @@ pub fn range_locus(
 /// one of the two, whichever it said last.
 pub fn actor_text_range<'p>(
     presence: &'p super::PresenceCtx,
-    actor: &str,
+    user: &crate::permissions::MemberId,
 ) -> Option<(&'p super::PresenceKey, super::SelectionRange)> {
-    let user = crate::permissions::UserId(actor.to_owned());
     presence
         .selections
         .iter()
         .find_map(|(key, held)| {
             held.iter()
-                .find(|(who, _)| *who == user)
+                .find(|(who, _)| who == user)
                 .map(|(_, range)| (key, *range))
         })
         .or_else(|| {
             presence.carets.iter().find_map(|(key, held)| {
-                held.iter().find(|(who, _)| *who == user).map(|(_, pos)| {
+                held.iter().find(|(who, _)| who == user).map(|(_, pos)| {
                     (
                         key,
                         super::SelectionRange {
@@ -162,7 +161,7 @@ pub fn agent_text_loci(
         .iter()
         .filter(|interaction| !interaction.actor.is_person())
         .filter_map(|interaction| {
-            let (key, range) = actor_text_range(presence, &interaction.actor.by.key())?;
+            let (key, range) = actor_text_range(presence, interaction.actor.member_id()?)?;
             let (_, rect) = range_locus(root, theme, key, range)?;
             Some((interaction.invocation, rect))
         })

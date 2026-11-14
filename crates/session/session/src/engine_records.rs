@@ -17,7 +17,7 @@ use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use tilo_broker_core::custody::OwnerCustody as _;
 use tilo_desktop_model::WorkspaceId;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::record::workspace::WorkspaceRecords;
 use ui::record::{RecordId, RecordOwners, RecordStore, RecordSync};
 
@@ -131,7 +131,7 @@ impl EngineRecords {
     }
 
     /// The records of `workspace` , opened as `author` .
-    pub(crate) fn in_workspace(&self, workspace: &str, author: UserId) -> WorkspaceRecords {
+    pub(crate) fn in_workspace(&self, workspace: &str, author: MemberId) -> WorkspaceRecords {
         let inner = Rc::clone(&self.0);
         let workspace = workspace.to_owned();
         WorkspaceRecords::new(author, move |app| inner.store_of(&workspace, app))

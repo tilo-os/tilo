@@ -76,7 +76,7 @@ mod tests {
             (640, 480),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         frame.relayout();
         assert!(frame.action_palette.is_none());
@@ -106,7 +106,7 @@ mod tests {
             (640, 480),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
+            crate::permissions::MemberId::person("fixture"),
         );
         let address = crate::search::search_address();
         assert!(tilo_actions::door::resolve(&frame.resources(), &address).is_some());

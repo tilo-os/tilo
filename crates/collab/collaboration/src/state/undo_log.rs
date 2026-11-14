@@ -20,7 +20,7 @@ use automerge::{AutoCommit, ChangeHash, ScalarValue};
 use tilo_actions::{ActionContext, ActionId, Did, HistoryOp};
 use tilo_resource::history::Version;
 
-use collab_types::presence::UserId;
+use collab_types::MemberId;
 
 use crate::history_source::authors;
 use crate::history_source::steps::{self, UNDONE_KEY};
@@ -36,7 +36,7 @@ pub struct UndoEntry {
     pub after: Vec<ChangeHash>,
     pub focused_node_idx: Option<usize>,
     pub widget_metadata: Option<String>,
-    pub author: Option<UserId>,
+    pub author: Option<MemberId>,
     /// Runtime instance attribution, independent of authenticated author/CRDT actor.
     pub instance_id: Option<InstanceId>,
     /// The entry of the step this undoes or redoes, so history names "Undo
@@ -50,7 +50,7 @@ struct StepPresentation {
     focused_node_idx: Option<usize>,
     widget_metadata: Option<String>,
     /// Who the host said made it, when its changes name nobody.
-    author: Option<UserId>,
+    author: Option<MemberId>,
     instance_id: Option<InstanceId>,
     /// The step it closed in, so this session takes it back with the rest
     /// of that step.
@@ -107,7 +107,7 @@ thread_local! {
 }
 
 /// An author's window and whether it asks for the next redo.
-type NextQuery = (UserId, InstanceId, bool);
+type NextQuery = (MemberId, InstanceId, bool);
 
 /// What the next undo or redo depends on: the document's committed heads
 /// and what is still pending on top of them, and this history's revision
@@ -323,18 +323,15 @@ impl UndoLog {
 
     /// Who a change is by, as far as this window knows: the host's word for
     /// this session's steps, else the invoker its entry records.
-    fn author_of(&self, version: &Version) -> Option<String> {
+    fn author_of(&self, version: &Version) -> Option<MemberId> {
         let presented = self.presented.get(&step_key(version));
-        presented
-            .and_then(|step| step.author.as_ref())
-            .map(|author| author.0.clone())
-            .or_else(|| {
-                version
-                    .context
-                    .as_ref()
-                    .and_then(|context| context.invoker.as_ref())
-                    .map(tilo_actions::ActionInvoker::key)
-            })
+        presented.and_then(|step| step.author.clone()).or_else(|| {
+            version
+                .context
+                .as_ref()
+                .and_then(|context| context.invoker.as_ref())
+                .and_then(|invoker| invoker.acting.member_id().cloned())
+        })
     }
 
     /// Whether a change is a step `author` takes back from `instance`:
@@ -344,7 +341,7 @@ impl UndoLog {
     fn claims(
         &self,
         version: &Version,
-        author: Option<&UserId>,
+        author: Option<&MemberId>,
         instance: Option<InstanceId>,
         reach: &Reach,
     ) -> bool {
@@ -364,7 +361,7 @@ impl UndoLog {
         let by = match author {
             None => presented.is_some(),
             Some(author) => match self.author_of(version) {
-                Some(by) => by == author.0,
+                Some(by) => by == *author,
                 None => presented.is_some(),
             },
         };
@@ -375,7 +372,7 @@ impl UndoLog {
             || reach.device.wrote(&version.actor)
             || (self.any_device
                 && author.is_some_and(|author| {
-                    authors::actor_handle(&version.actor).is_some_and(|actor| actor == author.0)
+                    authors::actor_handle(&version.actor).is_some_and(|actor| actor == author.key())
                 }));
         by && instance
             .is_none_or(|instance| presented.is_none_or(|step| step.instance_id == Some(instance)))
@@ -441,10 +438,7 @@ impl UndoLog {
             after,
             focused_node_idx: presented.and_then(|step| step.focused_node_idx),
             widget_metadata: presented.and_then(|step| step.widget_metadata.clone()),
-            author: step
-                .first()
-                .and_then(|newest| self.author_of(newest))
-                .map(UserId),
+            author: step.first().and_then(|newest| self.author_of(newest)),
             instance_id: presented.and_then(|step| step.instance_id),
             // A redo stands for the step it brought back.
             step: step.first().and_then(|newest| {
@@ -461,7 +455,7 @@ impl UndoLog {
     fn next_undo_step(
         &self,
         doc: &AutoCommit,
-        author: Option<&UserId>,
+        author: Option<&MemberId>,
         instance: Option<InstanceId>,
     ) -> Option<Vec<Version>> {
         let open = self.open_changes(doc);
@@ -480,7 +474,7 @@ impl UndoLog {
     fn next_redo_undo(
         &self,
         doc: &AutoCommit,
-        author: Option<&UserId>,
+        author: Option<&MemberId>,
         instance: Option<InstanceId>,
     ) -> Option<Version> {
         let open = self.open_changes(doc);
@@ -498,7 +492,7 @@ impl UndoLog {
     /// The step a Ctrl+Z by `author` would take back, without taking it
     /// back. With an author, other people's steps are walked past; without
     /// one, any step of this session.
-    pub fn next_undo_as(&self, doc: &AutoCommit, author: Option<&UserId>) -> Option<UndoEntry> {
+    pub fn next_undo_as(&self, doc: &AutoCommit, author: Option<&MemberId>) -> Option<UndoEntry> {
         self.next_undo_step(doc, author, None)
             .map(|step| self.step_entry(doc, &step))
     }
@@ -506,7 +500,7 @@ impl UndoLog {
     /// The undo a Ctrl+Shift+Z by `author` would bring back. The entry
     /// brackets the undo change; the caret is where it was when the undo
     /// was taken.
-    pub fn next_redo_as(&self, doc: &AutoCommit, author: Option<&UserId>) -> Option<UndoEntry> {
+    pub fn next_redo_as(&self, doc: &AutoCommit, author: Option<&MemberId>) -> Option<UndoEntry> {
         self.next_redo_undo(doc, author, None)
             .map(|undo| self.redo_entry(doc, &undo))
     }
@@ -520,11 +514,11 @@ impl UndoLog {
 
     /// Whether `author` has anything to undo — true exactly when
     /// [`undo_as`](Self::undo_as) would take a step back.
-    pub fn can_undo_as(&self, doc: &AutoCommit, author: Option<&UserId>) -> bool {
+    pub fn can_undo_as(&self, doc: &AutoCommit, author: Option<&MemberId>) -> bool {
         self.next_undo_step(doc, author, None).is_some()
     }
 
-    pub fn can_redo_as(&self, doc: &AutoCommit, author: Option<&UserId>) -> bool {
+    pub fn can_redo_as(&self, doc: &AutoCommit, author: Option<&MemberId>) -> bool {
         self.next_redo_undo(doc, author, None).is_some()
     }
 
@@ -595,7 +589,7 @@ impl UndoLog {
         doc: &mut AutoCommit,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: Option<UserId>,
+        author: Option<MemberId>,
     ) -> bool {
         self.commit_action_authored_with_message(doc, focused_node_idx, metadata, author, None)
     }
@@ -608,7 +602,7 @@ impl UndoLog {
         doc: &mut AutoCommit,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: Option<UserId>,
+        author: Option<MemberId>,
         message: Option<String>,
     ) -> bool {
         if !self.can_bump() {
@@ -630,7 +624,7 @@ impl UndoLog {
 
     /// The entry of a change this window commits: the given one (or none),
     /// attributed to `author` and joined to the open step.
-    fn stamp(&self, message: Option<String>, author: Option<&UserId>) -> Option<String> {
+    fn stamp(&self, message: Option<String>, author: Option<&MemberId>) -> Option<String> {
         let mut context = message.as_deref().map_or_else(
             || Some(ActionContext::default()),
             ActionContext::from_change_message,
@@ -642,7 +636,9 @@ impl UndoLog {
         if context.invoker.is_none()
             && let Some(author) = author
         {
-            context.invoker = Some(tilo_actions::ActionInvoker::person(author.0.clone()));
+            context.invoker = Some(tilo_actions::ActionInvoker::admitted(
+                &tilo_actions::Acting::member(author.clone()),
+            ));
         }
         if context.gesture.is_none() {
             context.gesture = Some(self.open);
@@ -674,7 +670,7 @@ impl UndoLog {
         before: Vec<ChangeHash>,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: Option<UserId>,
+        author: Option<MemberId>,
     ) -> bool {
         let after = doc.get_heads();
         self.record_committed_span(doc, before, after, focused_node_idx, metadata, author, None)
@@ -687,7 +683,7 @@ impl UndoLog {
         before: Vec<ChangeHash>,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: UserId,
+        author: MemberId,
         instance: InstanceId,
     ) -> bool {
         let after = doc.get_heads();
@@ -712,7 +708,7 @@ impl UndoLog {
         after: Vec<ChangeHash>,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: Option<UserId>,
+        author: Option<MemberId>,
         instance_id: Option<InstanceId>,
     ) -> bool {
         if after == before {
@@ -747,7 +743,7 @@ impl UndoLog {
     fn undo_step(
         &mut self,
         doc: &mut AutoCommit,
-        author: Option<&UserId>,
+        author: Option<&MemberId>,
         instance: Option<InstanceId>,
         focus: Option<usize>,
         metadata: Option<String>,
@@ -811,7 +807,7 @@ impl UndoLog {
         doc: &mut AutoCommit,
         op: HistoryOp,
         step: Option<&ActionContext>,
-        by: Option<UserId>,
+        by: Option<MemberId>,
         place: Placement,
     ) {
         let Placement {
@@ -826,7 +822,9 @@ impl UndoLog {
             group: step.and_then(|step| step.group.clone()),
             invoker: by
                 .as_ref()
-                .map(|by| tilo_actions::ActionInvoker::person(by.0.clone()))
+                .map(|by| {
+                    tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::member(by.clone()))
+                })
                 .or_else(|| step.and_then(|step| step.invoker.clone())),
             gesture: Some(ActionId::new()),
             ..ActionContext::default()
@@ -857,7 +855,7 @@ impl UndoLog {
     fn redo_step(
         &mut self,
         doc: &mut AutoCommit,
-        author: Option<&UserId>,
+        author: Option<&MemberId>,
         instance: Option<InstanceId>,
         focus: Option<usize>,
         metadata: Option<String>,
@@ -889,7 +887,7 @@ impl UndoLog {
     pub fn undo_as(
         &mut self,
         doc: &mut AutoCommit,
-        author: Option<&UserId>,
+        author: Option<&MemberId>,
         focus: Option<usize>,
         metadata: Option<String>,
     ) -> Option<UndoEntry> {
@@ -900,7 +898,7 @@ impl UndoLog {
     pub fn redo_as(
         &mut self,
         doc: &mut AutoCommit,
-        author: Option<&UserId>,
+        author: Option<&MemberId>,
         focus: Option<usize>,
         metadata: Option<String>,
     ) -> Option<UndoEntry> {
@@ -911,7 +909,7 @@ impl UndoLog {
     pub fn next_undo_in(
         &self,
         doc: &AutoCommit,
-        author: &UserId,
+        author: &MemberId,
         instance: InstanceId,
     ) -> Option<UndoEntry> {
         self.next_kept(doc, (author.clone(), instance, false), || {
@@ -959,7 +957,7 @@ impl UndoLog {
     pub fn next_redo_in(
         &self,
         doc: &AutoCommit,
-        author: &UserId,
+        author: &MemberId,
         instance: InstanceId,
     ) -> Option<UndoEntry> {
         self.next_kept(doc, (author.clone(), instance, true), || {
@@ -972,7 +970,7 @@ impl UndoLog {
     pub fn undo_in(
         &mut self,
         doc: &mut AutoCommit,
-        author: &UserId,
+        author: &MemberId,
         instance: InstanceId,
         focus: Option<usize>,
         metadata: Option<String>,
@@ -984,7 +982,7 @@ impl UndoLog {
     pub fn redo_in(
         &mut self,
         doc: &mut AutoCommit,
-        author: &UserId,
+        author: &MemberId,
         instance: InstanceId,
         focus: Option<usize>,
         metadata: Option<String>,
@@ -999,7 +997,7 @@ impl UndoLog {
         target_heads: &[ChangeHash],
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: Option<UserId>,
+        author: Option<MemberId>,
     ) -> bool {
         self.restore_to_heads_owned(
             doc,
@@ -1020,7 +1018,7 @@ impl UndoLog {
         target_heads: &[ChangeHash],
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-        author: UserId,
+        author: MemberId,
         instance: InstanceId,
     ) -> bool {
         self.restore_to_heads_owned(
@@ -1058,7 +1056,7 @@ impl UndoLog {
 /// Existing native commits and new owned restores use this same attribution.
 #[doc(hidden)]
 pub struct OwnedActionAttribution {
-    pub author: Option<UserId>,
+    pub author: Option<MemberId>,
     pub instance_id: Option<InstanceId>,
     pub focused_node_idx: Option<usize>,
     pub widget_metadata: Option<String>,

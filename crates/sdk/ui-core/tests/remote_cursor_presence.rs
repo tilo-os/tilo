@@ -5,8 +5,7 @@
 
 use tilo_ui::app::App;
 use tilo_ui::collaboration::{CollabEvent, Member, MemberId};
-use tilo_ui::permissions::UserId;
-use tilo_ui::presence::{ParticipantKind, user_color};
+use tilo_ui::presence::user_color;
 use tilo_ui::state::State;
 use tilo_ui::widget::Container;
 
@@ -21,7 +20,7 @@ fn remote_cursor_moves_populate_and_update_presence() {
     {
         let mut app = new_headless_app();
         app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
-            user_id: "alice".to_string(),
+            member: MemberId::person("alice"),
             x: 120.0,
             y: 80.0,
         });
@@ -33,7 +32,7 @@ fn remote_cursor_moves_populate_and_update_presence() {
             "one RemoteCursorMoved must produce exactly one overlay cursor",
         );
         let c = &presence.remote_cursors[0];
-        assert_eq!(c.user_id, "alice");
+        assert_eq!(c.member, MemberId::person("alice"));
         assert_eq!(c.position, [120.0, 80.0]);
         let (r, g, b) = user_color("alice");
         assert!((c.color[0] - f32::from(r) / 255.0).abs() < 1e-3);
@@ -45,12 +44,12 @@ fn remote_cursor_moves_populate_and_update_presence() {
     {
         let mut app = new_headless_app();
         app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
-            user_id: "bob".to_string(),
+            member: MemberId::person("bob"),
             x: 10.0,
             y: 10.0,
         });
         app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
-            user_id: "bob".to_string(),
+            member: MemberId::person("bob"),
             x: 200.0,
             y: 300.0,
         });
@@ -76,16 +75,11 @@ fn remote_cursor_moves_populate_and_update_presence() {
             apps: Vec::new(),
         });
         app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
-            user_id: "agent:release".into(),
+            member: MemberId::agent("release"),
             x: 24.0,
             y: 36.0,
         });
 
-        let agent = UserId("agent:release".into());
-        assert_eq!(
-            app.presence_ctx().participant_kind(&agent),
-            ParticipantKind::Agent,
-        );
         assert_eq!(
             app.presence_ctx().remote_cursors[0].label,
             "Release assistant · Agent",

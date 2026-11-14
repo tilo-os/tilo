@@ -1205,7 +1205,7 @@ mod presence_origin_tests {
         );
         let origin = CrdtRoute::record("so.tilo.chat", "workspace", "derived:main");
         let event = CollabEvent::RemotePresenceUpdate {
-            user_id: "peer@1".into(),
+            member: ui::permissions::MemberId::person("peer@1"),
             key: ui::presence::PresenceKey::pointer_default(),
             payload: ui::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
         };

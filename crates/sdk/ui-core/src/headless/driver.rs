@@ -306,7 +306,7 @@ mod tests {
             (400, 200),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
+            crate::permissions::MemberId::person("fixture-user"),
         )
     }
 

@@ -315,8 +315,11 @@ fn remote_cursor_move_damages_only_old_and_new_cursor() {
     for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
         let mut app = presence_app(&theme);
         let mut layer = crate::presence::PresenceLayer::new();
-        app.presence_ctx
-            .upsert_remote_cursor("alice".into(), [120.0, 150.0], Some("Alice"));
+        app.presence_ctx.upsert_remote_cursor(
+            crate::permissions::MemberId::person("alice"),
+            [120.0, 150.0],
+            Some("Alice"),
+        );
 
         assert_eq!(
             presence_frame(&mut app, &mut layer, &[]),
@@ -334,8 +337,11 @@ fn remote_cursor_move_damages_only_old_and_new_cursor() {
         );
         layer.presented();
 
-        app.presence_ctx
-            .upsert_remote_cursor("alice".into(), [220.0, 150.0], Some("Alice"));
+        app.presence_ctx.upsert_remote_cursor(
+            crate::permissions::MemberId::person("alice"),
+            [220.0, 150.0],
+            Some("Alice"),
+        );
         let moved = presence_frame(&mut app, &mut layer, &[])
             .expect("a pointer move keeps to widget damage");
         assert!(!moved.is_empty(), "a moved pointer must be repainted");
@@ -359,7 +365,8 @@ fn remote_cursor_move_damages_only_old_and_new_cursor() {
         shown = next;
 
         // The peer's pointer leaves the window: where it was is erased.
-        app.presence_ctx.remove_remote_cursor("alice");
+        app.presence_ctx
+            .remove_remote_cursor(&crate::permissions::MemberId::person("alice"));
         let left = presence_frame(&mut app, &mut layer, &[])
             .expect("a pointer leaving keeps to widget damage");
         let next = layer.scene().clone();
@@ -387,7 +394,7 @@ tilo_test_env::scenario! {
         let mut app = presence_app(&theme);
         let mut layer = crate::presence::PresenceLayer::new();
         app.presence_ctx
-            .upsert_remote_cursor("alice".into(), [300.0, 200.0], Some("Alice"));
+            .upsert_remote_cursor(crate::permissions::MemberId::person("alice"), [300.0, 200.0], Some("Alice"));
         assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
         layer.presented();
         // A local keystroke dirties one field; the peer is where she was.
@@ -409,15 +416,15 @@ tilo_test_env::scenario! {
         )])
         .expect("a widget key");
         app.presence_ctx
-            .set_remote_caret("alice".into(), key.clone(), 3);
+            .set_caret(&key.clone(), crate::permissions::MemberId::person("alice"), 3);
         app.presence_ctx
-            .upsert_remote_cursor("alice".into(), [300.0, 200.0], Some("Alice"));
+            .upsert_remote_cursor(crate::permissions::MemberId::person("alice"), [300.0, 200.0], Some("Alice"));
         assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
         layer.presented();
 
         // Her pointer moving changes no widget: only the pointer repaints.
         app.presence_ctx
-            .upsert_remote_cursor("alice".into(), [310.0, 200.0], Some("Alice"));
+            .upsert_remote_cursor(crate::permissions::MemberId::person("alice"), [310.0, 200.0], Some("Alice"));
         let pointer = presence_frame(&mut app, &mut layer, &[])
             .expect("a pointer move beside a remote caret keeps to its marks");
         assert!(!pointer.is_empty());
@@ -429,7 +436,7 @@ tilo_test_env::scenario! {
         layer.presented();
 
         // Her caret moving changes what the field paints: repaint, once.
-        app.presence_ctx.set_remote_caret("alice".into(), key, 4);
+        app.presence_ctx.set_caret(&key, crate::permissions::MemberId::person("alice"), 4);
         assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
         layer.presented();
         assert_eq!(presence_frame(&mut app, &mut layer, &[]), Some(Vec::new()));

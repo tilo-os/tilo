@@ -277,7 +277,7 @@ mod owner_commit_tests {
                 permissions: ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::permissive(),
                 ),
-                author: ui::permissions::UserId("worker".into()),
+                author: ui::permissions::MemberId::person("worker"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
@@ -1163,7 +1163,7 @@ mod owner_commit_tests {
                 permissions: ui::permissions::SharedPermissions::new(
                     ui::permissions::PermissionContext::permissive(),
                 ),
-                author: ui::permissions::UserId(principal.clone()),
+                author: ui::permissions::MemberId::person(principal.clone()),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,

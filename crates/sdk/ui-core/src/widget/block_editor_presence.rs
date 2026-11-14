@@ -17,7 +17,7 @@ impl BlockEditor {
         document_selections: &[(
             usize,
             usize,
-            &crate::permissions::UserId,
+            &crate::permissions::MemberId,
             crate::presence::SelectionRange,
         )],
         ctx: &mut BlockDrawCtx<'_>,
@@ -38,13 +38,15 @@ impl BlockEditor {
                 .into_iter()
                 .map(|band| ctx.transform.transform_rect_bbox(band))
                 .collect();
-            let user = crate::permissions::UserId(author.clone());
+            let Some(user) = crate::permissions::MemberId::parse(author) else {
+                continue;
+            };
             ctx.presence
                 .draw_peer_authorship(ctx.scene, ctx.theme, &user, &bands);
         }
         let now = crate::time::now();
         for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
-            if self.local_author.as_deref() == Some(user.0.as_str()) {
+            if self.local_author.as_deref() == Some(user.key().as_str()) {
                 continue;
             }
             let rect = line.selection_rect(ctx.theme, range.start, range.end);
@@ -62,7 +64,7 @@ impl BlockEditor {
         // person's typing leaves, from an action rather than from keys.
         // Whose action caret stands on this line: the one tag it wears says who and what, so their
         // own caret here draws no second one.
-        let mut acting: Vec<crate::permissions::UserId> = Vec::new();
+        let mut acting: Vec<crate::permissions::MemberId> = Vec::new();
         for interaction in ctx.presence.visible_interactions(now) {
             let Some((start, end)) =
                 crate::presence::written_in(&interaction, None, &b.id, line.value())
@@ -72,7 +74,14 @@ impl BlockEditor {
             let Some(alpha) = ctx.presence.interaction_fade(interaction.invocation, now) else {
                 continue;
             };
-            let user = crate::permissions::UserId(interaction.actor.by.key());
+            let Some(user) = interaction
+                .actor
+                .members()
+                .first()
+                .map(|member| (*member).clone())
+            else {
+                continue;
+            };
             acting.push(user.clone());
             let rect = line.selection_rect(ctx.theme, start, end);
             let p0 = transformed(ctx.transform, Point::new(rect.x0, rect.y0));

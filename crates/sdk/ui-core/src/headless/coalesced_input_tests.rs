@@ -123,8 +123,8 @@ fn presence_arriving_between_frames_lays_out_once_on_the_hosts_frame() {
     let before = frame.relayout_frames();
     for (user, name) in [("a1", "Ada"), ("b2", "Bo"), ("c3", "Cy"), ("a1", "Ada L")] {
         frame.update_presence(|presence| {
-            presence.set_display_name(crate::permissions::UserId(user.into()), name);
-            presence.unregister_peer("gone");
+            presence.set_display_name(crate::permissions::MemberId::person(user), name);
+            presence.unregister_peer(&crate::permissions::MemberId::person("gone"));
             true
         });
     }

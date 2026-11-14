@@ -12,7 +12,7 @@ use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
 
 use super::*;
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 use crate::state::State;
 use crate::widget::history::HistoryAuthor;
 use crate::widget::{ActivityTimeline, HistoryFilter};
@@ -450,7 +450,7 @@ tilo_test_env::scenario! {
             &target,
             None,
             Some("restore".into()),
-            Some(UserId("alice".into())),
+            Some(MemberId::person("alice")),
         );
         assert!(
             changed,
@@ -503,7 +503,7 @@ tilo_test_env::scenario! {
             .collect();
         let target = heads_for_entry(&mut state.doc, &rows_ids[0]).unwrap();
 
-        state.restore_to_heads(&target, None, None, Some(UserId("alice".into())));
+        state.restore_to_heads(&target, None, None, Some(MemberId::person("alice")));
         let text = |s: &State| {
             let c = tilo_doc::model::open(&s.doc, &ROOT).unwrap();
             tilo_doc::model::materialize(&s.doc, &c).blocks[0]

@@ -16,7 +16,7 @@ use vello::kurbo::{Affine, Rect};
 
 use ui::PresencePayload;
 use ui::paint::PaintCtx;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -162,13 +162,13 @@ pub fn range_frame(selected: Option<(ClipId, f64, f64)>) -> (PresenceKey, Presen
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeerPlayhead {
-    pub user: UserId,
+    pub user: MemberId,
     pub at: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeerClip {
-    pub user: UserId,
+    pub user: MemberId,
     pub clip: ClipId,
     /// The span they published, for when the clip is not present locally; prefer the
     /// local geometry when it is.
@@ -190,7 +190,7 @@ pub fn peer_playheads(presence: &PresenceCtx) -> Vec<PeerPlayhead> {
                 .collect()
         })
         .unwrap_or_default();
-    out.sort_by(|a, b| a.user.0.cmp(&b.user.0));
+    out.sort_by(|a, b| a.user.cmp(&b.user));
     out
 }
 
@@ -211,7 +211,7 @@ pub fn peer_clips(presence: &PresenceCtx) -> Vec<PeerClip> {
             });
         }
     }
-    out.sort_by(|a, b| a.user.0.cmp(&b.user.0));
+    out.sort_by(|a, b| a.user.cmp(&b.user));
     out
 }
 
@@ -219,10 +219,10 @@ pub fn peer_field_carets(
     presence: &PresenceCtx,
     field: &str,
     subject: Uuid,
-) -> Vec<(UserId, usize)> {
+) -> Vec<(MemberId, usize)> {
     let key = field_key(field, subject);
-    let mut out: Vec<(UserId, usize)> = presence.carets.get(&key).cloned().unwrap_or_default();
-    out.sort_by(|a, b| a.0.0.cmp(&b.0.0));
+    let mut out: Vec<(MemberId, usize)> = presence.carets.get(&key).cloned().unwrap_or_default();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
 
@@ -406,8 +406,8 @@ mod tests {
     use super::*;
     use ui::presence::SelectionRange;
 
-    fn uid(s: &str) -> UserId {
-        UserId(s.to_string())
+    fn uid(s: &str) -> MemberId {
+        MemberId::person(s.to_string())
     }
 
     tilo_test_env::scenario! {
@@ -525,10 +525,10 @@ mod tests {
                 // Both frames to one receiver, in order: the clip ends up with no peer.
                 let mut ctx = PresenceCtx::empty();
                 let (k, p) = range_frame(Some((clip, 2.0, 6.0)));
-                ctx.apply_remote_presence("ada".into(), k, p);
+                ctx.apply_remote_presence(MemberId::person("ada"), k, p);
                 assert_eq!(peer_clips(&ctx).len(), 1, "selected");
                 let (k, p) = range_frame(None);
-                ctx.apply_remote_presence("ada".into(), k, p);
+                ctx.apply_remote_presence(MemberId::person("ada"), k, p);
                 assert!(peer_clips(&ctx).is_empty(), "and deselected again");
             }
             {
@@ -585,9 +585,9 @@ mod tests {
             let mut ctx = PresenceCtx::empty();
 
             let (k, p) = point_frame(None, 12.5);
-            ctx.apply_remote_presence("ada".into(), k, p);
+            ctx.apply_remote_presence(MemberId::person("ada"), k, p);
             let (k, p) = range_frame(Some((clip, 2.0, 6.0)));
-            ctx.apply_remote_presence("ada".into(), k, p);
+            ctx.apply_remote_presence(MemberId::person("ada"), k, p);
 
             let heads = peer_playheads(&ctx);
             assert_eq!(heads.len(), 1);
@@ -603,7 +603,7 @@ mod tests {
             let mut ctx = PresenceCtx::empty();
             for t in [1.0, 2.0, 3.0] {
                 let (k, p) = point_frame(None, t);
-                ctx.apply_remote_presence("ada".into(), k, p);
+                ctx.apply_remote_presence(MemberId::person("ada"), k, p);
             }
             let heads = peer_playheads(&ctx);
             assert_eq!(heads.len(), 1, "one participant, one playhead: {heads:?}");
@@ -613,11 +613,11 @@ mod tests {
             let clip = Uuid::new_v4();
             let mut ctx = PresenceCtx::empty();
             let (k, p) = point_frame(None, 12.5);
-            ctx.apply_remote_presence("ada".into(), k, p);
+            ctx.apply_remote_presence(MemberId::person("ada"), k, p);
             assert_eq!(peer_playheads(&ctx).len(), 1);
 
             let (k, p) = point_frame(Some((FIELD_TITLE_WORDS, clip, 3)), 12.5);
-            ctx.apply_remote_presence("ada".into(), k, p);
+            ctx.apply_remote_presence(MemberId::person("ada"), k, p);
             assert!(
                 peer_playheads(&ctx).is_empty(),
                 "their ghost playhead steps aside while they type",
@@ -628,7 +628,7 @@ mod tests {
             );
 
             let (k, p) = point_frame(None, 12.5);
-            ctx.apply_remote_presence("ada".into(), k, p);
+            ctx.apply_remote_presence(MemberId::person("ada"), k, p);
             assert_eq!(peer_playheads(&ctx).len(), 1);
             assert!(peer_field_carets(&ctx, FIELD_TITLE_WORDS, clip).is_empty());
         }
@@ -638,9 +638,9 @@ mod tests {
             let mut ctx = PresenceCtx::empty();
             for (who, t, clip) in [("ada", 4.0, one), ("bo", 9.0, two)] {
                 let (k, p) = point_frame(None, t);
-                ctx.apply_remote_presence(who.into(), k, p);
+                ctx.apply_remote_presence(ui::permissions::MemberId::person(who), k, p);
                 let (k, p) = range_frame(Some((clip, 1.0, 2.0)));
-                ctx.apply_remote_presence(who.into(), k, p);
+                ctx.apply_remote_presence(ui::permissions::MemberId::person(who), k, p);
             }
             let heads = peer_playheads(&ctx);
             assert_eq!(heads.len(), 2, "{heads:?}");
@@ -678,7 +678,7 @@ mod tests {
             // "charlie" is the palette's emerald, so a green-dominant pixel is
             // that peer specifically and not some other ink.
             let (k, p) = point_frame(Some((FIELD_TITLE_WORDS, subject, 7)), 0.0);
-            ctx.apply_remote_presence("charlie".into(), k, p);
+            ctx.apply_remote_presence(MemberId::person("charlie"), k, p);
 
             let mut scene = Scene::new();
             let mut tr = ui::text_render::TextRenderer::new();

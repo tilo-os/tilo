@@ -31,7 +31,7 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
             let mut services = AppConstructionInputs::controlled();
             services.debug_mode = || true;
             let mut presence = PresenceCtx::empty();
-            presence.set_own_identity(["announced-handle"]);
+            presence.set_own_identity([crate::permissions::MemberId::person("announced-handle")]);
             services.presence_ctx = ConstructionValue::Ready(presence);
             AppConstructionInputs::component_with_services(inputs, binding, services)
         }
@@ -40,8 +40,11 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
         let mut app =
             App::from_component_using(component, presentation_inputs(2.0), services).unwrap();
         assert_eq!(app.local_author(), &author());
-        assert!(app.presence_ctx.is_own_identity(&author().0));
-        assert!(app.presence_ctx.is_own_identity("announced-handle"));
+        assert!(app.presence_ctx.is_own_identity(&author()));
+        assert!(
+            app.presence_ctx
+                .is_own_identity(&crate::permissions::MemberId::person("announced-handle"))
+        );
         assert!(app.debug_mode);
         assert!(app.watch_system_settings);
         assert_presentation(&app.theme, 1.5, 1.25);
@@ -637,7 +640,7 @@ impl Runner {
                     || {
                         let mut inputs = AppConstructionInputs::controlled();
                         let mut presence = PresenceCtx::empty();
-                        presence.set_own_identity([author.0.clone()]);
+                        presence.set_own_identity([author.clone()]);
                         inputs.local_author = ConstructionValue::Ready(author);
                         inputs.presence_ctx = ConstructionValue::Ready(presence);
                         inputs

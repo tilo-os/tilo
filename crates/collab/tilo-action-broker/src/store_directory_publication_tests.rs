@@ -70,7 +70,7 @@ fn mount_store(env: &Environment, manager: ui::collaboration::CollaborationManag
             permissions: ui::permissions::SharedPermissions::new(
                 ui::permissions::PermissionContext::permissive(),
             ),
-            author: ui::permissions::UserId(person_id_for_root(env.cert.user_public_key)),
+            author: ui::permissions::MemberId::person(person_id_for_root(env.cert.user_public_key)),
             action_context: tilo_actions::ActionContext::default(),
         },
         &target,

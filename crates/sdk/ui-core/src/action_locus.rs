@@ -40,7 +40,14 @@ pub(crate) fn draw_action_presence(
         if !names_a_place(bounds, viewport) {
             continue;
         }
-        let user = crate::permissions::UserId(interaction.actor.by.key());
+        let Some(user) = interaction
+            .actor
+            .members()
+            .first()
+            .map(|member| (*member).clone())
+        else {
+            continue;
+        };
         let control = control_bounds(tree, bindings, &interaction, bounds).unwrap_or(bounds);
         // An agent's place is washed in its colour and framed in it, brighter the moment its step
         // is taken; anyone else's outline is the selection. One fill either way, at the
@@ -70,7 +77,7 @@ pub(crate) fn draw_action_presence(
             presence.draw_action_label_within(paint, &user, &label, bounds, viewport, &ink);
         }
         if let Some(marker) = marker
-            && presence.participant_kind(&user) == crate::presence::ParticipantKind::Agent
+            && user.is_agent()
         {
             painted.push(PaintedActionMarker {
                 interaction: interaction.clone(),

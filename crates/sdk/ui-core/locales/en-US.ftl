@@ -583,8 +583,6 @@ relative-compact-years = { $count }y
 history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Shortcut
-participant-app = { $name } · App
-participant-program = { $name } (program)
 participant-bot = { $name } · Bot
 # Two or more people in a workspace go by the same name: each is numbered, the
 # same numbers for everyone in it.
@@ -689,9 +687,6 @@ find-bar-replace-all = Replace all
 find-bar-position = { $current } of { $total }
 find-bar-no-matches = No matches
 widget-mention-agent = Agent
-widget-mention-shortcut = Shortcut
-widget-mention-app = App
-widget-mention-program = Program
 widget-mention-bot = Bot
 widget-mention-list = People to mention
 rich-text-reference-unreadable = Not shared with you

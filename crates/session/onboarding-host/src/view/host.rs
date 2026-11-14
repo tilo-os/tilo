@@ -530,7 +530,7 @@ fn mount_in_memory(
     use std::rc::Rc;
     use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
     use ui::launch::LaunchError;
-    use ui::permissions::{PermissionContext, Role, SharedPermissions, UserId};
+    use ui::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
     use ui::record::{RecordId, RecordOwners};
 
     const DEVICE: &str = "this-device";
@@ -550,7 +550,7 @@ fn mount_in_memory(
         device_id: DEVICE.to_owned(),
         instance_id: instance,
         permissions: SharedPermissions::new(PermissionContext::member(&author, Role::Owner)),
-        author: UserId(author),
+        author: MemberId::person(author),
         action_context: tilo_actions::ActionContext::default(),
     };
     let mut context =

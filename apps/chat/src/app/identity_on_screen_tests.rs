@@ -242,13 +242,13 @@ tilo_test_env::scenario! {
 
     phase people_sharing_a_name_are_numbered_as_the_workspace_numbers_them;
     {
-        use ui::permissions::UserId;
+        use ui::permissions::MemberId;
         let mut app = ChatApp::new_ephemeral();
         let me = app.me.id.clone();
         let mut presence = PresenceCtx::default();
-        presence.set_self_participant(UserId(me.clone()), "Sam");
-        presence.set_display_name(UserId("a-peer".into()), "sam");
-        presence.set_display_name(UserId("z-peer".into()), "Kim");
+        presence.set_self_participant(MemberId::person(me.clone()), "Sam");
+        presence.set_display_name(MemberId::person("a-peer"), "sam");
+        presence.set_display_name(MemberId::person("z-peer"), "Kim");
         app.adopt_workspace(&presence);
         assert_eq!(app.user_name("a-peer"), "sam (1)");
         assert_eq!(app.user_name(&me), "Sam (2)");
@@ -259,7 +259,7 @@ tilo_test_env::scenario! {
             "the @ picker offers the numbered name, got {offered:?}"
         );
 
-        presence.set_display_name(UserId("a-peer".into()), "Alex");
+        presence.set_display_name(MemberId::person("a-peer"), "Alex");
         app.adopt_workspace(&presence);
         assert_eq!(app.user_name("a-peer"), "Alex");
         assert_eq!(
@@ -270,11 +270,11 @@ tilo_test_env::scenario! {
     }
 }
 
-/// In the browser presence names a person's device while the call
-/// counts the person: the roster lists them once, by the device's name.
+/// The call and presence both count the person: the roster lists them once, by the name
+/// presence gives them.
 #[test]
-fn a_call_names_each_person_once_by_their_devices_name() {
-    use ui::permissions::UserId;
+fn a_call_names_each_person_once() {
+    use ui::permissions::MemberId;
     let mut app = ChatApp::new_ephemeral();
     let channel: Id = "voice".into();
     app.channels.push(crate::model::Channel {
@@ -291,11 +291,10 @@ fn a_call_names_each_person_once_by_their_devices_name() {
         participants: Vec::new(),
     });
     let mut presence = PresenceCtx::default();
-    presence.set_display_name(UserId("crane-device".into()), "Clever Crane");
-    presence.set_persons([(UserId("crane-device".into()), UserId("crane".into()))]);
+    presence.set_display_name(MemberId::person("crane"), "Clever Crane");
     presence.set_caret(
         &ChatApp::voice_presence_key(&channel),
-        UserId("crane-device".into()),
+        MemberId::person("crane"),
         0,
     );
     // The call itself counts the person, as a browser's roster does.
@@ -328,7 +327,7 @@ fn a_call_names_each_person_once_by_their_devices_name() {
 /// the workspace's list was read with; once they are gone, by the workspace's.
 #[test]
 fn a_contact_goes_by_the_name_they_go_by_here_now() {
-    use ui::permissions::UserId;
+    use ui::permissions::MemberId;
     let mut app = ChatApp::new_ephemeral();
     app.users.push(crate::model::User {
         id: "ada-root".into(),
@@ -339,8 +338,7 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
         is_agent: false,
     });
     let mut presence = PresenceCtx::default();
-    presence.set_display_name(UserId("ada-device".into()), "Ada");
-    presence.set_persons([(UserId("ada-device".into()), UserId("ada-root".into()))]);
+    presence.set_display_name(MemberId::person("ada-root"), "Ada");
     app.adopt_workspace(&presence);
     assert!(
         app.display_name("ada-root").contains("Ada"),

@@ -1915,8 +1915,9 @@ pub fn install_channel_settings() {
 ///
 /// Not memoised — see `auto_hello_env_uncached`: a process hosting
 /// more than one identity must not be frozen into the first one.
-pub fn local_user_id() -> collab_types::presence::UserId {
-    collab_types::presence::UserId(resolve_local_user_id())
+pub fn local_user_id() -> collab_types::MemberId {
+    let id = resolve_local_user_id();
+    collab_types::MemberId::parse(&id).unwrap_or_else(|| collab_types::MemberId::person(id))
 }
 
 fn resolve_local_user_id() -> String {

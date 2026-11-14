@@ -282,18 +282,6 @@ impl AppKind {
     }
 }
 
-/// A person's stable id, as apps and presence spell it. Kept as a distinct
-/// newtype since presence and app code pass a bare user string around and gain
-/// nothing from a tagged enum.
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct UserId(pub String);
-
-impl AsRef<UserId> for UserId {
-    fn as_ref(&self) -> &UserId {
-        self
-    }
-}
-
 /// A rectangle in physical pixels — the app's viewport at capture time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewRect {

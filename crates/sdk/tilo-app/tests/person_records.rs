@@ -258,7 +258,7 @@ tilo_test_env::scenario! {
         let held = PersonRecords::open(
             &mut owners,
             QueueApp::ID,
-            tilo_app::permissions::UserId(ada()),
+            tilo_app::permissions::MemberId::person(ada()),
         )
         .unwrap();
         let mut app = TestApp::<QueueApp>::for_person_shown_by(&ada(), &held).unwrap();

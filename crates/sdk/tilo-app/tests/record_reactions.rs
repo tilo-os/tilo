@@ -1,7 +1,7 @@
 //! A record that holds reactions shows them in its window's bar, and a
 //! press there reacts through the window's dispatcher, as the person.
 
-use tilo_app::permissions::UserId;
+use tilo_app::permissions::MemberId;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::Reactions;
 use tilo_app::window_toolbar::{
@@ -48,7 +48,7 @@ fn press(app: &mut TestApp<PosterApp>, emoji: &str) {
 fn joined_by_bob(app: &mut TestApp<PosterApp>) {
     app.harness()
         .presence_mut()
-        .set_display_name(UserId("bob".into()), "Bob");
+        .set_display_name(MemberId::person("bob"), "Bob");
     app.settle();
 }
 

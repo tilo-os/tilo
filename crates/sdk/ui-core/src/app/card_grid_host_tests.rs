@@ -118,7 +118,7 @@ tilo_test_env::scenario! {
                 (200, 600),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("grid-test".into()),
+                crate::permissions::MemberId::person("grid-test"),
             );
             let snapshot = driver.inspection();
             let grid = &snapshot.root.children[0];

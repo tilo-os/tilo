@@ -21,7 +21,7 @@ pub(super) struct PaintedBar {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PersonSeen {
     tab: u64,
-    user: crate::permissions::UserId,
+    user: crate::permissions::MemberId,
     colour: (u8, u8, u8),
     dims: bool,
     agent: bool,
@@ -32,12 +32,17 @@ impl PersonSeen {
     /// Whether this is still how `user` on `tab` looks: one person as the
     /// bar drew them against the same person now, without building the
     /// list of everyone again.
-    fn matches(&self, tab: u64, user: &crate::permissions::UserId, presence: &PresenceCtx) -> bool {
+    fn matches(
+        &self,
+        tab: u64,
+        user: &crate::permissions::MemberId,
+        presence: &PresenceCtx,
+    ) -> bool {
         self.tab == tab
             && &self.user == user
             && self.colour == presence.color_for(user)
             && self.dims == presence.availability_of(user).dims()
-            && self.agent == presence.is_agent(user)
+            && self.agent != user.is_person()
             && self.name.as_deref() == presence.names.get(user).map(String::as_str)
     }
 }
@@ -242,7 +247,7 @@ impl TabBar {
                     tab: tab.id,
                     colour: presence.color_for(user),
                     dims: presence.availability_of(user).dims(),
-                    agent: presence.is_agent(user),
+                    agent: !user.is_person(),
                     name: presence.names.get(user).cloned(),
                     user: user.clone(),
                 });

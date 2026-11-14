@@ -1120,7 +1120,7 @@ impl DesktopChrome {
     /// the directory.
     fn cards(&self) -> Vec<crate::overview::WorkspaceCard> {
         let host = PlainOverview {
-            user: ui::collaboration::local_user_id().0,
+            user: ui::collaboration::local_user_id().key(),
         };
         let now = ui::time::unix_now();
         self.handle.read(|tree| workspace_cards(tree, &host, now))

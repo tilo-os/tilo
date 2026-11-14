@@ -6,7 +6,7 @@ use crate::num;
 use crate::review_overlay::{ReviewAction, ReviewOverlay, ReviewPlacement};
 use tilo_rich_text::{FieldOutcome, RichTextView};
 use ui::PresenceCtx;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -338,7 +338,7 @@ impl Editor {
         &self,
         presence: &PresenceCtx,
         now: ui::time::Instant,
-    ) -> Vec<(UserId, Vec<(Rect, f32)>)> {
+    ) -> Vec<(MemberId, Vec<(Rect, f32)>)> {
         let mut out = Vec::new();
         for l in &self.laid {
             let Some((_, layout)) = self.layout_cache.get(&l.id) else {

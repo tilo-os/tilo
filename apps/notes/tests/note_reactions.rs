@@ -4,7 +4,7 @@
 
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::tilo_resource::{Invoke, Replica};
 
 const ME: &str = "test-author";
@@ -34,7 +34,7 @@ fn a_reaction_on_another_replica_converges_and_shows_in_the_header() {
     let page = app.read_document(notes::read::list_pages)[0].id;
     app.harness()
         .presence_mut()
-        .set_display_name(UserId("bob".into()), "Bob");
+        .set_display_name(MemberId::person("bob"), "Bob");
 
     // Bob reacts on his replica.
     let mut bob =

@@ -114,7 +114,7 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     state: &mut crate::state::State,
     root: *mut dyn crate::widget::Widget,
     node_map: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget, S>,
-    author: &crate::permissions::UserId,
+    author: &crate::permissions::MemberId,
 ) -> bool {
     let mut brackets: Vec<Vec<automerge::ChangeHash>> = Vec::new();
     let mut visited = std::collections::HashSet::new();
@@ -146,7 +146,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
     nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
     order: impl IntoIterator<Item = taffy::NodeId>,
     bindings: &crate::bound_dispatch::BoundNodeMap,
-    author: &crate::permissions::UserId,
+    author: &crate::permissions::MemberId,
 ) -> bool {
     let mut brackets = Vec::new();
     {
@@ -813,7 +813,7 @@ pub(crate) fn step_summary(entry: &crate::state::UndoEntry) -> Option<String> {
 pub(crate) fn status_snapshot(
     doc: &automerge::AutoCommit,
     history: &crate::state::UndoLog,
-    author: Option<&crate::permissions::UserId>,
+    author: Option<&crate::permissions::MemberId>,
 ) -> UndoStatus {
     let undo = history.next_undo_as(doc, author);
     let redo = history.next_redo_as(doc, author);

@@ -27,7 +27,7 @@ use tilo_rich_text::{Draft, RichTextSurface, RichTextView, SubmitKey};
 use ui::ColorCompat;
 #[cfg(test)]
 use ui::clipboard_copy;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 #[cfg(test)]
 use ui::widget::Widget;
 use ui::widget::context_menu::ContextMenu;
@@ -599,14 +599,14 @@ fn participant_presence_payload(
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RemoteCaretOverlay {
-    pub user: UserId,
+    pub user: MemberId,
     pub rect: Rect,
     pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RemoteSelectionOverlay {
-    pub user: UserId,
+    pub user: MemberId,
     pub rects: Vec<Rect>,
 }
 

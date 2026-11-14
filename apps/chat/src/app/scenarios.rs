@@ -93,7 +93,7 @@ impl ChatApp {
                 // numbered alike, in the timeline and the people list.
                 let mut presence = PresenceCtx::empty();
                 presence.set_self_participant(
-                    ui::permissions::UserId(self.me.id.clone()),
+                    ui::permissions::MemberId::person(self.me.id.clone()),
                     self.me.name.clone(),
                 );
                 for (id, name) in [
@@ -103,7 +103,7 @@ impl ChatApp {
                     ("u_devon", "Devon Reyes"),
                     ("u_iris", "Iris Wolfe"),
                 ] {
-                    presence.set_display_name(ui::permissions::UserId(id.into()), name);
+                    presence.set_display_name(ui::permissions::MemberId::person(id), name);
                 }
                 self.capture_agent_presence = Some(presence);
                 self.thread_open = None;
@@ -370,7 +370,7 @@ impl ChatApp {
                 let mut presence = PresenceCtx::empty();
                 let standup = Self::voice_presence_key("c_standup");
                 for person in ["u_aria", "u_milo", "u_sora"] {
-                    presence.set_caret(&standup, ui::permissions::UserId(person.into()), 0);
+                    presence.set_caret(&standup, ui::permissions::MemberId::person(person), 0);
                 }
                 self.capture_agent_presence = Some(presence);
             }

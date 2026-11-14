@@ -1354,7 +1354,7 @@ fn harness(root: Box<dyn Widget>) -> crate::headless::FrameHarness {
         (900, 600),
         Theme::dark(),
         crate::font_catalog::fixture_renderer(),
-        crate::permissions::UserId("reader".into()),
+        crate::permissions::MemberId::person("reader"),
     )
 }
 

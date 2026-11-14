@@ -833,9 +833,10 @@ fn show_acting(
 ) {
     let (agent, _) = crate::change_marks::run();
     let shown = app.harness().update_presence(|presence| {
-        presence
-            .names
-            .insert(ui::permissions::UserId(agent.key()), "Helper".into());
+        presence.names.insert(
+            ui::permissions::MemberId::person(agent.key()),
+            "Helper".into(),
+        );
         presence
             .apply_interaction(event)
             .expect("a well-formed interaction applies")
@@ -875,7 +876,7 @@ fn bo_writing(app: &mut super::Session, task: &str, at: usize) -> [f64; 4] {
             .to_vec(),
     };
     app.harness().update_presence(|presence| {
-        let bo = ui::permissions::UserId("bo".into());
+        let bo = ui::permissions::MemberId::person("bo");
         presence.names.insert(bo.clone(), "Bo".into());
         presence.set_caret(&key, bo, at);
         true

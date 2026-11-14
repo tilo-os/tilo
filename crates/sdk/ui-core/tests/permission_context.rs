@@ -4,8 +4,8 @@
 )]
 
 use tilo_ui::permissions::{
-    Access, ActionKind, Answer, AppKind, CapDecision, CapOverride, Denial, Grantee,
-    PermissionContext, PermissionScope, ResourceRef, Role, Scope, TreePath, UserId, policy,
+    Access, ActionKind, Answer, AppKind, CapDecision, CapOverride, Denial, Grantee, MemberId,
+    PermissionContext, PermissionScope, ResourceRef, Role, Scope, TreePath, policy,
 };
 
 /// A viewer in the workspace: role only, no individual capabilities.
@@ -214,7 +214,7 @@ tilo_test_env::scenario! {
                 Answer::Allow,
                 policy::Grantee::person("owner"),
             ));
-            assert_eq!(ctx.user(), &UserId("alice".into()));
+            assert_eq!(ctx.user(), &MemberId::person("alice"));
             assert_eq!(ctx.role(), Some(Role::Editor));
             assert!(ctx.check(&PermissionScope::app_kind(
                 AppKind::Terminal,

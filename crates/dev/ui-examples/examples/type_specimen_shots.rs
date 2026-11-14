@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_ui::font_catalog::FontCatalog;
 use tilo_ui::headless::FrameHarness;
-use tilo_ui::permissions::UserId;
+use tilo_ui::permissions::MemberId;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::{TextRole, UiFace};
@@ -330,7 +330,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     viewport,
                     theme(face, light),
                     TextRenderer::with_font_catalog(&catalog)?,
-                    UserId("specimen".into()),
+                    MemberId::person("specimen"),
                 );
                 let face_name = face.name().to_ascii_lowercase();
                 let out = dir.join(format!("{stem}-{page_name}-{face_name}-{theme_name}.png"));

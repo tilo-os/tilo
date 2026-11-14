@@ -917,8 +917,11 @@ impl PeerBench {
             (w / 2.0 + w / 3.0 * (t * 0.031).sin()) as f32,
             (h / 2.0 + h / 3.0 * (t * 0.023).cos()) as f32,
         ];
-        self.presence
-            .upsert_remote_cursor("peer-ada".into(), at, Some("Ada Lovelace"));
+        self.presence.upsert_remote_cursor(
+            tilo_ui::permissions::MemberId::person("peer-ada"),
+            at,
+            Some("Ada Lovelace"),
+        );
     }
 
     /// Paint the pointer into the presence layer and append it over the

@@ -16,7 +16,7 @@ use ui::application::{
 use ui::application_view::InstanceViewStore;
 use ui::collaboration::record_content::{ContentLane, RecordContent};
 use ui::headless::FrameHarness;
-use ui::permissions::{SharedPermissions, UserId};
+use ui::permissions::{MemberId, SharedPermissions};
 use ui::portable_storage::{PortableStorage, StorageKey};
 use ui::record::{RecordCheckout, RecordId, RecordOwners};
 
@@ -764,7 +764,9 @@ impl ReadSession {
                 device_id: "canonical-reader".into(),
                 instance_id: INSTANCE,
                 permissions: permissions.clone(),
-                author: UserId(policy.standing.person_id().unwrap_or_default().to_owned()),
+                author: MemberId::person(
+                    policy.standing.person_id().unwrap_or_default().to_owned(),
+                ),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,

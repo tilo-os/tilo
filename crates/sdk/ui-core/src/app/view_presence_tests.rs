@@ -397,19 +397,19 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
         assert!(
             receiver
                 .presence_ctx()
-                .peer_view(&crate::permissions::UserId("alice".into()))
+                .peer_view(&crate::permissions::MemberId::person("alice"))
                 .is_none(),
             "no View known for the peer before their broadcast arrives"
         );
         receiver.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-            user_id: "alice".into(),
+            member: crate::permissions::MemberId::person("alice"),
             key: key.clone(),
             payload: PresencePayload::Arrived,
         });
 
         let peer_view = receiver
             .presence_ctx()
-            .peer_view(&crate::permissions::UserId("alice".into()))
+            .peer_view(&crate::permissions::MemberId::person("alice"))
             .expect("the peer's View is stored after their broadcast");
         assert_eq!(
             peer_view, &sent,
@@ -432,7 +432,7 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
                 view_mode: Some(mode.into()),
             };
             app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
-                user_id: peer.into(),
+                member: crate::permissions::MemberId::person(peer),
                 key: PresenceKey::view(&subset),
                 payload: PresencePayload::Arrived,
             });
@@ -447,7 +447,7 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
             "receiving a peer's View must not move the local view on its own"
         );
 
-        app.follow("bob");
+        app.follow(crate::permissions::MemberId::person("bob"));
         let v = <App as FreezeThaw>::capture_view(&app);
         assert_eq!(
             v.scroll,
@@ -484,7 +484,7 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
             rect: KurboRect::ZERO,
         });
 
-        app.follow("ghost");
+        app.follow(crate::permissions::MemberId::person("ghost"));
 
         let v = <App as FreezeThaw>::capture_view(&app);
         assert_eq!(
@@ -494,7 +494,7 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
         );
         assert_eq!(
             app.followed_peer(),
-            Some("ghost"),
+            Some(&crate::permissions::MemberId::person("ghost")),
             "the follow intent is still latched"
         );
     }

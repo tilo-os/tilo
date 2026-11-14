@@ -8,7 +8,7 @@ use ui::application::{
 };
 use ui::application_view::InstanceViewStore;
 use ui::headless::FrameHarness;
-use ui::permissions::{Acting, KindSet, Role, UserId, policy};
+use ui::permissions::{Acting, KindSet, MemberId, Role, policy};
 use ui::record::{RecordCheckout, RecordOwners};
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
@@ -180,7 +180,7 @@ fn canonical(profile: &Path) -> (RecordStore, FrameHarness) {
             device_id: "device".into(),
             instance_id: 7,
             permissions: ui::permissions::SharedPermissions::new(admitted.permissions),
-            author: UserId(hex::encode([12; 32])),
+            author: MemberId::person(hex::encode([12; 32])),
             action_context: tilo_actions::ActionContext::default(),
         },
         &target,

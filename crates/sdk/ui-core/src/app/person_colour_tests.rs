@@ -4,7 +4,7 @@
 
 use super::*;
 
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 use crate::presence::identity_rgb;
 use crate::tokens::PresenceHue;
 
@@ -54,7 +54,7 @@ tilo_test_env::scenario! {
         let me = app.local_author().clone();
         assert_eq!(
             app.presence_ctx.hue_for(&me),
-            PresenceHue::of_identity(&me.0)
+            PresenceHue::of_identity(&me.key())
         );
         assert_eq!(crate::local_identity::own_colour(), None);
     }
@@ -69,13 +69,13 @@ tilo_test_env::scenario! {
             &collab_types::Person::new("bo", "Bo").wearing(PresenceHue::Teal),
             None,
         )]);
-        assert_eq!(app.presence_ctx.hue_of("bo"), PresenceHue::Teal);
+        assert_eq!(app.presence_ctx.hue_for(&crate::permissions::MemberId::person("bo")), PresenceHue::Teal);
         assert_eq!(
-            app.presence_ctx.color_for(&UserId("bo".into())),
+            app.presence_ctx.color_for(&MemberId::person("bo")),
             identity_rgb(PresenceHue::Teal)
         );
         assert_eq!(
-            app.presence_ctx.hue_of("ada"),
+            app.presence_ctx.hue_for(&crate::permissions::MemberId::person("ada")),
             PresenceHue::of_identity("ada"),
             "someone the list names no colour for keeps their identity's"
         );

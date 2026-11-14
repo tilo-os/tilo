@@ -16,8 +16,8 @@ const APP: &str = "so.tilo.test-person";
 const ROOT_KEY: [u8; 32] = [42; 32];
 const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000a5";
 
-fn person() -> crate::permissions::UserId {
-    crate::permissions::UserId(hex::encode(ROOT_KEY))
+fn person() -> crate::permissions::MemberId {
+    crate::permissions::MemberId::person(hex::encode(ROOT_KEY))
 }
 
 /// One device's copy of the person's watched list in their own scope.
@@ -267,7 +267,7 @@ tilo_test_env::scenario! {
     // itself, as it does without a root identity.
     {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
-        let record = PersonRecords::open(&mut owners, APP, crate::permissions::UserId("local".into()))
+        let record = PersonRecords::open(&mut owners, APP, crate::permissions::MemberId::person("local"))
             .unwrap()
             .open_record(RecordKind::new("test.watched"), &|doc| {
                 doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)

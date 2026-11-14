@@ -443,7 +443,7 @@ tilo_test_env::scenario! {
 
         let (key, _) =
             ResourceSelection::Item("second-take".into()).presence::<Playlist>(PlaylistApp::ID);
-        let miles = tilo_app::permissions::UserId("miles".into());
+        let miles = tilo_app::permissions::MemberId::person("miles");
         let presence = app.harness().presence();
         assert!(presence.selection_for(&key, &miles).is_some());
         assert_eq!(presence.display_name(&miles), "miles");

@@ -913,9 +913,11 @@ fn the_compact_channels_show_who_is_in_a_call_and_who_joins() {
     );
     let standup = ChatApp::voice_presence_key("c_standup");
     let join = |app: &mut TestApp<ChatShell>, person: &str| {
-        app.harness()
-            .presence_mut()
-            .set_caret(&standup, ui::permissions::UserId(person.into()), 0);
+        app.harness().presence_mut().set_caret(
+            &standup,
+            ui::permissions::MemberId::person(person),
+            0,
+        );
         app.settle();
     };
     let in_call = |app: &mut TestApp<ChatShell>, person: &str| {

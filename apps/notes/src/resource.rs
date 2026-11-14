@@ -6,7 +6,7 @@ use ui::application::OpenFile;
 use ui::framework::{LaunchInput, ResourceApp, SeedCx, ViewCx};
 #[cfg(feature = "samples")]
 use ui::headless::FrameHarness;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::tilo_resource::Invoke;
 
 use crate::app::NotesApp;
@@ -38,7 +38,7 @@ impl ResourceApp for NotesShell {
     const WORKSPACE_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
-        let author = UserId(cx.me().unwrap_or("local").to_owned());
+        let author = MemberId::person(cx.me().unwrap_or("local").to_owned());
         // A note's save status sits in its header row beside the title, on
         // the note's own save status surface, so the window paints none.
         let mut app = NotesApp::empty_surface(&author, cx.save_status());

@@ -135,3 +135,23 @@ pub struct Shown {
     /// The voice channel they are in, as their presence carries it.
     pub call: Option<String>,
 }
+
+impl Shown {
+    /// The member this presence is: an agent by its workspace key, a person by the root their
+    /// device's certificate names. `None` for a device whose person is not known yet.
+    #[must_use]
+    pub fn member_id(&self) -> Option<tilo_action_policy::MemberId> {
+        if self.agent {
+            return self
+                .member
+                .as_deref()
+                .and_then(tilo_action_policy::MemberId::parse)
+                .filter(|member| !member.is_person())
+                .or_else(|| Some(tilo_action_policy::MemberId::agent(&self.publisher)));
+        }
+        self.user
+            .as_deref()
+            .filter(|user| !user.is_empty())
+            .map(tilo_action_policy::MemberId::person)
+    }
+}

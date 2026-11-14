@@ -24,7 +24,7 @@ fn harness() -> (
             device_id: "device".into(),
             instance_id: 1,
             permissions,
-            author: ui::permissions::UserId("author".into()),
+            author: ui::permissions::MemberId::person("author"),
             action_context: tilo_actions::ActionContext::default(),
         },
         &LaunchTarget::New,

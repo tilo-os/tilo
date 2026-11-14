@@ -703,12 +703,12 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
 /// Alice typing in the fifth block with her pointer over the note, and Bob
 /// reading another note.
 fn show_collaborators(driver: &mut FrameHarness) -> Result<(), String> {
-    use ui::permissions::UserId;
+    use ui::permissions::MemberId;
     use ui::presence::{PresenceCtx, PresenceKey, SelectionRange};
     let mut presence = PresenceCtx::empty();
-    let alice = UserId("alice".into());
+    let alice = MemberId::person("alice");
     presence.set_display_name(alice.clone(), "Alice");
-    presence.set_display_name(UserId("bob".into()), "Bob");
+    presence.set_display_name(MemberId::person("bob"), "Bob");
     let fifth = visible_block_ids(driver)
         .into_iter()
         .nth(4)
@@ -721,30 +721,29 @@ fn show_collaborators(driver: &mut FrameHarness) -> Result<(), String> {
         SelectionRange { start: 0, end: 18 },
         ui::time::now(),
     );
-    presence.upsert_remote_cursor("alice".into(), [560.0, 300.0], Some("Alice"));
+    presence.upsert_remote_cursor(MemberId::person("alice"), [560.0, 300.0], Some("Alice"));
     presence.register_peer_at(
-        "bob".into(),
-        PresenceKey::Tab {
+        MemberId::person("bob"),
+        &PresenceKey::Tab {
             id: actions::page_resource_id(page(4)),
         },
     );
-    presence.upsert_remote_cursor("bob".into(), [1500.0, 380.0], Some("Bob"));
+    presence.upsert_remote_cursor(MemberId::person("bob"), [1500.0, 380.0], Some("Bob"));
     driver.set_presence_context(presence);
     Ok(())
 }
 
 /// The workspace around the note: two people and an agent the `@` list offers.
 fn show_room(driver: &mut FrameHarness) {
-    use ui::permissions::UserId;
-    use ui::presence::{ParticipantKind, PresenceCtx};
+    use ui::permissions::MemberId;
+    use ui::presence::PresenceCtx;
     let mut presence = PresenceCtx::empty();
-    for (id, name, kind) in [
-        ("alice", "Alice Moreau", ParticipantKind::Person),
-        ("aaron", "Aaron Kim", ParticipantKind::Person),
-        ("agent:scribe", "Scribe", ParticipantKind::Agent),
+    for (id, name) in [
+        (MemberId::person("alice"), "Alice Moreau"),
+        (MemberId::person("aaron"), "Aaron Kim"),
+        (MemberId::agent("scribe"), "Scribe"),
     ] {
-        presence.set_display_name(UserId(id.into()), name);
-        presence.set_participant_kind(UserId(id.into()), kind);
+        presence.set_display_name(id, name);
     }
     driver.set_presence_context(presence);
     driver.relayout();

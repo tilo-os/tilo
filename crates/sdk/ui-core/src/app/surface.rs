@@ -2153,7 +2153,7 @@ mod tests {
             offered(&mut app),
             "agents and scripts see the window's zoom"
         );
-        let person = app.collaboration.local_author.0.clone();
+        let person = app.collaboration.local_author.key();
         app.invoke_resource_action(
             ResourceInvocation::new(&address("zoom-out"), &person).broker_admitted(true),
         )

@@ -1373,14 +1373,14 @@ mod tests {
             invoke(&state, &agent, "5", "new-window", None).expect("the agent acts");
             assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
             let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
-                user_id,
+                member,
                 key,
                 payload: ui::collaboration::PresencePayload::Interaction(interaction),
             }) = heard.try_recv()
             else {
                 panic!("the agent's action shows in its view");
             };
-            assert_eq!(user_id, "agent:scribe");
+            assert_eq!(member, collab_types::MemberId::agent("scribe"));
             assert_eq!(
                 key,
                 ui::presence::PresenceKey::resource(APP, "files.app", "files.app")

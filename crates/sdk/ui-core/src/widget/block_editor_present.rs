@@ -623,7 +623,7 @@ mod tests {
             if let Some(block) = caret_in {
                 presence.carets.insert(
                     super::super::block_presence_key(block),
-                    vec![(crate::permissions::UserId("ada".into()), 5)],
+                    vec![(crate::permissions::MemberId::person("ada"), 5)],
                 );
             }
             let mut text = crate::text_render::TextRenderer::new();

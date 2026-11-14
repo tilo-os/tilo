@@ -87,7 +87,7 @@ fn a_widget_reads_the_pen_behind_each_pointer_event_and_none_for_a_mouse() {
         (320, 200),
         Theme::dark(),
         crate::font_catalog::fixture_renderer(),
-        crate::permissions::UserId("pen-review".into()),
+        crate::permissions::MemberId::person("pen-review"),
     );
 
     for event in [

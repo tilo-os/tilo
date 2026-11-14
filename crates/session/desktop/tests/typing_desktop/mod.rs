@@ -81,7 +81,7 @@ impl ComponentContextSource for Host {
                         ui::permissions::Role::Owner,
                     ),
                 ),
-                author: ui::permissions::UserId("author".into()),
+                author: ui::permissions::MemberId::person("author"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             target,
@@ -188,7 +188,7 @@ impl DemoDesk {
             (1600, 1000),
             ui::Theme::dark(),
             ui::TextRenderer::new(),
-            ui::permissions::UserId("author".into()),
+            ui::permissions::MemberId::person("author"),
         );
         harness.set_caller_palette_enabled(false);
         for _ in 0..8 {

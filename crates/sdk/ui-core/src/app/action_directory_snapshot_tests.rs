@@ -871,7 +871,7 @@ tilo_test_env::scenario! {
         {
             let (mut app, calls) = connected_declared_directory();
             app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
-                user_id: "peer".into(),
+                member: crate::permissions::MemberId::person("peer"),
                 x: 1.0,
                 y: 2.0,
             });
@@ -1199,7 +1199,7 @@ tilo_test_env::scenario! {
             );
             assert_eq!(calls.get(), 2);
             let address = tilo_actions::ActionAddress::new("declared:0", "inspect");
-            let actor = app.collaboration.local_author.0.clone();
+            let actor = app.collaboration.local_author.key();
             assert!(
                 app.invoke_resource_action(ResourceInvocation::new(&address, &actor))
                     .is_err()
@@ -1304,7 +1304,7 @@ tilo_test_env::scenario! {
                 .put(ROOT, "changed-contract", true)
                 .unwrap();
             let address = tilo_actions::ActionAddress::new("declared:0", "inspect");
-            let actor = app.collaboration.local_author.0.clone();
+            let actor = app.collaboration.local_author.key();
             let error = app
                 .invoke_resource_action(ResourceInvocation::new(&address, &actor))
                 .unwrap_err();

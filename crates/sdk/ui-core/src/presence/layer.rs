@@ -26,7 +26,7 @@ use vello::Scene;
 use vello::kurbo::Rect;
 
 use super::{PresenceCtx, PresenceKey, SelectionRange, TypingMark};
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 use crate::scene_parts::SectionParts;
 use crate::time::Instant;
 
@@ -38,18 +38,17 @@ use crate::time::Instant;
 /// own damage when they change.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WidgetPresence {
-    here: HashMap<PresenceKey, Vec<UserId>>,
-    selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
-    carets: HashMap<PresenceKey, Vec<(UserId, usize)>>,
-    following: HashMap<(PresenceKey, UserId), UserId>,
-    color_overrides: HashMap<UserId, (u8, u8, u8)>,
-    names: HashMap<UserId, String>,
-    participant_kinds: HashMap<UserId, super::ParticipantKind>,
-    statuses: HashMap<UserId, crate::live_collaboration::LiveStatus>,
-    typing: HashMap<(UserId, PresenceKey), Vec<TypingMark>>,
-    views: HashMap<UserId, crate::view::ViewSubset>,
-    own: HashSet<UserId>,
-    self_participant: Option<(UserId, String)>,
+    here: HashMap<PresenceKey, Vec<MemberId>>,
+    selections: HashMap<PresenceKey, Vec<(MemberId, SelectionRange)>>,
+    carets: HashMap<PresenceKey, Vec<(MemberId, usize)>>,
+    following: HashMap<(PresenceKey, MemberId), MemberId>,
+    color_overrides: HashMap<MemberId, (u8, u8, u8)>,
+    names: HashMap<MemberId, String>,
+    statuses: HashMap<MemberId, crate::live_collaboration::LiveStatus>,
+    typing: HashMap<(MemberId, PresenceKey), Vec<TypingMark>>,
+    views: HashMap<MemberId, crate::view::ViewSubset>,
+    own: HashSet<MemberId>,
+    self_participant: Option<(MemberId, String)>,
     surface: Option<String>,
     /// Semantic activity is on screen: what widgets paint from it changes
     /// with the clock, not with this state.
@@ -92,7 +91,6 @@ impl PresenceCtx {
             following: self.following.clone(),
             color_overrides: self.color_overrides.clone(),
             names: self.names.clone(),
-            participant_kinds: self.participant_kinds.clone(),
             statuses: self.statuses.clone(),
             typing: self.typing.clone(),
             views: self.views.clone(),

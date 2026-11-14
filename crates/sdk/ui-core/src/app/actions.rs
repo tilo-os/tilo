@@ -1168,7 +1168,7 @@ impl App {
                         spec,
                         encoded,
                         actor,
-                        local_author: &self.collaboration.local_author.0,
+                        local_author: &self.collaboration.local_author.key(),
                         broker_admitted,
                         invocation: operation_invocation,
                         source_invocation,
@@ -1184,7 +1184,7 @@ impl App {
                 before,
                 None,
                 None,
-                Some(crate::permissions::UserId(actor.to_string())),
+                crate::permissions::MemberId::parse(actor),
             );
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -1358,7 +1358,7 @@ impl App {
         self.layout.layout_dirty = true;
         self.invalidate_widget_resource_cache();
         let started = started?;
-        if actor == self.collaboration.local_author.0 {
+        if actor == self.collaboration.local_author.key() {
             self.take_over_owner_view();
         }
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
@@ -1394,7 +1394,7 @@ impl App {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         let _entry = self.enter_wake_scope();
-        let actor = self.collaboration.local_author.0.clone();
+        let actor = self.collaboration.local_author.key();
         let argument = format!(
             "{}{}",
             tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -1455,7 +1455,7 @@ impl App {
         &mut self,
         request: ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let local = request.actor == self.collaboration.local_author.0;
+        let local = request.actor == self.collaboration.local_author.key();
         let _ = crate::widget::take_presses();
         let started = (|| {
             use crate::bound_dispatch::local_target::{LocalResourceTarget, select_local_target};
@@ -1525,7 +1525,7 @@ impl App {
                     &mut resources,
                 );
                 resources
-            } else if actor == self.collaboration.local_author.0 {
+            } else if actor == self.collaboration.local_author.key() {
                 self.collect_local_resources()
             } else {
                 let key = self.ensure_resource_cache();
@@ -1537,7 +1537,7 @@ impl App {
                     .filter(|cache| cache.key == key)
                     .and_then(|cache| cache.complete.clone())
                     .unwrap_or_default();
-                if actor == self.collaboration.local_author.0 {
+                if actor == self.collaboration.local_author.key() {
                     resources
                         .into_iter()
                         .filter_map(|resource| self.filter_resource_for_local_actor(resource))
@@ -1552,7 +1552,7 @@ impl App {
                 &self.state.doc,
                 &address.resource,
             );
-            let fallback = if actor == self.collaboration.local_author.0 {
+            let fallback = if actor == self.collaboration.local_author.key() {
                 fallback.and_then(|resource| self.filter_resource_for_local_actor(resource))
             } else {
                 fallback
@@ -1583,7 +1583,7 @@ impl App {
         )?;
         // The local participant's tree offers an action under the least it
         // needs; this invocation needs what its value asks.
-        if actor == self.collaboration.local_author.0 {
+        if actor == self.collaboration.local_author.key() {
             crate::bound_dispatch::admit_local_action(
                 &self.permission_ctx,
                 (&crate::collaboration::local_app_id(), resource, resolved),
@@ -1596,7 +1596,7 @@ impl App {
         if resolved.contract.runs_on_invokers_device()
             && !crate::bound_dispatch::runs_own_device(
                 actor,
-                &self.collaboration.local_author.0,
+                &self.collaboration.local_author.key(),
                 broker_admitted,
                 ambient_context,
             )
@@ -1606,7 +1606,7 @@ impl App {
         if kind == tilo_actions::OperationKind::View
             && !crate::invocation_scope::view_operation_permitted(
                 actor,
-                &self.collaboration.local_author.0,
+                &self.collaboration.local_author.key(),
                 &resolved.contract,
             )
         {
@@ -1825,7 +1825,7 @@ impl App {
                                 spec: resolved,
                                 encoded,
                                 actor,
-                                local_author: &self.collaboration.local_author.0,
+                                local_author: &self.collaboration.local_author.key(),
                                 broker_admitted,
                                 invocation: operation_invocation,
                                 source_invocation: broker_admitted.then_some(operation_invocation),
@@ -2917,7 +2917,7 @@ impl App {
             self.rebuild_action_palette_admission();
             let argument = pending.wire_argument();
             let continuation_arguments = pending.continuation_arguments();
-            let actor = self.collaboration.local_author.0.clone();
+            let actor = self.collaboration.local_author.key();
             let palette_request = ResourceInvocation::new(&pending.address, &actor)
                 .argument(argument.as_deref())
                 .confirmed(true)
@@ -3244,7 +3244,7 @@ impl crate::session_door::SessionDoor for BrokerDoor<'_> {
 }
 
 impl crate::host_core::ControlHost for App {
-    fn local_author(&self) -> &crate::permissions::UserId {
+    fn local_author(&self) -> &crate::permissions::MemberId {
         &self.collaboration.local_author
     }
 

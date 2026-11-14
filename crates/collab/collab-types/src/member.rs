@@ -226,7 +226,7 @@ pub const fn joined_at_from_packed(packed: u64) -> Option<u64> {
 /// person it acts for. The one assignment; every surface reads what it stored.
 #[must_use]
 pub fn assigned_colour(id: &MemberId, for_person: Option<&PersonId>) -> PresenceHue {
-    PresenceHue::of_participant(&id.key(), !id.is_person(), for_person.map(PersonId::as_str))
+    PresenceHue::of_member(id, for_person.map(PersonId::as_str))
 }
 
 #[cfg(test)]

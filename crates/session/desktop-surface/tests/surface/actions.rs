@@ -107,7 +107,7 @@ fn serving_desk(
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.set_caller_palette_enabled(false);
     let (session, openings) =
@@ -261,7 +261,7 @@ fn a_filling_page_keeps_its_strip_to_the_band_and_settles() {
         (1200, 800),
         ui::Theme::dark(),
         ui::TextRenderer::new(),
-        ui::permissions::UserId("tester".into()),
+        ui::permissions::MemberId::person("tester"),
     );
     driver.set_caller_palette_enabled(false);
     driver

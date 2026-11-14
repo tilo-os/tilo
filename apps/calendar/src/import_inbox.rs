@@ -44,7 +44,7 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     if imports.is_empty() {
         return Ok(());
     }
-    let author = context.author().0.clone();
+    let author = context.author().key();
     context
         .migrate_record(move |doc| apply(doc, imports, &author).map(|()| true))
         .map(drop)

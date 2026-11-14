@@ -78,7 +78,7 @@ tilo_test_env::scenario! {
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         records.create_record(&checkout).unwrap();
         let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
-        binding.author = UserId("agent".into());
+        binding.author = MemberId::person("agent");
         std::rc::Rc::make_mut(&mut binding.operation_context).invoker =
             Some(ActionInvoker::person("person"));
         let mut outer = AutoCommit::new();
@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
                     assert!(host_person_invocation_permitted());
                 }
                 let mut nested = binding.clone();
-                nested.host_person = UserId("other-person".into());
+                nested.host_person = MemberId::person("other-person");
                 nested
                     .with_record_frame(doc, false, |_, _| {
                         assert_eq!(executing_host_person().as_deref(), Some("other-person"));
@@ -286,11 +286,11 @@ pub(super) fn mount(
         instance_id: instance,
         app_id: APP.into(),
         device_id: "test-device".into(),
-        host_person: UserId(author.into()),
+        host_person: MemberId::person(author),
         records: records.clone(),
         checkout: checkout.clone(),
         permissions: crate::permissions::SharedPermissions::new(PermissionContext::permissive()),
-        author: UserId(author.into()),
+        author: MemberId::person(author),
         operation_context: std::rc::Rc::default(),
         writes_as_author,
     };

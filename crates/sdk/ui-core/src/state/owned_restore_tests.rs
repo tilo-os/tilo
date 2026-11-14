@@ -37,7 +37,7 @@ pub(crate) fn context() -> tilo_actions::ActionContext {
         .with_app("dev.tilo.restore-test", "Restore test")
 }
 pub(crate) fn admission(authority: &PermissionContext) -> ConfirmedRestore<'_> {
-    ConfirmedRestore::for_test(authority, UserId("ada".into()), context())
+    ConfirmedRestore::for_test(authority, MemberId::person("ada"), context())
 }
 pub(crate) fn value(doc: &AutoCommit) -> String {
     doc.get(ROOT, "body")
@@ -106,7 +106,7 @@ tilo_test_env::scenario! {
         let entry = state.peek_last_undo().unwrap();
         assert_eq!(entry.before, before);
         assert_eq!(entry.after, receipt.after);
-        assert_eq!(entry.author, Some(UserId("ada".into())));
+        assert_eq!(entry.author, Some(MemberId::person("ada")));
         assert_eq!(entry.instance_id, None);
         let change = &state.doc.get_changes(&before)[0];
         assert_eq!(change.deps(), before);
@@ -122,7 +122,7 @@ tilo_test_env::scenario! {
         assert_eq!(state.doc.get_actor(), &actor);
         assert_eq!(state.root, root);
         state
-            .undo_as(Some(&UserId("ada".into())), None, None)
+            .undo_as(Some(&MemberId::person("ada")), None, None)
             .unwrap();
         assert_eq!(value(&state.doc), "live");
     }
@@ -309,7 +309,7 @@ fn owned_restore_mixed_overlay_and_undo_preserve_live_remote_operational_state()
         Some("old")
     );
     state
-        .undo_as(Some(&UserId("ada".into())), None, None)
+        .undo_as(Some(&MemberId::person("ada")), None, None)
         .unwrap();
     assert_eq!(
         state.doc.get(&mixed, "body").unwrap().unwrap().0.as_str(),
@@ -336,10 +336,10 @@ fn owned_restore_mixed_overlay_and_undo_preserve_live_remote_operational_state()
     assert_eq!(
         state
             .undo
-            .next_redo_as(&state.doc, Some(&UserId("ada".into())))
+            .next_redo_as(&state.doc, Some(&MemberId::person("ada")))
             .unwrap()
             .author,
-        Some(UserId("ada".into()))
+        Some(MemberId::person("ada"))
     );
 }
 

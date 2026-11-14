@@ -107,7 +107,7 @@ fn a_comment_wears_the_colour_the_member_list_announces_for_its_author() {
 
     let mut presence = ui::presence::PresenceCtx::default();
     presence.set_presence_hue(
-        ui::permissions::UserId(author.clone()),
+        ui::permissions::MemberId::person(author.clone()),
         ui::tokens::PresenceHue::Violet,
     );
     let markers = app.comment_markers(&presence);

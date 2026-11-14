@@ -2330,7 +2330,7 @@ tilo_test_env::scenario! {
             "the face wears the colour its own shell announced"
         );
         // Nothing announced: the colour its kind's key wears, as every app paints it.
-        let (r, g, b) = ui::presence::participant_color("agent:helper@host", true, None);
+        let (r, g, b) = ui::presence::member_color(&ui::permissions::MemberId::agent("agent:helper@host"), None);
         assert_eq!(
             faces(None).1,
             vec![Color::from_rgb8(r, g, b)],

@@ -5,7 +5,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use super::TextInput;
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use automerge::{AutoCommit, ObjId};
@@ -64,7 +64,10 @@ impl TextInput {
             return;
         }
         for (range, author) in &self.authored {
-            if presence.is_own_identity(author) {
+            let Some(author) = MemberId::parse(author) else {
+                continue;
+            };
+            if presence.is_own_identity(&author) {
                 continue;
             }
             let bands: Vec<Rect> = self
@@ -72,13 +75,15 @@ impl TextInput {
                 .into_iter()
                 .map(|band| transform.transform_rect_bbox(band))
                 .collect();
-            presence.draw_peer_authorship(scene, theme, &UserId(author.clone()), &bands);
+            presence.draw_peer_authorship(scene, theme, &author, &bands);
         }
         self.draw_invocations_written(scene, transform, text_renderer, theme, presence);
         let (Some((identity, _)), Some((start, end))) = (&self.change, self.written_span()) else {
             return;
         };
-        let user = UserId(identity.clone());
+        let Some(user) = MemberId::parse(identity) else {
+            return;
+        };
         if start < end {
             let bands: Vec<Rect> = self
                 .selection_rects(theme, start, end)
@@ -145,7 +150,14 @@ impl TextInput {
             let Some(alpha) = presence.interaction_fade(interaction.invocation, now) else {
                 continue;
             };
-            let user = UserId(interaction.actor.by.key());
+            let Some(user) = interaction
+                .actor
+                .members()
+                .first()
+                .map(|member| (*member).clone())
+            else {
+                continue;
+            };
             let bands: Vec<(Rect, f32)> = self
                 .selection_rects(theme, start, end)
                 .into_iter()

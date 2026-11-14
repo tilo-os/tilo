@@ -338,7 +338,7 @@ impl Widget for ReactionStripWidget {
         if self.me.is_empty()
             && let Some(own) = presence.self_id()
         {
-            self.me.clone_from(&own.0);
+            self.me.clone_from(&own.key());
             self.layout_dirty = true;
         }
         self.relayout(text, theme);

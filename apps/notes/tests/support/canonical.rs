@@ -7,7 +7,7 @@ use notes::{
 };
 use std::{cell::RefCell, collections::HashMap, path::PathBuf};
 use ui::{
-    permissions::{PermissionContext, Role, UserId},
+    permissions::{MemberId, PermissionContext, Role},
     record::{RecordCheckout, RecordId, RecordKind, RecordOwners, RecordStore},
 };
 use uuid::Uuid;
@@ -26,7 +26,7 @@ pub struct NotebookFixture {
     pub child: PageId,
     pub empty: PageId,
     pub tag: Uuid,
-    pub author: UserId,
+    pub author: MemberId,
     pub authority: ui::permissions::SharedPermissions,
     pub workspace: Workspace,
     bodies: RefCell<HashMap<PageId, String>>,
@@ -92,7 +92,7 @@ impl NotebookFixture {
             child,
             empty,
             tag,
-            author: UserId("notes-fixture-author".into()),
+            author: MemberId::person("notes-fixture-author"),
             authority: ui::permissions::SharedPermissions::new(
                 PermissionContext::member("notes-fixture-author", Role::Owner).at_unix_time(100),
             ),

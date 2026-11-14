@@ -568,7 +568,7 @@ pub(crate) fn typing_line(
                 .flatten()
                 .map(|(user, _)| user),
         )
-        .filter(|user| !presence.is_own_identity(&user.0))
+        .filter(|user| !presence.is_own_identity(user))
         .map(|user| presence.display_name(user))
         .collect();
     writers.sort();

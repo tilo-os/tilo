@@ -21,7 +21,7 @@ use tilo_ui::history_source::revert::{RevertError, Slot, latest_run_by, plan_rev
 use tilo_ui::history_source::run_undo::{StepState, refuse_run, undo_run, unreachable_steps};
 use tilo_ui::history_source::runs::{AgentRun, RunStep, read_runs, record_run};
 use tilo_ui::history_source::{AuthorDirectory, HistorySource, entry_id_from_hash};
-use tilo_ui::permissions::UserId;
+use tilo_ui::permissions::MemberId;
 use tilo_ui::state::State;
 
 /// The agent commits under a stable actor derived from its name — see
@@ -176,7 +176,7 @@ tilo_test_env::scenario! {
             // and it is only ever called for a locally handled event.
             assert!(
                 alice
-                    .undo_as(Some(&UserId(AGENT.into())), None, None)
+                    .undo_as(Some(&MemberId::person(AGENT)), None, None)
                     .is_none(),
                 "a remote author's work never reaches the local undo stack"
             );
@@ -200,7 +200,7 @@ tilo_test_env::scenario! {
             let out = revert_run(&mut alice.doc, &run, Some(&actor_hex(AGENT)), &directory())
                 .expect("the run is in this document");
             // The caller commits — that is what stamps and attributes the undo.
-            alice.commit_action_authored(None, None, Some(UserId(PERSON.into())));
+            alice.commit_action_authored(None, None, Some(MemberId::person(PERSON)));
 
             assert_eq!(out.covered, 2, "both of the agent's changes were addressed");
             assert!(out.is_complete(), "nothing was held back: {:?}", out.kept);

@@ -2073,7 +2073,7 @@ mod tests {
                     (700, 300),
                     Theme::dark(),
                     crate::font_catalog::fixture_renderer(),
-                    crate::permissions::UserId("text-widget-locale-fixture".into()),
+                    crate::permissions::MemberId::person("text-widget-locale-fixture"),
                 );
 
                 let before = driver.inspection();

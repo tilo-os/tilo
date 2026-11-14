@@ -21,7 +21,7 @@ use tilo_doc::model::Region;
 use tilo_doc::snapshot::BlockView;
 use ui::PresenceCtx;
 use ui::paint::with_alpha;
-use ui::permissions::UserId;
+use ui::permissions::MemberId;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -1200,7 +1200,7 @@ impl Editor {
             if rects.is_empty() {
                 continue;
             }
-            let user = UserId(interaction.actor.by.key());
+            let user = MemberId::person(interaction.actor.by.key());
             for rect in &rects {
                 presence.draw_peer_selection(scene, theme, ctf, &user, *rect);
             }

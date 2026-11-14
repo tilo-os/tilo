@@ -2,9 +2,9 @@
 //! definition and migration; this owner supplies storage, identity, authority and local presentation.
 use super::{
     ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, HostContext,
-    HostContextInputs, InstanceId, InstanceViewStore, LaunchError, LaunchTarget, PermissionContext,
-    PreparedComponentInputs, RecordCheckout, RecordId, RecordOpenError, RecordStore, RestoreInput,
-    SavedInstanceView, UserId, View, validate_identity,
+    HostContextInputs, InstanceId, InstanceViewStore, LaunchError, LaunchTarget, MemberId,
+    PermissionContext, PreparedComponentInputs, RecordCheckout, RecordId, RecordOpenError,
+    RecordStore, RestoreInput, SavedInstanceView, View, validate_identity,
 };
 use crate::record::RecordOwners;
 use std::cell::RefCell;
@@ -53,7 +53,7 @@ impl NativeProcessHost {
     fn open_with(
         definition: &ApplicationDefinition,
         environment: NativeProcessEnvironment,
-        author: UserId,
+        author: MemberId,
     ) -> Result<Self, LaunchError> {
         let launcher_instance = environment.continuity_instance.is_some();
         let resolved = environment.resolve(definition.app_id(), &author)?;
@@ -285,7 +285,7 @@ impl NativeProcessEnvironment {
     fn resolve(
         self,
         app_id: &str,
-        author: &UserId,
+        author: &MemberId,
     ) -> Result<ResolvedNativeProcessHost, LaunchError> {
         let package_id = self
             .package_id
@@ -501,7 +501,7 @@ impl NativeProfile {
 }
 
 fn permissions_for_participation(
-    author: &UserId,
+    author: &MemberId,
     workspace: &str,
     workspace_scoped: bool,
     participation: Option<&str>,
@@ -517,11 +517,7 @@ fn permissions_for_participation(
             ));
         }
     };
-    Ok(PermissionContext::member_of(
-        workspace,
-        author.0.clone(),
-        role,
-    ))
+    Ok(PermissionContext::member_of(workspace, author.key(), role))
 }
 
 /// The host's view of the person's authority over one app's actions, read
@@ -539,7 +535,7 @@ struct FollowedState {
     authority: HostAuthority,
     workspace: String,
     app: String,
-    person: UserId,
+    person: MemberId,
     /// Held across a read and the store of what it read, so a read never
     /// replaces a later one.
     reading: std::sync::Mutex<()>,
@@ -574,7 +570,7 @@ impl FollowedAuthority {
         authority: HostAuthority,
         workspace: &str,
         app: &str,
-        person: &UserId,
+        person: &MemberId,
     ) -> Result<Self, String> {
         let state = std::sync::Arc::new(FollowedState {
             authority: authority.clone(),
@@ -672,11 +668,11 @@ fn action_authority_context(
     source: &tilo_host::action_authority::AuthoritySource,
     workspace: &str,
     app: &str,
-    person: &UserId,
+    person: &MemberId,
 ) -> Result<PermissionContext, String> {
     let projection = read_action_authority_projection(source, workspace, app, person)?;
     Ok(PermissionContext::new(
-        crate::permissions::Acting::person(person.0.clone()),
+        crate::permissions::Acting::person(person.key()),
         Vec::new(),
         projection.standing(),
     ))
@@ -686,14 +682,14 @@ fn read_action_authority_projection(
     source: &tilo_host::action_authority::AuthoritySource,
     workspace: &str,
     app: &str,
-    person: &UserId,
+    person: &MemberId,
 ) -> Result<collab_types::action_authority::AppActionAuthorityProjection, String> {
     use collab_types::action_authority::AppActionAuthorityProjection;
     let bytes = source()?.ok_or("host action policy is unavailable")?;
     let projection: AppActionAuthorityProjection =
         serde_json::from_slice(&bytes).map_err(|_| "host action policy is invalid")?;
     projection.validate().map_err(str::to_owned)?;
-    if !projection.matches(workspace, app, &person.0) {
+    if !projection.matches(workspace, app, &person.key()) {
         return Err("host action policy binding mismatch".into());
     }
     Ok(projection)
@@ -775,7 +771,7 @@ pub struct ApplicationHost {
     views: Rc<InstanceViewStore>,
     device_id: String,
     permissions: crate::permissions::SharedPermissions,
-    author: UserId,
+    author: MemberId,
     action_context: tilo_actions::ActionContext,
     /// Where the person records are kept: the host's store unless the
     /// host names another ([`Self::keep_person_records_in`]).
@@ -804,7 +800,7 @@ impl ApplicationHost {
 
     /// Who is at this device, as the host prepared them.
     #[must_use]
-    pub fn author(&self) -> &UserId {
+    pub fn author(&self) -> &MemberId {
         &self.author
     }
 
@@ -821,7 +817,7 @@ impl ApplicationHost {
         profile_root: PathBuf,
         device_id: String,
         workspace_id: &str,
-        author: UserId,
+        author: MemberId,
         permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
         lifetime: Rc<dyn std::any::Any>,
@@ -846,7 +842,7 @@ impl ApplicationHost {
         profile_root: PathBuf,
         device_id: String,
         workspace_id: &str,
-        author: UserId,
+        author: MemberId,
         permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
@@ -870,11 +866,11 @@ impl ApplicationHost {
         store: Rc<dyn durable_store::DurableStore>,
         device_id: String,
         workspace_id: &str,
-        author: UserId,
+        author: MemberId,
         permissions: crate::permissions::SharedPermissions,
         action_context: tilo_actions::ActionContext,
     ) -> Result<Self, LaunchError> {
-        validate_identity(&author.0).map_err(LaunchError::Restore)?;
+        validate_identity(&author.key()).map_err(LaunchError::Restore)?;
         let views = Rc::new(
             InstanceViewStore::with_store(Rc::clone(&store), &device_id, workspace_id)
                 .map_err(LaunchError::Restore)?,
@@ -1325,7 +1321,7 @@ mod native_process_tests {
                         continuity_instance: Some("61".into()),
                         ..environment(temp.path())
                     },
-                    UserId(person.into()),
+                    MemberId::person(person),
                 )
                 .unwrap();
                 native
@@ -1882,11 +1878,11 @@ mod native_process_tests {
             let temp = tempfile::tempdir().unwrap();
             let workspace = "3f2b1c00-0000-4000-8000-000000000001";
             let app = "so.tilo.store";
-            let author = UserId("person-a".into());
+            let author = MemberId::person("person-a");
             let original = AppActionAuthorityProjection::project(
-                &tilo_action_policy::WorkspacePolicy::new(workspace, author.0.clone()),
+                &tilo_action_policy::WorkspacePolicy::new(workspace, author.key()),
                 app,
-                &author.0,
+                &author.key(),
                 false,
             );
             let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
@@ -1962,11 +1958,11 @@ mod native_process_tests {
             let temp = tempfile::tempdir().unwrap();
             let workspace = "3f2b1c00-0000-4000-8000-000000000001";
             let app = "so.tilo.store";
-            let author = UserId("person-a".into());
+            let author = MemberId::person("person-a");
             let original = AppActionAuthorityProjection::project(
-                &tilo_action_policy::WorkspacePolicy::new(workspace, author.0.clone()),
+                &tilo_action_policy::WorkspacePolicy::new(workspace, author.key()),
                 app,
-                &author.0,
+                &author.key(),
                 false,
             );
             let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
@@ -2006,7 +2002,7 @@ mod native_process_tests {
         {
             {
                 let temp = tempfile::tempdir().unwrap();
-                let author = UserId("person-a".into());
+                let author = MemberId::person("person-a");
                 let first = NativeProcessHost::open_with(
                     &definition("so.tilo.one"),
                     environment(temp.path()),
@@ -2057,7 +2053,7 @@ mod native_process_tests {
                     (None, crate::permissions::Role::Viewer),
                 ] {
                     let resolved = make(mode)
-                        .resolve("so.tilo.notes", &UserId("person-a".into()))
+                        .resolve("so.tilo.notes", &MemberId::person("person-a"))
                         .unwrap();
                     assert!(resolved.workspace_scoped);
                     assert_eq!(resolved.workspace_id, workspace);
@@ -2068,7 +2064,7 @@ mod native_process_tests {
 
             {
                 let temp = tempfile::tempdir().unwrap();
-                let author = UserId("person-a".into());
+                let author = MemberId::person("person-a");
                 let mut mismatched = environment(temp.path());
                 mismatched.package_id = Some("so.tilo.other".into());
                 assert!(matches!(
@@ -2117,7 +2113,7 @@ mod native_process_tests {
         phase signed_package_id_must_name_the_launched_definition;
         {
             let temp = tempfile::tempdir().unwrap();
-            let author = UserId("person-a".into());
+            let author = MemberId::person("person-a");
             let mut exact = environment(temp.path());
             exact.package_id = Some("so.tilo.notes".into());
             let resolved = exact.resolve("so.tilo.notes", &author).unwrap();

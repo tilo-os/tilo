@@ -7,7 +7,7 @@ use super::*;
 use crate::{
     State,
     i18n::I18nManager,
-    permissions::{PermissionContext, UserId},
+    permissions::{MemberId, PermissionContext},
     widget::ModalDialog,
 };
 
@@ -105,7 +105,7 @@ impl HistoryHost {
         state: &mut State,
         root: &dyn Widget,
         authority: &PermissionContext,
-        author: &UserId,
+        author: &MemberId,
     ) -> bool {
         let Some(command) = self.review_request.take() else {
             return false;
@@ -245,7 +245,7 @@ impl HistoryHost {
     fn revert_selected_change(
         &mut self,
         state: &mut State,
-        actor: (&PermissionContext, &UserId),
+        actor: (&PermissionContext, &MemberId),
     ) -> bool {
         let selected = self.selected.clone();
         self.write_selected(
@@ -260,7 +260,7 @@ impl HistoryHost {
     fn name_selected_changes(
         &mut self,
         state: &mut State,
-        actor: (&PermissionContext, &UserId),
+        actor: (&PermissionContext, &MemberId),
     ) -> bool {
         let Some((start, end)) = self.selected_run() else {
             return false;
@@ -288,7 +288,7 @@ impl HistoryHost {
     fn write_selected(
         &mut self,
         state: &mut State,
-        (authority, author): (&PermissionContext, &UserId),
+        (authority, author): (&PermissionContext, &MemberId),
         extent: crate::state::owned_restore::RestoreExtent<'_>,
     ) -> bool {
         let Some(scope) = self.registration.definition.scopes.get(self.active_scope) else {

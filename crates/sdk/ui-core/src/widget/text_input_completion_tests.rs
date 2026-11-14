@@ -29,9 +29,8 @@ fn press_named(input: &mut TextInput, key: NamedKey) -> bool {
 
 fn ada() -> Vec<MentionCandidate> {
     vec![MentionCandidate::new(
-        "u_ada",
+        crate::permissions::MemberId::person("u_ada"),
         "Ada Lovelace",
-        false,
         crate::tokens::PresenceHue::of_identity("u_ada"),
     )]
 }

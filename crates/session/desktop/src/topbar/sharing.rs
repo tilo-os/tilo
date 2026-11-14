@@ -99,7 +99,7 @@ impl TopBarChrome {
             .iter()
             .enumerate()
             .map(|(index, id)| {
-                let user = ui::permissions::UserId(id.clone());
+                let user = ui::permissions::MemberId::person(id.clone());
                 let said = self.face_presence.get(index).copied().flatten();
                 let in_call =
                     said.map_or_else(|| presence.call_of(&user).is_some(), |(_, call)| call);

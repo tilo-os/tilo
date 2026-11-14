@@ -288,7 +288,7 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
     let create = named(&a, "New note")[0].clone();
     let create_rect = semantic_rect(&a, "new-note");
     f.authority.set(
-        ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
+        ui::permissions::PermissionContext::member(f.author.key(), ui::permissions::Role::Viewer)
             .at_unix_time(100),
     );
     let before = revision(&f, &checkout);
@@ -334,7 +334,7 @@ fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
     let offered = named(&a, "New note");
     let rect = semantic_rect(&a, "new-note");
     f.authority.set(
-        ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
+        ui::permissions::PermissionContext::member(f.author.key(), ui::permissions::Role::Viewer)
             .at_unix_time(100),
     );
     // A stale press, by assistive technology or the pointer, makes nothing.

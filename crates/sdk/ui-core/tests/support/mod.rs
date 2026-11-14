@@ -142,7 +142,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
             CollabRequest::Presence { key, payload } => {
                 let event = CollabEvent::RemotePresenceUpdate {
-                    user_id: from.clone(),
+                    member: tilo_ui::permissions::MemberId::person(from.clone()),
                     key,
                     payload,
                 };

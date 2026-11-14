@@ -32,7 +32,11 @@ fn ghost_cursor_paints_only_remote_presence() {
         // (10 px wide) doesn't bleed off the right edge.
         let apex_x: f32 = 30.0;
         let apex_y: f32 = 30.0;
-        presence.upsert_remote_cursor("alice".into(), [apex_x, apex_y], None);
+        presence.upsert_remote_cursor(
+            tilo_ui::permissions::MemberId::person("alice"),
+            [apex_x, apex_y],
+            None,
+        );
 
         let mut scene = Scene::new();
         let mut text_renderer = TextRenderer::new();

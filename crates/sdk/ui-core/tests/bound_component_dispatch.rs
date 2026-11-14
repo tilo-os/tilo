@@ -302,7 +302,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
             (400, 300),
             tilo_ui::Theme::dark(),
             renderer,
-            tilo_ui::permissions::UserId("probe-author".into()),
+            tilo_ui::permissions::MemberId::person("probe-author"),
         );
         let _ = driver.focus_order();
         driver.tab(false);
@@ -1192,7 +1192,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
             (400, 300),
             tilo_ui::Theme::dark(),
             tilo_ui::font_catalog::fixture_renderer(),
-            tilo_ui::permissions::UserId("probe-author".into()),
+            tilo_ui::permissions::MemberId::person("probe-author"),
         );
         host.records.try_flush().unwrap();
         let record_path = app_state::DocStore::workspace_document_dir_at(
@@ -2060,7 +2060,7 @@ fn controlled_driver(
         viewport,
         tilo_ui::Theme::dark(),
         tilo_ui::font_catalog::fixture_renderer(),
-        tilo_ui::permissions::UserId("probe-author".into()),
+        tilo_ui::permissions::MemberId::person("probe-author"),
     )
 }
 

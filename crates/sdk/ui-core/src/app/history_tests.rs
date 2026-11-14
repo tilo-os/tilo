@@ -1049,7 +1049,7 @@ impl RoutedPrimary {
                 permissions: crate::permissions::SharedPermissions::new(
                     crate::permissions::PermissionContext::permissive(),
                 ),
-                author: crate::permissions::UserId("primary-author".into()),
+                author: crate::permissions::MemberId::person("primary-author"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &target,
@@ -3503,13 +3503,13 @@ fn component_control_root(
             instance_id: 930 + index as u64,
             app_id: HISTORY.app_id.into(),
             device_id: "test-device".into(),
-            host_person: crate::permissions::UserId("component-control-author".into()),
+            host_person: crate::permissions::MemberId::person("component-control-author"),
             records: records.clone(),
             checkout,
             permissions: crate::permissions::SharedPermissions::new(
                 crate::permissions::PermissionContext::permissive(),
             ),
-            author: crate::permissions::UserId("component-control-author".into()),
+            author: crate::permissions::MemberId::person("component-control-author"),
             operation_context: Rc::default(),
             writes_as_author: false,
         };

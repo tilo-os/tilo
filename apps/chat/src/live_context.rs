@@ -131,7 +131,7 @@ mod tests {
             .unwrap();
         let mut app = ui::App::new(ui::State::from_doc(doc.chat), Box::new(follower));
         let frame = |scroll| CollabEvent::RemotePresenceUpdate {
-            user_id: "presenter".into(),
+            member: ui::permissions::MemberId::person("presenter"),
             key: ui::presence::PresenceKey::view(&ui::view::ViewSubset {
                 scroll: vec![scroll, 0.0],
                 view_mode: contribution.view_mode.clone(),

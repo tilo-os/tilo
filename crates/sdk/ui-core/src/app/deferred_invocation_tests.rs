@@ -230,7 +230,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
             address: tilo_actions::ActionAddress::new("ordinary:fixture", "run"),
         },
     };
-    let local_actor = binding.author.0.clone();
+    let local_actor = binding.author.key();
     let foreign_actor = format!("{local_actor}:foreign");
     let actor = if foreign {
         &foreign_actor

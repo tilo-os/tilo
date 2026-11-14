@@ -2,7 +2,7 @@
 //! device. Set only while a callback runs.
 use std::cell::RefCell;
 
-use crate::permissions::UserId;
+use crate::permissions::MemberId;
 
 thread_local! {
     static EXECUTING_HOST_SCOPE: RefCell<Option<uuid::Uuid>> = const { RefCell::new(None) };
@@ -30,8 +30,8 @@ impl Drop for ExecutingHostScope {
 
 pub(super) struct ExecutingHostPerson(Option<String>);
 impl ExecutingHostPerson {
-    pub(super) fn enter(person: &UserId) -> Self {
-        Self(EXECUTING_HOST_PERSON.replace(Some(person.0.clone())))
+    pub(super) fn enter(person: &MemberId) -> Self {
+        Self(EXECUTING_HOST_PERSON.replace(Some(person.key())))
     }
 }
 impl Drop for ExecutingHostPerson {

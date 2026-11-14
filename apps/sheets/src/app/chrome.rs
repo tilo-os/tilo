@@ -529,7 +529,7 @@ impl SheetsApp {
                     }
                 }
             }
-            peers.sort_by(|a, b| a.0.cmp(&b.0));
+            peers.sort();
             peers.dedup();
             let p0 = transform * Point::new(rect.x0, rect.y0);
             let p1 = transform * Point::new(rect.x1, rect.y1);

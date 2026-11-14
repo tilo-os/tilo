@@ -1,4 +1,4 @@
-use tilo_ui::permissions::UserId;
+use tilo_ui::permissions::MemberId;
 use tilo_ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
 
 tilo_test_env::scenario! {
@@ -42,7 +42,7 @@ tilo_test_env::scenario! {
             let b = PresenceKey::Widget {
                 path: vec![PathSegment::Index(1)],
             };
-            let alice = UserId("alice".into());
+            let alice = MemberId::person("alice");
 
             ctx.set_caret(&a, alice.clone(), 2);
             assert_eq!(ctx.caret_for(&a, &alice), Some(2));
@@ -54,7 +54,7 @@ tilo_test_env::scenario! {
                 None,
                 "the caret must clear from the previous block when it moves"
             );
-            let bob = UserId("bob".into());
+            let bob = MemberId::person("bob");
             ctx.set_caret(&a, bob.clone(), 1);
             ctx.set_caret(&b, alice, 6);
             assert_eq!(
@@ -72,7 +72,7 @@ tilo_test_env::scenario! {
             let b = PresenceKey::Widget {
                 path: vec![PathSegment::Index(1)],
             };
-            let alice = UserId("alice".into());
+            let alice = MemberId::person("alice");
 
             ctx.set_selection(&a, alice.clone(), SelectionRange { start: 0, end: 3 });
             assert!(ctx.selection_for(&a, &alice).is_some());
@@ -89,21 +89,21 @@ tilo_test_env::scenario! {
         {
             let mut ctx = PresenceCtx::empty();
             let key = PresenceKey::Tab { id: "tab-1".into() };
-            ctx.register_presence(&key, UserId("alice".into()));
-            ctx.register_presence(&key, UserId("bob".into()));
+            ctx.register_presence(&key, MemberId::person("alice"));
+            ctx.register_presence(&key, MemberId::person("bob"));
 
             let peers = ctx.peers_on(&key);
             assert_eq!(peers.len(), 2);
-            assert!(peers.iter().any(|u| u.0 == "alice"));
-            assert!(peers.iter().any(|u| u.0 == "bob"));
+            assert!(peers.iter().any(|u| u.key() == "alice"));
+            assert!(peers.iter().any(|u| u.key() == "bob"));
         }
 
         {
             let mut ctx = PresenceCtx::empty();
             let key = PresenceKey::Workspace { id: "ws-1".into() };
-            ctx.set_pointer(&key, UserId("alice".into()), (10.0, 20.0));
-            ctx.set_pointer(&key, UserId("alice".into()), (30.0, 40.0));
-            let pos = ctx.pointer_for(&key, &UserId("alice".into()));
+            ctx.set_pointer(&key, MemberId::person("alice"), (10.0, 20.0));
+            ctx.set_pointer(&key, MemberId::person("alice"), (30.0, 40.0));
+            let pos = ctx.pointer_for(&key, &MemberId::person("alice"));
             assert_eq!(pos, Some((30.0, 40.0)));
         }
 
@@ -114,10 +114,10 @@ tilo_test_env::scenario! {
             };
             ctx.set_selection(
                 &key,
-                UserId("alice".into()),
+                MemberId::person("alice"),
                 SelectionRange { start: 4, end: 9 },
             );
-            let sel = ctx.selection_for(&key, &UserId("alice".into())).unwrap();
+            let sel = ctx.selection_for(&key, &MemberId::person("alice")).unwrap();
             assert_eq!(sel.start, 4);
             assert_eq!(sel.end, 9);
         }
@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
                 &mut scene,
                 &theme,
                 vello::kurbo::Affine::IDENTITY,
-                &UserId("alice".into()),
+                &MemberId::person("alice"),
                 vello::kurbo::Rect::new(100.0, 50.0, 102.0, 70.0),
             );
             assert!(
@@ -154,7 +154,7 @@ tilo_test_env::scenario! {
                 &mut scene,
                 &theme,
                 vello::kurbo::Affine::IDENTITY,
-                &UserId("alice".into()),
+                &MemberId::person("alice"),
                 vello::kurbo::Rect::new(10.0, 20.0, 60.0, 40.0),
             );
             assert!(!scene.encoding().is_empty());
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
             let mut presence = PresenceCtx::empty();
             let key = tilo_ui::presence::capability::presence_key(&input)
                 .expect("text_input exposes presence_key");
-            presence.set_caret(&key, UserId("alice".into()), 3);
+            presence.set_caret(&key, MemberId::person("alice"), 3);
 
             let mut scene = Scene::new();
             let theme = Theme::dark();

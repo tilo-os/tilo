@@ -13,7 +13,6 @@ use crate::model::{
 };
 use tilo_rich_text::RichTextFieldViews;
 use ui::prelude::*;
-use ui::presence::ParticipantKind;
 use ui::tilo_resource::NonBlank;
 use ui::widget::{Avatar, AvatarSize, Badge, ButtonRole, ChipStyle, Fact, Facts, Stack, Tone};
 
@@ -179,10 +178,10 @@ fn assignee_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         "tasks-issue-assignee",
         tr("tasks-field-assignee"),
         tr("tasks-assignee-nobody"),
-        |member| match member.kind {
-            ParticipantKind::Person => Some(person_assignee(&member.id).0),
-            ParticipantKind::Agent => Some(agent_assignee(&member.id).0),
-            _ => None,
+        |member| match &member.id {
+            ui::permissions::MemberId::Person(id) => Some(person_assignee(id).0),
+            ui::permissions::MemberId::Agent(id) => Some(agent_assignee(id).0),
+            ui::permissions::MemberId::Bot(_) => None,
         },
         move |tracker: &Tracker| {
             tracker

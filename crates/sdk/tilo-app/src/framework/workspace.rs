@@ -221,7 +221,7 @@ impl<P: Resource> WorkspaceRecord<P> {
             app,
             permissions,
             wake,
-            records.author().0.clone(),
+            records.author().key(),
         )
     }
 
@@ -259,7 +259,7 @@ impl<P: Resource> WorkspaceRecord<P> {
             app,
             permissions,
             wake,
-            records.author().0.clone(),
+            records.author().key(),
         )
     }
 
@@ -285,7 +285,7 @@ impl<P: Resource> WorkspaceRecord<P> {
             app,
             permissions,
             wake,
-            records.author().0.clone(),
+            records.author().key(),
         )
         .ok()
     }
@@ -746,7 +746,7 @@ impl WorkspaceState {
         super::controls::opened_record::<P>();
         let workspace = super::chain::WorkspaceRecords {
             store: self.records.store_of(owner).ok()?,
-            me: self.records.author().0.clone(),
+            me: self.records.author().key(),
             permissions: self.permissions.clone(),
             app_id: self.app_id,
             app_title: self.app_title,
