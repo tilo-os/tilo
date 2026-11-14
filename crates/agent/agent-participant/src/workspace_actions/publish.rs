@@ -434,7 +434,7 @@ impl Worker {
 
     /// Name the record at `route` in its app's index of the workspace,
     /// under what its app calls it now, unless the index already does. A
-    /// record of the workspace itself (its desk, its emoji), the index, and
+    /// record of the workspace itself (its layout, its emoji), the index, and
     /// a part of a record's chain are no records of their own there.
     pub(super) fn index_record(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
         if route.record.is_empty()

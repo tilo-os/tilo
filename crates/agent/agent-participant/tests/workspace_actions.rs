@@ -32,11 +32,11 @@ mod agent_mcp;
 #[path = "workspace_actions/api.rs"]
 mod api;
 #[cfg(test)]
-#[path = "workspace_actions/api_desk.rs"]
-mod api_desk;
-#[cfg(test)]
 #[path = "workspace_actions/api_invites.rs"]
 mod api_invites;
+#[cfg(test)]
+#[path = "workspace_actions/api_layout.rs"]
+mod api_layout;
 #[cfg(test)]
 #[path = "workspace_actions/api_links.rs"]
 mod api_links;

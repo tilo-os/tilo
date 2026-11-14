@@ -45,9 +45,9 @@
 pub mod apps;
 pub mod bot;
 pub mod control;
-mod desk;
 pub mod facts;
 pub mod host;
+mod layout;
 pub mod message_lines;
 pub mod model;
 pub mod participant;

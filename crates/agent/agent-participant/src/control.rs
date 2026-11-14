@@ -724,7 +724,7 @@ pub trait AgentHostLink: Send + Sync {
     fn withdraw(&self, device_public_key: [u8; 32]);
 
     /// What the workspace whose channels are `workspace` is called, which a
-    /// desk the agent starts there is named after; `None` when the host does
+    /// layout the agent starts there is named after; `None` when the host does
     /// not govern it.
     fn workspace_name(&self, workspace: WorkspaceId) -> Option<String> {
         let _ = workspace;

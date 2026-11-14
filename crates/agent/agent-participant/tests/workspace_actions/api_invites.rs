@@ -1,5 +1,5 @@
 //! A backend's key brings another person into a customer's workspace through
-//! the door: `workspace/members#invite` answers the link a person's desk
+//! the door: `workspace/members#invite` answers the link a person's layout
 //! hands over, the person follows it on a page of their own and is in as
 //! the role, and a key they approve themselves reaches the workspace as them.
 //! Neither a key minted for the workspace nor the invited person's key
@@ -69,7 +69,7 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
         "the site's short link: {link}"
     );
 
-    // Ada's own page follows an invitation too, as a person's desk joins the
+    // Ada's own page follows an invitation too, as a person's layout joins the
     // workspace their backend made for them.
     let theirs = members(
         &mut backend,

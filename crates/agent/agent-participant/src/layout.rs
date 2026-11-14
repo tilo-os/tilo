@@ -1,4 +1,4 @@
-//! An agent's view on the person's desk.
+//! An agent's view on the person's layout.
 //!
 //! No action is performed out of sight: when an agent makes or changes a
 //! record that no window on the workspace's shared desktop shows, it adds a
@@ -8,12 +8,12 @@
 //! for, and says which run of the agent opened it. Every page of the
 //! workspace draws it from the synced desktop as it draws its own tabs,
 //! mounting the app over the record locally: nothing is streamed. A record
-//! already on the desk is left where the people put it. Records are named as
+//! already on the layout is left where the people put it. Records are named as
 //! every page notes its windows' (the record's wire spelling, the empty one
 //! for an app's primary record) and told apart by their app as well, so a
 //! person's own window of an app's primary record is the window that shows
 //! it, not a reason to open a second. A workspace nobody
-//! has opened a desk in yet gets one, as the first page in would make it,
+//! has opened a layout in yet gets one, as the first page in would make it,
 //! holding the agent's window.
 
 use automerge::AutoCommit;
@@ -110,11 +110,11 @@ fn opening(desktop: &SharedDesktop, app: &str) -> bool {
 /// that wrote its own before this reached it folds into the same one.
 fn fresh(workspace: &str, name: &str) -> Option<SharedDesktop> {
     let identity = WorkspaceId::parse(workspace)?;
-    let desk = Workspace::new(identity, name);
+    let layout = Workspace::new(identity, name);
     Some(SharedDesktop {
         tree: Layout {
-            active: desk.id(),
-            workspaces: vec![desk],
+            active: layout.id(),
+            workspaces: vec![layout],
             ..Layout::default()
         },
         ..SharedDesktop::default()
@@ -178,17 +178,17 @@ fn salt_of(author: &str) -> u16 {
     tilo_desktop_model::ids::device_salt(u16::try_from(folded).unwrap_or(1))
 }
 
-/// What publishes `change`, a change of the workspace's desk: the change alone where the
-/// workspace `holds` a desk, the whole desk where it holds none yet, since a record starts whole.
-pub(crate) fn desk_mutation(holds: bool, change: Vec<u8>) -> collab_types::DocumentMutation {
+/// What publishes `change`, a change of the workspace's layout: the change alone where the
+/// workspace `holds` a layout, the whole layout where it holds none yet, since a record starts whole.
+pub(crate) fn layout_mutation(holds: bool, change: Vec<u8>) -> collab_types::DocumentMutation {
     if holds {
         return collab_types::DocumentMutation::Incremental(change);
     }
-    let mut desk = AutoCommit::new();
-    if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut desk, &change) {
-        tracing::warn!(%error, "agent: a new desk did not take its first view");
+    let mut layout = AutoCommit::new();
+    if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut layout, &change) {
+        tracing::warn!(%error, "agent: a new layout did not take its first view");
     }
-    collab_types::DocumentMutation::Snapshot(desk.save())
+    collab_types::DocumentMutation::Snapshot(layout.save())
 }
 
 #[cfg(test)]
@@ -238,9 +238,9 @@ mod tests {
         }
     }
 
-    /// A desk with the person's strip (Chat) and the strip the agent's task
+    /// A layout with the person's strip (Chat) and the strip the agent's task
     /// runs on (Notes, which it works in), as one shared desktop change.
-    fn desk() -> Vec<u8> {
+    fn layout() -> Vec<u8> {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Workspace");
         workspace.strips = vec![
             Strip {
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn the_agents_view_opens_on_its_tasks_strip_beside_its_last_view() {
-        let mut changes = vec![desk()];
+        let mut changes = vec![layout()];
         let view = View {
             app_id: "so.tilo.files",
             title: "Files",
@@ -317,12 +317,12 @@ mod tests {
         );
         assert!(
             place_view(&merged(&changes), (WORKSPACE, None), &opener(), &view).is_none(),
-            "a record already on the desk stays where it is"
+            "a record already on the layout stays where it is"
         );
     }
 
     /// Notes keeps its notes in its primary record, which a person's own Notes window shows and
-    /// notes on the desk in the wire spelling (empty). A note the agent makes there is in that
+    /// notes on the layout in the wire spelling (empty). A note the agent makes there is in that
     /// window already: no second window opens on the same record. The empty spelling is every
     /// app's primary record, so a primary of another app still gets its window.
     #[test]
@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_nobody_opened_a_desk_in_gets_one_holding_the_view() {
+    fn a_workspace_nobody_opened_a_layout_in_gets_one_holding_the_view() {
         let view = View {
             app_id: "so.tilo.files",
             title: "Files",
@@ -433,7 +433,7 @@ mod tests {
             &opener(),
             &view,
         )
-        .expect("a desk is started");
+        .expect("a layout is started");
         let desktop = read(&[change]);
         let workspace = &desktop.tree.workspaces[0];
         assert_eq!(workspace.name, "Visa");

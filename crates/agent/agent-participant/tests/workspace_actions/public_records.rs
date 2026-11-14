@@ -489,7 +489,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
 
 /// A visitor's agent writing in the public workspace's Notes, which the
 /// visitor already has open, as `tilo mcp` runs it: after every call the
-/// records it changed are shown as windows on the person's desk while its
+/// records it changed are shown as windows on the person's layout while its
 /// next call runs. Every paragraph the host answered `ok` for is in the note
 /// the person's page holds, in order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -557,7 +557,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
         .with_surface(Surface::Agent)
         .with_agent_run("run-9", "Claude Code");
     // One call as `tilo mcp` serves it: answered, then its records shown on
-    // the desk beside the calls that follow.
+    // the layout beside the calls that follow.
     let call = async |name: &str, arguments: Value| {
         let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                              "params": {"name": name, "arguments": arguments}});

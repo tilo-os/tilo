@@ -532,7 +532,7 @@ impl Page {
 /// An agent's later task edits the record people have open as live as its
 /// first one did, and a session that joins afterwards replays both edits
 /// once each. A task that only reads opens nothing; the first edit starts the
-/// workspace's desk, under the workspace's name, holding the record's window.
+/// workspace's layout, under the workspace's name, holding the record's window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -546,7 +546,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
 
     // The person opens a workbook before any agent exists, and it is in the
     // workspace (sealed and durable on the host) before the agent arrives.
-    // Nobody has opened a desk in the workspace yet.
+    // Nobody has opened a layout in the workspace yet.
     let mut page = Page::create(&browser, SHEETS);
     page.until_sheets(&mut browser, &["Sheet1"]).await;
     browser.durable().await;
@@ -584,7 +584,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         })
         .await;
     assert!(
-        browser.desk().is_none(),
+        browser.layout().is_none(),
         "a task that only read opened nothing"
     );
 
@@ -655,12 +655,12 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         assert!(Instant::now() < deadline, "the reload replayed nothing");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // The workbook the agent worked in is open on the workspace's desk, once,
-    // as a window of the person's that the agent's run opened, on the desk the
+    // The workbook the agent worked in is open on the workspace's layout, once,
+    // as a window of the person's that the agent's run opened, on the layout the
     // agent started under the workspace's name.
     let person = hex::encode(root.verifying_key().to_bytes());
     loop {
-        let desktop = reloaded.desk();
+        let desktop = reloaded.layout();
         let windows: Vec<u64> = desktop
             .iter()
             .flat_map(|desktop| &desktop.records)
@@ -679,7 +679,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         }
         assert!(
             windows.len() < 2 && Instant::now() < deadline,
-            "the agent's workbook is open on the desk once: {desktop:?}"
+            "the agent's workbook is open on the layout once: {desktop:?}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

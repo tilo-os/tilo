@@ -46,7 +46,7 @@ const WRITER: &str = "so.tilo.word-processor";
 const CHAT: &str = "so.tilo.chat";
 
 /// The channel the member made in the workspace's chat.
-const MEMBER_CHANNEL: &str = "front-desk";
+const MEMBER_CHANNEL: &str = "front-office";
 
 /// What the scripted model plans, by what the task names: the record the
 /// member wrote (named outright), or the app whose one record the workspace

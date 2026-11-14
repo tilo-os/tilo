@@ -1,6 +1,6 @@
 //! What an agent working through the door changes opens in front of the
 //! workspace's people: each record it makes or changes is a window on the
-//! workspace's shared desk, said to be its run's, which a person entering
+//! workspace's shared layout, said to be its run's, which a person entering
 //! the workspace finds open. What it only reads opens nothing.
 use super::api::{ISSUER, Mcp, upload};
 use super::api_on_relay::{accept_invitation, api_on_relay, approved_key};
@@ -44,7 +44,7 @@ fn windows_of(desktop: &SharedDesktop, app: &str) -> Vec<u64> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn what_a_door_agent_changes_opens_on_the_workspaces_desk() {
+async fn what_a_door_agent_changes_opens_on_the_workspaces_layout() {
     let on_relay = api_on_relay(ISSUER).await;
     let api = Arc::clone(&on_relay.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -140,7 +140,7 @@ async fn what_a_door_agent_changes_opens_on_the_workspaces_desk() {
     .await;
     let deadline = tilo_test_env::hang_deadline();
     let desktop = loop {
-        let desktop = page.desk();
+        let desktop = page.layout();
         if let Some(desktop) = &desktop
             && !windows_of(desktop, PDF).is_empty()
             && !windows_of(desktop, WRITER).is_empty()
@@ -149,7 +149,7 @@ async fn what_a_door_agent_changes_opens_on_the_workspaces_desk() {
         }
         assert!(
             Instant::now() < deadline,
-            "the agent's records never opened on the desk: {desktop:?}"
+            "the agent's records never opened on the layout: {desktop:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     };

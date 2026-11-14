@@ -192,9 +192,9 @@ pub struct ParticipantConfig {
     pub host_cert: DeviceCert,
     /// The workspace uuid.
     pub workspace: String,
-    /// What the workspace is called, which a desk the agent starts there is
+    /// What the workspace is called, which a layout the agent starts there is
     /// named after, as the first page in names its own; `None` when the host
-    /// does not know it, and the agent starts no desk.
+    /// does not know it, and the agent starts no layout.
     pub workspace_name: Option<String>,
     /// The workspace's content store: content the agent's operations name is
     /// read from it, and content its apps store is kept in it.
@@ -2040,7 +2040,7 @@ impl AgentParticipant {
         // A record it made opens in front of the people; one it only opened
         // to read does not.
         if made.is_some() {
-            self.show_on_desk(&route);
+            self.show_on_layout(&route);
         }
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
@@ -2174,7 +2174,7 @@ impl AgentParticipant {
         // What the step made or changed opens in front of the people; a read
         // opens nothing.
         if changed.is_some() || posted {
-            self.show_on_desk(route);
+            self.show_on_layout(route);
         }
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),
@@ -2208,11 +2208,11 @@ impl AgentParticipant {
     /// Put the view of the record at `route`, which the agent made or
     /// changed, on the workspace's shared desktop when no tab shows it, beside
     /// the view the agent worked in last, so the people see what it did
-    /// ([`crate::desk`]). A workspace with no desk yet gets one, under its
+    /// ([`crate::layout`]). A workspace with no layout yet gets one, under its
     /// name.
-    fn show_on_desk(&self, route: &DocumentRoute) {
+    fn show_on_layout(&self, route: &DocumentRoute) {
         let desktop = desktop_route(&self.workspace);
-        // Pages note each window's record on the desk in its wire spelling (empty for an app's
+        // Pages note each window's record on the layout in its wire spelling (empty for an app's
         // primary record), and the view is named the same way, so a record a person's window
         // already shows is found there.
         let Some(record) = self.apps.get(route).map(|app| app.wire_record().to_owned()) else {
@@ -2236,7 +2236,7 @@ impl AgentParticipant {
             .catalogue
             .get(&route.app_id)
             .map_or(route.app_id.as_str(), |definition| definition.title());
-        let view = crate::desk::View {
+        let view = crate::layout::View {
             app_id: &route.app_id,
             title,
             record: &record,
@@ -2248,7 +2248,7 @@ impl AgentParticipant {
         // was this agent's task that opened it, and what it was asked.
         let delegation = &self.identity.delegation;
         let person = hex::encode(delegation.user_public_key);
-        let opener = crate::desk::Opener {
+        let opener = crate::layout::Opener {
             person: &person,
             run: Some(tilo_desktop_model::ownership::OpenedBy {
                 run: self.running.as_ref().map_or_else(
@@ -2265,7 +2265,7 @@ impl AgentParticipant {
         };
         let name = self.workspace_name.as_deref();
         let place = |doc: &automerge::AutoCommit| {
-            crate::desk::place_view(doc, (&self.workspace, name), &opener, &view)
+            crate::layout::place_view(doc, (&self.workspace, name), &opener, &view)
         };
         let held = self.unopened.desktop();
         let (change, holds) = match (&held, self.apps.get(&desktop)) {
@@ -2276,15 +2276,15 @@ impl AgentParticipant {
         let Some(change) = change else {
             return;
         };
-        let mutation = crate::desk::desk_mutation(holds, change);
+        let mutation = crate::layout::layout_mutation(holds, change);
         if let Err(error) = self.peer.write(desktop.clone(), &mutation) {
-            tracing::warn!(%error, "agent: its view did not reach the desk");
+            tracing::warn!(%error, "agent: its view did not reach the layout");
             return;
         }
         if let Some(app) = self.apps.get(&desktop)
             && let Err(error) = app.apply(&mutation)
         {
-            tracing::warn!(%error, "agent: the desk it holds did not take its view");
+            tracing::warn!(%error, "agent: the layout it holds did not take its view");
         }
     }
 

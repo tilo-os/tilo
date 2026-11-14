@@ -249,8 +249,8 @@ impl Page {
         }
     }
 
-    /// The route of the workspace's shared desk.
-    fn desk_route(&self) -> DocumentRoute {
+    /// The route of the workspace's shared layout.
+    fn layout_route(&self) -> DocumentRoute {
         DocumentRoute {
             app_id: tilo_desktop_model::ownership::DESKTOP_APP.into(),
             cluster_id: self.cluster_id.clone(),
@@ -258,9 +258,9 @@ impl Page {
         }
     }
 
-    /// Write the workspace's shared desk as a page first writes it: one
+    /// Write the workspace's shared layout as a page first writes it: one
     /// strip and no window yet.
-    pub fn put_desk(&mut self) {
+    pub fn put_layout(&mut self) {
         use tilo_desktop_model::{Layout, Strip, StripId, Workspace, WorkspaceId};
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Workspace");
         workspace.strips = vec![Strip::new(StripId(10), "Main")];
@@ -275,7 +275,7 @@ impl Page {
         tilo_desktop_model::shared_record::write(&mut doc, &desktop).unwrap();
         doc.commit();
         let bytes = doc.save();
-        let route = self.desk_route();
+        let route = self.layout_route();
         self.peer
             .write(
                 route.clone(),
@@ -289,14 +289,14 @@ impl Page {
             .push(([0; 32], bytes));
     }
 
-    /// The workspace's shared desk as the page has received it.
-    pub fn desk(&mut self) -> Option<tilo_desktop_model::ownership::SharedDesktop> {
+    /// The workspace's shared layout as the page has received it.
+    pub fn layout(&mut self) -> Option<tilo_desktop_model::ownership::SharedDesktop> {
         self.pump();
-        let desk = self.desk_route();
+        let layout = self.layout_route();
         let read = self
             .peer
             .engine()
-            .record(&desk.cluster_id, &desk.app_id, &desk.record);
+            .record(&layout.cluster_id, &layout.app_id, &layout.record);
         let bytes = read.ok()??;
         tilo_desktop_model::shared_record::read(&automerge::AutoCommit::load(&bytes).ok()?, None)
     }

@@ -41,7 +41,7 @@ fn words(index: usize) -> String {
         "tilo",
         "lounge",
         "workspace",
-        "desk",
+        "layout",
         "window",
         "share",
         "agent",

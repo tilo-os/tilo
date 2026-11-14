@@ -118,7 +118,7 @@ impl Worker {
     /// What running `request` waits for: the record it acts on
     /// ([`invoke_keys`]), and for an open of an app, the record the open
     /// shows, which the workspace may hold and send only when asked. That is
-    /// the record an open on the desk names, and for an app that keeps one
+    /// the record an open on the layout names, and for an app that keeps one
     /// record per workspace (Chat) the open of the app itself, whose record
     /// is that one: asked for and waited on before the open runs, so the open
     /// finds the record people use rather than taking the workspace for one

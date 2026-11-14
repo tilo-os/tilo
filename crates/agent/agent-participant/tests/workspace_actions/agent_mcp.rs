@@ -57,7 +57,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let hosted = start(&root, &host, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let sheets = browser.create(SHEETS);
-    browser.put_desk();
+    browser.put_layout();
     let writer = browser.create(WRITER);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
@@ -68,7 +68,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    // The records it works in open as windows on the workspace's desk, as
+    // The records it works in open as windows on the workspace's layout, as
     // `tilo mcp` opens them; the host that executes its run is what shows it
     // there, doing what it does.
     let windows = mcp_windows::AgentWindows::new(actions.clone(), person.clone(), WORKSPACE.into());
@@ -117,7 +117,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         .expect("the call names the record it worked in");
     assert_eq!(acted.app, SHEETS);
     assert_eq!(acted.record, sheets.record);
-    // The workbook it changed opens on the desk.
+    // The workbook it changed opens on the layout.
     let changed = server.take_changed();
     assert_eq!(
         changed,
@@ -192,9 +192,9 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
                 edited = true;
             }
         }
-        // The workbook it works in is open on the workspace's desk, as a
+        // The workbook it works in is open on the workspace's layout, as a
         // window of the person's, for every page to draw.
-        shown = shown || desk_windows(&mut browser, &sheets.record) > 0;
+        shown = shown || layout_windows(&mut browser, &sheets.record) > 0;
         // What it does reads as the catalogue's own line for such a step, in
         // the app as a person reads its name, not as an English verb glued to
         // an id.
@@ -274,7 +274,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         .await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     assert_eq!(
-        desk_windows(&mut browser, &sheets.record),
+        layout_windows(&mut browser, &sheets.record),
         1,
         "one window shows the workbook"
     );
@@ -585,10 +585,10 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
     }
 }
 
-/// How many windows of the workspace's desk show `record`, as the page has
+/// How many windows of the workspace's layout show `record`, as the page has
 /// received it: each says the agent's run opened it.
-fn desk_windows(browser: &mut Browser, record: &str) -> usize {
-    browser.desk().map_or(0, |desktop| {
+fn layout_windows(browser: &mut Browser, record: &str) -> usize {
+    browser.layout().map_or(0, |desktop| {
         desktop
             .records
             .iter()

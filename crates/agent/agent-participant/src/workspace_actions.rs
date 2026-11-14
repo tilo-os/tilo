@@ -369,7 +369,7 @@ impl WorkspaceActions {
         let link_request =
             request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_record;
         let on_workspace = provider_workspace(&request.target.provider).is_some();
-        // Showing a record on the workspace's desk, as an agent's work opens
+        // Showing a record on the workspace's layout, as an agent's work opens
         // what it changed in front of the people there.
         let shows = application_provider(&request.target.provider).is_some()
             && request.target.address.action == APPLICATION_OPEN_ACTION;
@@ -2281,7 +2281,7 @@ impl Worker {
             .map_err(Outcome::Rejected)?;
         if let Some((named, app)) = application_provider(&request.target.provider) {
             return self
-                .show_on_desk(workspace_id, caller, (named, app), request)
+                .show_on_layout(workspace_id, caller, (named, app), request)
                 .map(|output| (output, None));
         }
         // Acting on a record waits for that record's keys and no other's;
@@ -2441,14 +2441,14 @@ impl Worker {
     /// window on the workspace's shared desktop: what the device an agent acts through asks for
     /// each record the agent makes or changes (`tilo mcp`, the API server), so every member sees
     /// it open as they see a colleague's window, without anyone's view moving to it
-    /// ([`crate::desk`]). The window is the person's the caller acts for — the host's own, or a
+    /// ([`crate::layout`]). The window is the person's the caller acts for — the host's own, or a
     /// member of the workspace — and names the agent run that opened it. A record a window
     /// already shows is left where the people put it.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
-    fn show_on_desk(
+    fn show_on_layout(
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
@@ -2487,13 +2487,13 @@ impl Worker {
             .get(app)
             .map(|definition| definition.title().to_owned())
             .ok_or_else(unknown)?;
-        let desk = crate::participant::desktop_route(named);
+        let layout = crate::participant::desktop_route(named);
         let state = self
             .refresh(
                 workspace_id,
                 Needs::Act {
-                    app_id: &desk.app_id,
-                    record: &desk.record,
+                    app_id: &layout.app_id,
+                    record: &layout.record,
                 },
             )
             .map_err(Outcome::Rejected)?;
@@ -2518,7 +2518,7 @@ impl Worker {
             .workspaces
             .get_mut(&workspace_id)
             .ok_or_else(|| commit_failed("the workspace was not joined".into(), true))?;
-        let view = crate::desk::View {
+        let view = crate::layout::View {
             app_id: app,
             title: &title,
             record: &route.record,
@@ -2528,12 +2528,12 @@ impl Worker {
             .records
             .as_ref()
             .and_then(WorkspaceRecords::desktop);
-        let opener = crate::desk::Opener {
+        let opener = crate::layout::Opener {
             person: &person,
             run,
         };
         let empty = automerge::AutoCommit::new();
-        let Some(change) = crate::desk::place_view(
+        let Some(change) = crate::layout::place_view(
             held.as_ref().unwrap_or(&empty),
             (named, name.as_deref()),
             &opener,
@@ -2541,8 +2541,8 @@ impl Worker {
         ) else {
             return Ok(ActionOutput::default());
         };
-        let mutation = crate::desk::desk_mutation(held.is_some(), change);
-        self.commit(workspace_id, &desk, &mutation)
+        let mutation = crate::layout::layout_mutation(held.is_some(), change);
+        self.commit(workspace_id, &layout, &mutation)
             .map_err(|reason| commit_failed(reason, true))?;
         Ok(ActionOutput::default())
     }
@@ -2574,7 +2574,7 @@ impl Worker {
 
     /// Whether `caller` is the host's own person or an agent one of their
     /// devices handed its session to: who may open records, show them on the
-    /// shared desk and run commands in the workspace's shell.
+    /// shared layout and run commands in the workspace's shell.
     fn acts_for_owner(&self, caller: &Caller) -> bool {
         acts_for(caller, &self.participant)
     }
