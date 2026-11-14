@@ -81,7 +81,7 @@ pub enum MailEffect {
     /// sends as. No password travels here: the account signs in with the one
     /// the person's vault holds for it, or asks for it. Asked of the person
     /// first whenever anyone acts for them.
-    #[effect(attended, returns)]
+    #[effect(attended, returns, audience = "agents")]
     AddAccount {
         #[param("The name shown for it")]
         display_name: String,

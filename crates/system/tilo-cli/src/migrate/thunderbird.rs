@@ -37,7 +37,7 @@ const DELIVER: &str = "mail/mail.mailbox#deliver-message";
 const ADD_CONTACTS: &str = "contacts/contacts.book#add-contacts";
 const NEW_EVENT: &str = "calendar/calendar.calendar#new-event";
 /// Where an email account joins the person's accounts (Mail's, which the person allows).
-const ADD_ACCOUNT: &str = "mail#add-account";
+const ADD_ACCOUNT: &str = "mail/mail.mailbox#add-account";
 
 /// How many contacts one action carries.
 const CONTACTS_PER_ACTION: usize = 100;
@@ -278,7 +278,7 @@ fn land_account(
             let added = match workspace.act(run, ADD_ACCOUNT, arguments.clone()) {
                 Ok(_) => Landed::One,
                 Err(error) if format!("{error:#}").contains("already") => Landed::Already,
-                Err(error) => return Err(error),
+                Err(error) => return Err(mail_not_open(error, text(&arguments, "email"))),
             };
             if let Some(password) = password {
                 seal(&vault, text(&arguments, "email"), password)?;
@@ -286,6 +286,17 @@ fn land_account(
             Ok(added)
         },
     )
+}
+
+/// Why an account could not be added, said as what to do: Mail adds it from the person's own
+/// tab, so it has to be open there.
+pub fn mail_not_open(error: anyhow::Error, email: &str) -> anyhow::Error {
+    if format!("{error:#}").contains("no action") {
+        return anyhow!(
+            "{email} is added to the person's accounts by Mail in their tab, and Mail is not open there: ask them to open Mail, then start this again"
+        );
+    }
+    error
 }
 
 /// Keep `password` for the account `email` in this computer's account vault: where Tilo's Mail

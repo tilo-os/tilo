@@ -5,7 +5,7 @@
 //! the journal and every request to the service happen here. What comes over lands as the
 //! agent's run: an Outline document becomes a Notes page (`import-markdown`, under the id its
 //! source decides, then `move-note` under its parent), an issue from Linear one in Tasks (`create`
-//! in the project or area its Linear project or team became, then `comment`, `move-under` and
+//! in the project or area its project or team in Linear became, then `comment`, `move-under` and
 //! `link` for the issues it relates to). Each keeps its origin: who wrote it on the service, when,
 //! its page there and the name the service gave it (`ENG-12`), so a person sees the original
 //! author and date while History says who moved it.
@@ -32,7 +32,7 @@ pub const LINEAR: &str = "linear";
 pub const MAIL: &str = "mail";
 
 /// Where an email account joins the person's accounts (Mail's, which the person allows).
-const ADD_ACCOUNT: &str = "mail#add-account";
+const ADD_ACCOUNT: &str = "mail/mail.mailbox#add-account";
 
 const IMPORT_MARKDOWN: &str = "notes/notes.notebook#import-markdown";
 const MOVE_NOTE: &str = "notes/notes.notebook#move-note";
@@ -368,7 +368,7 @@ fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
                 Err(error) if format!("{error:#}").contains("already") => {
                     Ok(super::Landed::Already)
                 }
-                Err(error) => Err(error),
+                Err(error) => Err(super::thunderbird::mail_not_open(error, &config.email)),
             }
         },
     )
@@ -386,7 +386,7 @@ pub struct Kept {
     /// The run that brought each issue, by its page.
     #[serde(default)]
     pub issue_runs: BTreeMap<String, String>,
-    /// The project or area each Linear project and team became, by its key.
+    /// The project or area each project and team in Linear became, by its key.
     #[serde(default)]
     pub areas: BTreeMap<String, KeptArea>,
     /// Links made, as `from-page\u{0}to-page`.
@@ -454,7 +454,7 @@ impl Landing<'_, '_> {
         Ok(())
     }
 
-    /// The project or area `group` became, made now if no run made it yet: a Linear project
+    /// The project or area `group` became, made now if no run made it yet: a project in Linear
     /// becomes a project, a team an area, each named as Linear names it.
     fn area(&mut self, group: &IncomingGroup, kind: &str) -> Result<String> {
         let key = format!("{kind}:{}", group.key);
@@ -612,7 +612,7 @@ impl Landing<'_, '_> {
     }
 
     fn land_issue(&mut self, issue: &IncomingIssue) -> Result<()> {
-        // A Linear project becomes a project; an issue in none works towards its team's area.
+        // A project in Linear stays a project; an issue in none works towards its team's area.
         let project = match (&issue.project, &issue.team) {
             (Some(project), _) => Some(self.area(project, "project")?),
             (None, Some(team)) => Some(self.area(team, "area")?),

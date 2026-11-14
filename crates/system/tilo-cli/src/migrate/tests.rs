@@ -195,7 +195,7 @@ fn one_thunderbird_account_of_two_comes_over_once() {
     );
     // The account joins the person's accounts with its servers, the other address it sends
     // as and the password Thunderbird saved; the home account does not.
-    let added = workspace.of("mail#add-account");
+    let added = workspace.of("mail/mail.mailbox#add-account");
     assert_eq!(added.len(), 1, "{added:#?}");
     assert_eq!(added[0]["email"], "ada@example.com");
     assert_eq!(added[0]["imap_host"], "imap.example.com");
