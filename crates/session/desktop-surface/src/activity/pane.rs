@@ -3248,6 +3248,9 @@ include!("native_history_tests.rs");
 include!("workspace_activity_tests.rs");
 
 #[cfg(test)]
+#[path = "pane/clock_tests.rs"]
+mod clock_tests;
+#[cfg(test)]
 #[path = "pane_tests.rs"]
 mod pane_tests;
 #[cfg(test)]

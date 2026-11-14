@@ -1102,23 +1102,6 @@ mod tests {
         assert_eq!(next.passive_unread, before - shown);
     }
 
-    #[test]
-    fn away_recap_requires_the_full_threshold_and_fails_closed_on_clock_rollback() {
-        let departed = 10_000;
-        assert!(!away_recap_is_due(
-            departed,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(departed + 45 * 60 - 1)
-        ));
-        assert!(away_recap_is_due(
-            departed,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(departed + 45 * 60)
-        ));
-        assert!(!away_recap_is_due(
-            departed,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(departed - 1)
-        ));
-    }
-
     /// What the recap holds after leaving the view of a workspace and coming back `elapsed` later,
     /// with the workspace changed meanwhile or not.
     fn away_change_count_after(elapsed: Duration, changed: bool) -> usize {
@@ -1922,21 +1905,6 @@ mod tests {
                 .iter()
                 .any(|e| e.summary.contains("/tmp/bound/239")),
             "the most recent change is inside the window"
-        );
-    }
-
-    #[test]
-    fn period_windows_are_half_open_and_all_time_is_unbounded() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        assert!(Period::AllTime.range(now).is_none());
-        let (start, end) = Period::Week.range(now).unwrap();
-        assert_eq!(
-            now.duration_since(start).unwrap(),
-            Duration::from_secs(604_800)
-        );
-        assert!(
-            end > now,
-            "a change committed this instant is inside the window"
         );
     }
 
