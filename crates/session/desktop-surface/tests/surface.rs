@@ -19,7 +19,7 @@ use tilo_desktop_surface::{
 use ui::search::Scope;
 use ui::widget::TileHost;
 
-mod support;
+use crate::support;
 
 use support::{chrome_at, key_search, settle_search, type_search};
 

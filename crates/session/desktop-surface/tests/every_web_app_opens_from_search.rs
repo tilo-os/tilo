@@ -21,7 +21,7 @@
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 
-mod support;
+use crate::support;
 
 use std::time::{Duration, Instant};
 

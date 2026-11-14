@@ -1,11 +1,6 @@
 //! The chrome a session hosts over the shell, driven by tests: search's card is the chrome's, drawn
 //! above the windows, so a test that searches drives this beside the shell.
 
-#![allow(
-    dead_code,
-    reason = "each test binary takes what it needs of these fixtures"
-)]
-
 use std::rc::Rc;
 use std::time::Duration;
 

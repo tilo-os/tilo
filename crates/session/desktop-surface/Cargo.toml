@@ -7,6 +7,8 @@ license.workspace = true
 description = "The portable desktop surface: tilo-desktop-model's strips, window groups and tabs as tilo-ui widgets, and the versioned navigation contract hosts expose."
 repository.workspace = true
 homepage.workspace = true
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 
 # The part of the shell's desktop that does not need a compositor: it builds
 # on the portable `tilo-ui` build, so a browser page and the native shell can
@@ -81,6 +83,13 @@ tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] 
 # Members' pointers are placed through the live plane's layout mapping
 # against the windows and strip a desktop shows.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+
+# The integration tests: one binary, its files included as modules by
+# `tests/it.rs` (a file per binary linked the whole crate, the toolkit and the
+# media stack once each).
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true
