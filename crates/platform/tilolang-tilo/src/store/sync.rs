@@ -5,7 +5,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use automerge::ReadDoc as _;
 use tilo_actions::Described;
 use tilo_automerge::ApplyIncoming as _;
 use tilolang_runtime::ids::{AppId, DocId};
