@@ -401,318 +401,318 @@ mod tests {
         }
     }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        clippy::too_many_lines,
-        reason = "one scenario, end to end, reads as one test; the test keeps its fixture and guards alive through its assertions"
-    )]
-    #[test]
-    fn native_launch_and_close_keep_certified_ownership_and_signed_terminals() {
-        use tilo_identity_host::provisioning::{self, IdentityStorage};
-        let scratch = tempfile::tempdir().unwrap();
-        let config = scratch.path().join("config");
-        let system = scratch.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &config)
-            .set("TILO_IDENTITY_ROOT", &system)
-            .set(provisioning::FILE_SECRETS_ENV, "1");
-        provisioning::ensure_collaboration_identity(
-            &config.join("tilo/identity"),
-            &tilo_user_identity::IdentityPaths::under(&system),
-            IdentityStorage::Files,
-        )
-        .unwrap();
-        let mut workspace = Workspace::new(WorkspaceSlot(9), "Signed opens");
-        let workspace_id = workspace.id().to_string();
-        let (_, certificate) =
-            tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();
-        let person = hex::encode(certificate.user_public_key);
-        workspace.set_owner(person.clone());
-        let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
-        let launcher = Arc::new(Ticketed::default());
-        let (state, bridge) = AppBrokerState::test_state(
-            Some(tree.shared().authority()),
-            crate::services::HostServices {
-                launcher: Some(launcher.clone()),
-                local_person: Some(Arc::new(NativePerson(certificate.clone()))),
-                ..Default::default()
-            },
-        );
-        let clock = crate::policy_clock::OwnerPolicyClock::new().unwrap();
-        let origin = clock.new_origin();
-        assert!(
-            state
-                .certificate_authority
-                .set(Arc::new(NativeClock(origin.capture().unwrap())))
-                .is_ok()
-        );
-        *state.journal.lock().unwrap() = Ok(Some(
-            super::super::invocation_journal::InvocationJournal::open(
-                &scratch.path().join("journal"),
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::significant_drop_tightening,
+            clippy::too_many_lines,
+            reason = "one scenario, end to end, reads as one test; the test keeps its fixture and guards alive through its assertions"
+        )]
+        fn opening_an_app_keeps_custody_and_its_ticket;
+
+        phase native_launch_and_close_keep_certified_ownership_and_signed_terminals;
+        {
+            use tilo_identity_host::provisioning::{self, IdentityStorage};
+            let scratch = tempfile::tempdir().unwrap();
+            let config = scratch.path().join("config");
+            let system = scratch.path().join("system");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &config)
+                .set("TILO_IDENTITY_ROOT", &system)
+                .set(provisioning::FILE_SECRETS_ENV, "1");
+            provisioning::ensure_collaboration_identity(
+                &config.join("tilo/identity"),
+                &tilo_user_identity::IdentityPaths::under(&system),
+                IdentityStorage::Files,
             )
-            .unwrap(),
-        ));
-        let caller = Caller::local_person(person).in_workspace(&workspace_id);
-        for step in 0..6 {
-            match step {
-                4 => *launcher.outcome.lock().unwrap() = Some(Ok(Launched::Unconfirmed)),
-                5 => {
-                    *launcher.outcome.lock().unwrap() =
-                        Some(Err("application could not start".into()));
-                }
-                _ => {}
-            }
-            let mut request = request(&workspace_id);
-            if step == 3 {
-                request.target.address.action = "close".into();
-            }
-            let pending = state.action_invoke_local_person(&caller, &request);
-            // Native custody is inert until the broker services its admission
-            // turn. Drive the same eager dispatch as the live accept loop,
-            // rather than waiting for a worker this fixture never started.
-            let super::super::ActionDirectoryBridgeRequest::InvokeEager(invoke) = bridge
-                .recv_timeout(tilo_test_env::hang_bound())
-                .expect("native invoke reaches the broker turn")
-            else {
-                panic!("native open must enqueue eager admission");
-            };
-            std::thread::scope(|scope| {
-                scope
-                    .spawn(|| {
-                        super::super::action_host::answer_with(
-                            state.invoke_eager(
-                                &invoke.caller,
-                                invoke.own_peer,
-                                invoke.launch.as_ref(),
-                                Some(&invoke.origin),
-                                &invoke.request,
-                            ),
-                            invoke.reply,
-                        );
-                    })
-                    .join()
-                    .unwrap();
-            });
-            pending
-                .wait_timeout(tilo_test_env::hang_bound())
-                .ok()
-                .flatten()
-                .expect("serviced native admission answers")
-                .unwrap();
-            let job = state.remote_job(&caller, &request.invocation).unwrap();
-            match step {
-                0 => {
-                    state.launch_connected(80, &connected(1, &workspace_id));
-                    state.launch_published(&offering(80), None);
-                }
-                1 => {
-                    state.launch_connected(81, &connected(2, &workspace_id));
-                    state.launch_disconnected(81);
-                }
-                2 => {
-                    state.expire_workspace_opens(
-                        tilo_clock::now().checked_add(CONNECT_WAIT).unwrap(),
-                    );
-                }
-                _ => {}
-            }
-            let update = state.invocation_status(job).unwrap();
-            assert!(update.is_terminal());
-            assert_eq!(
-                matches!(update, InvocationUpdate::Failed { .. }),
-                matches!(step, 1 | 2 | 5)
+            .unwrap();
+            let mut workspace = Workspace::new(WorkspaceSlot(9), "Signed opens");
+            let workspace_id = workspace.id().to_string();
+            let (_, certificate) =
+                tilo_identity_host::broker::trusted_current_device(&workspace_id).unwrap();
+            let person = hex::encode(certificate.user_public_key);
+            workspace.set_owner(person.clone());
+            let mut tree = WorkspaceTree::default();
+            tree.workspaces.push(workspace);
+            let launcher = Arc::new(Ticketed::default());
+            let (state, bridge) = AppBrokerState::test_state(
+                Some(tree.shared().authority()),
+                crate::services::HostServices {
+                    launcher: Some(launcher.clone()),
+                    local_person: Some(Arc::new(NativePerson(certificate.clone()))),
+                    ..Default::default()
+                },
             );
-            assert_eq!(update.invocation(), request.invocation);
+            let clock = crate::policy_clock::OwnerPolicyClock::new().unwrap();
+            let origin = clock.new_origin();
+            assert!(
+                state
+                    .certificate_authority
+                    .set(Arc::new(NativeClock(origin.capture().unwrap())))
+                    .is_ok()
+            );
+            *state.journal.lock().unwrap() = Ok(Some(
+                super::super::invocation_journal::InvocationJournal::open(
+                    &scratch.path().join("journal"),
+                )
+                .unwrap(),
+            ));
+            let caller = Caller::local_person(person).in_workspace(&workspace_id);
+            for step in 0..6 {
+                match step {
+                    4 => *launcher.outcome.lock().unwrap() = Some(Ok(Launched::Unconfirmed)),
+                    5 => {
+                        *launcher.outcome.lock().unwrap() =
+                            Some(Err("application could not start".into()));
+                    }
+                    _ => {}
+                }
+                let mut request = request(&workspace_id);
+                if step == 3 {
+                    request.target.address.action = "close".into();
+                }
+                let pending = state.action_invoke_local_person(&caller, &request);
+                // Native custody is inert until the broker services its admission
+                // turn. Drive the same eager dispatch as the live accept loop,
+                // rather than waiting for a worker this fixture never started.
+                let super::super::ActionDirectoryBridgeRequest::InvokeEager(invoke) = bridge
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .expect("native invoke reaches the broker turn")
+                else {
+                    panic!("native open must enqueue eager admission");
+                };
+                std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| {
+                            super::super::action_host::answer_with(
+                                state.invoke_eager(
+                                    &invoke.caller,
+                                    invoke.own_peer,
+                                    invoke.launch.as_ref(),
+                                    Some(&invoke.origin),
+                                    &invoke.request,
+                                ),
+                                invoke.reply,
+                            );
+                        })
+                        .join()
+                        .unwrap();
+                });
+                pending
+                    .wait_timeout(tilo_test_env::hang_bound())
+                    .ok()
+                    .flatten()
+                    .expect("serviced native admission answers")
+                    .unwrap();
+                let job = state.remote_job(&caller, &request.invocation).unwrap();
+                match step {
+                    0 => {
+                        state.launch_connected(80, &connected(1, &workspace_id));
+                        state.launch_published(&offering(80), None);
+                    }
+                    1 => {
+                        state.launch_connected(81, &connected(2, &workspace_id));
+                        state.launch_disconnected(81);
+                    }
+                    2 => {
+                        state.expire_workspace_opens(
+                            tilo_clock::now().checked_add(CONNECT_WAIT).unwrap(),
+                        );
+                    }
+                    _ => {}
+                }
+                let update = state.invocation_status(job).unwrap();
+                assert!(update.is_terminal());
+                assert_eq!(
+                    matches!(update, InvocationUpdate::Failed { .. }),
+                    matches!(step, 1 | 2 | 5)
+                );
+                assert_eq!(update.invocation(), request.invocation);
+                let journal = state.journal.lock().unwrap();
+                let journal = journal.as_ref().unwrap().as_ref().unwrap();
+                let key = super::super::InvocationKey {
+                    workspace: workspace_id.clone(),
+                    host: journal.host(),
+                    owner: super::super::InvocationOwner::AuthenticatedLocal {
+                        root: certificate.user_public_key,
+                        device: certificate.device_public_key,
+                        agent: None,
+                    },
+                    invocation: request.invocation,
+                };
+                let record = journal.lookup(&key).unwrap().unwrap();
+                assert_eq!(record.update, update);
+                assert_eq!(record.uncertain, step == 2);
+                assert_eq!(
+                    record.terminal.as_ref().unwrap().category,
+                    if step == 2 {
+                        crate::action_evidence::TerminalCategory::Uncertain
+                    } else if matches!(step, 1 | 5) {
+                        crate::action_evidence::TerminalCategory::Failed
+                    } else {
+                        crate::action_evidence::TerminalCategory::Succeeded
+                    }
+                );
+                let evidence = record.admission.as_ref().unwrap();
+                crate::action_evidence::verify_terminal(
+                    record.terminal.as_ref().unwrap(),
+                    evidence.public_receipt(),
+                )
+                .unwrap();
+                let facts =
+                    super::super::invocation_journal::evidence_facts(&key, &record.intent).unwrap();
+                evidence.validate(&facts).unwrap();
+            }
+        }
+
+        phase launch_preserves_the_requested_uuid_through_the_terminal_journal_record;
+        {
+            let (state, workspace) = broker();
+            let scratch = tempfile::tempdir().unwrap();
+            *state.journal.lock().unwrap() = Ok(Some(
+                super::super::invocation_journal::InvocationJournal::open(
+                    &scratch.path().join("journal"),
+                )
+                .unwrap(),
+            ));
+            let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(&workspace);
+            let request = request(&workspace);
+            let job = invoke(&state, &caller, &request).unwrap();
+            assert_ne!(request.invocation.0, uuid::Uuid::from_u128(u128::from(job)));
+            assert_eq!(
+                state.invocation_status(job),
+                Some(InvocationUpdate::Accepted {
+                    invocation: request.invocation
+                })
+            );
+            state.launch_connected(77, &connected(1, &workspace));
+            state.launch_published(&offering(77), None);
+            let terminal = state.invocation_status(job).unwrap();
+            assert_eq!(terminal.invocation(), request.invocation);
+            assert_eq!(answered(&state, job), Some(naming(77)));
             let journal = state.journal.lock().unwrap();
             let journal = journal.as_ref().unwrap().as_ref().unwrap();
             let key = super::super::InvocationKey {
-                workspace: workspace_id.clone(),
+                workspace,
                 host: journal.host(),
-                owner: super::super::InvocationOwner::AuthenticatedLocal {
-                    root: certificate.user_public_key,
-                    device: certificate.device_public_key,
-                    agent: None,
+                owner: super::super::InvocationOwner::Local {
+                    actor: hex::encode([41; 32]),
                 },
                 invocation: request.invocation,
             };
             let record = journal.lookup(&key).unwrap().unwrap();
-            assert_eq!(record.update, update);
-            assert_eq!(record.uncertain, step == 2);
-            assert_eq!(
-                record.terminal.as_ref().unwrap().category,
-                if step == 2 {
-                    crate::action_evidence::TerminalCategory::Uncertain
-                } else if matches!(step, 1 | 5) {
-                    crate::action_evidence::TerminalCategory::Failed
-                } else {
-                    crate::action_evidence::TerminalCategory::Succeeded
-                }
-            );
-            let evidence = record.admission.as_ref().unwrap();
-            crate::action_evidence::verify_terminal(
-                record.terminal.as_ref().unwrap(),
-                evidence.public_receipt(),
-            )
-            .unwrap();
-            let facts =
-                super::super::invocation_journal::evidence_facts(&key, &record.intent).unwrap();
-            evidence.validate(&facts).unwrap();
+            assert_eq!(record.update, terminal);
         }
-    }
 
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the test keeps its fixture and guards alive through its assertions"
-    )]
-    #[test]
-    fn launch_preserves_the_requested_uuid_through_the_terminal_journal_record() {
-        let (state, workspace) = broker();
-        let scratch = tempfile::tempdir().unwrap();
-        *state.journal.lock().unwrap() = Ok(Some(
-            super::super::invocation_journal::InvocationJournal::open(
+        phase missing_original_custody_cannot_launch_or_allocate_a_ticket;
+        {
+            let (state, workspace) = broker();
+            let caller = Caller::authenticated([41; 32], [42; 32]).in_workspace(&workspace);
+            assert!(invoke(&state, &caller, &request(&workspace)).is_err());
+            assert!(state.workspace_opens.next_deadline().is_none());
+            assert!(state.completed_invocations.lock().unwrap().is_empty());
+            let job = open(&state, &workspace);
+            state.launch_connected(78, &connected(1, &workspace));
+            state.launch_published(&offering(78), None);
+            assert_eq!(answered(&state, job), Some(naming(78)));
+        }
+
+        phase a_failed_admission_barrier_never_calls_the_launcher;
+        {
+            let (state, workspace) = broker();
+            let scratch = tempfile::tempdir().unwrap();
+            let mut journal = super::super::invocation_journal::InvocationJournal::open(
                 &scratch.path().join("journal"),
             )
-            .unwrap(),
-        ));
-        let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(&workspace);
-        let request = request(&workspace);
-        let job = invoke(&state, &caller, &request).unwrap();
-        assert_ne!(request.invocation.0, uuid::Uuid::from_u128(u128::from(job)));
-        assert_eq!(
-            state.invocation_status(job),
-            Some(InvocationUpdate::Accepted {
-                invocation: request.invocation
-            })
-        );
-        state.launch_connected(77, &connected(1, &workspace));
-        state.launch_published(&offering(77), None);
-        let terminal = state.invocation_status(job).unwrap();
-        assert_eq!(terminal.invocation(), request.invocation);
-        assert_eq!(answered(&state, job), Some(naming(77)));
-        let journal = state.journal.lock().unwrap();
-        let journal = journal.as_ref().unwrap().as_ref().unwrap();
-        let key = super::super::InvocationKey {
-            workspace,
-            host: journal.host(),
-            owner: super::super::InvocationOwner::Local {
-                actor: hex::encode([41; 32]),
-            },
-            invocation: request.invocation,
-        };
-        let record = journal.lookup(&key).unwrap().unwrap();
-        assert_eq!(record.update, terminal);
-    }
+            .unwrap();
+            journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
+            *state.journal.lock().unwrap() = Ok(Some(journal));
+            let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(&workspace);
+            assert!(invoke(&state, &caller, &request(&workspace)).is_err());
+            assert!(state.workspace_opens.next_deadline().is_none());
+            assert!(state.completed_invocations.lock().unwrap().is_empty());
+            *state.journal.lock().unwrap() = Ok(None);
+            let job = open(&state, &workspace);
+            state.launch_connected(79, &connected(1, &workspace));
+            state.launch_published(&offering(79), None);
+            assert_eq!(answered(&state, job), Some(naming(79)));
+        }
 
-    #[test]
-    fn missing_original_custody_cannot_launch_or_allocate_a_ticket() {
-        let (state, workspace) = broker();
-        let caller = Caller::authenticated([41; 32], [42; 32]).in_workspace(&workspace);
-        assert!(invoke(&state, &caller, &request(&workspace)).is_err());
-        assert!(state.workspace_opens.next_deadline().is_none());
-        assert!(state.completed_invocations.lock().unwrap().is_empty());
-        let job = open(&state, &workspace);
-        state.launch_connected(78, &connected(1, &workspace));
-        state.launch_published(&offering(78), None);
-        assert_eq!(answered(&state, job), Some(naming(78)));
-    }
+        phase an_open_completes_with_the_instance_holding_its_ticket;
+        {
+            let (state, workspace) = broker();
+            let first = open(&state, &workspace);
+            let second = open(&state, &workspace);
+            assert!(accepted(&state, first) && accepted(&state, second));
 
-    #[test]
-    fn a_failed_admission_barrier_never_calls_the_launcher() {
-        let (state, workspace) = broker();
-        let scratch = tempfile::tempdir().unwrap();
-        let mut journal = super::super::invocation_journal::InvocationJournal::open(
-            &scratch.path().join("journal"),
-        )
-        .unwrap();
-        journal.fail_at = Some(super::super::invocation_journal::BarrierFailure::File);
-        *state.journal.lock().unwrap() = Ok(Some(journal));
-        let caller = Caller::local_person(hex::encode([41; 32])).in_workspace(&workspace);
-        assert!(invoke(&state, &caller, &request(&workspace)).is_err());
-        assert!(state.workspace_opens.next_deadline().is_none());
-        assert!(state.completed_invocations.lock().unwrap().is_empty());
-        *state.journal.lock().unwrap() = Ok(None);
-        let job = open(&state, &workspace);
-        state.launch_connected(79, &connected(1, &workspace));
-        state.launch_published(&offering(79), None);
-        assert_eq!(answered(&state, job), Some(naming(79)));
-    }
+            // The second launch's instance comes up first, as peer 5; another
+            // app of the workspace, not started by either, publishes too.
+            state.launch_connected(5, &connected(2, &workspace));
+            state.launch_published(&offering(4), None);
+            assert!(accepted(&state, first) && accepted(&state, second));
+            state.launch_published(&offering(5), None);
+            assert_eq!(answered(&state, second), Some(naming(5)));
+            assert!(accepted(&state, first), "peer 5 is not the first's");
 
-    #[test]
-    fn an_open_completes_with_the_instance_holding_its_ticket() {
-        let (state, workspace) = broker();
-        let first = open(&state, &workspace);
-        let second = open(&state, &workspace);
-        assert!(accepted(&state, first) && accepted(&state, second));
+            // A connection naming the first's ticket for another app or workspace
+            // is not its instance.
+            state.launch_connected(
+                6,
+                &ConnectedLaunch {
+                    app_id: "so.tilo.sheets".into(),
+                    ..connected(1, &workspace)
+                },
+            );
+            state.launch_connected(6, &connected(1, "another-workspace"));
+            state.launch_published(&offering(6), None);
+            assert!(accepted(&state, first));
+            state.launch_connected(7, &connected(1, &workspace));
+            state.launch_published(&offering(7), None);
+            assert_eq!(answered(&state, first), Some(naming(7)));
+        }
 
-        // The second launch's instance comes up first, as peer 5; another
-        // app of the workspace, not started by either, publishes too.
-        state.launch_connected(5, &connected(2, &workspace));
-        state.launch_published(&offering(4), None);
-        assert!(accepted(&state, first) && accepted(&state, second));
-        state.launch_published(&offering(5), None);
-        assert_eq!(answered(&state, second), Some(naming(5)));
-        assert!(accepted(&state, first), "peer 5 is not the first's");
+        phase an_open_never_names_an_instance_it_did_not_start;
+        {
+            let (state, workspace) = broker();
+            let silent = open(&state, &workspace);
+            let quiet = open(&state, &workspace);
+            let exits = open(&state, &workspace);
+            state.launch_connected(8, &connected(2, &workspace));
+            state.launch_connected(9, &connected(3, &workspace));
+            state.launch_disconnected(9);
+            assert!(matches!(
+                state.invocation_status(exits),
+                Some(InvocationUpdate::Failed { error, .. }) if error.code == "application_exited"
+                    && error.message.contains("exited before it published its actions")
+            ));
+            // Peer 10 of the same app connects with no ticket: not the open's.
+            state.launch_published(&offering(10), None);
 
-        // A connection naming the first's ticket for another app or workspace
-        // is not its instance.
-        state.launch_connected(
-            6,
-            &ConnectedLaunch {
-                app_id: "so.tilo.sheets".into(),
-                ..connected(1, &workspace)
-            },
-        );
-        state.launch_connected(6, &connected(1, "another-workspace"));
-        state.launch_published(&offering(6), None);
-        assert!(accepted(&state, first));
-        state.launch_connected(7, &connected(1, &workspace));
-        state.launch_published(&offering(7), None);
-        assert_eq!(answered(&state, first), Some(naming(7)));
+            let now = tilo_clock::now();
+            state.expire_workspace_opens(now);
+            assert!(accepted(&state, silent) && accepted(&state, quiet));
+            state.expire_workspace_opens(now.checked_add(CONNECT_WAIT).unwrap());
+            assert!(matches!(
+                state.invocation_status(silent),
+                Some(InvocationUpdate::Failed { error, .. })
+                    if error.code == "application_connection_timeout"
+            ));
+            // A connected instance is waited for however slowly it starts: its
+            // open ends with a catalogue offering something, never on a clock.
+            assert!(accepted(&state, quiet));
+            assert!(state.workspace_opens.next_deadline().is_none());
+            let mut starting = offering(8);
+            state.launch_published(&starting, Some("files.folder"));
+            assert!(accepted(&state, quiet), "its record is not offered yet");
+            starting.actions.clear();
+            state.launch_published(&starting, None);
+            assert!(accepted(&state, quiet), "nothing offered yet");
+            state.launch_published(&offering(8), Some("files.entry"));
+            assert_eq!(answered(&state, quiet), Some(naming(8)));
+        }
     }
 
     /// What `peer` publishes once it offers something.
     fn offering(peer: u64) -> super::super::PublishedSurface {
         super::super::tests::catalogue_surface(peer, "workspace", "entry")
-    }
-
-    #[test]
-    fn an_open_never_names_an_instance_it_did_not_start() {
-        let (state, workspace) = broker();
-        let silent = open(&state, &workspace);
-        let quiet = open(&state, &workspace);
-        let exits = open(&state, &workspace);
-        state.launch_connected(8, &connected(2, &workspace));
-        state.launch_connected(9, &connected(3, &workspace));
-        state.launch_disconnected(9);
-        assert!(matches!(
-            state.invocation_status(exits),
-            Some(InvocationUpdate::Failed { error, .. }) if error.code == "application_exited"
-                && error.message.contains("exited before it published its actions")
-        ));
-        // Peer 10 of the same app connects with no ticket: not the open's.
-        state.launch_published(&offering(10), None);
-
-        let now = tilo_clock::now();
-        state.expire_workspace_opens(now);
-        assert!(accepted(&state, silent) && accepted(&state, quiet));
-        state.expire_workspace_opens(now.checked_add(CONNECT_WAIT).unwrap());
-        assert!(matches!(
-            state.invocation_status(silent),
-            Some(InvocationUpdate::Failed { error, .. })
-                if error.code == "application_connection_timeout"
-        ));
-        // A connected instance is waited for however slowly it starts: its
-        // open ends with a catalogue offering something, never on a clock.
-        assert!(accepted(&state, quiet));
-        assert!(state.workspace_opens.next_deadline().is_none());
-        let mut starting = offering(8);
-        state.launch_published(&starting, Some("files.folder"));
-        assert!(accepted(&state, quiet), "its record is not offered yet");
-        starting.actions.clear();
-        state.launch_published(&starting, None);
-        assert!(accepted(&state, quiet), "nothing offered yet");
-        state.launch_published(&offering(8), Some("files.entry"));
-        assert_eq!(answered(&state, quiet), Some(naming(8)));
     }
 }

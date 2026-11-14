@@ -248,175 +248,280 @@ mod tests {
         }
     }
 
-    #[test]
-    fn actual_empty_record_passes_the_broker_capture() {
-        use automerge::ReadDoc as _;
-        use runtime_collab::committed_document::Reply;
-        use tilo_peer_state::{SeedDocument, SeedState, StatePeer};
-        use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
-        let person = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[22; 32]);
-        let mut certificate = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Empty record fixture".into(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut certificate, &person).unwrap();
-        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let roster = vec![certificate.clone()];
-        let now = tilo_clock::wall();
-        let mut source = StatePeer::new(
-            workspace,
-            certificate.clone(),
-            roster.clone(),
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        source
-            .install_seed(
-                SeedState {
-                    workspace_changes: tilo_peer_state::seed_workspace(
-                        workspace,
-                        &certificate,
-                        &roster,
+    tilo_test_env::scenario! {
+        fn a_committed_capture_is_reserved_bounded_and_exact;
+
+        phase actual_empty_record_passes_the_broker_capture;
+        {
+            use automerge::ReadDoc as _;
+            use runtime_collab::committed_document::Reply;
+            use tilo_peer_state::{SeedDocument, SeedState, StatePeer};
+            use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+            let person = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[22; 32]);
+            let mut certificate = DeviceCert {
+                user_public_key: person.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Empty record fixture".into(),
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut certificate, &person).unwrap();
+            let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+            let roster = vec![certificate.clone()];
+            let now = tilo_clock::wall();
+            let mut source = StatePeer::new(
+                workspace,
+                certificate.clone(),
+                roster.clone(),
+                RevocationList::new(),
+                now,
+            )
+            .unwrap();
+            source
+                .install_seed(
+                    SeedState {
+                        workspace_changes: tilo_peer_state::seed_workspace(
+                            workspace,
+                            &certificate,
+                            &roster,
+                        )
+                        .unwrap(),
+                        documents: vec![SeedDocument {
+                            app_id: "test.app".into(),
+                            record_id: String::new(),
+                            kind: "test.record".into(),
+                            bytes: automerge::AutoCommit::new().save(),
+                        }],
+                    },
+                    &device,
+                    now,
+                )
+                .unwrap();
+            let record = source
+                .capture_document(
+                    certificate.device_public_key,
+                    ("test.app", ""),
+                    now,
+                    64 * 1024,
+                    None,
+                )
+                .unwrap();
+            let reservation = Arc::new(Budget::default()).try_reserve().unwrap();
+            let mut stream = Capture::new(
+                Box::new(Bytes(record.into_bytes())),
+                reservation,
+                1,
+                [3; 32],
+            )
+            .unwrap();
+            let reply = stream.chunk(0, [0; 16]).unwrap();
+            assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
+            let Reply::Chunk { bytes, .. } = reply else {
+                panic!("the record's first capture chunk")
+            };
+            let document = automerge::AutoCommit::load(&bytes).unwrap();
+            assert_eq!(
+                document.keys(automerge::ROOT).count(),
+                0,
+                "capturing never seeds app content"
+            );
+        }
+
+        phase committed_capture_reserves_before_work_and_releases_on_drop;
+        {
+            let budget = Arc::new(Budget::default());
+            let first = budget.try_reserve().unwrap();
+            let second = budget.try_reserve().unwrap();
+            assert!(budget.try_reserve().is_none());
+            drop(first);
+            assert!(budget.try_reserve().is_some());
+            drop(second);
+            assert_eq!(budget.used(), 0);
+        }
+
+        phase committed_capture_expiry_is_terminal_and_keeps_quota_until_owner_drops;
+        {
+            let budget = Arc::new(Budget::default());
+            let second = budget.try_reserve().unwrap();
+            let mut capture = Capture::new(
+                Box::new(Bytes(vec![7; CHUNK_BYTES + 1])),
+                budget.try_reserve().unwrap(),
+                1,
+                [7; 32],
+            )
+            .unwrap();
+            let runtime_collab::committed_document::Reply::Chunk { token, .. } =
+                capture.chunk(0, [0; 16]).unwrap()
+            else {
+                panic!("chunk")
+            };
+            assert!(
+                !capture.acknowledges([0; 16]),
+                "the first request token cannot cancel a returned reply"
+            );
+            assert!(
+                capture.chunk(CHUNK_BYTES as u32, [0; 16]).is_err(),
+                "pipelined guesses cannot consume the next body"
+            );
+            assert!(
+                capture
+                    .check_deadline(tilo_clock::now() + std::time::Duration::from_secs(6))
+                    .is_err()
+            );
+            assert!(
+                capture.chunk(CHUNK_BYTES as u32, token).is_err(),
+                "current token cannot revive an expired capture"
+            );
+            assert_eq!(
+                budget.used(),
+                MAX_DOCUMENT_BYTES + CHUNK_BYTES + 1,
+                "expiry cannot free bytes while an unread response owner remains"
+            );
+            drop(capture);
+            assert_eq!(budget.used(), MAX_DOCUMENT_BYTES);
+            drop(second);
+        }
+
+        phase a_capture_waiting_to_be_read_holds_its_body_not_the_largest_body;
+        {
+            let budget = Arc::new(Budget::default());
+            // Every app of a session starting at once: each read's capture waits
+            // for its reader, and none keeps the next from being captured.
+            let waiting: Vec<Capture> = (1..=16)
+                .map(|id| {
+                    Capture::new(
+                        Box::new(Bytes(vec![1; 4096])),
+                        budget
+                            .try_reserve()
+                            .expect("room for another small capture"),
+                        id,
+                        [1; 32],
                     )
-                    .unwrap(),
-                    documents: vec![SeedDocument {
-                        app_id: "test.app".into(),
-                        record_id: String::new(),
-                        kind: "test.record".into(),
-                        bytes: automerge::AutoCommit::new().save(),
-                    }],
-                },
-                &device,
-                now,
+                    .unwrap()
+                })
+                .collect();
+            assert_eq!(budget.used(), 16 * 4096);
+            drop(waiting);
+            assert_eq!(budget.used(), 0);
+            // What is held is still bounded: bodies as large as a capture may be
+            // fill the budget.
+            let large: Vec<Capture> = (1..=2)
+                .map(|id| {
+                    Capture::new(
+                        Box::new(Bytes(vec![1; MAX_DOCUMENT_BYTES])),
+                        budget.try_reserve().unwrap(),
+                        id,
+                        [1; 32],
+                    )
+                    .unwrap()
+                })
+                .collect();
+            assert!(budget.try_reserve().is_none());
+            drop(large);
+            assert_eq!(budget.used(), 0);
+        }
+
+        phase changes_start_with_a_bounded_changes_piece_and_continue_in_chunks;
+        {
+            use runtime_collab::committed_document::Reply;
+            let budget = Arc::new(Budget::default());
+            let original = (0..CHUNK_BYTES + 99)
+                .map(|index| u8::try_from(index % 251).unwrap())
+                .collect::<Vec<_>>();
+            let mut capture = Capture::new(
+                Box::new(Bytes(original.clone())),
+                budget.try_reserve().unwrap(),
+                3,
+                [6; 32],
             )
+            .unwrap()
+            .naming(vec![[1; 32]])
+            .changes_since(vec![[2; 32]])
             .unwrap();
-        let record = source
-            .capture_document(
-                certificate.device_public_key,
-                ("test.app", ""),
-                now,
-                64 * 1024,
-                None,
-            )
-            .unwrap();
-        let reservation = Arc::new(Budget::default()).try_reserve().unwrap();
-        let mut stream = Capture::new(
-            Box::new(Bytes(record.into_bytes())),
-            reservation,
-            1,
-            [3; 32],
-        )
-        .unwrap();
-        let reply = stream.chunk(0, [0; 16]).unwrap();
-        assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
-        let Reply::Chunk { bytes, .. } = reply else {
-            panic!("the record's first capture chunk")
-        };
-        let document = automerge::AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            document.keys(automerge::ROOT).count(),
-            0,
-            "capturing never seeds app content"
-        );
-    }
-    #[test]
-    fn committed_capture_reserves_before_work_and_releases_on_drop() {
-        let budget = Arc::new(Budget::default());
-        let first = budget.try_reserve().unwrap();
-        let second = budget.try_reserve().unwrap();
-        assert!(budget.try_reserve().is_none());
-        drop(first);
-        assert!(budget.try_reserve().is_some());
-        drop(second);
-        assert_eq!(budget.used(), 0);
-    }
-    #[test]
-    fn committed_capture_expiry_is_terminal_and_keeps_quota_until_owner_drops() {
-        let budget = Arc::new(Budget::default());
-        let second = budget.try_reserve().unwrap();
-        let mut capture = Capture::new(
-            Box::new(Bytes(vec![7; CHUNK_BYTES + 1])),
-            budget.try_reserve().unwrap(),
-            1,
-            [7; 32],
-        )
-        .unwrap();
-        let runtime_collab::committed_document::Reply::Chunk { token, .. } =
-            capture.chunk(0, [0; 16]).unwrap()
-        else {
-            panic!("chunk")
-        };
-        assert!(
-            !capture.acknowledges([0; 16]),
-            "the first request token cannot cancel a returned reply"
-        );
-        assert!(
-            capture.chunk(CHUNK_BYTES as u32, [0; 16]).is_err(),
-            "pipelined guesses cannot consume the next body"
-        );
-        assert!(
-            capture
-                .check_deadline(tilo_clock::now() + std::time::Duration::from_secs(6))
-                .is_err()
-        );
-        assert!(
-            capture.chunk(CHUNK_BYTES as u32, token).is_err(),
-            "current token cannot revive an expired capture"
-        );
-        assert_eq!(
-            budget.used(),
-            MAX_DOCUMENT_BYTES + CHUNK_BYTES + 1,
-            "expiry cannot free bytes while an unread response owner remains"
-        );
-        drop(capture);
-        assert_eq!(budget.used(), MAX_DOCUMENT_BYTES);
-        drop(second);
-    }
-    #[test]
-    fn a_capture_waiting_to_be_read_holds_its_body_not_the_largest_body() {
-        let budget = Arc::new(Budget::default());
-        // Every app of a session starting at once: each read's capture waits
-        // for its reader, and none keeps the next from being captured.
-        let waiting: Vec<Capture> = (1..=16)
-            .map(|id| {
+            assert!(capture.delivers().is_none(), "nothing is handed out unread");
+            let Reply::Changes {
+                capture: id,
+                base,
+                bytes,
+                token,
+                total,
+                ..
+            } = capture.chunk(0, [0; 16]).unwrap()
+            else {
+                panic!("the first piece of changes names its base");
+            };
+            assert_eq!(
+                (id, base, total as usize),
+                (3, vec![[2; 32]], original.len())
+            );
+            assert_eq!(bytes.len(), CHANGES_FIRST_BYTES);
+            let mut output = bytes;
+            let mut continuation = token;
+            while output.len() < original.len() {
+                let Reply::Chunk { bytes, token, .. } =
+                    capture.chunk(output.len() as u32, continuation).unwrap()
+                else {
+                    panic!("changes continue in chunks");
+                };
+                output.extend(bytes);
+                continuation = token;
+            }
+            assert_eq!(output, original);
+            let held = capture
+                .delivers()
+                .expect("an entirely read capture hands out its revision");
+            assert_eq!((held.revision, held.heads), ([6; 32], vec![[1; 32]]));
+            assert!(
                 Capture::new(
-                    Box::new(Bytes(vec![1; 4096])),
-                    budget
-                        .try_reserve()
-                        .expect("room for another small capture"),
-                    id,
-                    [1; 32],
-                )
-                .unwrap()
-            })
-            .collect();
-        assert_eq!(budget.used(), 16 * 4096);
-        drop(waiting);
-        assert_eq!(budget.used(), 0);
-        // What is held is still bounded: bodies as large as a capture may be
-        // fill the budget.
-        let large: Vec<Capture> = (1..=2)
-            .map(|id| {
-                Capture::new(
-                    Box::new(Bytes(vec![1; MAX_DOCUMENT_BYTES])),
+                    Box::new(Bytes(vec![1])),
                     budget.try_reserve().unwrap(),
-                    id,
-                    [1; 32],
+                    4,
+                    [6; 32]
                 )
                 .unwrap()
-            })
-            .collect();
-        assert!(budget.try_reserve().is_none());
-        drop(large);
-        assert_eq!(budget.used(), 0);
+                .changes_since(Vec::new())
+                .is_err()
+            );
+        }
+
+        phase committed_capture_is_ordered_bounded_and_keeps_exact_bytes;
+        {
+            let budget = Arc::new(Budget::default());
+            let original = vec![5; CHUNK_BYTES + 17];
+            let mut capture = Capture::new(
+                Box::new(Bytes(original.clone())),
+                budget.try_reserve().unwrap(),
+                9,
+                [4; 32],
+            )
+            .unwrap();
+            assert!(capture.chunk(1, [0; 16]).is_err());
+            assert!(
+                capture.chunk(0, [9; 16]).is_err(),
+                "a guessed continuation must not consume a chunk"
+            );
+            let mut output = Vec::new();
+            let mut continuation = [0; 16];
+            for offset in [0, CHUNK_BYTES as u32] {
+                let runtime_collab::committed_document::Reply::Chunk { bytes, token, .. } =
+                    capture.chunk(offset, continuation).unwrap()
+                else {
+                    panic!("chunk")
+                };
+                assert!(bytes.len() <= CHUNK_BYTES);
+                output.extend(bytes);
+                continuation = token;
+            }
+            assert_eq!(output, original);
+            assert!(capture.finished());
+            assert!(capture.chunk(original.len() as u32, continuation).is_err());
+            drop(capture);
+            assert_eq!(budget.used(), 0);
+        }
     }
     #[tokio::test(flavor = "current_thread")]
     async fn reads_beyond_the_budget_wait_and_all_complete_in_order() {
@@ -480,103 +585,6 @@ mod tests {
         );
         drop(other);
         assert_eq!(large.await.unwrap(), 4096);
-        assert_eq!(budget.used(), 0);
-    }
-    #[test]
-    fn changes_start_with_a_bounded_changes_piece_and_continue_in_chunks() {
-        use runtime_collab::committed_document::Reply;
-        let budget = Arc::new(Budget::default());
-        let original = (0..CHUNK_BYTES + 99)
-            .map(|index| u8::try_from(index % 251).unwrap())
-            .collect::<Vec<_>>();
-        let mut capture = Capture::new(
-            Box::new(Bytes(original.clone())),
-            budget.try_reserve().unwrap(),
-            3,
-            [6; 32],
-        )
-        .unwrap()
-        .naming(vec![[1; 32]])
-        .changes_since(vec![[2; 32]])
-        .unwrap();
-        assert!(capture.delivers().is_none(), "nothing is handed out unread");
-        let Reply::Changes {
-            capture: id,
-            base,
-            bytes,
-            token,
-            total,
-            ..
-        } = capture.chunk(0, [0; 16]).unwrap()
-        else {
-            panic!("the first piece of changes names its base");
-        };
-        assert_eq!(
-            (id, base, total as usize),
-            (3, vec![[2; 32]], original.len())
-        );
-        assert_eq!(bytes.len(), CHANGES_FIRST_BYTES);
-        let mut output = bytes;
-        let mut continuation = token;
-        while output.len() < original.len() {
-            let Reply::Chunk { bytes, token, .. } =
-                capture.chunk(output.len() as u32, continuation).unwrap()
-            else {
-                panic!("changes continue in chunks");
-            };
-            output.extend(bytes);
-            continuation = token;
-        }
-        assert_eq!(output, original);
-        let held = capture
-            .delivers()
-            .expect("an entirely read capture hands out its revision");
-        assert_eq!((held.revision, held.heads), ([6; 32], vec![[1; 32]]));
-        assert!(
-            Capture::new(
-                Box::new(Bytes(vec![1])),
-                budget.try_reserve().unwrap(),
-                4,
-                [6; 32]
-            )
-            .unwrap()
-            .changes_since(Vec::new())
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn committed_capture_is_ordered_bounded_and_keeps_exact_bytes() {
-        let budget = Arc::new(Budget::default());
-        let original = vec![5; CHUNK_BYTES + 17];
-        let mut capture = Capture::new(
-            Box::new(Bytes(original.clone())),
-            budget.try_reserve().unwrap(),
-            9,
-            [4; 32],
-        )
-        .unwrap();
-        assert!(capture.chunk(1, [0; 16]).is_err());
-        assert!(
-            capture.chunk(0, [9; 16]).is_err(),
-            "a guessed continuation must not consume a chunk"
-        );
-        let mut output = Vec::new();
-        let mut continuation = [0; 16];
-        for offset in [0, CHUNK_BYTES as u32] {
-            let runtime_collab::committed_document::Reply::Chunk { bytes, token, .. } =
-                capture.chunk(offset, continuation).unwrap()
-            else {
-                panic!("chunk")
-            };
-            assert!(bytes.len() <= CHUNK_BYTES);
-            output.extend(bytes);
-            continuation = token;
-        }
-        assert_eq!(output, original);
-        assert!(capture.finished());
-        assert!(capture.chunk(original.len() as u32, continuation).is_err());
-        drop(capture);
         assert_eq!(budget.used(), 0);
     }
 }

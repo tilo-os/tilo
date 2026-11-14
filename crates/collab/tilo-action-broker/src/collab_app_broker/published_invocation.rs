@@ -928,30 +928,34 @@ mod agent_actor_tests {
         cert
     }
 
-    /// An agent whose certificate reads is tied to the person who delegated
-    /// it: it acts for them, never on its own.
-    #[test]
-    fn an_agents_request_acts_for_its_person() {
-        let cert = certificate(1, 2);
-        let actor = agent_actor("one", Ok(&cert)).expect("the agent's person is verified");
-        assert_eq!(
-            actor,
-            BrokerActor::agent("agent:one").for_person(person_id_for_root(cert.user_public_key))
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_agents_request_acts_for_its_certified_person;
 
-    /// An agent whose certificate does not read is refused for that reason,
-    /// which is what the person reads on the action they took.
-    #[test]
-    fn an_agent_without_its_persons_certificate_is_refused_for_that_reason() {
-        let refusal = agent_actor(
-            "one",
-            Err("original invocation certificate unavailable".into()),
-        )
-        .expect_err("an agent nobody can verify is refused");
-        assert_eq!(
-            refusal,
-            "the agent's person could not be verified: original invocation certificate unavailable"
-        );
+        phase an_agents_request_acts_for_its_person;
+        // An agent whose certificate reads is tied to the person who delegated
+        // it: it acts for them, never on its own.
+        {
+            let cert = certificate(1, 2);
+            let actor = agent_actor("one", Ok(&cert)).expect("the agent's person is verified");
+            assert_eq!(
+                actor,
+                BrokerActor::agent("agent:one").for_person(person_id_for_root(cert.user_public_key))
+            );
+        }
+
+        phase an_agent_without_its_persons_certificate_is_refused_for_that_reason;
+        // An agent whose certificate does not read is refused for that reason,
+        // which is what the person reads on the action they took.
+        {
+            let refusal = agent_actor(
+                "one",
+                Err("original invocation certificate unavailable".into()),
+            )
+            .expect_err("an agent nobody can verify is refused");
+            assert_eq!(
+                refusal,
+                "the agent's person could not be verified: original invocation certificate unavailable"
+            );
+        }
     }
 }
