@@ -281,6 +281,38 @@ def find_tree(ctx, probe: str) -> str:
     return hits[0].rsplit("/", 1)[0]
 
 
+FILES_UNIT = "fs.service"
+FILES_MOUNT = "/var/workspace"
+FILES_S = 60
+
+
+def files_served(ctx) -> None:
+    """The device's files folder is served: fs.service is active and its mount is on
+    /var/workspace (its FUSE mount, or the native data plane's bind of the store volume's
+    tree). Without it no workspace has a tree, and an environment's `~` cannot be its
+    workspace's (fs.service's SELinux domain once refused it its session link, and it
+    restarted every five seconds while the shells wrote into homes nobody looks at)."""
+    def state():
+        active = ctx.vm.root_exec(f"systemctl is-active {FILES_UNIT} || true", timeout=60).strip()
+        mount = ctx.vm.root_exec(f"findmnt -n -o FSTYPE,SOURCE --mountpoint {FILES_MOUNT} || true",
+                                 timeout=60).strip()
+        return active, mount
+
+    def served():
+        active, mount = state()
+        return True if active == "active" and mount else None
+
+    if wait_until(served, FILES_S, interval=2.0) is None:
+        active, mount = state()
+        shown = ctx.vm.root_exec(f"systemctl status {FILES_UNIT} --no-pager -n 0 || true", timeout=60)
+        journal = ctx.vm.root_exec(f"journalctl -b -u {FILES_UNIT} -o cat --no-pager | tail -n 20",
+                                   timeout=60, check=False)
+        ctx.write("fs-service.txt", f"{shown}\n--- journal ---\n{journal}")
+        raise CheckFailed(f"the device's files are not served: {FILES_UNIT} is {active or 'unknown'!r}, "
+                          f"{FILES_MOUNT} is {('a ' + mount) if mount else 'no mount'}; "
+                          f"its journal ends: {' | '.join(journal.strip().splitlines()[-6:])}")
+
+
 # -- the agents ----------------------------------------------------------------------------
 
 
@@ -441,6 +473,7 @@ def _need(scene: dict, key: str, by: str) -> object:
 def environments(ctx, res):
     ctx.facts["e2e:why"] = "E01 failed"
     ctx.reset()
+    files_served(ctx)
     run = uuid.uuid4().hex[:8]
     envs = []
     for name, env_name in WORKSPACES:
