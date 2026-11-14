@@ -11,7 +11,7 @@ use ui::component_lifecycle::WindowTitle as _;
 use ui::tilo_actions::{ActionContext, ActionInvoker};
 use ui::widget::{FilterCount, FindOptions, InPlace, SearchDriver};
 
-use super::{CHAT, NOTES, Session, TASKS, find, note_row, place_at, press_new_note};
+use super::{CHAT, HANDMADE, NOTES, Session, TASKS, find, note_row, place_at, press_new_note};
 use crate::change_marks::action_id;
 
 const HOST: &str = "tl:host";
@@ -211,9 +211,9 @@ fn opened(session: &mut Session) -> Option<String> {
     Some(edited.splitn(3, ':').nth(2).unwrap_or(edited).to_owned())
 }
 
-/// The titles of the rows the window lists, in the order it lists them, every row asked for as a
-/// window tall enough for all of them asks.
-fn listed(session: &mut Session) -> Vec<String> {
+/// The rows the window's lists hold, in the order they list them, every row asked for as a window
+/// tall enough for all of them asks.
+fn rows(session: &mut Session) -> Vec<UiNode> {
     let lists: Vec<_> = {
         let view = session.hosted().view().expect("the window is connected");
         view.lists()
@@ -227,15 +227,62 @@ fn listed(session: &mut Session) -> Vec<String> {
         rows.borrow_mut().request_range(0..len, None);
     }
     session.settle();
-    let mut titles = Vec::new();
+    let mut held = Vec::new();
     for rows in &lists {
         let rows = rows.borrow();
         for index in 0..rows.len() {
-            let row = rows.key_at(index).and_then(|key| rows.row(&key).cloned());
-            titles.extend(row.as_ref().map(super::title_of));
+            held.extend(rows.key_at(index).and_then(|key| rows.row(&key).cloned()));
         }
     }
-    titles
+    held
+}
+
+/// The titles of the rows the window lists, in the order it lists them.
+fn listed(session: &mut Session) -> Vec<String> {
+    rows(session).iter().map(super::title_of).collect()
+}
+
+/// The row the window lists with `title`, as the list holds it: what it draws, its menu and the
+/// swipe its item offers.
+fn row(session: &mut Session, title: &str) -> UiNode {
+    rows(session)
+        .into_iter()
+        .find(|row| super::title_of(row) == title)
+        .unwrap_or_else(|| panic!("the window lists no row {title:?}"))
+}
+
+/// The marks the row shows beside its title, as the app drew them.
+fn marks(row: &UiNode) -> Vec<String> {
+    let mut drawn = Vec::new();
+    all_of(row, "ui.ListRow", &mut drawn);
+    drawn
+        .into_iter()
+        .filter_map(|row| row.props.get("mark").map(display))
+        .collect()
+}
+
+/// The action the row offers when a person swipes it, and whether it destroys what it names.
+fn swipe(row: &UiNode) -> Option<(String, bool)> {
+    let mut actions = Vec::new();
+    all_of(row, "ui.SwipeAction", &mut actions);
+    actions.first().map(|action| {
+        (
+            action.props.get("label").map(display).unwrap_or_default(),
+            matches!(action.props.get("destructive"), Some(Value::Int(1))),
+        )
+    })
+}
+
+/// Whether the window shows the row `title` selected, as a person and a screen reader see it.
+fn selected(session: &mut Session, title: &str) -> bool {
+    session.window.a11y().into_iter().any(|(_, node)| {
+        node.label().map(str::trim) == Some(title) && node.is_selected() == Some(true)
+    })
+}
+
+/// The notice up in the window's bar, as a person reads it.
+fn notice() -> Option<ui::window_toolbar::ToolbarNotice> {
+    ui::window_toolbar::notice()
 }
 
 /// The window's own search, as its search key opens it: where it searches, and its driver.
@@ -1027,5 +1074,121 @@ fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
         session.titles().len(),
         notes + 1,
         "the press makes the note now"
+    );
+}
+
+// ----- an app's own window ----------------------------------------------------------------
+
+/// What `std` does for the standard apps, an app does by composing the toolkit's components with
+/// the platform's answers: the shelf builds its own list window, and a person gets the window the
+/// platform gives every window — its title, its bar with the shelf's primary action and the
+/// window's search, and a book's row carrying the book's mark, the book's and the shelf's
+/// commands in its menu, and the shelf's destructive one as its swipe. A destructive command from
+/// that menu is offered back from the window's notice, and the primary action opens the book it
+/// makes.
+#[test]
+fn an_apps_own_list_window_gets_the_platforms_title_bar_rows_menu_and_swipe() {
+    let mut session = staged(HANDMADE, "two books");
+    let shell = composed(&mut session);
+    assert!(
+        tilo_ui_host::shell::has_overview(&shell),
+        "the shelf's window is the list it composed"
+    );
+    assert_eq!(
+        prop(&shell, "overview_title").as_deref(),
+        Some("Shelf"),
+        "the shelf names the list"
+    );
+    assert_eq!(
+        buttons_in(&shell, "overview_actions"),
+        ["New book"],
+        "the bar leads with the shelf's primary action"
+    );
+    assert!(
+        slot_of(&shell, "overview_actions")
+            .iter()
+            .any(|node| node.kind == "ui.SearchButton"),
+        "and the window's search stands beside it: {:?}",
+        slot_of(&shell, "overview_actions")
+    );
+    assert_eq!(
+        listed(&mut session),
+        ["Piranesi", "The Dispossessed"],
+        "the shelf lists its books in its order"
+    );
+    assert_eq!(
+        session.hosted().window_title(),
+        Some("Piranesi"),
+        "the book the scenario opened stands beside the shelf, and names the window"
+    );
+
+    // The row of the book the window shows stands chosen, as the platform chooses the row of what
+    // its list opens.
+    let books = items_of(&mut session, HANDMADE, "books");
+    assert_eq!(
+        opened(&mut session).as_deref(),
+        Some(books[0].id_string().as_str()),
+        "the first book is the one shown"
+    );
+    assert!(
+        selected(&mut session, "Piranesi"),
+        "and its row is the one the shelf shows chosen"
+    );
+
+    // Each row is the app's own: a book read stands marked, and its menu offers the book's action
+    // and the shelf's on it, in the order the app declares them.
+    assert_eq!(marks(&row(&mut session, "The Dispossessed")), ["check"]);
+    assert!(
+        marks(&row(&mut session, "Piranesi")).is_empty(),
+        "the book read stands marked, the one unread not"
+    );
+    assert_eq!(
+        super::menus::row_menu(&mut session, "Piranesi"),
+        ["Mark read", "Remove"],
+        "the book's menu carries its own action and the shelf's"
+    );
+    assert_eq!(
+        swipe(&row(&mut session, "Piranesi")),
+        Some(("Remove".to_owned(), true)),
+        "and the shelf's destructive action is the book's swipe"
+    );
+
+    // The person takes the book off through its menu: it leaves the shelf, and the window offers
+    // to take that back, naming the book it removed.
+    session.window.press_named("Remove");
+    session.settle();
+    assert_eq!(listed(&mut session), ["The Dispossessed"]);
+    let undo = notice().expect("the window's bar offers to undo the removal");
+    assert!(
+        undo.actions.iter().any(|action| action.name == "Undo"),
+        "the notice offers to take the removal back: {undo:?}"
+    );
+    // What it offers is the person's undo: the book comes back, where it stood.
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert_eq!(listed(&mut session), ["Piranesi", "The Dispossessed"]);
+
+    // The shelf's primary action makes a book and opens it beside the list.
+    let new_book = session.doing("Shelf", "new_book");
+    let (x, y) = session.control(&new_book);
+    session.window.click_at(x, y);
+    session.settle();
+    assert_eq!(
+        listed(&mut session),
+        ["Piranesi", "The Dispossessed", "Untitled"]
+    );
+    let shown = opened(&mut session).expect("the book it made opened beside the shelf");
+    let made = items_of(&mut session, HANDMADE, "books")
+        .into_iter()
+        .find(|book| book.id_string() == shown)
+        .expect("the book it made is on the shelf");
+    assert_eq!(
+        read(&session, &made, "title"),
+        Some(RtValue::Text("Untitled".to_owned()))
+    );
+    assert_eq!(
+        session.hosted().window_title(),
+        Some("Untitled"),
+        "the window names the book the shelf's action made and opened"
     );
 }

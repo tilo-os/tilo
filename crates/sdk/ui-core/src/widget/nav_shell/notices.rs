@@ -15,6 +15,15 @@ pub(super) struct ShellNotice {
     action: Option<(String, String)>,
 }
 
+/// A notice a shell holds, to show again in the shell built in its place: a window that builds
+/// its shell anew keeps the notice it had up.
+#[derive(Clone, Debug)]
+pub struct HeldNotice {
+    text: String,
+    kind: ToastKind,
+    action: Option<(String, String)>,
+}
+
 impl NavShell {
     /// Show a transient notice in the window's bar: an operation's result or
     /// failure. It replaces the one showing and leaves on its own.
@@ -59,6 +68,29 @@ impl NavShell {
 
     pub fn toast_text(&self) -> Option<&str> {
         self.notice.get().map(|notice| notice.text.as_str())
+    }
+
+    /// The notice this shell has up, and its button, while it is up: what a window keeps of a
+    /// shell it builds anew.
+    #[must_use]
+    pub fn held_notice(&self) -> Option<HeldNotice> {
+        let notice = self.notice.get()?;
+        Some(HeldNotice {
+            text: notice.text.clone(),
+            kind: notice.kind,
+            action: notice.action.clone(),
+        })
+    }
+
+    /// Show `held` again in the shell built in its place, as it stood.
+    pub fn restore_notice(&mut self, held: HeldNotice) {
+        self.notice.show(ShellNotice {
+            text: held.text,
+            kind: held.kind,
+            action: held.action,
+        });
+        self.notice_pressed = None;
+        self.publish_notice();
     }
 
     pub(super) fn publish_notice(&self) {

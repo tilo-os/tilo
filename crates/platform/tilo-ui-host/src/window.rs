@@ -1060,10 +1060,15 @@ impl AppWindow {
     }
 
     fn reconcile_into_pane(&mut self, composed: &UiNode) {
+        // A shell built anew in place of this one keeps the notice it had up: an action that
+        // changes what the app publishes rebinds the window's controls, and the person's offer to
+        // undo what they just did outlives the shell it stood in.
+        let held = self.shell().and_then(|shell| shell.held_notice());
         let old = self.built.take();
         let reconciler = Rc::clone(&self.reconciler);
         // What an update builds into a composed window arrives; its first tree shows at rest.
         let _window = ui::motion::laying_out_window(old.is_some());
+        let mut rebuilt = false;
         if let Some(pane) = self.shell_pane() {
             let mut reconciler = reconciler.borrow_mut();
             match &old {
@@ -1073,8 +1078,17 @@ impl AppWindow {
                         pane.set(replaced);
                     }
                 }
-                _ => pane.set(reconciler.build(composed)),
+                _ => {
+                    pane.set(reconciler.build(composed));
+                    rebuilt = true;
+                }
             }
+        }
+        if rebuilt
+            && let Some(held) = held
+            && let Some(shell) = self.shell()
+        {
+            shell.restore_notice(held);
         }
     }
 

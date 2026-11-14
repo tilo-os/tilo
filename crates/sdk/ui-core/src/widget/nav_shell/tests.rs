@@ -2343,6 +2343,38 @@ fn a_notices_button_is_the_window_bars_and_a_press_reports_it() {
     assert_eq!(notice(), None, "from the bar too");
 }
 
+/// A window that builds its shell anew keeps the notice it had up: what a shell holds is shown
+/// again in the shell built in its place, with its button, until it leaves on its own.
+#[test]
+fn a_shell_built_in_place_shows_the_notice_the_one_before_it_held() {
+    use crate::window_toolbar::{notice, notify};
+    notify(None);
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    h.root_mut::<NavShell>().toast_with_action(
+        "Deleted Groceries",
+        ToastKind::Info,
+        "undo-2",
+        "Undo",
+    );
+    let held = h
+        .root_mut::<NavShell>()
+        .held_notice()
+        .expect("the shell holds the notice it shows");
+    // The shell built in its place shows what the one before it held.
+    let mut rebuilt = NavShell::new();
+    rebuilt.restore_notice(held);
+    assert_eq!(rebuilt.toast_text(), Some("Deleted Groceries"));
+    let shown = notice().expect("the bar shows it again");
+    assert_eq!(shown.text, "Deleted Groceries");
+    assert_eq!(
+        shown.actions.first().map(|action| action.name.as_str()),
+        Some("Undo"),
+        "with the button it offered"
+    );
+    assert!(rebuilt.held_notice().is_some(), "still up, not consumed");
+}
+
 /// One frame of the shell as a host presents it at `scale`: its widgets and
 /// overlays painted magnified, and the damage it reports, in the host's
 /// scene pixels as a host repaints it (rounded out by a pixel).

@@ -115,6 +115,8 @@ const TODAY: &str = "so.tilo.lang.today";
 const SIGNED: &str = "so.tilo.lang.signed";
 /// The page whose one box edits a field and runs no action of its own.
 const FIELDBOX: &str = "so.tilo.lang.fieldbox";
+/// The shelf, whose window its own view composes of the toolkit's components.
+const HANDMADE: &str = "so.tilo.lang.handmade";
 const VIEWPORT: (u32, u32) = (1280, 800);
 /// The longest a cost measurement waits for the host to be woken by the work it has off its
 /// frames.
@@ -291,6 +293,106 @@ impl Window {
             Self::Harness(window) => window.open_search(&request).expect("the palette opens"),
             Self::Live(app) => app.open_search(request),
         }
+    }
+
+    /// Every accessibility node the window publishes, each with the widget that draws it: what a
+    /// tool and a screen reader reach of it.
+    fn a11y(&mut self) -> Vec<(ui::accesskit::NodeId, ui::accesskit::Node)> {
+        match self {
+            Self::Harness(window) => window.a11y_nodes(),
+            Self::Live(app) => app.build_a11y_tree_update(1.0).nodes,
+        }
+    }
+
+    /// The node the window shows named `name`, the menu's own row first: a page behind a menu
+    /// may say the same word.
+    fn menu_item(&mut self, name: &str) -> Option<(ui::accesskit::NodeId, ui::accesskit::Node)> {
+        self.a11y().into_iter().find(|(_, node)| {
+            node.role() == ui::accesskit::Role::MenuItem
+                && node.label().map(str::trim) == Some(name)
+        })
+    }
+
+    /// The first node the window shows named `name`.
+    fn node_named(&mut self, name: &str) -> Option<(ui::accesskit::NodeId, ui::accesskit::Node)> {
+        self.a11y()
+            .into_iter()
+            .find(|(_, node)| node.label().map(str::trim) == Some(name))
+    }
+
+    /// Open the menu of the row or control named `name`, where it stands, as a tool or a screen
+    /// reader asks for it: a list that opens its rows' menus around them answers with the
+    /// person's own secondary click, as a window does.
+    fn show_context_menu(&mut self, name: &str) {
+        let node = self
+            .a11y()
+            .into_iter()
+            .find(|(_, node)| {
+                node.label().map(str::trim) == Some(name)
+                    && node.supports_action(ui::accesskit::Action::ShowContextMenu)
+            })
+            .unwrap_or_else(|| panic!("the window shows no {name:?} with a menu"))
+            .0;
+        let Self::Live(app) = self else {
+            return self.right_click(name);
+        };
+        if let Some((x, y)) = app.dispatch_a11y_action(node, &ui::a11y::Action::ShowContextMenu) {
+            self.click_at(x, y);
+        }
+    }
+
+    /// The person's own secondary click on the row or control named `name`, where it stands: a
+    /// menu a view attaches to a row opens on it.
+    fn right_click(&mut self, name: &str) {
+        use ui::winit::event::{ElementState, MouseButton};
+        let node = self
+            .node_named(name)
+            .unwrap_or_else(|| panic!("the window shows no {name:?}"))
+            .1;
+        let rect = node.bounds().expect("what the person clicks is laid out");
+        let (x, y) = (
+            f64::midpoint(rect.x0, rect.x1),
+            f64::midpoint(rect.y0, rect.y1),
+        );
+        match self {
+            Self::Harness(window) => {
+                window.send(&ui::synthetic_input::cursor_moved(x, y));
+                window.send(&ui::synthetic_input::mouse_input(
+                    ElementState::Pressed,
+                    MouseButton::Right,
+                ));
+                window.send(&ui::synthetic_input::mouse_input(
+                    ElementState::Released,
+                    MouseButton::Right,
+                ));
+            }
+            Self::Live(app) => {
+                Self::live_input(app, ui::synthetic_input::cursor_moved(x, y));
+                Self::live_input(
+                    app,
+                    ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+                );
+                Self::live_input(
+                    app,
+                    ui::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
+                );
+            }
+        }
+    }
+
+    /// Press the menu command or control named `name` where it stands, as a tool or a screen
+    /// reader does: a press at the place the window draws it, a menu's own row first.
+    fn press_named(&mut self, name: &str) {
+        let node = self
+            .menu_item(name)
+            .or_else(|| self.node_named(name))
+            .unwrap_or_else(|| panic!("the window draws no control named {name:?}"))
+            .1;
+        let rect = node.bounds().expect("what the person presses is laid out");
+        self.click_at(
+            f64::midpoint(rect.x0, rect.x1),
+            f64::midpoint(rect.y0, rect.y1),
+        );
     }
 
     /// The named key `key` pressed and released.
@@ -2733,18 +2835,6 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
     );
 }
 
-/// The node a tool names `name` in what the live window describes: its id, role, bounds and
-/// whether it reads checked.
-fn described(
-    app: &mut ui::App,
-    name: &str,
-) -> Option<(ui::accesskit::NodeId, ui::accesskit::Node)> {
-    app.build_a11y_tree_update(1.0)
-        .nodes
-        .into_iter()
-        .find(|(_, node)| node.label().map(str::trim) == Some(name))
-}
-
 /// The names of the controls the live window offers a tool, as it hands them to the desk.
 fn controls_of(app: &mut ui::App) -> Vec<String> {
     app.window_controls()
@@ -2776,8 +2866,10 @@ fn a_click_on_a_tasks_box_marks_it_done() {
         .expect("the package has a surface");
     collaboration::app_surface::register_package(TASKS, &surface);
     let mut session = live_task("Water the plants");
-    let (_, shown) =
-        described(session.window.app(), "Mark Water the plants done").expect("the row's box");
+    let (_, shown) = session
+        .window
+        .node_named("Mark Water the plants done")
+        .expect("the row's box");
     assert_eq!(shown.role(), ui::accesskit::Role::CheckBox);
     assert_eq!(
         shown.toggled(),
@@ -2811,11 +2903,7 @@ fn a_tool_opens_a_tasks_menu_and_marks_it_done_by_its_box() {
         "the window offers the task's box by name: {offered_now:?}"
     );
 
-    let (row, _) = described(session.window.app(), "Water the plants").expect("the row");
-    session
-        .window
-        .app()
-        .dispatch_a11y_action(row, &ui::a11y::Action::ShowContextMenu);
+    session.window.show_context_menu("Water the plants");
     session.settle();
     let menu = controls_of(session.window.app());
     assert!(
@@ -2825,16 +2913,7 @@ fn a_tool_opens_a_tasks_menu_and_marks_it_done_by_its_box() {
     session.window.press_key(NamedKey::Escape);
     session.settle();
 
-    let (check, _) =
-        described(session.window.app(), "Mark Water the plants done").expect("the box");
-    assert_eq!(
-        session
-            .window
-            .app()
-            .dispatch_a11y_action(check, &ui::a11y::Action::Activate),
-        None,
-        "the box takes the press itself"
-    );
+    session.window.press_named("Mark Water the plants done");
     session.settle();
     assert!(
         task_in_record(&session, "Water the plants", true),

@@ -2089,9 +2089,9 @@ pub mod window_controls;
 pub mod window_header;
 pub(crate) mod window_toolbar_row;
 pub use nav_shell::{
-    ContentKind, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry, NavMode, NavPane,
-    NavShell, NavShellProps, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WINDOW_SIDEBAR,
-    WindowBarLink,
+    ContentKind, HeldNotice, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry,
+    NavMode, NavPane, NavShell, NavShellProps, OverviewPlacement, SidebarPlacement, WINDOW_BACK,
+    WINDOW_SIDEBAR, WindowBarLink,
 };
 pub use window_header::{
     ColumnFrame, HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,

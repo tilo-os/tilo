@@ -57,6 +57,7 @@ use inspector::inspector_layout_of;
 pub use inspector::{InspectorFrame, InspectorLink};
 pub use layout::NavGeometry;
 use layout::{layout_of, stack_index};
+pub use notices::HeldNotice;
 use sidebar_resize::AdaptiveSidebar;
 use window_toolbar::Requests;
 pub use window_toolbar::{WINDOW_BACK, WINDOW_SIDEBAR, WindowBarLink};

@@ -372,11 +372,7 @@ fn a_tasks_complete_completes_the_task_its_row_names() {
         );
     }
     // The second row's menu, opened where the row stands.
-    let (row, _) = super::described(session.window.app(), "Call the plumber").expect("the row");
-    session
-        .window
-        .app()
-        .dispatch_a11y_action(row, &ui::a11y::Action::ShowContextMenu);
+    session.window.show_context_menu("Call the plumber");
     session.settle();
     let complete = session.identity_named("Complete");
     let answered = session.invoke_doing(&complete, &serde_json::json!({}));
