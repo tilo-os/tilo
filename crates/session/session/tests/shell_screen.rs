@@ -1195,3 +1195,49 @@ fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
         client.seen.keys
     );
 }
+
+/// The shell's own words are its package's, in the person's language: a German session reads
+/// the bar, the dock and the styles' surfaces in German, and the launcher keeps its name now that
+/// no record holds it.
+#[test]
+fn a_german_shell_reads_its_own_words_in_german() {
+    let _settled = ui::motion::testing::settled();
+    settings_store::appearance::LANGUAGE
+        .set(Some("de-DE".to_owned()))
+        .expect("the person's language is saved");
+    assert_eq!(
+        ui::i18n::preferred_language().as_deref(),
+        Some("de-DE"),
+        "the person's language is the one every window reads"
+    );
+    ui::i18n::I18nManager::set_locale("de-DE");
+    let (mut session, _notes) = session_at(WIDTH, HEIGHT);
+    until(&mut session, "the shell's words in German", |session| {
+        session.shell_says("Zeigt Strips")
+    });
+    // The style switch and the strips' empty place: the shell package's own words.
+    for german in ["Zeigt Strips", "Noch kein Fenster hier"] {
+        assert!(
+            session.shell_says(german),
+            "a German shell says `{german}`: {:?}",
+            session.accessible_labels()
+        );
+    }
+    for english in ["Showing Strips", "No window here yet"] {
+        assert!(
+            !session.shell_says(english),
+            "a German shell says no `{english}`: {:?}",
+            session.accessible_labels()
+        );
+    }
+    // The launcher keeps the name its package gives it, which the record no longer holds.
+    assert!(
+        session.shell_says("Launcher"),
+        "the dock names the launcher: {:?}",
+        session.accessible_labels()
+    );
+    settings_store::appearance::LANGUAGE
+        .set(None)
+        .expect("the language is the system's again");
+    ui::i18n::I18nManager::set_locale("en-US");
+}

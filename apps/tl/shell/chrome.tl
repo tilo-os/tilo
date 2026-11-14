@@ -153,20 +153,44 @@ type Shell {
 
 /// One part of the top bar, in the person's order.
 type BarPart {
-    /// What the part is; the bar draws it from this, so a part moved is a part the same.
+    /// What the part is; the bar draws it from this, so a part moved is a part the same, and its
+    /// name is the one that part goes by.
     slot: Slot = .menu
-    /// Its name on the bar, and in the settings.
-    title: Text
     /// Whether it shows on the bar; a part off keeps its place in the record.
     shown: Bool = true
+}
+
+/// What a part of the bar is called, on the bar and in the settings, from what it is: this
+/// package's words, so a shell shows them in the person's language.
+fn part_name(slot: Slot) -> Text {
+    if slot == .menu {
+        std.say("Tilo")
+    } else if slot == .workspace {
+        std.say("Workspace")
+    } else if slot == .app_menu {
+        std.say("App menus")
+    } else if slot == .strip {
+        std.say("Strip")
+    } else if slot == .tasks {
+        std.say("Tasks")
+    } else if slot == .clock {
+        std.say("Clock")
+    } else if slot == .people {
+        std.say("People")
+    } else if slot == .status {
+        std.say("Status")
+    } else if slot == .power {
+        std.say("Battery")
+    } else if slot == .agent { std.say("Agents") } else { std.say("Gap") }
 }
 
 /// One thing on the dock: a pinned app or resource, the launcher, or an app running now.
 type DockItem {
     /// What the item stands for: an app id, or a resource's reference as text.
     key: Text
-    /// Its name on the dock, and what assistive technology reads.
-    title: Text
+    /// Its name on the dock, and what assistive technology reads: the app's or the resource's own,
+    /// and empty for the launcher, which the dock names from this package's words.
+    title: Text = ""
     /// The glyph it shows, by its icon's name.
     icon: Text
     /// Whether the person pinned it; a running app that is not pinned is there while it runs.
@@ -187,18 +211,18 @@ root shell: Shell
 /// then on.
 migration action seed(s: Shell) {
     if s.bar_parts.is_empty() {
-        s.bar_parts.insert(BarPart(slot: .menu, title: "Tilo"))
-        s.bar_parts.insert(BarPart(slot: .workspace, title: "Workspace"))
-        s.bar_parts.insert(BarPart(slot: .strip, title: "Strip"))
-        s.bar_parts.insert(BarPart(slot: .agent, title: "Agents", shown: false))
-        s.bar_parts.insert(BarPart(slot: .space, title: "Gap"))
-        s.bar_parts.insert(BarPart(slot: .clock, title: "Clock"))
-        s.bar_parts.insert(BarPart(slot: .space, title: "Gap"))
-        s.bar_parts.insert(BarPart(slot: .people, title: "People"))
-        s.bar_parts.insert(BarPart(slot: .status, title: "Status"))
+        s.bar_parts.insert(BarPart(slot: .menu))
+        s.bar_parts.insert(BarPart(slot: .workspace))
+        s.bar_parts.insert(BarPart(slot: .strip))
+        s.bar_parts.insert(BarPart(slot: .agent, shown: false))
+        s.bar_parts.insert(BarPart(slot: .space))
+        s.bar_parts.insert(BarPart(slot: .clock))
+        s.bar_parts.insert(BarPart(slot: .space))
+        s.bar_parts.insert(BarPart(slot: .people))
+        s.bar_parts.insert(BarPart(slot: .status))
     }
     if s.dock_items.is_empty() and s.dock_launcher {
-        s.dock_items.insert(DockItem(key: "launcher", title: "Launcher", icon: "layout-grid"))
+        s.dock_items.insert(DockItem(key: "launcher", icon: "layout-grid"))
     }
 }
 
@@ -306,7 +330,7 @@ primary action apply(s: Shell, layout: Layout) (icon: .layout_grid, label: "Use 
     }
     if (layout == .macos or layout == .windows_desktop)
         and not s.bar_parts.any(p -> p.slot == Slot.app_menu) {
-        s.bar_parts.insert(BarPart(slot: .app_menu, title: "App menus"))
+        s.bar_parts.insert(BarPart(slot: .app_menu))
         if let brand = s.bar_parts.find(p -> p.slot == Slot.app_menu),
             after = s.bar_parts.find(p -> p.slot == Slot.menu) {
             s.bar_parts.move(brand, after: after)
@@ -318,7 +342,7 @@ primary action apply(s: Shell, layout: Layout) (icon: .layout_grid, label: "Use 
 /// now, on its resource.
 action show_app_menus(s: Shell) (icon: .menu, label: "Show the app's menus", group: "Top bar") {
     require not s.bar_parts.any(p -> p.slot == Slot.app_menu) "The app's menus are on the bar already"
-    s.bar_parts.insert(BarPart(slot: .app_menu, title: "App menus"))
+    s.bar_parts.insert(BarPart(slot: .app_menu))
     if let menus = s.bar_parts.find(p -> p.slot == Slot.app_menu),
         brand = s.bar_parts.find(p -> p.slot == Slot.menu) {
         s.bar_parts.move(menus, after: brand)
@@ -436,7 +460,7 @@ action set_dock_launcher(s: Shell, on: Bool (label: "In the dock")) (
 ) {
     s.dock_launcher = on
     if on and not s.dock_items.any(i -> i.key == "launcher") {
-        s.dock_items.insert(DockItem(key: "launcher", title: "Launcher", icon: "layout-grid"))
+        s.dock_items.insert(DockItem(key: "launcher", icon: "layout-grid"))
     }
     if not on {
         s.dock_items.remove_where(i -> i.key == "launcher")

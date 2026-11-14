@@ -337,10 +337,7 @@ d-sfhd6wko = Bar part
     }
 
 d-fjzbw5un = Slot
-    .doc = What the part is; the bar draws it from this, so a part moved is a part the same.
-
-d-v3iwpjov = Title
-    .doc = Its name on the bar, and in the settings.
+    .doc = What the part is; the bar draws it from this, so a part moved is a part the same, and its name is the one that part goes by.
 
 d-pbly7ymy = Shown
     .doc = Whether it shows on the bar; a part off keeps its place in the record.
@@ -360,7 +357,7 @@ d-rfsefuzv = Key
     .doc = What the item stands for: an app id, or a resource's reference as text.
 
 d-qsnrl2gk = Title
-    .doc = Its name on the dock, and what assistive technology reads.
+    .doc = Its name on the dock, and what assistive technology reads: the app's or the resource's own, and empty for the launcher, which the dock names from this package's words.
 
 d-6gyb7csc = Icon
     .doc = The glyph it shows, by its icon's name.
@@ -814,6 +811,22 @@ d-lfa3rl6s = Snap places to a grid
     .doc = Whether a place let go on the framed canvas lands on the grid: the frames style's own setting.
 
 d-lfa3rl6s-on = On
+
+d-qxbh2c44 = Part name
+    .w-tilo = Tilo
+    .w-workspace = Workspace
+    .w-app-menus = App menus
+    .w-strip = Strip
+    .w-tasks = Tasks
+    .w-clock = Clock
+    .w-people = People
+    .w-status = Status
+    .w-battery = Battery
+    .w-agents = Agents
+    .w-gap = Gap
+
+d-y45hdphl = Dock item name
+    .w-launcher = Launcher
 
 d-fcxy4mu5 = Shell view
 

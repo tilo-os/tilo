@@ -222,3 +222,76 @@ fn the_arrangement_names_itself_in_the_persons_language() {
         Some("Layout history")
     );
 }
+
+/// The words the layout's resource publishes for its actions: each action's label, and what each
+/// of its arguments is called.
+fn layout_actions(session: &tilo_session::Session) -> Vec<(String, Vec<String>)> {
+    fn find(specs: &[ResourceSpec]) -> Option<Vec<(String, Vec<String>)>> {
+        specs.iter().find_map(|spec| {
+            if spec.id.0 == "shell:arrangement" {
+                Some(
+                    spec.actions
+                        .iter()
+                        .map(|action| {
+                            (
+                                action.label.clone(),
+                                action
+                                    .params()
+                                    .iter()
+                                    .map(|param| param.description.to_string())
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                )
+            } else {
+                find(&spec.children)
+            }
+        })
+    }
+    find(&session.resources()).expect("the layout publishes its resource")
+}
+
+/// The layout's actions are copy too: what Undo does, what putting a resource on the canvas does,
+/// and what each argument of it is called, read in the person's language.
+#[test]
+fn the_layouts_actions_speak_the_persons_language() {
+    let root = private_home();
+    let session = seeded_session(root.path());
+    speak("de-DE");
+    let german = layout_actions(&session);
+    let labels: Vec<&str> = german.iter().map(|(label, _)| label.as_str()).collect();
+    assert!(
+        labels.contains(&"Die letzte Änderung am Layout rückgängig machen"),
+        "the layout undoes a change in German: {labels:?}"
+    );
+    assert!(
+        labels.contains(&"Eine Ressource als eine ihrer Ansichten auf die Fläche stellen"),
+        "the layout places a resource in German: {labels:?}"
+    );
+    let hints: Vec<&str> = german
+        .iter()
+        .flat_map(|(_, params)| params.iter().map(String::as_str))
+        .collect();
+    assert!(
+        hints.contains(&"Der Arbeitsbereich, auf dessen Fläche er steht, nach seiner Kennung; der vorn, wenn ausgelassen"),
+        "the layout names a placement's workspace in German: {hints:?}"
+    );
+    for english in [
+        "Undo the last layout change",
+        "Put a resource on the canvas as one of its views",
+    ] {
+        assert!(
+            !labels.contains(&english),
+            "a layout action reads `{english}` on a German desktop: {labels:?}"
+        );
+    }
+
+    speak("en-US");
+    let english = layout_actions(&session);
+    let labels: Vec<&str> = english.iter().map(|(label, _)| label.as_str()).collect();
+    assert!(
+        labels.contains(&"Undo the last layout change"),
+        "an English desktop reads the layout's undo in English: {labels:?}"
+    );
+}

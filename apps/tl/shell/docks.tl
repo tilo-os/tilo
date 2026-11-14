@@ -39,7 +39,7 @@ view dock_run(s: Shell) {
                 on drop(moved: DockItem, at: Int): place_item(s, moved, at)
                 for item in s.dock_items {
                     if item.pinned or s.dock_running {
-                        ui.DragItem(item, title: item.title) {
+                        ui.DragItem(item, title: dock_item_name(item)) {
                             on activate: open_item(s, item.key)
                             dock_tile(s, item)
                         }
@@ -59,7 +59,7 @@ view dock_run(s: Shell) {
                     on drop(moved: DockItem, at: Int): place_item(s, moved, at)
                     for item in s.dock_items {
                         if item.pinned or s.dock_running {
-                            ui.DragItem(item, title: item.title) {
+                            ui.DragItem(item, title: dock_item_name(item)) {
                                 on activate: open_item(s, item.key)
                                 dock_tile(s, item)
                             }
@@ -76,7 +76,7 @@ view dock_run(s: Shell) {
                     on drop(moved: DockItem, at: Int): place_item(s, moved, at)
                     for item in s.dock_items {
                         if item.pinned or s.dock_running {
-                            ui.DragItem(item, title: item.title) {
+                            ui.DragItem(item, title: dock_item_name(item)) {
                                 on activate: open_item(s, item.key)
                                 dock_tile(s, item)
                             }
@@ -155,12 +155,19 @@ action open_item(s: Shell, key: Text (label: "App")) {
     } else { session.open_app(app: key) }
 }
 
+/// What the dock names an item: the app's or the resource's own name, and the launcher's this
+/// package's, in the person's language.
+fn dock_item_name(item: DockItem) -> Text {
+    if item.key == "launcher" { std.say("Launcher") } else { item.title }
+}
+
 /// One dock item: its glyph, with its badge on the glyph's top trailing corner (the count of what
 /// is new, or the mark that it wants the person), as a dock has always badged an app. The count is
 /// the button's own (`count:`), so it stands on the glyph and never on the tile beside it, and the
 /// name read out says it.
 view dock_tile(s: Shell, item: DockItem) {
-    let name = if item.badge == 0 { item.title } else { "{item.title}, {item.badge} new" }
+    let title = dock_item_name(item)
+    let name = if item.badge == 0 { title } else { "{title}, {item.badge} new" }
     ui.Button(
         name,
         icon: item.icon,

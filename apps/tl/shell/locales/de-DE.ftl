@@ -252,9 +252,6 @@ d-sfhd6wko = Leistenteil
 d-fjzbw5un = Slot
     .doc = Was das Teil ist; die Leiste zeichnet es daraus, sodass ein verschobenes Teil dasselbe Teil ist.
 
-d-v3iwpjov = Titel
-    .doc = Sein Name auf der Leiste und in den Einstellungen.
-
 d-pbly7ymy = Gezeigt
     .doc = Ob es auf der Leiste zeigt; ein ausgeschaltetes Teil behält seinen Platz im Datensatz.
 
@@ -1129,6 +1126,22 @@ d-lfa3rl6s = Plätze am Raster einrasten
     .doc = Ob ein auf der gerahmten Arbeitsfläche losgelassener Platz auf dem Raster landet: die eigene Einstellung des Rahmenstils.
 
 d-lfa3rl6s-on = An
+
+d-qxbh2c44 = Teilname
+    .w-tilo = Tilo
+    .w-workspace = Arbeitsbereich
+    .w-app-menus = App-Menüs
+    .w-strip = Leiste
+    .w-tasks = Aufgaben
+    .w-clock = Uhr
+    .w-people = Personen
+    .w-status = Status
+    .w-battery = Akku
+    .w-agents = Agenten
+    .w-gap = Lücke
+
+d-y45hdphl = Name des Dock-Eintrags
+    .w-launcher = Launcher
 
 d-7womqcp3 = App-Zeile
 

@@ -94,7 +94,7 @@ view bar() {
                 and not (part.slot == .people and nobody) {
                 ui.DragItem(
                     part,
-                    title: part.title,
+                    title: part_name(part.slot),
                     group: if part.slot == .clock {
                         .center
                     } else if part.slot == .people or part.slot == .status {

@@ -183,12 +183,20 @@ pub const fn shell_sources() -> &'static [(&'static str, &'static str)] {
     SHELL_FILES
 }
 
-/// The shell package's own source-locale catalogue (`apps/tl/shell/locales/en-US.ftl`), as it
-/// ships: what a copy of the shell carries so its own words travel with it, as an installed
-/// app's do.
+/// The catalogues the shell package ships, by locale: its words in the languages a window may
+/// read them in, travelling in its module as an installed app's do.
 #[must_use]
-pub const fn shell_catalogue() -> &'static str {
-    include_str!("../../../../apps/tl/shell/locales/en-US.ftl")
+pub const fn shell_catalogues() -> [(&'static str, &'static str); 2] {
+    [
+        (
+            "en-US",
+            include_str!("../../../../apps/tl/shell/locales/en-US.ftl"),
+        ),
+        (
+            "de-DE",
+            include_str!("../../../../apps/tl/shell/locales/de-DE.ftl"),
+        ),
+    ]
 }
 
 /// The shell's whole screen: the `shell_view` view over the person's arrangement (the package's
@@ -267,10 +275,11 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
             .map(|(path, text)| (format!("apps/tl/shell/{path}"), (*text).to_owned())),
     )
     // The shell's own words travel in its module, as an installed app's do.
-    .with_locales([(
-        "en-US".to_owned(),
-        include_str!("../../../../apps/tl/shell/locales/en-US.ftl").to_owned(),
-    )]);
+    .with_locales(
+        shell_catalogues()
+            .into_iter()
+            .map(|(locale, text)| (locale.to_owned(), text.to_owned())),
+    );
     let mut imports: Vec<tilolang_tilo::tilolang::PackageMeta> = platform_packages()?
         .into_iter()
         .filter(|meta| meta.app != SESSION_APP)

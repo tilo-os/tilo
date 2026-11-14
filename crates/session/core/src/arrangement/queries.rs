@@ -3,9 +3,10 @@
 
 use tilo_actions::{ActionSpec, Noun, ParamType, ResourceSpec, ResourceType, ResourceViewSpec};
 
+use super::published::{action, count_of, required, text};
 use super::{
     ArrangementAction, ArrangementQueryReading, ArrangementRefReading, Item, QUERY_KIND,
-    SearchOutcome, Target, action, count_of, required, text,
+    SearchOutcome, Target, Words,
 };
 
 pub(super) fn query_state_from_outcome(outcome: SearchOutcome) -> (String, String) {
@@ -36,8 +37,8 @@ pub(super) fn settle(state: &str, matches: &[ArrangementRefReading]) -> (String,
 /// The query `query` publishes as a resource of its own, through the view a place shows it by
 /// (`query_view`): what a place stands as until its app answers, and what several or no matches
 /// leave standing (shell.md §8).
-pub(super) fn query_resource(query: &ArrangementQueryReading) -> ResourceSpec {
-    query_actions(&query.key).into_iter().fold(
+pub(super) fn query_resource(query: &ArrangementQueryReading, words: &Words) -> ResourceSpec {
+    query_actions(&query.key, words).into_iter().fold(
         ResourceSpec::new(
             Item::Query.resource(&query.key),
             QUERY_KIND,
@@ -66,13 +67,16 @@ pub(super) fn query_target(query: &ArrangementQueryReading) -> Target {
 
 /// A query's own actions, its place's id bound into each: a press on a row shows that match in the
 /// same place (`Show`), and Retry asks the app again.
-pub(super) fn query_actions(key: &str) -> Vec<ActionSpec> {
+pub(super) fn query_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
     let shown = key.to_owned();
     vec![
         action(
+            words,
             "show-match",
             "Show a match of the search in this place",
             vec![required(
+                words,
+                "show-match",
                 "resource",
                 ParamType::Resource,
                 "The resource the row names",
@@ -83,7 +87,7 @@ pub(super) fn query_actions(key: &str) -> Vec<ActionSpec> {
                 view: String::new(),
             },
         ),
-        action("retry", "Look for it again", Vec::new(), {
+        action(words, "retry", "Look for it again", Vec::new(), {
             let retried = key.to_owned();
             move |_| ArrangementAction::RetryQuery {
                 place: count_of(&retried),

@@ -105,9 +105,10 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     out.push((application(), None));
     // What is already arranged: a place, a strip and a row are resources of their own, each with
     // the actions it offers.
+    let words = crate::arrangement::words();
     out.push((crate::arrangement::row_kind_resource(), None));
-    out.push((crate::arrangement::strip_kind_resource(), None));
-    out.push((crate::arrangement::place_kind_resource(), None));
+    out.push((crate::arrangement::strip_kind_resource(&words), None));
+    out.push((crate::arrangement::place_kind_resource(&words), None));
     out
 }
 
