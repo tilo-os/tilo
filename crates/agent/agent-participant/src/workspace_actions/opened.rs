@@ -125,6 +125,17 @@ impl Worker {
     /// without it. Waited on as a read: a record the workspace holds none of
     /// is no reason to refuse the open.
     pub(super) fn invoke_keys(&self, request: &InvokeRequest) -> Keys {
+        // A file opened in Files is put into the workspace's tree, which is
+        // read before it is written: asked for, and waited on until it opens
+        // with the host's keys, as a read, since a workspace whose tree no one
+        // wrote yet is founded by the put.
+        if puts_into_the_tree(request) {
+            return Keys::Record {
+                app_id: tilo_fs::tree_record::FILES_APP.to_owned(),
+                record: tilo_fs::tree_record::record(),
+                act: false,
+            };
+        }
         match self.opened_record(request) {
             Some((app_id, record)) => Keys::Record {
                 app_id,
@@ -201,6 +212,21 @@ impl Worker {
         }
         Ok(false)
     }
+}
+
+/// Whether `request` opens a file in Files: what puts it into the workspace's
+/// tree ([`super::tree_put`]).
+fn puts_into_the_tree(request: &InvokeRequest) -> bool {
+    let target = &request.target;
+    provider_workspace(&target.provider).is_some()
+        && target.address.action == APPLICATION_OPEN_ACTION
+        && target
+            .address
+            .resource
+            .strip_prefix(APPLICATION_RESOURCE_PREFIX)
+            == Some(tilo_fs::tree_record::FILES_APP)
+        && super::opened_file::OpenedFile::named(&super::invoke_arguments(&request.argument))
+            .is_ok_and(|file| file.is_some())
 }
 
 #[cfg(test)]

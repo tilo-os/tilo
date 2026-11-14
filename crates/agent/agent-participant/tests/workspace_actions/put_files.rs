@@ -297,3 +297,77 @@ async fn a_put_file_makes_no_app_record_where_opening_it_in_an_app_does() {
     .await;
     assert!(opened.contains("opened in pdf-viewer"), "{opened}");
 }
+
+/// A file put into a workspace whose tree a computer of the person's wrote
+/// first (its folder, mounted as `tilo login` mounts it) goes into that tree:
+/// the host waits for the tree to open with its keys rather than refusing
+/// the put as a tree whose keys it does not hold yet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
+    use collab_types::DocumentMutation;
+    use tilo_session_client::Outbox as _;
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "tilo.sh", DeviceCapabilities::member());
+    let computer = enrol(&root, "laptop", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
+        &root,
+        &host,
+        state.path(),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+    )
+    .await;
+    let laptop = Browser::open(&hosted, &computer, &host).await;
+
+    // The laptop's folder: a file copied in, the tree written as the peer
+    // writes it, sealed as every write of the workspace is.
+    let mut folder = tilo_fs::Namespace::new(hex::encode(computer.cert.device_public_key)).unwrap();
+    folder
+        .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
+        .unwrap();
+    laptop
+        .peer
+        .write(
+            DocumentRoute {
+                app_id: FILES_APP.to_owned(),
+                cluster_id: laptop.cluster_id.clone(),
+                record: tree_record(),
+            },
+            &DocumentMutation::Snapshot(folder.save()),
+        )
+        .unwrap();
+    laptop.durable().await;
+    assert!(
+        file_at(&tree_of(&hosted, WORKSPACE).await, "", "contract.txt").is_some(),
+        "the host keeps the laptop's tree"
+    );
+
+    // An agent puts a file: it lands beside the laptop's.
+    let agent = Browser::open(
+        &hosted,
+        &enrol(&root, "agent", DeviceCapabilities::member()),
+        &host,
+    )
+    .await;
+    let server = McpServer::new(
+        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
+        WORKSPACE.into(),
+        hex::encode(root.verifying_key().to_bytes()),
+    )
+    .with_surface(Surface::Agent);
+    let notice = form_pdf("Notice of termination");
+    let content = content_in(&put(&server, &notice).await);
+    let said = tool(
+        &server,
+        "tilo_do",
+        json!({"path": "files#open", "args": {"content": content, "name": "notice.pdf"}}),
+    )
+    .await;
+    let tree = tree_of(&hosted, WORKSPACE).await;
+    assert!(file_at(&tree, "", "notice.pdf").is_some(), "{said}");
+    assert!(
+        file_at(&tree, "", "contract.txt").is_some(),
+        "the laptop's file is still there"
+    );
+}
