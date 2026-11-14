@@ -140,6 +140,10 @@ tilo_test_env::scenario! {
         clippy::too_many_lines,
         reason = "one scenario, one labelled phase per merged case"
     )]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
     fn declared_actions_are_typed_and_apply_through_the_one_door;
 
     phase methods_become_declared_typed_actions;

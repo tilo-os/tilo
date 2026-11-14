@@ -397,6 +397,10 @@ fn edit_parts<R>(edits: &[tilo_resource::Edit<R>]) -> EditParts {
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
     fn json_values_are_compared_in_memory;
 
     phase items_changed_in_place_compare_their_json_values_in_memory;

@@ -391,6 +391,10 @@ mod tests {
     use automerge::{ObjType, ROOT};
 
     tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+        )]
         fn a_delta_names_what_changes_touched;
 
         phase a_splice_touches_the_path_to_its_text_and_nothing_else;

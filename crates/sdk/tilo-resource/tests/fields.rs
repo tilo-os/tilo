@@ -140,6 +140,10 @@ fn field_edit(published: &tilo_actions::ResourceSpec) -> &tilo_actions::ActionSp
 }
 
 tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
     fn a_field_is_stored_and_listed_as_it_declares;
 
     phase an_atom_is_written_whole_and_the_last_writer_wins;
