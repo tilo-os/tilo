@@ -185,7 +185,8 @@ fn events_take_the_shape_the_calendar_app_reads() {
     assert_eq!(review["start"], "2026-11-05T09:00");
     assert_eq!(review["end"], "2026-11-05T10:00");
     assert_eq!(review["timezone"], "Europe/Berlin");
-    assert_eq!(review["rrule"], "FREQ=WEEKLY;COUNT=4");
+    assert_eq!(review["rrule"], "FREQ=WEEKLY");
+    assert_eq!(review["recurrence_count"], 4);
     let holiday = events
         .iter()
         .find(|event| event["title"] == "Company holiday")
@@ -193,4 +194,20 @@ fn events_take_the_shape_the_calendar_app_reads() {
     assert_eq!(holiday["all_day"], true);
     assert_eq!(holiday["start"], "2026-12-24T00:00");
     assert!(uuid::Uuid::parse_str(review["id"].as_str().unwrap()).is_ok());
+}
+
+/// A home reached through a link, as Fedora Atomic's `/home` is a link to `/var/home`, is read
+/// as the home it is; a link inside the profile is still never followed.
+#[cfg(unix)]
+#[test]
+fn a_home_reached_through_a_link_is_read() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("var-home");
+    std::fs::create_dir(&real).unwrap();
+    write_sample_profile(&real);
+    let linked = root.path().join("home");
+    std::os::unix::fs::symlink(&real, &linked).unwrap();
+    let profiles = discover(&linked).unwrap();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].accounts.len(), 2);
 }

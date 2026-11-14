@@ -147,10 +147,11 @@ impl Event {
             .clone()
             .unwrap_or_else(|| blake3::hash(self.content().as_bytes()).to_hex().to_string());
         let id = deterministic_id(&["event", profile, calendar, &key]);
-        let rrule = tilo_recurrence::Rule::parse(&self.rrule)
-            .map(|rule| rule.to_rrule())
-            .unwrap_or_default();
-        Some(json!({
+        // Calendar keeps how an event repeats as one of its presets (`FREQ=WEEKLY`), with the
+        // interval, the count and the last day as fields of their own.
+        let parsed = tilo_recurrence::Rule::parse(&self.rrule);
+        let rrule = tilo_recurrence::Repeat::from_rrule(&self.rrule).to_rrule();
+        let mut event = json!({
             "id": id,
             "title": self.title,
             "start": start_wall.format(DT_FMT).to_string(),
@@ -159,7 +160,21 @@ impl Event {
             "location": self.location,
             "timezone": zone,
             "rrule": rrule,
-        }))
+        });
+        if let (Some(rule), false, Some(fields)) = (parsed, rrule.is_empty(), event.as_object_mut())
+        {
+            fields.insert("recurrence_interval".into(), json!(rule.interval().max(1)));
+            if let Some(count) = rule.count() {
+                fields.insert("recurrence_count".into(), json!(count));
+            }
+            if let Some(until) = rule.until() {
+                fields.insert(
+                    "recurrence_until".into(),
+                    json!(until.format("%Y-%m-%d").to_string()),
+                );
+            }
+        }
+        Some(event)
     }
 
     fn content(&self) -> String {
@@ -247,7 +262,8 @@ mod tests {
         assert_eq!(event["start"], "2026-10-05T09:00");
         assert_eq!(event["end"], "2026-10-05T09:30");
         assert_eq!(event["timezone"], "Europe/Berlin");
-        assert_eq!(event["rrule"], "FREQ=WEEKLY;COUNT=4");
+        assert_eq!(event["rrule"], "FREQ=WEEKLY");
+        assert_eq!(event["recurrence_count"], 4);
         assert_eq!(event["all_day"], false);
         assert!(uuid::Uuid::parse_str(event["id"].as_str().unwrap()).is_ok());
     }

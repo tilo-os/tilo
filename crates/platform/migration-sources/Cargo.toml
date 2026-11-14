@@ -62,3 +62,7 @@ tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "sample_thunderbird_profile"
+required-features = ["fixture"]

@@ -250,7 +250,11 @@ pub fn scan(home: &Path) -> Scan {
         reviewed: Vec::new(),
         unreadable: Vec::new(),
     };
-    for (label, path) in roots(home) {
+    // The home is where the person keeps their profiles, named however their system names it:
+    // on Fedora Atomic `/home` is a link to `/var/home`. Its own path is resolved once; inside
+    // it, a profile is read without following any link.
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    for (label, path) in roots(&home) {
         match std::fs::symlink_metadata(&path) {
             Ok(info) if info.is_dir() && !info.is_symlink() => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
