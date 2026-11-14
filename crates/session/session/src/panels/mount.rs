@@ -134,7 +134,11 @@ pub(crate) fn mount_activities(
     reader: &Rc<crate::chrome::Activities>,
     cards: &crate::cards::Cards,
     (banners, readout): (Reserved, Reserved),
-    (places, desk): (&ReadoutPlaces, &tilo_desktop_surface::DesktopHandle),
+    (places, desk, overlays): (
+        &ReadoutPlaces,
+        &tilo_desktop_surface::DesktopHandle,
+        &tilo_desktop::overlays::Overlays,
+    ),
     options: &crate::Options,
 ) -> Option<tilo_activities::Link> {
     if options.shell {
@@ -152,7 +156,7 @@ pub(crate) fn mount_activities(
                 cards.clone(),
                 (banners, readout),
                 Rc::clone(places),
-                desk.clone(),
+                (desk.clone(), overlays.clone()),
                 options.scale,
             )));
             compositor.add_host(surface.clone());

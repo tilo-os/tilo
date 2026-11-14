@@ -11,6 +11,7 @@ use tilo_compositor::OutputInfo;
 use tilo_session_core::surface::HostKey;
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
+use tilo_desktop::overlays::Overlays;
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_session_core::door::Published;
 
@@ -38,6 +39,29 @@ fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
         ),
         scale,
     }
+}
+
+/// The output a panel without a place of its own stands on: the display the person works on, as
+/// the session read it from the desk each pass ([`Overlays`] holds it for every surface it places
+/// there), else the first.
+fn in_use(
+    outputs: &[tilo_session_core::surface::HostedOutput],
+    overlays: &Overlays,
+) -> Option<tilo_session_core::surface::HostedOutput> {
+    let focused = overlays.focused_display();
+    focused
+        .and_then(|focused| {
+            outputs.iter().copied().find(|output| {
+                let (x, y, w, h) = output.rect;
+                Rect::new(
+                    f64::from(x),
+                    f64::from(y),
+                    f64::from(x.saturating_add(w)),
+                    f64::from(y.saturating_add(h)),
+                ) == focused
+            })
+        })
+        .or_else(|| outputs.first().copied())
 }
 
 /// A rect on the desk another surface holds while it is up (the banners' stack, the readout's
@@ -104,15 +128,18 @@ fn until(hold: ui::time::Duration) -> ui::time::Instant {
         .unwrap_or_else(ui::time::now)
 }
 
-/// The notification banners over the first output, under the bar: the stack pins itself into its
+/// The notification banners over the display in use, under the bar: the stack pins itself into its
 /// top-right corner, clear of the windows' bars.
 pub(crate) struct Banners {
     host: AppHost,
     link: tilo_notification_banners::Link,
     /// The desk whose windows the stack keeps clear of.
     desk: tilo_desktop_surface::DesktopHandle,
-    /// The outputs the compositor last said it has: the first is the one in use, the rest repeat
-    /// what is about the whole machine.
+    /// Where the desk placed its surfaces: the display the person works on is the one the stack
+    /// stands on.
+    overlays: Overlays,
+    /// The outputs the compositor last said it has: the stack stands on the display in use, the
+    /// others repeat what is about the whole machine.
     outputs: Vec<tilo_session_core::surface::HostedOutput>,
     /// The rect the stack covers, which the floating layer keeps clear of while a banner shows.
     stack: Reserved,
@@ -123,6 +150,7 @@ impl Banners {
         app: ui::App,
         link: tilo_notification_banners::Link,
         desk: tilo_desktop_surface::DesktopHandle,
+        overlays: Overlays,
         scale: f64,
         stack: Reserved,
     ) -> Self {
@@ -130,6 +158,7 @@ impl Banners {
             host: AppHost::new(app, placement(0, 0, 1, 1, scale)).named("Notifications"),
             link,
             desk,
+            overlays,
             outputs: Vec::new(),
             stack,
         }
@@ -142,16 +171,16 @@ impl Banners {
         self.stack.set((!stack.is_zero_area()).then_some(stack));
     }
 
-    /// Put the stack on the first output, under the bar, starting where the windows' content does;
-    /// the outputs besides the one in use repeat what is about the whole machine. Placed every
-    /// frame, as the popover is: the banners are mounted before any output is lit, and they move
-    /// with the layout from then on.
+    /// Put the stack on the display the person works on, under the bar, starting where the windows'
+    /// content does; the outputs besides that one repeat what is about the whole machine. Placed
+    /// every frame, as the popover is: the banners are mounted before any output is lit, and they
+    /// move with the layout, and with the display in use, from then on.
     fn place(&mut self) {
-        let Some(first) = self.outputs.first().copied() else {
+        let Some(display) = in_use(&self.outputs, &self.overlays) else {
             return;
         };
-        let (x, y, width, height) = first.rect;
-        let scale = first.scale;
+        let (x, y, width, height) = display.rect;
+        let scale = display.scale;
         let place = placement(x, y, width, height, scale);
         if self.host.placement() != place {
             self.host.set_placement(place);
@@ -171,12 +200,12 @@ impl Banners {
         // as the desk's own notification centre does.
         let clear_top = (self.desk.content_top() - f64::from(y)).max(0.0);
         self.link.place(tilo_notification_banners::Placement {
-            viewport: under_bar((x, y, width, height)),
+            viewport: under_bar(display.rect),
             clear_top,
             others: self
                 .outputs
                 .iter()
-                .skip(1)
+                .filter(|output| output.rect != display.rect)
                 .map(|output| tilo_notification_banners::OtherDisplay {
                     display: local(output.rect),
                     viewport: under_bar(output.rect),
@@ -319,7 +348,7 @@ fn docked_id(group: u64) -> String {
     format!("window:{group}")
 }
 
-/// The floating layer over the first output: every activity's card, docked in a corner column or
+/// The floating layer over the display in use: every activity's card, docked in a corner column or
 /// dragged loose, clear of the bar, the banners and the readout. The session says what to show and
 /// carries out what the person did; the layer draws it.
 pub(crate) struct ActivityLayer {
@@ -331,7 +360,10 @@ pub(crate) struct ActivityLayer {
     cards: crate::cards::Cards,
     /// The corner docked cards gather in, on this device.
     corner: ui::floating_layer::Corner,
-    /// The outputs the compositor last said it has: the cards stand on the first.
+    /// Where the desk placed its surfaces: the display the person works on is the one the cards
+    /// stand on.
+    overlays: Overlays,
+    /// The outputs the compositor last said it has.
     outputs: Vec<tilo_session_core::surface::HostedOutput>,
     /// What the cards keep clear of: the banners' stack, the readout's band, and the field the
     /// person types into.
@@ -354,7 +386,7 @@ impl ActivityLayer {
         cards: crate::cards::Cards,
         (banners, readout): (Reserved, Reserved),
         typing: ReadoutPlaces,
-        desk: tilo_desktop_surface::DesktopHandle,
+        (desk, overlays): (tilo_desktop_surface::DesktopHandle, Overlays),
         scale: f64,
     ) -> Self {
         Self {
@@ -363,6 +395,7 @@ impl ActivityLayer {
             reader,
             cards,
             corner: ui::floating_layer::Corner::default(),
+            overlays,
             outputs: Vec::new(),
             banners,
             readout,
@@ -373,15 +406,15 @@ impl ActivityLayer {
         }
     }
 
-    /// Put the layer on the first output, under the bar, with what the person
-    /// shows now, and take back what the last frame asked. Placed every frame,
-    /// as the banners are: the layer is mounted before any output is lit.
+    /// Put the layer on the display the person works on, under the bar, with what the person
+    /// shows now, and take back what the last frame asked. Placed every frame, as the banners are:
+    /// the layer is mounted before any output is lit.
     fn place(&mut self) {
-        let Some(first) = self.outputs.first().copied() else {
+        let Some(display) = in_use(&self.outputs, &self.overlays) else {
             return;
         };
-        let (x, y, width, height) = first.rect;
-        let scale = first.scale;
+        let (x, y, width, height) = display.rect;
+        let scale = display.scale;
         let where_ = placement(x, y, width, height, scale);
         if self.host.placement() != where_ {
             self.host.set_placement(where_);

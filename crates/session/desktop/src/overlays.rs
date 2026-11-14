@@ -761,6 +761,13 @@ impl Overlays {
         stack.displays.focused = focused;
     }
 
+    /// The display the person works on, as the desktop last placed its surfaces on it: the one
+    /// every surface without a place of its own stands on. `None` while the desk spans one display.
+    #[must_use]
+    pub fn focused_display(&self) -> Option<Rect> {
+        self.0.borrow().displays.focused
+    }
+
     /// The caret of the field the person types into, as the desktop last saw it: what a surface a
     /// key opens for the text stands beside.
     pub fn set_caret(&self, caret: Option<Rect>) {

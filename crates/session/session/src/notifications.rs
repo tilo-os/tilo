@@ -76,7 +76,10 @@ pub(crate) fn mount_banners(
     compositor: &mut tilo_compositor::Compositor,
     doors: &mut tilo_session_core::door::Doors,
     notices: &DesktopNotifications,
-    desk: &tilo_desktop_surface::DesktopHandle,
+    (desk, overlays): (
+        &tilo_desktop_surface::DesktopHandle,
+        &tilo_desktop::overlays::Overlays,
+    ),
     options: &crate::Options,
     stack: crate::panels::Reserved,
     banners: Link,
@@ -93,6 +96,7 @@ pub(crate) fn mount_banners(
                 app,
                 banners,
                 desk.clone(),
+                overlays.clone(),
                 options.scale,
                 stack,
             )));

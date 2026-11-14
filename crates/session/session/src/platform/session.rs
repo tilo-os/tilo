@@ -997,14 +997,14 @@ impl Session {
             &activities,
             &cards,
             (banner_stack.clone(), readout_band.clone()),
-            (&readout_place, &handle),
+            (&readout_place, &handle, &overlays),
             &options,
         );
         mount_banners(
             &mut compositor,
             &mut doors,
             &notices,
-            &handle,
+            (&handle, &overlays),
             &options,
             banner_stack,
             banners.clone(),
@@ -2003,8 +2003,9 @@ impl Session {
     /// The display the person works on, as the compositor places it: the desk's focused display,
     /// which a press on a display, a step of focus past a display's last window or a window opened
     /// there moves. Every surface of the session that stands on one display stands on this one: the
-    /// full bar, the overview, the sheets, quick settings and the other overlays, and the lock's
-    /// prompt. `None` while the desk knows no such display (it spans one).
+    /// full bar, the overview, the sheets, quick settings and the other overlays, the notification
+    /// banners, the activity cards, and the lock's prompt. `None` while the desk knows no such
+    /// display (it spans one).
     pub(crate) fn working_output(&self) -> Option<tilo_compositor::OutputInfo> {
         let display = self.shared.handle.focused_display()?;
         let monitor = self

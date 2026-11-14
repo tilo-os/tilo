@@ -154,6 +154,31 @@ fn right() -> (i32, i32, i32, i32) {
     (WIDTH, 0, WIDTH, HEIGHT)
 }
 
+/// The first row under the top bar: everything below is the desk the banners and cards float over.
+fn under_bar() -> i32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the bar's height is a few dozen pixels"
+    )]
+    let height = tilo_desktop::topbar::TOPBAR_HEIGHT_PX.ceil() as i32;
+    height
+}
+
+/// How many pixels of `after` below row `from` differ from `before` : both frames of one display.
+fn changed(before: &Screenshot, after: &Screenshot, from: i32) -> usize {
+    let rows = i32::try_from(after.height).expect("a display with rows");
+    let columns = i32::try_from(after.width).expect("a display with columns");
+    let mut count = 0;
+    for y in from..rows {
+        for x in 0..columns {
+            if pixel(before, x, y) != pixel(after, x, y) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 /// Where every sheet puts itself: on the display the person is working on.
 #[test]
 fn a_sheet_opens_on_the_display_in_focus() {
@@ -195,6 +220,78 @@ fn a_sheet_opens_on_the_display_in_focus() {
         pixel(&after_left, cx, cy),
         pixel(&before_left, cx, cy),
         "and nothing of it reaches the other display"
+    );
+}
+
+/// A banner and an activity card stand where the sheets do: on the display the person is working
+/// on, and on the other display once they work there.
+#[test]
+fn a_banner_and_an_activity_card_stand_on_the_display_in_focus() {
+    use tilo_desktop::notifications::{Banner, BannerFeed, Notification};
+    use ui::live_activity::{Kind, Published, Summary};
+
+    let _settled = ui::motion::testing::settled();
+    let mut session = docked();
+    let mut client = client(&mut session);
+    assert_eq!(displays(&session).len(), 2, "the desk tells both apart");
+    focuses(&mut session, &mut client, 1);
+    let left = shot(&mut session, "HEADLESS-1");
+    let right = shot(&mut session, "HEADLESS-2");
+
+    // An app floats a card over the desk, and a notification puts a banner beside it.
+    let mut card = Published::of(Summary::new(Kind::Timer, "Tea", "4:32").with_id("tea"));
+    card.overlay = true;
+    session.live_activities().show(
+        "so.tilo.clocks",
+        Some(serde_json::to_value(card).expect("an activity is JSON")),
+    );
+    session.banners().publish(BannerFeed {
+        banners: vec![Banner {
+            notification: Notification::new("Build finished", "All 524 tests passed")
+                .with_shown_at(ui::time::now())
+                .with_dismiss_after(Duration::from_secs(60)),
+            actions: Vec::new(),
+        }],
+        locked: false,
+        held: false,
+    });
+    crate::common::wait_for(
+        &mut session,
+        "the banner and the card drawn on the display in focus",
+        |session| {
+            session.step(Duration::from_millis(16)).expect("step");
+            let shown = session.banners().shown();
+            let frame = shot(session, "HEADLESS-2");
+            (!shown.stack.is_zero_area() && changed(&right, &frame, under_bar()) > 1_000)
+                .then_some(())
+        },
+    );
+    assert_eq!(
+        session.banners().shown().banners.len(),
+        1,
+        "the banner is up for the person"
+    );
+    assert_eq!(
+        changed(&left, &shot(&mut session, "HEADLESS-1"), under_bar()),
+        0,
+        "nothing of them reaches the other display"
+    );
+
+    // The person moves to the other display: what stands over the desk moves with them.
+    focuses(&mut session, &mut client, 0);
+    crate::common::wait_for(
+        &mut session,
+        "the banner and the card on the display the person works on",
+        |session| {
+            session.step(Duration::from_millis(16)).expect("step");
+            let frame = shot(session, "HEADLESS-1");
+            (changed(&left, &frame, under_bar()) > 1_000).then_some(())
+        },
+    );
+    assert_eq!(
+        changed(&right, &shot(&mut session, "HEADLESS-2"), under_bar()),
+        0,
+        "and nothing of them stays behind"
     );
 }
 
