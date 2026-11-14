@@ -544,21 +544,11 @@ fn step(id: &str, label: &str, steps: bool, reason: &str) -> Row {
 /// at all.
 fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
     let mut rows = Vec::new();
-    for (id, label, side, icon) in [
-        (
-            MOVE_LEFT,
-            "window-menu-move-left",
-            Side::Left,
-            Icon::ArrowLeft,
-        ),
-        (
-            MOVE_RIGHT,
-            "window-menu-move-right",
-            Side::Right,
-            Icon::ArrowRight,
-        ),
+    for (id, label, icon) in [
+        (MOVE_LEFT, "window-menu-move-left", Icon::ArrowLeft),
+        (MOVE_RIGHT, "window-menu-move-right", Icon::ArrowRight),
     ] {
-        if moved_along(tree, route, side).is_some() {
+        if moved_along(tree, route, id == MOVE_LEFT).is_some() {
             rows.push(Row::offered(id, t(label)).with_icon(icon));
         }
     }
@@ -631,25 +621,19 @@ fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
     rows
 }
 
-/// Which way along its strip a window moves.
-#[derive(Clone, Copy)]
-enum Side {
-    Left,
-    Right,
-}
-
-/// Where the window at `route` goes moving one place to `side` along its strip: before the window
+/// Where the window at `route` goes moving one place along its strip, to the left or the right: before the window
 /// after the one it passes, or the strip's end. `None` at that end of the strip.
-fn moved_along(tree: &Layout, route: &RouteIds, side: Side) -> Option<Destination> {
+fn moved_along(tree: &Layout, route: &RouteIds, left: bool) -> Option<Destination> {
     let groups = &workspace_at(tree, route)?
         .strips
         .iter()
         .find(|strip| strip.id == route.strip)?
         .window_groups;
     let at = groups.iter().position(|group| group.id == route.group)?;
-    let (passed, land) = match side {
-        Side::Left => (at.checked_sub(1)?, at.checked_sub(1)?),
-        Side::Right => (at.checked_add(1)?, at.checked_add(2)?),
+    let (passed, land) = if left {
+        (at.checked_sub(1)?, at.checked_sub(1)?)
+    } else {
+        (at.checked_add(1)?, at.checked_add(2)?)
     };
     groups.get(passed)?;
     Some(Destination {
@@ -753,8 +737,7 @@ pub fn command(tree: &Layout, route: &RouteIds, id: &str, name: Option<&str>) ->
 /// workspace or display it names.
 fn destination(tree: &Layout, route: &RouteIds, id: &str) -> Option<Destination> {
     Some(match id {
-        MOVE_LEFT => moved_along(tree, route, Side::Left)?,
-        MOVE_RIGHT => moved_along(tree, route, Side::Right)?,
+        MOVE_LEFT | MOVE_RIGHT => moved_along(tree, route, id == MOVE_LEFT)?,
         _ => {
             if let Some(strip) = id.strip_prefix(MOVE_TO_STRIP) {
                 Destination {

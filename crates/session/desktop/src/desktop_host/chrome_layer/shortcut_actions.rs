@@ -125,9 +125,7 @@ impl DesktopChrome {
         match action {
             // The window in front goes, as its menu's Close row does.
             FixedAction::CloseTab => {
-                if let Some(route) = self.focused_route() {
-                    self.dispatch(LayoutEffect::CloseTab { tab: route.tab });
-                }
+                self.choose_row(&[window_menu::CLOSE, window_menu::CLOSE_WINDOW]);
             }
             // Another window of the app in front, right after it, as the menu's New tab row opens
             // one; with no window, the app picker.
