@@ -2651,12 +2651,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // nobody asked for.
             let starts = parsed.segments.is_empty() && starts_app(&action);
             let picked = self.pick_action_in(&action, &resolved).await;
+            // Found, and refused below as the word that starts an app: the word only begins
+            // the id of another action the app offers.
+            let begins_another = starts && picked.is_ok();
             match named_beyond_its_start(starts, &action, &resolved.path, picked) {
                 Ok(found) => found,
                 Err(_) if starts && arguments.is_empty() => {
                     return Ok(self.running(&resolved.app_id).await);
                 }
-                Err(_) if parsed.segments.is_empty() && starts_app(&action) => {
+                // The open's own arguments are a file, which reaches the app's open whether
+                // the app runs or not. Arguments that name no file are another action's where
+                // the app offers one the word begins: the caller is told which, and nothing
+                // is run.
+                Err(_) if starts && (opens_a_file(&arguments) || !begins_another) => {
                     let opening = (&parsed, resolved.app_id.as_str(), action.as_str());
                     return self.launched(opening, arguments, invocation, wait_ms).await;
                 }
@@ -2921,6 +2928,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 fn starts_app(action: &str) -> bool {
     action == tilo_actions::remote::APPLICATION_OPEN_ACTION
         || action == tilo_actions::remote::APPLICATION_START_ACTION
+}
+
+/// Whether `arguments` are those of an app's own `open` of a file: they name the file's
+/// content, as the workspace's open reads it.
+fn opens_a_file(arguments: &serde_json::Map<String, Value>) -> bool {
+    arguments.contains_key("content")
 }
 
 /// The one window `instance` (a provider an `open` or `tilo_ls` named) among `running`, which

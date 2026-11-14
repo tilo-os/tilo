@@ -7,7 +7,7 @@ use super::*;
 /// Notes that runs already (another device of the person's opened it, and this one shows its
 /// own view), the door runs no action nobody named, least of all one that reaches outside
 /// the notebook and so asks the person first. Named in full, or by a start that is not the
-/// word that starts an app, `open-link` is still the action run.
+/// word that starts an app, `open-link` is still the action run. A file is the open's own.
 #[test]
 fn opening_an_app_that_runs_is_never_another_action_its_name_begins() {
     let host = Notes::new(true).following_links();
@@ -48,5 +48,20 @@ fn opening_an_app_that_runs_is_never_another_action_its_name_begins() {
             .map(|(_, action, _)| action)
             .collect();
         assert_eq!(ran, ["open-link"; 2], "the action named is the action run");
+        // A file is the open's own argument: it reaches the app's open, which takes a file
+        // whether the app runs or not, and runs no other action either.
+        let (text, failed) = tool(
+            &server,
+            "tilo_do",
+            json!({"path": "notes#open", "args": {"content": "tilo.content:sha256:0", "name": "list.md"}}),
+        )
+        .await;
+        assert!(!failed, "{text}");
+        let links = host
+            .invoked()
+            .into_iter()
+            .filter(|(_, action, _)| action == "open-link")
+            .count();
+        assert_eq!(links, 2, "opening a file runs no other action");
     });
 }
