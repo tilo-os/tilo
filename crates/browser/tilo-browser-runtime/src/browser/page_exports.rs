@@ -11,7 +11,7 @@ fn drops_code() -> Result<Box<dyn crate::drops_code::DropsApi>, JsValue> {
         .get()
         .map(crate::drops_code::MakeDrops::make)
         .ok_or_else(|| {
-            error("The desk is still getting ready for files; drop them again in a moment")
+            error("The shell is still getting ready for files; drop them again in a moment")
         })
 }
 use wasm_bindgen::JsCast as _;
@@ -269,9 +269,9 @@ pub fn drop_target(id: u64, x: f64, y: f64) -> Result<JsValue, JsValue> {
             .get()
             .map(crate::drops_code::MakeDrops::make)
         else {
-            // The drag asks for the drops' code; the next move over the desk finds it in.
+            // The drag asks for the drops' code; the next move over the shell finds it in.
             set("kind", "refused".into());
-            set("why", "Reading the desk for files…".into());
+            set("why", "Reading the shell for files…".into());
             return Ok(answer.into());
         };
         match drops.drop_target(desktop, point, size) {

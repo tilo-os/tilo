@@ -1,9 +1,9 @@
-//! Files and folders dragged onto the desk from the computer's own file manager.
+//! Files and folders dragged onto the shell from the computer's own file manager.
 //!
-//! While they are dragged the desk says where they would go ([`Desktop::drop_target`]): the window
+//! While they are dragged the shell says where they would go ([`Desktop::drop_target`]): the window
 //! under the pointer when its app opens files, the place between the strip's windows a window
 //! would open at, or why nothing there takes them. Dropped, they are copied into the workspace's
-//! file tree ([`crate::dropped_files`]) and opened where they fell: on the desk, each in the app
+//! file tree ([`crate::dropped_files`]) and opened where they fell: on the shell, each in the app
 //! that opens it, in new windows side by side at that place, or Files for a folder or a file no
 //! app opens; on a window, by that app, as its own Import takes a file. The page shows how far the
 //! copy is at the drop's place, and says at the end what was added where.
@@ -16,12 +16,12 @@ use wasm_bindgen::prelude::*;
 
 use super::Desktop;
 use super::uploads::Picked;
-use crate::dropped_files::{self, DESK_FOLDER, Kept};
+use crate::dropped_files::{self, Kept, SHELL_FOLDER};
 use crate::drops_code::{DropTarget, DropsApi, hands_files};
 use crate::page_files::WorkspaceFiles;
 
-/// How far the outline of a drop's place keeps from the desk's edges.
-const DESK_INSET: f64 = 8.0;
+/// How far the outline of a drop's place keeps from the shell's edges.
+const SHELL_INSET: f64 = 8.0;
 
 /// The most of a file read from the browser at once while it is chunked: the page holds no more
 /// of a file than this and one chunk.
@@ -48,7 +48,7 @@ async fn tree_here(files: &WorkspaceFiles) -> Result<ui::record::StoredRecord, S
 const TREE_WAITS: u32 = 120;
 const TREE_WAIT_MS: u32 = 250;
 
-/// The drops a page asks of the desk's own code.
+/// The drops a page asks of the shell's own code.
 pub(crate) struct Drops;
 
 impl DropsApi for Drops {
@@ -77,7 +77,7 @@ impl DropsApi for Drops {
 }
 
 impl Desktop {
-    /// Where files dropped at `point` (the surface's coordinates) go, the desk being `width` ×
+    /// Where files dropped at `point` (the surface's coordinates) go, the shell being `width` ×
     /// `height`.
     pub(super) fn drop_target(&self, point: Point, (width, height): (f64, f64)) -> DropTarget {
         if !self.may_upload() {
@@ -105,15 +105,15 @@ impl Desktop {
                 app: self.handle.app_of(tab),
             };
         }
-        let top = f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX) + DESK_INSET;
-        let bottom = (height - DESK_INSET).max(top);
+        let top = f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX) + SHELL_INSET;
+        let bottom = (height - SHELL_INSET).max(top);
         match self.handle.slot_at(point.x) {
             Some(slot) if self.handle.shown_tabs().is_empty() => DropTarget::Strip {
                 slot,
                 area: Rect::new(
-                    DESK_INSET,
+                    SHELL_INSET,
                     top,
-                    (width - DESK_INSET).max(DESK_INSET),
+                    (width - SHELL_INSET).max(SHELL_INSET),
                     bottom,
                 ),
             },
@@ -203,7 +203,7 @@ impl Desktop {
         )
     }
 
-    /// Copy `files` into the workspace's files, opening nothing: what the desk menu's uploads
+    /// Copy `files` into the workspace's files, opening nothing: what the shell menu's uploads
     /// choose.
     ///
     /// # Errors
@@ -358,7 +358,7 @@ async fn copy(
             });
         let at = folder
             .as_ref()
-            .map_or(DESK_FOLDER, |(folder, _)| folder.as_str());
+            .map_or(SHELL_FOLDER, |(folder, _)| folder.as_str());
         dropped_files::place(doc, &mut tree, at, &kept, (mtime, &author))
             .map(|placed| (placed, folder.map(|(_, name)| name)))
     })?;

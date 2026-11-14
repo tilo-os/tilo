@@ -1,7 +1,7 @@
-//! What a page does with files dropped on the desk or uploaded from its menu:
+//! What a page does with files dropped on the shell or uploaded from its menu:
 //! copied into the workspace's file tree and opened where they landed. The
 //! first frame needs none of it, so the program fetches it the first time a
-//! drag reaches the desk ([`DROPS`]).
+//! drag reaches the shell ([`DROPS`]).
 
 use ui::kurbo::{Point, Rect};
 
@@ -27,7 +27,7 @@ pub(crate) fn takes_files(app: &str) -> bool {
         || tilo_content_types::landing_in(app).is_some()
 }
 
-/// Where files dropped at a point of the desk go.
+/// Where files dropped at a point of the shell go.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DropTarget {
     /// The window of `tab`, standing at `rect`, whose app is `app`.
@@ -36,8 +36,8 @@ pub(crate) enum DropTarget {
         rect: Rect,
         app: Option<String>,
     },
-    /// Between the strip's windows, or anywhere on a desk with none: a window opens at `slot`,
-    /// and `area` is what the page outlines (a bar in the gap, or the whole empty desk).
+    /// Between the strip's windows, or anywhere on a shell with none: a window opens at `slot`,
+    /// and `area` is what the page outlines (a bar in the gap, or the whole empty shell).
     Strip {
         slot: tilo_desktop_surface::StripSlot,
         area: Rect,
@@ -48,7 +48,7 @@ pub(crate) enum DropTarget {
 
 /// What a page asks of its file drops, as the trait object [`DROPS`] makes.
 pub(crate) trait DropsApi {
-    /// Where files dropped at `point` of `desktop` (the surface's coordinates) go, the desk being
+    /// Where files dropped at `point` of `desktop` (the surface's coordinates) go, the shell being
     /// `size`.
     fn drop_target(&self, desktop: &Desktop, point: Point, size: (f64, f64)) -> DropTarget;
     /// Copy `files` into the workspace's file tree and open them where they fell.
@@ -59,7 +59,7 @@ pub(crate) trait DropsApi {
         target: &DropTarget,
         progress: js_sys::Function,
     ) -> Result<(), String>;
-    /// Copy `files` chosen with the desk menu into the workspace's file tree.
+    /// Copy `files` chosen with the shell menu into the workspace's file tree.
     fn upload(
         &self,
         desktop: &Desktop,
@@ -86,6 +86,6 @@ pub fn builtin_drops() -> MakeDrops {
 
 ui::lazy_code! {
     /// The drops' code: linked, or with `deferred-drops` fetched the first time a drag reaches
-    /// the desk.
+    /// the shell.
     pub static DROPS: MakeDrops = builtin_drops, feature = "deferred-drops";
 }

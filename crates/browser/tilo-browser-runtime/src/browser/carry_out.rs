@@ -73,7 +73,7 @@ struct Inner {
     origin: Option<String>,
     /// Each offered row's link, by its offer's key.
     links: RefCell<HashMap<String, Link>>,
-    /// The desk's notices, where a save that fails is told.
+    /// The shell's notices, where a save that fails is told.
     notifications: tilo_desktop_surface::DesktopNotifications,
 }
 
