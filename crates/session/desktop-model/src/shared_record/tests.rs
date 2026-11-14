@@ -98,23 +98,6 @@ tilo_test_env::scenario! {
         assert_eq!(doc.get_heads(), heads);
     }
 
-    phase a_desktop_saved_with_text_fields_reads_whole;
-    {
-        let saved = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
-        let mut document = AutoCommit::new();
-        write(&mut document, &saved).unwrap();
-        document.commit();
-        let as_maps = read(&document, None).unwrap();
-        as_saved_with_text_fields(&mut document);
-        let back = read(&document, None).unwrap();
-        assert_eq!(
-            serde_json::to_value(&back.tree).unwrap(),
-            serde_json::to_value(&as_maps.tree).unwrap()
-        );
-        assert_eq!(back.authors, as_maps.authors);
-        assert_eq!(as_maps.tree.workspaces[0].strips[0].window_groups.len(), 2);
-    }
-
     phase moving_one_window_rewrites_only_its_order;
     {
         let mut doc = AutoCommit::new();
@@ -124,14 +107,14 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         doc.commit();
-        let before = held(&doc);
+        let before = held(&doc, None);
         write(
             &mut doc,
             &desktop(&[(1, 100, "a"), (3, 300, "a"), (2, 200, "a"), (4, 400, "a")]),
         )
         .unwrap();
         doc.commit();
-        let after = held(&doc);
+        let after = held(&doc, None);
         let moved: Vec<u64> = after
             .groups
             .iter()
@@ -142,17 +125,6 @@ tilo_test_env::scenario! {
             .collect();
         assert_eq!(moved.len(), 1, "{moved:?}");
         assert_eq!(windows(&doc), vec![(1, 100), (3, 300), (2, 200), (4, 400)]);
-    }
-
-    phase canonical_keeps_only_what_the_record_keeps;
-    {
-        let mut local = desktop(&[(1, 100, "ada")]);
-        local.tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(500);
-        local.tree.workspaces[0].strips[0].window_groups[0].maximized = true;
-        let canonical = canonical(&local);
-        let group = &canonical.tree.workspaces[0].strips[0].window_groups[0];
-        assert_eq!(group.width, WindowWidth::Normal);
-        assert!(!group.maximized);
     }
 
     phase desktops_written_before_the_workspace_was_received_fold_into_its_workspace;
@@ -216,7 +188,7 @@ tilo_test_env::scenario! {
         // Writing back what was read leaves the record holding only that.
         write(&mut document, &desktop).unwrap();
         document.commit();
-        let after = held(&document);
+        let after = held(&document, None);
         assert_eq!(after.workspaces.len(), 2);
         assert_eq!(after.strips.len(), 3, "Main and Design, and Side's Main");
         let again = read(&document, None).unwrap();
@@ -359,23 +331,8 @@ tilo_test_env::scenario! {
         ben.commit();
         merge(&mut document, &mut ada);
         merge(&mut document, &mut ben);
-        assert_eq!(windows(&document), vec![(2, 100)]);
+        assert_eq!(windows(&document), vec![(2, 2)], "in a group of its own");
     }
-}
-
-/// `doc` as saved before a workspace and a window were maps: each of those
-/// fields held its value as JSON text.
-fn as_saved_with_text_fields(doc: &mut AutoCommit) {
-    for (level, field) in [(WORKSPACES, WORKSPACE), (WINDOWS, TAB)] {
-        let (_, container) = doc.get(ROOT, level).unwrap().expect("level");
-        for id in doc.keys(&container).collect::<Vec<_>>() {
-            let (_, entry) = doc.get(&container, &id).unwrap().expect("entry");
-            let (value, at) = doc.get(&entry, field).unwrap().expect("field");
-            let value = tilo_automerge::json::read_value(&*doc, &value, &at).unwrap();
-            doc.put(&entry, field, value.to_string()).unwrap();
-        }
-    }
-    doc.commit();
 }
 
 /// A page's fresh desktop for a workspace it has not received yet: one workspace

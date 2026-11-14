@@ -626,14 +626,14 @@ impl SharedDesktops {
                 continue;
             }
             let known = self.held(&key, |held| held.revision);
-            let Some((doc, revision)) = Self::record(engine, &key, known).ok().flatten() else {
+            let Ok(record) = Self::record(engine, &key, known) else {
+                continue;
+            };
+            let Some((doc, revision)) = record else {
                 // Read against a revision, nothing comes back while the record did not move: what
-                // was read stands. A workspace this device holds no record of (not its own, or one
-                // still arriving) says nothing of its layout yet: its record is read again next
-                // pass.
-                if known.is_none() {
-                    self.held(&key, |held| held.read = false);
-                }
+                // was read stands. A workspace with no layout yet is read as one: a layout that
+                // arrives moves the engine's revision, and the next pass reads it.
+                self.held(&key, |held| held.read = true);
                 continue;
             };
             // The workspace's copy reaches this device after the workspace admitted this device's
@@ -879,7 +879,7 @@ impl SharedDesktops {
         // A layout the workspace holds is laid out here before this device writes it: what the
         // desk shows before then is not what the person made of it. A copy this device wrote is
         // what its next write is made on, with the workspace's merged in.
-        if reached.is_some() && !holds && !self.held(&key, |held| held.read) {
+        if reached.is_some() && !holds && self.held(&key, |held| held.folded.is_none()) {
             if let Some(acted) = acted {
                 self.held(&key, |held| held.pending_acted = Some(acted));
             }
@@ -1113,9 +1113,7 @@ impl SharedDesktops {
             let Some(sealed) = self.sealed(engine, &key) else {
                 continue;
             };
-            let (reached, revision, _) = self.reached(engine, &key);
-            let kept = self.held(&key, |held| held.kept.clone());
-            let mut doc = base_of(workspace_id, kept, reached);
+            let (mut doc, revision) = self.copy(engine, &key);
             doc.set_actor(actor(engine, person));
             let log = self
                 .held(&key, |held| held.undo.take())
@@ -1304,9 +1302,7 @@ impl SharedDesktops {
         let Some(sealed) = self.sealed(engine, &key) else {
             return false;
         };
-        let (reached, revision, _) = self.reached(engine, &key);
-        let kept = self.held(&key, |held| held.kept.clone());
-        let mut doc = base_of(workspace_id, kept, reached);
+        let (mut doc, revision) = self.copy(engine, &key);
         doc.set_actor(actor(engine, person));
         let before = doc.get_heads();
         if !edit(&mut doc) {
@@ -1391,12 +1387,7 @@ impl SharedDesktops {
                 });
                 continue;
             };
-            let (reached, revision, _) = self.reached(engine, &key);
-            let mut held = base_of(
-                workspace_id,
-                self.held(&key, |held| held.kept.clone()),
-                reached,
-            );
+            let (mut held, revision) = self.copy(engine, &key);
             let from = held.get_heads();
             let step = match view_written(&mut held, &view, acted.as_ref(), engine, person) {
                 Ok(step) => step,
@@ -1656,6 +1647,14 @@ impl SharedDesktops {
         let read = Self::record(engine, key, known).unwrap_or(None);
         let revision = read.as_ref().map(|(_, revision)| *revision);
         (read.map(|(doc, _)| doc), revision, holds)
+    }
+
+    /// The record of `key` this device writes on ([`base_of`]), and the revision the workspace's
+    /// copy is at.
+    fn copy(&self, engine: &Engine, key: &Key) -> (automerge::AutoCommit, Option<[u8; 32]>) {
+        let (reached, revision, _) = self.reached(engine, key);
+        let kept = self.held(key, |held| held.kept.clone());
+        (base_of(key.0, kept, reached), revision)
     }
 
     /// Keep `record` as this device's copy of `key`'s record, read at `revision` when this look
@@ -1974,11 +1973,6 @@ impl crate::activity::DeskHistory for LayoutHistory {
     }
 }
 
-/// The workspaces `handle`'s desk shows, by id.
-fn tree_workspaces(handle: &DesktopHandle) -> Vec<WorkspaceId> {
-    handle.read(|tree| tree.workspaces.iter().map(Workspace::id).collect())
-}
-
 /// The desk's layout as the arrangement keeps it: the layout of the workspace in front, which every
 /// member shows.
 pub(crate) struct Steps {
@@ -2028,7 +2022,9 @@ impl tilo_session_core::arrangement::Layouts for Steps {
     }
 
     fn shown(&self) -> std::collections::BTreeMap<tilo_desktop_model::TabId, String> {
-        let mut shown: BTreeMap<u64, String> = tree_workspaces(&self.handle)
+        let workspaces: Vec<WorkspaceId> =
+            (self.handle).read(|tree| tree.workspaces.iter().map(Workspace::id).collect());
+        let mut shown: BTreeMap<u64, String> = workspaces
             .into_iter()
             .filter_map(|workspace_id| self.layouts.layout(workspace_id))
             .filter_map(|doc| shared_record::read(&doc, None))
@@ -2156,6 +2152,15 @@ mod tests {
 
     /// Write `strips` as the layout of the workspace into `doc`, as another device does.
     fn lay_out(doc: &mut automerge::AutoCommit, strips: Vec<tilo_desktop_model::Strip>) {
+        laid_out_as(doc, strips, shared_record::change_message(None));
+    }
+
+    /// [`lay_out`], committed with `message`.
+    fn laid_out_as(
+        doc: &mut automerge::AutoCommit,
+        strips: Vec<tilo_desktop_model::Strip>,
+        message: String,
+    ) {
         let slot = WorkspaceSlot::of_workspace(workspace_id());
         let mut workspace = Workspace::in_workspace(slot, workspace_id(), "Desk");
         workspace.strips = strips;
@@ -2168,7 +2173,81 @@ mod tests {
             ..tilo_desktop_model::ownership::SharedDesktop::default()
         };
         shared_record::write(doc, &desktop).expect("the layout is written");
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
+    }
+
+    /// The windows of each strip of the layout `doc` holds, by the strip's name.
+    fn strips_in(doc: &automerge::AutoCommit) -> Vec<(String, BTreeSet<u64>)> {
+        let layout = shared_record::read(doc, None).expect("a layout");
+        let workspace = layout.tree.workspaces.first().expect("the workspace");
+        let strips = workspace.strips.iter();
+        strips
+            .map(|strip| {
+                let tabs = strip.window_groups.iter().flat_map(|group| &group.tabs);
+                (strip.name.clone(), tabs.map(|tab| tab.id).collect())
+            })
+            .collect()
+    }
+
+    /// Ada makes a strip with her window in it and Bob opens his in that strip: when she takes her
+    /// step back, her window goes and the strip stays with his.
+    #[test]
+    fn an_undo_never_takes_another_persons_window_from_the_strip() {
+        let as_person = |person: &str, device: u8| {
+            automerge::ActorId::from(ui::history_source::authors::device_actor(
+                person,
+                &automerge::ActorId::from(vec![device; 32]),
+            ))
+        };
+        let mut adas = tilo_desktop_model::IdMinter::new(7);
+        let main = tilo_desktop_model::Strip::new(tilo_desktop_model::StripId(adas.mint()), "Main");
+        let mut doc = automerge::AutoCommit::new().with_actor(as_person("ada", 1));
+        shared_record::found(&mut doc).expect("the record's maps stand");
+        laid_out_as(
+            &mut doc,
+            vec![main.clone()],
+            shared_record::housekeeping_message("ada"),
+        );
+        let (made, hers) = strip_of(&mut adas, "Made");
+        laid_out_as(
+            &mut doc,
+            vec![main.clone(), made.clone()],
+            shared_record::step_message("ada"),
+        );
+
+        let mut bobs = doc.fork().with_actor(as_person("bob", 2));
+        let (his_strip, his) = strip_of(&mut tilo_desktop_model::IdMinter::new(9), "His");
+        let mut shared = made;
+        shared.window_groups.extend(his_strip.window_groups);
+        laid_out_as(
+            &mut bobs,
+            vec![main, shared],
+            shared_record::step_message("bob"),
+        );
+        tilo_desktop_model::merge::merge_into(&mut doc, &bobs).expect("Bob's change merges");
+        assert_eq!(
+            strips_in(&doc),
+            vec![
+                ("Main".to_owned(), BTreeSet::new()),
+                ("Made".to_owned(), BTreeSet::from([hers, his])),
+            ]
+        );
+
+        let mut log = history(&mut doc);
+        assert!(
+            log.undo_as(&mut doc, Some(&user("ada")), None, None)
+                .is_some(),
+            "Ada has a step to take back"
+        );
         doc.commit();
+        assert_eq!(
+            strips_in(&doc),
+            vec![
+                ("Main".to_owned(), BTreeSet::new()),
+                ("Made".to_owned(), BTreeSet::from([his])),
+            ],
+            "her window goes, his stays in the strip"
+        );
     }
 
     /// A window this device opened before it read the workspace's layout stays on its desk when the

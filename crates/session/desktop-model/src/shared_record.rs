@@ -1,14 +1,17 @@
 //! A workspace's shared desktop as one Automerge record, entry by entry.
-//! Every workspace, strip, window group and window is its own map under its id,
-//! holding where it is (its parent and an order among its siblings) and who made
-//! it, so concurrent changes to different entries merge and a page that reconnects
-//! with an old desktop writes only the entries it changed itself. Who may change
-//! which entry is [`crate::ownership`]'s rule.
+//! Every workspace, strip and window is its own map under its id, holding who
+//! made it, so concurrent changes to different entries merge and a page that
+//! reconnects with an old desktop writes only the entries it changed itself. A
+//! strip holds its window groups, and a group the order of its windows: putting
+//! a window into a strip writes inside that strip, so taking back the change that
+//! made the strip leaves it standing while it holds what another person put in
+//! it: an undo keeps a map somebody wrote inside since. Who may change which
+//! entry is [`crate::ownership`]'s rule.
 //! ```text
 //! workspaces: { <id>: { order: f64, workspace: <map, no strips>, arrangement? } }
-//! strips:     { <id>: { workspace: <id>, order: f64, name, author? } }
-//! groups:     { <id>: { strip: <id>, order: f64, place? } }
-//! windows:    { <id>: { group: <id>, order: f64, tab: <map>, author?, record? } }
+//! strips:     { <id>: { workspace: <id>, order: f64, name, author?,
+//!                       groups: { <id>: { order: f64, place?, float?, windows: { <id>: f64 } } } } }
+//! windows:    { <id>: { tab: <map>, author?, record?, opened_by? } }
 //! ```
 //! A workspace, a window and a place are maps of their own fields, not one blob of
 //! text each, so two people editing different fields of the same one keep both
@@ -96,17 +99,12 @@ impl<D: ReadDoc> At<'_, D> {
     }
 
     /// The JSON value at `key`, whole: a field that is a map of its own.
-    /// Desktops saved before these fields were maps hold the same value as
-    /// JSON text; it reads the same and becomes a map on its next change.
     fn json(&self, obj: &ObjId, key: &str) -> Option<serde_json::Value> {
         let (value, id) = self.get(obj, key)?;
         match (&value, self.heads) {
             (Value::Object(_), Some(heads)) => json::read_at(self.doc, &id, heads, None).ok(),
             (Value::Object(_), None) => json::read_value(self.doc, &value, &id).ok(),
-            (Value::Scalar(scalar), _) => match scalar.as_ref() {
-                ScalarValue::Str(text) => serde_json::from_str(text).ok(),
-                scalar => json::scalar_json(scalar).ok(),
-            },
+            (Value::Scalar(scalar), _) => json::scalar_json(scalar).ok(),
         }
     }
 
@@ -121,16 +119,8 @@ impl<D: ReadDoc> At<'_, D> {
     }
 
     /// Every entry of the containers at `ROOT[key]`, each id once: the
-    /// entry's map, in whichever container holds it first.
-    fn entries(&self, key: &str) -> BTreeMap<u64, ObjId> {
-        self.placed_entries(key)
-            .into_iter()
-            .map(|(id, (entry, _))| (id, entry))
-            .collect()
-    }
-
-    /// [`Self::entries`], each saying whether it was written blind: held
-    /// by a container concurrent with the winning one. Only a document
+    /// entry's map, in whichever container holds it first, and whether it was
+    /// written blind: held by a container concurrent with the winning one. Only a document
     /// that did not hold the workspace's record yet makes a container of its
     /// own, so what such a container holds was written without seeing the
     /// workspace's desktop.
@@ -151,6 +141,52 @@ impl<D: ReadDoc> At<'_, D> {
         }
         entries
     }
+
+    /// What each of `parents` holds in its map `key`, in turn: a group a strip holds is a map of
+    /// its own, a window a group holds is its order. An id two writers placed at once is listed
+    /// under each parent that holds it.
+    fn placed(&self, parents: impl IntoIterator<Item = (u64, ObjId)>, key: &str) -> Vec<Placed> {
+        let mut out = Vec::new();
+        for (parent, obj) in parents {
+            let Some((Value::Object(ObjType::Map), within)) = self.get(&obj, key) else {
+                continue;
+            };
+            for name in self.keys(&within) {
+                let Ok(id) = name.parse::<u64>() else {
+                    continue;
+                };
+                let (order, obj) = match self.get(&within, name.as_str()) {
+                    Some((Value::Object(ObjType::Map), entry)) => {
+                        (self.number(&entry, ORDER), Some(entry))
+                    }
+                    Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
+                        ScalarValue::F64(order) => (Some(*order), None),
+                        _ => (None, None),
+                    },
+                    _ => continue,
+                };
+                out.push(Placed {
+                    parent,
+                    id,
+                    within: within.clone(),
+                    obj,
+                    order,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// An entry kept inside its parent's map ([`At::placed`]).
+struct Placed {
+    parent: u64,
+    id: u64,
+    /// The map it is kept in.
+    within: ObjId,
+    /// Its own map, for a group.
+    obj: Option<ObjId>,
+    order: Option<f64>,
 }
 
 // Through `serde_json::Value`, the input `DesktopTree::from_json` reads: one
@@ -181,9 +217,12 @@ struct Parts {
     records: Vec<(TabId, String)>,
     workspaces: Vec<Workspace>,
     strips: HashMap<Option<u64>, Vec<(f64, u64, Strip)>>,
-    groups: HashMap<Option<u64>, Vec<(f64, u64, GroupId)>>,
-    /// Windows by the group they name.
+    /// Groups by the strip that holds them.
+    groups: HashMap<u64, Vec<(f64, u64, GroupId)>>,
+    /// Windows by the group that holds them.
     windows: HashMap<u64, Vec<(f64, u64, Tab)>>,
+    /// Windows no group holds: one moved into a group that was closed at the same time.
+    loose: Vec<(u64, Tab)>,
     /// Where groups stand on their workspace's canvas.
     places: HashMap<GroupId, CanvasPlace>,
     /// Which of those groups float, and where.
@@ -228,90 +267,90 @@ fn fold<T>(
 }
 
 impl Parts {
-    fn of<D: ReadDoc>(at: &At<'_, D>) -> Self {
+    fn of(held: Levels<HeldEntry>) -> Self {
         let mut parts = Self::default();
         let mut workspaces = Vec::new();
-        for (id, (entry, blind)) in at.placed_entries(WORKSPACES) {
-            if blind {
+        for (id, held) in held.workspaces {
+            if held.blind {
                 parts.blind.insert(id);
             }
-            let Some(mut workspace) = at.json(&entry, WORKSPACE).and_then(workspace_from) else {
+            let entry = held.entry;
+            let Some(mut workspace) = entry.json(WORKSPACE).and_then(workspace_from) else {
                 continue;
             };
             workspace.slot = WorkspaceSlot(id);
             workspace.strips.clear();
             workspace.arrangement = Arrangement {
-                kind: at
-                    .text(&entry, ARRANGEMENT)
-                    .map_or(ArrangementKind::Strips, |kind| {
-                        ArrangementKind::parse(&kind)
-                    }),
+                kind: entry
+                    .text(ARRANGEMENT)
+                    .map_or(ArrangementKind::Strips, ArrangementKind::parse),
                 places: BTreeMap::new(),
                 floats: BTreeMap::new(),
             };
-            workspaces.push((at.number(&entry, ORDER).unwrap_or(0.0), id, workspace));
+            workspaces.push((entry.order(), id, workspace));
         }
         parts.workspaces = sorted(workspaces);
-        for (id, (entry, blind)) in at.placed_entries(STRIPS) {
-            if blind {
+        for (id, held) in held.strips {
+            if held.blind {
                 parts.blind.insert(id);
             }
-            if let Some(author) = at.text(&entry, AUTHOR) {
-                parts.authors.insert(id, author);
+            let entry = held.entry;
+            if let Some(author) = entry.text(AUTHOR) {
+                parts.authors.insert(id, author.to_owned());
             }
-            let name = at.text(&entry, NAME).unwrap_or_default();
-            parts
-                .strips
-                .entry(parse_id(at.text(&entry, WORKSPACE)))
-                .or_default()
-                .push((
-                    at.number(&entry, ORDER).unwrap_or(0.0),
-                    id,
-                    Strip::new(StripId(id), name),
-                ));
+            let strip = Strip::new(StripId(id), entry.text(NAME).unwrap_or_default());
+            let workspace = entry.parent.map(|(_, workspace)| workspace);
+            let strips = parts.strips.entry(workspace).or_default();
+            strips.push((entry.order(), id, strip));
         }
-        for (id, entry) in at.entries(GROUPS) {
-            if let Some(place) = at
-                .json(&entry, PLACE)
-                .and_then(|value| serde_json::from_value::<CanvasPlace>(value).ok())
-            {
+        for (id, held) in held.groups {
+            let entry = held.entry;
+            let place = entry
+                .json(PLACE)
+                .and_then(|value| serde_json::from_value(value).ok());
+            if let Some(place) = place.map(|place: CanvasPlace| place.window()) {
                 // A window's place is a window's size, whoever wrote a smaller one.
-                parts.places.insert(id, place.window());
+                parts.places.insert(id, place);
             }
-            if let Some(float) = at
-                .json(&entry, FLOAT)
-                .and_then(|value| serde_json::from_value::<FloatPlace>(value).ok())
-            {
+            let float = entry
+                .json(FLOAT)
+                .and_then(|value| serde_json::from_value(value).ok());
+            if let Some(float) = float {
                 parts.floats.insert(id, float);
             }
-            parts
-                .groups
-                .entry(parse_id(at.text(&entry, STRIP)))
-                .or_default()
-                .push((at.number(&entry, ORDER).unwrap_or(0.0), id, id));
+            if let Some((_, strip)) = entry.parent {
+                parts
+                    .groups
+                    .entry(strip)
+                    .or_default()
+                    .push((entry.order(), id, id));
+            }
         }
-        for (id, entry) in at.entries(WINDOWS) {
-            let Some(mut tab) = at.json(&entry, TAB).and_then(tab_from) else {
+        for (id, held) in held.windows {
+            let entry = held.entry;
+            let Some(mut tab) = entry.json(TAB).and_then(tab_from) else {
                 continue;
             };
             tab.id = id;
-            if let Some(author) = at.text(&entry, AUTHOR) {
-                parts.authors.insert(id, author);
+            if let Some(author) = entry.text(AUTHOR) {
+                parts.authors.insert(id, author.to_owned());
             }
-            if let Some(record) = at.text(&entry, RECORD) {
-                parts.records.push((id, record));
+            if let Some(record) = entry.text(RECORD) {
+                parts.records.push((id, record.to_owned()));
             }
-            if let Some(opened) = at
-                .json(&entry, OPENED_BY)
-                .and_then(|value| serde_json::from_value(value).ok())
-            {
+            let opened = entry
+                .json(OPENED_BY)
+                .and_then(|value| serde_json::from_value(value).ok());
+            if let Some(opened) = opened {
                 parts.opened_by.insert(id, opened);
             }
-            parts
-                .windows
-                .entry(parse_id(at.text(&entry, GROUP)).unwrap_or(0))
-                .or_default()
-                .push((at.number(&entry, ORDER).unwrap_or(0.0), id, tab));
+            match entry.parent {
+                Some((_, group)) => {
+                    let windows = parts.windows.entry(group).or_default();
+                    windows.push((entry.order(), id, tab));
+                }
+                None => parts.loose.push((id, tab)),
+            }
         }
         parts
     }
@@ -348,34 +387,24 @@ impl Parts {
             workspace.strips = list;
             folded_strips.extend(folded);
         }
-        let groups = std::mem::take(&mut self.groups);
-        for (parent, list) in groups {
-            let parent = parent.map(|id| folded_strips.get(&id).copied().unwrap_or(id));
-            self.groups.entry(parent).or_default().extend(list);
+        let mut groups: HashMap<u64, Vec<(f64, u64, GroupId)>> = HashMap::new();
+        for (parent, list) in self.groups.drain() {
+            let parent = folded_strips.get(&parent).copied().unwrap_or(parent);
+            groups.entry(parent).or_default().extend(list);
         }
-        let strip_ids: Vec<u64> = self
+        let first_strip = self
             .workspaces
             .iter()
-            .flat_map(|w| w.strips.iter().map(|s| s.id.0))
-            .collect();
-        if let Some(&first_strip) = strip_ids.first() {
-            let mut groups: HashMap<u64, Vec<(f64, u64, GroupId)>> = HashMap::new();
-            for (parent, list) in self.groups.drain() {
-                let parent = parent
-                    .filter(|id| strip_ids.contains(id))
-                    .unwrap_or(first_strip);
-                groups.entry(parent).or_default().extend(list);
-            }
-            for (parent, list) in &self.windows {
-                if !groups.values().flatten().any(|group| group.2 == *parent) {
-                    // Its group went away while a window was opened or moved
-                    // into it: the window keeps a group of that id.
-                    let order = list.iter().map(|w| w.0).fold(f64::MAX, f64::min);
-                    groups
-                        .entry(first_strip)
-                        .or_default()
-                        .push((order, *parent, *parent));
-                }
+            .find_map(|w| w.strips.first())
+            .map(|s| s.id.0);
+        if let Some(first_strip) = first_strip {
+            for (id, tab) in std::mem::take(&mut self.loose) {
+                // A window no group holds stays, in a group of its own.
+                groups
+                    .entry(first_strip)
+                    .or_default()
+                    .push((f64::MAX, id, id));
+                self.windows.entry(id).or_default().push((0.0, id, tab));
             }
             for strip in self.workspaces.iter_mut().flat_map(|w| w.strips.iter_mut()) {
                 let list = sorted(groups.remove(&strip.id.0).unwrap_or_default());
@@ -446,7 +475,7 @@ pub fn read_as_kept(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<Sh
     let mut desktop = if crate::desktop_doc::holds(doc) {
         desk_of(doc, heads)?
     } else {
-        Parts::of(&At { doc, heads }).assemble()?
+        Parts::of(held(doc, heads)).assemble()?
     };
     for (_, record) in &mut desktop.records {
         if record == LEGACY_PRIMARY_RECORD {
@@ -509,17 +538,6 @@ fn as_of(doc: &AutoCommit, heads: &[ChangeHash]) -> AutoCommit {
     out
 }
 
-/// `desktop` as [`read`] gives it back: only what the record keeps, so a
-/// local desktop and the workspace's compare equal when nothing shared differs.
-#[must_use]
-pub fn canonical(desktop: &SharedDesktop) -> SharedDesktop {
-    let mut doc = AutoCommit::new();
-    if write(&mut doc, desktop).is_err() {
-        return desktop.clone();
-    }
-    read(&doc, None).unwrap_or_default()
-}
-
 /// What a field of an entry holds: text of its own, or a value made of
 /// fields of its own (a workspace, a window, a place on the canvas).
 #[derive(Clone, Debug, PartialEq)]
@@ -534,6 +552,27 @@ struct Entry {
     parent: Option<(&'static str, u64)>,
     order: f64,
     fields: Vec<(&'static str, Field)>,
+}
+
+impl Entry {
+    /// Its order, where one is kept.
+    fn order(&self) -> f64 {
+        if self.order.is_nan() { 0.0 } else { self.order }
+    }
+
+    fn text(&self, key: &str) -> Option<&str> {
+        self.fields.iter().find_map(|(field, value)| match value {
+            Field::Text(text) if *field == key => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
+    fn json(&self, key: &str) -> Option<serde_json::Value> {
+        self.fields.iter().find_map(|(field, value)| match value {
+            Field::Json(value) if *field == key => Some(value.clone()),
+            _ => None,
+        })
+    }
 }
 
 /// `n` as an order step.
@@ -623,6 +662,8 @@ struct Levels<T> {
     strips: BTreeMap<u64, T>,
     groups: BTreeMap<u64, T>,
     windows: BTreeMap<u64, T>,
+    /// Second copies of a group or a window placed twice at once, by the map each is in.
+    twice: Vec<(ObjId, u64)>,
 }
 
 impl<T> Default for Levels<T> {
@@ -632,6 +673,7 @@ impl<T> Default for Levels<T> {
             strips: BTreeMap::new(),
             groups: BTreeMap::new(),
             windows: BTreeMap::new(),
+            twice: Vec::new(),
         }
     }
 }
@@ -664,14 +706,116 @@ pub fn write(
         );
         return Ok(crate::desktop_doc::note_opened_by(doc, &desktop.opened_by) || wrote);
     }
-    let held = held(doc);
+    let held = held(doc, None);
     let want = wanted(desktop, &held);
-    let mut changed = false;
-    changed |= reconcile(doc, WORKSPACES, &held.workspaces, &want.workspaces)?;
-    changed |= reconcile(doc, STRIPS, &held.strips, &want.strips)?;
-    changed |= reconcile(doc, GROUPS, &held.groups, &want.groups)?;
-    changed |= reconcile(doc, WINDOWS, &held.windows, &want.windows)?;
-    Ok(changed)
+    let ops = doc.pending_ops();
+    // What leaves a group or a strip that stays is taken out first, while every map still stands.
+    for (within, id) in &held.twice {
+        doc.delete(within, id.to_string())?;
+    }
+    let stays = |held: &HeldEntry, want: &BTreeMap<u64, Entry>, id: &u64| {
+        want.get(id)
+            .is_some_and(|want| want.parent == held.entry.parent)
+    };
+    let groups_staying: HashSet<u64> = held
+        .groups
+        .iter()
+        .filter(|(id, group)| stays(group, &want.groups, id))
+        .map(|(id, _)| *id)
+        .collect();
+    for (id, group) in &held.groups {
+        let strip_stays = group
+            .entry
+            .parent
+            .is_some_and(|(_, strip)| want.strips.contains_key(&strip));
+        if !groups_staying.contains(id) && strip_stays {
+            delete_within(doc, group, *id)?;
+        }
+    }
+    for (id, window) in &held.windows {
+        let group_stays = window
+            .entry
+            .parent
+            .is_some_and(|(_, group)| groups_staying.contains(&group));
+        if group_stays && !stays(window, &want.windows, id) {
+            delete_within(doc, window, *id)?;
+        }
+    }
+    reconcile(
+        doc,
+        WORKSPACES,
+        &held.workspaces,
+        &want.workspaces,
+        Keeps::Both,
+    )?;
+    let strips = reconcile(doc, STRIPS, &held.strips, &want.strips, Keeps::Both)?;
+    let mut group_windows = HashMap::new();
+    for (id, entry) in &want.groups {
+        let Some(strip) = entry.parent.and_then(|(_, strip)| strips.get(&strip)) else {
+            continue;
+        };
+        let held_here = held.groups.get(id).filter(|_| groups_staying.contains(id));
+        let obj = if let Some(group) = held_here {
+            group.obj.clone()
+        } else {
+            let within = map_at(doc, strip, GROUPS)?;
+            let obj = doc.put_object(&within, id.to_string(), ObjType::Map)?;
+            doc.put_object(&obj, WINDOWS, ObjType::Map)?;
+            obj
+        };
+        update(
+            doc,
+            &obj,
+            held_here.map(|group| &group.entry),
+            entry,
+            Keeps::Order,
+        )?;
+        group_windows.insert(*id, map_at(doc, &obj, WINDOWS)?);
+    }
+    reconcile(doc, WINDOWS, &held.windows, &want.windows, Keeps::Neither)?;
+    for (id, entry) in &want.windows {
+        let Some(within) = entry
+            .parent
+            .and_then(|(_, group)| group_windows.get(&group))
+        else {
+            continue;
+        };
+        let placed = held.windows.get(id).is_some_and(|window| {
+            window.entry.parent == entry.parent
+                && window.entry.order.to_bits() == entry.order.to_bits()
+                && entry
+                    .parent
+                    .is_some_and(|(_, group)| groups_staying.contains(&group))
+        });
+        if !placed {
+            doc.put(within, id.to_string(), entry.order)?;
+        }
+    }
+    Ok(doc.pending_ops() > ops)
+}
+
+/// Take `held`, kept as `id` in its parent's map, out of that map.
+fn delete_within(
+    doc: &mut AutoCommit,
+    held: &HeldEntry,
+    id: u64,
+) -> Result<(), automerge::AutomergeError> {
+    match &held.within {
+        Some(within) => doc.delete(within, id.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// The map at `obj[key]`, stood up where `obj` holds none.
+fn map_at(
+    doc: &mut AutoCommit,
+    obj: &ObjId,
+    key: &'static str,
+) -> Result<ObjId, automerge::AutomergeError> {
+    match doc.get(obj, key)? {
+        Some((Value::Object(ObjType::Map), map)) => Ok(map),
+        _ => doc.put_object(obj, key, ObjType::Map),
+    }
 }
 
 /// Stand the containers every entry of the record is kept in, empty, where `doc` holds none yet: a
@@ -680,7 +824,7 @@ pub fn write(
 /// # Errors
 /// The document refused a write.
 pub fn found(doc: &mut AutoCommit) -> Result<(), automerge::AutomergeError> {
-    for key in [WORKSPACES, STRIPS, GROUPS, WINDOWS] {
+    for key in [WORKSPACES, STRIPS, WINDOWS] {
         let held = At {
             doc: &*doc,
             heads: None,
@@ -824,9 +968,13 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
     want
 }
 
-/// An entry a document holds: its map, and what it says.
+/// An entry a document holds: its map, the map it is kept in when that is its parent's, and what
+/// it says.
 struct HeldEntry {
     obj: ObjId,
+    within: Option<ObjId>,
+    /// Written without seeing the workspace's record ([`At::placed_entries`]).
+    blind: bool,
     entry: Entry,
 }
 
@@ -838,47 +986,48 @@ enum Shape {
 }
 use Shape::{Json, Text};
 
-/// What `doc` holds of each kind of entry, by id.
-fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
-    let at = At { doc, heads: None };
-    let level = |key: &str, parent: Option<&'static str>, fields: &[(&'static str, Shape)]| {
-        at.entries(key)
-            .into_iter()
-            .map(|(id, obj)| {
-                let parent =
-                    parent.and_then(|field| parse_id(at.text(&obj, field)).map(|id| (field, id)));
-                let order = at.number(&obj, ORDER).unwrap_or(f64::NAN);
-                let fields = fields
-                    .iter()
-                    .filter_map(|(field, shape)| {
-                        let value = match shape {
-                            Shape::Text => Field::Text(at.text(&obj, field)?),
-                            Shape::Json => Field::Json(at.json(&obj, field)?),
-                        };
-                        Some((*field, value))
-                    })
-                    .collect();
-                (
-                    id,
-                    HeldEntry {
-                        obj,
-                        entry: Entry {
-                            parent,
-                            order,
-                            fields,
-                        },
-                    },
-                )
+/// What `doc` holds of each kind of entry, by id, now (`None`) or as of `heads`.
+fn held(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Levels<HeldEntry> {
+    let at = At { doc, heads };
+    let fields_of = |obj: &ObjId, fields: &[(&'static str, Shape)]| {
+        fields
+            .iter()
+            .filter_map(|(field, shape)| {
+                let value = match shape {
+                    Shape::Text => Field::Text(at.text(obj, field)?),
+                    Shape::Json => Field::Json(at.json(obj, field)?),
+                };
+                Some((*field, value))
             })
             .collect()
     };
-    Levels {
+    let level = |key: &str, parent: Option<&'static str>, fields: &[(&'static str, Shape)]| {
+        at.placed_entries(key)
+            .into_iter()
+            .map(|(id, (obj, blind))| {
+                let parent =
+                    parent.and_then(|field| parse_id(at.text(&obj, field)).map(|id| (field, id)));
+                let entry = Entry {
+                    parent,
+                    order: at.number(&obj, ORDER).unwrap_or(f64::NAN),
+                    fields: fields_of(&obj, fields),
+                };
+                let held = HeldEntry {
+                    obj,
+                    within: None,
+                    blind,
+                    entry,
+                };
+                (id, held)
+            })
+            .collect::<BTreeMap<u64, HeldEntry>>()
+    };
+    let mut held = Levels {
         workspaces: level(WORKSPACES, None, &[(WORKSPACE, Json), (ARRANGEMENT, Text)]),
         strips: level(STRIPS, Some(WORKSPACE), &[(NAME, Text), (AUTHOR, Text)]),
-        groups: level(GROUPS, Some(STRIP), &[(PLACE, Json), (FLOAT, Json)]),
         windows: level(
             WINDOWS,
-            Some(GROUP),
+            None,
             &[
                 (TAB, Json),
                 (AUTHOR, Text),
@@ -886,39 +1035,67 @@ fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
                 (OPENED_BY, Json),
             ],
         ),
+        ..Levels::default()
+    };
+    let strips = held
+        .strips
+        .iter()
+        .map(|(id, strip)| (*id, strip.obj.clone()));
+    for group in at.placed(strips, GROUPS) {
+        let Some(obj) = group.obj else { continue };
+        if held.groups.contains_key(&group.id) {
+            held.twice.push((group.within, group.id));
+            continue;
+        }
+        let entry = Entry {
+            parent: Some((STRIP, group.parent)),
+            order: group.order.unwrap_or(f64::NAN),
+            fields: fields_of(&obj, &[(PLACE, Json), (FLOAT, Json)]),
+        };
+        let held_group = HeldEntry {
+            obj,
+            within: Some(group.within),
+            blind: false,
+            entry,
+        };
+        held.groups.insert(group.id, held_group);
     }
+    let groups = held
+        .groups
+        .iter()
+        .map(|(id, group)| (*id, group.obj.clone()));
+    for window in at.placed(groups, WINDOWS) {
+        match held.windows.get_mut(&window.id) {
+            Some(held) if held.within.is_none() => {
+                held.entry.parent = Some((GROUP, window.parent));
+                held.entry.order = window.order.unwrap_or(f64::NAN);
+                held.within = Some(window.within);
+            }
+            _ => held.twice.push((window.within, window.id)),
+        }
+    }
+    held
 }
 
-/// Every entry `doc` holds, by kind and id, as what it says: where it is
-/// and its text fields. An entry nobody changed reads the same.
-#[must_use]
-pub fn entries(doc: &AutoCommit) -> BTreeMap<(&'static str, u64), String> {
-    let held = held(doc);
-    [
-        (WORKSPACES, held.workspaces),
-        (STRIPS, held.strips),
-        (GROUPS, held.groups),
-        (WINDOWS, held.windows),
-    ]
-    .into_iter()
-    .flat_map(|(kind, level)| {
-        level
-            .into_iter()
-            .map(move |(id, held)| ((kind, id), format!("{:?}", held.entry)))
-    })
-    .collect()
+/// What of where an entry is its own map keeps.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keeps {
+    /// Its parent and its order.
+    Both,
+    Order,
+    /// A window: the group that holds it keeps both.
+    Neither,
 }
 
-/// Make the entries at `ROOT[key]` exactly `want`, writing only what differs.
+/// Make the entries at `ROOT[key]` exactly `want`, writing only what differs. Returns the map of
+/// each.
 fn reconcile(
     doc: &mut AutoCommit,
     key: &str,
     held: &BTreeMap<u64, HeldEntry>,
     want: &BTreeMap<u64, Entry>,
-) -> Result<bool, automerge::AutomergeError> {
-    // Whether anything was written: an entry that differs only in what
-    // its writer leaves as it is writes nothing.
-    let ops = doc.pending_ops();
+    keeps: Keeps,
+) -> Result<BTreeMap<u64, ObjId>, automerge::AutomergeError> {
     let containers = At {
         doc: &*doc,
         heads: None,
@@ -935,45 +1112,67 @@ fn reconcile(
     }
     let container = match containers.first() {
         Some(container) => container.clone(),
-        None if want.is_empty() => return Ok(doc.pending_ops() > ops),
+        None if want.is_empty() => return Ok(BTreeMap::new()),
         None => doc.put_object(ROOT, key, ObjType::Map)?,
     };
+    let mut objs = BTreeMap::new();
     for (id, entry) in want {
         let before = held.get(id).map(|existing| &existing.entry);
-        if before == Some(entry) {
-            continue;
-        }
-        let obj = match held.get(id) {
-            Some(existing) => existing.obj.clone(),
-            None => doc.put_object(&container, id.to_string(), ObjType::Map)?,
-        };
-        if let Some((field, parent)) = entry.parent
-            && before.and_then(|b| b.parent) != Some((field, parent))
-        {
-            doc.put(&obj, field, parent.to_string())?;
-        }
-        if before.is_none_or(|b| b.order.to_bits() != entry.order.to_bits()) {
-            doc.put(&obj, ORDER, entry.order)?;
-        }
-        for (field, value) in &entry.fields {
-            let same =
-                before.is_some_and(|b| b.fields.iter().any(|(f, v)| f == field && v == value));
-            if !same {
-                match value {
-                    Field::Text(text) => doc.put(&obj, *field, text.as_str())?,
-                    Field::Json(value) => write_json(doc, &obj, field, value)?,
-                }
+        let obj = if let Some(existing) = held.get(id) {
+            existing.obj.clone()
+        } else {
+            let obj = doc.put_object(&container, id.to_string(), ObjType::Map)?;
+            if key == STRIPS {
+                // Every group the strip will hold goes into this one map, however many people
+                // place one at once.
+                doc.put_object(&obj, GROUPS, ObjType::Map)?;
             }
-        }
-        for (field, _) in before.map(|b| b.fields.as_slice()).unwrap_or_default() {
-            // Who opened a window goes with the window: a writer that does
-            // not say it knows nothing of it.
-            if *field != OPENED_BY && !entry.fields.iter().any(|(f, _)| f == field) {
-                doc.delete(&obj, *field)?;
+            obj
+        };
+        update(doc, &obj, before, entry, keeps)?;
+        objs.insert(*id, obj);
+    }
+    Ok(objs)
+}
+
+/// Write what of `entry` differs from what `obj` holds (`before`).
+fn update(
+    doc: &mut AutoCommit,
+    obj: &ObjId,
+    before: Option<&Entry>,
+    entry: &Entry,
+    keeps: Keeps,
+) -> Result<(), automerge::AutomergeError> {
+    if before == Some(entry) {
+        return Ok(());
+    }
+    if keeps == Keeps::Both
+        && let Some((field, parent)) = entry.parent
+        && before.and_then(|b| b.parent) != Some((field, parent))
+    {
+        doc.put(obj, field, parent.to_string())?;
+    }
+    if keeps != Keeps::Neither && before.is_none_or(|b| b.order.to_bits() != entry.order.to_bits())
+    {
+        doc.put(obj, ORDER, entry.order)?;
+    }
+    for (field, value) in &entry.fields {
+        let same = before.is_some_and(|b| b.fields.iter().any(|(f, v)| f == field && v == value));
+        if !same {
+            match value {
+                Field::Text(text) => doc.put(obj, *field, text.as_str())?,
+                Field::Json(value) => write_json(doc, obj, field, value)?,
             }
         }
     }
-    Ok(doc.pending_ops() > ops)
+    for (field, _) in before.map(|b| b.fields.as_slice()).unwrap_or_default() {
+        // Who opened a window goes with the window: a writer that does
+        // not say it knows nothing of it.
+        if *field != OPENED_BY && !entry.fields.iter().any(|(f, _)| f == field) {
+            doc.delete(obj, *field)?;
+        }
+    }
+    Ok(())
 }
 
 /// The message a change of the record is committed with: an edit of the
@@ -1053,7 +1252,6 @@ pub fn commit_change(
     );
 }
 
-pub mod continuation;
 pub mod device;
 pub mod guard;
 
