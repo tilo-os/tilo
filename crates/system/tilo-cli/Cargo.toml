@@ -82,7 +82,6 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Tilo OS mounts.
 tilo-fs = { package = "tilo-fs", path = "../fs" }
 fs-protocol = { path = "../fs-protocol" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 automerge.workspace = true

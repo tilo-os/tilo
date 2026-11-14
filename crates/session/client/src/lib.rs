@@ -66,6 +66,8 @@ pub use saying::saying;
 pub use session::{PeerConfig, SessionMemberHost, member_host, start_session};
 pub use tilo_live::presence::Call as InCall;
 pub use tilo_live::presence::{LiveCall, LiveCaller};
+/// The route a record is opened and written by: what [`Cmd`]s and [`Event`]s name.
+pub use tilo_peer_state::document_frame::DocumentRoute;
 
 /// What became of an enrollment or an entry, and the workspace it was for.
 #[derive(Debug)]

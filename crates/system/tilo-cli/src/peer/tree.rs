@@ -23,10 +23,9 @@ use std::time::Duration;
 use collab_types::DocumentMutation;
 use tilo_fs::namespace::Namespace;
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
 use tilo_session_client::engine::RecordReading;
-use tilo_session_client::{Cmd, Event, Link, Outbox as _};
+use tilo_session_client::{Cmd, DocumentRoute, Event, Link, Outbox as _};
 
 use super::content::SessionContent;
 
