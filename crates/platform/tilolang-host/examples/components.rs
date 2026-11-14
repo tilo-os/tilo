@@ -51,6 +51,21 @@ impl PeerTransport for Admitting {
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         self.joined.take().map(Ok)
     }
+
+    /// The records every app of the workspace opens beside its own (each person's own state)
+    /// are joined and sent on routes of their own: the broker takes them. A broker that refused
+    /// the join would close the instance's whole connection.
+    fn join_route(
+        &mut self,
+        _: RouteSpec,
+        _: collaboration::record::RecordKind,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn send_to_route(&mut self, _: RouteSpec, _: CollabRequest) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 fn print(node: &patch::Node) {
