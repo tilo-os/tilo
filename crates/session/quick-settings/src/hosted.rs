@@ -436,52 +436,56 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_copy_says_when_and_where_it_was_copied() {
-        // Case `a_copy_says_which_device_it_came_from`:
-        // A copy shared from another device names it, and one made here says
-        // it came from this computer, both after how long ago it was made.
-        let now = 1_000_000;
-        let mut here = copy(TEXT, Some("made here"));
-        here.created_ms = now - 30_000;
-        let mut there = copy(TEXT, Some("made there"));
-        there.created_ms = now - 30_000;
-        there.from = Some("laptop".to_owned());
-        let view = clipboard_view(&[here, there], now);
-        assert!(
-            view.rows[0].detail.ends_with(", from this computer"),
-            "a copy made here: {}",
-            view.rows[0].detail
-        );
-        assert!(
-            view.rows[1].detail.ends_with(", from laptop"),
-            "a copy shared from a laptop: {}",
-            view.rows[1].detail
-        );
-        assert!(
-            !view.rows[1].detail.starts_with(", from"),
-            "the age comes first: {}",
-            view.rows[1].detail
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_copy_is_listed_by_what_it_is_and_where_it_came_from;
 
-    #[test]
-    fn a_copied_file_is_a_folder_row_named_after_the_first_file() {
-        // Case `a_file_copy_lists_as_the_files_it_is`:
-        // A copy of files is not formatted text: it is a folder, named by
-        // the first file, so the row says what was copied.
-        let view = clipboard_view(
-            &[copy("text/uri-list", Some("holiday.png"))],
-            ui::time::unix_now_ms(),
-        );
-        assert_eq!(view.rows[0].title, "holiday.png");
-        assert_eq!(view.rows[0].icon, Icon::Folder);
+        phase a_copy_says_when_and_where_it_was_copied;
+        {
+            // Case `a_copy_says_which_device_it_came_from`:
+            // A copy shared from another device names it, and one made here says
+            // it came from this computer, both after how long ago it was made.
+            let now = 1_000_000;
+            let mut here = copy(TEXT, Some("made here"));
+            here.created_ms = now - 30_000;
+            let mut there = copy(TEXT, Some("made there"));
+            there.created_ms = now - 30_000;
+            there.from = Some("laptop".to_owned());
+            let view = clipboard_view(&[here, there], now);
+            assert!(
+                view.rows[0].detail.ends_with(", from this computer"),
+                "a copy made here: {}",
+                view.rows[0].detail
+            );
+            assert!(
+                view.rows[1].detail.ends_with(", from laptop"),
+                "a copy shared from a laptop: {}",
+                view.rows[1].detail
+            );
+            assert!(
+                !view.rows[1].detail.starts_with(", from"),
+                "the age comes first: {}",
+                view.rows[1].detail
+            );
+        }
 
-        // Case `a_file_copy_without_a_name_still_says_files`:
-        // With no path to show, the row still says files rather than
-        // claiming a format it does not hold.
-        let view = clipboard_view(&[copy("x-special/gnome-copied-files", None)], 0);
-        assert_eq!(view.rows[0].icon, Icon::Folder);
-        assert_ne!(view.rows[0].title, "");
+        phase a_copied_file_is_a_folder_row_named_after_the_first_file;
+        {
+            // Case `a_file_copy_lists_as_the_files_it_is`:
+            // A copy of files is not formatted text: it is a folder, named by
+            // the first file, so the row says what was copied.
+            let view = clipboard_view(
+                &[copy("text/uri-list", Some("holiday.png"))],
+                ui::time::unix_now_ms(),
+            );
+            assert_eq!(view.rows[0].title, "holiday.png");
+            assert_eq!(view.rows[0].icon, Icon::Folder);
+
+            // Case `a_file_copy_without_a_name_still_says_files`:
+            // With no path to show, the row still says files rather than
+            // claiming a format it does not hold.
+            let view = clipboard_view(&[copy("x-special/gnome-copied-files", None)], 0);
+            assert_eq!(view.rows[0].icon, Icon::Folder);
+            assert_ne!(view.rows[0].title, "");
+        }
     }
 }

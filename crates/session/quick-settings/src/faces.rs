@@ -1124,364 +1124,466 @@ mod tests {
         }
     }
 
-    #[test]
-    fn no_brightness_slider_without_anything_to_dim() {
-        let mut state = QuickSettingsState::fixture();
-        state.brightness_available = false;
-        let ids: Vec<String> = Sliders::of(&state)
-            .rows
-            .into_iter()
-            .map(|row| row.id)
-            .collect();
-        assert_eq!(ids, ["qs-volume"]);
-        state.brightness_available = true;
-        let ids: Vec<String> = Sliders::of(&state)
-            .rows
-            .into_iter()
-            .map(|row| row.id)
-            .collect();
-        assert_eq!(ids, ["qs-brightness", "qs-volume"]);
-    }
+    tilo_test_env::scenario! {
+        fn the_sliders_name_what_they_set_and_stand_where_it_is;
 
-    /// A session with no audio server: the row stays and says there is no
-    /// audio device, inert until the sound service reads an output again.
-    #[test]
-    fn the_volume_row_says_there_is_no_audio_device_until_one_appears() {
-        let mut state = QuickSettingsState::fixture();
-        state.volume_available = false;
-        state.status.volume = None;
-        state.sound_outputs.clear();
-        let sliders = Sliders::of(&state);
-        let volume = sliders
-            .rows
-            .iter()
-            .find(|row| row.id == "qs-volume")
-            .expect("the row stands without an audio server");
-        assert!(!volume.available, "there is nothing to set");
-        assert!(
-            volume.value_at(volume.level).is_empty(),
-            "and no level to show"
-        );
-        assert_eq!(said(&volume.device), vec![t("qs-sound-no-device")]);
-        assert!(!sliders.outputs, "there is no output to choose");
+        phase no_brightness_slider_without_anything_to_dim;
+        {
+            let mut state = QuickSettingsState::fixture();
+            state.brightness_available = false;
+            let ids: Vec<String> = Sliders::of(&state)
+                .rows
+                .into_iter()
+                .map(|row| row.id)
+                .collect();
+            assert_eq!(ids, ["qs-volume"]);
+            state.brightness_available = true;
+            let ids: Vec<String> = Sliders::of(&state)
+                .rows
+                .into_iter()
+                .map(|row| row.id)
+                .collect();
+            assert_eq!(ids, ["qs-brightness", "qs-volume"]);
+        }
 
-        // The server came: the same row reads the output it landed. There is
-        // one output, the one playing, so the row names nothing: a name is
-        // for choosing between outputs.
-        state.volume_available = true;
-        state.status.volume = Some(media::audio::default_node::VolumeState {
-            level: 0.4,
-            muted: false,
-        });
-        state.sound_outputs = vec![SoundOutput {
-            node: 41,
-            name: "Speakers".into(),
-            current: true,
-        }];
-        let sliders = Sliders::of(&state);
-        let volume = sliders
-            .rows
-            .iter()
-            .find(|row| row.id == "qs-volume")
-            .expect("an output to set");
-        assert!(volume.available);
-        assert!(volume.device.is_empty(), "the only output needs no name");
-        assert_eq!(volume.value_at(volume.level), "40%");
-        assert!(sliders.outputs);
+        phase the_volume_row_says_there_is_no_audio_device_until_one_appears;
+        // A session with no audio server: the row stays and says there is no
+        // audio device, inert until the sound service reads an output again.
+        {
+            let mut state = QuickSettingsState::fixture();
+            state.volume_available = false;
+            state.status.volume = None;
+            state.sound_outputs.clear();
+            let sliders = Sliders::of(&state);
+            let volume = sliders
+                .rows
+                .iter()
+                .find(|row| row.id == "qs-volume")
+                .expect("the row stands without an audio server");
+            assert!(!volume.available, "there is nothing to set");
+            assert!(
+                volume.value_at(volume.level).is_empty(),
+                "and no level to show"
+            );
+            assert_eq!(said(&volume.device), vec![t("qs-sound-no-device")]);
+            assert!(!sliders.outputs, "there is no output to choose");
 
-        // A second output to choose from: the row says which one plays.
-        state.sound_outputs.push(SoundOutput {
-            node: 52,
-            name: "Studio headphones".into(),
-            current: false,
-        });
-        let sliders = Sliders::of(&state);
-        let volume = sliders
-            .rows
-            .iter()
-            .find(|row| row.id == "qs-volume")
-            .expect("an output to set");
-        assert_eq!(
-            said(&volume.device),
-            ["Speakers"],
-            "of two outputs, the one playing is named"
-        );
-    }
-
-    #[test]
-    fn the_sound_section_says_so_when_there_is_no_audio_device() {
-        let mut state = QuickSettingsState::fixture();
-        state.volume_available = false;
-        state.status.volume = None;
-        state.microphone = None;
-        state.sound_outputs.clear();
-        state.sound_streams.clear();
-        let items = sound(&state);
-        assert!(
-            matches!(items.first(), Some(Item::Message(message)) if message == &t("qs-sound-no-device")),
-            "the section names the missing audio device"
-        );
-        assert!(
-            matches!(items.last(), Some(Item::Settings { .. })),
-            "and still leads to the sound settings"
-        );
-    }
-
-    /// A panel whose device has not been read shows nothing measured: no
-    /// brightness, no level, no pack and no link, rather than a stand-in a
-    /// person would take for this machine's.
-    #[test]
-    fn nothing_of_the_device_is_invented_before_a_reading() {
-        let state = QuickSettingsState::unread();
-        assert_eq!(state.brightness, 0.0);
-        assert!(!state.can_set_brightness());
-        assert!(!state.volume_available);
-        assert_eq!(state.status.volume, None);
-        assert_eq!(state.status.battery, None);
-        assert_eq!(state.status.link, None);
-        assert!(!state.network.wifi.available);
-        let ids: Vec<String> = Sliders::of(&state)
-            .rows
-            .into_iter()
-            .map(|row| row.id)
-            .collect();
-        assert_eq!(
-            ids,
-            ["qs-volume"],
-            "no brightness row stands at a level nobody set"
-        );
-    }
-
-    #[test]
-    fn each_slider_names_what_it_sets_and_the_value_it_stands_at() {
-        let mut state = QuickSettingsState::fixture();
-        state.sound_outputs = vec![
-            SoundOutput {
+            // The server came: the same row reads the output it landed. There is
+            // one output, the one playing, so the row names nothing: a name is
+            // for choosing between outputs.
+            state.volume_available = true;
+            state.status.volume = Some(media::audio::default_node::VolumeState {
+                level: 0.4,
+                muted: false,
+            });
+            state.sound_outputs = vec![SoundOutput {
                 node: 41,
                 name: "Speakers".into(),
                 current: true,
-            },
-            SoundOutput {
+            }];
+            let sliders = Sliders::of(&state);
+            let volume = sliders
+                .rows
+                .iter()
+                .find(|row| row.id == "qs-volume")
+                .expect("an output to set");
+            assert!(volume.available);
+            assert!(volume.device.is_empty(), "the only output needs no name");
+            assert_eq!(volume.value_at(volume.level), "40%");
+            assert!(sliders.outputs);
+
+            // A second output to choose from: the row says which one plays.
+            state.sound_outputs.push(SoundOutput {
                 node: 52,
                 name: "Studio headphones".into(),
                 current: false,
-            },
-        ];
-        let sliders = Sliders::of(&state);
-        let brightness = sliders
-            .rows
-            .iter()
-            .find(|row| row.id == "qs-brightness")
-            .expect("a screen to dim");
-        assert_eq!(brightness.value_at(brightness.level), "60%");
-        assert!(
-            brightness.device.is_empty(),
-            "one screen needs no name of its own"
-        );
-        let volume = sliders
-            .rows
-            .iter()
-            .find(|row| row.id == "qs-volume")
-            .expect("an output to set");
-        assert_eq!(
-            said(&volume.device),
-            ["Speakers"],
-            "it names where the sound plays"
-        );
-        assert_eq!(volume.value_at(volume.level), "40%");
-        assert!((volume.level - 0.4).abs() < 0.001);
-    }
-
-    /// Two displays are two rows, each named as a person knows the display —
-    /// its model, or the part it plays — and never by its connector.
-    #[test]
-    fn each_display_has_its_own_row_named_as_a_person_knows_it() {
-        let mut state = QuickSettingsState::fixture();
-        state.displays = vec![
-            DisplayBrightness {
-                connector: "eDP-1".into(),
-                name: "Built-in display".into(),
-                level: 0.7,
-            },
-            DisplayBrightness {
-                connector: "HDMI-A-1".into(),
-                name: "LG ULTRAGEAR+".into(),
-                level: 0.3,
-            },
-        ];
-        let rows: Vec<SliderFace> = Sliders::of(&state)
-            .rows
-            .into_iter()
-            .filter(|row| matches!(row.kind, SliderKind::Display(_)))
-            .collect();
-        let names: Vec<String> = rows.iter().map(|row| row.name.clone()).collect();
-        assert_eq!(
-            names,
-            [
-                t_args(
-                    "qs-brightness-display",
-                    &[("display", "Built-in display".into())]
-                ),
-                t_args(
-                    "qs-brightness-display",
-                    &[("display", "LG ULTRAGEAR+".into())]
-                ),
-            ],
-            "each row says the display it dims"
-        );
-        let devices: Vec<Vec<Fact>> = rows.iter().map(|row| row.device.clone()).collect();
-        assert_eq!(
-            devices,
-            [
-                vec![Fact::text("Built-in display")],
-                vec![Fact::text("LG ULTRAGEAR+")]
-            ],
-            "and names it on its own line"
-        );
-        let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
-        assert_eq!(
-            ids,
-            ["qs-brightness-eDP-1", "qs-brightness-HDMI-A-1"],
-            "the connector is what the row's control addresses, not its name"
-        );
-    }
-
-    #[test]
-    fn a_muted_output_says_so_and_stands_empty() {
-        let mut state = QuickSettingsState::fixture();
-        state
-            .status
-            .volume
-            .as_mut()
-            .expect("a default output")
-            .muted = true;
-        let volume = Sliders::of(&state)
-            .rows
-            .into_iter()
-            .find(|row| row.id == "qs-volume")
-            .expect("an output to set");
-        assert_eq!(volume.value_at(volume.level), "Muted");
-        assert!(
-            volume.level.abs() < 0.001,
-            "a muted output is silent at any level"
-        );
-    }
-
-    #[test]
-    fn the_charge_stands_above_the_rest_and_the_mode_has_no_row_of_its_own() {
-        use tilo_power_mgmt::{BatterySnapshot, BatteryState, BatteryTime};
-        let mut state = QuickSettingsState::fixture();
-        state.status.battery = Some(BatterySnapshot {
-            present: true,
-            percent: 76,
-            state: BatteryState::Discharging,
-        });
-        state.status.battery_time = Some(BatteryTime::ToEmpty(214));
-        state.power_profiles = vec![PowerProfile::Saver, PowerProfile::Balanced];
-        let faces = rows(&state);
-        assert_eq!(faces[0].row, RootRow::Battery);
-        assert_eq!(faces[0].value.as_deref(), Some("76%"));
-        assert_eq!(faces[0].detail.as_deref(), Some("3 h 34 min left"));
-        assert!(
-            faces
+            });
+            let sliders = Sliders::of(&state);
+            let volume = sliders
+                .rows
                 .iter()
-                .all(|face| face.section() != Some(QsSection::PowerMode)),
-            "the mode is switched on its tile, which opens the modes' page: no row says it twice"
-        );
-        assert!(
-            tiles(&state)
-                .iter()
-                .any(|tile| tile.control == QuickSettingsControl::PowerMode
-                    && tile.section == Some(QsSection::PowerMode)),
-            "the tile is where the mode is chosen and where its page opens"
-        );
-    }
+                .find(|row| row.id == "qs-volume")
+                .expect("an output to set");
+            assert_eq!(
+                said(&volume.device),
+                ["Speakers"],
+                "of two outputs, the one playing is named"
+            );
+        }
 
-    #[test]
-    fn networks_list_the_one_in_use_then_known_ones_then_by_signal() {
-        let networks = vec![
-            network("Strong stranger", 4, false, false),
-            network("Weak known", 1, false, true),
-            network("Home", 3, true, true),
-            network("another", 2, false, false),
-            network("Beta", 2, false, false),
-        ];
-        let order: Vec<&str> = ordered_networks(&networks)
-            .into_iter()
-            .map(|network| network.name.as_str())
-            .collect();
-        assert_eq!(
-            order,
-            ["Home", "Weak known", "Strong stranger", "another", "Beta"]
-        );
-    }
-
-    #[test]
-    fn a_protected_network_never_seen_asks_for_its_password_and_a_known_one_joins() {
-        let mut state = QuickSettingsState::fixture();
-        state.network.wifi.available = true;
-        state.network.wifi.on = true;
-        state.network.wifi.networks = vec![
-            network("Home", 3, false, true),
-            network("Cafe", 2, false, false),
-        ];
-        let presses: Vec<Option<QsEffect>> = wifi(&state)
-            .into_iter()
-            .filter_map(|item| match item {
-                Item::Network(face) => Some(face.press),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            presses,
-            [
-                Some(QsEffect::JoinWifi {
-                    network: "Home".into()
-                }),
-                Some(QsEffect::AskWifiPassword {
-                    network: "Cafe".into()
-                }),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_radio_change_under_way_says_so_and_takes_no_second_press() {
-        let mut state = QuickSettingsState::fixture();
-        state.network.wifi.available = true;
-        state.network.wifi.on = false;
-        state.network.pending = vec!["set-wifi".into()];
-        assert_eq!(subline(QuickSettingsControl::Wifi, &state), "Turning on…");
-        let wifi = tiles(&state)
-            .into_iter()
-            .find(|tile| tile.control == QuickSettingsControl::Wifi)
-            .expect("the Wi-Fi tile");
-        assert_eq!(wifi.switch, None);
-    }
-
-    #[test]
-    fn the_power_mode_tile_switches_between_the_saver_and_balanced() {
-        let mut state = QuickSettingsState::fixture();
-        state.power_profiles = vec![PowerProfile::Saver, PowerProfile::Balanced];
-        let tile = |state: &QuickSettingsState| {
-            tiles(state)
+        phase nothing_of_the_device_is_invented_before_a_reading;
+        // A panel whose device has not been read shows nothing measured: no
+        // brightness, no level, no pack and no link, rather than a stand-in a
+        // person would take for this machine's.
+        {
+            let state = QuickSettingsState::unread();
+            assert_eq!(state.brightness, 0.0);
+            assert!(!state.can_set_brightness());
+            assert!(!state.volume_available);
+            assert_eq!(state.status.volume, None);
+            assert_eq!(state.status.battery, None);
+            assert_eq!(state.status.link, None);
+            assert!(!state.network.wifi.available);
+            let ids: Vec<String> = Sliders::of(&state)
+                .rows
                 .into_iter()
-                .find(|tile| tile.control == QuickSettingsControl::PowerMode)
-                .and_then(|tile| tile.switch)
-        };
-        assert_eq!(
-            tile(&state),
-            Some(QsEffect::SetPowerMode {
-                mode: PowerProfile::Saver
-            })
-        );
-        state.power_profile = PowerProfile::Saver;
-        assert_eq!(
-            tile(&state),
-            Some(QsEffect::SetPowerMode {
-                mode: PowerProfile::Balanced
-            })
-        );
+                .map(|row| row.id)
+                .collect();
+            assert_eq!(
+                ids,
+                ["qs-volume"],
+                "no brightness row stands at a level nobody set"
+            );
+        }
+
+        phase each_slider_names_what_it_sets_and_the_value_it_stands_at;
+        {
+            let mut state = QuickSettingsState::fixture();
+            state.sound_outputs = vec![
+                SoundOutput {
+                    node: 41,
+                    name: "Speakers".into(),
+                    current: true,
+                },
+                SoundOutput {
+                    node: 52,
+                    name: "Studio headphones".into(),
+                    current: false,
+                },
+            ];
+            let sliders = Sliders::of(&state);
+            let brightness = sliders
+                .rows
+                .iter()
+                .find(|row| row.id == "qs-brightness")
+                .expect("a screen to dim");
+            assert_eq!(brightness.value_at(brightness.level), "60%");
+            assert!(
+                brightness.device.is_empty(),
+                "one screen needs no name of its own"
+            );
+            let volume = sliders
+                .rows
+                .iter()
+                .find(|row| row.id == "qs-volume")
+                .expect("an output to set");
+            assert_eq!(
+                said(&volume.device),
+                ["Speakers"],
+                "it names where the sound plays"
+            );
+            assert_eq!(volume.value_at(volume.level), "40%");
+            assert!((volume.level - 0.4).abs() < 0.001);
+        }
+
+        phase each_display_has_its_own_row_named_as_a_person_knows_it;
+        // Two displays are two rows, each named as a person knows the display —
+        // its model, or the part it plays — and never by its connector.
+        {
+            let mut state = QuickSettingsState::fixture();
+            state.displays = vec![
+                DisplayBrightness {
+                    connector: "eDP-1".into(),
+                    name: "Built-in display".into(),
+                    level: 0.7,
+                },
+                DisplayBrightness {
+                    connector: "HDMI-A-1".into(),
+                    name: "LG ULTRAGEAR+".into(),
+                    level: 0.3,
+                },
+            ];
+            let rows: Vec<SliderFace> = Sliders::of(&state)
+                .rows
+                .into_iter()
+                .filter(|row| matches!(row.kind, SliderKind::Display(_)))
+                .collect();
+            let names: Vec<String> = rows.iter().map(|row| row.name.clone()).collect();
+            assert_eq!(
+                names,
+                [
+                    t_args(
+                        "qs-brightness-display",
+                        &[("display", "Built-in display".into())]
+                    ),
+                    t_args(
+                        "qs-brightness-display",
+                        &[("display", "LG ULTRAGEAR+".into())]
+                    ),
+                ],
+                "each row says the display it dims"
+            );
+            let devices: Vec<Vec<Fact>> = rows.iter().map(|row| row.device.clone()).collect();
+            assert_eq!(
+                devices,
+                [
+                    vec![Fact::text("Built-in display")],
+                    vec![Fact::text("LG ULTRAGEAR+")]
+                ],
+                "and names it on its own line"
+            );
+            let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+            assert_eq!(
+                ids,
+                ["qs-brightness-eDP-1", "qs-brightness-HDMI-A-1"],
+                "the connector is what the row's control addresses, not its name"
+            );
+        }
+
+        phase a_muted_output_says_so_and_stands_empty;
+        {
+            let mut state = QuickSettingsState::fixture();
+            state
+                .status
+                .volume
+                .as_mut()
+                .expect("a default output")
+                .muted = true;
+            let volume = Sliders::of(&state)
+                .rows
+                .into_iter()
+                .find(|row| row.id == "qs-volume")
+                .expect("an output to set");
+            assert_eq!(volume.value_at(volume.level), "Muted");
+            assert!(
+                volume.level.abs() < 0.001,
+                "a muted output is silent at any level"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn the_sound_section_lists_what_the_machine_hears_and_plays;
+
+        phase the_sound_section_says_so_when_there_is_no_audio_device;
+        {
+            let mut state = QuickSettingsState::fixture();
+            state.volume_available = false;
+            state.status.volume = None;
+            state.microphone = None;
+            state.sound_outputs.clear();
+            state.sound_streams.clear();
+            let items = sound(&state);
+            assert!(
+                matches!(items.first(), Some(Item::Message(message)) if message == &t("qs-sound-no-device")),
+                "the section names the missing audio device"
+            );
+            assert!(
+                matches!(items.last(), Some(Item::Settings { .. })),
+                "and still leads to the sound settings"
+            );
+        }
+
+        phase the_sound_section_keeps_the_microphone_and_the_outputs_above_the_streams;
+        {
+            let mut state = QuickSettingsState::fixture();
+            state.microphone = Some(SoundInput {
+                node: 50,
+                name: "Microphone".into(),
+                level: 0.5,
+                muted: false,
+            });
+            state.sound_outputs = vec![
+                SoundOutput {
+                    node: 40,
+                    name: "Speakers".into(),
+                    current: true,
+                },
+                SoundOutput {
+                    node: 41,
+                    name: "Headphones".into(),
+                    current: false,
+                },
+            ];
+            state.sound_streams = vec![
+                SoundStream {
+                    node: 60,
+                    label: "Music".into(),
+                    plays: Some("Clair de lune".into()),
+                    playback: true,
+                    target: Some(41),
+                    level: 0.3,
+                    muted: false,
+                },
+                SoundStream {
+                    node: 61,
+                    label: "Browser".into(),
+                    plays: Some("Recording".into()),
+                    playback: false,
+                    target: Some(50),
+                    level: 0.8,
+                    muted: false,
+                },
+            ];
+
+            let listed: Vec<String> = sound(&state)
+                .into_iter()
+                .map(|item| match item {
+                    Item::Microphone(microphone) => format!("input:{}", microphone.node),
+                    Item::Output(output) => format!("output:{}", output.node),
+                    Item::Stream(stream) => format!("stream:{}:{}", stream.stream.node, stream.goes),
+                    Item::Settings { .. } => "settings".to_owned(),
+                    _ => "other".to_owned(),
+                })
+                .collect();
+            assert_eq!(
+                listed,
+                [
+                    "input:50",
+                    "output:40",
+                    "output:41",
+                    "stream:60:Playing on Headphones",
+                    "stream:61:Recording from Microphone",
+                    "settings",
+                ],
+                "the microphone, the outputs, then every stream and the way to the settings"
+            );
+
+            let Item::Stream(playing) = &sound(&state)[3] else {
+                panic!("the playing stream's row");
+            };
+            assert_eq!(
+                playing
+                    .outputs
+                    .iter()
+                    .map(|output| (output.name.as_str(), output.current))
+                    .collect::<Vec<_>>(),
+                [("Speakers", false), ("Headphones", true)],
+                "the output it plays on is the one marked"
+            );
+            let Item::Stream(recording) = &sound(&state)[4] else {
+                panic!("the recording stream's row");
+            };
+            assert!(
+                recording.outputs.is_empty(),
+                "a stream that records does not move between outputs"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn the_tiles_and_rows_say_the_power_and_the_radio_as_they_stand;
+
+        phase the_charge_stands_above_the_rest_and_the_mode_has_no_row_of_its_own;
+        {
+            use tilo_power_mgmt::{BatterySnapshot, BatteryState, BatteryTime};
+            let mut state = QuickSettingsState::fixture();
+            state.status.battery = Some(BatterySnapshot {
+                present: true,
+                percent: 76,
+                state: BatteryState::Discharging,
+            });
+            state.status.battery_time = Some(BatteryTime::ToEmpty(214));
+            state.power_profiles = vec![PowerProfile::Saver, PowerProfile::Balanced];
+            let faces = rows(&state);
+            assert_eq!(faces[0].row, RootRow::Battery);
+            assert_eq!(faces[0].value.as_deref(), Some("76%"));
+            assert_eq!(faces[0].detail.as_deref(), Some("3 h 34 min left"));
+            assert!(
+                faces
+                    .iter()
+                    .all(|face| face.section() != Some(QsSection::PowerMode)),
+                "the mode is switched on its tile, which opens the modes' page: no row says it twice"
+            );
+            assert!(
+                tiles(&state)
+                    .iter()
+                    .any(|tile| tile.control == QuickSettingsControl::PowerMode
+                        && tile.section == Some(QsSection::PowerMode)),
+                "the tile is where the mode is chosen and where its page opens"
+            );
+        }
+
+        phase a_radio_change_under_way_says_so_and_takes_no_second_press;
+        {
+            let mut state = QuickSettingsState::fixture();
+            state.network.wifi.available = true;
+            state.network.wifi.on = false;
+            state.network.pending = vec!["set-wifi".into()];
+            assert_eq!(subline(QuickSettingsControl::Wifi, &state), "Turning on…");
+            let wifi = tiles(&state)
+                .into_iter()
+                .find(|tile| tile.control == QuickSettingsControl::Wifi)
+                .expect("the Wi-Fi tile");
+            assert_eq!(wifi.switch, None);
+        }
+
+        phase the_power_mode_tile_switches_between_the_saver_and_balanced;
+        {
+            let mut state = QuickSettingsState::fixture();
+            state.power_profiles = vec![PowerProfile::Saver, PowerProfile::Balanced];
+            let tile = |state: &QuickSettingsState| {
+                tiles(state)
+                    .into_iter()
+                    .find(|tile| tile.control == QuickSettingsControl::PowerMode)
+                    .and_then(|tile| tile.switch)
+            };
+            assert_eq!(
+                tile(&state),
+                Some(QsEffect::SetPowerMode {
+                    mode: PowerProfile::Saver
+                })
+            );
+            state.power_profile = PowerProfile::Saver;
+            assert_eq!(
+                tile(&state),
+                Some(QsEffect::SetPowerMode {
+                    mode: PowerProfile::Balanced
+                })
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn the_wifi_section_orders_its_networks_and_asks_only_for_a_password_it_lacks;
+
+        phase networks_list_the_one_in_use_then_known_ones_then_by_signal;
+        {
+            let networks = vec![
+                network("Strong stranger", 4, false, false),
+                network("Weak known", 1, false, true),
+                network("Home", 3, true, true),
+                network("another", 2, false, false),
+                network("Beta", 2, false, false),
+            ];
+            let order: Vec<&str> = ordered_networks(&networks)
+                .into_iter()
+                .map(|network| network.name.as_str())
+                .collect();
+            assert_eq!(
+                order,
+                ["Home", "Weak known", "Strong stranger", "another", "Beta"]
+            );
+        }
+
+        phase a_protected_network_never_seen_asks_for_its_password_and_a_known_one_joins;
+        {
+            let mut state = QuickSettingsState::fixture();
+            state.network.wifi.available = true;
+            state.network.wifi.on = true;
+            state.network.wifi.networks = vec![
+                network("Home", 3, false, true),
+                network("Cafe", 2, false, false),
+            ];
+            let presses: Vec<Option<QsEffect>> = wifi(&state)
+                .into_iter()
+                .filter_map(|item| match item {
+                    Item::Network(face) => Some(face.press),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                presses,
+                [
+                    Some(QsEffect::JoinWifi {
+                        network: "Home".into()
+                    }),
+                    Some(QsEffect::AskWifiPassword {
+                        network: "Cafe".into()
+                    }),
+                ]
+            );
+        }
     }
 
     #[test]
@@ -1510,91 +1612,5 @@ mod tests {
         assert_eq!(titles("noon laptop"), ["Meeting at noon"]);
         assert!(titles("nothing").is_empty());
         assert_eq!(copies_caption("phone", 1), "One copy matches “phone”");
-    }
-
-    #[test]
-    fn the_sound_section_keeps_the_microphone_and_the_outputs_above_the_streams() {
-        let mut state = QuickSettingsState::fixture();
-        state.microphone = Some(SoundInput {
-            node: 50,
-            name: "Microphone".into(),
-            level: 0.5,
-            muted: false,
-        });
-        state.sound_outputs = vec![
-            SoundOutput {
-                node: 40,
-                name: "Speakers".into(),
-                current: true,
-            },
-            SoundOutput {
-                node: 41,
-                name: "Headphones".into(),
-                current: false,
-            },
-        ];
-        state.sound_streams = vec![
-            SoundStream {
-                node: 60,
-                label: "Music".into(),
-                plays: Some("Clair de lune".into()),
-                playback: true,
-                target: Some(41),
-                level: 0.3,
-                muted: false,
-            },
-            SoundStream {
-                node: 61,
-                label: "Browser".into(),
-                plays: Some("Recording".into()),
-                playback: false,
-                target: Some(50),
-                level: 0.8,
-                muted: false,
-            },
-        ];
-
-        let listed: Vec<String> = sound(&state)
-            .into_iter()
-            .map(|item| match item {
-                Item::Microphone(microphone) => format!("input:{}", microphone.node),
-                Item::Output(output) => format!("output:{}", output.node),
-                Item::Stream(stream) => format!("stream:{}:{}", stream.stream.node, stream.goes),
-                Item::Settings { .. } => "settings".to_owned(),
-                _ => "other".to_owned(),
-            })
-            .collect();
-        assert_eq!(
-            listed,
-            [
-                "input:50",
-                "output:40",
-                "output:41",
-                "stream:60:Playing on Headphones",
-                "stream:61:Recording from Microphone",
-                "settings",
-            ],
-            "the microphone, the outputs, then every stream and the way to the settings"
-        );
-
-        let Item::Stream(playing) = &sound(&state)[3] else {
-            panic!("the playing stream's row");
-        };
-        assert_eq!(
-            playing
-                .outputs
-                .iter()
-                .map(|output| (output.name.as_str(), output.current))
-                .collect::<Vec<_>>(),
-            [("Speakers", false), ("Headphones", true)],
-            "the output it plays on is the one marked"
-        );
-        let Item::Stream(recording) = &sound(&state)[4] else {
-            panic!("the recording stream's row");
-        };
-        assert!(
-            recording.outputs.is_empty(),
-            "a stream that records does not move between outputs"
-        );
     }
 }

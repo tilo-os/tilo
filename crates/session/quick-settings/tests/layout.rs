@@ -979,85 +979,89 @@ fn a_control_dragged_part_way_waits_for_the_release_and_lands_there() {
     );
 }
 
-#[test]
-fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
-    let mut panel = QuickSettings::default();
-    panel.open_section(QsSection::Bluetooth);
-    panel.show_accessory("00:11".into());
-    assert_eq!(panel.page, Page::Accessory);
-    panel.back();
-    assert_eq!(
-        (panel.page, panel.section),
-        (Page::Root, Some(QsSection::Bluetooth))
-    );
-    panel.back();
-    assert_eq!(panel.section, None);
-    assert!(!panel.showing().goes_back(), "now Back closes the panel");
-    // Arranging stands over the controls: Back finishes it, and the controls it returns to are
-    // where Back closes the panel again.
-    panel.edit(true);
-    assert!(
-        panel.showing().goes_back(),
-        "arranging has the controls behind it"
-    );
-    panel.back();
-    assert!(!panel.editing, "Back finishes arranging");
-    assert!(
-        !panel.showing().goes_back(),
-        "and the controls it finished on have nothing behind them"
-    );
-    panel.paste();
-    assert!(
-        !panel.showing().goes_back(),
-        "Back closes a panel opened to paste"
-    );
-    let pasting = panel.clone();
-    panel.back();
-    assert_eq!(
-        panel, pasting,
-        "Back has nothing to go back to, so the first Escape closes it"
-    );
-}
+tilo_test_env::scenario! {
+    fn back_and_an_opened_section_return_the_panel_to_its_controls;
 
-/// A section opens from wherever the panel stands (an accessory's page, the arrangement, the
-/// clipboard opened to paste) and it opens on the controls: none of those stays over it, and what
-/// shows the panel is told the section and nothing of the place it left.
-#[test]
-fn a_section_opens_on_the_controls_from_every_place_the_panel_stands() {
-    /// A way the panel comes to stand somewhere other than its controls.
-    type Stand = fn(&mut QuickSettings);
-    let places: [(&str, Stand); 3] = [
-        ("an accessory's page", |panel: &mut QuickSettings| {
-            panel.show_accessory("00:11".into());
-        }),
-        ("the arrangement", |panel: &mut QuickSettings| {
-            panel.edit(true);
-        }),
-        ("the clipboard opened to paste", QuickSettings::paste),
-    ];
-    for (place, stand) in places {
+    phase back_closes_a_section_leaves_a_page_and_finishes_arranging;
+    {
         let mut panel = QuickSettings::default();
-        stand(&mut panel);
+        panel.open_section(QsSection::Bluetooth);
+        panel.show_accessory("00:11".into());
+        assert_eq!(panel.page, Page::Accessory);
+        panel.back();
+        assert_eq!(
+            (panel.page, panel.section),
+            (Page::Root, Some(QsSection::Bluetooth))
+        );
+        panel.back();
+        assert_eq!(panel.section, None);
+        assert!(!panel.showing().goes_back(), "now Back closes the panel");
+        // Arranging stands over the controls: Back finishes it, and the controls it returns to are
+        // where Back closes the panel again.
+        panel.edit(true);
         assert!(
-            panel.showing().is_deeper(),
-            "{place} stands over the controls"
+            panel.showing().goes_back(),
+            "arranging has the controls behind it"
         );
-        panel.open_section(QsSection::Vpn);
-        let showing = panel.showing();
+        panel.back();
+        assert!(!panel.editing, "Back finishes arranging");
+        assert!(
+            !panel.showing().goes_back(),
+            "and the controls it finished on have nothing behind them"
+        );
+        panel.paste();
+        assert!(
+            !panel.showing().goes_back(),
+            "Back closes a panel opened to paste"
+        );
+        let pasting = panel.clone();
+        panel.back();
         assert_eq!(
-            (
-                showing.page,
-                showing.section,
-                showing.pasting,
-                showing.editing
-            ),
-            (Page::Root, Some(QsSection::Vpn), false, false),
-            "a section opened from {place} stands on the controls"
+            panel, pasting,
+            "Back has nothing to go back to, so the first Escape closes it"
         );
-        assert_eq!(
-            showing.accessory, "",
-            "from {place}, no accessory is named off its page"
-        );
+    }
+
+    phase a_section_opens_on_the_controls_from_every_place_the_panel_stands;
+    // A section opens from wherever the panel stands (an accessory's page, the arrangement, the
+    // clipboard opened to paste) and it opens on the controls: none of those stays over it, and what
+    // shows the panel is told the section and nothing of the place it left.
+    {
+        /// A way the panel comes to stand somewhere other than its controls.
+        type Stand = fn(&mut QuickSettings);
+        let places: [(&str, Stand); 3] = [
+            ("an accessory's page", |panel: &mut QuickSettings| {
+                panel.show_accessory("00:11".into());
+            }),
+            ("the arrangement", |panel: &mut QuickSettings| {
+                panel.edit(true);
+            }),
+            ("the clipboard opened to paste", QuickSettings::paste),
+        ];
+        for (place, stand) in places {
+            let mut panel = QuickSettings::default();
+            stand(&mut panel);
+            assert!(
+                panel.showing().is_deeper(),
+                "{place} stands over the controls"
+            );
+            panel.open_section(QsSection::Vpn);
+            let showing = panel.showing();
+            assert_eq!(
+                (
+                    showing.page,
+                    showing.section,
+                    showing.pasting,
+                    showing.editing
+                ),
+                (Page::Root, Some(QsSection::Vpn), false, false),
+                "a section opened from {place} stands on the controls"
+            );
+            assert_eq!(
+                showing.accessory, "",
+                "from {place}, no accessory is named off its page"
+            );
+        }
     }
 }
 

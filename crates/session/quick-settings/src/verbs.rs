@@ -330,158 +330,162 @@ mod tests {
         Some(said)
     }
 
-    #[test]
-    fn every_device_effect_is_one_action_of_the_resource_that_owns_it() {
-        assert_eq!(
-            said(&QsEffect::ToggleWifi).as_deref(),
-            Some("network toggle-wifi"),
-            "the radio is the connectivity service's"
-        );
-        assert_eq!(
-            said(&QsEffect::SetBluetooth { on: true }).as_deref(),
-            Some("bluetooth set-bluetooth on=true")
-        );
-        assert_eq!(
-            said(&QsEffect::SetVolume { level: 0.5 }).as_deref(),
-            Some("sound set-volume level=0.5")
-        );
-        assert_eq!(
-            said(&QsEffect::SetBrightness { level: 0.25 }).as_deref(),
-            Some("session:displays set-brightness level=0.25")
-        );
-        assert_eq!(
-            said(&QsEffect::PinCopy {
-                copy: "abc".into(),
-                pinned: true,
-            })
-            .as_deref(),
-            Some("session:clipboard pin copy=abc pinned=true")
-        );
-        assert_eq!(
-            said(&QsEffect::LockScreen).as_deref(),
-            Some("session:screen lock"),
-            "the session itself locks"
-        );
-        assert_eq!(
-            said(&QsEffect::SetRotationLock { locked: true }).as_deref(),
-            Some("settings:settings.display set-rotation-lock locked=true"),
-            "the lock is the person's display setting, kept by the settings service"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn each_effect_is_the_verb_of_the_resource_that_owns_it;
 
-    #[test]
-    fn a_devices_row_press_is_the_sessions_press_verb() {
-        assert_eq!(
-            said(&QsEffect::PressDevice {
-                row: "laptop".into(),
-                part: RowPart::Decline,
-            })
-            .as_deref(),
-            Some("session:devices press row=laptop part=decline"),
-            "the part the person pressed goes with the row"
-        );
-    }
+        phase every_device_effect_is_one_action_of_the_resource_that_owns_it;
+        {
+            assert_eq!(
+                said(&QsEffect::ToggleWifi).as_deref(),
+                Some("network toggle-wifi"),
+                "the radio is the connectivity service's"
+            );
+            assert_eq!(
+                said(&QsEffect::SetBluetooth { on: true }).as_deref(),
+                Some("bluetooth set-bluetooth on=true")
+            );
+            assert_eq!(
+                said(&QsEffect::SetVolume { level: 0.5 }).as_deref(),
+                Some("sound set-volume level=0.5")
+            );
+            assert_eq!(
+                said(&QsEffect::SetBrightness { level: 0.25 }).as_deref(),
+                Some("session:displays set-brightness level=0.25")
+            );
+            assert_eq!(
+                said(&QsEffect::PinCopy {
+                    copy: "abc".into(),
+                    pinned: true,
+                })
+                .as_deref(),
+                Some("session:clipboard pin copy=abc pinned=true")
+            );
+            assert_eq!(
+                said(&QsEffect::LockScreen).as_deref(),
+                Some("session:screen lock"),
+                "the session itself locks"
+            );
+            assert_eq!(
+                said(&QsEffect::SetRotationLock { locked: true }).as_deref(),
+                Some("settings:settings.display set-rotation-lock locked=true"),
+                "the lock is the person's display setting, kept by the settings service"
+            );
+        }
 
-    #[test]
-    fn an_accessory_move_is_the_sessions_own() {
-        assert_eq!(
-            said(&QsEffect::HandOffBluetooth {
-                address: "00:1B:66:A1:B2:C3".into(),
-                device: "desk".into(),
-            })
-            .as_deref(),
-            Some("session:devices hand-off address=00:1B:66:A1:B2:C3 device=desk"),
-            "the session moves the accessory between the person's devices"
-        );
-    }
+        phase a_devices_row_press_is_the_sessions_press_verb;
+        {
+            assert_eq!(
+                said(&QsEffect::PressDevice {
+                    row: "laptop".into(),
+                    part: RowPart::Decline,
+                })
+                .as_deref(),
+                Some("session:devices press row=laptop part=decline"),
+                "the part the person pressed goes with the row"
+            );
+        }
 
-    /// The arrangement is this device's own setting: the session keeps it, so a person, an agent
-    /// and a script change the panel the same way whether it is drawn or not.
-    #[test]
-    fn arranging_the_panel_is_the_sessions_own_setting() {
-        assert_eq!(
-            said(&QsEffect::ShowControl {
-                control: "vpn".into()
-            })
-            .as_deref(),
-            Some("session:quick-settings show-control control=vpn")
-        );
-        assert_eq!(
-            said(&QsEffect::HideControl {
-                control: "vpn".into()
-            })
-            .as_deref(),
-            Some("session:quick-settings hide-control control=vpn")
-        );
-        assert_eq!(
-            said(&QsEffect::MoveControl {
-                control: "vpn".into(),
-                before: Some("wifi".into()),
-            })
-            .as_deref(),
-            Some("session:quick-settings move-control control=vpn before=wifi"),
-            "a control stands in front of the one it was dropped on"
-        );
-        assert_eq!(
-            said(&QsEffect::MoveControl {
-                control: "vpn".into(),
-                before: None,
-            })
-            .as_deref(),
-            Some("session:quick-settings move-control control=vpn"),
-            "and last, with no control named"
-        );
-        assert_eq!(
-            said(&QsEffect::ResetControls).as_deref(),
-            Some("session:quick-settings reset-controls")
-        );
-    }
+        phase an_accessory_move_is_the_sessions_own;
+        {
+            assert_eq!(
+                said(&QsEffect::HandOffBluetooth {
+                    address: "00:1B:66:A1:B2:C3".into(),
+                    device: "desk".into(),
+                })
+                .as_deref(),
+                Some("session:devices hand-off address=00:1B:66:A1:B2:C3 device=desk"),
+                "the session moves the accessory between the person's devices"
+            );
+        }
 
-    #[test]
-    fn the_notifications_row_opens_the_desks_own_centre() {
-        assert_eq!(
-            said(&QsEffect::ShowCentre).as_deref(),
-            Some("session:desk show-surface surface=centre"),
-            "one list, on the desk every app of the session reaches"
-        );
-    }
+        phase arranging_the_panel_is_the_sessions_own_setting;
+        // The arrangement is this device's own setting: the session keeps it, so a person, an agent
+        // and a script change the panel the same way whether it is drawn or not.
+        {
+            assert_eq!(
+                said(&QsEffect::ShowControl {
+                    control: "vpn".into()
+                })
+                .as_deref(),
+                Some("session:quick-settings show-control control=vpn")
+            );
+            assert_eq!(
+                said(&QsEffect::HideControl {
+                    control: "vpn".into()
+                })
+                .as_deref(),
+                Some("session:quick-settings hide-control control=vpn")
+            );
+            assert_eq!(
+                said(&QsEffect::MoveControl {
+                    control: "vpn".into(),
+                    before: Some("wifi".into()),
+                })
+                .as_deref(),
+                Some("session:quick-settings move-control control=vpn before=wifi"),
+                "a control stands in front of the one it was dropped on"
+            );
+            assert_eq!(
+                said(&QsEffect::MoveControl {
+                    control: "vpn".into(),
+                    before: None,
+                })
+                .as_deref(),
+                Some("session:quick-settings move-control control=vpn"),
+                "and last, with no control named"
+            );
+            assert_eq!(
+                said(&QsEffect::ResetControls).as_deref(),
+                Some("session:quick-settings reset-controls")
+            );
+        }
 
-    #[test]
-    fn settings_opens_on_the_page_the_link_names() {
-        assert_eq!(
-            said(&QsEffect::OpenSettings {
-                link: "settings://devices_sync".into(),
-            })
-            .as_deref(),
-            Some("session:desk open-settings link=settings://devices_sync"),
-            "the desk opens Settings at the page, as its own search does"
-        );
-    }
+        phase the_notifications_row_opens_the_desks_own_centre;
+        {
+            assert_eq!(
+                said(&QsEffect::ShowCentre).as_deref(),
+                Some("session:desk show-surface surface=centre"),
+                "one list, on the desk every app of the session reaches"
+            );
+        }
 
-    #[test]
-    fn the_card_that_plays_opens_its_app_on_the_desk() {
-        assert_eq!(
-            said(&QsEffect::OpenPlaying {
-                app: "so.tilo.music".into(),
-            })
-            .as_deref(),
-            Some("session:desk show-app app=so.tilo.music"),
-            "the desk shows the app the music comes from"
-        );
-    }
+        phase settings_opens_on_the_page_the_link_names;
+        {
+            assert_eq!(
+                said(&QsEffect::OpenSettings {
+                    link: "settings://devices_sync".into(),
+                })
+                .as_deref(),
+                Some("session:desk open-settings link=settings://devices_sync"),
+                "the desk opens Settings at the page, as its own search does"
+            );
+        }
 
-    #[test]
-    fn what_the_panel_carries_out_itself_reaches_no_resource() {
-        assert!(
-            verb(&QsEffect::AskWifiPassword {
-                network: "Home".into(),
-            })
-            .is_none(),
-            "the password prompt is the panel's own"
-        );
-        assert!(
-            verb(&QsEffect::ClearClipboard) == Some((CLIPBOARD, "clear", Map::new())),
-            "while clearing the history is the clipboard's"
-        );
+        phase the_card_that_plays_opens_its_app_on_the_desk;
+        {
+            assert_eq!(
+                said(&QsEffect::OpenPlaying {
+                    app: "so.tilo.music".into(),
+                })
+                .as_deref(),
+                Some("session:desk show-app app=so.tilo.music"),
+                "the desk shows the app the music comes from"
+            );
+        }
+
+        phase what_the_panel_carries_out_itself_reaches_no_resource;
+        {
+            assert!(
+                verb(&QsEffect::AskWifiPassword {
+                    network: "Home".into(),
+                })
+                .is_none(),
+                "the password prompt is the panel's own"
+            );
+            assert!(
+                verb(&QsEffect::ClearClipboard) == Some((CLIPBOARD, "clear", Map::new())),
+                "while clearing the history is the clipboard's"
+            );
+        }
     }
 }
