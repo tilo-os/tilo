@@ -504,3 +504,64 @@ fn unfolding_a_hugging_answers_steps_grows_it_by_them() {
         "the place grows by the six steps it unfolds: {folded:?} -> {open:?}"
     );
 }
+
+/// A turn that fails grows its "Request refused" row where it stands, with no pointer over it:
+/// the banner a view adds to a hugging answer arrives, and the place stands it once it has, in
+/// the frames the window draws by itself. Before, it stood only once the pointer moved there.
+#[test]
+fn a_banner_added_to_a_hugging_answer_stands_without_the_pointer() {
+    let card = crate::widget::arrange::Stack::stack()
+        .gap(crate::tokens::Rhythm::Related)
+        .push(Box::new(crate::widget::Text::new(
+            "The model's answer could not be used.",
+        )));
+    let body: Element =
+        Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(card)));
+    let map = Map::new().pin("turn", grown(100.0, 80.0, 420.0, 400.0), body);
+    let mut host =
+        crate::headless::FrameHarness::for_root(crate::State::new(), map, (800, 600), theme());
+    host.relayout();
+    host.recompose().expect("a frame settles");
+    for _ in 0..4 {
+        host.idle();
+    }
+    let laid = |host: &mut crate::headless::FrameHarness| {
+        host.root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<Map>())
+            .expect("the map")
+            .laid
+            .borrow()["turn"]
+    };
+    let before = laid(&mut host);
+    // The view's next tree holds the failure's row: the reconciler inserts it in place.
+    host.with_widget_mut(|scroll: &mut crate::widget::Scrollable| {
+        let stack = scroll
+            .child_mut()
+            .and_then(|child| child.as_any_mut())
+            .and_then(|any| any.downcast_mut::<crate::widget::arrange::Stack>())
+            .expect("the card");
+        let banner =
+            crate::widget::Banner::new(crate::widget::BannerKind::Error, "Request refused");
+        stack.insert(1, crate::widget::arrange::Slot::new(Box::new(banner)));
+    })
+    .expect("the scroll");
+    // The window draws what it asks for, as time passes, and nothing moves the pointer.
+    let started = crate::time::now();
+    while started.elapsed() < std::time::Duration::from_millis(1500) {
+        host.idle();
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+    let banner = host
+        .with_widget_mut(|banner: &mut crate::widget::Banner| banner.get_rect())
+        .expect("the banner");
+    let after = laid(&mut host);
+    assert!(
+        banner.height() > 20.0,
+        "the banner stands in the card at its height: {banner:?}"
+    );
+    assert!(
+        after.height() > before.height() + 20.0,
+        "the place grows by the row it holds: {before:?} -> {after:?}"
+    );
+}

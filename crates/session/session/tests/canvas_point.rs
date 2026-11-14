@@ -173,6 +173,50 @@ fn a_click_puts_the_caret_where_it_points_under_pan_and_zoom() {
     }
 }
 
+/// The first ask after the person switches to the framed canvas is not lost: a click and the words
+/// typed straight after it, with no pause for the caret, stand at the caret and are sent.
+#[test]
+fn the_first_ask_after_switching_to_frames_is_typed_and_sent() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let mut repl = crate::common::Repl::connect(&root.path().join("agent.sock"));
+    repl.opened(&mut session);
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_style(shell.viewing, shown: \"so.tilo.shell:strips\")",
+    );
+    assert!(!failed, "the strips: {answer}");
+    until(&mut session, "the strips", |session| {
+        on_screen(session, CANVAS).is_none()
+    });
+    let (answer, failed) = repl.run(
+        &mut session,
+        "shell.show_style(shell.viewing, shown: \"so.tilo.shell:frames\")",
+    );
+    assert!(!failed, "the frames: {answer}");
+    until(&mut session, "the canvas", |session| {
+        on_screen(session, CANVAS).is_some()
+    });
+    // At once, as a person who switched and clicks to ask does: click, then type.
+    let at = crate::common::free_point(&mut session);
+    click(&mut session, at);
+    crate::common::type_text(&mut session, "what is on my list");
+    until(&mut session, "the words at the caret", |session| {
+        session
+            .shell_drawn_text_bounds("what is on my list")
+            .is_some()
+    });
+    key(&mut session, crate::common::KEY_ENTER);
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
+    });
+}
+
 /// Escape lets go of what was typed at the caret with the caret: the next caret starts empty, and
 /// what is said there is only what is typed there.
 #[test]

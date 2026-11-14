@@ -248,6 +248,11 @@ fn a_turns_words_scroll_inside_its_card() {
     let tree = super::turn(&turn, &view_cx(&channel));
     passes(&tree);
     assert_eq!(tree.kind, "ui.Scroll", "the card scrolls what it holds");
+    assert_eq!(
+        tree.props.get("shows_bar"),
+        Some(&Value::Bool(true)),
+        "a capped answer shows its scroll bar while its words overflow, not only while scrolled"
+    );
     let card = tree.children.first().expect("the card in the scroll");
     assert_eq!(
         card.props.get("padding"),

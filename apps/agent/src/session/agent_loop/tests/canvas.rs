@@ -337,9 +337,11 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
         first.contains("This conversation stands on it, as `chat.workspace/channels/loop`"),
         "{first}"
     );
+    // The request body is JSON: the call's own quotes stand escaped in it.
     assert!(
         first.contains(&format!(
-            "Show a resource: `{}`",
+            "Show a resource: `invoke` with `\\\"operation\\\": \\\"{}\\\"` and \
+             `\\\"parameters\\\": {{\\\"resource\\\": …}}`",
             session_op(SESSION_PEER, "shell:arrangement", "place")
         )),
         "{first}"

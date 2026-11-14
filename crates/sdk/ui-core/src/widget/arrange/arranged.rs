@@ -150,6 +150,26 @@ pub fn wrapper_style() -> Style {
     }
 }
 
+/// A slot's wrapper style around the child whose style is `child`.
+///
+/// A child out of the flow (an absent one, an effect endpoint) takes its slot with it, gap and
+/// all. A view that clips what it holds (a scroll view, a table) asks for the whole height
+/// because that height is its viewport: through a wrapper that hugs its content it would never
+/// see it. The wrapper takes the height the container gives its slots, and the view scrolls
+/// inside it. Where the container has none, both stay as tall as the content.
+fn wrapped(mut style: Style, child: &Style) -> Style {
+    if child.display == taffy::Display::None {
+        style.display = taffy::Display::None;
+    }
+    let full = taffy::style_helpers::percent(1.0_f32);
+    let clips = child.overflow.x != taffy::Overflow::Visible
+        || child.overflow.y != taffy::Overflow::Visible;
+    if child.size.height == full && clips && style.size.height == taffy::Dimension::auto() {
+        style.size.height = full;
+    }
+    style
+}
+
 /// How far `lead` leads come to, in logical pixels.
 #[must_use]
 fn lead_width(lead: i16, resolved: &Resolved) -> f32 {
@@ -193,11 +213,21 @@ pub trait Layout {
     /// The wrapper style of slot `index` for the current arrangement.
     fn slot(&self, index: usize, slot: &Slot, resolved: &Resolved) -> Style;
 
-    /// Decide the arrangement from the allocated size. Returns whether the styles must be
-    /// computed again.
+    /// Whether the arrangement is decided from the allocated size ([`Self::settle`]).
+    fn settles(&self) -> bool {
+        false
+    }
+
+    /// Decide the arrangement from the allocated size. Returns whether the decision differs
+    /// from the one it settled on last, in whichever tree that was.
     fn settle(&mut self, _allocated: Size<f32>, _resolved: &Resolved) -> bool {
         false
     }
+
+    /// The arrangement was settled from the tree the container is placed from: what a host
+    /// reads of it (whether a navigating split is collapsed) is published here, never from a
+    /// tree that was only measured.
+    fn applied(&mut self) {}
 
     /// How many slots the container holds, told before each layout: a layout that arranges by
     /// count (a grid that keeps no empty columns) reads it.
@@ -436,19 +466,16 @@ impl<L: Layout> Arranged<L> {
     }
 
     /// Give every slot whose fit asks for an `aspect` the block size the ratio gives at the
-    /// inline size it was solved at.
+    /// inline size it was solved at in `tree`.
     ///
     /// Taffy derives one size from the other only where the known one is definite in the
     /// style. A slot takes the width its container decides: stretched across a column, a share
     /// of a row, a layer's cell, a grid's column. What is solved is where the ratio applies, so
-    /// the derivation reads the solved width and holds the slot at the height that follows.
-    /// Returns whether any slot's height changed, so the host solves again.
-    fn derive_aspects(&mut self, tree: &mut TaffyTree<()>) -> bool {
-        let mut changed = false;
-        for index in 0..self.slots.len() {
-            let Some(slot) = self.slots.get(index) else {
-                continue;
-            };
+    /// the derivation reads the solved width and holds the slot at the height that follows;
+    /// [`Self::restyle`] gives `tree` the wrapper style that holds it, where it does not yet.
+    fn derive_aspects(&mut self, tree: &TaffyTree<()>) {
+        let rem = self.resolved.rem;
+        for slot in &mut self.slots {
             let Some(ratio) = slot.fit.aspect else {
                 continue;
             };
@@ -462,7 +489,6 @@ impl<L: Layout> Arranged<L> {
             if !(width.is_finite() && width > 0.0 && ratio.is_finite() && ratio > 0.0) {
                 continue;
             }
-            let rem = self.resolved.rem;
             let bounds = |sizing: super::units::Sizing| {
                 (
                     sizing.min.map(|min| min.resolve(rem)),
@@ -480,30 +506,36 @@ impl<L: Layout> Arranged<L> {
             if slot.height.is_some_and(|held| (held - height).abs() < 0.5) {
                 continue;
             }
-            if let Some(slot) = self.slots.get_mut(index) {
-                slot.height = Some(height);
-            }
-            let style = self
-                .slots
-                .get(index)
-                .map(|slot| self.slot_style(index, slot));
-            let Some(style) = style else { continue };
-            if tree.set_style(wrapper, style).is_ok() {
-                changed = true;
-            }
+            slot.height = Some(height);
         }
-        changed
     }
 
-    /// Style the container and its slots again for what the layout settled on. Where the node
-    /// sits in its parent stays as the parent set it: a parent that places it (a virtual list
-    /// positions its rows) changed those after the layout styled it, and settling changes how
-    /// the container arranges its children, not where it is.
+    /// Whether this container's styles follow from the room a solve gave it: an arrangement
+    /// its layout settles from the width (a grid's columns, a split's panes), a lead kept only
+    /// where the column has room for it, or a slot whose height a ratio derives from its width.
+    fn styled_by_room(&self) -> bool {
+        self.layout.settles()
+            || self.lead > 0
+            || self.slots.iter().any(|slot| slot.fit.aspect.is_some())
+    }
+
+    /// Style the container and its slots in `tree` for what the layout settled on, wherever
+    /// `tree` does not hold that style already, and return whether any style there changed.
+    ///
+    /// The comparison is with `tree`, never with what this container set last: one container
+    /// is laid out in more than one tree (a region measures it in a copy of the window's tree
+    /// before it places it), and each tree takes the arrangement its own solve settled on.
+    ///
+    /// How the node sits in its parent stays as the parent set it: a parent that places it (a
+    /// virtual list positions its rows) or grows it into its slot changed those after the
+    /// layout styled it, and settling changes how the container arranges its children, not
+    /// where it is or how its parent sizes it.
     fn restyle(&self, tree: &mut TaffyTree<()>) -> bool {
         let Some(node) = self.node else {
             return false;
         };
         let mut style = self.container_style();
+        let mut changed = false;
         if let Ok(placed) = tree.style(node) {
             style.position = placed.position;
             style.inset = placed.inset;
@@ -512,18 +544,42 @@ impl<L: Layout> Arranged<L> {
             style.justify_self = placed.justify_self;
             style.grid_row = placed.grid_row.clone();
             style.grid_column = placed.grid_column.clone();
+            style.flex_grow = placed.flex_grow;
+            style.flex_shrink = placed.flex_shrink;
+            style.flex_basis = placed.flex_basis;
+            style.min_size.height = placed.min_size.height;
             if placed.position == taffy::Position::Absolute {
                 style.size = placed.size;
                 style.min_size = placed.min_size;
                 style.max_size = placed.max_size;
             }
+            if *placed != style {
+                changed |= tree.set_style(node, style).is_ok();
+            }
         }
-        let mut changed = tree.set_style(node, style).is_ok();
+        self.rewrap(tree) || changed
+    }
+
+    /// Give each slot's wrapper in `tree` the style its child there asks for, where it does not
+    /// hold it: a child that left the flow (a banner on its way in, laid out nowhere while it
+    /// moves) takes its slot with it, and one that came back to rest brings its slot back. The
+    /// child decides that in its own layout hook, after this container was built: a wrapper
+    /// kept at what the child was when the container was built would hold a banner that came to
+    /// rest at no size, and the row it says never stands. Returns whether any changed.
+    fn rewrap(&self, tree: &mut TaffyTree<()>) -> bool {
+        let mut changed = false;
         for (index, slot) in self.slots.iter().enumerate() {
-            if let Some(wrapper) = slot.wrapper {
-                changed |= tree
-                    .set_style(wrapper, self.slot_style(index, slot))
-                    .is_ok();
+            let Some(wrapper) = slot.wrapper else {
+                continue;
+            };
+            let Some(style) = Self::inner_node(tree, wrapper)
+                .and_then(|inner| tree.style(inner).ok())
+                .map(|child| wrapped(self.slot_style(index, slot), child))
+            else {
+                continue;
+            };
+            if tree.style(wrapper).is_ok_and(|held| *held != style) {
+                changed |= tree.set_style(wrapper, style).is_ok();
             }
         }
         changed
@@ -587,11 +643,6 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             let mut style = style;
             // The child grows into a wrapper that is larger than its content (a filled slot).
             if let Ok(current) = tree.style(inner) {
-                // A child out of the flow (an absent one, an effect endpoint) takes its slot
-                // with it, gap and all.
-                if current.display == taffy::Display::None {
-                    style.display = taffy::Display::None;
-                }
                 let mut grown = current.clone();
                 if grown.flex_grow == 0.0 {
                     grown.flex_grow = 1.0;
@@ -600,20 +651,7 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
                 // holds its child to it; the mark is read before the wrapper below takes a
                 // height of its own.
                 let given = style.size.height;
-                // A view that clips what it holds (a scroll view, a table) asks for the whole
-                // height because that height is its viewport: through a wrapper that hugs its
-                // content it would never see it. The wrapper takes the height the container
-                // gives its slots, and the view scrolls inside it. Where the container has
-                // none, both stay as tall as the content.
-                let full = taffy::style_helpers::percent(1.0_f32);
-                let clips = current.overflow.x != taffy::Overflow::Visible
-                    || current.overflow.y != taffy::Overflow::Visible;
-                if current.size.height == full
-                    && clips
-                    && style.size.height == taffy::Dimension::auto()
-                {
-                    style.size.height = full;
-                }
+                style = wrapped(style, current);
                 // A wrapper whose height is given (a filled layer, a filled share of a stack)
                 // holds the child to it: the child shrinks to that height, and what it holds
                 // scrolls or overflows inside it rather than pushing past the wrapper. A layer
@@ -650,27 +688,39 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         let Ok(laid) = tree.layout(node) else {
             return false;
         };
+        if !self.styled_by_room() {
+            return self.rewrap(tree);
+        }
         let allocated = laid.size;
-        let aspects = self.derive_aspects(tree);
+        self.derive_aspects(tree);
         // The column this pass gave the container decides whether what it holds keeps the lead.
         // A change of class is a change of style, solved again on the next pass.
-        let mut room_changed = false;
         if self.lead > 0 {
             // What the column has left once the lead is reserved decides whether it is kept: the
             // box less one lead, which does not change with the answer.
             let room = (allocated.width - lead_width(self.lead, &self.resolved)).max(0.0);
-            let column = WidthClass::with_history(room / self.resolved.rem, self.column);
-            room_changed = self.column != Some(column);
-            self.column = Some(column);
+            self.column = Some(WidthClass::with_history(
+                room / self.resolved.rem,
+                self.column,
+            ));
         }
-        if self.layout.settle(allocated, &self.resolved) || room_changed {
-            return self.restyle(tree) || aspects;
-        }
-        aspects
+        // The arrangement is settled from what this tree allocated, and this tree is styled for
+        // it wherever it is not yet. Whether the layout's decision changed since it last settled
+        // says nothing about this tree: another tree's solve may have settled it.
+        self.layout.settle(allocated, &self.resolved);
+        self.restyle(tree)
     }
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(tree, node, origin);
+        // What this container draws, hit-tests and tells its host is the arrangement of the
+        // tree it is placed from, whichever tree was settled last.
+        if self.layout.settles()
+            && let Ok(laid) = tree.layout(node)
+        {
+            self.layout.settle(laid.size, &self.resolved);
+            self.layout.applied();
+        }
         let start = Point::new(self.rect.x0, self.rect.y0);
         for slot in &mut self.slots {
             let Some(wrapper) = slot.wrapper else {

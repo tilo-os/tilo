@@ -710,7 +710,10 @@ fn invoke_definition() -> ToolDefinition {
              available. Several invokes in one turn run in order as soon as each is \
              written; after a failure the rest of the turn is skipped, except invokes \
              marked `standalone`, which may also run alongside the ones before them. \
-             Put your reply on the last invoke of the task to finish in the same turn.")
+             Put your reply on the last invoke of the task to finish in the same turn. \
+             Every call names its operation: `{\"operation\": \"broker:…#place\", \
+             \"parameters\": {\"resource\": \"…\"}}`; the id goes in `operation`, never in \
+             `parameters` or under another name.")
             .into(),
         input_schema: json!({
             "type": "object",
@@ -719,7 +722,8 @@ fn invoke_definition() -> ToolDefinition {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "description": "An operation id exactly as listed."
+                    "description": "Required: the operation id exactly as listed (`broker:…#action`), at \
+                         the top level beside `parameters`."
                 },
                 INVOKE_PARAMETERS: {
                     "type": "object",
@@ -1383,8 +1387,55 @@ fn call_refused(call: &ToolCall, problem: &str) -> String {
             let _ = write!(answer, " It takes: {}.", takes.join(", "));
         }
     }
+    if call.name == INVOKE
+        && call
+            .input
+            .get("operation")
+            .and_then(Value::as_str)
+            .is_none()
+    {
+        // The shape a model keeps getting wrong is named back to it: where the id it wrote
+        // went, and the call as it is written.
+        if let Some(path) = misplaced_operation(&call.input) {
+            let _ = write!(
+                answer,
+                " The operation id you wrote is under `{path}`: it goes in `operation`, at the \
+                 top level beside `parameters`."
+            );
+        }
+        answer.push_str(
+            " Write it as {\"operation\": \"<the id exactly as listed>\", \"parameters\": {…}}.",
+        );
+    }
     answer.push_str(" Call it again with every required argument present and correctly typed.");
     answer
+}
+
+/// Where an `invoke` that names no `operation` put the operation id it wrote: a key of its own
+/// beside `parameters` (`operation_id`, `id`), or `operation` inside `parameters`. An id is a
+/// listed operation's form, `<resource>#<action>`.
+fn misplaced_operation(input: &Value) -> Option<String> {
+    let looks_like_id = |value: &Value| {
+        value
+            .as_str()
+            .is_some_and(|text| text.contains('#') && !text.contains(char::is_whitespace))
+    };
+    let object = input.as_object()?;
+    for (key, value) in object {
+        if looks_like_id(value) {
+            return Some(key.clone());
+        }
+    }
+    for outer in [INVOKE_PARAMETERS, "arguments"] {
+        if let Some(inner) = object.get(outer).and_then(Value::as_object) {
+            for (key, value) in inner {
+                if looks_like_id(value) {
+                    return Some(format!("{outer}.{key}"));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// What is running, and what could be opened.

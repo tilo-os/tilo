@@ -66,6 +66,60 @@ fn a_malformed_tool_call_is_answered_with_what_was_wrong_and_the_turn_taken_agai
     );
 }
 
+/// A model that wrote the operation id inside `parameters`, the shape it got wrong on the canvas,
+/// is told where the id went and how the call is written, once, and its corrected call finishes
+/// the task: no failed turn.
+#[test]
+fn an_operation_written_inside_parameters_is_named_back_and_the_task_finishes() {
+    let mut f = fixture(
+        "show me my mails",
+        World::default(),
+        vec![
+            turn(
+                &[(
+                    tools::INVOKE,
+                    serde_json::json!({"parameters": {
+                        "operation": "broker:so.tilo.session:shell:arrangement#place",
+                        "resource": "tl:so.tilo.lang.mail:root",
+                    }}),
+                )],
+                24,
+            ),
+            turn(
+                &[finish("Your mails are beside this conversation.", true)],
+                24,
+            ),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 2, "one correction, then the corrected turn");
+    let answer = bodies[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().cloned().unwrap_or_default())
+        .find(|block| block["type"] == "tool_result")
+        .and_then(|block| block["content"].as_str().map(str::to_owned))
+        .expect("the refused call is answered");
+    assert!(
+        answer.contains("under `parameters.operation`"),
+        "it says where the id went: {answer}"
+    );
+    assert!(
+        answer.contains("{\"operation\": \"<the id exactly as listed>\", \"parameters\": {…}}"),
+        "and how the call is written: {answer}"
+    );
+    assert!(
+        matches!(
+            terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded { .. }
+        ),
+        "the task finishes, never on a failed turn: {:?}",
+        terminal(&f.sent.borrow())
+    );
+}
+
 /// A turn where one call is malformed does not run the other calls' actions:
 /// the whole batch is refused and answered, so nothing half of a turn runs.
 #[test]

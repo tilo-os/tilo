@@ -113,6 +113,10 @@ impl Layout for GridLayout {
         style
     }
 
+    fn settles(&self) -> bool {
+        true
+    }
+
     fn settle(&mut self, allocated: Size<f32>, resolved: &Resolved) -> bool {
         let count = self.count_for(allocated.width, resolved);
         let changed = count != self.count;

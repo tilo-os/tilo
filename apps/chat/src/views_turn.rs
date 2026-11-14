@@ -177,8 +177,11 @@ pub(super) fn turn(t: &Turn, cx: &ViewCx) -> Node {
         .insert("padding".to_owned(), Value::text("section"));
     // The card scrolls its words once they come to more than the canvas shows: its place hugs
     // them up to the visible area and no further (canvas.md §7, "Everything stays in view"), and
-    // the words wrap at the card's width and scroll inside it.
-    let scroll = ui::ScrollBuilder::new(&cx.key("turn-scroll")).into();
+    // the words wrap at the card's width and scroll inside it. Its bar stands while they
+    // overflow, as a list's beside it does, so a capped answer says there is more below.
+    let scroll = ui::ScrollBuilder::new(&cx.key("turn-scroll"))
+        .shows_bar(true)
+        .into();
     node::with(scroll, vec![card])
 }
 

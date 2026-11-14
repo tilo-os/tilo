@@ -99,9 +99,10 @@ pub fn canvas_section(
     revealed.reveal(place.id());
     let _ = writeln!(
         s,
-        "Show a resource: `{}` with `resource` (an id below, or one a program answered) and, \
-         when it has several, `view`. Without `x` and `y` it stands beside this conversation, \
-         or the place already showing it comes forward.",
+        "Show a resource: `invoke` with `\"operation\": \"{}\"` and `\"parameters\": \
+         {{\"resource\": …}}` (an id below, or one a program answered; add `\"view\"` beside it \
+         when it has several). Without `x` and `y` it stands beside this conversation, or the \
+         place already showing it comes forward.",
         place.id()
     );
 

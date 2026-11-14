@@ -2073,6 +2073,49 @@ fn persistent_overflow_bar_paints_before_input_and_after_idle_without_ticks() {
     }
 }
 
+/// A scroll a view asks to show its bar (a card held to a height, its words going on below)
+/// paints its thumb, in the theme's thumb ink, from its first frame and with no input: the
+/// person sees there is more before they scroll. The default scroll keeps the overlay bar,
+/// which shows only once it is scrolled.
+#[test]
+fn a_scroll_that_shows_its_bar_paints_it_while_it_overflows_without_input() {
+    use crate::component::Described;
+    use crate::headless::FrameHarness;
+    use crate::widget::{Column, Text};
+    let theme = Theme::dark();
+    for shows_bar in [true, false] {
+        let mut content = Column::new().with_no_padding().with_intrinsic_height();
+        for index in 0..40 {
+            content = content.push(Box::new(Text::new(&format!("Due this week {index}"))));
+        }
+        let scroll = Scrollable::from_props(
+            "turn-scroll",
+            super::component::ScrollProps {
+                shows_bar,
+                content: Some(Box::new(content)),
+                ..super::component::ScrollProps::default()
+            },
+        );
+        let mut host = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(scroll),
+            (400, 300),
+            theme.clone(),
+        );
+        host.with_widget_mut(|scroll: &mut Scrollable| {
+            assert!(scroll.max_offset_y() > 0.0, "the words overflow");
+            let mut scene = Scene::new();
+            scroll.draw_scrollbars(&mut scene, Affine::IDENTITY, &theme);
+            assert_eq!(
+                !scene.encoding().path_tags.is_empty(),
+                shows_bar,
+                "the bar shows at rest exactly when the view asked for it"
+            );
+        })
+        .unwrap();
+    }
+}
+
 #[test]
 fn stable_vertical_gutter_keeps_media_columns_across_overflow() {
     use crate::headless::FrameHarness;

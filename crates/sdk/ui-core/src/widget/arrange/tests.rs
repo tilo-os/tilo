@@ -41,6 +41,60 @@ fn solve_in(root: &mut dyn Widget, theme: &Theme, width: f32, height: taffy::Ava
     root.apply_layout(&tree, node, Point::ZERO);
 }
 
+/// Solve `root` first in a copy of its tree at `measured` wide — as a region that hugs what it
+/// holds measures it before it stands it — and then in the tree itself at `width`, which is the
+/// tree it is placed from.
+fn solve_after_a_copy(root: &mut dyn Widget, theme: &Theme, measured: f32, width: f32) {
+    solve_with_a_copy(root, theme, measured, width, true);
+}
+
+/// Solve `root` in its tree at `width`, then measure it in a copy at `measured` wide (a region
+/// measuring it again on a later pass), and place it from its own tree.
+fn solve_before_a_copy(root: &mut dyn Widget, theme: &Theme, measured: f32, width: f32) {
+    solve_with_a_copy(root, theme, measured, width, false);
+}
+
+fn solve_with_a_copy(
+    root: &mut dyn Widget,
+    theme: &Theme,
+    measured: f32,
+    width: f32,
+    copy_first: bool,
+) {
+    let mut tree = TaffyTree::new();
+    let mut nodes: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+    let node = root.build_layout(&mut tree, theme, &mut nodes);
+    let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+    let mut text = crate::font_catalog::fixture_renderer();
+    let mut copy = tree.clone();
+    let available = |width: f32| taffy::Size {
+        width: taffy::AvailableSpace::Definite(width),
+        height: taffy::AvailableSpace::MaxContent,
+    };
+    // SAFETY: exact live, exclusively owned widget tree and matching maps; the copy holds the
+    // same node ids, as a region's measuring copy does.
+    unsafe {
+        bindings.rebuild(root, &tree, node, &nodes);
+        for in_copy in [copy_first, !copy_first] {
+            let (solved, at) = if in_copy {
+                (&mut copy, measured)
+            } else {
+                (&mut tree, width)
+            };
+            crate::widget::compute_widget_layout(
+                solved,
+                node,
+                available(at),
+                &nodes,
+                &bindings,
+                &mut text,
+            )
+            .expect("settles");
+        }
+    }
+    root.apply_layout(&tree, node, Point::ZERO);
+}
+
 fn boxed(size: f32) -> crate::widget::Element {
     Box::new(Spacer::fixed(size))
 }
@@ -497,6 +551,87 @@ fn a_navigating_split_shows_one_pane_and_a_drawer_opens_the_other() {
     drawer.layout_mut().set_drawer_open(true);
     solve(&mut drawer, &theme, 300.0);
     assert!(!drawer.layout().hidden(1));
+}
+
+/// A grid measured in a copy of the window's tree first (a hugging place on the canvas does)
+/// still stands its columns in the window's own tree.
+#[test]
+fn a_grid_measured_in_a_copy_stands_its_columns_in_the_tree_it_is_placed_from() {
+    let theme = Theme::dark();
+    let mut grid = grid_of(12, 11.0);
+    solve_after_a_copy(&mut grid, &theme, 1000.0, 1000.0);
+    let columns = usize::from(grid.layout().columns());
+    assert!(columns > 1, "a wide grid has several columns");
+    let r = rects(&grid);
+    for item in 1..columns {
+        assert!(
+            (r[item].y0 - r[0].y0).abs() < 0.5 && r[item].x0 > r[item - 1].x0,
+            "item {item} stands in the first row beside the one before it: {r:?}"
+        );
+    }
+    assert!(
+        r[columns].y0 > r[0].y1 - 0.5,
+        "item {columns} starts the second row"
+    );
+}
+
+/// A split measured in a copy first stands collapsed in the window's own tree when that is
+/// where it is narrow, and a navigating split shows the pane its host asked for there.
+#[test]
+fn a_split_measured_in_a_copy_collapses_in_the_tree_it_is_placed_from() {
+    let theme = Theme::dark();
+    let mut narrow = split();
+    solve_after_a_copy(&mut narrow, &theme, 300.0, 300.0);
+    assert!(narrow.layout().collapsed());
+    let r = rects(&narrow);
+    assert!(
+        r[1].y0 >= r[0].y1,
+        "the secondary pane stands under the primary in the window's tree: {r:?}"
+    );
+
+    let mut navigate = split().collapse(Collapse::Navigate);
+    let navigation = navigate.navigation();
+    navigation.show(Pane::Secondary);
+    solve_after_a_copy(&mut navigate, &theme, 300.0, 300.0);
+    let r = rects(&navigate);
+    assert!(
+        r[0].width() < 0.5 && r[1].width() > 0.5,
+        "only the secondary pane the host asked for stands: {r:?}"
+    );
+    assert!(navigation.detail_alone());
+}
+
+/// What a navigating split tells its host is how it stands in the tree it is placed from, not
+/// in a copy measured at another width.
+#[test]
+fn a_navigating_split_tells_its_host_how_it_stands_where_it_is_placed() {
+    let theme = Theme::dark();
+    let mut navigate = split().collapse(Collapse::Navigate);
+    let navigation = navigate.navigation();
+    // Placed wide, then measured narrow on a later pass (a min-content contribution).
+    solve_before_a_copy(&mut navigate, &theme, 300.0, 1400.0);
+    assert!(
+        !navigation.collapsed(),
+        "the split stands side by side where it is placed"
+    );
+    assert!(
+        !navigate.layout().hidden(1),
+        "and draws both panes it stands"
+    );
+    let r = rects(&navigate);
+    assert!(r[1].x0 > r[0].x0 && (r[0].y0 - r[1].y0).abs() < 0.5);
+    // And the other way round.
+    let mut navigate = split().collapse(Collapse::Navigate);
+    let navigation = navigate.navigation();
+    solve_before_a_copy(&mut navigate, &theme, 1400.0, 300.0);
+    assert!(
+        navigation.collapsed(),
+        "the split is collapsed where it is placed"
+    );
+    assert!(
+        navigate.layout().hidden(1),
+        "and draws the one pane it shows"
+    );
 }
 
 #[test]

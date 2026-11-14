@@ -90,7 +90,6 @@ pub struct SplitLayout {
     /// The pane `Navigate` shows, and whether the `Drawer` is open.
     shown: Pane,
     drawer_open: bool,
-    dirty: bool,
     /// A host's handle on the pane shown and the collapse, when it asked for one.
     navigation: Option<Navigation>,
 }
@@ -121,19 +120,13 @@ impl SplitLayout {
     }
 
     /// Show `pane` while navigating.
-    pub fn show(&mut self, pane: Pane) {
-        if self.shown != pane {
-            self.shown = pane;
-            self.dirty = true;
-        }
+    pub const fn show(&mut self, pane: Pane) {
+        self.shown = pane;
     }
 
     /// Open or close the drawer.
-    pub fn set_drawer_open(&mut self, open: bool) {
-        if self.drawer_open != open {
-            self.drawer_open = open;
-            self.dirty = true;
-        }
+    pub const fn set_drawer_open(&mut self, open: bool) {
+        self.drawer_open = open;
     }
 
     #[must_use]
@@ -217,6 +210,13 @@ impl Layout for SplitLayout {
         style
     }
 
+    fn settles(&self) -> bool {
+        true
+    }
+
+    /// The arrangement for the width this solve allocated, and the pane a host's navigation
+    /// asks for. Whether the collapse is told to the host waits for [`Self::applied`]: a solve
+    /// in a copy of the window's tree (a region measuring the split) is not where it stands.
     fn settle(&mut self, allocated: Size<f32>, resolved: &Resolved) -> bool {
         let arrangement = arrangement_for(
             allocated.width,
@@ -224,20 +224,22 @@ impl Layout for SplitLayout {
             self.secondary_min.resolve(resolved.rem),
             resolved.gap(self.gap),
         );
-        let mut changed = arrangement != self.arrangement || self.dirty;
+        let mut changed = arrangement != self.arrangement;
         self.arrangement = arrangement;
-        self.dirty = false;
         if let Some(navigation) = &self.navigation {
             let wanted = navigation.shown();
-            if wanted != self.shown {
-                self.shown = wanted;
-                changed = true;
-            }
-            navigation
-                .collapsed
-                .set(arrangement == Arrangement::Collapsed);
+            changed |= wanted != self.shown;
+            self.shown = wanted;
         }
         changed
+    }
+
+    fn applied(&mut self) {
+        if let Some(navigation) = &self.navigation {
+            navigation
+                .collapsed
+                .set(self.arrangement == Arrangement::Collapsed);
+        }
     }
 
     fn hidden(&self, index: usize) -> bool {
@@ -271,7 +273,6 @@ impl Arranged<SplitLayout> {
             arrangement: Arrangement::SideBySide,
             shown: Pane::Primary,
             drawer_open: false,
-            dirty: false,
             navigation: None,
         })
     }

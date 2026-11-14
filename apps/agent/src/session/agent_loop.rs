@@ -1635,10 +1635,25 @@ impl Session {
                     && state.malformed_turns < MOST_MALFORMED_TURNS
                 {
                     state.malformed_turns += 1;
+                    // What the model sent, as it sent it: the record of a refused call is the
+                    // call, not only the parser's reason.
+                    let sent = conversation
+                        .read_calls(raw)
+                        .map(|calls| {
+                            calls
+                                .iter()
+                                .map(|call| {
+                                    format!("{}({})", call.name, head(&call.input.to_string(), 600))
+                                })
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        })
+                        .unwrap_or_default();
                     tracing::info!(
                         turn,
                         %error,
                         calls = refused.len(),
+                        %sent,
                         "the model's calls were refused; answering them with what was wrong"
                     );
                     conversation

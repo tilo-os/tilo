@@ -4465,6 +4465,11 @@
           "name": "both",
           "doc": "Scroll both ways: a 2D surface whose content is wider and taller than its column, such as a desk of strips. Takes precedence over `across`.",
           "type": "bool"
+        },
+        {
+          "name": "shows_bar",
+          "doc": "Show the bar for as long as the content overflows, not only while it is scrolled: a card held to a height whose words go on below it, so the person sees there is more.",
+          "type": "bool"
         }
       ],
       "slots": [
