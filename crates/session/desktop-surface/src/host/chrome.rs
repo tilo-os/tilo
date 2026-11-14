@@ -337,10 +337,6 @@ pub enum ChromeIntent {
     /// Delete the active workspace, with everything in it, now: the person already answered a
     /// question of their own about it.
     DeleteWorkspaceConfirmed,
-    /// Open or close the menu behind the bar's Tilo mark
-    /// ([`crate::topbar::TopBarChrome::with_tilo_mark`]), under
-    /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].
-    ToggleTiloMenu,
     /// Open or close the menu behind the workspace name, under
     /// [`crate::topbar::TopBarChrome::workspace_menu_rect`] — or, `at` a place on the desk a
     /// secondary press named, standing there instead: the same menu, offering the desk's own

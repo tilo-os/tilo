@@ -524,7 +524,7 @@ impl Shared {
             // Deleting is the desk's, which asks the person first: the desk's own action is the
             // only thing that deletes.
             DELETE_WORKSPACE => self.ask_desk_to_delete(),
-            // The Tilo menu's own rows, and the same effects the power menu's choices are.
+            // The session's own rows, and the same effects the power menu's choices are.
             SESSION_LOCK => self.power_effect(PowerEffect::Lock),
             SESSION_LOG_OUT => self.power_effect(PowerEffect::LogOut),
             SESSION_RESTART => self.power_effect(PowerEffect::Restart),
@@ -623,8 +623,8 @@ impl Shared {
         }
     }
 
-    /// Carry out a power effect the person chose: the power menu's rows,
-    /// the Tilo menu's and a published action all name the same effects.
+    /// Carry out a power effect the person chose: the power menu's rows and a
+    /// published action name the same effects.
     pub(crate) fn power_effect(&self, effect: PowerEffect) {
         match effect {
             PowerEffect::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),

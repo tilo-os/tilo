@@ -1212,7 +1212,7 @@ tilo_test_env::scenario! {
             .iter()
             .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_TILO_MARK))
             .expect("the mark is a semantic child");
-        assert_eq!(child.name.as_deref(), Some("Tilo menu"));
+        assert_eq!(child.name.as_deref(), Some("Workspace overview"));
         assert_eq!(child.role, ui::a11y::Role::Button);
 
         bar.last_cursor = Some(mark.center());
@@ -1226,7 +1226,7 @@ tilo_test_env::scenario! {
             .borrow()
             .intents
             .iter()
-            .filter(|intent| matches!(intent, ChromeIntent::ToggleTiloMenu))
+            .filter(|intent| matches!(intent, ChromeIntent::ToggleOverview))
             .count();
         assert_eq!(asked, 2, "a click and Enter each ask once");
     }

@@ -143,7 +143,7 @@ impl OverviewPanel {
         let caption = tokens.typography.style(TextRole::Caption);
         text.draw_style(
             scene,
-            &t("overview-go-to"),
+            &t("overview-workspaces"),
             colors.text_tertiary,
             transform
                 .pre_translate((content.x0, self.list_caption_top() + m.caption_text_dy).into()),

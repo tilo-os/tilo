@@ -25,7 +25,7 @@ mod shortcut_actions;
 mod tests;
 
 use super::{PlainOverview, close_tab, column, fill, grow, wake_deadline};
-use crate::about::TiloMenu;
+use crate::about::AboutSheet;
 use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::control_hints::{ControlHints, HintFrame, HintsFeed};
 use crate::desk_verbs::chrome_resource;
@@ -68,7 +68,7 @@ pub struct DesktopChrome {
     placement: Placement,
     bars_revision: u64,
     overview: OverviewPanel,
-    tilo_menu: TiloMenu,
+    about: AboutSheet,
     workspace_menu: WorkspaceMenu,
     /// What the person can do to the window in front, at its window. Where the person is in the
     /// workspace (the strip ribbon grown into the strip switcher, and the window rail).
@@ -96,7 +96,7 @@ pub struct DesktopChrome {
     overview_open: Option<Rc<Cell<bool>>>,
     /// What the overview's panel last said of itself.
     overview_said: bool,
-    /// Whether the bar last drew its Tilo mark pressed (its menu open).
+    /// Whether the bar last drew its Tilo mark pressed (the overview open).
     menu_shown: Cell<bool>,
     handle: DesktopHandle,
     generation: String,
@@ -224,7 +224,7 @@ impl PaintedOverlay {
 impl DesktopChrome {
     /// The chrome over the desktop `handle` drives: `bar` (its source
     /// answering the clock, the person and their notifications) and
-    /// `tilo_menu`, under `rules`. Commands it sends carry `generation`;
+    /// `about`, under `rules`. Commands it sends carry `generation`;
     /// `mac` reads chords with a Mac's keys.
     #[must_use]
     pub fn new(
@@ -232,7 +232,7 @@ impl DesktopChrome {
         generation: String,
         rules: Rc<dyn DesktopRules>,
         bar: TopBarChrome,
-        tilo_menu: TiloMenu,
+        about: AboutSheet,
         mac: bool,
     ) -> Self {
         let search = SearchOverlay::new(handle.clone());
@@ -243,7 +243,7 @@ impl DesktopChrome {
             placement: Placement::default(),
             bars_revision: u64::MAX,
             overview: OverviewPanel::new(),
-            tilo_menu,
+            about,
             workspace_menu: WorkspaceMenu::new(),
             navigator: StripNavigator::default(),
             emoji: ui::widget::EmojiPicker::sheet(),
@@ -453,11 +453,6 @@ impl DesktopChrome {
             .collect()
     }
 
-    /// The Tilo menu behind the bar's mark.
-    pub fn tilo_menu_mut(&mut self) -> &mut TiloMenu {
-        &mut self.tilo_menu
-    }
-
     /// Whether the overview is open over the desk.
     #[must_use]
     pub fn overview_open(&self) -> bool {
@@ -467,7 +462,7 @@ impl DesktopChrome {
     /// Whether a menu the chrome opened is up.
     #[must_use]
     pub fn menu_open(&self) -> bool {
-        self.tilo_menu.is_open() || self.workspace_menu.is_open()
+        self.workspace_menu.is_open()
     }
 
     /// Say what the chrome's own surfaces are to the stack: which are up and which are gone.
@@ -479,8 +474,6 @@ impl DesktopChrome {
         // them: a press on the desk reaches the desk, not the chrome over it.
         self.overlays
             .stands(Slot::WorkspaceMenu, self.workspace_menu.panel_rect());
-        self.overlays
-            .stands(Slot::TiloMenu, self.tilo_menu.menu_rect());
         let centre = self.notices.as_ref().and_then(NotificationLayer::panel);
         self.overlays.stands(Slot::Centre, centre);
         self.overlays
@@ -490,7 +483,6 @@ impl DesktopChrome {
             (Slot::WorkspaceMenu, self.workspace_menu.is_open()),
             // The name typed in the bar holds the keyboard until Enter or Escape ends it.
             (Slot::WorkspaceName, self.bar.renaming_workspace()),
-            (Slot::TiloMenu, self.tilo_menu.is_open()),
             (Slot::Overview, self.overview.is_open()),
             (Slot::Strips, self.navigator.takes_keys()),
             (Slot::Search, self.search.is_open()),
@@ -537,10 +529,6 @@ impl DesktopChrome {
         if self.bar.renaming_workspace() && !self.overlays.is_open(Slot::WorkspaceName) {
             self.bar.cancel_workspace_rename();
             self.overlays.close(Slot::WorkspaceName);
-        }
-        if self.tilo_menu.is_menu_open() && !self.overlays.is_open(Slot::TiloMenu) {
-            self.tilo_menu.toggle(Rect::ZERO, self.rect);
-            self.overlays.close(Slot::TiloMenu);
         }
         if self.navigator.takes_keys() && !self.overlays.is_open(Slot::Strips) {
             self.navigator.close();
@@ -822,9 +810,6 @@ impl DesktopChrome {
 
     /// Close the menus the chrome opened: the host opens a popover of its own, one at a time.
     pub fn close_menus(&mut self) {
-        if self.tilo_menu.is_menu_open() {
-            self.tilo_menu.toggle(Rect::ZERO, self.rect);
-        }
         self.workspace_menu.close();
     }
 
@@ -890,9 +875,6 @@ impl DesktopChrome {
                 if at.is_none() && self.overlays.dismissed_recently(Slot::WorkspaceMenu) {
                     return;
                 }
-                if self.tilo_menu.is_menu_open() {
-                    self.tilo_menu.toggle(Rect::ZERO, self.rect);
-                }
                 let model = self.workspace_menu_model(at.is_some());
                 match at {
                     Some((x, y)) => self.workspace_menu.open_at(
@@ -909,7 +891,12 @@ impl DesktopChrome {
                     }
                 }
             }
-            ChromeIntent::ToggleOverview => self.toggle_overview(),
+            // The Tilo mark zooms out of the workspace to the overview of the person's Tilo, and
+            // back in; the bar's popovers close under it.
+            ChromeIntent::ToggleOverview => {
+                self.workspace_menu.close();
+                self.toggle_overview();
+            }
             // The bell in the status cluster: the centre it counts is this layer's to open and
             // close, where quick settings is the session's.
             ChromeIntent::ToggleNotifications => {
@@ -932,12 +919,6 @@ impl DesktopChrome {
                 if let Err(refusal) = self.delete_workspace(None, Some(true)) {
                     self.handle.acknowledge(refusal);
                 }
-            }
-            // The Tilo mark zooms out of the workspace to the overview of the person's Tilo, and
-            // back in.
-            ChromeIntent::ToggleTiloMenu => {
-                self.workspace_menu.close();
-                self.toggle_overview();
             }
             // The strip's name in the bar opens the strip switcher, as a menu on the shown strip.
             ChromeIntent::ShowStrips => self
@@ -1973,8 +1954,7 @@ impl DesktopChrome {
     /// Whether something of the chrome holds the bars shown: one of the bar's menus or cards, an
     /// overlay it opened, or the keyboard in it.
     fn holds_bar_open(&self) -> bool {
-        self.tilo_menu.is_menu_open()
-            || self.workspace_menu.is_open()
+        self.workspace_menu.is_open()
             || self.navigator.is_open()
             || self.emoji.is_open()
             || self.bar.holds_itself_shown()
@@ -2003,19 +1983,11 @@ impl DesktopChrome {
                 }
                 return Ok(true);
             }
-            // The Tilo mark's verb: the overview of the person's Tilo, zoomed out to or back from.
-            ChromeEffect::TiloMenu { open } => {
-                let open = open.unwrap_or(!self.overview.is_open());
-                if self.overview.is_open() == open {
-                    return Ok(true);
-                }
-                ChromeIntent::ToggleTiloMenu
-            }
             // The About sheet, as the chrome's `about` verb shows it.
             ChromeEffect::About { open } => {
-                let open = open.unwrap_or(!self.tilo_menu.is_about_open());
-                if self.tilo_menu.is_about_open() != open {
-                    self.tilo_menu.set_about_open(open);
+                let open = open.unwrap_or(!self.about.is_about_open());
+                if self.about.is_about_open() != open {
+                    self.about.set_about_open(open);
                 }
                 return Ok(true);
             }
@@ -2267,15 +2239,15 @@ impl Widget for DesktopChrome {
             self.overview.set_desk(desk);
             changed = true;
         }
-        changed |= self.tilo_menu.settle();
+        changed |= self.about.settle();
         if let Some(choice) = self.workspace_menu.take_choice() {
             self.apply_workspace_choice(choice);
             changed = true;
         }
         // The mark reads as pressed while the overview it zoomed out to is up.
-        let menu_open = self.tilo_menu.is_menu_open() || self.overview.is_open();
-        if self.menu_shown.replace(menu_open) != menu_open {
-            self.bar.set_tilo_menu_open(menu_open);
+        let overview_open = self.overview.is_open();
+        if self.menu_shown.replace(overview_open) != overview_open {
+            self.bar.set_overview_open(overview_open);
             changed = true;
         }
         changed |= self.bar.update(state, path);
@@ -2326,10 +2298,10 @@ impl Widget for DesktopChrome {
         };
         style.size = Size::auto();
         let _ = taffy.set_style(overview, style);
-        let tilo_menu = self.tilo_menu.build_layout(taffy, theme, map);
+        let about = self.about.build_layout(taffy, theme, map);
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
         let search = self.search.build_layout(taffy, theme, map);
-        let mut kids = vec![bar, content, overview, tilo_menu, workspace_menu, search];
+        let mut kids = vec![bar, content, overview, about, workspace_menu, search];
         if let Some(notices) = self.notices.as_mut() {
             kids.push(notices.build_layout(taffy, theme, map));
         }
@@ -2362,7 +2334,7 @@ impl Widget for DesktopChrome {
             bar,
             content,
             overview,
-            tilo_menu,
+            about,
             workspace_menu,
             search,
             compact @ ..,
@@ -2373,7 +2345,7 @@ impl Widget for DesktopChrome {
         self.bar.apply_layout(taffy, *bar, inner);
         self.content = ui::widget::layout_rect(taffy, *content, inner);
         self.overview.apply_layout(taffy, *overview, inner);
-        self.tilo_menu.apply_layout(taffy, *tilo_menu, inner);
+        self.about.apply_layout(taffy, *about, inner);
         self.workspace_menu
             .apply_layout(taffy, *workspace_menu, inner);
         self.search.apply_layout(taffy, *search, inner);
@@ -2468,7 +2440,7 @@ impl Widget for DesktopChrome {
             bar,
             _,
             overview,
-            tilo_menu,
+            about,
             workspace_menu,
             search,
             compact @ ..,
@@ -2514,15 +2486,15 @@ impl Widget for DesktopChrome {
             self.publish_overlays();
             return;
         }
-        // The bar's menus take what they cover, the keyboard and the press that dismisses them, in
-        // the order the stack stands them: the workspace's over the Tilo mark's.
+        // The workspace's menu takes what it covers, the keyboard and the press that dismisses it,
+        // in the order the stack stands it.
         if self.overlays.is_open(Slot::WorkspaceMenu) {
             self.workspace_menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, *workspace_menu));
         }
-        if !*ctx.handled && self.overlays.is_open(Slot::TiloMenu) {
-            self.tilo_menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *tilo_menu));
+        if !*ctx.handled && self.about.is_about_open() {
+            self.about
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *about));
         }
         let (notices, compact) = Self::notices_node(self.notices.is_some(), compact);
         self.notices_event(event, ctx, notices);
@@ -2573,7 +2545,7 @@ impl Widget for DesktopChrome {
         let mut children: Vec<&dyn Widget> = vec![
             &self.bar,
             &self.overview,
-            &self.tilo_menu,
+            &self.about,
             &self.workspace_menu,
             &self.search,
         ];
@@ -2586,7 +2558,7 @@ impl Widget for DesktopChrome {
     /// so a reader standing in the emoji card stays there as the chrome
     /// rebuilds under it rather than falling back to the window.
     fn is_focusable(&self) -> bool {
-        self.overlays.target().slot().is_some_and(Slot::is_chrome)
+        self.about.is_about_open() || self.overlays.target().slot().is_some_and(Slot::is_chrome)
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -2668,7 +2640,7 @@ impl Widget for DesktopChrome {
         let mut children: Vec<&mut (dyn Widget + '_)> = vec![
             &mut self.bar,
             &mut self.overview,
-            &mut self.tilo_menu,
+            &mut self.about,
             &mut self.workspace_menu,
             &mut self.search,
         ];
@@ -2730,7 +2702,7 @@ impl Widget for DesktopChrome {
         [
             &self.bar as &dyn Widget,
             &self.overview,
-            &self.tilo_menu,
+            &self.about,
             &self.search,
         ]
         .into_iter()

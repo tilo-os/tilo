@@ -40,8 +40,6 @@ pub enum Slot {
     WorkspaceMenu,
     /// The workspace's name on the bar, being typed: its menu's Rename turns the name into a field.
     WorkspaceName,
-    /// The menu behind the bar's Tilo mark.
-    TiloMenu,
     /// The notification centre, under the bar's trailing end.
     Centre,
     /// The workspace overview.
@@ -55,13 +53,12 @@ pub enum Slot {
 
 impl Slot {
     /// Every slot, topmost first.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::Search,
         Self::Emoji,
         Self::WindowMenu,
         Self::WorkspaceMenu,
         Self::WorkspaceName,
-        Self::TiloMenu,
         Self::Centre,
         Self::Overview,
         Self::Strips,
@@ -77,7 +74,6 @@ impl Slot {
             Self::WindowMenu => "window-menu",
             Self::WorkspaceMenu => "workspace-menu",
             Self::WorkspaceName => "workspace-name",
-            Self::TiloMenu => "tilo-menu",
             Self::Centre => "centre",
             Self::Overview => "overview",
             Self::Strips => "strips",
@@ -100,7 +96,6 @@ impl Slot {
             Self::WindowMenu
             | Self::WorkspaceMenu
             | Self::WorkspaceName
-            | Self::TiloMenu
             | Self::Centre
             | Self::QuickSettings => Role::Popup,
         }
@@ -121,7 +116,7 @@ impl Slot {
             Self::Overview | Self::Strips => Anchor::Fill,
             Self::Search | Self::Emoji => Anchor::Center,
             Self::WindowMenu => Anchor::At(Point::ZERO),
-            Self::WorkspaceMenu | Self::WorkspaceName | Self::TiloMenu => Anchor::TopLeading(0.0),
+            Self::WorkspaceMenu | Self::WorkspaceName => Anchor::TopLeading(0.0),
             Self::Centre | Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),
         }
     }
@@ -866,10 +861,10 @@ mod tests {
         phase one_anchored_surface_stands_at_a_time;
         {
             let overlays = overlays();
-            overlays.open(Slot::TiloMenu, None);
+            overlays.open(Slot::WorkspaceMenu, None);
             overlays.open(Slot::Strips, None);
             assert!(
-                !overlays.is_open(Slot::TiloMenu),
+                !overlays.is_open(Slot::WorkspaceMenu),
                 "the strip labels came up, and the menu went down with them"
             );
             overlays.open(Slot::QuickSettings, None);

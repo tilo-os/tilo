@@ -45,7 +45,7 @@ pub(crate) struct Sheets {
 }
 
 /// What this session offers of locking and the computer's power, for the power menu and for the
-/// rows the Tilo menu and search list: the host's power is the host's, so a session in a window of
+/// rows search lists: the host's power is the host's, so a session in a window of
 /// another desktop offers no switching user, suspending or restarting, and a session that could not
 /// be left again offers no locking. Something to show the lock is always there — the lock screen's
 /// app, or the session's own view of it — so a password that can be checked is all locking needs.

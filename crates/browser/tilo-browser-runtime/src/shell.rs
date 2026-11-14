@@ -1,7 +1,7 @@
 //! The desktop's chrome in the page, from `tilo-desktop`'s widgets: the
 //! native shell's backdrop, its top bar over the strip, the launchpad on a
-//! desk with no windows yet, the overview panel, and the menu behind
-//! the bar's Tilo mark with the About sheet saying what this is.
+//! desk with no windows yet, the overview panel the bar's Tilo mark opens,
+//! and the About sheet saying what this is.
 //!
 //! Desktop chords are the native shell's, read from the same shortcut
 //! table ([`tilo_desktop::shortcuts`]), where the browser passes Super
@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use crate::guide::PageGuide;
 use crate::over_page::OverSheet as _;
-use tilo_desktop::about::{AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutSheet, AboutVariant};
 use tilo_desktop::chrome::{ChromeIntent, DesktopChromeSource};
 use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk, DesktopChrome};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
@@ -131,7 +131,7 @@ const DEVICES_ACCESS: &str = tilo_session::people::DEVICES_ACCESS;
 /// The popovers the bar opens, one at a time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BarPopover {
-    /// The desktop chrome's own: the Tilo menu or the workspace menu.
+    /// The desktop chrome's own: the overview or the workspace menu.
     Chrome,
     Profile,
     /// The ask about the person, open beside their avatar.
@@ -675,11 +675,7 @@ impl BrowserShell {
             .with_tilo_mark()
             // A phone shows the time above the page: the bar's own would say it twice.
             .with_device_clock();
-        let mut tilo_menu = TiloMenu::new(AboutVariant::Browser, &offers.about);
-        // Offered only where the page holds a destination for reports.
-        if chrome.shared.feedback.borrow().is_some() {
-            tilo_menu = tilo_menu.with_feedback();
-        }
+        let about = AboutSheet::new(AboutVariant::Browser, &offers.about);
         let desk = page_desk(surface, &handle);
         // The desktop's shortcut table keeps the native defaults: the page
         // keeps no device settings to rebind them in.
@@ -688,7 +684,7 @@ impl BrowserShell {
             generation,
             source.clone(),
             bar,
-            tilo_menu,
+            about,
             offers.mac,
         );
         let walk = tilo_session::switcher::WindowWalk::new(handle.clone());
@@ -1104,28 +1100,6 @@ impl BrowserShell {
         })
     }
 
-    /// Feedback about the window in front, in the one private composer.
-    fn open_feedback(&self) {
-        let subject = match self.front() {
-            // Asked again from the composer: it keeps its subject.
-            tilo_desktop::feedback::Focused::Composer => None,
-            tilo_desktop::feedback::Focused::Nothing => Some(None),
-            tilo_desktop::feedback::Focused::App(subject) => Some(Some(subject)),
-        };
-        if let (Some(subject), Some(feedback)) =
-            (subject, self.chrome.shared.feedback.borrow().as_ref())
-            && let Err(error) = feedback.about(subject)
-        {
-            web_sys::console::warn_1(&format!("feedback: {error}").into());
-        }
-        match self.handle.read(tilo_desktop::feedback::composer_tab) {
-            Some((.., tab)) => {
-                self.handle.focus_tab(tab);
-            }
-            None => self.launch(tilo_desktop::feedback::PACKAGE),
-        }
-    }
-
     /// Point at what is wrong: the picker, where the page holds a
     /// destination for reports.
     fn report_problem(&mut self) {
@@ -1237,7 +1211,7 @@ impl BrowserShell {
         };
         if matches!(
             intent,
-            ChromeIntent::ToggleTiloMenu | ChromeIntent::ToggleWorkspaceMenu { .. }
+            ChromeIntent::ToggleOverview | ChromeIntent::ToggleWorkspaceMenu { .. }
         ) {
             // One popover from the bar at a time.
             self.close_bar_popovers_except(BarPopover::Chrome);
@@ -1849,13 +1823,8 @@ impl Widget for BrowserShell {
         self.invitable.set(self.chrome.may_invite());
         let following = self.following();
         self.chrome.here.borrow_mut().set_following(following);
-        if self.top.tilo_menu_mut().take_feedback() {
-            self.open_feedback();
-            changed = true;
-        }
         if self.chrome.shared.adopt_feedback() {
-            // The page holds a destination now: the Tilo menu offers it too.
-            self.top.tilo_menu_mut().offer_feedback();
+            // The page holds a destination now: reports go where it says.
             changed = true;
         }
         changed |= self.follow_picker();

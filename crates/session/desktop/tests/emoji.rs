@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::emoji::{EmojiLink, EmojiPlace};
 use tilo_desktop::topbar::TopBarChrome;
@@ -98,7 +98,7 @@ fn chrome_with_picker(
         "g".into(),
         Rc::new(PermissiveRules::new(handle.clone())),
         TopBarChrome::from_tree(&tree),
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
     chrome.set_emoji(link.clone());

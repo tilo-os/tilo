@@ -155,7 +155,7 @@ impl TopBarChrome {
                 .map_or_else(|| t("topbar-app-tray-item"), |slot| slot.title.clone());
         }
         match target {
-            Self::CONTROL_TILO_MARK => t("topbar-tilo-menu"),
+            Self::CONTROL_TILO_MARK => t("overview-title"),
             Self::CONTROL_WORKSPACE_SETTINGS => t_args(
                 "topbar-workspace-menu",
                 &[("workspace", self.workspace_name.as_str().into())],
@@ -280,7 +280,7 @@ impl TopBarChrome {
             return;
         };
         let intent = if self.tilo_mark.is_some() && self.tilo_mark_rect.contains(p) {
-            ChromeIntent::ToggleTiloMenu
+            ChromeIntent::ToggleOverview
         } else if self.ws_strip_rect.contains(p) {
             ChromeIntent::ShowStrips
         } else if self.ws_pill_rect.contains(p) {
@@ -390,7 +390,7 @@ impl TopBarChrome {
             });
         }
         let intent = match target {
-            Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => ChromeIntent::ToggleTiloMenu,
+            Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => ChromeIntent::ToggleOverview,
             Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceMenu { at: None },
             Self::CONTROL_STRIP_NAME => ChromeIntent::ShowStrips,
             Self::CONTROL_PROFILE => ChromeIntent::ToggleProfile,

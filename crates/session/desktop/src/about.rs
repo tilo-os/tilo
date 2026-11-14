@@ -2,10 +2,8 @@
 //! system, where it runs, which version, and where to go next (tilo.so, to get it; be told when it
 //! comes to your computer, its source, its community).
 //! [`AboutVariant`] picks the words for where Tilo runs, [`AboutLinks`] is the deployment's set of
-//! links (one left empty is not offered) and [`about_view`] lays them out. [`TiloMenu`] is the
-//! small menu behind the top bar's Tilo mark ([`crate::topbar::TopBarChrome::with_tilo_mark`]) and
-//! the About sheet it opens; a host shows it under the mark when the bar asks with
-//! [`crate::chrome::ChromeIntent::ToggleTiloMenu`].
+//! links (one left empty is not offered) and [`about_view`] lays them out. [`AboutSheet`] shows
+//! them over the window the person asked from, opened by the chrome's `about` verb.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -16,9 +14,7 @@ use ui::TextRole;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{
-    Column, ContextMenu, Link, MenuItem, ModalDialog, Row, TaffyTreeExt as _, Text, Widget,
-};
+use ui::widget::{Column, Link, ModalDialog, Row, TaffyTreeExt as _, Text, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -101,9 +97,8 @@ impl<'de> serde::Deserialize<'de> for AboutLinks {
 /// The About sheet's words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AboutCopy {
-    /// The sheet's title, and the menu entry that opens it.
+    /// The sheet's title.
     pub title: String,
-    pub menu: String,
     /// That this is Tilo, an operating system.
     pub lead: String,
     /// Where it runs.
@@ -118,23 +113,20 @@ pub struct AboutCopy {
 /// The words for Tilo running as `variant` . A browser tab is not "this computer": there it is
 /// About Tilo.
 pub fn about_copy(variant: AboutVariant) -> AboutCopy {
-    let (title, menu, body, home) = match variant {
+    let (title, body, home) = match variant {
         AboutVariant::Native => (
             "tilo-about-title",
-            "tilo-menu-about",
             "tilo-about-body-native",
             "tilo-about-link-home",
         ),
         AboutVariant::Browser => (
             "tilo-about-title-browser",
-            "tilo-menu-about-browser",
             "tilo-about-body-browser",
             "tilo-about-link-get",
         ),
     };
     AboutCopy {
         title: t(title),
-        menu: t(menu),
         lead: t("tilo-about-lead"),
         body: t(body),
         version: t_args(
@@ -215,215 +207,83 @@ pub fn about_view(variant: AboutVariant, links: &AboutLinks) -> Column {
     column.push(Box::new(row))
 }
 
-/// Which entry of the menu was chosen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Entry {
-    About,
-    Feedback,
-}
-
-/// The menu behind the bar's Tilo mark and the About sheet it opens.
-pub struct TiloMenu {
-    menu: ContextMenu,
-    about: ModalDialog<Column>,
+/// The About sheet: what this Tilo is, over the window it was asked from.
+pub struct AboutSheet {
+    sheet: ModalDialog<Column>,
     /// Set by the sheet's close control, Escape or a click outside it.
     dismissed: Rc<Cell<bool>>,
-    /// The row chosen since the host last settled the menu.
-    chosen: Rc<Cell<Option<Entry>>>,
-    /// The menu offers Feedback: the host has a destination for it.
-    offers_feedback: bool,
-    /// Feedback was chosen and the host has not yet opened it.
-    feedback: bool,
-    /// The About entry's label for where Tilo runs.
-    about_label: String,
     rect: Rect,
 }
 
-impl TiloMenu {
+impl AboutSheet {
     pub fn new(variant: AboutVariant, links: &AboutLinks) -> Self {
-        let variant_menu = about_copy(variant).menu;
+        let copy = about_copy(variant);
         let dismissed = Rc::new(Cell::new(false));
         let dismiss = Rc::clone(&dismissed);
-        let copy = about_copy(variant);
-        let mut menu = Self {
-            menu: ContextMenu::new(),
-            about: ModalDialog::new(copy.title, about_view(variant, links))
+        Self {
+            sheet: ModalDialog::new(copy.title, about_view(variant, links))
                 .with_test_id("tilo-about")
                 .with_max_width(440.0)
                 .on_dismiss(move || dismiss.set(true)),
             dismissed,
-            chosen: Rc::new(Cell::new(None)),
-            offers_feedback: false,
-            feedback: false,
-            about_label: variant_menu,
             rect: Rect::ZERO,
-        };
-        menu.rebuild();
-        menu
-    }
-
-    /// Offer Feedback after About, for a host that has somewhere to send it.
-    #[must_use]
-    pub fn with_feedback(mut self) -> Self {
-        self.offer_feedback();
-        self
-    }
-
-    /// [`Self::with_feedback`] for a menu already shown, once the host has somewhere to send it.
-    pub fn offer_feedback(&mut self) {
-        if self.offers_feedback {
-            return;
-        }
-        self.offers_feedback = true;
-        self.rebuild();
-    }
-
-    /// Lay the menu's rows out again: About, and Feedback where the host has somewhere to send it.
-    fn rebuild(&mut self) {
-        let mut items = Vec::with_capacity(2);
-        let chosen = Rc::clone(&self.chosen);
-        let about_label = self.about_label.clone();
-        items.push(MenuItem::action(about_label, move || {
-            chosen.set(Some(Entry::About));
-        }));
-        if self.offers_feedback {
-            let chosen = Rc::clone(&self.chosen);
-            items.push(MenuItem::action(t("tilo-menu-feedback"), move || {
-                chosen.set(Some(Entry::Feedback));
-            }));
-        }
-        self.menu.set_items(items);
-    }
-
-    /// Whether Feedback was chosen since the last call; the host opens it about the window in
-    /// front.
-    pub fn take_feedback(&mut self) -> bool {
-        std::mem::take(&mut self.feedback)
-    }
-
-    /// Open the menu under `anchor` (the mark) within `viewport` , or close it when it is open.
-    pub fn toggle(&mut self, anchor: Rect, viewport: Rect) {
-        if self.menu.is_open() {
-            self.menu.close();
-        } else {
-            self.menu.open_anchored(anchor, viewport);
-            self.menu.focus_first_action();
         }
     }
 
-    /// Show the About sheet, or take it away: the chrome's own `about` verb and the menu's entry.
+    /// Show the sheet, or take it away: the chrome's own `about` verb.
     pub fn set_about_open(&mut self, open: bool) {
-        if open {
-            // The menu goes at once: fading out under the sheet's scrim it showed through it, over
-            // what the scrim dims.
-            self.menu.close_at_once();
-        }
-        self.about.set_open(open);
-    }
-
-    pub fn is_menu_open(&self) -> bool {
-        self.menu.is_open()
-    }
-
-    /// Where the menu stands while it is open: as big as its rows, which no anchor says, so a press
-    /// that misses it can close it.
-    pub fn menu_rect(&self) -> Option<Rect> {
-        self.menu.is_open().then(|| self.menu.get_rect())
+        self.sheet.set_open(open);
     }
 
     pub fn is_about_open(&self) -> bool {
-        self.about.is_open()
+        self.sheet.is_open()
     }
 
-    /// The menu or the sheet is up.
-    pub fn is_open(&self) -> bool {
-        self.is_menu_open() || self.is_about_open()
-    }
-
-    /// Apply what the person chose since the last call; true when anything changed.
+    /// Apply what the person dismissed since the last call; true when the sheet closed.
     pub fn settle(&mut self) -> bool {
-        let mut changed = false;
-        match self.chosen.take() {
-            Some(Entry::About) => {
-                self.set_about_open(true);
-                changed = true;
-            }
-            Some(Entry::Feedback) if self.offers_feedback => {
-                self.menu.close();
-                self.feedback = true;
-                changed = true;
-            }
-            Some(Entry::Feedback) | None => {}
-        }
         if self.dismissed.replace(false) {
-            self.about.set_open(false);
-            changed = true;
+            self.sheet.set_open(false);
+            return true;
         }
-        changed
+        false
     }
 }
 
-impl Widget for TiloMenu {
+impl Widget for AboutSheet {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let menu = self.menu.build_layout(taffy, theme, map);
-        let about = self.about.build_layout(taffy, theme, map);
-        // Over the whole host, out of its flow: the sheet's scrim covers it.
-        let style = Style {
-            position: taffy::Position::Absolute,
-            inset: taffy::Rect {
-                left: taffy::LengthPercentageAuto::length(0.0),
-                right: taffy::LengthPercentageAuto::length(0.0),
-                top: taffy::LengthPercentageAuto::length(0.0),
-                bottom: taffy::LengthPercentageAuto::length(0.0),
-            },
-            ..Default::default()
-        };
-        taffy.widget_node(style, &[menu, about], map, self)
+        // The sheet is absolute and covers the host on its own, out of the column's flow.
+        self.sheet.build_layout(taffy, theme, map)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
-        let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let [menu, about] = taffy.children(node).unwrap_or_default()[..] {
-            self.menu.apply_layout(taffy, menu, inner);
-            self.about.apply_layout(taffy, about, inner);
-        }
+        self.sheet.apply_layout(taffy, node, origin);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let [menu, about] = nodes[..] else {
-            return;
-        };
-        if self.about.is_open() {
-            self.about
-                .handle_event(event, &mut ctx.reborrow(ctx.path, about));
-        } else if self.menu.is_open() {
-            self.menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, menu));
-        }
+        self.sheet.handle_event(event, ctx);
         self.settle();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.menu, &self.about]
+        vec![&self.sheet]
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.menu, &mut self.about]
+        vec![&mut self.sheet]
     }
 
     fn traps_focus(&self) -> bool {
-        self.is_open()
+        self.is_about_open()
     }
 
     fn name(&self) -> &'static str {
-        "TiloMenu"
+        "AboutSheet"
     }
 
     fn get_rect(&self) -> Rect {
@@ -436,7 +296,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn the_tilo_menu_opens_about_and_carries_the_sessions_actions;
+        fn the_about_sheet_says_where_this_tilo_runs;
 
         phase empty_or_non_web_links_are_not_offered;
         {
@@ -465,7 +325,7 @@ mod tests {
             assert!(browser.body.contains("browser"), "{}", browser.body);
             assert!(!native.body.contains("browser"), "{}", native.body);
             // A browser tab is not "this computer".
-            for words in [&browser.title, &browser.menu, &browser.body] {
+            for words in [&browser.title, &browser.body] {
                 assert!(
                     !words.contains("computer") || words.contains("own computer"),
                     "{words}"
@@ -486,63 +346,21 @@ mod tests {
             assert_eq!(native.home, "tilo.so");
         }
 
-        phase about_takes_the_menu_away_at_once;
-        // Choosing About takes the menu away at once: a menu still fading out showed through the
-        // sheet's scrim, over the window it dims.
+        phase the_sheet_opens_on_the_chromes_verb_and_closes_on_dismiss;
         {
             ui::i18n::I18nManager::init("en-US");
-            let mut menu = TiloMenu::new(AboutVariant::Browser, &AboutLinks::default());
-            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-            ui::time::testing::with_monotonic_time(ui::time::now(), || {
-                menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
-                assert!(menu.menu.is_drawn());
-                menu.menu.click_item(0);
-                assert!(menu.settle());
-                assert!(menu.is_about_open());
-                assert!(
-                    !menu.menu.is_drawn(),
-                    "nothing of the menu paints under the sheet"
-                );
-            });
-        }
+            let mut sheet = AboutSheet::new(AboutVariant::Browser, &AboutLinks::default());
+            assert!(!sheet.is_about_open());
+            sheet.set_about_open(true);
+            assert!(sheet.is_about_open());
+            sheet.set_about_open(false);
+            assert!(!sheet.is_about_open());
 
-        phase the_menu_opens_about_and_the_sheet_closes_on_dismiss;
-        {
-            ui::i18n::I18nManager::init("en-US");
-            let mut menu = TiloMenu::new(AboutVariant::Browser, &AboutLinks::default());
-            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-            let anchor = Rect::new(8.0, 4.0, 40.0, 36.0);
-            menu.toggle(anchor, viewport);
-            assert!(menu.is_menu_open());
-            menu.toggle(anchor, viewport);
-            assert!(!menu.is_open());
-            menu.toggle(anchor, viewport);
-            menu.menu.click_item(0);
-            assert!(menu.settle());
-            assert!(menu.is_about_open() && !menu.is_menu_open());
-            menu.dismissed.set(true);
-            assert!(menu.settle());
-            assert!(!menu.is_open());
-            assert!(
-                !menu.take_feedback(),
-                "a menu without feedback never asks for it"
-            );
-        }
-
-        phase choosing_feedback_closes_the_menu_and_asks_the_host_once;
-        {
-            ui::i18n::I18nManager::init("en-US");
-            let mut menu = TiloMenu::new(AboutVariant::Browser, &AboutLinks::default()).with_feedback();
-            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-            menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
-            menu.menu.click_item(1);
-            assert!(menu.settle());
-            assert!(
-                !menu.is_open(),
-                "feedback opens as a window, not over the menu"
-            );
-            assert!(menu.take_feedback());
-            assert!(!menu.take_feedback());
+            sheet.set_about_open(true);
+            sheet.dismissed.set(true);
+            assert!(sheet.settle(), "the dismissal closed the sheet");
+            assert!(!sheet.is_about_open());
+            assert!(!sheet.settle(), "a settled sheet asks for nothing more");
         }
     }
 

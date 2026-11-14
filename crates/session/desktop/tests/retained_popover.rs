@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::{ChromeIntent, OwnChip};
 use tilo_desktop::desktop_host::{DeskLayer, DesktopChrome, NoticeTiles};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
@@ -116,7 +116,7 @@ fn page() -> (FrameHarness, Rc<Page>) {
         "g".into(),
         source,
         bar,
-        TiloMenu::new(AboutVariant::Browser, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Browser, &AboutLinks::default()),
         false,
     );
     let root = Stack::new().push(Box::new(desk)).push(Box::new(chrome));

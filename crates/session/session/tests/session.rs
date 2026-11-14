@@ -1275,7 +1275,7 @@ fn the_power_menus_shortcut_opens_it() {
 }
 
 /// The session publishes the actions only it can carry out, with what each is called, so every
-/// surface listing them — the Tilo menu, search — offers the same rows; what this machine cannot do
+/// surface listing them — quick settings, search — offers the same rows; what this machine cannot do
 /// is not offered.
 #[test]
 fn the_session_publishes_the_actions_only_it_can_carry_out() {

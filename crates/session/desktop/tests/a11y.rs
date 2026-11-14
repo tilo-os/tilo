@@ -10,7 +10,7 @@
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::{
     DesktopAsk, DesktopChrome, JOIN_WORKSPACE, NoticeTiles, PermissiveRules,
@@ -97,7 +97,7 @@ fn desk() -> Desk {
         "g".into(),
         Rc::new(PermissiveRules::new(handle.clone())),
         TopBarChrome::from_tree(&tree),
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
     chrome.set_emoji(link.clone());
@@ -436,51 +436,53 @@ fn action(id: &str, title: &str, source: HostActionSource) -> HostAction {
     }
 }
 
-/// The Tilo mark zooms out to the overview of the person's Tilo, whose account section holds what
-/// the mark's menu offered: the session's own actions and About. A reader picks one there, and the
-/// session is asked for it by the id it published it under. The person's workspaces the host knows
-/// are there to go to as well.
+/// The Tilo mark zooms out to the overview of the person's Tilo: the workspaces to go to and the
+/// windows of the one the person is in, each read as its own row. A reader picks the workspace,
+/// and the overview zooms back in to it.
 #[test]
-fn the_tilo_mark_zooms_out_to_the_sessions_own_actions_and_about() {
-    let (mut frame, _desk, handle, _link) = chrome();
-    handle.set_host_actions(vec![
-        action("session-lock", "Lock", HostActionSource::Session),
-        action("session-shut-down", "Shut down", HostActionSource::Session),
-        action("host-ws-3", "Garden", HostActionSource::Workspaces),
-    ]);
+fn the_tilo_mark_zooms_out_to_the_overview_a_reader_picks_from() {
+    let (mut frame, _desk, _handle, _link) = chrome();
     with_chrome(&mut frame, |chrome| {
-        chrome.apply_intent(ChromeIntent::ToggleTiloMenu);
+        chrome.apply_intent(ChromeIntent::ToggleOverview);
     });
     frame.relayout();
     assert!(with_chrome(&mut frame, |chrome| chrome.overview_open()));
 
+    let work = frame
+        .a11y_node_named("Work")
+        .expect("the workspace is a row to go to");
     frame
-        .a11y_node_named("Lock")
-        .expect("the session's Lock is in the account section");
+        .a11y_node_named("Notes")
+        .expect("and the window in it is read too");
     frame
-        .a11y_node_named("Shut down")
-        .expect("so is shutting the computer down");
-    frame
-        .a11y_node_named("About Tilo")
-        .expect("About follows the session's own rows");
-    frame
-        .a11y_node_named("Garden")
-        .expect("a workspace the host knows is there to go to");
-
-    let lock = frame.a11y_node_named("Lock").expect("the row is reachable");
-    frame
-        .perform_a11y_action(lock, &Action::Activate)
-        .expect("the reader picks Lock");
+        .perform_a11y_action(work, &Action::Activate)
+        .expect("the reader picks the workspace");
     frame.relayout();
-    assert_eq!(
-        with_chrome(&mut frame, DesktopChrome::take_asks),
-        vec![DesktopAsk::HostAction("session-lock".into())],
-        "the overview asks the session for what it published, once"
-    );
     assert!(
         !with_chrome(&mut frame, |chrome| chrome.overview_open()),
-        "and zooms back in"
+        "and the overview zooms back in"
     );
+}
+
+/// The About sheet is the chrome's own action, read over the desk: what this Tilo is, where it
+/// runs and which version.
+#[test]
+fn the_about_sheet_is_the_chromes_own_action() {
+    ui::i18n::I18nManager::init("en-US");
+    let (mut frame, _desk, _handle, _link) = chrome();
+    frame.relayout();
+    frame
+        .invoke_action(
+            &tilo_actions::ActionAddress::new("desktop:chrome", "about"),
+            &serde_json::Map::new(),
+            false,
+            None,
+        )
+        .expect("the chrome publishes About");
+    frame.relayout();
+    frame
+        .a11y_node_named("About this computer")
+        .expect("the sheet says what this Tilo is and where it runs");
 }
 
 /// The switcher offers joining another workspace exactly when the session published the action that

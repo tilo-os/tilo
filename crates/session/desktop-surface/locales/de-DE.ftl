@@ -31,7 +31,6 @@ topbar-watching-description = { $count } { $count ->
         [one] Person schaut
        *[other] Personen schauen
     } zu, ohne teilzunehmen
-topbar-tilo-menu = Tilo-Menü
 # A running application's icon in the bar, when the item that named it is gone.
 topbar-app-tray-item = Laufende Anwendung
 topbar-app-tray-unread = { $count } ungelesen
@@ -791,7 +790,7 @@ browser-welcome-hint = Pfeiltasten bewegen, Eingabe öffnet
 # The workspace overview every desktop shows
 overview-title = Arbeitsbereichsübersicht
 overview-strip-empty = Keine Fenster
-overview-go-to = Wechseln zu
+overview-workspaces = Arbeitsbereiche
 overview-no-workspace = Kein Arbeitsbereich ausgewählt
 overview-you-are-here = Du bist hier
 overview-shared-out = Von hier aus geteilt
@@ -872,9 +871,6 @@ answer-remote-not-in-browser = Fernsteuerung gibt es in Tilo auf einem Computer
 answer-why-remote-not-in-browser = Hier steht nichts unter der Kontrolle von jemand anderem.
 
 # Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
-tilo-menu-about = Über diesen Computer
-tilo-menu-about-browser = Über Tilo
-tilo-menu-feedback = Feedback geben…
 tilo-about-title = Über diesen Computer
 tilo-about-title-browser = Über Tilo
 tilo-about-lead = Das ist Tilo, ein Betriebssystem.
@@ -1240,7 +1236,6 @@ so-tilo-chrome-split-right = Nach rechts teilen
 so-tilo-chrome-step-strip = Durch die Leisten wechseln
 so-tilo-chrome-stop-desktop-control = Die Fernsteuerung beenden
 so-tilo-chrome-switch-workspace = Arbeitsbereich wechseln
-so-tilo-chrome-tilo-menu = Tilo-Menü
 so-tilo-chrome-toggle-people = Wer hier ist
 so-tilo-chrome-workspace-menu = Arbeitsbereich-Menü
 so-tilo-chrome-workspace-settings = Einstellungen des Arbeitsbereichs

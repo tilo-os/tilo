@@ -75,7 +75,6 @@ fn the_description_reads_as_the_session_package() {
     let text = std::fs::read_to_string(dir.join("surface.toml")).expect("the description");
     let addresses = tilolang_tilo::catalogue::addresses(&text).expect("each action one address");
     assert_eq!(addresses["place"], "shell:arrangement");
-    assert_eq!(addresses["tilo-menu"], "desktop:chrome");
     assert!(
         !addresses.contains_key("focus"),
         "a window's focus goes to the window"

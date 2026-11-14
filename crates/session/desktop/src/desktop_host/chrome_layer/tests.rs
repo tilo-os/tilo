@@ -9,7 +9,7 @@ use std::rc::Rc;
 use tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
 
 use super::{DesktopAsk, DesktopChrome};
-use crate::about::{AboutLinks, AboutVariant, TiloMenu};
+use crate::about::{AboutLinks, AboutSheet, AboutVariant};
 use crate::desktop_host::{NoticeTiles, PermissiveRules};
 use crate::overview_panel::OverviewPick;
 use crate::overview_tilo::TiloDesk;
@@ -72,7 +72,7 @@ fn chrome_with_an_agent() -> DesktopChrome {
         "g".into(),
         Rc::new(PermissiveRules::new(handle)),
         TopBarChrome::from_tree(&tree),
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
     chrome.set_tilo(TiloDesk {
@@ -105,7 +105,7 @@ fn chrome_over_a_desk() -> (DesktopChrome, DesktopHandle) {
         "g".into(),
         Rc::new(PermissiveRules::new(handle.clone())),
         TopBarChrome::from_tree(&tree),
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
     (chrome, handle)

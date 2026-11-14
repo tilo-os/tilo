@@ -19,7 +19,6 @@ topbar-watching-description = { $count } { $count ->
         [one] person
        *[other] people
     } watching without joining
-topbar-tilo-menu = Tilo menu
 # A running application's icon in the bar, when the item that named it is gone.
 topbar-app-tray-item = Running application
 topbar-app-tray-unread = { $count } unread
@@ -772,7 +771,7 @@ browser-welcome-hint = Arrow keys move, Enter opens
 # The workspace overview every desktop shows
 overview-title = Workspace overview
 overview-strip-empty = No windows
-overview-go-to = Go to
+overview-workspaces = Workspaces
 overview-no-workspace = No workspace selected
 overview-you-are-here = You are here
 overview-shared-out = Shared out of here
@@ -853,9 +852,6 @@ answer-remote-not-in-browser = Remote control runs in Tilo on a computer
 answer-why-remote-not-in-browser = Nothing here is under someone else's control.
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
-tilo-menu-about = About this computer
-tilo-menu-about-browser = About Tilo
-tilo-menu-feedback = Give feedback…
 tilo-about-title = About this computer
 tilo-about-title-browser = About Tilo
 tilo-about-lead = This is Tilo, an operating system.
@@ -1227,7 +1223,6 @@ so-tilo-chrome-split-right = Split right
 so-tilo-chrome-step-strip = Step through the strips
 so-tilo-chrome-stop-desktop-control = Stop the remote control
 so-tilo-chrome-switch-workspace = Switch workspace
-so-tilo-chrome-tilo-menu = Tilo menu
 so-tilo-chrome-toggle-people = Who is here
 so-tilo-chrome-workspace-menu = Workspace menu
 so-tilo-chrome-workspace-settings = Workspace settings

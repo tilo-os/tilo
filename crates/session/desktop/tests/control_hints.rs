@@ -12,7 +12,7 @@
 )]
 use std::rc::Rc;
 
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::control_hints::{ControlHints, HINTS, HintFrame, HintsFeed};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
@@ -98,7 +98,7 @@ fn chrome_over_at(
         "g".into(),
         Rc::new(PermissiveRules::new(handle.clone())),
         TopBarChrome::from_tree(tree),
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
     chrome.set_hints_feed(feed.clone());

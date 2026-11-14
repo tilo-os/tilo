@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::{
     AvatarAsk, ChromeIntent, DesktopChromeSnapshot, DesktopChromeSource, OwnChip,
 };
@@ -139,7 +139,7 @@ fn session(size: (u32, u32)) -> Session {
         "g".into(),
         Rc::new(PermissiveRules::new(handle.clone())),
         bar,
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
     let mut chrome =

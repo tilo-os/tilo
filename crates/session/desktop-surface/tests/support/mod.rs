@@ -9,7 +9,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::DesktopTree;
@@ -54,7 +54,7 @@ pub fn chrome_at(handle: &DesktopHandle, size: (u32, u32)) -> ui::headless::Fram
             handle: handle.clone(),
         }),
         TopBarChrome::from_tree(&handle.read(Clone::clone)),
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
     let mut frame = ui::headless::FrameHarness::for_root(

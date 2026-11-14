@@ -449,7 +449,7 @@ impl OverviewPanel {
         self.here_rect().y1
     }
 
-    /// Y of the "Go to" caption.
+    /// Y of the workspaces caption.
     pub(super) fn list_caption_top(&self) -> f64 {
         self.content_top() + self.here_block_height() + self.metrics.section_gap
     }

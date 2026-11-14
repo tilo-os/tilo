@@ -10,7 +10,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
@@ -97,7 +97,7 @@ fn session_parts(
         "g".into(),
         Rc::new(PermissiveRules::new(handle.clone())),
         TopBarChrome::from_tree(tree),
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
     let mut chrome =
@@ -649,7 +649,7 @@ fn a_keystroke_in_the_palette_does_not_rebuild_the_page_with_many_windows() {
             "g".into(),
             Rc::new(PermissiveRules::new(handle.clone())),
             TopBarChrome::from_tree(&tree),
-            TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+            AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
             false,
         );
         // The page's own composition: the desk under the chrome over it, one tree, so a rebuild of

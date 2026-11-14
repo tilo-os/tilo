@@ -166,7 +166,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
         "Wi-Fi stays, as the way a desktop without a network gets online: {arranged}"
     );
 
-    // Show the About sheet, as the Tilo menu's own About does.
+    // Show the About sheet, as the chrome's own about verb does.
     act(
         &mut session,
         "desktop:chrome",

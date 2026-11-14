@@ -494,7 +494,7 @@ impl AskWords {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::about::{AboutLinks, AboutVariant, TiloMenu};
+    use crate::about::{AboutLinks, AboutSheet, AboutVariant};
     use crate::chrome::{DesktopChromeSnapshot, DesktopChromeSource, OwnChip};
     use crate::desktop_host::{DesktopChrome, DesktopRules};
     use std::cell::RefCell;
@@ -649,7 +649,7 @@ mod tests {
             "g".into(),
             Rc::new(Rules { handle }),
             bar,
-            TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+            AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
             false,
         );
         let mut frame = Framed::new(ui::State::new(), chrome, viewport, Theme::dark());

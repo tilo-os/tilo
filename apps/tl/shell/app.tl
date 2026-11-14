@@ -196,7 +196,7 @@ view bar_part(d: Desk, part: BarPart) {
     } else if part.slot == .menu {
         row(gap: .related, align: .center) {
             ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-                on press: session.tilo_menu()
+                on press: session.overview()
             }
             // The switch between the desk styles, in the bar's own seat rather than in a row of
             // its own, so nothing stands between a window and the bar. A bar too narrow for it

@@ -1018,7 +1018,7 @@ impl Session {
         // the box a report is written in opens to it.
         let feedback = crate::feedback::Destination::configured();
         // What only the session can do, offered the same way to every
-        // surface that shows it: the workspace menu, the Tilo menu, search.
+        // surface that shows it: the workspace menu, quick settings, search.
         crate::host_actions::publish(
             &handle,
             crate::sheets::mount::power_offers(&options),

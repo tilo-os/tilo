@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::platform::surfaces::{Placement as SurfacePlacement, WidgetHost};
 use tilo_action_policy::Role;
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::{
     AppTrayIcon, AppTrayItem, AppTrayStatus, ChromeIntent, DesktopChromeSnapshot, OwnChip,
 };
@@ -804,7 +804,7 @@ pub(crate) fn host(
         crate::GENERATION.into(),
         source,
         bar,
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
     chrome.set_intents(intents);

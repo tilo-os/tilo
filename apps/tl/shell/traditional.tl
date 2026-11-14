@@ -247,7 +247,7 @@ view traditional_bar(d: Desk) {
     } else if space.compact { BarRoom.one } else { BarRoom.menus }
     row(gap: .related, align: .center, fill) {
         ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-            on press: session.tilo_menu()
+            on press: session.overview()
         }
         action_bar(arrangement, room)
         spacer

@@ -646,22 +646,13 @@ pub enum ChromeEffect {
     #[effect(view, own_device, idempotent)]
     QuickSettings,
 
-    /// Open or close the Tilo menu
-    #[effect(view, own_device, idempotent)]
-    TiloMenu {
-        /// Whether it is open.
-        #[param("Whether the menu is open; toggled when absent")]
-        open: Option<bool>,
-    },
-
     /// Open or close the workspace menu
     #[effect(view, own_device, idempotent)]
     WorkspaceMenu,
 
     /// Open or close the About sheet
     ///
-    /// What this Tilo is, where it runs and which version: the same sheet the Tilo menu's About
-    /// shows.
+    /// What this Tilo is, where it runs and which version.
     #[effect(view, own_device, idempotent)]
     About {
         /// Whether it is open.
@@ -1223,7 +1214,6 @@ fn admit_chrome(
         | ChromeEffect::Overview { .. }
         | ChromeEffect::RevealTopBar
         | ChromeEffect::QuickSettings
-        | ChromeEffect::TiloMenu { .. }
         | ChromeEffect::WorkspaceMenu
         | ChromeEffect::About { .. }
         | ChromeEffect::SwitchWorkspace {

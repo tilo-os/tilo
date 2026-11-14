@@ -3,8 +3,8 @@
 //! leaving this one, and its settings) and about the session itself (locking
 //! the screen, logging out, restarting the computer, shutting it down), and
 //! the empty desk's welcome verbs, which the launchpad declares and its cards
-//! show. The workspace menu lists the workspace rows, the Tilo menu the
-//! session's, and search all of them.
+//! show. The workspace menu lists the workspace rows, quick settings' power
+//! menu the session's, and search all of them.
 //!
 //! Each row is named once: its name, the sentence describing it, its own
 //! picture, and whether search may offer it before anything is typed.
@@ -20,7 +20,7 @@ use tilo_sheets::power::{Offers, PowerEffect};
 use ui::icons::Icon;
 
 /// The session's own rows, in the order a person reads them: what happens to the screen first, what
-/// happens to the computer last. Switch user and suspend are the power menu's, not the Tilo menu's.
+/// happens to the computer last. Switch user and suspend are the power menu's alone.
 const SESSION_ROWS: [(PowerEffect, &str, &str); 4] = [
     (PowerEffect::Lock, SESSION_LOCK, "session-host-lock"),
     (PowerEffect::LogOut, SESSION_LOG_OUT, "session-host-log-out"),

@@ -417,7 +417,7 @@ impl Widget for WorkspaceMenu {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let menu = self.menu.build_layout(taffy, theme, map);
-        // Over the whole host, out of its flow, like the Tilo menu.
+        // Over the whole host, out of its flow, like the overview.
         let style = Style {
             position: taffy::Position::Absolute,
             inset: taffy::Rect {

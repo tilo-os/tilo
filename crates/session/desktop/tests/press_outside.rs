@@ -7,7 +7,7 @@
     clippy::indexing_slicing,
     reason = "in a test these are the assertion, not a hazard"
 )]
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop::overlays::{POPOVER_MARGIN, POPOVER_WIDTH, Target};
@@ -81,7 +81,7 @@ fn chrome_over(notifications: Option<DesktopNotifications>) -> (FrameHarness, Ov
         "g".into(),
         std::rc::Rc::new(PermissiveRules::new(handle)),
         TopBarChrome::from_tree(&tree),
-        TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+        AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
     chrome.set_overlays(overlays.clone());
@@ -237,17 +237,18 @@ fn the_press_that_takes_the_menu_down_does_not_raise_it_again() {
 fn the_tilo_mark_zooms_out_and_back_in() {
     let (mut frame, overlays) = chrome();
     with_chrome(&mut frame, |chrome| {
-        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
+        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleOverview);
     });
     frame.relayout();
     assert!(with_chrome(&mut frame, |chrome| chrome.overview_open()));
     assert!(!with_chrome(&mut frame, |chrome| chrome.menu_open()));
-    assert_ne!(
+    assert_eq!(
         overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1),
-        Some(Slot::TiloMenu)
+        None,
+        "the overview answers no press of the desk's"
     );
     with_chrome(&mut frame, |chrome| {
-        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
+        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleOverview);
     });
     frame.relayout();
     assert!(!with_chrome(&mut frame, |chrome| chrome.overview_open()));

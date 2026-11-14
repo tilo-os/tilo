@@ -419,7 +419,8 @@ pub struct TopBarChrome {
     /// Last clock reading, for a bar drawn without a chrome.
     clock: ClockSnapshot,
     synced_revision: u64,
-    /// `Some(menu open)` when the bar leads with the Tilo mark ([`TopBarChrome::with_tilo_mark`]).
+    /// `Some(overview open)` when the bar leads with the Tilo mark
+    /// ([`TopBarChrome::with_tilo_mark`]).
     tilo_mark: Option<bool>,
     /// Whether the device the bar is drawn on shows the time itself at phone width, as a phone
     /// does above a web page ([`TopBarChrome::with_device_clock`]): the bar's clock then gives way

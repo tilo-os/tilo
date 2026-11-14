@@ -26,7 +26,7 @@ use tilo_actions::remote::host_account::{
     Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer,
     Standing, Usage, WorkspaceUsage,
 };
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
+use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::ClockSnapshot;
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::overlays::Overlays;
@@ -199,7 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         weekday: "Mon".into(),
                         date: "Nov 9".into(),
                     }),
-                TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
+                AboutSheet::new(AboutVariant::Native, &AboutLinks::default()),
                 false,
             );
             chrome.set_overlays(overlays);
@@ -210,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             frame.relayout();
             frame
                 .root_mut::<DesktopChrome>()
-                .apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
+                .apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleOverview);
             // The zoom's clock is the host's: stop it on the way in, then at rest.
             for (step, progress) in [("40", 0.4), ("70", 0.7), ("rest", 1.0)] {
                 flight.set_clock(progress, HashMap::new());

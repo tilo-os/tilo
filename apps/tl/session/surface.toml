@@ -456,15 +456,6 @@ kind = "read"
 params = []
 
 [[resources.verbs]]
-id = "tilo-menu"
-kind = "read"
-
-[[resources.verbs.params]]
-name = "open"
-required = false
-type = "bool"
-
-[[resources.verbs]]
 id = "workspace-menu"
 kind = "read"
 params = []

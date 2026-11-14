@@ -5,8 +5,8 @@
 use super::*;
 
 impl TopBarChrome {
-    /// Lead the bar with the Tilo mark, which asks for [`ChromeIntent::ToggleTiloMenu`]: a host
-    /// with no other place for what Tilo is (the browser) offers it there. Off by default.
+    /// Lead the bar with the Tilo mark, which asks for [`ChromeIntent::ToggleOverview`]: the
+    /// person's Tilo zoomed out to its workspaces, and back in. Off by default.
     #[must_use]
     pub fn with_tilo_mark(mut self) -> Self {
         self.tilo_mark = Some(false);
@@ -21,14 +21,14 @@ impl TopBarChrome {
         self
     }
 
-    /// The menu the mark opens is shown or gone; the mark reads as pressed while it is.
-    pub fn set_tilo_menu_open(&mut self, open: bool) {
+    /// The overview the mark opens is up or gone; the mark reads as pressed while it is.
+    pub fn set_overview_open(&mut self, open: bool) {
         if let Some(shown) = self.tilo_mark.as_mut() {
             *shown = open;
         }
     }
 
-    /// Where the Tilo mark was last drawn, for anchoring its menu; zero without the mark.
+    /// Where the Tilo mark was last drawn; zero without the mark.
     pub fn tilo_mark_rect(&self) -> Rect {
         if self.tilo_mark.is_some() {
             self.control_rect(Self::CONTROL_TILO_MARK)
