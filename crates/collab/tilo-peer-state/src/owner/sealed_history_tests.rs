@@ -556,17 +556,39 @@ async fn a_device_away_keeps_every_write_through_a_restart_and_all_converge_on_r
     );
 }
 
-/// `member` takes `messages` as its host relays them.
+/// How many of the documents its host relays a member's session keeps in one owner turn here.
+const RELAYED_AT_ONCE: usize = 256;
+
+/// `member` takes `messages` as its host relays them, the way its session keeps the documents
+/// that arrived at once: one owner turn for a run of them
+/// ([`NativeWorkspaceOwner::receive_batch`], which [`NativeWorkspaceOwner::receive`] is for a
+/// run of one), each decided on its own, and every one of them taken.
 fn relay(member: &Enrolled, messages: impl IntoIterator<Item = NeighbourMsg>) {
-    for message in messages {
-        let NeighbourMsg::AppDocument { envelope, .. } = &message else {
-            panic!("a document write");
-        };
-        let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
-        member
+    let mut relayed = messages
+        .into_iter()
+        .map(|message| {
+            let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+                panic!("a document write");
+            };
+            let author = TransportOrigin::RetainedRelayDelta(*envelope.author.as_bytes());
+            (author, message)
+        })
+        .peekable();
+    let mut taken = 0_usize;
+    while relayed.peek().is_some() {
+        let arrived: Vec<_> = relayed.by_ref().take(RELAYED_AT_ONCE).collect();
+        let sent = arrived.len();
+        let reports = member
             .owner
-            .receive(member.workspace, author, message, member.now)
+            .receive_batch(member.workspace, arrived, member.now)
             .unwrap();
+        assert_eq!(reports.len(), sent, "one answer for each document");
+        for report in reports {
+            if let Err(error) = report {
+                panic!("the member took {taken} relayed documents and refused the next: {error:?}");
+            }
+            taken = taken.saturating_add(1);
+        }
     }
 }
 
