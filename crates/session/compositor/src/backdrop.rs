@@ -26,7 +26,7 @@
 )]
 
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::egl::EGLContext;
+use smithay::backend::renderer::ContextId;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::gles::{
@@ -54,11 +54,13 @@ const MAX_SIGMA: f64 = 4.0;
 const MAX_HALVINGS: u32 = 6;
 
 /// Which GL context made a texture or a program: neither is usable in another.
-type Context = usize;
+/// The renderer's own identity, held for as long as what it made is: a context made after another
+/// is gone (a window whose graphics were lost and made again) may sit at the same address, but is
+/// never the same context.
+type Context = ContextId<GlesTexture>;
 
 fn context_of(renderer: &GlesRenderer) -> Context {
-    let context: &EGLContext = renderer.egl_context();
-    std::ptr::from_ref(context) as usize
+    renderer.context_id()
 }
 
 /// What one region's last image saw, to skip unchanged ones.
@@ -130,7 +132,7 @@ pub(crate) fn draw(
         watches.push(Watch {
             key: (host, slot),
             request: *request,
-            context,
+            context: context.clone(),
             tracker: OutputDamageTracker::new(size, scale, Transform::Normal),
             images: None,
         });
@@ -161,7 +163,7 @@ pub(crate) fn draw(
         return Ok(None);
     };
     draw_below(renderer, &elements, size, scale, image)?;
-    blur_image(renderer, images, request.blur, context, program)?;
+    blur_image(renderer, images, request.blur, &context, program)?;
     let rgba = read_back(renderer, images, texels)?;
     Ok(Some(BackdropImage { rgba, texels }))
 }
@@ -172,7 +174,7 @@ fn blur_image(
     renderer: &mut GlesRenderer,
     images: &mut Images,
     sigma: f64,
-    context: Context,
+    context: &Context,
     program: &mut Option<(Context, GlesTexProgram)>,
 ) -> Result<(), BackendError> {
     for level in 1..images.levels.len() {
@@ -182,12 +184,12 @@ fn blur_image(
         let level = images.levels.len().saturating_sub(1);
         let (columns, rows) = images.sizes.get(level).copied().unwrap_or((1, 1));
         let taps = taps(sigma / f64::from(1_u32 << u32::try_from(level).unwrap_or(0)));
-        if program.as_ref().is_none_or(|(made, _)| *made != context) {
+        if program.as_ref().is_none_or(|(made, _)| made != context) {
             let names = uniform_names();
             let compiled = renderer
                 .compile_custom_texture_shader(SHADER, &names)
                 .map_err(|error| BackendError(format!("blur shader: {error:?}")))?;
-            *program = Some((context, compiled));
+            *program = Some((context.clone(), compiled));
         }
         let Some((_, program)) = program.as_ref() else {
             return Ok(());
