@@ -370,7 +370,7 @@ doc = false
 "frost-rerandomized-3_0_0" = { package = "frost-rerandomized", version = "^3.0.0", default-features = false, features = ["serde", "serialization"] }
 "fs-content" = { path = "../../../crates/system/fs-content", default-features = false, features = [] }
 "fs-native" = { path = "../../../crates/system/fs-native", default-features = false, features = [] }
-"fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = [] }
+"fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = ["documents"] }
 "fs-set-times-0_20_3" = { package = "fs-set-times", version = "^0.20.3", default-features = false, features = [] }
 "fs4-0_13_1" = { package = "fs4", version = "^0.13.1", default-features = false, features = ["default", "sync"] }
 "fuser-0_18_0" = { package = "fuser", version = "^0.18.0", default-features = false, features = ["default"] }
@@ -1293,7 +1293,6 @@ doc = false
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
 "tilo-rich-text" = { path = "../../../crates/sdk/tilo-rich-text", default-features = false, features = [] }
 "tilo-rollback" = { path = "../../../crates/system/tilo-rollback", default-features = false, features = [] }
-"tilo-workspace-host" = { path = "../../../crates/hosting/tilo-workspace-host", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-runner-native" = { path = "../../../crates/sdk/runner-native", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "webview-adblock"] }
 "tilo-runtime" = { path = "../../../crates/runtime/tilo-runtime", default-features = false, features = [] }
@@ -1367,6 +1366,7 @@ doc = false
 "tilo-workspace-agent" = { path = "../../../crates/platform/tilo-workspace-agent", default-features = false, features = [] }
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
+"tilo-workspace-host" = { path = "../../../crates/hosting/tilo-workspace-host", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
@@ -1890,7 +1890,7 @@ doc = false
 "frost-rerandomized-3_0_0" = { package = "frost-rerandomized", version = "^3.0.0", default-features = false, features = ["serde", "serialization"] }
 "fs-content" = { path = "../../../crates/system/fs-content", default-features = false, features = [] }
 "fs-native" = { path = "../../../crates/system/fs-native", default-features = false, features = [] }
-"fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = [] }
+"fs-protocol" = { path = "../../../crates/system/fs-protocol", default-features = false, features = ["documents"] }
 "fs-set-times-0_20_3" = { package = "fs-set-times", version = "^0.20.3", default-features = false, features = [] }
 "fs4-0_13_1" = { package = "fs4", version = "^0.13.1", default-features = false, features = ["default", "sync"] }
 "fs_extra-1_3_0" = { package = "fs_extra", version = "^1.3.0", default-features = false, features = [] }
@@ -2459,7 +2459,6 @@ doc = false
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-id" = { path = "../../../crates/platform/tilo-app-id", default-features = false, features = [] }
-"tilo-app-module" = { path = "../../../crates/platform/tilo-app-module", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../../crates/packaging/tilo-app-package", default-features = false, features = [] }
 "tilo-app-state" = { path = "../../../crates/system/app-state", default-features = false, features = [] }
 "tilo-appearance" = { path = "../../../crates/platform/tilo-appearance", default-features = false, features = [] }
