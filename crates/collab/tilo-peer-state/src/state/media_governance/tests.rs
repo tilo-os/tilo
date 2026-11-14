@@ -223,7 +223,7 @@ fn workspace_media_security_no_policy_accepts_host_revocation_without_enabling_m
             now,
         )
         .unwrap_err();
-    assert!(error.contains("device revoked"), "{error}");
+    assert!(error.to_string().contains("device revoked"), "{error}");
     assert_eq!(observed.durable().unwrap(), before);
     observed
         .receive_from(

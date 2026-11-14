@@ -16,6 +16,7 @@
 //! itself ([`invitation_admits`]). A device certified by a member's root is
 //! that member's device: any participant writes it in.
 
+use super::AdmissionFailure;
 use std::collections::BTreeMap;
 
 use automerge::AutoCommit;
@@ -43,6 +44,9 @@ pub enum MembershipRefusal {
     Refused(String),
     /// The changes the writer may make do not give what the batch wrote.
     Mismatch,
+    /// This device could not decide the batch: its isolated worker failed.
+    /// Nothing is known about what the writer sent.
+    Device(String),
 }
 
 impl std::fmt::Display for MembershipRefusal {
@@ -55,6 +59,7 @@ impl std::fmt::Display for MembershipRefusal {
             Self::Malformed(error) => write!(f, "membership change is malformed: {error}"),
             Self::Refused(error) => write!(f, "membership change refused: {error}"),
             Self::Mismatch => f.write_str("membership change is not what its actions make"),
+            Self::Device(reason) => f.write_str(reason),
         }
     }
 }
@@ -125,7 +130,10 @@ pub fn position(
     changes: &[Vec<u8>],
 ) -> Result<(AutoCommit, AutoCommit), MembershipRefusal> {
     let at = dependency_state(before, changes)?;
-    let after = super::candidate(Some(&at), changes).map_err(MembershipRefusal::Position)?;
+    let after = super::candidate(Some(&at), changes).map_err(|failure| match failure {
+        AdmissionFailure::Device(reason) => MembershipRefusal::Device(reason),
+        AdmissionFailure::Refused(refusal) => MembershipRefusal::Position(refusal.to_string()),
+    })?;
     Ok((at, after))
 }
 

@@ -161,6 +161,7 @@ fn install_policy(
         message(&mut doc),
         now,
     )
+    .map_err(|error| error.to_string())
 }
 fn edited_chat(peer: &StatePeer, operation: u8) -> (Vec<u8>, Vec<u8>) {
     let mut chat = AutoCommit::load(&peer.document(APP, "").unwrap()).unwrap();

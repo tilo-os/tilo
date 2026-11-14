@@ -203,7 +203,8 @@ fn refusal_of_tampered_admission(
             },
             now,
         )
-        .unwrap_err();
+        .unwrap_err()
+        .to_string();
     assert!(peer.permissions(guest.1.device_public_key, now).is_err());
     refused
 }

@@ -474,9 +474,14 @@ impl PersonalStore {
         let mut candidate = self.clone();
         let refused = candidate.write(app, record, &envelope, now, true).err();
         *self = candidate;
-        if let Some(reason) = refused {
+        if let Some(refused) = refused {
+            // A write this device could not decide is no verdict on it.
+            if refused.is_device_failure() {
+                return Err(refused.to_string());
+            }
             // The store's verdict on the person's own write is filed like a
             // sibling's: what its history shows, and what a notice is made of.
+            let reason = refused.to_string();
             self.file_refusal(app, record, &envelope, &reason, key, now)?;
             return Err(reason);
         }
@@ -635,16 +640,21 @@ impl PersonalStore {
             || peer != peer_handle(&source)
             || envelope.author.as_bytes() != &source
         {
-            Some("transport author or store key mismatch".to_owned())
+            crate::AdmissionError::Rejected("transport author or store key mismatch".to_owned())
         } else {
             match self.write(&app_id, &record_id, &envelope, now, false) {
                 Ok(outcome) => return Ok(outcome),
-                Err(reason) => Some(reason),
+                Err(reason) => reason,
             }
         };
-        let reason = refused.unwrap_or_default();
+        // A write this device could not decide is no verdict on it: nothing is
+        // filed, and its author's next write proceeds.
+        if refused.is_device_failure() {
+            return Err(refused.to_string());
+        }
         // The store's verdict on this one write is now a fact it keeps: the
         // write's author is told, and its history joins it to the write.
+        let reason = refused.to_string();
         self.file_refusal(&app_id, &record_id, &envelope, &reason, key, now)?;
         Err(reason)
     }
@@ -660,7 +670,7 @@ impl PersonalStore {
         envelope: &SignedOp,
         now: SystemTime,
         local: bool,
-    ) -> Result<ReceiveOutcome, String> {
+    ) -> Result<ReceiveOutcome, crate::AdmissionError> {
         let source = *envelope.author.as_bytes();
         if self.revoked_here() {
             return Err("this device was revoked".into());
@@ -745,7 +755,7 @@ impl PersonalStore {
         }
         let changed =
             match crate::document::merge_committed_with_status(&mut candidate.doc, &mutation)
-                .map_err(|error| format!("{error:?}"))?
+                .map_err(crate::AdmissionError::from)?
             {
                 crate::document::MergeOutcome::Changed(changed) => changed,
                 crate::document::MergeOutcome::MissingDependencies => {

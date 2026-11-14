@@ -142,6 +142,12 @@ fn admit(
         },
         changes,
     )
+    .map_err(|failure| match failure {
+        AdmissionFailure::Refused(refusal) => refusal,
+        // These changes are decided in this test's own process; a worker
+        // failure would be the test failing, not a case to assert.
+        AdmissionFailure::Device(reason) => WorkspaceRefusal::Malformed(reason),
+    })
 }
 
 /// A record the workspace holds, as any member writes it.

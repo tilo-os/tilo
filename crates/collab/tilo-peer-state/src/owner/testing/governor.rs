@@ -432,7 +432,10 @@ impl TestGovernor {
             .flatten()
             .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
         let now = self.now();
-        let outcome = self.peer.receive_from(origin, message, now)?;
+        let outcome = self
+            .peer
+            .receive_from(origin, message, now)
+            .map_err(|error| error.to_string())?;
         tracing::debug!(?id, ?outcome, "native fixture governor admission");
         Ok(())
     }

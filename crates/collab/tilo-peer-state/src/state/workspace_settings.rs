@@ -379,6 +379,7 @@ mod tests {
             tilo_clock::wall(),
         )
         .map(|_| ())
+        .map_err(|error| error.to_string())
     }
 
     #[test]

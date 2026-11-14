@@ -313,7 +313,7 @@ impl NativeWorkspaceOwner {
         &self,
         enrollment: &VerifiedNativeEnrollment,
         now: SystemTime,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::owner::InstallError> {
         let _turn = self.0.mutation.lock();
         let workspace = enrollment.bootstrap().workspace_id;
         let pending = self
@@ -394,11 +394,11 @@ impl NativeWorkspaceOwner {
             join_ledger: crate::join_ledger::JoinLedger::default(),
             join_admissions: std::collections::BTreeMap::new(),
         };
-        self.publish_workspace(
+        Ok(self.publish_workspace(
             workspace,
             NativeCommittedView::new(peer, record),
             Some(&pending),
-        )
+        )?)
     }
 }
 /// Admit the workspace's governance from `bootstrap` into `peer`, in the order
@@ -414,7 +414,7 @@ pub(crate) fn install_governance(
     peer: &mut StatePeer,
     bootstrap: &crate::join::JoinBootstrap,
     now: SystemTime,
-) -> Result<usize, String> {
+) -> Result<usize, crate::AdmissionError> {
     let origin = TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key);
     let mut app_messages = 0usize;
     for bytes in &bootstrap.governance_messages {

@@ -402,7 +402,10 @@ fn refused_with(
 ) {
     let before = peer.durable().unwrap();
     let error = peer.receive_from(origin(key), message, now).unwrap_err();
-    assert!(error.contains(reason), "{error:?} is not {reason:?}");
+    assert!(
+        error.to_string().contains(reason),
+        "{error:?} is not {reason:?}"
+    );
     assert_eq!(peer.durable().unwrap(), before, "the record is unchanged");
 }
 

@@ -879,7 +879,8 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
             right.workspace_message(),
             now,
         )
-        .unwrap_err();
+        .unwrap_err()
+        .to_string();
     assert!(
         error.contains("conflicting redemption") || error.contains("duplicate seq"),
         "concurrent redemption must fail before two receipts merge: {error}"
@@ -1191,7 +1192,10 @@ fn concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first(
     let receive = |first: NeighbourMsg, second: NeighbourMsg| {
         let mut receiver = base.clone();
         receiver.receive_from(from, first, now).unwrap();
-        let refused = receiver.receive_from(from, second, now).unwrap_err();
+        let refused = receiver
+            .receive_from(from, second, now)
+            .unwrap_err()
+            .to_string();
         assert!(
             refused.contains("conflicting redemption"),
             "the second redemption of one invitation must be refused: {refused}"
@@ -1400,6 +1404,7 @@ fn forged_or_mismatched_coverage_cannot_install_snapshot() {
                 now
             )
             .unwrap_err()
+            .to_string()
             .contains("coverage")
     );
     assert!(fresh.rows().is_empty());
@@ -1584,6 +1589,7 @@ fn authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade() {
                 now
             )
             .unwrap_err()
+            .to_string()
             .contains("downgrade")
     );
 }
@@ -1643,6 +1649,7 @@ fn aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_read
         receiver
             .receive_from(origin, stale[1].clone(), delayed)
             .unwrap_err()
+            .to_string()
             .contains("timestamp")
     );
     assert_eq!(receiver.durable().unwrap(), before);
@@ -1778,6 +1785,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
                 now
             )
             .unwrap_err()
+            .to_string()
             .contains("revoked")
     );
 }
@@ -1899,6 +1907,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
                     now
                 )
                 .unwrap_err()
+                .to_string()
                 .contains("downgrade")
         );
     }

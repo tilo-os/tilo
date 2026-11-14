@@ -502,7 +502,8 @@ fn open_history<'a>(
             super::sealed_compaction::WriteMerge::Waiting => stuck.push((index, mutation)),
             super::sealed_compaction::WriteMerge::Applied
             | super::sealed_compaction::WriteMerge::AlreadyHeld { .. } => {}
-            super::sealed_compaction::WriteMerge::Refused(why) => {
+            super::sealed_compaction::WriteMerge::Refused(why)
+            | super::sealed_compaction::WriteMerge::Device(why) => {
                 return Err(PeerDocumentReadError::Opening(why));
             }
         }

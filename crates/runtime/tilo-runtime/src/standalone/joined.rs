@@ -256,7 +256,9 @@ impl Joined {
             self.owner.clone(),
         )
         .await?;
-        self.owner.install(&enrollment, SystemTime::now())?;
+        self.owner
+            .install(&enrollment, SystemTime::now())
+            .map_err(|error| error.to_string())?;
         Ok(workspace)
     }
 

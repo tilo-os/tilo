@@ -250,6 +250,7 @@ fn native_publication_current_pinned_governor_expiry_is_mandatory() {
         short
             .receive_from(origin, message, now + Duration::from_secs(2))
             .unwrap_err()
+            .to_string()
             .contains("expired")
     );
 }

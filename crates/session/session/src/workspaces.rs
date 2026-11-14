@@ -1202,6 +1202,10 @@ impl crate::Shared {
 
     /// Take what became of the invitations this session redeemed: the person lands in the workspace
     /// they joined once it is held here, or it is taken off the desk and the sheet says why.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass over every enrollment that settled since the last"
+    )]
     pub(crate) fn follow_enrollments(&self) {
         let Some(sync) = &self.sync else {
             return;
@@ -1274,6 +1278,19 @@ impl crate::Shared {
                         personal.borrow_mut().ask_again_later(enrolled.workspace_id);
                     }
                 }
+                // This computer could not take the workspace in: nothing was
+                // refused, so the workspace it made for the join stays, the
+                // community stays listed, and its row offers the join again.
+                Err(error) if error.is_device_failure() => {
+                    tracing::warn!(
+                        target: JOIN_FLOW_TARGET,
+                        workspace = %key,
+                        name = %listed,
+                        %error,
+                        outcome = "deferred",
+                        "join: this computer could not take the workspace in; the join stays for the next attempt"
+                    );
+                }
                 Err(error) => {
                     tracing::info!(
                         target: JOIN_FLOW_TARGET,
@@ -1303,8 +1320,12 @@ impl crate::Shared {
             if enrolled.member {
                 continue;
             }
-            self.directory_store
-                .enrolled(&key, &listed, &enrolled.result);
+            let said = enrolled
+                .result
+                .as_ref()
+                .map_err(ToString::to_string)
+                .copied();
+            self.directory_store.enrolled(&key, &listed, &said);
             settled = true;
         }
         let Some(seat) = &self.directory else {

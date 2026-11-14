@@ -23,7 +23,7 @@ pub(super) async fn redeem(
     events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Enrolling,
     link: Option<&KeyLink>,
-) -> Result<(), String> {
+) -> Result<(), tilo_session_client::EnrollFailure> {
     let topic = request.workspace_id;
     // Renewal precedes presentation: a device that slept past the end of its certificate joins with
     // the renewal, reissued here or signed by the person's devices, and a join that cannot renew
@@ -34,11 +34,9 @@ pub(super) async fn redeem(
             .await;
     match before {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(error),
+        Ok(Err(error)) => return Err(error.into()),
         Err(error) => {
-            return Err(format!(
-                "the renewal before this join did not finish: {error}"
-            ));
+            return Err(format!("the renewal before this join did not finish: {error}").into());
         }
     }
     // The workspace is joined as this computer's person: the device's own certificate signs the
@@ -74,12 +72,13 @@ pub(super) async fn redeem(
             )
             .await
             .map_err(|_| "the workspace's host did not answer".to_owned())??;
-            return tokio::time::timeout(
+            tokio::time::timeout(
                 SETTLE_WITHIN,
                 take_part_in(&owner, request.workspace_id, link, plane, events),
             )
             .await
-            .map_err(|_| "the workspace was not taken in time".to_owned())?;
+            .map_err(|_| "the workspace was not taken in time".to_owned())??;
+            return Ok(());
         }
     };
     let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
@@ -100,8 +99,12 @@ pub(super) async fn redeem(
     // be let into a workspace is told when it did not happen rather than left on a plane that
     // stopped taking work.
     tokio::time::timeout(SETTLE_WITHIN, async {
-        owner.install(&enrollment, tilo_clock::wall())?;
-        take_part_in(&owner, request.workspace_id, link, plane, events).await
+        owner
+            .install(&enrollment, tilo_clock::wall())
+            .map_err(tilo_session_client::EnrollFailure::from)?;
+        take_part_in(&owner, request.workspace_id, link, plane, events)
+            .await
+            .map_err(tilo_session_client::EnrollFailure::from)
     })
     .await
     .map_err(|_| "the workspace was not taken in time".to_owned())??;
@@ -253,7 +256,7 @@ pub(super) async fn enter(
     events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Entering,
     link: Option<&KeyLink>,
-) -> Result<(), String> {
+) -> Result<(), tilo_session_client::EnrollFailure> {
     let topic = request.workspace_id;
     identity.current_material(topic)?;
     let owner = engine.owner().clone();
@@ -276,5 +279,6 @@ pub(super) async fn enter(
         take_part_in(&owner, request.workspace_id, link, plane, events),
     )
     .await
-    .map_err(|_| "the workspace was not taken in time".to_owned())?
+    .map_err(|_| "the workspace was not taken in time".to_owned())??;
+    Ok(())
 }

@@ -391,8 +391,9 @@ impl Input {
             .with_current(self.workspace(), |view| Ok(view.generation()))
     }
     /// What the workspace's admission decided for this frame, as the link
-    /// found it.
-    pub fn admit(&self) -> Result<crate::AdmissionReport, String> {
+    /// found it. An [`crate::AdmissionError::Device`] is this device failing to
+    /// decide it, never a refusal of the frame.
+    pub fn admit(&self) -> Result<crate::AdmissionReport, crate::AdmissionError> {
         self.heard.report.clone()
     }
     /// Whether `other` came over the same link as this one: what
@@ -476,7 +477,7 @@ impl Input {
 /// What [`Input::admit_batch`] decided.
 pub struct Admitted {
     /// Each input, in the order it came, with what its admission decided.
-    pub inputs: Vec<(Input, Result<crate::AdmissionReport, String>)>,
+    pub inputs: Vec<(Input, Result<crate::AdmissionReport, crate::AdmissionError>)>,
     /// Whether the admission moved the workspace's state.
     pub changed: bool,
 }

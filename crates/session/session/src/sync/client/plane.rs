@@ -446,7 +446,7 @@ impl Asking {
                 workspace_id,
                 member,
                 name,
-                result: Err(missing.to_owned()),
+                result: Err(missing.into()),
                 held,
             });
             return;
@@ -782,6 +782,13 @@ async fn admit(
                 if let Some(documents) = documents {
                     documents.deliver(&input, &report);
                 }
+            }
+            Err(error) if error.is_device_failure() => {
+                tracing::warn!(
+                    %error,
+                    %workspace,
+                    "this computer could not take a workspace's state in; nothing was refused"
+                );
             }
             Err(error) => {
                 tracing::warn!(%error, %workspace, "a workspace's state was not taken in");

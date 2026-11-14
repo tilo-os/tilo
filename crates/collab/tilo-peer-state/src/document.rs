@@ -4,7 +4,22 @@ use collab_types::DocumentMutation;
 #[derive(Debug, PartialEq, Eq)]
 pub enum MergeError {
     Busy,
+    /// The workspace refused the mutation.
     Invalid(String),
+    /// This device could not merge it (its isolated worker crashed, overran
+    /// its deadline or never started); the mutation says nothing about it.
+    Device(String),
+}
+impl From<MergeError> for crate::AdmissionError {
+    fn from(error: MergeError) -> Self {
+        match error {
+            MergeError::Busy => {
+                Self::Rejected("the shared document has changes of its own open".into())
+            }
+            MergeError::Invalid(reason) => Self::Rejected(reason),
+            MergeError::Device(reason) => Self::Device(reason),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -29,7 +44,11 @@ pub(crate) fn merge_committed_with_status(
     match tilo_automerge_isolate::apply(doc, bytes, Dependencies::RequireComplete) {
         Ok(Applied::Changed(changed)) => Ok(MergeOutcome::Changed(changed)),
         Ok(Applied::MissingDependencies) => Ok(MergeOutcome::MissingDependencies),
-        Err(error) => Err(MergeError::Invalid(error.to_string())),
+        Err(error) => match crate::AdmissionError::from(error) {
+            crate::AdmissionError::Rejected(reason) => Err(MergeError::Invalid(reason)),
+            crate::AdmissionError::Device(reason) => Err(MergeError::Device(reason)),
+            other => Err(MergeError::Invalid(other.to_string())),
+        },
     }
 }
 

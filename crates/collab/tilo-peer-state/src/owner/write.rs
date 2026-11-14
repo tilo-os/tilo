@@ -177,7 +177,10 @@ impl NativeWorkspaceOwner {
     pub async fn keep_verdicts(
         &self,
         workspace: WorkspaceId,
-        heard: &[(&NeighbourMsg, &Result<crate::AdmissionReport, String>)],
+        heard: &[(
+            &NeighbourMsg,
+            &Result<crate::AdmissionReport, crate::AdmissionError>,
+        )],
         signer: &dyn collab_types::signer::DeviceSigner,
         now: SystemTime,
     ) -> Result<(), String> {
@@ -200,9 +203,16 @@ impl NativeWorkspaceOwner {
                         Ok(_) => live
                             .workspace_mut()
                             .clear_landed_write(&device, message, signed, now),
-                        Err(reason) => live
-                            .workspace_mut()
-                            .refuse_write(&device, message, reason, signed, now),
+                        // This device could not decide the write: no verdict of
+                        // this device's says anything about it.
+                        Err(error) if error.is_device_failure() => Ok(false),
+                        Err(error) => live.workspace_mut().refuse_write(
+                            &device,
+                            message,
+                            &error.to_string(),
+                            signed,
+                            now,
+                        ),
                     };
                     match verdict {
                         Ok(filed) => kept |= filed,

@@ -184,8 +184,9 @@ pub struct Heard {
     /// live traffic.
     pub retained: bool,
     /// What the workspace's admission decided: the frame is already in, and
-    /// this says how.
-    pub report: Result<crate::AdmissionReport, String>,
+    /// this says how. An [`crate::AdmissionError::Device`] means this device
+    /// could not decide it, never that the frame was refused.
+    pub report: Result<crate::AdmissionReport, crate::AdmissionError>,
     /// Whether this device had not taken the frame in before, on any carrier:
     /// a sealed frame its store already held is one it carried on already.
     pub fresh: bool,
@@ -1592,10 +1593,23 @@ impl DirectSync {
         let kept = match &heard.report {
             Ok(report) if !report.lacks_history => Some(Kept::Durable),
             Ok(_) => None,
-            Err(reason) => neighbour_wire::RefusalReason::of(reason)
+            // A frame this device could not decide is no verdict on it: it is
+            // not kept as refused, and the writer's next frame proceeds.
+            Err(error) if error.is_device_failure() => None,
+            Err(error) => neighbour_wire::RefusalReason::of(&error.to_string())
                 .permanent()
                 .then_some(Kept::Refused),
         };
+        if let Err(error) = &heard.report
+            && error.is_device_failure()
+        {
+            tracing::warn!(
+                workspace = ?self.workspace().ok(),
+                author = %short(&heard.author),
+                %error,
+                "this device could not decide a link's frame; nothing was refused"
+            );
+        }
         tracing::debug!(
             workspace = ?self.workspace().ok(),
             author = %short(&heard.author),
@@ -1735,9 +1749,16 @@ impl DirectSync {
         }
         let (landed, report) = match report {
             Ok(report) => (report.changed || report.metadata_changed, Ok(report)),
-            Err(reason) => {
-                tracing::warn!(%reason, "a direct link carried a frame the workspace refused");
-                (false, Err(reason))
+            Err(error) if error.is_device_failure() => {
+                tracing::warn!(
+                    %error,
+                    "this device could not decide a link's frame; nothing was refused"
+                );
+                (false, Err(error))
+            }
+            Err(error) => {
+                tracing::warn!(%error, "a direct link carried a frame the workspace refused");
+                (false, Err(error))
             }
         };
         Heard {
@@ -1765,12 +1786,11 @@ impl DirectSync {
         let own = matches!(message, NeighbourMsg::AppDocument { .. })
             .then(|| self.certificate().ok())
             .flatten();
-        let received = self
-            .0
-            .replica
-            .lock()
-            .receive_from_report(origin, message.clone(), tilo_clock::wall())
-            .map_err(|reason| reason.to_string());
+        let received =
+            self.0
+                .replica
+                .lock()
+                .receive_from_report(origin, message.clone(), tilo_clock::wall());
         let mut landed = received
             .as_ref()
             .is_ok_and(|report| report.changed || report.metadata_changed);
@@ -1780,15 +1800,26 @@ impl DirectSync {
         // lands on. The carrier's certificate says who sent the frame, not
         // whose verdicts these are. Any other frame is the link's alone to
         // drop.
-        if let Some(own) = own.filter(|_| received.is_err() || landed) {
+        // A frame this device could not decide is no refusal to file: the
+        // writer's write is not marked as missing, and its next one proceeds.
+        let refused = received
+            .as_ref()
+            .err()
+            .filter(|error| !error.is_device_failure());
+        if let Some(own) = own.filter(|_| received.is_ok() || refused.is_some()) {
             let filed = self
-                .signed_change(|peer, signer, now| match &received {
-                    Ok(_) => peer
+                .signed_change(|peer, signer, now| match (&received, refused) {
+                    (Ok(_), _) => peer
                         .workspace_mut()
                         .clear_landed_write(&own, &message, signer, now),
-                    Err(reason) => peer
-                        .workspace_mut()
-                        .refuse_write(&own, &message, reason, signer, now),
+                    (Err(_), Some(reason)) => peer.workspace_mut().refuse_write(
+                        &own,
+                        &message,
+                        &reason.to_string(),
+                        signer,
+                        now,
+                    ),
+                    (Err(_), None) => Ok(false),
                 })
                 .await;
             match filed {

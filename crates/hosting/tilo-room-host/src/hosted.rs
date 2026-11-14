@@ -394,7 +394,8 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
         if matches!(message, NeighbourMsg::AppDocument { .. }) {
             continue;
         }
-        peer.receive_from(origin, message, now)?;
+        peer.receive_from(origin, message, now)
+            .map_err(|error| error.to_string())?;
     }
     if !peer.has_governance() {
         return Err("the workspace was handed over without its governance".into());

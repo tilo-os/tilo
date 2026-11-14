@@ -71,6 +71,51 @@ pub use tilo_live::presence::{LiveCall, LiveCaller};
 /// The route a record is opened and written by: what [`Cmd`]s and [`Event`]s name.
 pub use tilo_peer_state::document_frame::DocumentRoute;
 
+/// Why an enrollment or an entry gave nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EnrollFailure {
+    /// The host, the invitation or the workspace refused: nothing was joined.
+    Refused(String),
+    /// This device could not take the workspace in (an isolated Automerge worker crashed,
+    /// overran its deadline or never started). Nothing says the join was refused: the workspace
+    /// stays where the join made it, and the next join attempt proceeds.
+    Device(String),
+}
+impl EnrollFailure {
+    /// Whether this device failed, rather than the join being refused.
+    #[must_use]
+    pub fn is_device_failure(&self) -> bool {
+        matches!(self, Self::Device(_))
+    }
+}
+impl std::fmt::Display for EnrollFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(reason) | Self::Device(reason) => f.write_str(reason),
+        }
+    }
+}
+impl std::error::Error for EnrollFailure {}
+impl From<String> for EnrollFailure {
+    fn from(reason: String) -> Self {
+        Self::Refused(reason)
+    }
+}
+impl From<&str> for EnrollFailure {
+    fn from(reason: &str) -> Self {
+        Self::Refused(reason.into())
+    }
+}
+impl From<tilo_peer_state::owner::InstallError> for EnrollFailure {
+    fn from(error: tilo_peer_state::owner::InstallError) -> Self {
+        if error.is_device_failure() {
+            Self::Device(error.to_string())
+        } else {
+            Self::Refused(error.to_string())
+        }
+    }
+}
+
 /// What became of an enrollment or an entry, and the workspace it was for.
 #[derive(Debug)]
 pub struct Enrolled {
@@ -81,7 +126,7 @@ pub struct Enrolled {
     /// The name the person's list gave it, when it was entered from there.
     pub name: Option<String>,
     /// `Ok` once this device holds the workspace and takes part in it.
-    pub result: Result<(), String>,
+    pub result: Result<(), EnrollFailure>,
     /// The entry was for a workspace already on this desk.
     pub held: bool,
 }

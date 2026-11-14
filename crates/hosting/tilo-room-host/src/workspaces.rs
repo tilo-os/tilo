@@ -107,6 +107,7 @@ use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
 use tilo_peer_state::replica::PeerGuard;
 
+use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
@@ -2363,11 +2364,9 @@ impl Workspaces {
                 now,
             )?;
         }
-        candidate.receive_from(
-            tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
-            message,
-            now,
-        )?;
+        candidate
+            .receive_from(TransportOrigin::RetainedRelayDelta(author), message, now)
+            .map_err(|error| error.to_string())?;
         // A sealed write stays in the record's sealed history; a readable
         // one is folded into the governor's checkpoint.
         if !sealed {
@@ -2420,11 +2419,9 @@ impl Workspaces {
         }
         let now = tilo_clock::wall();
         let mut candidate = workspace.peer().clone();
-        let outcome = candidate.receive_from(
-            tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
-            message,
-            now,
-        )?;
+        let outcome = candidate
+            .receive_from(TransportOrigin::RetainedRelayDelta(author), message, now)
+            .map_err(|error| error.to_string())?;
         if !outcome.changed {
             return Ok(());
         }

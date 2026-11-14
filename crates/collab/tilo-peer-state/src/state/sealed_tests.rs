@@ -228,6 +228,7 @@ fn a_full_sealed_history_refuses_rather_than_evicts() {
     assert!(
         host.receive_from(origin(&b), sealed(&host, &b, 2, b"one more"), now)
             .unwrap_err()
+            .to_string()
             .contains("full")
     );
     assert_eq!(held(&host).len(), MAX_SEALED_OPS);

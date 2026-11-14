@@ -202,7 +202,9 @@ fn joins_with(
             owner.clone(),
         )
         .await?;
-        owner.install(&enrollment, SystemTime::now())
+        owner
+            .install(&enrollment, SystemTime::now())
+            .map_err(|error| error.to_string())
     })?;
     Ok(owner)
 }

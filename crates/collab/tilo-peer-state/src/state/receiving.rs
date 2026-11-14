@@ -217,26 +217,30 @@ impl StatePeer {
     }
 
     /// Admit a message from `origin`, queuing it while prerequisites are missing.
+    /// An [`AdmissionError::Device`] is this device failing to decide it, never
+    /// the message being refused.
     pub fn receive_from(
         &mut self,
         origin: TransportOrigin,
         message: NeighbourMsg,
         now: SystemTime,
-    ) -> Result<ReceiveOutcome, String> {
+    ) -> Result<ReceiveOutcome, AdmissionError> {
         if let TransportOrigin::RetainedNativePublication { publisher } = origin {
             return self
                 .receive_native_publication(publisher, message, now, false)
-                .map(|report| report.summary)
-                .map_err(err);
+                .map(|report| report.summary);
         }
-        let (source, retained_replay) = self.resolve_origin(origin, &message, now).map_err(err)?;
+        let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
         let written = written_route(&message);
         let mut candidate = self.clone();
         let mut outcome = candidate
             .receive_with_context(source, message, now, retained_replay, false)
-            .map_err(|error| {
-                self.forget_refused(source, written.as_ref());
-                err(error)
+            .inspect_err(|error| {
+                // A device that could not decide the frame has not refused it:
+                // what waited for the writer stays waiting for it.
+                if !error.is_device_failure() {
+                    self.forget_refused(source, written.as_ref());
+                }
             })?;
         let landed = outcome.summary.changed || outcome.summary.metadata_changed;
         outcome.summary.replay_wanted |= candidate.missed_landed(landed);
@@ -437,8 +441,7 @@ impl StatePeer {
                 now_ns: now_ns(now),
             },
             workspace_changes,
-        )
-        .map_err(err)?;
+        )?;
         // Receipts this peer admitted earlier stay immutable even once
         // the workspace document omits them.
         let mut receipts = self.core.receipts.clone();

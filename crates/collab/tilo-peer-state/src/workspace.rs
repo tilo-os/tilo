@@ -12,7 +12,7 @@ pub mod rows;
 pub mod saved_shortcut;
 pub mod share;
 pub use admit::{
-    AdmittedWorkspace, Standing, WorkspaceAdmission, WorkspaceRefusal, Writer,
+    AdmissionFailure, AdmittedWorkspace, Standing, WorkspaceAdmission, WorkspaceRefusal, Writer,
     admit_workspace_changes,
 };
 pub use adopt::adopt_workspace;
@@ -321,7 +321,10 @@ pub fn sent_change(mut change: automerge::Change) -> Vec<u8> {
     change.bytes().into_owned()
 }
 
-pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
+pub fn candidate(
+    before: Option<&AutoCommit>,
+    changes: &[Vec<u8>],
+) -> Result<AutoCommit, AdmissionFailure> {
     candidate_on(before.cloned().unwrap_or_else(AutoCommit::new), changes)
 }
 
@@ -329,7 +332,10 @@ pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<Aut
 ///
 /// # Errors
 /// As [`candidate`].
-pub fn candidate_on(mut candidate: AutoCommit, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
+pub fn candidate_on(
+    mut candidate: AutoCommit,
+    changes: &[Vec<u8>],
+) -> Result<AutoCommit, AdmissionFailure> {
     // Each entry is one complete change chunk; their concatenation is ordinary
     // storage, admitted like any other untrusted document mutation.
     let storage = changes.concat();
@@ -345,7 +351,13 @@ pub fn candidate_on(mut candidate: AutoCommit, changes: &[Vec<u8>]) -> Result<Au
         &storage,
         tilo_automerge_isolate::Dependencies::RetainOrphans,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|error| match crate::AdmissionError::from(error) {
+        crate::AdmissionError::Rejected(reason) => {
+            AdmissionFailure::Refused(WorkspaceRefusal::Malformed(reason))
+        }
+        crate::AdmissionError::Device(reason) => AdmissionFailure::Device(reason),
+        other => AdmissionFailure::Refused(WorkspaceRefusal::Malformed(other.to_string())),
+    })?;
     Ok(candidate)
 }
 pub fn declared_workspace_mismatches(candidate: &AutoCommit, workspace: uuid::Uuid) -> bool {

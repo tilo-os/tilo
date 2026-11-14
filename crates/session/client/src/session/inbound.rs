@@ -519,7 +519,7 @@ impl Task {
     pub(super) fn kept(
         &mut self,
         document: Arrived,
-        report: Result<tilo_peer_state::AdmissionReport, String>,
+        report: Result<tilo_peer_state::AdmissionReport, tilo_peer_state::AdmissionError>,
     ) {
         let Arrived {
             author,
@@ -530,8 +530,17 @@ impl Task {
         } = document;
         let report = match report {
             Ok(report) => report,
+            // This computer could not decide the write: nothing says it was
+            // refused, so nothing is counted as refused.
+            Err(error) if error.is_device_failure() => {
+                tracing::warn!(
+                    %error,
+                    "this computer could not decide a workspace write; nothing was refused"
+                );
+                return;
+            }
             Err(error) => {
-                self.refused = (self.refused.0.saturating_add(1), error);
+                self.refused = (self.refused.0.saturating_add(1), error.to_string());
                 return;
             }
         };

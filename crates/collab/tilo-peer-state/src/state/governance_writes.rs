@@ -98,14 +98,16 @@ impl StatePeer {
             .map(|change| change.raw_bytes().to_vec())
             .collect();
         let workspace = self.core.workspace.clone();
-        let outcome = self.receive_from(
-            TransportOrigin::RelayDelta(key.device_public_key()),
-            NeighbourMsg::SyncResp {
-                changes,
-                room: workspace,
-            },
-            now,
-        )?;
+        let outcome = self
+            .receive_from(
+                TransportOrigin::RelayDelta(key.device_public_key()),
+                NeighbourMsg::SyncResp {
+                    changes,
+                    room: workspace,
+                },
+                now,
+            )
+            .map_err(|error| error.to_string())?;
         Ok(outcome.changed || outcome.metadata_changed)
     }
 

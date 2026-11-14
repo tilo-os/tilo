@@ -219,7 +219,7 @@ impl Replicas {
         author: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
-    ) -> Result<tilo_peer_state::AdmissionReport, String> {
+    ) -> Result<tilo_peer_state::AdmissionReport, tilo_peer_state::AdmissionError> {
         if !self.workspaces.contains(&workspace_id) {
             return Err("the workspace has no governance".into());
         }
@@ -239,7 +239,10 @@ impl Replicas {
         workspace_id: WorkspaceId,
         documents: Vec<([u8; 32], NeighbourMsg)>,
         now: SystemTime,
-    ) -> Result<Vec<Result<tilo_peer_state::AdmissionReport, String>>, String> {
+    ) -> Result<
+        Vec<Result<tilo_peer_state::AdmissionReport, tilo_peer_state::AdmissionError>>,
+        String,
+    > {
         self.workspace(workspace_id)
             .ok_or("the workspace has no governance")?;
         let inputs = documents

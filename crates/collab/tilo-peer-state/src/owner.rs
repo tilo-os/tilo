@@ -170,6 +170,52 @@ pub enum Change {
     Released { workspace: WorkspaceId },
 }
 
+/// Why a completed enrollment was not installed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstallError {
+    /// The host's Complete or the governance it carries was refused: nothing
+    /// was installed, and the enrollment is no longer worth retrying.
+    Refused(String),
+    /// This device could not admit what the host sent (an isolated Automerge
+    /// worker crashed, overran its deadline or never started). Nothing says
+    /// the enrollment is wrong: it stays pending for the next attempt.
+    Device(String),
+}
+impl InstallError {
+    /// Whether this device failed, rather than the admission refusing.
+    #[must_use]
+    pub fn is_device_failure(&self) -> bool {
+        matches!(self, Self::Device(_))
+    }
+}
+impl std::fmt::Display for InstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(reason) | Self::Device(reason) => f.write_str(reason),
+        }
+    }
+}
+impl std::error::Error for InstallError {}
+impl From<String> for InstallError {
+    fn from(reason: String) -> Self {
+        Self::Refused(reason)
+    }
+}
+impl From<&str> for InstallError {
+    fn from(reason: &str) -> Self {
+        Self::Refused(reason.into())
+    }
+}
+impl From<crate::AdmissionError> for InstallError {
+    fn from(error: crate::AdmissionError) -> Self {
+        if error.is_device_failure() {
+            Self::Device(error.to_string())
+        } else {
+            Self::Refused(error.to_string())
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct NativeWorkspaceOwner(Arc<SharedOwner>);
 /// Does not keep the owner alive; a host's writer holds one to fence it.
@@ -752,7 +798,7 @@ impl NativeWorkspaceOwner {
         origin: TransportOrigin,
         message: NeighbourMsg,
         now: SystemTime,
-    ) -> Result<AdmissionReport, String> {
+    ) -> Result<AdmissionReport, crate::AdmissionError> {
         self.receive_batch(workspace, vec![(origin, message)], now)?
             .pop()
             .ok_or_else(|| "native owner admitted no input".to_owned())?
@@ -774,7 +820,7 @@ impl NativeWorkspaceOwner {
         workspace: WorkspaceId,
         inputs: Vec<(TransportOrigin, NeighbourMsg)>,
         now: SystemTime,
-    ) -> Result<Vec<Result<AdmissionReport, String>>, String> {
+    ) -> Result<Vec<Result<AdmissionReport, crate::AdmissionError>>, String> {
         let _turn = self.0.mutation.lock();
         let candidate = self.view(workspace)?;
         let replica = candidate.replica.clone();
@@ -794,7 +840,7 @@ impl NativeWorkspaceOwner {
                 .as_mut()
                 .and_then(|publication| self.receive_hosted(&candidate, publication, &message, now))
             {
-                Some(report) => report,
+                Some(report) => report.map_err(crate::AdmissionError::from),
                 None => Self::admit_input(&candidate, origin, message, now),
             };
             if report.is_ok()
@@ -872,24 +918,20 @@ impl NativeWorkspaceOwner {
         origin: TransportOrigin,
         message: NeighbourMsg,
         now: SystemTime,
-    ) -> Result<AdmissionReport, String> {
+    ) -> Result<AdmissionReport, crate::AdmissionError> {
         let workspace = candidate.workspace_id();
         let mut live = candidate.live();
         if matches!(&message, NeighbourMsg::AppDocument { .. })
             && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
         {
-            let exact = live
-                .lookup_exact_document_report(origin, &message, now)
-                .map_err(|error| error.to_string())?;
+            let exact = live.lookup_exact_document_report(origin, &message, now)?;
             if let Some(exact) = exact
                 && publication::exact_replay_unchanged(&live, &candidate.record)?
             {
                 return Ok(exact);
             }
         }
-        let report = live
-            .receive_from_report(origin, message, now)
-            .map_err(|e| e.to_string())?;
+        let report = live.receive_from_report(origin, message, now)?;
         for dropped in &report.summary().dropped {
             tracing::warn!(%workspace, %dropped, "a held app message was let go unapplied");
         }

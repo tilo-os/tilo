@@ -1421,3 +1421,47 @@ fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owne
     }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
     assert_eq!(record_on_disk(&path), before);
 }
+
+/// A change chunk that makes Automerge's decoder panic in the isolated worker.
+const CRASHING_CHANGE: &str = "856f4a83a9cba9c000ba020210a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a110b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2014707c716356b85249314a37e0cdff282bd05e090ed2b18595c18a1969a410cbf0701050305130623024006430456020e0106020a110613081527210e230f3403420d560f571080010d81010583010502007e010002017e7f027f0802027f010401800002017f02020002010407000607007f01000603017f0403067f0b000b02000001000a7d00070000017f0561667465720201637d056974656d73016d0374626c0301787f03726f7700037f046465657002007f0105007f0102007d010001720d76077c7b037e07007c02047d040a030102017c0502000605017f0002017d850118140300031402167d001602000000000000f83f05040102037270717e000104007f0203007f0103007c010001007c0a7f000103";
+
+/// A worker that crashed while installing the host's governance says nothing
+/// about the enrollment: nothing is installed, and the join stays where it is
+/// for the next attempt.
+#[test]
+fn a_worker_crash_while_installing_leaves_the_join_pending() {
+    let (intent, mut bootstrap, _, _, now) = raw_fixture();
+    bootstrap.governance_messages = vec![
+        postcard::to_stdvec(&NeighbourMsg::SyncResp {
+            changes: vec![hex::decode(CRASHING_CHANGE).unwrap()],
+            room: WORKSPACE.into(),
+        })
+        .unwrap(),
+    ];
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let path = directory.path().join("joined-workspaces.json");
+    let owner = open_file(&path).unwrap();
+    let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
+    let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+    let enrollment = crate::owner::testing::finalize(intent, pending, bootstrap).unwrap();
+    let error = owner
+        .install(&enrollment, now)
+        .expect_err("the crashed worker fails this install");
+    assert!(
+        error.is_device_failure(),
+        "the crash is this device failing, not a refusal: {error:?}"
+    );
+    assert!(
+        owner.with_current(workspace, |_| Ok(())).is_err(),
+        "nothing was installed"
+    );
+    let held = owner
+        .pending_enrollment(workspace)
+        .unwrap()
+        .expect("the join stays pending");
+    assert_eq!(
+        held.status(),
+        crate::owner::PendingEnrollmentStatus::Active,
+        "the next attempt finds the same join"
+    );
+}

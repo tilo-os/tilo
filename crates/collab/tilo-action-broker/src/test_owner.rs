@@ -341,14 +341,16 @@ impl SessionOwner {
                     .into_iter()
                     .map(|change| change.raw_bytes().to_vec())
                     .collect();
-                candidate.receive_from(
-                    TransportOrigin::RelayDelta(self.key.verifying_key().to_bytes()),
-                    NeighbourMsg::SyncResp {
-                        room: request.workspace.clone(),
-                        changes,
-                    },
-                    now,
-                )?;
+                candidate
+                    .receive_from(
+                        TransportOrigin::RelayDelta(self.key.verifying_key().to_bytes()),
+                        NeighbourMsg::SyncResp {
+                            room: request.workspace.clone(),
+                            changes,
+                        },
+                        now,
+                    )
+                    .map_err(|error| error.to_string())?;
             }
             _ => return Err("this owner commits documents and effect receipts only".into()),
         }

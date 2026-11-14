@@ -131,8 +131,19 @@ impl GovernedWorkspace {
                 replay_wanted: outcome.replay_wanted,
                 refused: None,
             },
+            // This device could not decide the write: no verdict of its says
+            // anything about it, and the write stays in the relay's custody
+            // for the next replay.
+            Err(error) if error.is_device_failure() => {
+                tracing::warn!(
+                    workspace = %self.record.workspace,
+                    %error,
+                    "this device could not decide a member's write; nothing was refused"
+                );
+                Followed::default()
+            }
             Err(error) => Followed {
-                refused: Some(error),
+                refused: Some(error.to_string()),
                 ..Followed::default()
             },
         }
@@ -176,13 +187,18 @@ impl GovernedWorkspace {
             }
             peer.clone()
         };
-        decided
+        let error = decided
             .receive_from(
                 TransportOrigin::RetainedRelayDelta(author),
                 message.clone(),
                 tilo_clock::wall(),
             )
-            .err()
+            .err()?;
+        if error.is_device_failure() {
+            tracing::warn!(%error, "this device could not decide a member's write; nothing is refused");
+            return None;
+        }
+        Some(error.to_string())
     }
 
     /// File this device's verdict on the write admission refused because

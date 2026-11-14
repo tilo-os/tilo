@@ -12,7 +12,20 @@ pub enum AdmissionError {
     WriterSelectionRequired,
     ConflictingSequence,
     ResourceLimit,
+    /// The input was refused by the workspace's rules.
     Rejected(String),
+    /// This device could not decide the input: its isolated Automerge worker
+    /// crashed, overran its deadline or never started. That says nothing about
+    /// the input, so it is no refusal of a write and leaves no verdict.
+    Device(String),
+}
+impl AdmissionError {
+    /// Whether this device failed to decide the input, rather than the input
+    /// being refused. A caller keeps no verdict and drops nothing on one.
+    #[must_use]
+    pub fn is_device_failure(&self) -> bool {
+        matches!(self, Self::Device(_))
+    }
 }
 impl std::fmt::Display for AdmissionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -24,7 +37,7 @@ impl std::fmt::Display for AdmissionError {
                 f.write_str("signed operation conflicts with exact admitted sequence")
             }
             Self::ResourceLimit => f.write_str("exact admission index quota exceeded"),
-            Self::Rejected(reason) => f.write_str(reason),
+            Self::Rejected(reason) | Self::Device(reason) => f.write_str(reason),
         }
     }
 }
@@ -37,6 +50,25 @@ impl From<String> for AdmissionError {
 impl From<&str> for AdmissionError {
     fn from(value: &str) -> Self {
         Self::Rejected(value.into())
+    }
+}
+impl From<tilo_automerge_isolate::Rejected> for AdmissionError {
+    fn from(value: tilo_automerge_isolate::Rejected) -> Self {
+        if value.refuses_input() {
+            Self::Rejected(value.to_string())
+        } else {
+            Self::Device(value.to_string())
+        }
+    }
+}
+impl From<crate::workspace::AdmissionFailure> for AdmissionError {
+    fn from(value: crate::workspace::AdmissionFailure) -> Self {
+        match value {
+            crate::workspace::AdmissionFailure::Refused(refusal) => {
+                Self::Rejected(refusal.to_string())
+            }
+            crate::workspace::AdmissionFailure::Device(reason) => Self::Device(reason),
+        }
     }
 }
 

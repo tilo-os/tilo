@@ -203,7 +203,8 @@ impl NativeWorkspaceOwner {
             &bootstrap.revocations,
             now,
         )?;
-        crate::owner::enrollment::install_governance(&mut peer, bootstrap, now)?;
+        crate::owner::enrollment::install_governance(&mut peer, bootstrap, now)
+            .map_err(|error| error.to_string())?;
         if !peer.has_governance() {
             return Err("a member's workspace arrived without its governance".into());
         }

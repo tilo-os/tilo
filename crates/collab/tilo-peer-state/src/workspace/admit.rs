@@ -150,6 +150,37 @@ impl std::fmt::Display for WorkspaceRefusal {
 
 impl std::error::Error for WorkspaceRefusal {}
 
+/// Why [`admit_workspace_changes`] answered nothing. Only [`Self::Refused`] is
+/// a verdict on the batch; [`Self::Device`] is this device failing to decide it
+/// (an isolated worker crashed, overran its deadline or never started), which
+/// says nothing about what the sender wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdmissionFailure {
+    Refused(WorkspaceRefusal),
+    Device(String),
+}
+impl AdmissionFailure {
+    /// Whether this device failed to decide the batch, rather than refusing it.
+    #[must_use]
+    pub fn is_device_failure(&self) -> bool {
+        matches!(self, Self::Device(_))
+    }
+}
+impl std::fmt::Display for AdmissionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(refusal) => refusal.fmt(f),
+            Self::Device(reason) => f.write_str(reason),
+        }
+    }
+}
+impl std::error::Error for AdmissionFailure {}
+impl From<WorkspaceRefusal> for AdmissionFailure {
+    fn from(refusal: WorkspaceRefusal) -> Self {
+        Self::Refused(refusal)
+    }
+}
+
 /// Admit `changes` to `input.before`: build the candidate and run every check a
 /// workspace document must pass, in one place for every receiver.
 ///
@@ -160,11 +191,12 @@ impl std::error::Error for WorkspaceRefusal {}
 ///
 /// # Errors
 ///
-/// The first [`WorkspaceRefusal`] that applies; nothing is admitted then.
+/// The first [`WorkspaceRefusal`] that applies, or [`AdmissionFailure::Device`]
+/// when this device could not decide the batch; nothing is admitted then.
 pub fn admit_workspace_changes(
     input: WorkspaceAdmission<'_>,
     changes: &[Vec<u8>],
-) -> Result<AdmittedWorkspace, WorkspaceRefusal> {
+) -> Result<AdmittedWorkspace, AdmissionFailure> {
     let governs = input.source.governs(input.owner);
     let writes = governs || may_write(input.before, input.workspace, &input.source, input.now_ns)?;
     match super::base::lineage(input.before, changes) {
@@ -172,12 +204,11 @@ pub fn admit_workspace_changes(
             // Changes waiting in the document that the batch shows to be of
             // another history go before the batch is applied.
             let pruned = super::base::pruned(input.before, replaced);
-            let candidate = super::candidate(pruned.as_ref().or(input.before), &changes)
-                .map_err(WorkspaceRefusal::Malformed)?;
+            let candidate = super::candidate(pruned.as_ref().or(input.before), &changes)?;
             // One who only reads the workspace records only their own receipts
             // and gives only their own shares.
             if !writes && !super::only_reader_writes_differ(input.before, &candidate) {
-                return Err(WorkspaceRefusal::WriteForbidden);
+                return Err(WorkspaceRefusal::WriteForbidden.into());
             }
             // What a batch changes in the workspace's governance is what its
             // operations say it changes, each of them its author's to make: a
@@ -199,7 +230,7 @@ pub fn admit_workspace_changes(
             } else if !governs && !super::governance_unchanged(input.before, &candidate) {
                 // A change to the workspace's governance is an operation's: a
                 // batch that changes it without one changes nothing.
-                return Err(WorkspaceRefusal::GovernanceWriter);
+                return Err(WorkspaceRefusal::GovernanceWriter.into());
             } else {
                 false
             };
@@ -211,8 +242,7 @@ pub fn admit_workspace_changes(
             })
         }
         super::base::Lineage::Newer { base, changes } if governs => {
-            let candidate =
-                super::candidate_on(*base, &changes).map_err(WorkspaceRefusal::Malformed)?;
+            let candidate = super::candidate_on(*base, &changes)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
             let media = checked(&input, &candidate, false)?;
@@ -222,14 +252,17 @@ pub fn admit_workspace_changes(
                 rebased: true,
             })
         }
-        super::base::Lineage::Newer { .. } => Err(WorkspaceRefusal::GovernanceWriter),
+        super::base::Lineage::Newer { .. } => Err(WorkspaceRefusal::GovernanceWriter.into()),
     }
 }
 
-fn membership(refusal: super::membership::MembershipRefusal) -> WorkspaceRefusal {
+fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure {
     match refusal {
-        super::membership::MembershipRefusal::NotMembership => WorkspaceRefusal::GovernanceWriter,
-        refusal => WorkspaceRefusal::Membership(refusal.to_string()),
+        super::membership::MembershipRefusal::Device(reason) => AdmissionFailure::Device(reason),
+        super::membership::MembershipRefusal::NotMembership => {
+            WorkspaceRefusal::GovernanceWriter.into()
+        }
+        refusal => WorkspaceRefusal::Membership(refusal.to_string()).into(),
     }
 }
 

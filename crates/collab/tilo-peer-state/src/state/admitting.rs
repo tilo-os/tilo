@@ -490,7 +490,7 @@ impl StatePeer {
                 bytes,
                 tilo_automerge_isolate::Dependencies::RequireComplete,
             )
-            .map_err(err)?
+            .map_err(AdmissionError::from)?
             {
                 tilo_automerge_isolate::Applied::Changed(_) => {}
                 tilo_automerge_isolate::Applied::MissingDependencies => {
@@ -556,7 +556,7 @@ impl StatePeer {
             ))
         .then(|| candidate.doc.base_heads());
         let changed = match document::merge_committed_with_status(&mut candidate.doc, &mutation)
-            .map_err(|e| format!("{e:?}"))?
+            .map_err(AdmissionError::from)?
         {
             document::MergeOutcome::Changed(changed) => changed,
             document::MergeOutcome::MissingDependencies if !local_app => {

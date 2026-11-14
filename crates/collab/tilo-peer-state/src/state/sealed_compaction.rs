@@ -574,6 +574,9 @@ pub(super) enum WriteMerge {
     AlreadyHeld { actor: String, seq: u64 },
     /// Automerge refused it for any other reason.
     Refused(String),
+    /// This device could not decide it (an isolated worker crashed or overran
+    /// its deadline). Nothing is known about the write itself.
+    Device(String),
 }
 
 /// Merge one write of a sealed history, opened and decoded, over `record`.
@@ -591,6 +594,7 @@ pub(super) fn merge_write(record: &mut AutoCommit, mutation: &DocumentMutation) 
             Some((actor, seq)) => WriteMerge::AlreadyHeld { actor, seq },
             None => WriteMerge::Refused(why),
         },
+        Err(crate::document::MergeError::Device(reason)) => WriteMerge::Device(reason),
         // A write is merged between frames and between actions: it is never
         // handed a record with ops of its own still open.
         Err(crate::document::MergeError::Busy) => {
@@ -688,6 +692,8 @@ pub(super) fn merge_writes(
                     UnmergedReason::AlreadyHeld { actor, seq }
                 }
                 WriteMerge::Refused(why) => UnmergedReason::Unreadable(why),
+                // This device could not decide it: no fact about the write.
+                WriteMerge::Device(reason) => return Err(reason),
             };
             if policy == LeftOut::ForkOnly && !matches!(reason, UnmergedReason::AlreadyHeld { .. })
             {

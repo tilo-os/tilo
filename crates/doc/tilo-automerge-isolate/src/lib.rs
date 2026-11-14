@@ -6,9 +6,11 @@
 //! release builds abort on panic. So peer bytes pass [`precheck`] first, then the
 //! same call runs in a worker process with its heap capped ([`Limits::memory_bytes`])
 //! and a deadline per request ([`Limits::timeout`]), confined by Landlock and a
-//! seccomp allow-list; a crash, a refused syscall or an overrun rejects the input.
-//! Only then does the caller make the identical call on its own document, which is
-//! deterministic and so does what the worker's did.
+//! seccomp allow-list. Only input the worker itself refuses is a refusal of the
+//! input ([`Rejected::refuses_input`]); a crash, a refused syscall or an overrun is
+//! this device failing to serve the request, and the next request starts a fresh
+//! worker. Only then does the caller make the identical call on its own document,
+//! which is deterministic and so does what the worker's did.
 //!
 //! Workers are long-lived and keep copies of the documents they have seen, keyed by
 //! state, each state routed to the worker that last saw it; what a worker keeps is
@@ -89,6 +91,17 @@ pub enum Rejected {
     TimedOut,
     #[error("automerge worker unavailable: {0}")]
     Unavailable(String),
+}
+
+impl Rejected {
+    /// Whether the input itself was refused. A worker that crashed, overran
+    /// its deadline or never started says nothing about the input: it is this
+    /// device failing to serve the request, and the next request starts a
+    /// fresh worker.
+    #[must_use]
+    pub fn refuses_input(&self) -> bool {
+        matches!(self, Self::TooLarge | Self::Malformed(_) | Self::Invalid(_))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

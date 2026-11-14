@@ -633,6 +633,7 @@ pub fn receive(
         now(),
     )
     .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 /// A shortcut named after its id, with nothing else set.
