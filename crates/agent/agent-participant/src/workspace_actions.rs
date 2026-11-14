@@ -55,6 +55,7 @@ mod catch_up;
 mod content;
 mod feedback;
 mod found;
+mod jobs;
 mod keys;
 mod ledger;
 mod link;
@@ -90,6 +91,7 @@ use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_records::WorkspaceRecords;
 use catch_up::catch_up;
 use collab_types::DocumentMutation;
+use jobs::Jobs;
 use keys::{Keys, catalogue_keys};
 use ledger::Ledger;
 use publish::Unsaved;
@@ -206,23 +208,6 @@ impl Job {
         }
     }
 
-    /// The workspace whose thread serves the job: every job is about one.
-    const fn served_in(&self) -> WorkspaceId {
-        match self {
-            Self::Feedback { workspace_id, .. }
-            | Self::Catalogue { workspace_id, .. }
-            | Self::Invoke { workspace_id, .. }
-            | Self::Content { workspace_id, .. }
-            | Self::ContentGet { workspace_id, .. }
-            | Self::Search { workspace_id, .. }
-            | Self::Changes { workspace_id, .. }
-            | Self::Arrived { workspace_id, .. }
-            | Self::Joined(workspace_id)
-            | Self::Forget(workspace_id) => *workspace_id,
-            Self::Ran(ended) => ended.workspace_id,
-        }
-    }
-
     /// The workspace whose records the job reads or changes.
     const fn workspace(&self) -> Option<WorkspaceId> {
         match self {
@@ -262,38 +247,6 @@ impl Job {
 /// logged: every request of a workspace waits behind the one before it, and
 /// behind the requests of the other workspaces its thread serves.
 const SLOW_JOB: Duration = Duration::from_secs(2);
-
-/// Where the service's requests go: each workspace's to the one thread that
-/// serves it, so a workspace's requests run in the order they came while
-/// other workspaces' run beside them.
-#[derive(Clone)]
-pub(crate) struct Jobs {
-    shards: Arc<[mpsc::Sender<(Instant, Job)>]>,
-}
-
-impl Jobs {
-    /// Hand `job` to the thread serving its workspace.
-    ///
-    /// # Errors
-    ///
-    /// The job back, when that thread has stopped.
-    #[allow(
-        clippy::result_large_err,
-        reason = "a job the thread cannot take goes back to its sender whole"
-    )]
-    fn send(&self, job: (Instant, Job)) -> Result<(), mpsc::SendError<(Instant, Job)>> {
-        use std::hash::{Hash as _, Hasher as _};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        job.1.served_in().hash(&mut hasher);
-        let count = u64::try_from(self.shards.len()).unwrap_or(1).max(1);
-        let index = usize::try_from(hasher.finish().checked_rem(count).unwrap_or_default())
-            .unwrap_or_default();
-        match self.shards.get(index) {
-            Some(shard) => shard.send(job),
-            None => Err(mpsc::SendError(job)),
-        }
-    }
-}
 
 struct Shared {
     ledger: Mutex<Ledger>,
@@ -353,27 +306,10 @@ impl WorkspaceActions {
             return Ok(());
         }
         crate::worker::prestart();
-        let mut shards = Vec::new();
-        for index in 0..crate::worker::pool_size() {
-            let (sender, jobs) = mpsc::channel();
-            let shared = Arc::clone(&self.shared);
-            let catalogue = Arc::clone(&self.catalogue);
-            let link = Arc::clone(&link);
-            std::thread::Builder::new()
-                .name(format!("workspace-actions-{index}"))
-                .spawn(move || {
-                    // This thread's records are held in a worker of its own.
-                    crate::worker::set_affinity(index);
-                    Worker::new(link.as_ref(), catalogue(), shared).run(&jobs);
-                })
-                .map_err(|error| error.to_string())?;
-            shards.push(sender);
-        }
+        let jobs = Jobs::start(&self.shared, &self.catalogue, &link)?;
         // Each thread holds its own handle on the link.
         drop(link);
-        *self.shared.jobs.lock_recover() = Some(Jobs {
-            shards: shards.into(),
-        });
+        *self.shared.jobs.lock_recover() = Some(jobs);
         Ok(())
     }
 
