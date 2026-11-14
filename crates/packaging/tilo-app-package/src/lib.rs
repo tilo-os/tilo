@@ -33,7 +33,7 @@ pub use manifest::{
     Capabilities, Cli, DEFAULT_PLATFORMS, Entrypoint, EntrypointType, Image, Manifest,
     ManifestParseError, NetMode, Package, PathPattern, Platform, Providers, Publisher, Requirement,
     Sandbox, SandboxFs, SandboxNet, ServiceProtocol, ServiceReq, ServiceReqParseError,
-    SplashSegment, SplashSegmentError, Target, Trust, TrustAttestation,
+    SplashSegment, SplashSegmentError, Target, Trust, TrustAttestation, WindowKind,
 };
 pub use pack::{
     PackError, Packed, SigningIdentity, pack, pack_with_signature, sign_placeholder_root,

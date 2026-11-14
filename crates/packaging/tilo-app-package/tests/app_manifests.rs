@@ -141,6 +141,29 @@ fn every_shipped_manifest_exists_validates_and_round_trips() {
     }
 }
 
+/// An app says its windows run only on the device that opened them with one word of its
+/// entrypoint, and one that says nothing has windows that are views of records. A kind of window
+/// no build knows is refused, never taken for a view.
+#[test]
+fn an_app_says_what_its_windows_are_to_other_devices_in_its_entrypoint() {
+    let notes = repo_root().join("apps/notes");
+    assert!(
+        !load(&notes).window_runs_on_its_device(),
+        "a Notes window is a view of a record"
+    );
+    let src = std::fs::read_to_string(manifest_path(&notes)).expect("Notes' manifest");
+    let said = src.replacen("[entrypoint]", "[entrypoint]\nwindow = \"device\"", 1);
+    assert_ne!(said, src, "the manifest has an entrypoint to say it in");
+    let manifest = Manifest::from_toml_str(&said).expect("the manifest decodes");
+    assert!(manifest.window_runs_on_its_device());
+    validate_manifest(&manifest).expect("and is a valid manifest");
+    let unknown = src.replacen("[entrypoint]", "[entrypoint]\nwindow = \"elsewhere\"", 1);
+    assert!(
+        Manifest::from_toml_str(&unknown).is_err(),
+        "a kind of window no build knows is refused"
+    );
+}
+
 #[test]
 fn shipped_apps_declare_presentation_metadata() {
     {
