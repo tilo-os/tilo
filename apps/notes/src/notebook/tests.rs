@@ -793,6 +793,8 @@ tilo_test_env::scenario! {
                 markdown: "See [[Target]].\n\n- one\n- two\n".into(),
                 images: Vec::new(),
                 note: Some(id.clone()),
+                path: None,
+                origin: None,
             })
         };
         apply(&mut notebook, import(&id)).unwrap();
@@ -816,6 +818,8 @@ tilo_test_env::scenario! {
                     markdown: too_big,
                     images: Vec::new(),
                     note: None,
+                    path: None,
+                    origin: None,
                 }),
             )
             .is_err()
@@ -834,6 +838,8 @@ tilo_test_env::scenario! {
                 markdown: markdown.into(),
                 images: Vec::new(),
                 note: Some(id.clone()),
+                path: None,
+                origin: None,
             }),
         )
         .unwrap();
@@ -875,6 +881,8 @@ tilo_test_env::scenario! {
                     markdown: markdown.into(),
                     images: Vec::new(),
                     note: Some(id.clone()),
+                    path: None,
+                    origin: None,
                 }),
             )
             .unwrap();
@@ -904,6 +912,8 @@ tilo_test_env::scenario! {
                     markdown: markdown.clone(),
                     images: Vec::new(),
                     note: Some(id.clone()),
+                    path: None,
+                    origin: None,
                 }),
             )
             .unwrap();
@@ -923,4 +933,218 @@ tilo_test_env::scenario! {
             );
         }
     }
+}
+
+/// The note titled `title`.
+fn titled(notebook: &Replica<Notebook>, title: &str) -> Id {
+    notebook
+        .state()
+        .unwrap()
+        .pages
+        .iter()
+        .find(|(_, page)| page.title == title)
+        .map(|(id, _)| id.clone())
+        .expect("the note is there")
+}
+
+fn create_page(notebook: &mut Replica<Notebook>, title: &str, markdown: &str) -> Id {
+    apply(
+        notebook,
+        Notebook::CREATE_PAGE.with(notebook::CreatePage {
+            title: NonBlank::parse(title).unwrap(),
+            markdown: Some(markdown.into()),
+            origin: None,
+        }),
+    )
+    .unwrap();
+    titled(notebook, title)
+}
+
+/// The note and heading anchor a heading link's address names.
+fn heading_link(mark: &Mark) -> Option<(PageId, Option<String>)> {
+    let Mark::ResourceLink(href) = mark else {
+        return None;
+    };
+    let address = crate::actions::resource_address_in(href)?;
+    assert_eq!(address.kind, PAGE_KIND);
+    let (page, anchor) = note_and_anchor(&address.id)?;
+    Some((page, anchor.map(str::to_owned)))
+}
+
+#[test]
+fn wrapped_lines_read_as_one_paragraph_and_hard_breaks_stay() {
+    let mut notebook = Replica::<Notebook>::new();
+    let id = create_page(
+        &mut notebook,
+        "Wrapped",
+        "A paragraph wrapped\nover two lines.\n- An item\n- Next\n\nHard  \nbreak\n\n> A quote\n> wrapped\n",
+    );
+    assert_eq!(
+        texts(&notebook, &id),
+        [
+            "A paragraph wrapped over two lines.",
+            "An item",
+            "Next",
+            "Hard\nbreak",
+            "A quote wrapped",
+        ]
+    );
+    // Appending reads Markdown the same way.
+    apply(
+        &mut notebook,
+        Notebook::APPEND_TO_NOTE.with(notebook::AppendToNote {
+            title: Some("Wrapped".into()),
+            markdown: "More text\nwrapped [here](#more).\n\n## More\n".into(),
+        }),
+    )
+    .unwrap();
+    let blocks = page(&notebook, &id).blocks();
+    let added = blocks
+        .iter()
+        .find(|block| block.text == "More text wrapped here.")
+        .unwrap();
+    assert_eq!(
+        heading_link(&added.marks[0].mark),
+        Some((uuid(&id), Some("more".to_owned())))
+    );
+    assert_eq!(blocks.last().unwrap().text, "More");
+}
+
+#[test]
+fn a_link_to_a_heading_leads_to_it() {
+    let mut notebook = Replica::<Notebook>::new();
+    let id = create_page(
+        &mut notebook,
+        "Guide",
+        "Press [Undo](#undo) to go back.\n\n## Undo\n\nIt takes back the last step.\n",
+    );
+    let blocks = page(&notebook, &id).blocks();
+    assert_eq!(
+        blocks[0].text, "Press Undo to go back.",
+        "never the literal Markdown"
+    );
+    assert_eq!(blocks[0].marks.len(), 1);
+    assert_eq!(blocks[0].marks[0].range, 6..10);
+    assert_eq!(
+        heading_link(&blocks[0].marks[0].mark),
+        Some((uuid(&id), Some("undo".to_owned())))
+    );
+    assert_eq!(crate::markdown::heading_anchor(&blocks[1].text), "undo");
+}
+
+#[test]
+fn files_imported_together_link_to_each_other_and_their_headings() {
+    let mut notebook = Replica::<Notebook>::new();
+    let file = |path: &str, markdown: &str| MarkdownFile {
+        path: path.into(),
+        title: None,
+        markdown: markdown.into(),
+        origin: None,
+    };
+    apply(
+        &mut notebook,
+        Notebook::IMPORT_MARKDOWN_FILES.with(notebook::ImportMarkdownFiles {
+            files: vec![
+                file(
+                    "docs/intro.md",
+                    "# Intro\n\nSee [setup](guide/setup.md#install-it), [the guide](./guide/setup.md) and [elsewhere](../outside.md).\n",
+                ),
+                file(
+                    "docs/guide/setup.md",
+                    "# Setup\n\nBack to the [intro](../intro.md).\n\n## Install it\n\nRun it.\n",
+                ),
+            ],
+        }),
+    )
+    .unwrap();
+    let intro = titled(&notebook, "Intro");
+    let setup = titled(&notebook, "Setup");
+    assert_eq!(
+        page(&notebook, &setup).path.as_deref(),
+        Some("docs/guide/setup.md")
+    );
+    let blocks = page(&notebook, &intro).blocks();
+    assert_eq!(blocks[0].text, "See setup, the guide and elsewhere.");
+    let marks: Vec<_> = blocks[0]
+        .marks
+        .iter()
+        .map(|span| span.mark.clone())
+        .collect();
+    assert_eq!(
+        marks.len(),
+        2,
+        "a link to a file outside the set keeps only its words: {marks:?}"
+    );
+    assert_eq!(
+        heading_link(&marks[0]),
+        Some((uuid(&setup), Some("install-it".to_owned())))
+    );
+    assert_eq!(marks[1], Mark::Link(uuid(&setup)));
+    let back = page(&notebook, &setup).blocks();
+    assert_eq!(back[0].marks[0].mark, Mark::Link(uuid(&intro)));
+    assert!(
+        back.iter()
+            .any(|block| crate::markdown::heading_anchor(&block.text) == "install-it")
+    );
+
+    // A file imported later links to one imported before by its path.
+    apply(
+        &mut notebook,
+        Notebook::IMPORT_MARKDOWN.with(notebook::ImportMarkdown {
+            title: "Later".into(),
+            markdown: "Read the [setup](guide/setup.md).".into(),
+            images: Vec::new(),
+            note: None,
+            path: Some("docs/later.md".into()),
+            origin: None,
+        }),
+    )
+    .unwrap();
+    let later = titled(&notebook, "Later");
+    assert_eq!(
+        page(&notebook, &later).blocks()[0].marks[0].mark,
+        Mark::Link(uuid(&setup))
+    );
+}
+
+#[test]
+fn a_moved_note_keeps_its_origin_and_who_moved_it() {
+    let mut notebook = Replica::<Notebook>::new();
+    let mut mover = notebook
+        .fork()
+        .as_agent_for("agent:grant-a8a42b74", "ada")
+        .named("Company mover");
+    let origin = Origin {
+        author: "Jane Doe".into(),
+        handle: Some("jane".into()),
+        source: "Notion".into(),
+        url: Some("https://docs.example.com/doc/handbook".into()),
+        created_ms: Some(1_741_000_000_000),
+        updated_ms: None,
+    };
+    apply(
+        &mut mover,
+        Notebook::CREATE_PAGE.with(notebook::CreatePage {
+            title: NonBlank::parse("Handbook").unwrap(),
+            markdown: Some("Welcome.".into()),
+            origin: Some(origin.clone()),
+        }),
+    )
+    .unwrap();
+    let handbook = page(&mover, &titled(&mover, "Handbook"));
+    assert_eq!(handbook.origin, Some(origin));
+    assert_eq!(
+        handbook.creator.map(|by| by.0).as_deref(),
+        Some("agent:grant-a8a42b74")
+    );
+    assert_eq!(handbook.creator_name, "Company mover");
+}
+
+#[test]
+fn every_notebook_action_publishes_what_it_reads() {
+    let mut notebook = Replica::<Notebook>::new();
+    create_page(&mut notebook, "One", "Text");
+    let unstated =
+        ui::tilo_resource::schema_check::unstated_arguments::<Notebook>(&notebook.state().unwrap());
+    assert!(unstated.is_empty(), "{unstated:#?}");
 }

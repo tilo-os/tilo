@@ -71,7 +71,7 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
         &mut app,
         "notes.notebook",
         "create-page",
-        json!({ "title": "Todo", "markdown": "# Todo\nbuy milk\nbuy eggs\ncall mum" }),
+        json!({ "title": "Todo", "markdown": "# Todo\n\nbuy milk\n\nbuy eggs\n\ncall mum" }),
     );
     let resource = created["resource"]
         .as_str()
@@ -238,7 +238,7 @@ fn a_selection_in_a_note_is_shared_as_the_place_replace_range_edits() {
         &mut app,
         "notes.notebook",
         "create-page",
-        json!({ "title": "Ideas", "markdown": "# Ideas\nsee the search docs for xy\nlast line" }),
+        json!({ "title": "Ideas", "markdown": "# Ideas\nsee the search docs for xy\n\nlast line" }),
     );
     let resource = created["resource"].as_str().unwrap().to_owned();
     let page = created["page"].as_str().unwrap().to_owned();
@@ -366,7 +366,7 @@ fn an_agent_makes_converts_and_ticks_checklist_items_and_reads_them_back_in_orde
         &mut app,
         "notes.notebook",
         "create-page",
-        json!({ "title": "Errands", "markdown": "pack bags\nbook train\nwater plants" }),
+        json!({ "title": "Errands", "markdown": "pack bags\n\nbook train\n\nwater plants" }),
     );
     let resource = created["resource"].as_str().unwrap().to_owned();
     let note = read(&mut app, &resource);

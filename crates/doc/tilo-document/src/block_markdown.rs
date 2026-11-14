@@ -498,6 +498,25 @@ fn fence_for(lines: &[&str]) -> String {
     "`".repeat(longest.saturating_add(1).max(3))
 }
 
+/// `blocks` as the lines [`RichTextAction::InsertMarkdown`](crate::RichTextAction) writes back
+/// as the same blocks, with their marks: what a caller that read Markdown its own way inserts so
+/// the text is the invoker's. `None` when a block has no line of its own (a table, a picture) or
+/// links somewhere a line cannot name (a page of an app, another resource).
+#[must_use]
+pub fn lines_of(blocks: &[BlockView]) -> Option<String> {
+    blocks
+        .iter()
+        .all(|view| {
+            Shape::of_view(view).is_some()
+                && view.marks.iter().all(|mark| {
+                    mark.name != "link"
+                        || matches!(&mark.value, MarkValue::Str(target)
+                            if crate::action::valid_hyperlink_target(target))
+                })
+        })
+        .then(|| render(blocks, &BTreeMap::new(), false))
+}
+
 /// `blocks` as Markdown, one line per block. With `ids`, each line ends in
 /// its block's id as `shown` gives it (`ids` empty omits them).
 pub fn render(blocks: &[BlockView], shown: &BTreeMap<&str, String>, ids: bool) -> String {

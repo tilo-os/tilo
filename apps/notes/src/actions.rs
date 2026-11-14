@@ -334,6 +334,8 @@ pub fn import_markdown_action(
             markdown: markdown.to_owned(),
             images: images.into_iter().map(Bytes::to_keep).collect(),
             note: note.map(page_id),
+            path: None,
+            origin: None,
         },
     ))
 }

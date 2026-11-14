@@ -119,7 +119,14 @@ impl NotesApp {
                 Ok(self.choose_image(page, cx))
             }
             NotesEffect::OpenLink { url } => self.open_link(url, cx),
-            NotesEffect::OpenResource { href } => Self::open_resource(&href, cx),
+            NotesEffect::OpenResource { href } => match Self::own_note(&href) {
+                // A link to a note or to a heading of one opens here, at the
+                // heading.
+                Some((page, anchor)) => self
+                    .open_heading(&state, page, anchor.as_deref())
+                    .map(|()| Effected::done()),
+                None => Self::open_resource(&href, cx),
+            },
             NotesEffect::CopyLink { page } => {
                 self.copy_link(&state, page).map(|()| Effected::done())
             }
@@ -205,6 +212,36 @@ impl NotesApp {
             self.pending_block_reveal = Some((page, block));
         }
         Ok(())
+    }
+
+    /// The note, and the heading anchor, a link names when it is a link to
+    /// a note of this notebook ([`crate::notebook::heading_href`]).
+    fn own_note(href: &str) -> Option<(PageId, Option<String>)> {
+        let address = actions::resource_address_in(href)?;
+        if address.kind != crate::notebook::PAGE_KIND {
+            return None;
+        }
+        let (page, anchor) = crate::notebook::note_and_anchor(&address.id)?;
+        Some((page, anchor.map(str::to_owned)))
+    }
+
+    /// Show `page` at the heading whose anchor is `anchor`
+    /// ([`crate::markdown::heading_anchor`]), or at its top when it has no
+    /// such heading.
+    pub(super) fn open_heading(
+        &mut self,
+        state: &Workspace,
+        page: PageId,
+        anchor: Option<&str>,
+    ) -> Result<(), String> {
+        let block = anchor.and_then(|anchor| {
+            state.bodies.get(&page)?.iter().find_map(|stored| {
+                (matches!(stored.kind, ui::widget::BlockKind::Heading { .. })
+                    && crate::markdown::heading_anchor(&stored.text) == anchor)
+                    .then(|| stored.id.clone())
+            })
+        });
+        self.open_block(state, page, block)
     }
 
     /// Validate offsets before navigation; select only once the same text is bound.
@@ -569,6 +606,8 @@ fn import_note(
                 .map(|(_, bytes)| ui::tilo_resource::Bytes::to_keep(bytes))
                 .collect(),
             note: Some(crate::notebook::page_id(page)),
+            path: None,
+            origin: None,
         }),
     );
     done.push(Completed::Open(page));

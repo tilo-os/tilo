@@ -103,6 +103,8 @@ impl ResourceApp for NotesShell {
                     .map(|(_, bytes)| ui::tilo_resource::Bytes::to_keep(bytes))
                     .collect(),
                 note: Some(crate::notebook::page_id(page)),
+                path: None,
+                origin: None,
             }),
         ]
     }

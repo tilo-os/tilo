@@ -18,8 +18,8 @@ use std::collections::{HashMap, HashSet};
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Fields, Id, Map, Model, NonBlank, Reactions, Refusal,
-    Set, resource,
+    self, ActionCx, Atom, Bytes, Collection, Fields, Id, Map, Model, NonBlank, Origin, Reactions,
+    Refusal, Set, resource,
 };
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
@@ -85,6 +85,24 @@ pub struct Page {
     #[model(readonly)]
     #[model(default = None)]
     pub creator: Option<Atom>,
+    /// The name its maker acted under, when software made it: an agent's
+    /// name, shown where the workspace no longer names the agent.
+    #[model(readonly)]
+    pub creator_name: String,
+    /// Origin
+    ///
+    /// Where the note was first written, when it was moved here from another
+    /// tool: shown as its author and date, while `creator` keeps who moved
+    /// it.
+    #[model(readonly)]
+    pub origin: Option<Origin>,
+    /// Path
+    ///
+    /// The file it was imported from, by its path in the set it came with
+    /// (`guide/setup.md`): links between the set's files by their paths lead
+    /// to the notes they became.
+    #[model(readonly)]
+    pub path: Option<String>,
     /// Reactions
     ///
     /// What people answered the note with, shown under its title.
@@ -133,6 +151,7 @@ impl Page {
                 .author()
                 .filter(|author| !author.is_empty())
                 .map(|author| Atom(author.to_owned())),
+            creator_name: tilo_resource::acting_name(cx),
             ..self
         }
     }
@@ -203,6 +222,94 @@ fn titles(pages: &[&Page]) -> String {
 #[must_use]
 pub fn page_of(id: &Id) -> Option<PageId> {
     id.as_str().parse().ok()
+}
+
+/// The kind of a note, an item of the notebook's pages, as links name it.
+pub const PAGE_KIND: &str = "notes.notebook.pages";
+
+/// The address a link to the heading `anchor` of the note `page` opens:
+/// the note, with the anchor after its id (`<note>#<anchor>`), as Markdown
+/// names a heading. Opening it shows the note at the heading whose anchor it
+/// is ([`crate::markdown::heading_anchor`]).
+#[must_use]
+pub fn heading_href(page: &Id, anchor: &str) -> Option<String> {
+    use ui::tilo_reference::link::{
+        AppId, Link, LinkSecrets, LinkTarget, Mode, RecordSegment, ResourceAddress, Scope,
+    };
+    let mut target = LinkTarget::new(Scope::Own);
+    target.app = Some(AppId::parse("so.tilo.notes").ok()?);
+    target.record = Some(RecordSegment::Primary);
+    target.resource = Some(ResourceAddress {
+        kind: PAGE_KIND.to_owned(),
+        id: format!("{page}#{anchor}"),
+        span: None,
+    });
+    Link {
+        mode: Mode::Desktop,
+        target,
+        secrets: LinkSecrets::default(),
+    }
+    .to_native()
+    .ok()
+}
+
+/// The note and the heading anchor a link's resource id names
+/// ([`heading_href`]): `<note>` alone, or `<note>#<anchor>`.
+#[must_use]
+pub fn note_and_anchor(id: &str) -> Option<(PageId, Option<&str>)> {
+    let (page, anchor) = match id.split_once('#') {
+        Some((page, anchor)) => (page, Some(anchor).filter(|anchor| !anchor.is_empty())),
+        None => (id, None),
+    };
+    Some((page.parse().ok()?, anchor))
+}
+
+/// One Markdown file of a set imported together ([`Notebook::import_markdown_files`]).
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct MarkdownFile {
+    /// Its path in the set (`guide/setup.md`): what the set's links name it
+    /// by.
+    pub path: String,
+    /// The note's title; the file's first `# heading`, else its name, without.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Its text, as Markdown.
+    pub markdown: String,
+    /// Where it was first written, when it was moved here from another tool.
+    #[serde(default)]
+    pub origin: Option<Origin>,
+}
+
+impl MarkdownFile {
+    /// The note's title: the one given, else the file's leading `# heading`,
+    /// else its file name without the extension.
+    fn title(&self) -> String {
+        if let Some(title) = self
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+        {
+            return title.to_owned();
+        }
+        if let Some(heading) = self
+            .markdown
+            .trim_start_matches('\u{feff}')
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .and_then(|line| line.strip_prefix("# "))
+            .map(str::trim)
+            .filter(|heading| !heading.is_empty())
+        {
+            return heading.to_owned();
+        }
+        let name = self.path.rsplit('/').next().unwrap_or(&self.path);
+        name.rsplit_once('.')
+            .map_or(name, |(stem, _)| stem)
+            .to_owned()
+    }
 }
 
 /// Bring a notebook stored at version `from` up to this one: a document
@@ -443,6 +550,10 @@ impl Notebook {
                 body: written(&blocks),
                 tags: original.tags.clone(),
                 creator: None,
+                creator_name: String::new(),
+                // A copy is written here, by whoever copies it.
+                origin: None,
+                path: None,
                 // People reacted to the original; the copy starts unanswered.
                 reactions: Reactions::new(),
             }
@@ -554,35 +665,33 @@ impl Notebook {
     ///
     /// A top-level note titled `title` whose body is the Markdown: headings,
     /// bullets, `- [ ]` checklists, quotes, code, tables and `[[Note title]]`
-    /// links. A leading `# title` equal to the title is dropped. Answers the
-    /// note's id and resource.
+    /// links. A leading `# title` equal to the title is dropped. A link to a
+    /// heading (`[Undo](#undo)`) leads to that heading of the note. Answers
+    /// the note's id and resource.
     #[action(answers, audience = "agents")]
     pub fn create_page(
         &mut self,
         cx: &mut ActionCx,
         #[param("The note's title")] title: NonBlank,
         #[param("The note's body as Markdown")] markdown: Option<String>,
+        #[param(
+            "Where it was first written, when it is moved here from elsewhere: shown as its author and date, while its history keeps who moved it"
+        )]
+        origin: Option<Origin>,
     ) -> Result<(), Refusal> {
         let title = title.as_str();
         let markdown =
             crate::markdown::strip_matching_title_heading(&markdown.unwrap_or_default(), title);
         check_markdown_import(&markdown).map_err(Refusal::new)?;
+        let origin = Origin::checked_option(origin)?;
         let id = Id::from(cx.uuid().to_string());
         let page = Page::titled(title, None).made(cx);
-        let new = page_of(&id);
-        let blocks = crate::MainPanel::seed_blocks(&markdown, |target| {
-            if target == page.title {
-                return new;
-            }
-            self.pages
-                .iter()
-                .find(|(_, candidate)| candidate.title == target)
-                .and_then(|(id, _)| page_of(id))
-        });
+        let blocks = self.seed(&markdown, &id, &page.title, None, &HashMap::new());
         self.pages.push(
             id,
             Page {
                 body: written(&blocks),
+                origin,
                 ..page
             },
         );
@@ -593,7 +702,10 @@ impl Notebook {
     ///
     /// Add Markdown text as a new top-level note titled `title`, with the
     /// pictures it shows. A `[[Title]]` link leads to the note of that
-    /// title.
+    /// title, a link to a heading (`#install`) to that heading, and a link
+    /// to a file imported before by its `path` (`../guide/setup.md#install`)
+    /// to that note. Several files that link to each other import together
+    /// with `import-markdown-files`.
     #[action(audience = "agents")]
     pub fn import_markdown(
         &mut self,
@@ -602,8 +714,15 @@ impl Notebook {
         #[param("Markdown content")] markdown: String,
         #[param("Pictures the Markdown shows")] images: Vec<Bytes>,
         #[param("The id the note is kept under; a new one when none")] note: Option<Id>,
+        #[param("The file's path in the set it comes from (guide/setup.md), for links by path")]
+        path: Option<String>,
+        #[param(
+            "Where it was first written, when it is moved here from elsewhere: shown as its author and date, while its history keeps who moved it"
+        )]
+        origin: Option<Origin>,
     ) -> Result<(), Refusal> {
         check_markdown_import(&markdown).map_err(Refusal::new)?;
+        let origin = Origin::checked_option(origin)?;
         let id = match note {
             Some(note) if page_of(&note).is_none() => {
                 return Err(Refusal::new("a note's id is a UUID"));
@@ -627,30 +746,84 @@ impl Notebook {
             None,
         )
         .made(cx);
-        let new = page_of(&id);
-        let blocks = crate::MainPanel::seed_blocks(&markdown, |target| {
-            if target == page.title {
-                return new;
-            }
-            self.pages
-                .iter()
-                .find(|(_, candidate)| candidate.title == target)
-                .and_then(|(id, _)| page_of(id))
-        });
+        let path = path
+            .map(|path| crate::markdown::normal_path(&path))
+            .filter(|path| !path.is_empty());
+        let blocks = self.seed(
+            &markdown,
+            &id,
+            &page.title,
+            path.as_deref(),
+            &HashMap::new(),
+        );
         self.pages.push(
             id,
             Page {
                 body: written(&blocks),
+                origin,
+                path,
                 ..page
             },
         );
         Ok(())
     }
 
+    /// Import Markdown files
+    ///
+    /// Add several Markdown files as top-level notes in one step, each
+    /// titled by its `title`, its first `# heading` or its file name. Links
+    /// between them by their paths (`setup.md`, `../guide/setup.md#install`)
+    /// lead to the notes they become, and to the heading an anchor names; a
+    /// link to a file outside the set keeps its words.
+    #[action(audience = "agents")]
+    pub fn import_markdown_files(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param(
+            "The files: each its path in the set, its Markdown, and optionally a title and an origin"
+        )]
+        files: Vec<MarkdownFile>,
+    ) -> Result<(), Refusal> {
+        if files.is_empty() {
+            return Err(Refusal::new("give the files to import"));
+        }
+        let mut ids = HashMap::new();
+        let mut planned = Vec::with_capacity(files.len());
+        for file in files {
+            check_markdown_import(&file.markdown).map_err(Refusal::new)?;
+            let path = crate::markdown::normal_path(&file.path);
+            if path.is_empty() {
+                return Err(Refusal::new("a file has a path in its set"));
+            }
+            if ids.contains_key(&path) {
+                return Err(Refusal::new(format!("{path} is in the set twice")));
+            }
+            let origin = Origin::checked_option(file.origin.clone())?;
+            let id = Id::from(cx.uuid().to_string());
+            ids.insert(path.clone(), id.clone());
+            planned.push((id, path, file.title(), file.markdown, origin));
+        }
+        for (id, path, title, markdown, origin) in planned {
+            let markdown = crate::markdown::strip_matching_title_heading(&markdown, &title);
+            let page = Page::titled(&title, None).made(cx);
+            let blocks = self.seed(&markdown, &id, &page.title, Some(&path), &ids);
+            self.pages.push(
+                id,
+                Page {
+                    body: written(&blocks),
+                    origin,
+                    path: Some(path),
+                    ..page
+                },
+            );
+        }
+        Ok(())
+    }
+
     /// Append to note
     ///
-    /// Add Markdown at the end of a note, a block per line: headings,
-    /// bullets, `- [ ]` checklists, quotes and code. The note is the one
+    /// Add Markdown at the end of a note: headings, bullets, `- [ ]`
+    /// checklists, quotes, code, and links to its headings and other notes. The note is the one
     /// titled `title` (case and spacing aside); with no title, the one note
     /// you made. An agent names notes by the titles it reads, so it need
     /// not look the note's id up first; answers the note's id and resource.
@@ -670,11 +843,29 @@ impl Notebook {
             Some(title) if !title.is_empty() => self.titled(title)?,
             _ => self.made_by(cx.author())?,
         };
+        let note = self.pages.get(&id).ok_or("no such note")?;
+        let (title, path) = (note.title.clone(), note.path.clone());
+        // Read as every other Markdown a note takes in: wrapped lines are
+        // one paragraph, and links to its headings and to other notes lead
+        // there.
+        let blocks = self.seed(&markdown, &id, &title, path.as_deref(), &HashMap::new());
+        let clips: Vec<ClipBlock> = blocks.iter().map(tilo_rich_text::clip_of_content).collect();
+        let views: Vec<_> = clips.iter().map(ClipBlock::to_view).collect();
         let note = self.pages.get_mut(&id).ok_or("no such note")?;
-        note.body.perform(RichTextAction::InsertMarkdown {
-            at: tilo_document::block_edit::Placement::End,
-            markdown,
-        });
+        // Written as lines the text is the invoker's in, where every block
+        // has one; a table or a picture is placed as it is.
+        note.body
+            .perform(match tilo_document::block_markdown::lines_of(&views) {
+                Some(markdown) => RichTextAction::InsertMarkdown {
+                    at: tilo_document::block_edit::Placement::End,
+                    markdown,
+                },
+                None => RichTextAction::SyncClips {
+                    blocks: clips,
+                    replace: Some(Vec::new()),
+                    at: usize::MAX,
+                },
+            });
         Ok(())
     }
 
@@ -695,6 +886,53 @@ impl Notebook {
 }
 
 impl Notebook {
+    /// The blocks `markdown` is, as the note `new` titled `title`, kept as
+    /// the file at `path`: `[[Title]]` links lead to the notes of those
+    /// titles, a link to a heading of the same file (`#install`) to the
+    /// note's own heading, and a link to another file by its path to the
+    /// note that file became, among `files` (path to note) imported with it
+    /// or the notes imported before by path.
+    fn seed(
+        &self,
+        markdown: &str,
+        new: &Id,
+        title: &str,
+        path: Option<&str>,
+        files: &HashMap<String, Id>,
+    ) -> Vec<BlockContent> {
+        let mut specs = crate::markdown::parse(markdown);
+        crate::markdown::resolve_link_ids(&mut specs, |target| {
+            if target == title {
+                return page_of(new);
+            }
+            self.pages
+                .iter()
+                .find(|(_, candidate)| candidate.title == target)
+                .and_then(|(id, _)| page_of(id))
+        });
+        crate::markdown::resolve_relative_links(&mut specs, |link| {
+            let (file, anchor) = crate::markdown::relative_target(path, link)?;
+            let note = match file {
+                None => new.clone(),
+                Some(file) if path == Some(file.as_str()) => new.clone(),
+                Some(file) => files.get(&file).cloned().or_else(|| {
+                    self.pages
+                        .iter()
+                        .find(|(_, page)| page.path.as_deref() == Some(file.as_str()))
+                        .map(|(id, _)| id.clone())
+                })?,
+            };
+            match anchor {
+                Some(anchor) => heading_href(&note, &anchor).map(Mark::ResourceLink),
+                None => page_of(&note).map(Mark::Link),
+            }
+        });
+        crate::markdown::specs_to_blocks(&specs)
+            .iter()
+            .map(ui::widget::Block::content)
+            .collect()
+    }
+
     /// The note titled `title`: an exact title first, else the one title
     /// equal with case and spacing aside; refused, naming the notes, when
     /// none or several are. Never another note in its place: an append

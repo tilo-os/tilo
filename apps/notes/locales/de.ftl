@@ -236,6 +236,7 @@ notes-notebook-keep-image = Bild übernehmen
 notes-notebook-place-image = Bild platzieren
 notes-notebook-create-page = Notiz aus Markdown anlegen
 notes-notebook-import-markdown = Markdown importieren
+notes-notebook-import-markdown-files = Markdown-Dateien importieren
 notes-notebook-append-to-note = An Notiz anhängen
 
 ## Wie die App in einem Fenster und im Starter heißt

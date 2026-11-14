@@ -161,6 +161,8 @@ pub(crate) fn invokes(
             markdown: entry.markdown.clone(),
             images,
             note: Some(note.clone()),
+            path: None,
+            origin: None,
         }));
         present.insert(note.clone());
         let parent = entry

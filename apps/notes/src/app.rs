@@ -1049,6 +1049,18 @@ impl NotesApp {
     /// The reactions to the selected note, as its header shows them: every
     /// reaction it has, and an add button while the person may react and
     /// someone else shares the notebook (alone, nobody would see one).
+    /// Where the selected note was first written, as its header says it,
+    /// when it was moved here from another tool: `Jane Doe in Notion,
+    /// 3 Mar 2025`.
+    fn selected_origin(&self) -> Option<String> {
+        let page = self.workspace.selected()?;
+        let notebook = self.live.as_ref()?.get();
+        let note = notebook.pages.get(&crate::notebook::page_id(page))?;
+        let origin = note.origin.as_ref()?;
+        let people = self.people.as_ref()?;
+        Some(people.byline("", "", 0, Some(origin)).text)
+    }
+
     fn selected_reactions(&self) -> Option<crate::main_panel::NoteReactions> {
         let page = self.workspace.selected()?;
         let notebook = self.live.as_ref()?.get();
@@ -2996,6 +3008,7 @@ impl Widget for NotesApp {
         self.drain_backlink_open();
         self.main.set_tags(self.selected_tag_chips());
         self.main.set_reactions(self.selected_reactions());
+        self.main.set_origin(self.selected_origin());
         self.refresh_transclusion_previews();
         self.sidebar.sync(state, path);
         self.main.sync(state, path);

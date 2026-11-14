@@ -465,8 +465,9 @@ fn parse_external_link(
     let url_end = link_destination_end(bytes, label_end + 2)?;
     let label = line.get(at + 1..label_end)?;
     let url = line.get(label_end + 2..url_end)?;
-    (!label.is_empty() && (safe_external_url(url) || tilo_rich_text::is_resource_link(url)))
-        .then_some(())?;
+    (!label.is_empty()
+        && (safe_external_url(url) || tilo_rich_text::is_resource_link(url) || relative_link(url)))
+    .then_some(())?;
     let label = parse_inline(label);
     let start = plain.len();
     plain.push_str(&label.text);
@@ -562,6 +563,130 @@ fn find_pair(bytes: &[u8], start: usize, delim1: u8, delim2: u8) -> Option<usize
         i += 1;
     }
     None
+}
+
+/// Whether `value` is a link within a set of documents rather than to a
+/// page on the web: a heading of the same document (`#undo`) or another file
+/// of the set by its path (`setup.md`, `../guide/setup.md#install`). It reads
+/// as a link until [`resolve_relative_links`] makes it one to a note, or
+/// takes it off when no note of the set is that file.
+#[must_use]
+pub fn relative_link(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() || value.contains(char::is_whitespace) {
+        return false;
+    }
+    if value.starts_with('#') {
+        return value.len() > 1;
+    }
+    // No scheme (`https:`, `mailto:`, `javascript:`) before the path.
+    let path = value.split(['#', '?']).next().unwrap_or_default();
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.split('/').next().unwrap_or_default().contains(':')
+}
+
+/// The anchor GitHub and most Markdown tools give a heading: lower case,
+/// spaces as `-`, punctuation dropped (`Set up: Linux` is `set-up-linux`).
+#[must_use]
+pub fn heading_anchor(text: &str) -> String {
+    text.trim()
+        .chars()
+        .filter_map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                Some(c.to_lowercase().collect::<String>())
+            } else if c.is_whitespace() {
+                Some("-".to_owned())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// The file a relative link written in the file at `from` leads to, and the
+/// heading anchor it names: `../guide/setup.md#install` from
+/// `docs/intro.md` is (`guide/setup.md`, `install`). The path is `None` for
+/// a link to a heading of the same file; `None` altogether for a path that
+/// climbs out of the set.
+#[must_use]
+pub fn relative_target(from: Option<&str>, link: &str) -> Option<(Option<String>, Option<String>)> {
+    let link = link.trim();
+    let (path, anchor) = match link.split_once('#') {
+        Some((path, anchor)) => (
+            path,
+            Some(anchor.to_owned()).filter(|anchor| !anchor.is_empty()),
+        ),
+        None => (link, None),
+    };
+    let path = path.split('?').next().unwrap_or_default();
+    if path.is_empty() {
+        return Some((None, anchor));
+    }
+    let mut parts: Vec<&str> = from
+        .map(|from| from.rsplit_once('/').map_or("", |(dir, _)| dir))
+        .unwrap_or_default()
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some((Some(parts.join("/")), anchor))
+}
+
+/// A path as a set of files names one: `./` and doubled `/` dropped.
+#[must_use]
+pub fn normal_path(path: &str) -> String {
+    relative_target(None, path)
+        .and_then(|(path, _)| path)
+        .unwrap_or_default()
+}
+
+/// Make every relative link of `blocks` ([`relative_link`]) the link
+/// `resolve` gives for its destination, or take it off, its words kept,
+/// when `resolve` gives none.
+pub fn resolve_relative_links<F>(blocks: &mut [BlockSpec], mut resolve: F)
+where
+    F: FnMut(&str) -> Option<Mark>,
+{
+    for b in blocks {
+        let mut b = b;
+        while let BlockSpec::Nested { block, .. } = b {
+            b = block;
+        }
+        let (BlockSpec::Paragraph(inline)
+        | BlockSpec::Quote(inline)
+        | BlockSpec::Callout { text: inline, .. }
+        | BlockSpec::Heading { text: inline, .. }
+        | BlockSpec::Bullet { text: inline, .. }
+        | BlockSpec::Numbered { text: inline, .. }
+        | BlockSpec::Checklist { text: inline, .. }) = b
+        else {
+            continue;
+        };
+        inline.marks.retain_mut(|span| {
+            let Mark::ExternalLink(url) = &span.mark else {
+                return true;
+            };
+            if !relative_link(url) {
+                return true;
+            }
+            match resolve(url) {
+                Some(mark) => {
+                    span.mark = mark;
+                    true
+                }
+                None => false,
+            }
+        });
+    }
 }
 
 pub fn safe_external_url(value: &str) -> bool {
@@ -964,13 +1089,79 @@ fn join_hard_breaks<'a>(
         })
     };
     let mut joined = line.to_string();
-    while joined.ends_with("  ") && lines.peek().is_some() {
-        let next = lines.next().unwrap_or_default();
-        joined.truncate(joined.len() - 2);
-        joined.push('\n');
-        joined.push_str(next.strip_prefix(&prefix).unwrap_or(next));
+    // A paragraph or a quote runs on over the lines that continue it. A
+    // heading is one line, and a line indented under a list item is a block
+    // of the item's own.
+    let one_line = ["# ", "## ", "### "]
+        .iter()
+        .any(|marker| line.starts_with(marker))
+        || prefix.starts_with(' ');
+    while let Some(next) = lines.peek().copied() {
+        if joined.ends_with("  ") {
+            let _ = lines.next();
+            joined.truncate(joined.len() - 2);
+            joined.push('\n');
+            joined.push_str(next.strip_prefix(&prefix).unwrap_or(next));
+            continue;
+        }
+        if one_line {
+            break;
+        }
+        // A line that does not start a block of its own continues the text
+        // after a space, as CommonMark reads a soft line break, so wrapped
+        // source reads as one paragraph rather than ragged lines.
+        let content = if prefix.is_empty() {
+            next
+        } else {
+            match next.strip_prefix(prefix.trim_end()) {
+                Some(rest) => rest.strip_prefix(' ').unwrap_or(rest),
+                None => break,
+            }
+        };
+        if !continues_text(content) || (prefix.is_empty() && parse_list_indent(next).0 > 0) {
+            break;
+        }
+        let _ = lines.next();
+        if trailing_backslashes(&joined) % 2 == 1 {
+            // A backslash at the end of a line is a hard break.
+            joined.pop();
+            joined.push('\n');
+        } else {
+            joined.push(' ');
+        }
+        joined.push_str(content.trim_start());
     }
     joined
+}
+
+fn trailing_backslashes(text: &str) -> usize {
+    text.chars().rev().take_while(|c| *c == '\\').count()
+}
+
+/// Whether `line`, at the indentation of the text before it, carries that
+/// text on rather than starting a block of its own: a blank line, a heading,
+/// a list item, a quote, a fence, a divider, a table row, a picture or an
+/// empty paragraph each start one.
+fn continues_text(line: &str) -> bool {
+    let line = line.trim_end();
+    let start = line.trim_start();
+    if start.is_empty() {
+        return false;
+    }
+    let starts_block = start.starts_with('#')
+        || start.starts_with("- ")
+        || start.starts_with("* ")
+        || start.starts_with("+ ")
+        || start == "-"
+        || start.starts_with('>')
+        || start.starts_with("```")
+        || start.starts_with("~~~")
+        || start.starts_with('|')
+        || ["---", "***", "___"].contains(&start)
+        || start == EMPTY_PARAGRAPH
+        || strip_ordered_prefix(start).is_some()
+        || standalone_image_syntax(start);
+    !starts_block
 }
 
 /// A text's source with its line breaks as hard breaks. Whitespace the text
@@ -1222,7 +1413,13 @@ pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
         .into_iter()
         .map(|(kind, inline, fence, nesting)| {
             let mut block = block_from_kind(kind, &inline.text);
-            block.line.set_marks(inline.marks);
+            // A link left relative names no note: its words stay, as text.
+            let marks = inline
+                .marks
+                .into_iter()
+                .filter(|span| !matches!(&span.mark, Mark::ExternalLink(url) if !safe_external_url(url)))
+                .collect();
+            block.line.set_marks(marks);
             block.nesting = nesting;
             block.code_group = fence.map(|fence| {
                 groups
@@ -1527,7 +1724,14 @@ mod tests {
                     "[script](javascript:alert(1))",
                     vec![],
                 ),
-                ("[local](../private)", "[local](../private)", vec![]),
+                // A link within a set of files reads as its words, linked
+                // until the import makes it a link to a note or takes it off:
+                // a block never keeps it ([`specs_to_blocks`]).
+                (
+                    "[local](../private)",
+                    "local",
+                    vec![MarkSpan::new(0..5, Mark::ExternalLink("../private".into()))],
+                ),
                 (
                     "[file](file:///etc/passwd)",
                     "[file](file:///etc/passwd)",
@@ -1539,6 +1743,9 @@ mod tests {
                 assert_eq!(inline.text, text, "text of {md:?}");
                 assert_eq!(inline.marks, marks, "marks of {md:?}");
             }
+            let unresolved = specs_to_blocks(&parse("[local](../private)"));
+            assert_eq!(unresolved[0].text(), "local");
+            assert!(unresolved[0].line.marks().is_empty(), "no link to nowhere");
             assert_eq!(
                 serialize_inline(&parse_inline(
                     "Read [the guide](https://example.test/docs?q=notes)."
