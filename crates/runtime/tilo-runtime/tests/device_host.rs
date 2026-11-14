@@ -422,10 +422,26 @@ async fn a_key_reaching_another_workspace_enters_nothing_and_runs_nothing_here()
         ),
     );
     let key = session(&device, &elsewhere).await;
+    let refused = key
+        .enter_workspace(&device.workspace, "elsewhere")
+        .await
+        .unwrap_err();
+    // The device's host said so itself, and why: a session that never reached
+    // it, or an answer that never came, is no refusal of this key.
+    assert_eq!(
+        refused.message,
+        tilo_relay_session::workspaces::NOT_YOUR_OWN,
+        "{refused:?}"
+    );
     assert!(
-        key.enter_workspace(&device.workspace, "elsewhere")
-            .await
-            .is_err()
+        !device
+            .host
+            .is_subscribed(
+                device.workspace.parse().unwrap(),
+                &elsewhere.1.device_public_key
+            )
+            .await,
+        "the key entered nothing"
     );
     assert!(device.runs.opened.lock().unwrap().is_empty());
 }
