@@ -11,18 +11,11 @@
 //! [`delegation`] holds the root-signed agent and bot delegations; it is
 //! re-exported by `tilo-relay-protocol`.
 //!
-//! A workspace is named by its [`WorkspaceId`] everywhere here. Signed bytes
-//! a build wrote before grants stopped naming the workspace's authority are
-//! read in the layout their version names ([`previous`]), never written.
+//! A workspace is named by its [`WorkspaceId`] everywhere here.
 
 pub mod agent_cert;
 pub mod delegation;
 pub mod invitations;
-/// The invitation and join layouts a build wrote before the grants stopped
-/// naming the workspace's authority: read, never written. A stored record
-/// keeps the bytes its device signed, so a build that reads a record written
-/// then needs the layout that record is in.
-pub mod previous;
 /// A link that carries an invitation's place and key, not its kilobytes.
 pub mod sealed;
 mod workspace_text;
@@ -41,8 +34,7 @@ pub use collab_types::{Member, MemberId, Person};
 
 /// The invitation whose grant names its workspace by its [`WorkspaceId`]
 /// alone and no authority: an invitation is issued by a device of a member,
-/// and nothing above it. Versions 1 and 2 are the layout before it, which
-/// named an authority ([`previous`]), still read.
+/// and nothing above it.
 const INVITATION_VERSION: u32 = 5;
 /// An invitation that also names who sent it.
 const INVITATION_WITH_INVITER_VERSION: u32 = 6;
@@ -54,8 +46,7 @@ const ADMINISTRATOR_INVITATION_VERSION: u32 = 7;
 /// Longest inviter name an invitation carries, in characters.
 pub const MAX_INVITER_NAME_CHARS: usize = 80;
 /// Challenges carry no authority device, and name the workspace by its
-/// [`WorkspaceId`] alone. Version 1 named an authority ([`previous`]): a
-/// stored Complete in it still verifies.
+/// [`WorkspaceId`] alone.
 const JOIN_VERSION: u32 = 3;
 /// The variant index of [`JoinTransportRequest::Complete`] in every join
 /// layout: what a stored Complete's bytes start with.
@@ -213,12 +204,6 @@ pub struct VerifiedJoin {
     inviter: Option<Inviter>,
     administrator: bool,
     signed_invitation: Vec<u8>,
-    /// The authority an invitation issued before grants stopped naming one
-    /// was delegated from, where it was not its issuer.
-    authority: Option<DeviceCert>,
-    /// The number the layout that named the workspace's authority carried
-    /// beside its UUID, which its join challenges repeat.
-    workspace_number: Option<u64>,
 }
 
 /// A signed invitation of any layout, decoded and its signature checked.
@@ -226,8 +211,6 @@ struct Decoded {
     grant: InviteGrant,
     inviter: Option<Inviter>,
     administrator: bool,
-    authority: Option<DeviceCert>,
-    workspace_number: Option<u64>,
 }
 
 impl VerifiedJoin {
@@ -243,7 +226,7 @@ impl VerifiedJoin {
     /// workspace's policy let invite, or, for an invitation issued before
     /// grants named no authority, the authority its issuer was delegated from.
     pub fn workspace_authority(&self) -> &DeviceCert {
-        self.authority.as_ref().unwrap_or(&self.grant.issuer)
+        &self.grant.issuer
     }
 
     /// Who sent the invitation, when its issuer recorded them.
@@ -764,9 +747,6 @@ pub fn decode_and_verify_invitation(
             decode_invitation(signed_invitation, version)?
         }
         ADMINISTRATOR_INVITATION_VERSION => decode_administrator_invitation(signed_invitation)?,
-        _ if previous::is_invitation_version(version) => {
-            previous::decode_invitation(signed_invitation, version)?
-        }
         _ => return Err("unsupported invitation version".into()),
     };
     validate_decoded(
@@ -781,8 +761,6 @@ pub fn decode_and_verify_invitation(
         inviter: decoded.inviter,
         administrator: decoded.administrator,
         signed_invitation: signed_invitation.to_vec(),
-        authority: decoded.authority,
-        workspace_number: decoded.workspace_number,
     })
 }
 
@@ -822,8 +800,6 @@ fn decode_invitation(signed_invitation: &[u8], version: u32) -> Result<Decoded, 
         grant,
         inviter,
         administrator: false,
-        authority: None,
-        workspace_number: None,
     })
 }
 
@@ -852,8 +828,6 @@ fn decode_administrator_invitation(signed_invitation: &[u8]) -> Result<Decoded, 
         grant: signed.grant,
         inviter: signed.inviter,
         administrator: true,
-        authority: None,
-        workspace_number: None,
     })
 }
 
@@ -1036,9 +1010,6 @@ pub fn verify_stored_complete(
     let (version, _) = postcard::take_from_bytes::<u32>(challenge).map_err(|_| not_complete())?;
     match version {
         JOIN_VERSION => {}
-        previous::JOIN_VERSION => {
-            return previous::verify_complete(bytes, device_cert, revocations, now_ns);
-        }
         _ => return Err("join challenge is expired or unsupported".into()),
     }
     let request =
@@ -1166,35 +1137,3 @@ fn tagged_digest(value: &[u8], body: &impl Serialize) -> Result<[u8; 32], String
 
 #[cfg(test)]
 mod tests;
-
-/// Sign `grant` in the invitation layout issued before grants stopped naming
-/// the workspace's authority (versions 1 and 2): the bytes a record written
-/// then holds, so a decoder for them is tested against what a build wrote,
-/// not against itself.
-///
-/// # Errors
-/// Returns an error if the grant cannot be encoded for signing.
-#[cfg(any(test, feature = "test-support"))]
-pub fn issue_previous_invitation(
-    grant: &InviteGrant,
-    inviter: Option<&Inviter>,
-    authority: &DeviceCert,
-    key: &ed25519_dalek::SigningKey,
-) -> Result<Vec<u8>, String> {
-    previous::encode_invitation(grant, inviter, authority, key)
-}
-
-/// A `JoinTransportRequest::Complete` whose challenge is in the layout
-/// issued before grants stopped naming an authority (join version 1), signed
-/// by `key`: the stored proof a record written then holds.
-///
-/// # Errors
-/// Returns an error if the proof cannot be encoded.
-#[cfg(any(test, feature = "test-support"))]
-pub fn complete_previous_layout(
-    challenge: &JoinChallenge,
-    authority: &DeviceCert,
-    key: &ed25519_dalek::SigningKey,
-) -> Result<Vec<u8>, String> {
-    previous::encode_complete(challenge, authority, key)
-}

@@ -249,35 +249,13 @@ fn current_complete(layouts: &Layouts, signed: &[u8]) -> (JoinChallenge, Vec<u8>
     (challenge, complete)
 }
 
-/// `layouts`'s grant issued in every invitation layout, each with its
-/// version and the inviter it names.
+/// `layouts`'s grant issued in every invitation layout this build writes,
+/// each with its version and the inviter it names.
 fn every_invitation_layout<'a>(
     layouts: &Layouts,
     inviter: &'a Inviter,
-) -> [(Vec<u8>, u8, Option<&'a Inviter>); 4] {
+) -> [(Vec<u8>, u8, Option<&'a Inviter>); 2] {
     [
-        (
-            crate::issue_previous_invitation(
-                &layouts.grant,
-                None,
-                &layouts.issuer,
-                &layouts.issuer_device,
-            )
-            .unwrap(),
-            1,
-            None,
-        ),
-        (
-            crate::issue_previous_invitation(
-                &layouts.grant,
-                Some(inviter),
-                &layouts.issuer,
-                &layouts.issuer_device,
-            )
-            .unwrap(),
-            2,
-            Some(inviter),
-        ),
         (
             issue_invitation(layouts.grant.clone(), &layouts.issuer_device).unwrap(),
             5,
@@ -334,83 +312,31 @@ fn every_invitation_layout_reads_and_verifies_by_its_version() {
                 .contains("signature"),
             "version {version}"
         );
-        // This build's invitations share their issuer and transport.
-        if version >= 5 {
-            assert_eq!(
-                crate::invitation_shared_runs(&signed),
-                vec![
-                    postcard::to_stdvec(&layouts.issuer).unwrap(),
-                    postcard::to_stdvec(&layouts.grant.transport).unwrap(),
-                ],
-                "version {version}"
-            );
-        }
+        assert_eq!(
+            crate::invitation_shared_runs(&signed),
+            vec![
+                postcard::to_stdvec(&layouts.issuer).unwrap(),
+                postcard::to_stdvec(&layouts.grant.transport).unwrap(),
+            ],
+            "version {version}"
+        );
     }
-}
-
-#[test]
-fn a_released_grant_that_names_no_canonical_workspace_is_refused() {
-    let layouts = layouts();
-    let signed = crate::issue_previous_invitation(
-        &layouts.grant,
-        None,
-        &layouts.issuer,
-        &layouts.issuer_device,
-    )
-    .unwrap();
-    let canonical = layouts.grant.workspace_id.to_string();
-    let at = signed
-        .windows(canonical.len())
-        .position(|bytes| bytes == canonical.as_bytes())
-        .unwrap();
-    let mut upper = signed;
-    upper
-        .get_mut(at..at + canonical.len())
-        .unwrap()
-        .copy_from_slice(canonical.to_uppercase().as_bytes());
-    assert!(
-        decode_and_verify_invitation(&upper, None, &RevocationList::new(), 2)
-            .unwrap_err()
-            .contains("canonical")
-    );
 }
 
 #[test]
 fn a_stored_complete_verifies_in_the_join_layout_its_version_names() {
     let layouts = layouts();
     let revocations = RevocationList::new();
-    let previous_invitation = crate::issue_previous_invitation(
-        &layouts.grant,
-        None,
-        &layouts.issuer,
-        &layouts.issuer_device,
-    )
-    .unwrap();
-    let current_invitation =
-        issue_invitation(layouts.grant.clone(), &layouts.issuer_device).unwrap();
-
-    // This build's layout, over an invitation of every layout it reads.
-    for signed in [&current_invitation, &previous_invitation] {
-        let (_, complete) = current_complete(&layouts, signed);
-        assert_eq!(
-            complete.get(1),
-            Some(&3),
-            "this build writes join version 3"
-        );
-        let redemption =
-            verify_stored_complete(&complete, &layouts.guest, &revocations, 3).unwrap();
-        assert_eq!(redemption.join().signed_invitation(), signed.as_slice());
-        assert_eq!(redemption.request_id(), [26; 32]);
-    }
-
-    // The layout before that, which named the authority.
-    let (challenge, _) = current_complete(&layouts, &previous_invitation);
-    let complete =
-        crate::complete_previous_layout(&challenge, &layouts.issuer, &layouts.guest_device)
-            .unwrap();
-    assert_eq!(complete.get(1), Some(&1));
+    let invitation = issue_invitation(layouts.grant.clone(), &layouts.issuer_device).unwrap();
+    let (_, complete) = current_complete(&layouts, &invitation);
+    assert_eq!(
+        complete.get(1),
+        Some(&3),
+        "this build writes join version 3"
+    );
     let redemption = verify_stored_complete(&complete, &layouts.guest, &revocations, 3).unwrap();
-    assert_eq!(redemption.join().workspace_authority(), &layouts.issuer);
+    assert_eq!(redemption.join().signed_invitation(), invitation.as_slice());
+    assert_eq!(redemption.request_id(), [26; 32]);
 
     // A version no build wrote is refused, not read as another layout.
     let mut unknown = complete;
