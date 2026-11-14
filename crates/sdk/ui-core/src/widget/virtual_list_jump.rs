@@ -157,6 +157,14 @@ impl<M: ListModel> VirtualList<M> {
         self.pill_rect_for(self.rect).map(|(_, rect)| rect)
     }
 
+    /// Where a press on the pill lands: its face grown to the host's minimum target about its
+    /// centre, as every control's target is, so a finger meets the way back however thin its
+    /// face is drawn.
+    pub(super) fn pill_target(&self) -> Option<Rect> {
+        self.pill_rect()
+            .map(|rect| self.interaction.minimum_target_rect(rect))
+    }
+
     pub(super) fn jump_face(&self) -> Option<crate::widget::conversation::JumpFace> {
         let (jump, rect) = self.pill_rect_for(self.rect)?;
         Some(

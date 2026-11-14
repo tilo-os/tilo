@@ -495,7 +495,8 @@ impl<M: ListModel> VirtualList<M> {
     /// shows, standing where it is drawn, so the way back a list offers over its rows is reached
     /// by something that is not a pointer.
     fn pill_node(&self, enabled: bool) -> Option<AccessNode> {
-        let (jump, rect) = self.pill_rect_for(self.rect)?;
+        let (jump, _) = self.pill_rect_for(self.rect)?;
+        let rect = self.pill_target()?;
         Some(
             AccessNode::new(Role::Button)
                 .with_name(jump.label())

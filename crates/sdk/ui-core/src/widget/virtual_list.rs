@@ -1862,7 +1862,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
-                self.jump_hovered = self.pill_rect().is_some_and(|rect| rect.contains(point));
+                self.jump_hovered = self.pill_target().is_some_and(|rect| rect.contains(point));
                 if self.reorder.is_tracking() {
                     self.scroll.momentum.stop();
                     self.update_reorder_pointer(point, crate::time::now());
@@ -1888,7 +1888,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 .is_some_and(|point| self.rect.contains(point)) =>
             {
                 let cursor = self.last_cursor.unwrap_or_default();
-                if self.pill_rect().is_some_and(|rect| rect.contains(cursor)) {
+                if self.pill_target().is_some_and(|rect| rect.contains(cursor)) {
                     self.jump_pressed = true;
                     *ctx.handled = true;
                     return;
@@ -1914,7 +1914,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             } => {
                 if std::mem::take(&mut self.jump_pressed) {
                     if self.last_cursor.is_some_and(|point| {
-                        self.pill_rect().is_some_and(|rect| rect.contains(point))
+                        self.pill_target().is_some_and(|rect| rect.contains(point))
                     }) {
                         self.follow_pill();
                     }
