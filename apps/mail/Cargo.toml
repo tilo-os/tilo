@@ -160,6 +160,9 @@ settings = { path = "../settings" }
 pdf-viewer = { path = "../pdf-viewer" }
 test-http = { path = "../../crates/dev/test-http" }
 tilo-seal = { path = "../../crates/system/tilo-seal" }
+# The session a host carries for an account it keeps, proved against the
+# fake IMAP and SMTP servers above.
+tilo-account-probe = { path = "../../crates/system/account-probe" }
 
 [lints]
 workspace = true

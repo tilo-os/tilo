@@ -67,7 +67,29 @@ pub trait MailSession: Send + Sync {
 
 /// The session a host opens with the servers of the accounts it keeps.
 #[derive(Default)]
-pub struct LiveMailSession;
+pub struct LiveMailSession {
+    /// The secure connection the host makes, when it does not use the
+    /// system's own roots (a stack whose mail server signs itself).
+    tls: Option<Arc<rustls::ClientConfig>>,
+    smtp_trust: Vec<rustls::pki_types::CertificateDer<'static>>,
+}
+
+impl LiveMailSession {
+    /// A session that trusts `extra` as chain roots beside the system's own:
+    /// a host whose mail servers are not publicly signed.
+    #[must_use]
+    pub fn also_trusting(extra: Vec<rustls::pki_types::CertificateDer<'static>>) -> Self {
+        let mut roots = tilo_net::system_roots();
+        for certificate in &extra {
+            let _ = roots.add(certificate.clone());
+        }
+        let tls = tilo_net::client_config_with_roots(roots).ok().map(Arc::new);
+        Self {
+            tls,
+            smtp_trust: extra,
+        }
+    }
+}
 
 impl MailSession for LiveMailSession {
     fn fetch(
@@ -88,7 +110,7 @@ impl MailSession for LiveMailSession {
         secret: &accounts::Secret,
         sending: &SendMail,
     ) -> Result<(), String> {
-        Self::block(send_message(account, secret, sending))
+        Self::block(send_message(account, secret, sending, &self.smtp_trust))
     }
 
     fn mark(
@@ -130,14 +152,19 @@ impl LiveMailSession {
         }
         let user = login_name(&user)?;
         let password = login_name(&secret.password)?;
-        let config = tilo_net::client_config_with_roots(tilo_net::system_roots())
-            .map_err(|_| "could not initialize secure protocol versions".to_string())?;
+        let config = match &self.tls {
+            Some(config) => Arc::clone(config),
+            None => Arc::new(
+                tilo_net::client_config_with_roots(tilo_net::system_roots())
+                    .map_err(|_| "could not initialize secure protocol versions".to_string())?,
+            ),
+        };
         let server_name = rustls::pki_types::ServerName::try_from(host.clone())
             .map_err(|_| "invalid IMAP server name".to_string())?;
         let tcp = connect(&host, port).await?;
         let tls = timeout(
             NETWORK_TIMEOUT,
-            tokio_rustls::TlsConnector::from(Arc::new(config)).connect(server_name, tcp),
+            tokio_rustls::TlsConnector::from(config).connect(server_name, tcp),
         )
         .await
         .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
@@ -616,6 +643,7 @@ async fn send_message(
     account: &accounts::Account,
     secret: &accounts::Secret,
     sending: &SendMail,
+    trust: &[rustls::pki_types::CertificateDer<'static>],
 ) -> Result<(), String> {
     use lettre::AsyncTransport as _;
     use lettre::transport::smtp::authentication::{Credentials, Mechanism};
@@ -634,7 +662,15 @@ async fn send_message(
     }
     let mime = write_mime(sending)?;
     let envelope = envelope(sending)?;
-    let params = TlsParameters::new(host.clone())
+    let mut builder = TlsParameters::builder(host.clone());
+    for certificate in trust {
+        let certificate =
+            lettre::transport::smtp::client::Certificate::from_der(certificate.to_vec())
+                .map_err(|error| format!("a trusted certificate is not readable: {error}"))?;
+        builder = builder.add_root_certificate(certificate);
+    }
+    let params = builder
+        .build()
         .map_err(|error| format!("could not prepare the secure SMTP connection: {error}"))?;
     let tls = match port {
         465 => lettre::transport::smtp::client::Tls::Wrapper(params),

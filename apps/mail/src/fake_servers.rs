@@ -17,6 +17,15 @@ pub fn accepting_client_config() -> Arc<rustls::ClientConfig> {
 }
 
 pub fn server_tls_config() -> Arc<rustls::ServerConfig> {
+    server_identity().0
+}
+
+/// The servers' TLS configuration and the certificate they present, for a
+/// client that has to trust exactly this one.
+pub fn server_identity() -> (
+    Arc<rustls::ServerConfig>,
+    rustls::pki_types::CertificateDer<'static>,
+) {
     let cert =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
             .unwrap();
@@ -29,11 +38,11 @@ pub fn server_tls_config() -> Arc<rustls::ServerConfig> {
     .unwrap()
     .with_no_client_auth()
     .with_single_cert(
-        vec![cert_der],
+        vec![cert_der.clone()],
         rustls::pki_types::PrivateKeyDer::Pkcs8(key_der),
     )
     .unwrap();
-    Arc::new(cfg)
+    (Arc::new(cfg), cert_der)
 }
 
 async fn smtp_plaintext_until_starttls(tcp: TcpStream) -> Option<TcpStream> {
