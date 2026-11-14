@@ -1227,10 +1227,15 @@ fn replica_standing(
     let permissions = match actor {
         ReplicaActor::Agent => {
             let member = PermissionContext::member_of(workspace, participant, Role::Editor);
-            let standing = member.standing().clone().as_acting(
-                policy::Acting::agent(participant).acting_for(policy::Acting::person(participant)),
-            );
-            match standing {
+            let acting =
+                policy::Acting::agent(participant).acting_for(policy::Acting::person(participant));
+            let granted = policy::roles::agent_grants(workspace, participant, participant, &[]);
+            match member
+                .standing()
+                .clone()
+                .as_acting(acting)
+                .map(|standing| standing.granted(granted))
+            {
                 Some(standing) => member.with_standing(standing),
                 None => member.read_only(),
             }

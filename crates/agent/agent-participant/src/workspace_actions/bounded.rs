@@ -305,16 +305,19 @@ pub(super) fn question(
 
 /// `who`'s standing as the host decides for them: the person's standing as
 /// `policy` gives it now, held to the bounds the one reading of a caller
-/// gives ([`Caller::acting`]): for an agent, the delegation a device gives
-/// its agents. Refused when the policy is someone else's.
+/// gives ([`Caller::acting`]): for an agent, the grants the caller carries
+/// ([`Caller::granted`]) as the broker gives them. Refused when the policy is
+/// someone else's.
 pub(super) fn bounded_standing(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
 ) -> Result<policy::Standing, ActionHostError> {
+    let granted = who.caller.granted(&policy.workspace);
     policy
         .standing
         .clone()
         .as_acting(who.caller.acting())
+        .map(|standing| standing.granted(granted))
         .ok_or(ActionHostError::NotPermitted)
 }
 
