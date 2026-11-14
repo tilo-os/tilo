@@ -684,10 +684,6 @@ mod tests {
     use tilo_automerge::ApplyIncoming as _;
 
     tilo_test_env::scenario! {
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
-        )]
         fn a_history_is_read_in_steps_pages_and_positions;
 
         phase one_act_is_one_step_and_a_person_alone_is_one_step_beside_their_changes;
