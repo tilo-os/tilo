@@ -2217,6 +2217,109 @@ fn a_window_the_desk_already_lists_is_pictured_in_a_tab_of_its_own_beside_the_de
     assert_eq!(stands(&viewer.session), 1);
 }
 
+/// A window that runs only on its device stands on every other desk as that window, in the tab
+/// its host laid it in: a Browser's, whose page lives in the engine there. Sharing it pictures it
+/// in that tab, and the tab stays when the share ends. The window still runs on its host, and
+/// taking its tab off this desk would close it in the workspace's layout, on every device.
+#[test]
+fn a_window_the_desk_lists_as_running_on_its_host_is_pictured_there_and_stays_when_its_share_ends()
+{
+    tilo_window_share::flatpak_share::read_encoders();
+    let salt = tilo_desktop_model::ids::device_salt_of_key(device(0x81).as_bytes());
+    let mut host = member_minting_under(
+        0x81,
+        desk(
+            TileContent::LocalApp {
+                app_id: APP.to_owned(),
+                label: "Notes".to_owned(),
+                note: String::new(),
+            },
+            tilo_desktop_model::ids::compose_id(salt, 1),
+        ),
+        salt,
+    );
+    let mut window = Some(mapped(&mut host.session, APP));
+    let tab = tab_of(&host.session, APP);
+    let host_key = hex::encode(device(0x81).as_bytes());
+    // The other desk lists the window as the workspace's layout does: in the group its host put
+    // it in, as a window that runs on that device.
+    let mut viewer = member_minting_under(0x82, showing(device(0x81), APP, tab), 1);
+    let hosted_tabs = |session: &Session| {
+        session.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(tilo_desktop_model::Workspace::tabs)
+                .filter(|shown| matches!(shown.tile, TileContent::HostedWindow { .. }))
+                .map(|shown| shown.id)
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(hosted_tabs(&viewer.session), vec![tab]);
+
+    share(&mut host, APP, tab);
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !rows(&shares(&host.session), "sharing").is_empty()
+    });
+    carry_governance(&host.session, &viewer.session);
+    heard(&viewer, 0x81, "Framework");
+
+    // The window is pictured in the tab the desk lists it in, and in no tab made for the share.
+    let wanted = tab.to_string();
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        rows(&shares(&viewer.session), "received")
+            .iter()
+            .any(|stream| {
+                stream["tab"].as_str() == Some(wanted.as_str())
+                    && stream["pictured"].as_bool() == Some(true)
+            })
+    });
+    let place = rows(&shares(&viewer.session), "watching")
+        .iter()
+        .find(|watched| watched["tab"].as_str() == Some(wanted.as_str()))
+        .and_then(|watched| watched["shown_in"].as_str())
+        .map(str::to_owned);
+    assert_eq!(
+        place.as_deref(),
+        Some(wanted.as_str()),
+        "the tab that lists the window pictures it"
+    );
+    assert_eq!(viewer.session.handle().peer_surface_tabs(), vec![tab]);
+    assert_eq!(hosted_tabs(&viewer.session), vec![tab]);
+
+    // The share ends: the picture goes, and the window's tab stays where its host laid it.
+    host.session
+        .invoke(
+            SHARES_RESOURCE,
+            "stop",
+            &arguments(serde_json::json!({ "tab": tab.to_string() })),
+        )
+        .expect("the share is stopped");
+    until(&mut host, &mut window, &mut viewer, |host, _, _| {
+        !host.session.handle().read(|tree| {
+            tree.workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .any(|grant| is_of_share(grant, &window_share_id(tab)))
+        })
+    });
+    carry_governance(&host.session, &viewer.session);
+    until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
+        let reading = shares(&viewer.session);
+        rows(&reading, "watching").is_empty() && rows(&reading, "received").is_empty()
+    });
+    assert!(
+        viewer.session.handle().peer_surface_tabs().is_empty(),
+        "no picture of the window is held once its share ended"
+    );
+    assert_eq!(
+        hosted(&viewer.session, tab).as_deref(),
+        Some(host_key.as_str()),
+        "the window still stands on the desk, as one that runs on its host"
+    );
+    assert_eq!(hosted_tabs(&viewer.session), vec![tab]);
+}
+
 /// The window of another device shown on `session` 's desk as `tab` , with the key of the device
 /// that hosts it: what a person sees there.
 fn hosted(session: &Session, tab: u64) -> Option<String> {

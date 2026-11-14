@@ -913,10 +913,12 @@ impl WindowShares {
                 continue;
             };
             self.watching.remove(&(governed.workspace, tab));
-            // The tab that pictured the window goes with the share, and nothing else does: what
-            // the desk lists under the sharer's id is this device's own view of the window.
+            // The tab this share put on the desk goes with it, and nothing else does: what the
+            // desk lists under the sharer's id is this device's own view of the window, or the
+            // window itself where it runs only on its host, and goes on running when its share
+            // ends.
             let place = governed.shown_in;
-            if hosted_window(tree, place).is_some() {
+            if placed_for_share(tree, tab, place) {
                 self.end_tab(desk, tab, TAB_GONE);
                 remove_governed_tile(tree, place, governed.strip.then_some(StripId(place)));
                 changed = true;
@@ -1243,9 +1245,10 @@ impl WindowShares {
             self.watching
                 .retain(|(workspace, watched), _| *watched != tab || *workspace != entry.workspace);
             self.end_tab(desk, tab, TAB_GONE);
-            // Only the tab that pictured the window goes: the desk's own view of it stays.
+            // Only the tab this share put on the desk goes: the desk's own view of the window
+            // stays, and so does a window the workspace's layout lists as running on its host.
             let place = entry.shown_in;
-            if hosted_window(&tree, place).is_some() {
+            if placed_for_share(&tree, tab, place) {
                 remove_governed_tile(&mut tree, place, entry.strip.then_some(StripId(place)));
             }
         }
@@ -2378,6 +2381,22 @@ fn hosted_window(tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
         TileContent::HostedWindow { host, app_id, .. } => Some((host.clone(), app_id.clone())),
         _ => None,
     })
+}
+
+/// Whether `place`, the tab that pictures the shared window `tab`, is one its share put on the
+/// desk, and goes with the share: a tab this device minted for it, or the group made for it under
+/// its sharer's id ([`add_hosted_tab`]). A window the workspace's layout lists as running only on
+/// its host stands in the group its host laid it in: it is the window, not a picture's place, and
+/// taking it off this desk would close it on every device.
+fn placed_for_share(tree: &DesktopTree, tab: TabId, place: TabId) -> bool {
+    hosted_window(tree, place).is_some()
+        && (place != tab
+            || tree
+                .workspaces
+                .iter()
+                .flat_map(|held| &held.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .any(|group| group.id == place && group.tabs.iter().any(|shown| shown.id == place)))
 }
 
 /// The tab of `tree` that shows the window `shared` names as one running on its host already: the
