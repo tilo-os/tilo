@@ -19,6 +19,7 @@ use fs_protocol::tree::{FILES_APP, ROOT_ID, TREE_KIND, Tree, TreeEntry};
 use ui::framework::{Dispatcher, Live, People, ResourceApp, ViewCx, WorkspaceRecord};
 use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
+use ui::portal::PickRequest;
 use ui::tilo_actions::remote::ApplicationLaunch;
 use ui::tilo_actions::{ActionBinding, ResourceSpec};
 use ui::tilo_resource::{self, Atom, Model, resource};
@@ -87,6 +88,18 @@ struct Asked {
     name: String,
 }
 
+/// A file or folder the person asked to download, waiting for the bytes of
+/// every file in it.
+#[derive(Clone)]
+struct Download {
+    /// The name it is saved under: the file's own, or the folder's with `.zip`.
+    name: String,
+    /// Each file, by its path within the download and the hash of its bytes.
+    files: Vec<(String, String)>,
+    /// A folder downloads as a zip of its files.
+    folder: bool,
+}
+
 /// What the rows were built from, so they are built again only when it moved.
 struct Shown {
     folder: String,
@@ -112,6 +125,8 @@ pub struct TreeBrowser {
     asked: Rc<RefCell<Vec<Asked>>>,
     /// The handoff that opens a file, by the app that opens its type.
     handoffs: RefCell<HashMap<String, ActionEmitter<String>>>,
+    /// Downloads asked for whose bytes have not all arrived yet.
+    downloads: Rc<RefCell<Vec<Download>>>,
 }
 
 impl TreeBrowser {
@@ -133,6 +148,7 @@ impl TreeBrowser {
             structure_dirty: true,
             asked: Rc::default(),
             handoffs: RefCell::new(HashMap::new()),
+            downloads: Rc::default(),
         };
         browser.refresh();
         browser
@@ -155,6 +171,7 @@ impl TreeBrowser {
     /// names moved; open what the person asked for once its bytes are here.
     fn refresh(&mut self) -> bool {
         self.open_what_arrived();
+        self.save_what_arrived();
         let tree = self.tree.as_ref().map(WorkspaceRecord::get);
         let folder = self.folder(tree.as_deref());
         let names = self.people.revision().get();
@@ -197,7 +214,8 @@ impl TreeBrowser {
             ));
         }
         for (id, node) in entries {
-            body = body.push(self.row(id, node));
+            let download = tree.map(|tree| Self::download_of(tree, id, node));
+            body = body.push(self.row(id, node, download));
         }
         body
     }
@@ -225,10 +243,35 @@ impl TreeBrowser {
 
     /// One entry of the open folder: its name, its size and when and by whom
     /// it last changed; choosing it opens the folder or the file.
-    fn row(&self, id: &str, node: &TreeEntry) -> Box<dyn ui::widget::Widget> {
+    fn row(
+        &self,
+        id: &str,
+        node: &TreeEntry,
+        download: Option<Download>,
+    ) -> Box<dyn ui::widget::Widget> {
         let name = Self::name_of(node);
         let is_folder = node.kind == FileNodeKind::Directory;
         let mut row = ListRow::new(id.to_owned(), name.clone()).secondary(Self::details(node));
+        // Getting it out of the workspace onto this computer: the file, or
+        // the folder as one zip of everything in it.
+        if let Some(download) = download {
+            let label = t(if is_folder {
+                "files-tree-download-folder"
+            } else {
+                "files-tree-download"
+            });
+            let downloads = Rc::clone(&self.downloads);
+            let read = self.read.clone();
+            row = row.action(Icon::Download, label, move || {
+                if let Some(read) = &read {
+                    // Reading content the page lacks asks the workspace for it.
+                    for (_, hash) in &download.files {
+                        let _ = read(hash);
+                    }
+                }
+                downloads.borrow_mut().push(download.clone());
+            });
+        }
         if is_folder {
             row = row.mark(Icon::Folder);
         }
@@ -258,6 +301,90 @@ impl TreeBrowser {
                 name: name.clone(),
             });
         }))
+    }
+
+    /// What downloading the entry `id` takes: the file itself, or every file
+    /// under the folder, by its path from the folder's own place.
+    fn download_of(tree: &Tree, id: &str, node: &TreeEntry) -> Download {
+        let name = Self::name_of(node);
+        if node.kind != FileNodeKind::Directory {
+            return Download {
+                files: node
+                    .hash
+                    .clone()
+                    .map(|hash| (name.clone(), hash))
+                    .into_iter()
+                    .collect(),
+                name,
+                folder: false,
+            };
+        }
+        let mut files = Vec::new();
+        Self::files_under(tree, id, &name, &mut files);
+        Download {
+            name: format!("{name}.zip"),
+            files,
+            folder: true,
+        }
+    }
+
+    /// Every file under the folder `id` (at `path` in the download), by its
+    /// path and hash; trashed entries are left out.
+    fn files_under(tree: &Tree, id: &str, path: &str, files: &mut Vec<(String, String)>) {
+        for (child, node) in tree.children(id) {
+            if tree.trashed(child) || child == id {
+                continue;
+            }
+            let at = format!("{path}/{}", Self::name_of(node));
+            if node.kind == FileNodeKind::Directory {
+                Self::files_under(tree, child, &at, files);
+            } else if let Some(hash) = node.hash.clone() {
+                files.push((at, hash));
+            }
+        }
+    }
+
+    /// Save every download whose bytes are all here: a file as it is, a
+    /// folder as one zip. The browser's own Save dialog asks where, or the
+    /// browser downloads it when the bytes arrived after the click.
+    fn save_what_arrived(&self) {
+        let asked = std::mem::take(&mut *self.downloads.borrow_mut());
+        let mut waiting: Vec<Download> = Vec::new();
+        for download in asked {
+            let contents: Option<Vec<Vec<u8>>> = self
+                .read
+                .as_ref()
+                .and_then(|read| download.files.iter().map(|(_, hash)| read(hash)).collect());
+            let Some(contents) = contents else {
+                waiting.push(download);
+                continue;
+            };
+            let bytes = if download.folder {
+                let members: Vec<crate::store_zip::Member<'_>> = download
+                    .files
+                    .iter()
+                    .zip(&contents)
+                    .map(|((path, _), bytes)| crate::store_zip::Member { path, bytes })
+                    .collect();
+                match crate::store_zip::zip(&members) {
+                    Ok(bytes) => bytes,
+                    Err(why) => {
+                        tracing::warn!("{}: {why}", download.name);
+                        continue;
+                    }
+                }
+            } else {
+                contents.into_iter().next().unwrap_or_default()
+            };
+            let request = PickRequest::save(
+                &t("files-tree-save-title"),
+                &t("files-tree-save"),
+                &download.name,
+            );
+            // The browser takes it from here: its Save dialog, or its downloads.
+            drop(request.send_save_contents(bytes));
+        }
+        *self.downloads.borrow_mut() = waiting;
     }
 
     /// An entry's name, whose bytes are not necessarily UTF-8.

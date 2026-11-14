@@ -101,6 +101,8 @@ pub mod toolbar;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod views;
 
+/// A folder of the workspace's files as one `.zip` a page downloads.
+pub mod store_zip;
 /// The workspace's files, as the page shows them.
 #[cfg(target_arch = "wasm32")]
 pub mod tree;
