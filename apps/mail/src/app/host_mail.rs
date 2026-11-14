@@ -42,6 +42,10 @@ pub(crate) struct HostMail {
     accounts: Option<MailAccounts>,
     listing: Option<InvocationCall>,
     listed_at: Option<ui::time::Instant>,
+    /// The account the person asked to add, while the host keeps it.
+    adding: Option<InvocationCall>,
+    /// Why the host would not keep the account, once it would not.
+    add_error: Option<String>,
 }
 
 /// A window with the host's mail session as its engine: what the window
@@ -57,6 +61,8 @@ pub(super) fn engine() -> (EngineHandle, HostMail) {
         accounts: None,
         listing: None,
         listed_at: None,
+        adding: None,
+        add_error: None,
     };
     host.ask_for_accounts();
     (EngineHandle { tx, rx }, host)
@@ -75,6 +81,39 @@ impl HostMail {
     /// The accounts the host answered since the last read.
     pub(super) fn take_accounts(&mut self) -> Option<MailAccounts> {
         self.accounts.take()
+    }
+
+    /// Why the host would not keep the account the person added, once it
+    /// would not.
+    pub(super) fn take_add_error(&mut self) -> Option<String> {
+        self.add_error.take()
+    }
+
+    /// Ask the host to keep `config`'s account, with the sign-in it carries:
+    /// the host proves it and seals it in the workspace's vault, and the
+    /// next reading shows the account.
+    pub(super) fn add_account(&mut self, config: &crate::model::AccountConfig) {
+        let adding = person_accounts::AddMailAccount {
+            address: config.email.clone(),
+            display_name: config.display_name.clone(),
+            username: Some(config.username.clone())
+                .filter(|username| !username.is_empty() && username != &config.email),
+            incoming_host: config.imap_host.clone(),
+            incoming_port: config.imap_port,
+            outgoing_host: config.smtp_host.clone(),
+            outgoing_port: config.smtp_port,
+            password: config.password.clone(),
+            identities: config.identities.clone(),
+        };
+        let Some(argument) = map(&adding) else {
+            self.add_error = Some("the account could not be asked for".into());
+            return;
+        };
+        self.adding = Some(self.remote.invoke(
+            person_accounts::target(person_accounts::ADD_MAIL),
+            argument,
+            None,
+        ));
     }
 
     /// Take every request the window posted and every answer the host gave.
@@ -144,6 +183,16 @@ impl HostMail {
             }
         }
         self.asking = still;
+        if let Some(adding) = &self.adding
+            && let Some(outcome) = answered(adding)
+        {
+            changed = true;
+            self.adding = None;
+            match outcome {
+                Ok(_) => self.ask_for_accounts(),
+                Err(reason) => self.add_error = Some(reason),
+            }
+        }
         if let Some(listing) = &self.listing {
             if let Some(outcome) = answered(listing) {
                 changed = true;

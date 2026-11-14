@@ -10,8 +10,8 @@
 use tilo_account_probe::{LiveMailSession, MailSession};
 use tilo_actions::remote::person_accounts::{FetchMail, MarkMail, SendMail};
 
-use crate::fake_imap::{FakeImap, Layout};
-use crate::fake_servers::{FakeSmtp, server_identity};
+use mail::fake_imap::{FakeImap, Layout};
+use mail::fake_servers::{FakeSmtp, server_identity};
 
 /// The account that reaches `imap` and `smtp`.
 fn account(imap_port: u16, smtp_port: u16) -> accounts::Account {
@@ -32,12 +32,14 @@ fn account(imap_port: u16, smtp_port: u16) -> accounts::Account {
 fn a_host_reads_sends_and_marks_through_real_mail_servers() {
     let runtime = ui::rt::app();
     let (tls, certificate) = server_identity();
-    let (imap, smtp) = runtime.block_on(async {
-        (
-            FakeImap::start(Layout::Gmail, tls.clone()).await,
-            FakeSmtp::start(tls).await,
-        )
-    });
+    let (imap, smtp) = runtime
+        .block_on(async {
+            (
+                FakeImap::start(Layout::Gmail, tls.clone()).await,
+                FakeSmtp::start(tls).await,
+            )
+        })
+        .expect("the test servers start");
     imap.append(
         "INBOX",
         "From: Ana <ana@veeza.example>\r\nTo: Ada <ada@example.test>\r\n\

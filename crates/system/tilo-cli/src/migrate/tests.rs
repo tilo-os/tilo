@@ -65,7 +65,6 @@ fn run_once(home: &Path, place: &Place, workspace: &mut Recorded) -> Result<Jour
             place,
             source: thunderbird::SOURCE,
             progress: &mut progress,
-            vault: place.path("vault", ""),
         };
         thunderbird::land(home, &review, &mut lander)
     };
@@ -194,29 +193,29 @@ fn one_thunderbird_account_of_two_comes_over_once() {
             .is_empty()
     );
     // The account joins the person's accounts with its servers, the other address it sends
-    // as and the password Thunderbird saved; the home account does not.
+    // as and the password Thunderbird saved; the home account does not. The password travels
+    // with the account, as a secret argument, into the store that keeps the account.
     let added = workspace.of("mail/mail.mailbox#add-account");
     assert_eq!(added.len(), 1, "{added:#?}");
     assert_eq!(added[0]["email"], "ada@example.com");
     assert_eq!(added[0]["imap_host"], "imap.example.com");
     assert_eq!(added[0]["smtp_host"], "smtp.example.com");
-    assert!(
-        !added[0]
-            .to_string()
-            .contains(migration_sources::thunderbird::fixture::WORK_PASSWORD),
-        "the password never travels to the workspace"
+    assert_eq!(
+        added[0]["password"],
+        migration_sources::thunderbird::fixture::WORK_PASSWORD,
+        "the saved sign-in travels once, with the account"
     );
     assert!(
         added[0].get("identities").is_none(),
         "the work account sends as itself only"
     );
-    // Its saved password went to the vault, under the account.
+    // No vault of this computer's keeps a second copy beside it.
     let vault = accounts::SecretVault::open_read_only_in(&place.path("vault", ""));
-    assert_eq!(
+    assert!(
         vault
             .get(&accounts::AccountId::new("ada@example.com"))
-            .map(|secret| secret.password),
-        Some(migration_sources::thunderbird::fixture::WORK_PASSWORD.to_owned())
+            .is_none(),
+        "the sign-in is not sealed into a second vault"
     );
     assert_eq!(journal.brought.get("accounts"), Some(&1));
     // Every action is a step of the one run.

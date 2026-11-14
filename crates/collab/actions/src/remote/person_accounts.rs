@@ -96,8 +96,13 @@ pub struct AddMailAccount {
     pub outgoing_host: String,
     #[serde(default = "default_submissions_port")]
     pub outgoing_port: u16,
-    /// The account's sign-in.
+    /// The account's sign-in. Empty for an account another mail program
+    /// moved in whose sign-in the person has not given yet.
+    #[serde(default)]
     pub password: String,
+    /// Other names and addresses it sends as, each `Name <address>`.
+    #[serde(default)]
+    pub identities: Vec<String>,
 }
 
 impl std::fmt::Debug for AddMailAccount {
@@ -303,6 +308,7 @@ mod tests {
             outgoing_host: "smtp.example.com".into(),
             outgoing_port: 465,
             password: "hunter2".into(),
+            identities: Vec::new(),
         };
         let printed = format!("{adding:?}");
         assert!(!printed.contains("hunter2"), "{printed}");

@@ -78,10 +78,13 @@ pub enum MailEffect {
     ///
     /// Adds an email account to the person's accounts, as another mail
     /// program kept it: its servers and the other names and addresses it
-    /// sends as. No password travels here: the account signs in with the one
-    /// the person's vault holds for it, or asks for it. It reaches outside
-    /// the record, so an agent asking for it is put to the person in their
-    /// tab first, as any agent's outside action is, unless they allowed it.
+    /// sends as. A sign-in another program saved travels with it, once, into
+    /// the store the account lives in — the workspace's vault when the
+    /// account is kept there — and is never written, logged or answered
+    /// anywhere. An account without one asks for it in Settings. It reaches
+    /// outside the record, so an agent asking for it is put to the person in
+    /// their tab first, as any agent's outside action is, unless they allowed
+    /// it.
     #[effect(returns, audience = "agents")]
     AddAccount {
         #[param("The name shown for it")]
@@ -100,6 +103,8 @@ pub enum MailEffect {
         smtp_port: u16,
         #[param("Other names and addresses it sends as, each `Name <address>`")]
         identities: Option<Vec<String>>,
+        #[param(secret, "The sign-in the source saved for it, when it saved one")]
+        password: Option<String>,
     },
     /// Prepare a draft from this exact address-book recipient and sender.
     #[effect(row, destructive, returns)]

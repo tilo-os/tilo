@@ -144,6 +144,10 @@ fake-servers = ["live", "dep:rcgen", "ui/test-support"]
 # a dependency named `mail` claims `--features mail/thin` in the
 # collection build, and the app then links the whole runtime statically.
 mail-samples = { package = "mail", path = ".", features = ["samples"] }
+# Turns on the fake IMAP and SMTP servers for this package's tests, so the
+# integration test of the session a host carries can start them. Named apart
+# from `mail` for the same reason as the samples above.
+mail-fixture = { package = "mail", path = ".", features = ["fake-servers"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Test-only self-signed certificates for local IMAP/SMTP TLS servers.
 rcgen.workspace = true

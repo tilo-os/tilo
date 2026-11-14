@@ -345,17 +345,17 @@ fn account_with_secret(
 
 /// Read one folder of one account as its server holds it.
 async fn fetch_mail(root: &Path, asking: FetchMail) -> Result<FetchedMail, String> {
-    fetch_with(Arc::new(LiveMailSession), root, asking).await
+    fetch_with(Arc::new(LiveMailSession::default()), root, asking).await
 }
 
 /// Hand one message to its account's server.
 async fn send_mail(root: &Path, sending: SendMail) -> Result<(), String> {
-    send_with(Arc::new(LiveMailSession), root, sending).await
+    send_with(Arc::new(LiveMailSession::default()), root, sending).await
 }
 
 /// Tell one message's server what changed about it.
 async fn mark_mail(root: &Path, marking: MarkMail) -> Result<(), String> {
-    mark_with(Arc::new(LiveMailSession), root, marking).await
+    mark_with(Arc::new(LiveMailSession::default()), root, marking).await
 }
 
 type Session = Arc<dyn tilo_account_probe::MailSession + Send + Sync>;

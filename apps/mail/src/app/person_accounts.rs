@@ -8,7 +8,7 @@ use crate::state::Command;
 
 /// Mail's `add-account`: check the account and have the window add it to
 /// the person's accounts, unless they have it. Its servers and identities,
-/// never a password.
+/// and the sign-in the source saved, go to the store the account lives in.
 pub(super) fn ask_to_add(
     shared: &crate::state::Shared,
     effect: MailEffect,
@@ -22,6 +22,7 @@ pub(super) fn ask_to_add(
         smtp_host,
         smtp_port,
         identities,
+        password,
     } = effect
     else {
         return Err("Not an account to add".into());
@@ -37,6 +38,7 @@ pub(super) fn ask_to_add(
         smtp_port,
         smtp_tls: true,
         identities: accounts::email::sender_identities(identities.unwrap_or_default())?,
+        password: password.unwrap_or_default(),
         ..AccountConfig::default()
     };
     if let Some((_, problem)) = config.validate().first() {
@@ -62,8 +64,21 @@ pub(super) fn ask_to_add(
 
 impl MailApp {
     /// Add the email account `config` to the person's accounts, unless they
-    /// have it.
-    pub(super) fn add_account(&self, config: AccountConfig) {
+    /// have it. A page has no store of its own: the host that keeps the
+    /// account adds it there, with the sign-in it carries.
+    #[cfg_attr(
+        not(any(target_arch = "wasm32", test)),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "a page's window hands the account to its host, a device stores it here"
+        )
+    )]
+    pub(super) fn add_account(&mut self, config: AccountConfig) {
+        #[cfg(any(target_arch = "wasm32", test))]
+        if let Some(host) = &mut self.host_mail {
+            host.add_account(&config);
+            return;
+        }
         let mut accounts = self.shared.borrow().accounts.clone();
         if accounts
             .accounts
@@ -287,12 +302,21 @@ impl MailApp {
     /// Take what the host answered about the person's accounts and the
     /// window's asks, so the mailbox follows the store the host keeps.
     pub(super) fn pump_host_mail(&mut self) {
-        let Some(host) = &mut self.host_mail else {
+        let Some((changed, listed, error)) = self.host_mail.as_mut().map(|host| {
+            let changed = host.poll();
+            (changed, host.take_accounts(), host.take_add_error())
+        }) else {
             return;
         };
-        let changed = host.poll();
-        if let Some(listed) = host.take_accounts() {
+        if let Some(listed) = listed {
             self.adopt_host_accounts(&listed);
+        }
+        if let Some(error) = error {
+            self.shared.borrow_mut().status =
+                Some(crate::state::Notice::error(crate::i18n::CATALOG.t_args(
+                    "mail-status-account-not-saved",
+                    &[("error", ui::i18n::ArgValue::Text(error))],
+                )));
         }
         if changed {
             self.dirty = true;

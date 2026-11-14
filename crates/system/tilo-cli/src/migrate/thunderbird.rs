@@ -13,12 +13,13 @@
 //! Contacts and Calendar under an id the source decides, so running it again names the same
 //! records and adds nothing.
 //!
-//! A chosen account itself joins the person's accounts: its server settings and the other names
-//! and addresses it sends as, through Mail's `add-account`, which their tab puts to them before
-//! it runs. The password Thunderbird saved for it goes from Thunderbird's store straight into
-//! this computer's account vault, where Tilo's Mail here signs in with it; it is never printed,
-//! answered or sent to the workspace. An account Thunderbird saved no password for asks the
-//! person for it when Mail first signs in.
+//! A chosen account itself joins the person's accounts: its server settings, the other names
+//! and addresses it sends as, and the password Thunderbird saved for it, through Mail's
+//! `add-account`, which their tab puts to them before it runs. The password travels once, with
+//! the account, into the store that keeps it — the workspace's vault when the workspace runs on
+//! a host, this computer's when Mail here keeps it — and no second vault keeps a copy. It is
+//! never printed or answered. An account Thunderbird saved no password for asks the person for
+//! it when Mail first signs in.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -258,32 +259,25 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
     Ok(())
 }
 
-/// The settings of `account` (its servers, and the other names and addresses it sends as) and
-/// the password Thunderbird saved for it, into the person's accounts. An account with no server
-/// settings Mail can use (a local or POP one) keeps only its mail.
+/// The settings of `account` (its servers, the other names and addresses it sends as, and the
+/// password Thunderbird saved for it) into the person's accounts, where that store keeps them.
+/// An account with no server settings Mail can use (a local or POP one) keeps only its mail.
 fn land_account(
     account: &migration_sources::thunderbird::ThunderbirdAccount,
     logins: &[migration_sources::thunderbird::SavedLogin],
     lander: &mut Lander<'_>,
 ) -> Result<()> {
-    let Some((arguments, password)) = account_arguments(account, logins) else {
+    let Some(arguments) = account_arguments(account, logins) else {
         return Ok(());
     };
     lander.open("mail");
-    let vault = lander.vault.clone();
     lander.once(
         &format!("account:{}", account_key(account)),
         "accounts",
-        |workspace, run| {
-            let added = match workspace.act(run, ADD_ACCOUNT, arguments.clone()) {
-                Ok(_) => Landed::One,
-                Err(error) if format!("{error:#}").contains("already") => Landed::Already,
-                Err(error) => return Err(mail_not_open(error, text(&arguments, "email"))),
-            };
-            if let Some(password) = password {
-                seal(&vault, text(&arguments, "email"), password)?;
-            }
-            Ok(added)
+        |workspace, run| match workspace.act(run, ADD_ACCOUNT, arguments.clone()) {
+            Ok(_) => Ok(Landed::One),
+            Err(error) if format!("{error:#}").contains("already") => Ok(Landed::Already),
+            Err(error) => Err(mail_not_open(error, text(&arguments, "email"))),
         },
     )
 }
@@ -299,23 +293,13 @@ pub fn mail_not_open(error: anyhow::Error, email: &str) -> anyhow::Error {
     error
 }
 
-/// Keep `password` for the account `email` in this computer's account vault: where Tilo's Mail
-/// on this computer signs in with it. Nothing prints or answers it.
-fn seal(root: &Path, email: &str, password: &str) -> Result<()> {
-    migration_sources::vault::seal(
-        root,
-        &accounts::AccountId::new(email),
-        &accounts::Secret::password(password.to_owned()),
-    )
-    .map_err(|error| anyhow!("{email}: {error}"))
-}
-
-/// What Mail's `add-account` takes for `account`, and the password Thunderbird saved for it:
-/// `None` for an account Mail cannot reach (local folders, POP) or whose settings do not check.
-fn account_arguments<'a>(
+/// What Mail's `add-account` takes for `account`, including the password Thunderbird saved
+/// for it: `None` for an account Mail cannot reach (local folders, POP) or whose settings do
+/// not check.
+fn account_arguments(
     account: &migration_sources::thunderbird::ThunderbirdAccount,
-    logins: &'a [migration_sources::thunderbird::SavedLogin],
-) -> Option<(Value, Option<&'a str>)> {
+    logins: &[migration_sources::thunderbird::SavedLogin],
+) -> Option<Value> {
     use accounts::email::AuthMethod;
     let candidate = account.settings.as_ref()?.candidate.as_ref()?;
     let config = candidate
@@ -360,12 +344,18 @@ fn account_arguments<'a>(
         "smtp_host": config.smtp_host,
         "smtp_port": config.smtp_port,
     });
-    if let Some(fields) = arguments.as_object_mut()
-        && !identities.is_empty()
-    {
-        fields.insert("identities".into(), json!(identities));
+    if let Some(fields) = arguments.as_object_mut() {
+        if !identities.is_empty() {
+            fields.insert("identities".into(), json!(identities));
+        }
+        // The sign-in travels with the account into the store that keeps it
+        // (the workspace's vault when it is kept there), and is never sealed
+        // into a vault of this computer's beside it.
+        if let Some(password) = password {
+            fields.insert("password".into(), json!(password));
+        }
     }
-    Some((arguments, password.map(|password| password.as_str())))
+    Some(arguments)
 }
 
 /// Each message of `folder`, delivered to the workspace's Mail as the account received it.

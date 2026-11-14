@@ -322,8 +322,6 @@ fn start(place: &Place, home: &Path, source: &str, json: bool) -> Result<Value> 
             place,
             source,
             progress: &mut progress,
-            vault: migration_sources::service::config_root()
-                .ok_or_else(|| anyhow!("this account has no Tilo config directory"))?,
         };
         if source == thunderbird::SOURCE {
             thunderbird::land(home, &review, &mut lander)
@@ -582,8 +580,6 @@ pub struct Lander<'a> {
     place: &'a Place,
     source: &'a str,
     progress: &'a mut dyn FnMut(&str),
-    /// The account vault passwords a run reads go to: this computer's.
-    vault: std::path::PathBuf,
 }
 
 impl Lander<'_> {
