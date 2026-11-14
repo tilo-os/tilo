@@ -136,62 +136,66 @@ mod tests {
         request.invocation
     }
 
-    #[test]
-    fn sharing_asks_the_desk_for_its_invite_sheet() {
-        let mut invite = ShareInvite::default();
-        invite.ask().expect("nothing is opening");
-        let invocation = asked(&mut invite);
-        assert_eq!(
-            invite.handle_event(&receipt(invocation, ReceiptStatus::Accepted)),
-            None
-        );
-        let requests = invite.take_requests();
-        let [
-            CollabRequest::RemoteAction {
-                message:
-                    RemoteActionMessage::Observe {
-                        invocation: followed,
-                        ..
-                    },
-            },
-        ] = requests.as_slice()
-        else {
-            panic!("a sheet still opening is followed: {requests:?}");
-        };
-        assert_eq!(*followed, invocation);
-        assert_eq!(
-            invite.handle_event(&update(
-                invocation,
-                InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-            )),
-            Some(Ok(()))
-        );
-        assert!(!invite.asking(), "the answer settles the ask");
-        invite.ask().expect("the sheet opens again");
-    }
+    tilo_test_env::scenario! {
+        fn sharing_asks_the_desk_once_and_says_why_when_refused;
 
-    #[test]
-    fn a_second_ask_waits_and_a_refused_one_says_why() {
-        let mut invite = ShareInvite::default();
-        invite.ask().unwrap();
-        let invocation = asked(&mut invite);
-        assert_eq!(
-            invite.ask(),
-            Err("The invite sheet is already opening".to_owned())
-        );
-        assert_eq!(
-            invite.handle_event(&receipt(
-                invocation,
-                ReceiptStatus::Rejected {
-                    error: ActionHostError::NotPermitted,
+        phase sharing_asks_the_desk_for_its_invite_sheet;
+        {
+            let mut invite = ShareInvite::default();
+            invite.ask().expect("nothing is opening");
+            let invocation = asked(&mut invite);
+            assert_eq!(
+                invite.handle_event(&receipt(invocation, ReceiptStatus::Accepted)),
+                None
+            );
+            let requests = invite.take_requests();
+            let [
+                CollabRequest::RemoteAction {
+                    message:
+                        RemoteActionMessage::Observe {
+                            invocation: followed,
+                            ..
+                        },
                 },
-            )),
-            Some(Err(ActionHostError::NotPermitted.to_string())),
-            "a member who may not invite is refused by the workspace"
-        );
-        assert!(!invite.asking());
+            ] = requests.as_slice()
+            else {
+                panic!("a sheet still opening is followed: {requests:?}");
+            };
+            assert_eq!(*followed, invocation);
+            assert_eq!(
+                invite.handle_event(&update(
+                    invocation,
+                    InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    },
+                )),
+                Some(Ok(()))
+            );
+            assert!(!invite.asking(), "the answer settles the ask");
+            invite.ask().expect("the sheet opens again");
+        }
+
+        phase a_second_ask_waits_and_a_refused_one_says_why;
+        {
+            let mut invite = ShareInvite::default();
+            invite.ask().unwrap();
+            let invocation = asked(&mut invite);
+            assert_eq!(
+                invite.ask(),
+                Err("The invite sheet is already opening".to_owned())
+            );
+            assert_eq!(
+                invite.handle_event(&receipt(
+                    invocation,
+                    ReceiptStatus::Rejected {
+                        error: ActionHostError::NotPermitted,
+                    },
+                )),
+                Some(Err(ActionHostError::NotPermitted.to_string())),
+                "a member who may not invite is refused by the workspace"
+            );
+            assert!(!invite.asking());
+        }
     }
 }

@@ -251,130 +251,261 @@ mod tests {
     #[cfg(windows)]
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    #[test]
-    fn system_errors_read_as_copy() {
-        let denied = std::io::Error::from_raw_os_error(13).to_string();
-        assert_eq!(
-            readable_error(&denied),
-            crate::i18n::t("files-error-permission")
-        );
-        let full = std::io::Error::from_raw_os_error(28).to_string();
-        assert_eq!(
-            readable_error(&full),
-            crate::i18n::t("files-error-no-space")
-        );
-        let odd = std::io::Error::from_raw_os_error(40).to_string();
-        let shown = readable_error(&odd);
-        assert!(!shown.contains("os error"), "{shown}");
-        assert!(
-            shown.chars().next().is_some_and(char::is_uppercase),
-            "{shown}"
-        );
-        assert_eq!(
-            readable_error("A file with that name already exists"),
-            "A file with that name already exists"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn file_operations_never_overwrite_and_errors_read_as_copy;
 
-    #[cfg(unix)]
-    #[test]
-    fn opening_empty_trash_creates_owner_only_directories() {
-        use std::os::unix::fs::MetadataExt as _;
-        let _home = tilo_test_env::TestHome::new().expect("private test home");
-        let files = ensure_trash_dir().expect("opening empty Trash");
-        let trash = files.parent().expect("Trash root");
-        let owner = fs::metadata(trash.parent().expect("data directory"))
-            .expect("data metadata")
-            .uid();
-        let info = trash.join("info");
-        for directory in [trash, files.as_path(), info.as_path()] {
-            let metadata = fs::symlink_metadata(directory).expect("created Trash directory");
-            assert!(metadata.is_dir());
-            assert_eq!(metadata.uid(), owner);
-            assert_eq!(metadata.mode() & 0o777, 0o700, "{}", directory.display());
-        }
-        assert_eq!(ensure_trash_dir().as_deref(), Some(files.as_path()));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn opening_trash_does_not_rewrite_existing_directory_permissions() {
-        use std::os::unix::fs::MetadataExt as _;
-        let _home = tilo_test_env::TestHome::new().expect("private test home");
-        let files = trash_dir().expect("test Trash path");
-        fs::create_dir_all(&files).expect("existing nonprivate Trash fixture");
-        let trash = files.parent().expect("Trash root");
-        for directory in [trash, files.as_path()] {
-            host_fs::set_mode(directory, 0o755).expect("explicit nonprivate fixture");
-        }
-        assert!(
-            ensure_trash_dir().is_none(),
-            "nonprivate Trash must be refused"
-        );
-        let source = trash.parent().expect("data directory").join("notes.txt");
-        fs::write(&source, b"keep private contents").expect("refused deletion source");
-        let error = delete_to_trash(std::slice::from_ref(&source))
-            .expect_err("deletion must refuse nonprivate Trash");
-        assert!(error.contains("not a private directory owned by this user"));
-        assert_eq!(
-            fs::read(&source).expect("source retained"),
-            b"keep private contents"
-        );
-        assert_eq!(
-            fs::read_dir(&files)
-                .expect("no published private contents")
-                .count(),
-            0
-        );
-        for directory in [trash, files.as_path()] {
+        phase system_errors_read_as_copy;
+        {
+            let denied = std::io::Error::from_raw_os_error(13).to_string();
             assert_eq!(
-                fs::symlink_metadata(directory)
-                    .expect("untouched fixture")
-                    .mode()
-                    & 0o777,
-                0o755
+                readable_error(&denied),
+                crate::i18n::t("files-error-permission")
+            );
+            let full = std::io::Error::from_raw_os_error(28).to_string();
+            assert_eq!(
+                readable_error(&full),
+                crate::i18n::t("files-error-no-space")
+            );
+            let odd = std::io::Error::from_raw_os_error(40).to_string();
+            let shown = readable_error(&odd);
+            assert!(!shown.contains("os error"), "{shown}");
+            assert!(
+                shown.chars().next().is_some_and(char::is_uppercase),
+                "{shown}"
+            );
+            assert_eq!(
+                readable_error("A file with that name already exists"),
+                "A file with that name already exists"
             );
         }
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn legacy_delete_creates_owner_only_trash_metadata_and_payload_directories() {
-        use std::os::unix::fs::MetadataExt as _;
-        let home = tilo_test_env::TestHome::new().expect("private test home");
-        let source = home.home().join("notes.txt");
-        fs::write(&source, b"private notes").expect("source contents");
-        delete_to_trash(std::slice::from_ref(&source)).expect("production legacy delete");
-        assert!(!source.exists());
-        let files = trash_dir().expect("test Trash path");
-        let data = files
-            .parent()
-            .and_then(Path::parent)
-            .expect("data directory");
-        for directory in ["Trash", "Trash/files", "Trash/info"] {
-            let path = data.join(directory);
-            let metadata = fs::symlink_metadata(&path).expect("created Trash directory");
-            assert!(metadata.is_dir());
-            assert_eq!(metadata.mode() & 0o777, 0o700, "{}", path.display());
+        phase basic_file_operations_dedup_and_never_overwrite;
+        {
+            {
+                let d = tmp();
+                let root = d.path();
+                assert_eq!(
+                    unique_destination(root, "a.txt").unwrap(),
+                    root.join("a.txt")
+                );
+                fs::write(root.join("a.txt"), b"x").unwrap();
+                assert_eq!(
+                    unique_destination(root, "a.txt").unwrap(),
+                    root.join("a 2.txt")
+                );
+                fs::write(root.join("a 2.txt"), b"x").unwrap();
+                assert_eq!(
+                    unique_destination(root, "a.txt").unwrap(),
+                    root.join("a 3.txt")
+                );
+                fs::create_dir(root.join("folder")).unwrap();
+                assert_eq!(
+                    unique_destination(root, "folder").unwrap(),
+                    root.join("folder 2")
+                );
+            }
+
+            {
+                let d = tmp();
+                let p = new_folder(d.path(), "Stuff").unwrap();
+                assert!(p.is_dir());
+                let p2 = new_folder(d.path(), "Stuff").unwrap();
+                assert_eq!(p2.file_name().unwrap().to_string_lossy(), "Stuff 2");
+                assert!(new_folder(d.path(), "  ").is_err());
+                assert!(new_folder(d.path(), "a/b").is_err());
+                assert!(new_folder(d.path(), ".").is_err());
+                assert!(new_folder(d.path(), "..").is_err());
+                let unicode = new_folder(d.path(), "文書 📁").unwrap();
+                assert!(unicode.is_dir());
+            }
+
+            {
+                let d = tmp();
+                let f = d.path().join("old.txt");
+                fs::write(&f, b"x").unwrap();
+                let renamed = rename(&f, "new.txt").unwrap();
+                assert!(renamed.ends_with("new.txt"));
+                assert!(!f.exists());
+                assert!(renamed.exists());
+                fs::write(d.path().join("taken.txt"), b"x").unwrap();
+                assert!(rename(&renamed, "taken.txt").is_err());
+                assert!(rename(&renamed, "..").is_err());
+            }
+
+            {
+                let d = tmp();
+                let src = d.path().join("dir");
+                fs::create_dir(&src).unwrap();
+                fs::write(src.join("inner.txt"), b"hello").unwrap();
+                let destdir = d.path().join("dest");
+                fs::create_dir(&destdir).unwrap();
+
+                let copied = copy_into(&src, &destdir).unwrap();
+                assert!(copied.join("inner.txt").exists());
+                assert_eq!(fs::read(copied.join("inner.txt")).unwrap(), b"hello");
+                assert!(src.join("inner.txt").exists());
+                let copied2 = copy_into(&src, &destdir).unwrap();
+                assert_eq!(copied2.file_name().unwrap().to_string_lossy(), "dir 2");
+            }
+
+            {
+                let d = tmp();
+                let f = d.path().join("move-me.txt");
+                fs::write(&f, b"x").unwrap();
+                let destdir = d.path().join("dest");
+                fs::create_dir(&destdir).unwrap();
+                let moved = move_into(&f, &destdir).unwrap();
+                assert!(moved.exists());
+                assert!(!f.exists());
+                assert_eq!(moved.parent().unwrap(), destdir);
+            }
+
+            {
+                if let Some(t) = trash_dir() {
+                    assert!(
+                        t.ends_with("Trash/files"),
+                        "trash dir is <data>/Trash/files: {t:?}"
+                    );
+                    assert!(is_trash_dir(&t), "the trash dir recognises itself");
+                    assert!(
+                        !is_trash_dir(Path::new("/tmp/not-trash")),
+                        "an unrelated dir is not the trash"
+                    );
+                }
+            }
+
+            {
+                let directory = tempfile::tempdir().unwrap();
+                let source = directory.path().join("report.txt");
+                let destination = directory.path().join("destination");
+                fs::write(&source, b"selected bytes").unwrap();
+                fs::create_dir(&destination).unwrap();
+                let occupied = destination.join("report.txt");
+                fs::write(&occupied, b"existing bytes").unwrap();
+                for suffix in 2..10_000 {
+                    fs::write(
+                        destination.join(format!("report {suffix}.txt")),
+                        b"suffix bytes",
+                    )
+                    .unwrap();
+                }
+                assert!(copy_into(&source, &destination).is_err());
+                assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+                assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+                assert!(move_into(&source, &destination).is_err());
+                assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+                assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+                assert_eq!(fs::read_dir(&destination).unwrap().count(), 9_999);
+                for suffix in 2..10_000 {
+                    assert_eq!(
+                        fs::read(destination.join(format!("report {suffix}.txt"))).unwrap(),
+                        b"suffix bytes"
+                    );
+                }
+            }
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn opening_trash_refuses_a_symlink_without_populating_its_target() {
-        let _home = tilo_test_env::TestHome::new().expect("private test home");
-        let outside = tempfile::tempdir().expect("unrelated directory");
-        let files = trash_dir().expect("test Trash path");
-        let trash = files.parent().expect("Trash root");
-        fs::create_dir_all(trash.parent().expect("data directory")).expect("data directory");
-        host_fs::symlink(outside.path(), trash).expect("symlink fixture");
-        assert!(ensure_trash_dir().is_none());
-        assert_eq!(
-            fs::read_dir(outside.path())
-                .expect("untouched target")
-                .count(),
-            0
-        );
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn the_trash_is_opened_owner_only_and_never_through_a_link;
+
+        phase opening_empty_trash_creates_owner_only_directories;
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let _home = tilo_test_env::TestHome::new().expect("private test home");
+            let files = ensure_trash_dir().expect("opening empty Trash");
+            let trash = files.parent().expect("Trash root");
+            let owner = fs::metadata(trash.parent().expect("data directory"))
+                .expect("data metadata")
+                .uid();
+            let info = trash.join("info");
+            for directory in [trash, files.as_path(), info.as_path()] {
+                let metadata = fs::symlink_metadata(directory).expect("created Trash directory");
+                assert!(metadata.is_dir());
+                assert_eq!(metadata.uid(), owner);
+                assert_eq!(metadata.mode() & 0o777, 0o700, "{}", directory.display());
+            }
+            assert_eq!(ensure_trash_dir().as_deref(), Some(files.as_path()));
+        }
+
+        phase opening_trash_does_not_rewrite_existing_directory_permissions;
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let _home = tilo_test_env::TestHome::new().expect("private test home");
+            let files = trash_dir().expect("test Trash path");
+            fs::create_dir_all(&files).expect("existing nonprivate Trash fixture");
+            let trash = files.parent().expect("Trash root");
+            for directory in [trash, files.as_path()] {
+                host_fs::set_mode(directory, 0o755).expect("explicit nonprivate fixture");
+            }
+            assert!(
+                ensure_trash_dir().is_none(),
+                "nonprivate Trash must be refused"
+            );
+            let source = trash.parent().expect("data directory").join("notes.txt");
+            fs::write(&source, b"keep private contents").expect("refused deletion source");
+            let error = delete_to_trash(std::slice::from_ref(&source))
+                .expect_err("deletion must refuse nonprivate Trash");
+            assert!(error.contains("not a private directory owned by this user"));
+            assert_eq!(
+                fs::read(&source).expect("source retained"),
+                b"keep private contents"
+            );
+            assert_eq!(
+                fs::read_dir(&files)
+                    .expect("no published private contents")
+                    .count(),
+                0
+            );
+            for directory in [trash, files.as_path()] {
+                assert_eq!(
+                    fs::symlink_metadata(directory)
+                        .expect("untouched fixture")
+                        .mode()
+                        & 0o777,
+                    0o755
+                );
+            }
+        }
+
+        phase legacy_delete_creates_owner_only_trash_metadata_and_payload_directories;
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let home = tilo_test_env::TestHome::new().expect("private test home");
+            let source = home.home().join("notes.txt");
+            fs::write(&source, b"private notes").expect("source contents");
+            delete_to_trash(std::slice::from_ref(&source)).expect("production legacy delete");
+            assert!(!source.exists());
+            let files = trash_dir().expect("test Trash path");
+            let data = files
+                .parent()
+                .and_then(Path::parent)
+                .expect("data directory");
+            for directory in ["Trash", "Trash/files", "Trash/info"] {
+                let path = data.join(directory);
+                let metadata = fs::symlink_metadata(&path).expect("created Trash directory");
+                assert!(metadata.is_dir());
+                assert_eq!(metadata.mode() & 0o777, 0o700, "{}", path.display());
+            }
+        }
+
+        phase opening_trash_refuses_a_symlink_without_populating_its_target;
+        {
+            let _home = tilo_test_env::TestHome::new().expect("private test home");
+            let outside = tempfile::tempdir().expect("unrelated directory");
+            let files = trash_dir().expect("test Trash path");
+            let trash = files.parent().expect("Trash root");
+            fs::create_dir_all(trash.parent().expect("data directory")).expect("data directory");
+            host_fs::symlink(outside.path(), trash).expect("symlink fixture");
+            assert!(ensure_trash_dir().is_none());
+            assert_eq!(
+                fs::read_dir(outside.path())
+                    .expect("untouched target")
+                    .count(),
+                0
+            );
+        }
     }
 
     #[test]
@@ -424,136 +555,6 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    fn basic_file_operations_dedup_and_never_overwrite() {
-        {
-            let d = tmp();
-            let root = d.path();
-            assert_eq!(
-                unique_destination(root, "a.txt").unwrap(),
-                root.join("a.txt")
-            );
-            fs::write(root.join("a.txt"), b"x").unwrap();
-            assert_eq!(
-                unique_destination(root, "a.txt").unwrap(),
-                root.join("a 2.txt")
-            );
-            fs::write(root.join("a 2.txt"), b"x").unwrap();
-            assert_eq!(
-                unique_destination(root, "a.txt").unwrap(),
-                root.join("a 3.txt")
-            );
-            fs::create_dir(root.join("folder")).unwrap();
-            assert_eq!(
-                unique_destination(root, "folder").unwrap(),
-                root.join("folder 2")
-            );
-        }
-
-        {
-            let d = tmp();
-            let p = new_folder(d.path(), "Stuff").unwrap();
-            assert!(p.is_dir());
-            let p2 = new_folder(d.path(), "Stuff").unwrap();
-            assert_eq!(p2.file_name().unwrap().to_string_lossy(), "Stuff 2");
-            assert!(new_folder(d.path(), "  ").is_err());
-            assert!(new_folder(d.path(), "a/b").is_err());
-            assert!(new_folder(d.path(), ".").is_err());
-            assert!(new_folder(d.path(), "..").is_err());
-            let unicode = new_folder(d.path(), "文書 📁").unwrap();
-            assert!(unicode.is_dir());
-        }
-
-        {
-            let d = tmp();
-            let f = d.path().join("old.txt");
-            fs::write(&f, b"x").unwrap();
-            let renamed = rename(&f, "new.txt").unwrap();
-            assert!(renamed.ends_with("new.txt"));
-            assert!(!f.exists());
-            assert!(renamed.exists());
-            fs::write(d.path().join("taken.txt"), b"x").unwrap();
-            assert!(rename(&renamed, "taken.txt").is_err());
-            assert!(rename(&renamed, "..").is_err());
-        }
-
-        {
-            let d = tmp();
-            let src = d.path().join("dir");
-            fs::create_dir(&src).unwrap();
-            fs::write(src.join("inner.txt"), b"hello").unwrap();
-            let destdir = d.path().join("dest");
-            fs::create_dir(&destdir).unwrap();
-
-            let copied = copy_into(&src, &destdir).unwrap();
-            assert!(copied.join("inner.txt").exists());
-            assert_eq!(fs::read(copied.join("inner.txt")).unwrap(), b"hello");
-            assert!(src.join("inner.txt").exists());
-            let copied2 = copy_into(&src, &destdir).unwrap();
-            assert_eq!(copied2.file_name().unwrap().to_string_lossy(), "dir 2");
-        }
-
-        {
-            let d = tmp();
-            let f = d.path().join("move-me.txt");
-            fs::write(&f, b"x").unwrap();
-            let destdir = d.path().join("dest");
-            fs::create_dir(&destdir).unwrap();
-            let moved = move_into(&f, &destdir).unwrap();
-            assert!(moved.exists());
-            assert!(!f.exists());
-            assert_eq!(moved.parent().unwrap(), destdir);
-        }
-
-        {
-            if let Some(t) = trash_dir() {
-                assert!(
-                    t.ends_with("Trash/files"),
-                    "trash dir is <data>/Trash/files: {t:?}"
-                );
-                assert!(is_trash_dir(&t), "the trash dir recognises itself");
-                assert!(
-                    !is_trash_dir(Path::new("/tmp/not-trash")),
-                    "an unrelated dir is not the trash"
-                );
-            }
-        }
-
-        {
-            let directory = tempfile::tempdir().unwrap();
-            let source = directory.path().join("report.txt");
-            let destination = directory.path().join("destination");
-            fs::write(&source, b"selected bytes").unwrap();
-            fs::create_dir(&destination).unwrap();
-            let occupied = destination.join("report.txt");
-            fs::write(&occupied, b"existing bytes").unwrap();
-            for suffix in 2..10_000 {
-                fs::write(
-                    destination.join(format!("report {suffix}.txt")),
-                    b"suffix bytes",
-                )
-                .unwrap();
-            }
-            assert!(copy_into(&source, &destination).is_err());
-            assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
-            assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
-            assert!(move_into(&source, &destination).is_err());
-            assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
-            assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
-            assert_eq!(fs::read_dir(&destination).unwrap().count(), 9_999);
-            for suffix in 2..10_000 {
-                assert_eq!(
-                    fs::read(destination.join(format!("report {suffix}.txt"))).unwrap(),
-                    b"suffix bytes"
-                );
-            }
-        }
     }
 
     #[cfg(unix)]

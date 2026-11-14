@@ -35,50 +35,54 @@ fn a_double_click_opens_the_folder_row() {
     );
 }
 
-#[test]
-fn an_assistive_technology_opens_the_folder_row() {
-    let (dir, folder) = dir_with_folder();
-    let mut h = Harness::new(dir.path());
-    let node = Framed::harness_mut(&mut h.w)
-        .a11y_node_named("Aardvark")
-        .expect("the row is described by name");
-    Framed::harness_mut(&mut h.w)
-        .perform_a11y_action(node, &ui::a11y::Action::Activate)
-        .expect("the row answers an activation");
-    h.layout();
-    assert_eq!(
-        h.w.state().current_path(),
-        folder,
-        "the activated folder row opens"
-    );
-}
+tilo_test_env::scenario! {
+    fn an_assistive_technology_opens_the_row_and_its_menu;
 
-#[test]
-fn an_assistive_technology_opens_the_row_menu() {
-    let (dir, _folder) = dir_with_folder();
-    let mut h = Harness::new(dir.path());
-    assert!(
+    phase an_assistive_technology_opens_the_folder_row;
+    {
+        let (dir, folder) = dir_with_folder();
+        let mut h = Harness::new(dir.path());
+        let node = Framed::harness_mut(&mut h.w)
+            .a11y_node_named("Aardvark")
+            .expect("the row is described by name");
         Framed::harness_mut(&mut h.w)
-            .a11y_node_named("Rename")
-            .is_none(),
-        "no menu is open before the row is asked"
-    );
-    let node = Framed::harness_mut(&mut h.w)
-        .a11y_node_named("Aardvark")
-        .expect("the row is described by name");
-    Framed::harness_mut(&mut h.w)
-        .perform_a11y_action(node, &ui::a11y::Action::ShowContextMenu)
-        .expect("the row answers a context-menu request");
-    h.layout();
-    assert!(
+            .perform_a11y_action(node, &ui::a11y::Action::Activate)
+            .expect("the row answers an activation");
+        h.layout();
+        assert_eq!(
+            h.w.state().current_path(),
+            folder,
+            "the activated folder row opens"
+        );
+    }
+
+    phase an_assistive_technology_opens_the_row_menu;
+    {
+        let (dir, _folder) = dir_with_folder();
+        let mut h = Harness::new(dir.path());
+        assert!(
+            Framed::harness_mut(&mut h.w)
+                .a11y_node_named("Rename")
+                .is_none(),
+            "no menu is open before the row is asked"
+        );
+        let node = Framed::harness_mut(&mut h.w)
+            .a11y_node_named("Aardvark")
+            .expect("the row is described by name");
         Framed::harness_mut(&mut h.w)
-            .a11y_node_named("Rename")
-            .is_some(),
-        "the menu the row asked for opens, on that row"
-    );
-    assert_eq!(
-        h.w.state().current_path(),
-        dir.path(),
-        "asking a row for its menu opens the menu, not the folder"
-    );
+            .perform_a11y_action(node, &ui::a11y::Action::ShowContextMenu)
+            .expect("the row answers a context-menu request");
+        h.layout();
+        assert!(
+            Framed::harness_mut(&mut h.w)
+                .a11y_node_named("Rename")
+                .is_some(),
+            "the menu the row asked for opens, on that row"
+        );
+        assert_eq!(
+            h.w.state().current_path(),
+            dir.path(),
+            "asking a row for its menu opens the menu, not the folder"
+        );
+    }
 }

@@ -254,101 +254,105 @@ fn coverage_of(dir: &Path) -> Coverage {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_entry_created_in_the_watched_directory_is_reported_once_drained() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut watch = DirectoryWatch::new(ui::WakeHandle::detached());
-        assert!(watch.point_at(Some(dir.path())));
-        assert_ne!(watch.coverage(), Coverage::None);
-        assert!(!watch.take_changes(), "nothing changed yet");
-        std::fs::create_dir(dir.path().join("new")).unwrap();
-        tilo_test_env::wait_until("the watch to report the creation", || watch.take_changes());
-        assert!(!watch.take_changes(), "a drained watch reports nothing new");
-    }
+    tilo_test_env::scenario! {
+        fn a_directory_watch_reports_changes_and_awaits_missing_folders;
 
-    #[test]
-    fn pointing_at_the_same_directory_keeps_the_watch() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut watch = DirectoryWatch::new(ui::WakeHandle::detached());
-        assert!(watch.point_at(Some(dir.path())));
-        assert!(!watch.point_at(Some(dir.path())));
-        assert!(!watch.point_at(None));
-        assert_eq!(watch.coverage(), Coverage::None);
-    }
-
-    #[test]
-    fn a_missing_directory_is_awaited_on_its_nearest_ancestor() {
-        let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("a/b");
-        let mut watch = AwaitedDirectoryWatch::new(ui::WakeHandle::detached());
-        assert!(!watch.point_at(Some(&target)), "the target is missing");
-        assert!(!watch.watches_target());
-        assert_ne!(watch.coverage(), Coverage::None, "its ancestor is watched");
-        assert!(
-            !watch.point_at(Some(&target)),
-            "the same target keeps its watch"
-        );
-
-        std::fs::create_dir_all(&target).unwrap();
-        tilo_test_env::wait_until("the watch reaches the created directory", || {
-            let _ = watch.take_changes();
-            watch.watches_target()
-        });
-        std::fs::write(target.join("projection.json"), b"{}").unwrap();
-        tilo_test_env::wait_until("a file in the directory is reported", || {
-            watch.take_changes()
-        });
-
-        #[cfg(target_os = "linux")]
+        phase an_entry_created_in_the_watched_directory_is_reported_once_drained;
         {
-            std::fs::remove_dir_all(root.path().join("a")).unwrap();
-            tilo_test_env::wait_until("the watch falls back to an ancestor", || {
-                let _ = watch.take_changes();
-                !watch.watches_target() && watch.coverage() != Coverage::None
-            });
+            let dir = tempfile::tempdir().unwrap();
+            let mut watch = DirectoryWatch::new(ui::WakeHandle::detached());
+            assert!(watch.point_at(Some(dir.path())));
+            assert_ne!(watch.coverage(), Coverage::None);
+            assert!(!watch.take_changes(), "nothing changed yet");
+            std::fs::create_dir(dir.path().join("new")).unwrap();
+            tilo_test_env::wait_until("the watch to report the creation", || watch.take_changes());
+            assert!(!watch.take_changes(), "a drained watch reports nothing new");
         }
-        assert!(!watch.point_at(None));
-        assert_eq!(watch.coverage(), Coverage::None);
-    }
 
-    #[test]
-    fn an_existing_directory_is_awaited_by_watching_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut watch = AwaitedDirectoryWatch::new(ui::WakeHandle::detached());
-        assert!(
-            watch.point_at(Some(dir.path())),
-            "the target itself is watched"
-        );
-        assert!(watch.watches_target());
-        assert!(!watch.take_changes(), "nothing changed yet");
-    }
+        phase pointing_at_the_same_directory_keeps_the_watch;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut watch = DirectoryWatch::new(ui::WakeHandle::detached());
+            assert!(watch.point_at(Some(dir.path())));
+            assert!(!watch.point_at(Some(dir.path())));
+            assert!(!watch.point_at(None));
+            assert_eq!(watch.coverage(), Coverage::None);
+        }
 
-    #[test]
-    fn a_change_in_any_watched_root_is_reported() {
-        let first = tempfile::tempdir().unwrap();
-        let second = tempfile::tempdir().unwrap();
-        let roots = [first.path().to_path_buf(), second.path().to_path_buf()];
-        let mut watch = RootsWatch::new(ui::WakeHandle::detached());
-        assert_eq!(watch.coverage(), Coverage::None, "nothing watched yet");
-        assert!(watch.point_at(&roots));
-        assert!(!watch.point_at(&roots), "the same roots keep their watches");
-        assert_ne!(watch.coverage(), Coverage::None);
-        assert!(!watch.take_changes(), "nothing changed yet");
-        std::fs::create_dir(second.path().join("new")).unwrap();
-        tilo_test_env::wait_until("the second root's change is reported", || {
-            watch.take_changes()
-        });
-        assert!(!watch.point_at(&[]));
-        assert_eq!(watch.coverage(), Coverage::None);
-    }
+        phase a_missing_directory_is_awaited_on_its_nearest_ancestor;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let target = root.path().join("a/b");
+            let mut watch = AwaitedDirectoryWatch::new(ui::WakeHandle::detached());
+            assert!(!watch.point_at(Some(&target)), "the target is missing");
+            assert!(!watch.watches_target());
+            assert_ne!(watch.coverage(), Coverage::None, "its ancestor is watched");
+            assert!(
+                !watch.point_at(Some(&target)),
+                "the same target keeps its watch"
+            );
 
-    #[test]
-    fn a_missing_directory_has_no_watch_and_is_not_retried() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("missing");
-        let mut watch = DirectoryWatch::new(ui::WakeHandle::detached());
-        assert!(!watch.point_at(Some(&missing)));
-        assert_eq!(watch.coverage(), Coverage::None);
-        assert!(!watch.take_changes());
+            std::fs::create_dir_all(&target).unwrap();
+            tilo_test_env::wait_until("the watch reaches the created directory", || {
+                let _ = watch.take_changes();
+                watch.watches_target()
+            });
+            std::fs::write(target.join("projection.json"), b"{}").unwrap();
+            tilo_test_env::wait_until("a file in the directory is reported", || {
+                watch.take_changes()
+            });
+
+            #[cfg(target_os = "linux")]
+            {
+                std::fs::remove_dir_all(root.path().join("a")).unwrap();
+                tilo_test_env::wait_until("the watch falls back to an ancestor", || {
+                    let _ = watch.take_changes();
+                    !watch.watches_target() && watch.coverage() != Coverage::None
+                });
+            }
+            assert!(!watch.point_at(None));
+            assert_eq!(watch.coverage(), Coverage::None);
+        }
+
+        phase an_existing_directory_is_awaited_by_watching_it;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut watch = AwaitedDirectoryWatch::new(ui::WakeHandle::detached());
+            assert!(
+                watch.point_at(Some(dir.path())),
+                "the target itself is watched"
+            );
+            assert!(watch.watches_target());
+            assert!(!watch.take_changes(), "nothing changed yet");
+        }
+
+        phase a_change_in_any_watched_root_is_reported;
+        {
+            let first = tempfile::tempdir().unwrap();
+            let second = tempfile::tempdir().unwrap();
+            let roots = [first.path().to_path_buf(), second.path().to_path_buf()];
+            let mut watch = RootsWatch::new(ui::WakeHandle::detached());
+            assert_eq!(watch.coverage(), Coverage::None, "nothing watched yet");
+            assert!(watch.point_at(&roots));
+            assert!(!watch.point_at(&roots), "the same roots keep their watches");
+            assert_ne!(watch.coverage(), Coverage::None);
+            assert!(!watch.take_changes(), "nothing changed yet");
+            std::fs::create_dir(second.path().join("new")).unwrap();
+            tilo_test_env::wait_until("the second root's change is reported", || {
+                watch.take_changes()
+            });
+            assert!(!watch.point_at(&[]));
+            assert_eq!(watch.coverage(), Coverage::None);
+        }
+
+        phase a_missing_directory_has_no_watch_and_is_not_retried;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let missing = dir.path().join("missing");
+            let mut watch = DirectoryWatch::new(ui::WakeHandle::detached());
+            assert!(!watch.point_at(Some(&missing)));
+            assert_eq!(watch.coverage(), Coverage::None);
+            assert!(!watch.take_changes());
+        }
     }
 }

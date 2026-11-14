@@ -266,104 +266,108 @@ mod tests {
         command
     }
 
-    #[test]
-    fn paste_holds_receiving_object_and_retries_the_same_operation_until_receipted() {
-        let (_directory, mut transfer, retained) = fixture();
-        let offer = Offer {
-            id: uuid::Uuid::new_v4().to_string(),
-            count: 2,
-            cut: true,
-        };
-        let capture = command(transfer.answer(&Reply::Snapshot {
-            offer: Some(offer.clone()),
-        }));
-        let Command::Capture {
-            sources,
-            destination: Some(destination),
-        } = capture
-        else {
-            panic!("must capture receiving folder")
-        };
-        assert!(sources.is_empty());
-        assert_eq!(destination.descriptor, retained.descriptor().unwrap());
-        assert_eq!(Arc::strong_count(&retained), 2);
-        let ticket = uuid::Uuid::new_v4().to_string();
-        let paste = command(transfer.answer(&Reply::Captured {
-            sources: Vec::new(),
-            destination: Some(ticket.clone()),
-        }));
-        assert_eq!(Arc::strong_count(&retained), 1);
-        let Command::Paste {
-            offer: actual_offer,
-            destination,
-            operation,
-            ..
-        } = &paste
-        else {
-            panic!("must paste exact captured objects")
-        };
-        assert_eq!(actual_offer, &offer.id);
-        assert_eq!(destination, &ticket);
-        assert_eq!(
-            command(transfer.failed("lost acknowledgement".into())),
-            paste
-        );
-        let observe = command(transfer.answer(&Reply::Running {
-            operation: operation.clone(),
-        }));
-        assert_eq!(
-            observe,
-            Command::Observe {
-                operation: operation.clone()
-            }
-        );
-        assert_eq!(command(transfer.failed("lost observation".into())), observe);
-        let release = command(transfer.answer(&Reply::Settled {
-            operation: operation.clone(),
-            completed: 1,
-            error: Some("second entry refused".into()),
-            undone: false,
-        }));
-        assert_eq!(
-            release,
-            Command::Release {
-                tickets: vec![ticket]
-            }
-        );
-        let Step::Done(Ok(receipt)) = transfer.answer(&Reply::Released) else {
-            panic!("receipt must settle after release")
-        };
-        assert_eq!(receipt.operation, *operation);
-        assert_eq!(receipt.completed, 1);
-        assert!(receipt.cut);
-        assert_eq!(receipt.error.as_deref(), Some("second entry refused"));
-    }
+    tilo_test_env::scenario! {
+        fn a_paste_receipt_is_claimed_only_for_the_observed_transfer;
 
-    #[test]
-    fn unobserved_or_mismatched_transfer_never_claims_a_successful_receipt() {
-        let (_directory, mut transfer, _) = fixture();
-        assert!(matches!(
-            transfer.answer(&Reply::Released),
-            Step::Done(Err(_))
-        ));
-        let (_directory, mut transfer, _) = fixture();
-        transfer.phase = Phase::Observe;
-        let original = transfer.operation.clone();
-        assert_eq!(
-            command(transfer.answer(&Reply::Settled {
-                operation: uuid::Uuid::new_v4().to_string(),
+        phase paste_holds_receiving_object_and_retries_the_same_operation_until_receipted;
+        {
+            let (_directory, mut transfer, retained) = fixture();
+            let offer = Offer {
+                id: uuid::Uuid::new_v4().to_string(),
+                count: 2,
+                cut: true,
+            };
+            let capture = command(transfer.answer(&Reply::Snapshot {
+                offer: Some(offer.clone()),
+            }));
+            let Command::Capture {
+                sources,
+                destination: Some(destination),
+            } = capture
+            else {
+                panic!("must capture receiving folder")
+            };
+            assert!(sources.is_empty());
+            assert_eq!(destination.descriptor, retained.descriptor().unwrap());
+            assert_eq!(Arc::strong_count(&retained), 2);
+            let ticket = uuid::Uuid::new_v4().to_string();
+            let paste = command(transfer.answer(&Reply::Captured {
+                sources: Vec::new(),
+                destination: Some(ticket.clone()),
+            }));
+            assert_eq!(Arc::strong_count(&retained), 1);
+            let Command::Paste {
+                offer: actual_offer,
+                destination,
+                operation,
+                ..
+            } = &paste
+            else {
+                panic!("must paste exact captured objects")
+            };
+            assert_eq!(actual_offer, &offer.id);
+            assert_eq!(destination, &ticket);
+            assert_eq!(
+                command(transfer.failed("lost acknowledgement".into())),
+                paste
+            );
+            let observe = command(transfer.answer(&Reply::Running {
+                operation: operation.clone(),
+            }));
+            assert_eq!(
+                observe,
+                Command::Observe {
+                    operation: operation.clone()
+                }
+            );
+            assert_eq!(command(transfer.failed("lost observation".into())), observe);
+            let release = command(transfer.answer(&Reply::Settled {
+                operation: operation.clone(),
                 completed: 1,
-                error: None,
-                undone: false
-            })),
-            Command::Observe {
-                operation: original.clone()
-            }
-        );
-        transfer.expires = ui::time::now();
-        let Step::Done(Err(error)) = transfer.failed("host cannot be observed".into()) else {
-            panic!("unobserved transfer must fail")
-        };
-        assert!(error.contains(&original));
+                error: Some("second entry refused".into()),
+                undone: false,
+            }));
+            assert_eq!(
+                release,
+                Command::Release {
+                    tickets: vec![ticket]
+                }
+            );
+            let Step::Done(Ok(receipt)) = transfer.answer(&Reply::Released) else {
+                panic!("receipt must settle after release")
+            };
+            assert_eq!(receipt.operation, *operation);
+            assert_eq!(receipt.completed, 1);
+            assert!(receipt.cut);
+            assert_eq!(receipt.error.as_deref(), Some("second entry refused"));
+        }
+
+        phase unobserved_or_mismatched_transfer_never_claims_a_successful_receipt;
+        {
+            let (_directory, mut transfer, _) = fixture();
+            assert!(matches!(
+                transfer.answer(&Reply::Released),
+                Step::Done(Err(_))
+            ));
+            let (_directory, mut transfer, _) = fixture();
+            transfer.phase = Phase::Observe;
+            let original = transfer.operation.clone();
+            assert_eq!(
+                command(transfer.answer(&Reply::Settled {
+                    operation: uuid::Uuid::new_v4().to_string(),
+                    completed: 1,
+                    error: None,
+                    undone: false
+                })),
+                Command::Observe {
+                    operation: original.clone()
+                }
+            );
+            transfer.expires = ui::time::now();
+            let Step::Done(Err(error)) = transfer.failed("host cannot be observed".into()) else {
+                panic!("unobserved transfer must fail")
+            };
+            assert!(error.contains(&original));
+        }
     }
 }

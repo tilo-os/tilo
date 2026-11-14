@@ -119,19 +119,56 @@ pub fn name(place: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_place_is_named_as_a_person_knows_it() {
-        crate::i18n::set_locale("en-US");
-        assert_eq!(name("xdg:home"), "Home");
-        assert_eq!(name("xdg:documents"), "Documents");
-        assert_eq!(name("xdg:desktop"), "Desktop");
-        assert_eq!(name("~"), "Home");
-        assert_eq!(name("~/Projects/tilo"), "tilo");
-        assert_eq!(name("/srv/media/"), "media");
-        assert_eq!(name("/"), "/");
-        crate::i18n::set_locale("de-DE");
-        assert_eq!(name("xdg:documents"), "Dokumente");
-        crate::i18n::set_locale("en-US");
+    tilo_test_env::scenario! {
+        fn places_are_named_and_resolved_as_each_device_knows_them;
+
+        phase a_place_is_named_as_a_person_knows_it;
+        {
+            crate::i18n::set_locale("en-US");
+            assert_eq!(name("xdg:home"), "Home");
+            assert_eq!(name("xdg:documents"), "Documents");
+            assert_eq!(name("xdg:desktop"), "Desktop");
+            assert_eq!(name("~"), "Home");
+            assert_eq!(name("~/Projects/tilo"), "tilo");
+            assert_eq!(name("/srv/media/"), "media");
+            assert_eq!(name("/"), "/");
+            crate::i18n::set_locale("de-DE");
+            assert_eq!(name("xdg:documents"), "Dokumente");
+            crate::i18n::set_locale("en-US");
+        }
+
+        phase places_resolve_on_each_device_in_its_own_terms;
+        {
+            let alex = UserDirs::default();
+            let alex_home = Path::new("/home/alex");
+            let documents = place_of(&alex_home.join("Documents"), Some(alex_home), &alex);
+            assert_eq!(documents, "xdg:documents");
+            let project = place_of(&alex_home.join("Projects/tilo"), Some(alex_home), &alex);
+            assert_eq!(project, "~/Projects/tilo");
+            assert_eq!(place_of(alex_home, Some(alex_home), &alex), "xdg:home");
+            assert_eq!(
+                place_of(Path::new("/mnt/data"), Some(alex_home), &alex),
+                "/mnt/data"
+            );
+
+            let ute = german();
+            let ute_home = Path::new("/home/ute");
+            assert_eq!(
+                path_of(&documents, Some(ute_home), &ute),
+                Some(PathBuf::from("/home/ute/Dokumente"))
+            );
+            assert_eq!(
+                path_of(&project, Some(ute_home), &ute),
+                Some(PathBuf::from("/home/ute/Projects/tilo"))
+            );
+            assert_eq!(
+                path_of("/mnt/data", Some(ute_home), &ute),
+                Some(PathBuf::from("/mnt/data"))
+            );
+            assert_eq!(path_of("xdg:documents", None, &ute), None);
+            assert_eq!(path_of("xdg:attic", Some(ute_home), &ute), None);
+            assert_eq!(path_of("relative/path", Some(ute_home), &ute), None);
+        }
     }
 
     fn german() -> UserDirs {
@@ -140,38 +177,5 @@ mod tests {
             documents: Some(PathBuf::from("/home/ute/Dokumente")),
             ..UserDirs::default()
         }
-    }
-
-    #[test]
-    fn places_resolve_on_each_device_in_its_own_terms() {
-        let alex = UserDirs::default();
-        let alex_home = Path::new("/home/alex");
-        let documents = place_of(&alex_home.join("Documents"), Some(alex_home), &alex);
-        assert_eq!(documents, "xdg:documents");
-        let project = place_of(&alex_home.join("Projects/tilo"), Some(alex_home), &alex);
-        assert_eq!(project, "~/Projects/tilo");
-        assert_eq!(place_of(alex_home, Some(alex_home), &alex), "xdg:home");
-        assert_eq!(
-            place_of(Path::new("/mnt/data"), Some(alex_home), &alex),
-            "/mnt/data"
-        );
-
-        let ute = german();
-        let ute_home = Path::new("/home/ute");
-        assert_eq!(
-            path_of(&documents, Some(ute_home), &ute),
-            Some(PathBuf::from("/home/ute/Dokumente"))
-        );
-        assert_eq!(
-            path_of(&project, Some(ute_home), &ute),
-            Some(PathBuf::from("/home/ute/Projects/tilo"))
-        );
-        assert_eq!(
-            path_of("/mnt/data", Some(ute_home), &ute),
-            Some(PathBuf::from("/mnt/data"))
-        );
-        assert_eq!(path_of("xdg:documents", None, &ute), None);
-        assert_eq!(path_of("xdg:attic", Some(ute_home), &ute), None);
-        assert_eq!(path_of("relative/path", Some(ute_home), &ute), None);
     }
 }

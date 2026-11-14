@@ -889,420 +889,515 @@ mod tests {
         outcome.result()
     }
 
-    #[test]
-    fn operations_name_the_paths_they_write() {
-        let rename = FileOp::Rename {
-            path: "/w/draft.txt".into(),
-            name: "final.txt".into(),
-        };
-        assert_eq!(rename.written_paths(None), ["/w/draft.txt", "/w/final.txt"]);
-        let moved = FileOp::Move {
-            paths: vec!["/w/a.txt".into(), "/w/b.txt".into()],
-            folder: "/w/Archive".into(),
-            create: true,
-        };
-        assert_eq!(
-            moved.written_paths(None),
-            ["/w/Archive", "/w/a.txt", "/w/b.txt"]
-        );
-        assert_eq!(
-            FileOp::NewFolder {
-                parent: "/w".into(),
-                name: "Projects".into()
-            }
-            .written_paths(None),
-            ["/w/Projects"]
-        );
-        let reverting = [
-            Change::Moved {
-                from: "/w/draft.txt".into(),
-                to: "/w/final.txt".into(),
-            },
-            Change::Created {
-                path: "/w/Projects".into(),
-            },
-        ];
-        assert_eq!(
-            FileOp::Revert { op: "op".into() }.written_paths(Some(&reverting)),
-            ["/w/Projects", "/w/draft.txt", "/w/final.txt"]
-        );
-        let many = FileOp::Trash {
-            paths: (0..200).map(|i| format!("/w/{}/f{i}.txt", i % 3)).collect(),
-        };
-        assert_eq!(many.written_paths(None), ["/w/0", "/w/1", "/w/2"]);
-    }
+    tilo_test_env::scenario! {
+        fn file_operations_record_what_they_did_and_take_it_back;
 
-    #[test]
-    fn operations_record_their_changes_and_reverts_take_them_back() {
-        let root = tempfile::tempdir().unwrap();
-        let at = |name: &str| root.path().join(name).display().to_string();
-        std::fs::write(root.path().join("draft.txt"), b"x").unwrap();
-
-        let created = execute(
-            &FileOp::NewFolder {
-                parent: at(""),
-                name: "Projects".into(),
-            },
-            None,
-        );
-        assert_eq!(
-            done(&created),
-            [Change::Created {
-                path: at("Projects")
-            }]
-        );
-
-        let renamed = execute(
-            &FileOp::Rename {
-                path: at("draft.txt"),
+        phase operations_name_the_paths_they_write;
+        {
+            let rename = FileOp::Rename {
+                path: "/w/draft.txt".into(),
                 name: "final.txt".into(),
-            },
-            None,
-        );
-        done(&renamed);
-        let moved = execute(
-            &FileOp::Move {
-                paths: vec![at("final.txt")],
-                folder: at("Archive"),
+            };
+            assert_eq!(rename.written_paths(None), ["/w/draft.txt", "/w/final.txt"]);
+            let moved = FileOp::Move {
+                paths: vec!["/w/a.txt".into(), "/w/b.txt".into()],
+                folder: "/w/Archive".into(),
                 create: true,
-            },
-            None,
-        );
-        assert_eq!(done(&moved).len(), 2, "the folder and the move");
-        assert!(root.path().join("Archive/final.txt").exists());
+            };
+            assert_eq!(
+                moved.written_paths(None),
+                ["/w/Archive", "/w/a.txt", "/w/b.txt"]
+            );
+            assert_eq!(
+                FileOp::NewFolder {
+                    parent: "/w".into(),
+                    name: "Projects".into()
+                }
+                .written_paths(None),
+                ["/w/Projects"]
+            );
+            let reverting = [
+                Change::Moved {
+                    from: "/w/draft.txt".into(),
+                    to: "/w/final.txt".into(),
+                },
+                Change::Created {
+                    path: "/w/Projects".into(),
+                },
+            ];
+            assert_eq!(
+                FileOp::Revert { op: "op".into() }.written_paths(Some(&reverting)),
+                ["/w/Projects", "/w/draft.txt", "/w/final.txt"]
+            );
+            let many = FileOp::Trash {
+                paths: (0..200).map(|i| format!("/w/{}/f{i}.txt", i % 3)).collect(),
+            };
+            assert_eq!(many.written_paths(None), ["/w/0", "/w/1", "/w/2"]);
+        }
 
-        let revert = FileOp::Revert { op: "move".into() };
-        let reverted = execute(&revert, Some(moved.result().as_slice()));
-        done(&reverted);
-        assert!(root.path().join("final.txt").exists());
-        assert!(
-            !root.path().join("Archive").exists(),
-            "the created folder goes"
-        );
-        let again = execute(&revert, Some(reverted.result().as_slice()));
-        done(&again);
-        assert!(root.path().join("Archive/final.txt").exists(), "redone");
-        done(&execute(&revert, Some(again.result().as_slice())));
+        phase operations_record_their_changes_and_reverts_take_them_back;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let at = |name: &str| root.path().join(name).display().to_string();
+            std::fs::write(root.path().join("draft.txt"), b"x").unwrap();
 
-        done(&execute(&revert, Some(renamed.result().as_slice())));
-        assert!(
-            root.path().join("draft.txt").exists(),
-            "the old name is back"
-        );
-        done(&execute(&revert, Some(created.result().as_slice())));
-        assert!(!root.path().join("Projects").exists());
+            let created = execute(
+                &FileOp::NewFolder {
+                    parent: at(""),
+                    name: "Projects".into(),
+                },
+                None,
+            );
+            assert_eq!(
+                done(&created),
+                [Change::Created {
+                    path: at("Projects")
+                }]
+            );
 
-        let nothing = execute(&revert, None);
-        assert!(!nothing.is_done());
-    }
+            let renamed = execute(
+                &FileOp::Rename {
+                    path: at("draft.txt"),
+                    name: "final.txt".into(),
+                },
+                None,
+            );
+            done(&renamed);
+            let moved = execute(
+                &FileOp::Move {
+                    paths: vec![at("final.txt")],
+                    folder: at("Archive"),
+                    create: true,
+                },
+                None,
+            );
+            assert_eq!(done(&moved).len(), 2, "the folder and the move");
+            assert!(root.path().join("Archive/final.txt").exists());
 
-    #[cfg(unix)]
-    #[test]
-    fn move_to_trash_records_its_entry_and_undo_restores_it() {
-        let home = tilo_test_env::TestHome::new().expect("private Trash for undo");
-        let downloads = home.home().join("Downloads");
-        std::fs::create_dir_all(&downloads).unwrap();
-        let film = downloads.join("film.mkv");
-        std::fs::write(&film, b"frames").unwrap();
-        let film = film.canonicalize().unwrap();
+            let revert = FileOp::Revert { op: "move".into() };
+            let reverted = execute(&revert, Some(moved.result().as_slice()));
+            done(&reverted);
+            assert!(root.path().join("final.txt").exists());
+            assert!(
+                !root.path().join("Archive").exists(),
+                "the created folder goes"
+            );
+            let again = execute(&revert, Some(reverted.result().as_slice()));
+            done(&again);
+            assert!(root.path().join("Archive/final.txt").exists(), "redone");
+            done(&execute(&revert, Some(again.result().as_slice())));
 
-        let trashed = execute(
-            &FileOp::Trash {
-                paths: vec![text(&film)],
-            },
-            None,
-        );
-        let [Change::Trashed { from, entry }] = done(&trashed) else {
-            panic!("{trashed:?}");
-        };
-        assert_eq!(from, &text(&film));
-        let entry = PathBuf::from(entry.as_deref().expect("the entry it became"));
-        assert_eq!(entry.file_name(), film.file_name());
-        assert_eq!(std::fs::read(&entry).unwrap(), b"frames");
-        assert!(!film.exists());
+            done(&execute(&revert, Some(renamed.result().as_slice())));
+            assert!(
+                root.path().join("draft.txt").exists(),
+                "the old name is back"
+            );
+            done(&execute(&revert, Some(created.result().as_slice())));
+            assert!(!root.path().join("Projects").exists());
 
-        let revert = FileOp::Revert { op: "trash".into() };
-        done(&execute(&revert, Some(trashed.result().as_slice())));
-        assert_eq!(std::fs::read(&film).unwrap(), b"frames");
-        assert!(!entry.exists());
-    }
+            let nothing = execute(&revert, None);
+            assert!(!nothing.is_done());
+        }
 
-    #[cfg(unix)]
-    #[test]
-    fn mounted_import_is_writable_without_changing_source_or_ordinary_copy() {
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        let home = tilo_test_env::TestHome::new().expect("private Trash for undo");
-        fileops::ensure_trash_dir().expect("open Trash before recording undo entries");
-        let root = tempfile::tempdir_in(home.home()).unwrap();
-        let source = root.path().join("mounted.txt");
-        let folder = root.path().join("local");
-        std::fs::create_dir(&folder).unwrap();
-        std::fs::write(&source, b"original").unwrap();
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
-        let paths = vec![text(&source)];
-        let op = FileOp::ImportMounted {
-            paths: paths.clone(),
-            folder: text(&folder),
-        };
-        assert!(
-            !execute(&op, None).is_done(),
-            "serialized jobs supply no private consent"
-        );
-        let mut app =
-            ui::prelude::TestApp::<crate::resource::FileExplorerShell>::on_device("laptop")
-                .unwrap();
-        app.invoke(crate::resource::FileExplorer::queueing("laptop", op).unwrap())
-            .unwrap();
-        tilo_test_env::wait_until("the queued operation to settle", || {
-            app.settle();
-            app.state().ops.pending().next().is_none()
-        });
-        let imported = app
-            .state()
-            .ops
-            .entries()
-            .next()
-            .unwrap()
-            .1
-            .settled
-            .clone()
-            .unwrap();
-        let destination = folder.join("mounted.txt");
-        assert_eq!(
-            done(&imported),
-            [Change::Copied {
-                from: text(&source),
-                to: text(&destination),
-            }]
-        );
-        assert_eq!(
-            std::fs::metadata(&destination).unwrap().mode() & 0o777,
-            0o644
-        );
-        std::fs::write(&destination, b"edited locally").unwrap();
-        assert_eq!(std::fs::read(&source).unwrap(), b"original");
-        assert_eq!(std::fs::metadata(&source).unwrap().mode() & 0o777, 0o444);
+        phase undo_move_restores_original_name_after_destination_collision;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("report.txt");
+            let destination = root.path().join("archive");
+            std::fs::create_dir(&destination).unwrap();
+            std::fs::write(&source, b"moved report").unwrap();
+            std::fs::write(destination.join("report.txt"), b"existing report").unwrap();
+            let moved = execute(
+                &FileOp::Move {
+                    paths: vec![text(&source)],
+                    folder: text(&destination),
+                    create: false,
+                },
+                None,
+            );
+            done(&moved);
+            let suffixed = destination.join("report 2.txt");
+            assert_eq!(std::fs::read(&suffixed).unwrap(), b"moved report");
+            let revert = FileOp::Revert { op: "move".into() };
+            let undone = execute(&revert, Some(done(&moved)));
+            done(&undone);
+            assert_eq!(std::fs::read(&source).unwrap(), b"moved report");
+            assert!(!root.path().join("report 2.txt").exists());
+            assert!(!suffixed.exists());
+            let redone = execute(&revert, Some(done(&undone)));
+            done(&redone);
+            assert_eq!(std::fs::read(&suffixed).unwrap(), b"moved report");
+            assert!(!source.exists());
+            assert_eq!(
+                std::fs::read(destination.join("report.txt")).unwrap(),
+                b"existing report"
+            );
+        }
 
-        let copied = execute(
-            &FileOp::Copy {
-                paths,
-                folder: text(&folder),
-            },
-            None,
-        );
-        let ordinary = folder.join("mounted 2.txt");
-        assert_eq!(
-            done(&copied),
-            [Change::Copied {
-                from: text(&source),
-                to: text(&ordinary)
-            }]
-        );
-        assert_eq!(std::fs::metadata(&ordinary).unwrap().mode() & 0o777, 0o444);
+        phase a_failed_operation_records_what_it_did;
+        {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(root.path().join("a.txt"), b"a").unwrap();
+            let folder = root.path().join("into");
+            std::fs::create_dir(&folder).unwrap();
+            let outcome = execute(
+                &FileOp::Move {
+                    paths: vec![
+                        root.path().join("a.txt").display().to_string(),
+                        root.path().join("missing.txt").display().to_string(),
+                    ],
+                    folder: folder.display().to_string(),
+                    create: false,
+                },
+                None,
+            );
+            assert!(!outcome.is_done());
+            assert_eq!(outcome.result().len(), 1);
+            done(&execute(
+                &FileOp::Revert { op: "m".into() },
+                Some(outcome.result().as_slice()),
+            ));
+            assert!(root.path().join("a.txt").exists());
+        }
 
-        let revert = FileOp::Revert {
-            op: "import".into(),
-        };
-        let undone = execute(&revert, Some(done(&imported)));
-        done(&undone);
-        assert!(!destination.exists());
-        let redone = execute(&revert, Some(done(&undone)));
-        done(&redone);
-        assert_eq!(std::fs::read(&destination).unwrap(), b"edited locally");
-        assert_eq!(
-            std::fs::metadata(&destination).unwrap().mode() & 0o777,
-            0o644
-        );
-        assert_eq!(std::fs::metadata(&source).unwrap().mode() & 0o777, 0o444);
-    }
+        phase write_and_compress_reject_names_that_address_other_folders;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let folder = root.path().join("chosen");
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::create_dir(folder.join("nested")).unwrap();
+            let source = folder.join("source.txt");
+            std::fs::write(&source, b"source").unwrap();
+            for name in [
+                "../escaped.txt".to_owned(),
+                "nested/escaped.txt".to_owned(),
+                text(&root.path().join("absolute.txt")),
+                ".".to_owned(),
+                "..".to_owned(),
+            ] {
+                let write = execute(
+                    &FileOp::Write {
+                        folder: text(&folder),
+                        name: name.clone(),
+                        text: "new contents".into(),
+                        replace: false,
+                    },
+                    None,
+                );
+                assert!(!write.is_done(), "write accepted {name}: {write:?}");
+                assert!(write.result().is_empty());
+                let compressed = execute(
+                    &FileOp::Compress {
+                        paths: vec![text(&source)],
+                        folder: text(&folder),
+                        name: name.clone(),
+                    },
+                    None,
+                );
+                assert!(
+                    !compressed.is_done(),
+                    "compress accepted {name}: {compressed:?}"
+                );
+                assert!(compressed.result().is_empty());
+            }
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+            assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 2);
+            assert_eq!(std::fs::read_dir(folder.join("nested")).unwrap().count(), 0);
+            assert_eq!(std::fs::read(source).unwrap(), b"source");
+        }
 
-    #[test]
-    fn undo_move_restores_original_name_after_destination_collision() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("report.txt");
-        let destination = root.path().join("archive");
-        std::fs::create_dir(&destination).unwrap();
-        std::fs::write(&source, b"moved report").unwrap();
-        std::fs::write(destination.join("report.txt"), b"existing report").unwrap();
-        let moved = execute(
-            &FileOp::Move {
-                paths: vec![text(&source)],
-                folder: text(&destination),
-                create: false,
-            },
-            None,
-        );
-        done(&moved);
-        let suffixed = destination.join("report 2.txt");
-        assert_eq!(std::fs::read(&suffixed).unwrap(), b"moved report");
-        let revert = FileOp::Revert { op: "move".into() };
-        let undone = execute(&revert, Some(done(&moved)));
-        done(&undone);
-        assert_eq!(std::fs::read(&source).unwrap(), b"moved report");
-        assert!(!root.path().join("report 2.txt").exists());
-        assert!(!suffixed.exists());
-        let redone = execute(&revert, Some(done(&undone)));
-        done(&redone);
-        assert_eq!(std::fs::read(&suffixed).unwrap(), b"moved report");
-        assert!(!source.exists());
-        assert_eq!(
-            std::fs::read(destination.join("report.txt")).unwrap(),
-            b"existing report"
-        );
-    }
+        phase written_files_are_recorded_and_undone_through_trash;
+        {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let folder = root.path().display().to_string();
+            let at = |name: &str| root.path().join(name);
 
-    #[test]
-    fn a_failed_operation_records_what_it_did() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("a.txt"), b"a").unwrap();
-        let folder = root.path().join("into");
-        std::fs::create_dir(&folder).unwrap();
-        let outcome = execute(
-            &FileOp::Move {
-                paths: vec![
-                    root.path().join("a.txt").display().to_string(),
-                    root.path().join("missing.txt").display().to_string(),
-                ],
-                folder: folder.display().to_string(),
-                create: false,
-            },
-            None,
-        );
-        assert!(!outcome.is_done());
-        assert_eq!(outcome.result().len(), 1);
-        done(&execute(
-            &FileOp::Revert { op: "m".into() },
-            Some(outcome.result().as_slice()),
-        ));
-        assert!(root.path().join("a.txt").exists());
-    }
-
-    #[test]
-    fn write_and_compress_reject_names_that_address_other_folders() {
-        let root = tempfile::tempdir().unwrap();
-        let folder = root.path().join("chosen");
-        std::fs::create_dir(&folder).unwrap();
-        std::fs::create_dir(folder.join("nested")).unwrap();
-        let source = folder.join("source.txt");
-        std::fs::write(&source, b"source").unwrap();
-        for name in [
-            "../escaped.txt".to_owned(),
-            "nested/escaped.txt".to_owned(),
-            text(&root.path().join("absolute.txt")),
-            ".".to_owned(),
-            "..".to_owned(),
-        ] {
-            let write = execute(
+            let wrote = execute(
                 &FileOp::Write {
-                    folder: text(&folder),
-                    name: name.clone(),
-                    text: "new contents".into(),
+                    folder: folder.clone(),
+                    name: "Summary.md".into(),
+                    text: "# Summary\n\nShort.".into(),
                     replace: false,
                 },
                 None,
             );
-            assert!(!write.is_done(), "write accepted {name}: {write:?}");
-            assert!(write.result().is_empty());
-            let compressed = execute(
-                &FileOp::Compress {
-                    paths: vec![text(&source)],
-                    folder: text(&folder),
-                    name: name.clone(),
+            assert_eq!(
+                done(&wrote),
+                [Change::Wrote {
+                    path: text(&at("Summary.md"))
+                }]
+            );
+            assert_eq!(
+                std::fs::read_to_string(at("Summary.md")).unwrap(),
+                "# Summary\n\nShort."
+            );
+            let again = execute(
+                &FileOp::Write {
+                    folder: folder.clone(),
+                    name: "Summary.md".into(),
+                    text: "other".into(),
+                    replace: false,
                 },
                 None,
             );
-            assert!(
-                !compressed.is_done(),
-                "compress accepted {name}: {compressed:?}"
+            assert!(!again.is_done(), "an existing file is never written over");
+
+            let replaced = execute(
+                &FileOp::Write {
+                    folder: folder.clone(),
+                    name: "Summary.md".into(),
+                    text: "# Summary\n\nLonger now.".into(),
+                    replace: true,
+                },
+                None,
             );
-            assert!(compressed.result().is_empty());
+            assert_eq!(
+                done(&replaced).len(),
+                2,
+                "the old one to Trash, the new one"
+            );
+            let revert = FileOp::Revert { op: "w".into() };
+            done(&execute(&revert, Some(replaced.result().as_slice())));
+            assert_eq!(
+                std::fs::read_to_string(at("Summary.md")).unwrap(),
+                "# Summary\n\nShort.",
+                "undo brings the old file back"
+            );
+
+            std::fs::write(at("notes.txt"), "milk\n").unwrap();
+            let compressed = execute(
+                &FileOp::Compress {
+                    paths: vec![text(&at("Summary.md")), text(&at("notes.txt"))],
+                    folder,
+                    name: "Summary.zip".into(),
+                },
+                None,
+            );
+            assert_eq!(
+                done(&compressed),
+                [Change::Wrote {
+                    path: text(&at("Summary.zip"))
+                }]
+            );
+            let listed = crate::archive::list_directory(&at("Summary.zip"), Path::new("")).unwrap();
+            assert_eq!(listed.len(), 2, "{listed:?}");
+
+            done(&execute(&revert, Some(compressed.result().as_slice())));
+            assert!(!at("Summary.zip").exists());
+            assert!(at("Summary.md").exists(), "the original stays");
         }
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
-        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 2);
-        assert_eq!(std::fs::read_dir(folder.join("nested")).unwrap().count(), 0);
-        assert_eq!(std::fs::read(source).unwrap(), b"source");
+
+        phase extracting_names_the_folder_and_settles_a_taken_name;
+        {
+            let _home = tilo_test_env::TestHome::new().unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let at = |name: &str| root.path().join(name);
+            std::fs::create_dir_all(at("src/Project/docs")).unwrap();
+            std::fs::write(at("src/Project/docs/a.txt"), b"a").unwrap();
+            std::fs::write(at("src/loose.txt"), b"l").unwrap();
+            let out = at("out");
+            std::fs::create_dir(&out).unwrap();
+            crate::archive::create(
+                &[at("src/Project")],
+                &at("one.tar.zst"),
+                crate::archive::Packing::TarZst,
+                &(),
+            )
+            .unwrap();
+            crate::archive::create(
+                &[at("src/Project"), at("src/loose.txt")],
+                &at("two.zip"),
+                crate::archive::Packing::Zip,
+                &(),
+            )
+            .unwrap();
+            let extract = |archive: &str, if_exists| {
+                execute(
+                    &FileOp::Extract {
+                        archive: text(&at(archive)),
+                        folder: text(&out),
+                        if_exists,
+                    },
+                    None,
+                )
+            };
+
+            let own = extract("one.tar.zst", IfExists::KeepBoth);
+            assert_eq!(
+                done(&own),
+                [Change::Wrote {
+                    path: text(&out.join("Project"))
+                }]
+            );
+            assert_eq!(std::fs::read(out.join("Project/docs/a.txt")).unwrap(), b"a");
+            let named = extract("two.zip", IfExists::KeepBoth);
+            done(&named);
+            assert_eq!(std::fs::read(out.join("two/loose.txt")).unwrap(), b"l");
+            assert_eq!(
+                std::fs::read(out.join("two/Project/docs/a.txt")).unwrap(),
+                b"a"
+            );
+
+            let both = extract("one.tar.zst", IfExists::KeepBoth);
+            assert_eq!(
+                done(&both),
+                [Change::Wrote {
+                    path: text(&out.join("Project 2"))
+                }]
+            );
+            std::fs::write(out.join("Project/docs/a.txt"), b"edited").unwrap();
+            let skipped = extract("one.tar.zst", IfExists::Skip);
+            assert!(done(&skipped).is_empty());
+            assert_eq!(
+                std::fs::read(out.join("Project/docs/a.txt")).unwrap(),
+                b"edited"
+            );
+            let replaced = extract("one.tar.zst", IfExists::Replace);
+            assert_eq!(
+                done(&replaced).len(),
+                2,
+                "the old one to Trash, the new one"
+            );
+            assert_eq!(std::fs::read(out.join("Project/docs/a.txt")).unwrap(), b"a");
+            let revert = FileOp::Revert { op: "x".into() };
+            done(&execute(&revert, Some(replaced.result().as_slice())));
+            assert_eq!(
+                std::fs::read(out.join("Project/docs/a.txt")).unwrap(),
+                b"edited",
+                "undo brings the replaced folder back"
+            );
+            done(&execute(&revert, Some(named.result().as_slice())));
+            assert!(!out.join("two").exists(), "undo takes the extraction away");
+            assert!(
+                tree(&out).iter().all(|name| !name.starts_with(".tilo-")),
+                "no staging is left: {:?}",
+                tree(&out)
+            );
+        }
     }
 
-    #[test]
-    fn written_files_are_recorded_and_undone_through_trash() {
-        let _home = tilo_test_env::TestHome::new().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let folder = root.path().display().to_string();
-        let at = |name: &str| root.path().join(name);
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn trash_and_mounted_imports_undo_without_changing_their_sources;
 
-        let wrote = execute(
-            &FileOp::Write {
-                folder: folder.clone(),
-                name: "Summary.md".into(),
-                text: "# Summary\n\nShort.".into(),
-                replace: false,
-            },
-            None,
-        );
-        assert_eq!(
-            done(&wrote),
-            [Change::Wrote {
-                path: text(&at("Summary.md"))
-            }]
-        );
-        assert_eq!(
-            std::fs::read_to_string(at("Summary.md")).unwrap(),
-            "# Summary\n\nShort."
-        );
-        let again = execute(
-            &FileOp::Write {
-                folder: folder.clone(),
-                name: "Summary.md".into(),
-                text: "other".into(),
-                replace: false,
-            },
-            None,
-        );
-        assert!(!again.is_done(), "an existing file is never written over");
+        phase move_to_trash_records_its_entry_and_undo_restores_it;
+        {
+            let home = tilo_test_env::TestHome::new().expect("private Trash for undo");
+            let downloads = home.home().join("Downloads");
+            std::fs::create_dir_all(&downloads).unwrap();
+            let film = downloads.join("film.mkv");
+            std::fs::write(&film, b"frames").unwrap();
+            let film = film.canonicalize().unwrap();
 
-        let replaced = execute(
-            &FileOp::Write {
-                folder: folder.clone(),
-                name: "Summary.md".into(),
-                text: "# Summary\n\nLonger now.".into(),
-                replace: true,
-            },
-            None,
-        );
-        assert_eq!(
-            done(&replaced).len(),
-            2,
-            "the old one to Trash, the new one"
-        );
-        let revert = FileOp::Revert { op: "w".into() };
-        done(&execute(&revert, Some(replaced.result().as_slice())));
-        assert_eq!(
-            std::fs::read_to_string(at("Summary.md")).unwrap(),
-            "# Summary\n\nShort.",
-            "undo brings the old file back"
-        );
+            let trashed = execute(
+                &FileOp::Trash {
+                    paths: vec![text(&film)],
+                },
+                None,
+            );
+            let [Change::Trashed { from, entry }] = done(&trashed) else {
+                panic!("{trashed:?}");
+            };
+            assert_eq!(from, &text(&film));
+            let entry = PathBuf::from(entry.as_deref().expect("the entry it became"));
+            assert_eq!(entry.file_name(), film.file_name());
+            assert_eq!(std::fs::read(&entry).unwrap(), b"frames");
+            assert!(!film.exists());
 
-        std::fs::write(at("notes.txt"), "milk\n").unwrap();
-        let compressed = execute(
-            &FileOp::Compress {
-                paths: vec![text(&at("Summary.md")), text(&at("notes.txt"))],
-                folder,
-                name: "Summary.zip".into(),
-            },
-            None,
-        );
-        assert_eq!(
-            done(&compressed),
-            [Change::Wrote {
-                path: text(&at("Summary.zip"))
-            }]
-        );
-        let listed = crate::archive::list_directory(&at("Summary.zip"), Path::new("")).unwrap();
-        assert_eq!(listed.len(), 2, "{listed:?}");
+            let revert = FileOp::Revert { op: "trash".into() };
+            done(&execute(&revert, Some(trashed.result().as_slice())));
+            assert_eq!(std::fs::read(&film).unwrap(), b"frames");
+            assert!(!entry.exists());
+        }
 
-        done(&execute(&revert, Some(compressed.result().as_slice())));
-        assert!(!at("Summary.zip").exists());
-        assert!(at("Summary.md").exists(), "the original stays");
+        phase mounted_import_is_writable_without_changing_source_or_ordinary_copy;
+        {
+            use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+            let home = tilo_test_env::TestHome::new().expect("private Trash for undo");
+            fileops::ensure_trash_dir().expect("open Trash before recording undo entries");
+            let root = tempfile::tempdir_in(home.home()).unwrap();
+            let source = root.path().join("mounted.txt");
+            let folder = root.path().join("local");
+            std::fs::create_dir(&folder).unwrap();
+            std::fs::write(&source, b"original").unwrap();
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+            let paths = vec![text(&source)];
+            let op = FileOp::ImportMounted {
+                paths: paths.clone(),
+                folder: text(&folder),
+            };
+            assert!(
+                !execute(&op, None).is_done(),
+                "serialized jobs supply no private consent"
+            );
+            let mut app =
+                ui::prelude::TestApp::<crate::resource::FileExplorerShell>::on_device("laptop")
+                    .unwrap();
+            app.invoke(crate::resource::FileExplorer::queueing("laptop", op).unwrap())
+                .unwrap();
+            tilo_test_env::wait_until("the queued operation to settle", || {
+                app.settle();
+                app.state().ops.pending().next().is_none()
+            });
+            let imported = app
+                .state()
+                .ops
+                .entries()
+                .next()
+                .unwrap()
+                .1
+                .settled
+                .clone()
+                .unwrap();
+            let destination = folder.join("mounted.txt");
+            assert_eq!(
+                done(&imported),
+                [Change::Copied {
+                    from: text(&source),
+                    to: text(&destination),
+                }]
+            );
+            assert_eq!(
+                std::fs::metadata(&destination).unwrap().mode() & 0o777,
+                0o644
+            );
+            std::fs::write(&destination, b"edited locally").unwrap();
+            assert_eq!(std::fs::read(&source).unwrap(), b"original");
+            assert_eq!(std::fs::metadata(&source).unwrap().mode() & 0o777, 0o444);
+
+            let copied = execute(
+                &FileOp::Copy {
+                    paths,
+                    folder: text(&folder),
+                },
+                None,
+            );
+            let ordinary = folder.join("mounted 2.txt");
+            assert_eq!(
+                done(&copied),
+                [Change::Copied {
+                    from: text(&source),
+                    to: text(&ordinary)
+                }]
+            );
+            assert_eq!(std::fs::metadata(&ordinary).unwrap().mode() & 0o777, 0o444);
+
+            let revert = FileOp::Revert {
+                op: "import".into(),
+            };
+            let undone = execute(&revert, Some(done(&imported)));
+            done(&undone);
+            assert!(!destination.exists());
+            let redone = execute(&revert, Some(done(&undone)));
+            done(&redone);
+            assert_eq!(std::fs::read(&destination).unwrap(), b"edited locally");
+            assert_eq!(
+                std::fs::metadata(&destination).unwrap().mode() & 0o777,
+                0o644
+            );
+            assert_eq!(std::fs::metadata(&source).unwrap().mode() & 0o777, 0o444);
+        }
     }
 
     fn tree(folder: &Path) -> Vec<String> {
@@ -1319,94 +1414,6 @@ mod tests {
         }
         names.sort();
         names
-    }
-
-    #[test]
-    fn extracting_names_the_folder_and_settles_a_taken_name() {
-        let _home = tilo_test_env::TestHome::new().unwrap();
-        let root = tempfile::tempdir().unwrap();
-        let at = |name: &str| root.path().join(name);
-        std::fs::create_dir_all(at("src/Project/docs")).unwrap();
-        std::fs::write(at("src/Project/docs/a.txt"), b"a").unwrap();
-        std::fs::write(at("src/loose.txt"), b"l").unwrap();
-        let out = at("out");
-        std::fs::create_dir(&out).unwrap();
-        crate::archive::create(
-            &[at("src/Project")],
-            &at("one.tar.zst"),
-            crate::archive::Packing::TarZst,
-            &(),
-        )
-        .unwrap();
-        crate::archive::create(
-            &[at("src/Project"), at("src/loose.txt")],
-            &at("two.zip"),
-            crate::archive::Packing::Zip,
-            &(),
-        )
-        .unwrap();
-        let extract = |archive: &str, if_exists| {
-            execute(
-                &FileOp::Extract {
-                    archive: text(&at(archive)),
-                    folder: text(&out),
-                    if_exists,
-                },
-                None,
-            )
-        };
-
-        let own = extract("one.tar.zst", IfExists::KeepBoth);
-        assert_eq!(
-            done(&own),
-            [Change::Wrote {
-                path: text(&out.join("Project"))
-            }]
-        );
-        assert_eq!(std::fs::read(out.join("Project/docs/a.txt")).unwrap(), b"a");
-        let named = extract("two.zip", IfExists::KeepBoth);
-        done(&named);
-        assert_eq!(std::fs::read(out.join("two/loose.txt")).unwrap(), b"l");
-        assert_eq!(
-            std::fs::read(out.join("two/Project/docs/a.txt")).unwrap(),
-            b"a"
-        );
-
-        let both = extract("one.tar.zst", IfExists::KeepBoth);
-        assert_eq!(
-            done(&both),
-            [Change::Wrote {
-                path: text(&out.join("Project 2"))
-            }]
-        );
-        std::fs::write(out.join("Project/docs/a.txt"), b"edited").unwrap();
-        let skipped = extract("one.tar.zst", IfExists::Skip);
-        assert!(done(&skipped).is_empty());
-        assert_eq!(
-            std::fs::read(out.join("Project/docs/a.txt")).unwrap(),
-            b"edited"
-        );
-        let replaced = extract("one.tar.zst", IfExists::Replace);
-        assert_eq!(
-            done(&replaced).len(),
-            2,
-            "the old one to Trash, the new one"
-        );
-        assert_eq!(std::fs::read(out.join("Project/docs/a.txt")).unwrap(), b"a");
-        let revert = FileOp::Revert { op: "x".into() };
-        done(&execute(&revert, Some(replaced.result().as_slice())));
-        assert_eq!(
-            std::fs::read(out.join("Project/docs/a.txt")).unwrap(),
-            b"edited",
-            "undo brings the replaced folder back"
-        );
-        done(&execute(&revert, Some(named.result().as_slice())));
-        assert!(!out.join("two").exists(), "undo takes the extraction away");
-        assert!(
-            tree(&out).iter().all(|name| !name.starts_with(".tilo-")),
-            "no staging is left: {:?}",
-            tree(&out)
-        );
     }
 
     #[test]

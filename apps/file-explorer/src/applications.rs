@@ -134,35 +134,39 @@ mod tests {
         entry
     }
 
-    #[test]
-    fn an_app_item_names_its_app_and_nothing_else_does() {
-        assert_eq!(
-            app_id(&app_path("org.gnome.Chess")),
-            Some("org.gnome.Chess")
-        );
-        assert_eq!(app_id(&location()), None);
-        assert_eq!(
-            app_id(Path::new("/home/me/Applications/Foo.AppImage")),
-            None
-        );
-        assert!(is_location(&location()));
-    }
+    tilo_test_env::scenario! {
+        fn apps_show_as_app_items_and_files_as_files;
 
-    #[test]
-    fn a_moved_program_shows_once_as_its_app_and_other_files_as_files() {
-        let apps = [app("foo", Some("/home/me/Applications/Foo.AppImage"))];
-        let files = [
-            file("/home/me/Applications/Foo.AppImage"),
-            file("/home/me/Applications/notes.txt"),
-        ];
-        let items = listing(&apps, &files);
-        let paths: Vec<_> = items.iter().map(|item| item.path.clone()).collect();
-        assert_eq!(
-            paths,
-            [
-                app_path("foo"),
-                PathBuf::from("/home/me/Applications/notes.txt")
-            ]
-        );
+        phase an_app_item_names_its_app_and_nothing_else_does;
+        {
+            assert_eq!(
+                app_id(&app_path("org.gnome.Chess")),
+                Some("org.gnome.Chess")
+            );
+            assert_eq!(app_id(&location()), None);
+            assert_eq!(
+                app_id(Path::new("/home/me/Applications/Foo.AppImage")),
+                None
+            );
+            assert!(is_location(&location()));
+        }
+
+        phase a_moved_program_shows_once_as_its_app_and_other_files_as_files;
+        {
+            let apps = [app("foo", Some("/home/me/Applications/Foo.AppImage"))];
+            let files = [
+                file("/home/me/Applications/Foo.AppImage"),
+                file("/home/me/Applications/notes.txt"),
+            ];
+            let items = listing(&apps, &files);
+            let paths: Vec<_> = items.iter().map(|item| item.path.clone()).collect();
+            assert_eq!(
+                paths,
+                [
+                    app_path("foo"),
+                    PathBuf::from("/home/me/Applications/notes.txt")
+                ]
+            );
+        }
     }
 }

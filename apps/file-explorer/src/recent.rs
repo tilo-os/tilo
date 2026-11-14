@@ -129,63 +129,67 @@ impl RecentRecord {
 mod tests {
     use super::*;
 
-    #[test]
-    fn newest_use_leads_and_a_path_appears_once() {
-        let mut recent = RecentFiles::default();
-        recent.note(Path::new("/docs/a.txt"), RecentUse::Opened, 10);
-        recent.note(Path::new("/docs/b.txt"), RecentUse::Changed, 20);
-        recent.note(Path::new("/docs/a.txt"), RecentUse::Opened, 30);
-        let paths: Vec<_> = recent
-            .items()
-            .iter()
-            .map(|item| item.path.clone())
-            .collect();
-        assert_eq!(
-            paths,
-            vec![PathBuf::from("/docs/a.txt"), PathBuf::from("/docs/b.txt")]
-        );
-        assert_eq!(recent.items()[0].at_ms, 30);
-    }
+    tilo_test_env::scenario! {
+        fn the_recent_list_orders_follows_renames_and_forgets;
 
-    #[test]
-    fn a_backwards_clock_still_orders_by_time() {
-        let mut recent = RecentFiles::default();
-        recent.note(Path::new("/a"), RecentUse::Opened, 50);
-        recent.note(Path::new("/b"), RecentUse::Opened, 40);
-        assert_eq!(recent.items()[0].path, PathBuf::from("/a"));
-    }
+        phase newest_use_leads_and_a_path_appears_once;
+        {
+            let mut recent = RecentFiles::default();
+            recent.note(Path::new("/docs/a.txt"), RecentUse::Opened, 10);
+            recent.note(Path::new("/docs/b.txt"), RecentUse::Changed, 20);
+            recent.note(Path::new("/docs/a.txt"), RecentUse::Opened, 30);
+            let paths: Vec<_> = recent
+                .items()
+                .iter()
+                .map(|item| item.path.clone())
+                .collect();
+            assert_eq!(
+                paths,
+                vec![PathBuf::from("/docs/a.txt"), PathBuf::from("/docs/b.txt")]
+            );
+            assert_eq!(recent.items()[0].at_ms, 30);
+        }
 
-    #[test]
-    fn relative_paths_and_the_recent_place_are_not_recorded() {
-        let mut recent = RecentFiles::default();
-        recent.note(&location(), RecentUse::Opened, 1);
-        recent.note(Path::new("notes.txt"), RecentUse::Opened, 2);
-        assert!(recent.items().is_empty());
-    }
+        phase a_backwards_clock_still_orders_by_time;
+        {
+            let mut recent = RecentFiles::default();
+            recent.note(Path::new("/a"), RecentUse::Opened, 50);
+            recent.note(Path::new("/b"), RecentUse::Opened, 40);
+            assert_eq!(recent.items()[0].path, PathBuf::from("/a"));
+        }
 
-    #[test]
-    fn renames_follow_files_and_folders() {
-        let mut recent = RecentFiles::default();
-        recent.note(Path::new("/w/old/a.txt"), RecentUse::Opened, 1);
-        recent.note(Path::new("/w/b.txt"), RecentUse::Opened, 2);
-        recent.moved(Path::new("/w/old"), Path::new("/w/new"));
-        recent.moved(Path::new("/w/b.txt"), Path::new("/w/c.txt"));
-        let paths: Vec<_> = recent
-            .items()
-            .iter()
-            .map(|item| item.path.clone())
-            .collect();
-        assert_eq!(
-            paths,
-            vec![PathBuf::from("/w/c.txt"), PathBuf::from("/w/new/a.txt")]
-        );
-    }
+        phase relative_paths_and_the_recent_place_are_not_recorded;
+        {
+            let mut recent = RecentFiles::default();
+            recent.note(&location(), RecentUse::Opened, 1);
+            recent.note(Path::new("notes.txt"), RecentUse::Opened, 2);
+            assert!(recent.items().is_empty());
+        }
 
-    #[test]
-    fn forgetting_reports_whether_the_path_was_listed() {
-        let mut recent = RecentFiles::default();
-        recent.note(Path::new("/docs/a.txt"), RecentUse::Changed, 7);
-        assert!(recent.forget(Path::new("/docs/a.txt")));
-        assert!(!recent.forget(Path::new("/docs/a.txt")));
+        phase renames_follow_files_and_folders;
+        {
+            let mut recent = RecentFiles::default();
+            recent.note(Path::new("/w/old/a.txt"), RecentUse::Opened, 1);
+            recent.note(Path::new("/w/b.txt"), RecentUse::Opened, 2);
+            recent.moved(Path::new("/w/old"), Path::new("/w/new"));
+            recent.moved(Path::new("/w/b.txt"), Path::new("/w/c.txt"));
+            let paths: Vec<_> = recent
+                .items()
+                .iter()
+                .map(|item| item.path.clone())
+                .collect();
+            assert_eq!(
+                paths,
+                vec![PathBuf::from("/w/c.txt"), PathBuf::from("/w/new/a.txt")]
+            );
+        }
+
+        phase forgetting_reports_whether_the_path_was_listed;
+        {
+            let mut recent = RecentFiles::default();
+            recent.note(Path::new("/docs/a.txt"), RecentUse::Changed, 7);
+            assert!(recent.forget(Path::new("/docs/a.txt")));
+            assert!(!recent.forget(Path::new("/docs/a.txt")));
+        }
     }
 }

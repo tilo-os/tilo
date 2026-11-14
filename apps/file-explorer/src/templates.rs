@@ -168,107 +168,111 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[test]
-    fn templates_list_label_and_create_files() {
-        {
-            let d = tempfile::tempdir().unwrap();
-            fs::write(d.path().join("Document.md"), b"# ${title}\n").unwrap();
-            fs::write(d.path().join("Spreadsheet.csv"), b"a,b\n").unwrap();
-            fs::write(d.path().join(".hidden"), b"x").unwrap();
-            fs::create_dir(d.path().join("subdir")).unwrap();
+    tilo_test_env::scenario! {
+        fn templates_are_listed_created_and_kept_current_by_a_worker;
 
-            let t = list_templates(d.path());
-            let names: Vec<String> = t
-                .iter()
-                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-                .collect();
-            assert_eq!(
-                names,
-                ["Document.md", "Spreadsheet.csv"],
-                "files only, sorted, no dotfiles/dirs"
+        phase templates_list_label_and_create_files;
+        {
+            {
+                let d = tempfile::tempdir().unwrap();
+                fs::write(d.path().join("Document.md"), b"# ${title}\n").unwrap();
+                fs::write(d.path().join("Spreadsheet.csv"), b"a,b\n").unwrap();
+                fs::write(d.path().join(".hidden"), b"x").unwrap();
+                fs::create_dir(d.path().join("subdir")).unwrap();
+
+                let t = list_templates(d.path());
+                let names: Vec<String> = t
+                    .iter()
+                    .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                    .collect();
+                assert_eq!(
+                    names,
+                    ["Document.md", "Spreadsheet.csv"],
+                    "files only, sorted, no dotfiles/dirs"
+                );
+            }
+
+            {
+                let d = tempfile::tempdir().unwrap();
+                assert!(list_templates(d.path()).is_empty());
+                assert!(list_templates(&d.path().join("nope")).is_empty());
+            }
+
+            {
+                let d = tempfile::tempdir().unwrap();
+                let catalog = Catalog::new(Some(d.path().to_path_buf()), ui::WakeHandle::detached());
+                assert!(catalog.templates().is_empty());
+                fs::write(d.path().join("Note.md"), b"").unwrap();
+                assert_eq!(catalog.templates(), [d.path().join("Note.md")]);
+            }
+
+            {
+                assert_eq!(menu_label(Path::new("/t/Document.md")), "New Document");
+                assert_eq!(menu_label(Path::new("/t/notes")), "New notes");
+            }
+
+            {
+                let d = tempfile::tempdir().unwrap();
+                let tmpl = d.path().join("Document.md");
+                fs::write(&tmpl, b"hello template").unwrap();
+                let dest = d.path().join("dest");
+                fs::create_dir(&dest).unwrap();
+
+                let made = create_from_template(&tmpl, &dest).unwrap();
+                assert_eq!(made.file_name().unwrap().to_string_lossy(), "Document.md");
+                assert_eq!(fs::read(&made).unwrap(), b"hello template");
+                let made2 = create_from_template(&tmpl, &dest).unwrap();
+                assert_eq!(
+                    made2.file_name().unwrap().to_string_lossy(),
+                    "Document 2.md"
+                );
+            }
+        }
+
+        phase a_catalog_on_the_frame_loop_is_kept_by_its_worker;
+        {
+            let home = tempfile::tempdir().unwrap();
+            let dir = home.path().join("Templates");
+            let catalog = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
+                        let catalog = Catalog::new(Some(dir.clone()), ui::WakeHandle::detached());
+                        assert!(catalog.templates().is_empty());
+                        catalog
+                    })
+                    .join()
+                    .unwrap()
+            });
+            assert!(
+                catalog.live.get().is_some_and(Option::is_some),
+                "the frame loop's catalog has a worker"
             );
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join("Letter.md"), b"").unwrap();
+            tilo_test_env::wait_until("the worker to list the new template", || {
+                catalog.templates() == [dir.join("Letter.md")]
+            });
         }
 
+        phase a_catalog_built_before_the_frame_loop_is_read_there_from_memory;
         {
-            let d = tempfile::tempdir().unwrap();
-            assert!(list_templates(d.path()).is_empty());
-            assert!(list_templates(&d.path().join("nope")).is_empty());
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join("Memo.md"), b"").unwrap();
+            let catalog = Catalog::new(Some(dir.path().to_path_buf()), ui::WakeHandle::detached());
+            let catalog = std::thread::scope(|scope| {
+                scope
+                    .spawn(move || {
+                        let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
+                        let _ = catalog.templates();
+                        catalog
+                    })
+                    .join()
+                    .unwrap()
+            });
+            tilo_test_env::wait_until("the worker to list the template", || {
+                catalog.templates() == [dir.path().join("Memo.md")]
+            });
         }
-
-        {
-            let d = tempfile::tempdir().unwrap();
-            let catalog = Catalog::new(Some(d.path().to_path_buf()), ui::WakeHandle::detached());
-            assert!(catalog.templates().is_empty());
-            fs::write(d.path().join("Note.md"), b"").unwrap();
-            assert_eq!(catalog.templates(), [d.path().join("Note.md")]);
-        }
-
-        {
-            assert_eq!(menu_label(Path::new("/t/Document.md")), "New Document");
-            assert_eq!(menu_label(Path::new("/t/notes")), "New notes");
-        }
-
-        {
-            let d = tempfile::tempdir().unwrap();
-            let tmpl = d.path().join("Document.md");
-            fs::write(&tmpl, b"hello template").unwrap();
-            let dest = d.path().join("dest");
-            fs::create_dir(&dest).unwrap();
-
-            let made = create_from_template(&tmpl, &dest).unwrap();
-            assert_eq!(made.file_name().unwrap().to_string_lossy(), "Document.md");
-            assert_eq!(fs::read(&made).unwrap(), b"hello template");
-            let made2 = create_from_template(&tmpl, &dest).unwrap();
-            assert_eq!(
-                made2.file_name().unwrap().to_string_lossy(),
-                "Document 2.md"
-            );
-        }
-    }
-
-    #[test]
-    fn a_catalog_on_the_frame_loop_is_kept_by_its_worker() {
-        let home = tempfile::tempdir().unwrap();
-        let dir = home.path().join("Templates");
-        let catalog = std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
-                    let catalog = Catalog::new(Some(dir.clone()), ui::WakeHandle::detached());
-                    assert!(catalog.templates().is_empty());
-                    catalog
-                })
-                .join()
-                .unwrap()
-        });
-        assert!(
-            catalog.live.get().is_some_and(Option::is_some),
-            "the frame loop's catalog has a worker"
-        );
-        fs::create_dir(&dir).unwrap();
-        fs::write(dir.join("Letter.md"), b"").unwrap();
-        tilo_test_env::wait_until("the worker to list the new template", || {
-            catalog.templates() == [dir.join("Letter.md")]
-        });
-    }
-
-    #[test]
-    fn a_catalog_built_before_the_frame_loop_is_read_there_from_memory() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("Memo.md"), b"").unwrap();
-        let catalog = Catalog::new(Some(dir.path().to_path_buf()), ui::WakeHandle::detached());
-        let catalog = std::thread::scope(|scope| {
-            scope
-                .spawn(move || {
-                    let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
-                    let _ = catalog.templates();
-                    catalog
-                })
-                .join()
-                .unwrap()
-        });
-        tilo_test_env::wait_until("the worker to list the template", || {
-            catalog.templates() == [dir.path().join("Memo.md")]
-        });
     }
 }
