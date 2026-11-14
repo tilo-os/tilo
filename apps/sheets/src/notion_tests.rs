@@ -48,33 +48,6 @@ tilo_test_env::scenario! {
         assert_eq!(tables[0].name, "Q3 budget");
     }
 
-    phase a_listing_hands_over_its_table_block_as_rows;
-    {
-        let listing = serde_json::json!({
-            "results": [
-                {"type": "table", "table": {"table_width": 3}, "children": [
-                    {"type": "table_row", "table_row": {"cells": [
-                        [{"plain_text": "Name"}],
-                        [{"plain_text": "Owner"}],
-                        [{"plain_text": "Due"}],
-                    ]}},
-                    {"type": "table_row", "table_row": {"cells": [
-                        [{"plain_text": "Ship it"}],
-                        [{"plain_text": "Alex, Sam"}],
-                        [{"plain_text": "2026-11-01"}],
-                    ]}},
-                ]},
-            ],
-        });
-        let bytes = serde_json::to_vec(&listing).unwrap();
-        let tables = tables(&bytes).unwrap();
-        assert_eq!(tables.len(), 1);
-        assert_eq!(
-            tables[0].csv,
-            "Name,Owner,Due\nShip it,\"Alex, Sam\",2026-11-01\n"
-        );
-    }
-
     phase a_database_listing_gives_its_rows_columns_from_the_properties;
     {
         localized();
@@ -154,4 +127,34 @@ tilo_test_env::scenario! {
         assert_eq!(csv_field_of("say \"hi\""), "\"say \"\"hi\"\"\"");
         assert_eq!(csv_field_of("two\nlines"), "\"two\nlines\"");
     }
+}
+
+// On its own, not a phase of the scenario above: a table block has no title, so this reads the
+// default table name from the catalogue on a thread where no test installed an i18n manager, and
+// a phase before it would leave the one it installed.
+#[test]
+fn a_listing_hands_over_its_table_block_as_rows() {
+    let listing = serde_json::json!({
+        "results": [
+            {"type": "table", "table": {"table_width": 3}, "children": [
+                {"type": "table_row", "table_row": {"cells": [
+                    [{"plain_text": "Name"}],
+                    [{"plain_text": "Owner"}],
+                    [{"plain_text": "Due"}],
+                ]}},
+                {"type": "table_row", "table_row": {"cells": [
+                    [{"plain_text": "Ship it"}],
+                    [{"plain_text": "Alex, Sam"}],
+                    [{"plain_text": "2026-11-01"}],
+                ]}},
+            ]},
+        ],
+    });
+    let bytes = serde_json::to_vec(&listing).unwrap();
+    let tables = tables(&bytes).unwrap();
+    assert_eq!(tables.len(), 1);
+    assert_eq!(
+        tables[0].csv,
+        "Name,Owner,Due\nShip it,\"Alex, Sam\",2026-11-01\n"
+    );
 }
