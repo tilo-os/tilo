@@ -80,12 +80,7 @@ impl Binges {
                 "CollaborationManager::for_record",
             ],
             Self::Keys => &["group_keys", "KeyProvider", "install_channel_keys"],
-            Self::Storage => &[
-                "DocStore",
-                "DocOwner",
-                "app_state::",
-                "open_workspace_document",
-            ],
+            Self::Storage => &["DocStore", "DocOwner", "app_state::"],
             // The runner's own code is not an app's sources: it is counted from the app's
             // entry point ([`on_runner`]), not from a marker.
             Self::Runner => &[],
