@@ -2234,8 +2234,15 @@ pub(crate) fn sections_not_read(bytes: &[u8]) -> Result<Vec<Range<usize>>> {
 
 /// `key` over `bytes` without `skipped`, which must be in order, and without
 /// the local variables' names in its name section: a local's name reaches no
-/// module's bytes (the tests prove it), so a change to one is no change of
-/// what a key covers. Everything else is hashed as it is.
+/// module's bytes (the tests hold a module whose only change is one of them
+/// to the same modules), so a change to one is no change of what a key
+/// covers. Only a bundle compiled with debug information carries them - the
+/// desktop bundle's `wasm-split` profiles emit the functions' names alone -
+/// and a key that holds them re-emits every module when one is renamed.
+///
+/// Everything else is hashed as it is: a function's name among it, since a
+/// change to the set of functions (a closure added, a function renamed)
+/// moves what every module holds.
 pub(crate) fn hash_sections(key: &mut Key, bytes: &[u8], skipped: &[Range<usize>]) -> Result<()> {
     let mut at = 0;
     for range in skipped {
