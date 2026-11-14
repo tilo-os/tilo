@@ -25,18 +25,6 @@ pub struct DeviceFleet {
     pub identity_id: String,
     pub certificates: Vec<DeviceCert>,
     pub revocations: Vec<RevocationEntry>,
-    /// Enrollment nonces an older build recorded here. Redeemed nonces now
-    /// live in [`crate::enrollment::NonceStore`], which the nearby-pairing
-    /// broker shares; the next redemption moves these there and saves the
-    /// fleet without them. Omitted while empty.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) consumed_enrollments: Vec<ConsumedEnrollment>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ConsumedEnrollment {
-    pub(crate) nonce: [u8; 16],
 }
 
 impl DeviceFleet {
@@ -67,8 +55,7 @@ impl DeviceFleet {
         Ok(())
     }
 
-    /// An empty fleet of `identity_id`: no certificates, revocations or
-    /// consumed enrollments.
+    /// An empty fleet of `identity_id`: no certificates or revocations.
     #[must_use]
     pub fn new(identity_id: String) -> Self {
         Self {
@@ -76,7 +63,6 @@ impl DeviceFleet {
             identity_id,
             certificates: Vec::new(),
             revocations: Vec::new(),
-            consumed_enrollments: Vec::new(),
         }
     }
 

@@ -134,10 +134,6 @@ pub struct NonceStore {
     directory: PathBuf,
 }
 
-/// What a migrated marker holds: the admitted device is not known, so no
-/// device can ever re-record the nonce as its own.
-const MIGRATED_MARKER: &str = "migrated";
-
 impl NonceStore {
     /// The store under `identity_root`, the directory holding
     /// `user-identity/` and `device-private/`.
@@ -196,14 +192,6 @@ impl NonceStore {
                     ))
                 }
             }
-            other => other,
-        }
-    }
-
-    /// Carry a nonce spent in an older store into this one.
-    pub(crate) fn import(&self, nonce: &[u8; 16]) -> io::Result<()> {
-        match self.create(nonce, MIGRATED_MARKER) {
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
             other => other,
         }
     }
@@ -733,9 +721,6 @@ mod tests {
             assert!(nonces.record(&[4; 16], [8; 32]).is_err());
             assert!(nonces.claim(&[4; 16], [7; 32]).is_err());
             nonces.claim(&[5; 16], [7; 32]).expect("a fresh nonce");
-            nonces.import(&[6; 16]).expect("migrated");
-            assert!(nonces.is_consumed(&[6; 16]).expect("marker"));
-            assert!(nonces.record(&[6; 16], [7; 32]).is_err());
         }
     }
 }
