@@ -59,7 +59,9 @@ pub(crate) struct Mounted {
 #[derive(Clone, Debug)]
 struct Listed {
     workspace: WorkspaceId,
-    name: String,
+    /// `None` until the person's list named it: a folder is called after
+    /// its workspace's name, never its id.
+    name: Option<String>,
     role: Option<String>,
 }
 
@@ -127,7 +129,7 @@ impl Peer {
         }
         let mut list = vec![Listed {
             workspace: device.workspace_id(),
-            name: device.workspace_id().to_string(),
+            name: None,
             role: None,
         }];
         match device
@@ -144,7 +146,7 @@ impl Peer {
                     };
                     let item = Listed {
                         workspace,
-                        name: entry.name,
+                        name: Some(entry.name).filter(|name| !name.trim().is_empty()),
                         role: entry.role,
                     };
                     match list.iter_mut().find(|known| known.workspace == workspace) {
@@ -173,12 +175,25 @@ impl Peer {
                 return;
             }
         };
-        let mut offered = false;
+        let mut changed = false;
+        let mut moves = Vec::new();
         for entry in &listed {
+            let Some(name) = entry.name.as_deref() else {
+                continue;
+            };
+            let id = entry.workspace.to_string();
             let own = entry.role.as_deref().is_none_or(|role| role == "owner");
-            offered |= wanted.offer(&entry.workspace.to_string(), &entry.name, own, &self.home);
+            changed |= wanted.offer(&id, name, own, &self.home);
+            if wanted
+                .workspaces
+                .get(&id)
+                .is_some_and(|folder| folder.name != name)
+            {
+                changed = true;
+                moves.extend(wanted.follow_rename(&id, name, &self.home));
+            }
         }
-        if offered && let Err(error) = wanted.save(&self.device_dir) {
+        if changed && let Err(error) = wanted.save(&self.device_dir) {
             tracing::warn!(%error, "the synced folders' settings are not kept");
         }
         // Removed, moved, or no longer the person's: unmounted.
@@ -192,19 +207,38 @@ impl Peer {
                 .get(&id)
                 .is_some_and(|folder| still && !folder.removed && folder.path == shown.showing.at)
         });
+        // A renamed workspace's folder, unmounted above, goes to its new name
+        // with what it holds (a synced folder's copies, or nothing where it was
+        // a mount point).
+        for (old, new) in moves {
+            if std::fs::symlink_metadata(&new).is_err()
+                && let Err(error) = std::fs::rename(&old, &new)
+            {
+                tracing::warn!(%error, from = %old.display(), to = %new.display(), "the renamed workspace's folder did not move; it is shown at its new name");
+            }
+        }
         self.failed.lock().map(|mut failed| failed.clear()).ok();
         for entry in &listed {
             let id = entry.workspace.to_string();
             let Some(folder) = wanted.workspaces.get(&id).filter(|folder| !folder.removed) else {
+                if entry.name.is_none() {
+                    self.fail(
+                        entry.workspace,
+                        "its folder waits for the workspace's name, which the person's workspace list has not given yet",
+                    );
+                }
                 continue;
             };
             let shown = self
                 .held
                 .lock()
                 .await
-                .iter()
+                .iter_mut()
                 .find(|shown| shown.workspace == entry.workspace)
-                .map(|shown| shown.replica.set_paused(folder.paused))
+                .map(|shown| {
+                    shown.replica.set_paused(folder.paused);
+                    shown.name.clone_from(&folder.name);
+                })
                 .is_some();
             if shown {
                 continue;
@@ -219,7 +253,7 @@ impl Peer {
                 .role
                 .as_deref()
                 .is_some_and(|role| matches!(role, "viewer" | "commenter"));
-            match self.hold(device, entry, &folder.path, read_only) {
+            match self.hold(device, entry, (&folder.name, &folder.path), read_only) {
                 Ok(shown) => {
                     shown.replica.set_paused(folder.paused);
                     self.held.lock().await.push(shown);
@@ -241,7 +275,7 @@ impl Peer {
         &self,
         device: &Entered,
         entry: &Listed,
-        at: &Path,
+        (folder_name, at): (&str, &Path),
         read_only: bool,
     ) -> anyhow::Result<Held> {
         let workspace = entry.workspace;
@@ -272,7 +306,7 @@ impl Peer {
         )?;
         Ok(Held {
             workspace,
-            name: entry.name.clone(),
+            name: folder_name.to_owned(),
             read_only,
             showing,
             replica,

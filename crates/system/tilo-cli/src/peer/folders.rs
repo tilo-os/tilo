@@ -102,6 +102,48 @@ impl Folders {
         true
     }
 
+    /// Follow `workspace`'s new name `name`: a folder still where this
+    /// computer put it (`~/<old name>`, or its suffixed spot) moves to
+    /// `~/<name>`, suffixed when that is taken; one the person moved keeps
+    /// its place and only takes the name. The folder's old and new path when
+    /// it moves.
+    pub(crate) fn follow_rename(
+        &mut self,
+        workspace: &str,
+        name: &str,
+        home: &Path,
+    ) -> Option<(PathBuf, PathBuf)> {
+        let folder = self.workspaces.get(workspace)?;
+        if folder.name == name {
+            return None;
+        }
+        let placed = folder.path.parent() == Some(home)
+            && folder.path.file_name().is_some_and(|file| {
+                let old = folder_name(&folder.name);
+                let file = file.to_string_lossy();
+                file == old.as_str()
+                    || file
+                        .strip_prefix(old.as_str())
+                        .is_some_and(|rest| rest.starts_with(" (Tilo") && rest.ends_with(')'))
+            });
+        let old = folder.path.clone();
+        let removed = folder.removed;
+        let new = if placed && !removed {
+            // The folder itself is not in the way of its own new name.
+            let mut others = self.clone();
+            others.workspaces.remove(workspace);
+            let free = others.free_path(home, name);
+            if free == old { None } else { Some(free) }
+        } else {
+            None
+        };
+        let folder = self.workspaces.get_mut(workspace)?;
+        name.clone_into(&mut folder.name);
+        let new = new?;
+        folder.path.clone_from(&new);
+        Some((old, new))
+    }
+
     /// The folder a workspace called `name` gets below `home`: `~/<name>`,
     /// unless that path is another folder's or holds the person's own files.
     pub(crate) fn free_path(&self, home: &Path, name: &str) -> PathBuf {
@@ -225,6 +267,56 @@ mod tests {
             Folders::load(&home.path().join("none")).unwrap(),
             Folders::default()
         );
+    }
+
+    #[test]
+    fn a_renamed_workspace_moves_its_folder_unless_the_person_moved_it() {
+        let home = tempfile::tempdir().unwrap();
+        let mut folders = Folders::default();
+        assert!(folders.offer("w1", "Acme", true, home.path()));
+        assert!(folders.offer("w2", "Acme", true, home.path()));
+        assert_eq!(folders.follow_rename("w1", "Acme", home.path()), None);
+
+        // Renamed: the folder follows its name.
+        assert_eq!(
+            folders.follow_rename("w1", "Acme Legal", home.path()),
+            Some((home.path().join("Acme"), home.path().join("Acme Legal")))
+        );
+        assert_eq!(folders.workspaces["w1"].name, "Acme Legal");
+        // A suffixed one takes the plain name once it is free.
+        assert_eq!(
+            folders.follow_rename("w2", "Acme", home.path()),
+            None,
+            "same name"
+        );
+        assert_eq!(
+            folders.follow_rename("w2", "Acme Legal", home.path()),
+            Some((
+                home.path().join("Acme (Tilo)"),
+                home.path().join("Acme Legal (Tilo)")
+            ))
+        );
+        // Someone's own folder of that name is never taken over.
+        std::fs::create_dir_all(home.path().join("Books/mine")).unwrap();
+        assert_eq!(
+            folders.follow_rename("w1", "Books", home.path()),
+            Some((
+                home.path().join("Acme Legal"),
+                home.path().join("Books (Tilo)")
+            ))
+        );
+
+        // Moved by the person: it stays, and only takes the name.
+        let elsewhere = home.path().join("work/acme");
+        folders
+            .workspaces
+            .get_mut("w2")
+            .unwrap()
+            .path
+            .clone_from(&elsewhere);
+        assert_eq!(folders.follow_rename("w2", "Acme Inc", home.path()), None);
+        assert_eq!(folders.workspaces["w2"].path, elsewhere);
+        assert_eq!(folders.workspaces["w2"].name, "Acme Inc");
     }
 
     #[test]
