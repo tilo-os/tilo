@@ -71,14 +71,12 @@ impl Device {
     fn write(&mut self) -> bool {
         let actor = self.actor;
         let mine = move |id: u64| id / 1000 == actor;
-        let former = former_ids(&self.doc);
         let notes = self.notes.clone();
         let records = move |id: u64| notes.get(&id).cloned();
         let writer = Writer {
             person: Some(PERSON),
             mine: &mine,
             retained: &|_| false,
-            carried: &|id| former.contains(&id),
             records: &records,
         };
         let published = self.published();
@@ -532,44 +530,6 @@ tilo_test_env::scenario! {
         assert_eq!(laptop.workspace.strips.len(), 2);
     }
 
-    phase a_workspace_laid_out_before_the_record_brings_its_windows_over;
-    {
-        use automerge::transaction::Transactable as _;
-        let identity = WorkspaceId::new();
-        let mut desk = Device::new(DESK, identity, 2);
-        // The laptop's windows, as the old layout kept them.
-        let contents = desk.doc.put_object(ROOT, "contents", ObjType::Map).unwrap();
-        let strip = desk
-            .doc
-            .put_object(&contents, format!("{MAIN:016x}"), ObjType::Map)
-            .unwrap();
-        let groups = desk.doc.put_object(&strip, "groups", ObjType::Map).unwrap();
-        let group_entry = desk
-            .doc
-            .put_object(&groups, format!("{NOTES_GROUP:016x}"), ObjType::Map)
-            .unwrap();
-        let tabs = desk
-            .doc
-            .put_object(&group_entry, "tabs", ObjType::Map)
-            .unwrap();
-        desk.doc
-            .put_object(&tabs, format!("{NOTES:016x}"), ObjType::Map)
-            .unwrap();
-        desk.doc.commit();
-        // The desk's tree holds them, folded in before the record existed.
-        let mut main = Strip::new(StripId(MAIN), "Main");
-        main.window_groups
-            .push(group(NOTES_GROUP, vec![notes(NOTES)]));
-        desk.workspace.strips.push(main);
-        assert!(desk.write());
-        let shared = crate::shared_record::read(&desk.doc, None).unwrap();
-        assert_eq!(
-            shared.tree.workspaces[0].strips[0].window_groups[0].tabs[0].id,
-            NOTES
-        );
-        // Not as the desk's: nobody's until the workspace says otherwise.
-        assert!(!shared.authors.contains_key(&NOTES));
-    }
 }
 
 /// What the record holds of which record each window shows.

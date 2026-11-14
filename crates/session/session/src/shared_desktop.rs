@@ -310,7 +310,6 @@ impl Save {
             person: Some(person),
             mine: &mine,
             retained,
-            carried: device::Writer::NOTHING_CARRIED,
             records: &records,
         };
         if heads.is_empty()

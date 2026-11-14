@@ -530,6 +530,19 @@ fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() 
                 && chat["rect"][2].as_f64().unwrap_or(0.0) > 1000.0
         })
     });
+    // The layout is the workspace's: within a moment the laptop shows Chat as a tab of Notes'
+    // window too.
+    let settle = Instant::now() + Duration::from_secs(3);
+    while !window_of(&laptop, CHAT).is_some_and(|chat| {
+        window_of(&laptop, "Stays behind").is_some_and(|notes| chat["group"] == notes["group"])
+    }) {
+        assert!(
+            Instant::now() < settle,
+            "the laptop still shows Chat apart from Notes' window: {}",
+            laptop.ask(&json!({"op": "windows"}))
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     picture(&laptop, "drag-4-laptop-after");
     picture(&phone, "drag-4-phone-after");
 }

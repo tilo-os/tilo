@@ -1794,7 +1794,6 @@ fn write_windows(
             person: Some(&person),
             mine: &mine,
             retained: &|_| false,
-            carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
             records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
         },
     )
