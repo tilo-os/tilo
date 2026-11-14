@@ -36,29 +36,6 @@ fn pe(cmdline: &[u8]) -> Vec<u8> {
     raw
 }
 
-#[test]
-fn the_promotion_receipt_masks_only_the_command_line_and_its_virtual_size() {
-    let raw = pe(b"old\0");
-    let mut changed = pe(b"new");
-    assert_eq!(
-        non_cmdline_bytes(&raw).unwrap(),
-        non_cmdline_bytes(&changed).unwrap()
-    );
-    changed[200] = 1;
-    assert_ne!(
-        non_cmdline_bytes(&raw).unwrap(),
-        non_cmdline_bytes(&changed).unwrap()
-    );
-    changed[108..112].copy_from_slice(&500u32.to_le_bytes());
-    assert!(
-        non_cmdline_bytes(&changed)
-            .unwrap_err()
-            .0
-            .contains("bounds")
-    );
-    assert!(non_cmdline_bytes(b"not a pe").is_err());
-}
-
 struct Scenario {
     _dir: tempfile::TempDir,
     base: PathBuf,
@@ -181,81 +158,108 @@ fn refused(result: Result<Value>, message: &str) {
     assert!(error.0.contains(message), "{error}");
 }
 
-#[test]
-fn the_original_ci_boot_fixture_validates_and_refuses_tampering() {
-    let fixture = scenario(None, false);
-    let result = fixture_probe(&fixture).unwrap();
-    assert_eq!(
-        result["schema"],
-        "tilo.installer-code-cached-target-probe.v1"
-    );
-    assert_eq!(result["profile"], "lenovo-83ed");
-    assert_eq!(result["kernel_version"], "7");
-    assert_eq!(result["promotion"], Value::Null);
-    assert_eq!(result["kernel_sha256"], sha256_hex(b"kernel"));
-    assert_eq!(
-        result["validator_sha256"],
-        sha256_hex(b"compiled validator")
-    );
-    assert_eq!(
-        result["mount"]["uki_fixture"]["sha256"],
-        sha256_hex(&fs::read(&fixture.archive).unwrap())
-    );
-    assert!(
-        fs::read_dir(&fixture.base).unwrap().all(|entry| !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with("tilo-boot-fixture-")),
-        "the scratch copy is removed"
-    );
-
-    fs::write(fixture.base.join("sys/inputs.tar/ro"), "0\n").unwrap();
-    refused(fixture_probe(&fixture), "writable");
-    fs::write(fixture.base.join("sys/inputs.tar/ro"), "1\n").unwrap();
-    let data = fs::read(&fixture.archive).unwrap();
-    let at = data.windows(6).position(|w| w == b"initrd").unwrap();
-    let mut tampered = data;
-    tampered[at..at + 6].copy_from_slice(b"BROKEN");
-    fs::write(&fixture.archive, tampered).unwrap();
-    refused(fixture_probe(&fixture), "differ");
-}
-
 fn promotion() -> Value {
     json!({"composefs_digest": "c".repeat(128), "origin": "[origin]\ncontainer-image-reference = x\n",
            "loader": "title Tilo\n", "update_origin": "registry/test"})
 }
 
-#[test]
-fn a_scratch_promotion_may_change_only_the_command_line() {
-    let fixture = scenario(Some(promotion()), false);
-    let result = fixture_probe(&fixture).unwrap();
-    assert!(fixture.promoted.get());
-    assert_eq!(result["promotion"]["composefs_digest"], "c".repeat(128));
-    assert_eq!(result["promotion"]["non_cmdline_pe_bytes_preserved"], true);
-    assert_eq!(
-        result["promotion"]["input_uki_sha256"],
-        sha256_hex(&pe(b"root=sealed"))
-    );
+tilo_test_env::scenario! {
+    fn the_code_refresh_probes_cached_target_check;
 
-    let tampering = scenario(Some(promotion()), true);
-    refused(fixture_probe(&tampering), "non-command-line PE bytes");
-}
-
-#[test]
-fn promotion_metadata_is_bounded_before_scratch_writes() {
-    let fixture = scenario(None, false);
-    let root = fixture.base.join("root");
-    fs::create_dir(&root).unwrap();
-    let mut long = promotion();
-    long["origin"] = json!("x".repeat(16385));
-    for metadata in [json!([]), long, json!({"composefs_digest": "short"})] {
-        let manifest = json!({"promotion": metadata});
-        refused(
-            promotion_probe(&fixture, &root, manifest.as_object().unwrap(), "7"),
-            "invalid scratch promotion fixture",
+    phase the_promotion_receipt_masks_only_the_command_line_and_its_virtual_size;
+    {
+        let raw = pe(b"old\0");
+        let mut changed = pe(b"new");
+        assert_eq!(
+            non_cmdline_bytes(&raw).unwrap(),
+            non_cmdline_bytes(&changed).unwrap()
         );
-        assert!(!root.join("promotion-target").exists());
+        changed[200] = 1;
+        assert_ne!(
+            non_cmdline_bytes(&raw).unwrap(),
+            non_cmdline_bytes(&changed).unwrap()
+        );
+        changed[108..112].copy_from_slice(&500u32.to_le_bytes());
+        assert!(
+            non_cmdline_bytes(&changed)
+                .unwrap_err()
+                .0
+                .contains("bounds")
+        );
+        assert!(non_cmdline_bytes(b"not a pe").is_err());
     }
-    assert!(!fixture.promoted.get());
+
+    phase the_original_ci_boot_fixture_validates_and_refuses_tampering;
+    {
+        let fixture = scenario(None, false);
+        let result = fixture_probe(&fixture).unwrap();
+        assert_eq!(
+            result["schema"],
+            "tilo.installer-code-cached-target-probe.v1"
+        );
+        assert_eq!(result["profile"], "lenovo-83ed");
+        assert_eq!(result["kernel_version"], "7");
+        assert_eq!(result["promotion"], Value::Null);
+        assert_eq!(result["kernel_sha256"], sha256_hex(b"kernel"));
+        assert_eq!(
+            result["validator_sha256"],
+            sha256_hex(b"compiled validator")
+        );
+        assert_eq!(
+            result["mount"]["uki_fixture"]["sha256"],
+            sha256_hex(&fs::read(&fixture.archive).unwrap())
+        );
+        assert!(
+            fs::read_dir(&fixture.base).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("tilo-boot-fixture-")),
+            "the scratch copy is removed"
+        );
+
+        fs::write(fixture.base.join("sys/inputs.tar/ro"), "0\n").unwrap();
+        refused(fixture_probe(&fixture), "writable");
+        fs::write(fixture.base.join("sys/inputs.tar/ro"), "1\n").unwrap();
+        let data = fs::read(&fixture.archive).unwrap();
+        let at = data.windows(6).position(|w| w == b"initrd").unwrap();
+        let mut tampered = data;
+        tampered[at..at + 6].copy_from_slice(b"BROKEN");
+        fs::write(&fixture.archive, tampered).unwrap();
+        refused(fixture_probe(&fixture), "differ");
+    }
+
+    phase a_scratch_promotion_may_change_only_the_command_line;
+    {
+        let fixture = scenario(Some(promotion()), false);
+        let result = fixture_probe(&fixture).unwrap();
+        assert!(fixture.promoted.get());
+        assert_eq!(result["promotion"]["composefs_digest"], "c".repeat(128));
+        assert_eq!(result["promotion"]["non_cmdline_pe_bytes_preserved"], true);
+        assert_eq!(
+            result["promotion"]["input_uki_sha256"],
+            sha256_hex(&pe(b"root=sealed"))
+        );
+
+        let tampering = scenario(Some(promotion()), true);
+        refused(fixture_probe(&tampering), "non-command-line PE bytes");
+    }
+
+    phase promotion_metadata_is_bounded_before_scratch_writes;
+    {
+        let fixture = scenario(None, false);
+        let root = fixture.base.join("root");
+        fs::create_dir(&root).unwrap();
+        let mut long = promotion();
+        long["origin"] = json!("x".repeat(16385));
+        for metadata in [json!([]), long, json!({"composefs_digest": "short"})] {
+            let manifest = json!({"promotion": metadata});
+            refused(
+                promotion_probe(&fixture, &root, manifest.as_object().unwrap(), "7"),
+                "invalid scratch promotion fixture",
+            );
+            assert!(!root.join("promotion-target").exists());
+        }
+        assert!(!fixture.promoted.get());
+    }
 }

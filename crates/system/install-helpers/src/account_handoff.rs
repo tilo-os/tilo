@@ -160,106 +160,6 @@ mod tests {
     use account_custody::portable::{self, PortableBinding};
     use accounts::{Account, AccountId, AccountStore, AccountTypeId, Secret, SecretVault};
 
-    #[test]
-    fn framed_selection_authenticates_before_writes_and_retries_without_touching_source() {
-        let uid = rustix::process::getuid().as_raw().max(1000);
-        let directory = tempfile::tempdir().unwrap();
-        // The production consumer uses a canonical home. TMPDIR itself may
-        // contain an alias (for example /home -> /var/home on Fedora).
-        let root = directory.path().canonicalize().unwrap();
-        let source = root.join("source");
-        let destination = root.join("destination");
-        let id = AccountId::new("selected");
-        let mut vault = SecretVault::open_in(&source);
-        vault.put(&id, &Secret::password("private fixture credential"));
-        vault.try_save().unwrap();
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(id.clone(), AccountTypeId::new("webdav")));
-        store.save_in(&source).unwrap();
-        let source_key = std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap();
-        let source_cipher =
-            std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap();
-        let binding = PortableBinding::new("operation", "disk", "person", uid).unwrap();
-        let key = SymmetricKey::generate().unwrap();
-        let sealed = portable::seal_selected_accounts(
-            &source,
-            std::slice::from_ref(&id),
-            &key,
-            binding.as_bytes(),
-        )
-        .unwrap();
-        let accounts = InstallAccounts::new(&sealed, key);
-        let mut frame = zeroize::Zeroizing::new(Vec::new());
-        accounts.write_to(&mut *frame).unwrap();
-        let received = InstallAccounts::read_from(&mut frame.as_slice()).unwrap();
-        assert_eq!(received, accounts);
-        let wrong_user =
-            PortableBinding::new("operation", "disk", "person", uid.saturating_add(1)).unwrap();
-        assert!(received.import_for_user(&destination, &wrong_user).is_err());
-        assert!(!destination.exists());
-        if rustix::process::getuid().is_root() {
-            assert!(received.import_for_user(&destination, &binding).is_err());
-            assert!(!destination.exists());
-        }
-        for wrong in [
-            PortableBinding::new("other", "disk", "person", uid).unwrap(),
-            PortableBinding::new("operation", "other", "person", uid).unwrap(),
-            PortableBinding::new("operation", "disk", "other", uid).unwrap(),
-            PortableBinding::new("operation", "disk", "person", uid.saturating_add(1)).unwrap(),
-        ] {
-            assert!(received.import_authenticated(&destination, &wrong).is_err());
-            assert!(!destination.exists());
-        }
-        let wrong_key = InstallAccounts {
-            ciphertext: received.ciphertext.clone(),
-            key: SymmetricKey::generate().unwrap(),
-        };
-        assert!(
-            wrong_key
-                .import_authenticated(&destination, &binding)
-                .is_err()
-        );
-        assert!(!destination.exists());
-        received
-            .import_authenticated(&destination, &binding)
-            .unwrap();
-        received
-            .import_authenticated(&destination, &binding)
-            .unwrap();
-        assert_eq!(AccountStore::load_in(&destination).len(), 1);
-        assert_eq!(
-            SecretVault::open_read_only_in(&destination)
-                .get(&id)
-                .unwrap()
-                .password,
-            "private fixture credential"
-        );
-        assert_eq!(
-            std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap(),
-            source_key
-        );
-        assert_eq!(
-            std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap(),
-            source_cipher
-        );
-        assert_ne!(
-            std::fs::read(accounts::vault_dir_in(&destination).join("vault.key")).unwrap(),
-            source_key
-        );
-        assert_destination_rejects_alias_and_conflict(
-            &root,
-            &source,
-            &destination,
-            &received,
-            &binding,
-            &id,
-            &source_cipher,
-        );
-        assert!(InstallAccounts::read_from(&mut &frame[..frame.len().saturating_sub(1)]).is_err());
-        frame.push(0);
-        assert!(InstallAccounts::read_from(&mut frame.as_slice()).is_err());
-    }
-
     fn assert_destination_rejects_alias_and_conflict(
         directory: &std::path::Path,
         source: &std::path::Path,
@@ -289,18 +189,122 @@ mod tests {
         );
     }
 
-    #[test]
-    fn oversized_frame_and_ambiguous_identity_are_rejected() {
-        let mut frame = MAGIC.to_vec();
-        frame.extend_from_slice(&u32::MAX.to_be_bytes());
-        assert!(InstallAccounts::read_from(&mut frame.as_slice()).is_err());
-        assert_ne!(
-            target_fingerprint(1, "2:3", "ab", "c"),
-            target_fingerprint(1, "2:3", "a", "bc")
-        );
-        assert_ne!(
-            target_fingerprint(1, "2:3", "ab", "c"),
-            target_fingerprint(2, "2:3", "ab", "c")
-        );
+    tilo_test_env::scenario! {
+        fn the_framed_account_selection;
+
+        phase framed_selection_authenticates_before_writes_and_retries_without_touching_source;
+        {
+            let uid = rustix::process::getuid().as_raw().max(1000);
+            let directory = tempfile::tempdir().unwrap();
+            // The production consumer uses a canonical home. TMPDIR itself may
+            // contain an alias (for example /home -> /var/home on Fedora).
+            let root = directory.path().canonicalize().unwrap();
+            let source = root.join("source");
+            let destination = root.join("destination");
+            let id = AccountId::new("selected");
+            let mut vault = SecretVault::open_in(&source);
+            vault.put(&id, &Secret::password("private fixture credential"));
+            vault.try_save().unwrap();
+            let mut store = AccountStore::new();
+            store.upsert(Account::new(id.clone(), AccountTypeId::new("webdav")));
+            store.save_in(&source).unwrap();
+            let source_key = std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap();
+            let source_cipher =
+                std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap();
+            let binding = PortableBinding::new("operation", "disk", "person", uid).unwrap();
+            let key = SymmetricKey::generate().unwrap();
+            let sealed = portable::seal_selected_accounts(
+                &source,
+                std::slice::from_ref(&id),
+                &key,
+                binding.as_bytes(),
+            )
+            .unwrap();
+            let accounts = InstallAccounts::new(&sealed, key);
+            let mut frame = zeroize::Zeroizing::new(Vec::new());
+            accounts.write_to(&mut *frame).unwrap();
+            let received = InstallAccounts::read_from(&mut frame.as_slice()).unwrap();
+            assert_eq!(received, accounts);
+            let wrong_user =
+                PortableBinding::new("operation", "disk", "person", uid.saturating_add(1)).unwrap();
+            assert!(received.import_for_user(&destination, &wrong_user).is_err());
+            assert!(!destination.exists());
+            if rustix::process::getuid().is_root() {
+                assert!(received.import_for_user(&destination, &binding).is_err());
+                assert!(!destination.exists());
+            }
+            for wrong in [
+                PortableBinding::new("other", "disk", "person", uid).unwrap(),
+                PortableBinding::new("operation", "other", "person", uid).unwrap(),
+                PortableBinding::new("operation", "disk", "other", uid).unwrap(),
+                PortableBinding::new("operation", "disk", "person", uid.saturating_add(1)).unwrap(),
+            ] {
+                assert!(received.import_authenticated(&destination, &wrong).is_err());
+                assert!(!destination.exists());
+            }
+            let wrong_key = InstallAccounts {
+                ciphertext: received.ciphertext.clone(),
+                key: SymmetricKey::generate().unwrap(),
+            };
+            assert!(
+                wrong_key
+                    .import_authenticated(&destination, &binding)
+                    .is_err()
+            );
+            assert!(!destination.exists());
+            received
+                .import_authenticated(&destination, &binding)
+                .unwrap();
+            received
+                .import_authenticated(&destination, &binding)
+                .unwrap();
+            assert_eq!(AccountStore::load_in(&destination).len(), 1);
+            assert_eq!(
+                SecretVault::open_read_only_in(&destination)
+                    .get(&id)
+                    .unwrap()
+                    .password,
+                "private fixture credential"
+            );
+            assert_eq!(
+                std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap(),
+                source_key
+            );
+            assert_eq!(
+                std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap(),
+                source_cipher
+            );
+            assert_ne!(
+                std::fs::read(accounts::vault_dir_in(&destination).join("vault.key")).unwrap(),
+                source_key
+            );
+            assert_destination_rejects_alias_and_conflict(
+                &root,
+                &source,
+                &destination,
+                &received,
+                &binding,
+                &id,
+                &source_cipher,
+            );
+            assert!(InstallAccounts::read_from(&mut &frame[..frame.len().saturating_sub(1)]).is_err());
+            frame.push(0);
+            assert!(InstallAccounts::read_from(&mut frame.as_slice()).is_err());
+        }
+
+        phase oversized_frame_and_ambiguous_identity_are_rejected;
+        {
+            let mut frame = MAGIC.to_vec();
+            frame.extend_from_slice(&u32::MAX.to_be_bytes());
+            assert!(InstallAccounts::read_from(&mut frame.as_slice()).is_err());
+            assert_ne!(
+                target_fingerprint(1, "2:3", "ab", "c"),
+                target_fingerprint(1, "2:3", "a", "bc")
+            );
+            assert_ne!(
+                target_fingerprint(1, "2:3", "ab", "c"),
+                target_fingerprint(2, "2:3", "ab", "c")
+            );
+        }
     }
 }

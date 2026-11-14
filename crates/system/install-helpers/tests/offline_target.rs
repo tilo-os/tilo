@@ -191,97 +191,6 @@ fn digest_of(metadata: &Map<String, Value>) -> String {
     metadata["target_digest"].as_str().unwrap().to_owned()
 }
 
-#[test]
-fn direct_import_preserves_digest_and_uses_immutable_id() {
-    let dir = tempfile::tempdir().unwrap();
-    let target = fixture(dir.path());
-    let mut host = Fixture::new(dir.path());
-    fs::create_dir(dir.path().join("run")).unwrap();
-    fs::write(
-        host.receipt(),
-        Value::Object(target.metadata.clone()).to_string(),
-    )
-    .unwrap();
-    let image_id = format!("sha256:{}", "e".repeat(64));
-    let digest = digest_of(&target.metadata);
-    let (id, expected_digest) = (image_id.clone(), digest);
-    host.respond = Box::new(move |argv| {
-        if argv[0] == "skopeo" {
-            assert_eq!(
-                argv[1..4],
-                ["--insecure-policy", "copy", "--preserve-digests"]
-            );
-            let view = PathBuf::from(
-                argv[4]
-                    .strip_prefix("oci:")
-                    .unwrap()
-                    .strip_suffix(":target")
-                    .unwrap(),
-            );
-            assert!(view.join("blobs").is_symlink());
-            let index: Value =
-                serde_json::from_str(&fs::read_to_string(view.join("index.json")).unwrap())
-                    .unwrap();
-            assert_eq!(index["manifests"].as_array().unwrap().len(), 1);
-            assert_eq!(
-                index["manifests"][0]["annotations"]["org.opencontainers.image.ref.name"],
-                "target"
-            );
-            assert_eq!(
-                argv[5],
-                format!(
-                    "containers-storage:localhost/tilo-offline-target:{}",
-                    &expected_digest[7..]
-                )
-            );
-            return Ok(String::new());
-        }
-        if argv.iter().any(|word| word == "{{.Id}}") {
-            return Ok(id.clone());
-        }
-        if argv.iter().any(|word| word == "{{.Digest}}") {
-            assert_eq!(argv.last().unwrap(), &id);
-            return Ok(expected_digest.clone());
-        }
-        assert_eq!(argv[0..2], ["podman", "run"]);
-        assert!(argv.iter().any(|word| word == "--network=none"));
-        let origin = update();
-        assert_eq!(
-            argv[argv.len() - 5..],
-            [
-                "--entrypoint",
-                "/usr/libexec/tilo-board-successor",
-                id.as_str(),
-                "install-update-origin",
-                origin.as_str(),
-            ]
-        );
-        Ok(String::new())
-    });
-    assert_eq!(import_image(&host).unwrap(), image_id);
-    assert!(
-        !host
-            .calls
-            .borrow()
-            .iter()
-            .any(|argv| argv.iter().any(|w| w == "load"))
-    );
-
-    let host = Fixture {
-        queue: RefCell::new(
-            [
-                String::new(),
-                image_id,
-                format!("sha256:{}", "f".repeat(64)),
-            ]
-            .into(),
-        ),
-        ..Fixture::new(dir.path())
-    };
-    let error = import_image(&host).unwrap_err();
-    assert!(error.0.contains("manifest differs"), "{error}");
-}
-
 fn development_transport(dir: &Path, target: &mut Target) {
     let blobs = target.root.join("oci/blobs/sha256");
     let blob = |data: Value| {
@@ -333,305 +242,404 @@ fn development_transport(dir: &Path, target: &mut Target) {
     let _ = dir;
 }
 
-#[test]
-fn the_receipt_names_the_verified_origin_and_target_kind() {
-    let dir = tempfile::tempdir().unwrap();
-    let host = Fixture::new(dir.path());
-    let error = receipt_facts(&host).unwrap_err();
-    assert!(error.0.contains("no verified preflight"), "{error}");
-    fs::create_dir(dir.path().join("run")).unwrap();
-    let mut target = fixture(dir.path());
-    let write = |metadata: &Map<String, Value>| {
-        fs::write(host.receipt(), Value::Object(metadata.clone()).to_string()).unwrap();
-    };
-    write(&target.metadata);
-    assert_eq!(
-        receipt_facts(&host).unwrap(),
-        format!("UPDATE_ORIGIN={}\nDEVELOPMENT=0", update())
-    );
-    development_transport(dir.path(), &mut target);
-    write(&target.metadata);
-    assert!(receipt_facts(&host).unwrap().ends_with("\nDEVELOPMENT=1"));
-    for origin in [Value::Null, json!(""), json!("a\nDEVELOPMENT=1")] {
-        let mut metadata = target.metadata.clone();
-        metadata.insert("update_origin".into(), origin);
-        write(&metadata);
-        assert!(receipt_facts(&host).is_err());
+tilo_test_env::scenario! {
+    fn an_offline_target_is_authenticated;
+
+    phase manifest_signature_and_slsa_bind_selected_target;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let target = fixture(dir.path());
+        fs::write(dir.path().join("cosign.pub"), "test public key").unwrap();
+        fs::write(dir.path().join("cosign"), "test").unwrap();
+        let host = Fixture {
+            queue: RefCell::new([target.signature.clone(), target.attestation.clone()].into()),
+            ..Fixture::new(dir.path())
+        };
+        let result = verify(&host).unwrap();
+        assert_eq!(result["target_digest"], target.metadata["target_digest"]);
+        assert_eq!(result["provenance"]["source_revision"], SOURCE);
+        assert_eq!(result["provenance"]["invocation_id"], "12345");
+        assert_eq!(result["provenance"]["generation"], 1);
+        assert_eq!(result["verifier_key_sha256"], sha256(b"test public key"));
+        let receipt: Value =
+            serde_json::from_str(&fs::read_to_string(host.receipt()).unwrap()).unwrap();
+        assert_eq!(receipt["update_origin"], update());
+        let calls = host.calls.borrow();
+        assert_eq!(calls[0][1..4], ["verify", "--offline", "--key"]);
+        assert_eq!(calls[1][1..3], ["verify-attestation", "--offline"]);
+    }
+
+    phase generic_child_binds_signed_generation_origin;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut target = fixture(dir.path());
+        let digest = digest_of(&target.metadata);
+        target
+            .metadata
+            .insert("hardware_profile".into(), json!("generic"));
+        target.metadata.insert(
+            "target_ref".into(),
+            json!(format!("registry.tilo.so/tilo/tilo@{digest}")),
+        );
+        target.metadata.insert(
+            "update_origin".into(),
+            json!("registry.tilo.so/tilo/tilo:gen2"),
+        );
+        write_metadata(&target.root, &target.metadata);
+        read_target(&Fixture::new(dir.path()), &target.root).unwrap();
+        let mut statement = statement(&digest);
+        let definition = &mut statement["predicate"]["buildDefinition"];
+        definition["externalParameters"] = json!({"generation": 2});
+        definition["resolvedDependencies"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        let signed = json!([{"payload": b64(statement.to_string().as_bytes())}]).to_string();
+        let provenance = checked_provenance(&signed, &target.metadata).unwrap();
+        assert_eq!(provenance["generation"], 2);
+        assert_eq!(provenance["firmware_candidate"], Value::Null);
+        target.metadata.insert(
+            "update_origin".into(),
+            json!("registry.tilo.so/tilo/tilo:gen3"),
+        );
+        let error = checked_provenance(&signed, &target.metadata).unwrap_err();
+        assert!(error.0.contains("SLSA"), "{error}");
+    }
+
+    phase tampered_manifest_or_origin_fails;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut target = fixture(dir.path());
+        let host = Fixture::new(dir.path());
+        let blob = target
+            .root
+            .join("oci/blobs/sha256")
+            .join(&digest_of(&target.metadata)[7..]);
+        let original = fs::read(&blob).unwrap();
+        fs::write(&blob, [original.as_slice(), b"x"].concat()).unwrap();
+        let error = read_target(&host, &target.root).unwrap_err();
+        assert!(error.0.contains("manifest differs"), "{error}");
+        fs::write(&blob, &original).unwrap();
+        let mut origin = update();
+        origin.pop();
+        origin.push('b');
+        target
+            .metadata
+            .insert("update_origin".into(), json!(origin));
+        let error = checked_provenance(&target.attestation, &target.metadata).unwrap_err();
+        assert!(error.0.contains("SLSA"), "{error}");
+    }
+
+    phase ambiguous_or_unsigned_target_fails;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let target = fixture(dir.path());
+        let index_path = target.root.join("oci/index.json");
+        let mut index: Value = serde_json::from_str(&fs::read_to_string(&index_path).unwrap()).unwrap();
+        let first = index["manifests"][0].clone();
+        index["manifests"].as_array_mut().unwrap().push(first);
+        fs::write(&index_path, index.to_string()).unwrap();
+        let error = read_target(&Fixture::new(dir.path()), &target.root).unwrap_err();
+        assert!(error.0.contains("unique target"), "{error}");
+        index["manifests"].as_array_mut().unwrap().pop();
+        fs::write(&index_path, index.to_string()).unwrap();
+        fs::write(dir.path().join("cosign.pub"), "test public key").unwrap();
+        fs::write(dir.path().join("cosign"), "test").unwrap();
+        let wrong = json!([{"critical": {"image": {
+            "docker-manifest-digest": format!("sha256:{}", "f".repeat(64))}}}])
+        .to_string();
+        let mut host = Fixture::new(dir.path());
+        host.respond = Box::new(move |_| Ok(wrong.clone()));
+        let error = verify(&host).unwrap_err();
+        assert!(error.0.contains("signature does not bind"), "{error}");
+        assert!(!host.receipt().exists());
+    }
+
+    phase tampered_config_fails_before_disk_work;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let target = fixture(dir.path());
+        let blobs = target.root.join("oci/blobs/sha256");
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(blobs.join(&digest_of(&target.metadata)[7..])).unwrap())
+                .unwrap();
+        let config_path = blobs.join(&manifest["config"]["digest"].as_str().unwrap()[7..]);
+        let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+        config["architecture"] = json!("amd64");
+        fs::write(&config_path, config.to_string()).unwrap();
+        let error = read_target(&Fixture::new(dir.path()), &target.root).unwrap_err();
+        assert!(error.0.contains("config differs"), "{error}");
     }
 }
 
-#[test]
-fn development_transport_requires_the_vm_gate() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut target = fixture(dir.path());
-    development_transport(dir.path(), &mut target);
-    let host = Fixture::new(dir.path());
-    let error = read_target(&host, &target.root).unwrap_err();
-    assert!(error.0.contains("development VM installer"), "{error}");
-    fs::write(dir.path().join("vm-marker"), "VM-only").unwrap();
-    fs::write(dir.path().join("flavour"), "dev\n").unwrap();
-    let mut host = Fixture::new(dir.path());
-    host.proof_port = true;
-    host.respond = Box::new(|_| Ok(String::new()));
-    let (selected, _) = read_target(&host, &target.root).unwrap();
-    assert_eq!(selected, target.metadata);
-    assert_eq!(
-        *host.calls.borrow(),
-        [vec!["systemd-detect-virt", "--vm", "--quiet"]]
-    );
-    fs::write(dir.path().join("flavour"), "production\n").unwrap();
-    let error = read_target(&host, &target.root).unwrap_err();
-    assert!(error.0.contains("development VM installer"), "{error}");
-}
+tilo_test_env::scenario! {
+    fn an_offline_target_is_imported;
 
-#[test]
-fn development_import_validates_boot_layout_without_changing_image() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut target = fixture(dir.path());
-    development_transport(dir.path(), &mut target);
-    fs::write(dir.path().join("vm-marker"), "VM-only").unwrap();
-    fs::write(dir.path().join("flavour"), "dev\n").unwrap();
-    fs::create_dir(dir.path().join("run")).unwrap();
-    let mounted = dir.path().join("mounted");
-    fs::create_dir(&mounted).unwrap();
-    let image_id = format!("sha256:{}", "e".repeat(64));
-    let digest = digest_of(&target.metadata);
-    let mut host = Fixture::new(dir.path());
-    host.proof_port = true;
-    fs::write(
-        host.receipt(),
-        Value::Object(target.metadata.clone()).to_string(),
-    )
-    .unwrap();
-    let (id, mount) = (image_id.clone(), mounted.to_string_lossy().into_owned());
-    host.respond = Box::new(move |argv| {
-        if argv.iter().any(|word| word == "{{.Id}}") {
-            return Ok(id.clone());
-        }
-        if argv.iter().any(|word| word == "{{.Digest}}") {
-            return Ok(digest.clone());
-        }
-        if argv[..3] == ["podman", "image", "mount"] {
-            return Ok(mount.clone());
-        }
-        Ok(String::new())
-    });
-    assert_eq!(import_image(&host).unwrap(), image_id);
-    let calls = host.calls.borrow();
-    let validate: Vec<String> = [
-        "/usr/libexec/tilo-installer-offline-target",
-        "dev-target-uki",
-        "validate-image",
-        "--image-root",
-        &mounted.to_string_lossy(),
-    ]
-    .iter()
-    .map(|word| (*word).to_owned())
-    .collect();
-    assert!(calls.contains(&validate), "{calls:?}");
-    assert!(calls.contains(&vec![
-        "podman".to_owned(),
-        "image".into(),
-        "unmount".into(),
-        image_id
-    ]));
-    assert!(!calls.iter().any(|argv| {
-        argv.iter()
-            .any(|word| word == "commit" || word == "build" || word == "push")
-    }));
-}
-
-#[test]
-fn command_failure_retains_exit_status_without_arguments() {
-    struct Real;
-    impl Host for Real {}
-    let failed = Real
-        .run(
-            &["sh", "-c", "exit 125", "private-argument"],
-            Duration::from_secs(5),
+    phase direct_import_preserves_digest_and_uses_immutable_id;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let target = fixture(dir.path());
+        let mut host = Fixture::new(dir.path());
+        fs::create_dir(dir.path().join("run")).unwrap();
+        fs::write(
+            host.receipt(),
+            Value::Object(target.metadata.clone()).to_string(),
         )
-        .unwrap_err();
-    assert_eq!(failed.0, "sh failed (exit 125): no diagnostic stderr");
-    let signalled = Real
-        .run(
-            &["sh", "-c", "kill -9 $$", "private-argument"],
-            Duration::from_secs(5),
+        .unwrap();
+        let image_id = format!("sha256:{}", "e".repeat(64));
+        let digest = digest_of(&target.metadata);
+        let (id, expected_digest) = (image_id.clone(), digest);
+        host.respond = Box::new(move |argv| {
+            if argv[0] == "skopeo" {
+                assert_eq!(
+                    argv[1..4],
+                    ["--insecure-policy", "copy", "--preserve-digests"]
+                );
+                let view = PathBuf::from(
+                    argv[4]
+                        .strip_prefix("oci:")
+                        .unwrap()
+                        .strip_suffix(":target")
+                        .unwrap(),
+                );
+                assert!(view.join("blobs").is_symlink());
+                let index: Value =
+                    serde_json::from_str(&fs::read_to_string(view.join("index.json")).unwrap())
+                        .unwrap();
+                assert_eq!(index["manifests"].as_array().unwrap().len(), 1);
+                assert_eq!(
+                    index["manifests"][0]["annotations"]["org.opencontainers.image.ref.name"],
+                    "target"
+                );
+                assert_eq!(
+                    argv[5],
+                    format!(
+                        "containers-storage:localhost/tilo-offline-target:{}",
+                        &expected_digest[7..]
+                    )
+                );
+                return Ok(String::new());
+            }
+            if argv.iter().any(|word| word == "{{.Id}}") {
+                return Ok(id.clone());
+            }
+            if argv.iter().any(|word| word == "{{.Digest}}") {
+                assert_eq!(argv.last().unwrap(), &id);
+                return Ok(expected_digest.clone());
+            }
+            assert_eq!(argv[0..2], ["podman", "run"]);
+            assert!(argv.iter().any(|word| word == "--network=none"));
+            let origin = update();
+            assert_eq!(
+                argv[argv.len() - 5..],
+                [
+                    "--entrypoint",
+                    "/usr/libexec/tilo-board-successor",
+                    id.as_str(),
+                    "install-update-origin",
+                    origin.as_str(),
+                ]
+            );
+            Ok(String::new())
+        });
+        assert_eq!(import_image(&host).unwrap(), image_id);
+        assert!(
+            !host
+                .calls
+                .borrow()
+                .iter()
+                .any(|argv| argv.iter().any(|w| w == "load"))
+        );
+
+        let host = Fixture {
+            queue: RefCell::new(
+                [
+                    String::new(),
+                    image_id,
+                    format!("sha256:{}", "f".repeat(64)),
+                ]
+                .into(),
+            ),
+            ..Fixture::new(dir.path())
+        };
+        let error = import_image(&host).unwrap_err();
+        assert!(error.0.contains("manifest differs"), "{error}");
+    }
+
+    phase the_receipt_names_the_verified_origin_and_target_kind;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Fixture::new(dir.path());
+        let error = receipt_facts(&host).unwrap_err();
+        assert!(error.0.contains("no verified preflight"), "{error}");
+        fs::create_dir(dir.path().join("run")).unwrap();
+        let mut target = fixture(dir.path());
+        let write = |metadata: &Map<String, Value>| {
+            fs::write(host.receipt(), Value::Object(metadata.clone()).to_string()).unwrap();
+        };
+        write(&target.metadata);
+        assert_eq!(
+            receipt_facts(&host).unwrap(),
+            format!("UPDATE_ORIGIN={}\nDEVELOPMENT=0", update())
+        );
+        development_transport(dir.path(), &mut target);
+        write(&target.metadata);
+        assert!(receipt_facts(&host).unwrap().ends_with("\nDEVELOPMENT=1"));
+        for origin in [Value::Null, json!(""), json!("a\nDEVELOPMENT=1")] {
+            let mut metadata = target.metadata.clone();
+            metadata.insert("update_origin".into(), origin);
+            write(&metadata);
+            assert!(receipt_facts(&host).is_err());
+        }
+    }
+
+    phase development_transport_requires_the_vm_gate;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut target = fixture(dir.path());
+        development_transport(dir.path(), &mut target);
+        let host = Fixture::new(dir.path());
+        let error = read_target(&host, &target.root).unwrap_err();
+        assert!(error.0.contains("development VM installer"), "{error}");
+        fs::write(dir.path().join("vm-marker"), "VM-only").unwrap();
+        fs::write(dir.path().join("flavour"), "dev\n").unwrap();
+        let mut host = Fixture::new(dir.path());
+        host.proof_port = true;
+        host.respond = Box::new(|_| Ok(String::new()));
+        let (selected, _) = read_target(&host, &target.root).unwrap();
+        assert_eq!(selected, target.metadata);
+        assert_eq!(
+            *host.calls.borrow(),
+            [vec!["systemd-detect-virt", "--vm", "--quiet"]]
+        );
+        fs::write(dir.path().join("flavour"), "production\n").unwrap();
+        let error = read_target(&host, &target.root).unwrap_err();
+        assert!(error.0.contains("development VM installer"), "{error}");
+    }
+
+    phase development_import_validates_boot_layout_without_changing_image;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut target = fixture(dir.path());
+        development_transport(dir.path(), &mut target);
+        fs::write(dir.path().join("vm-marker"), "VM-only").unwrap();
+        fs::write(dir.path().join("flavour"), "dev\n").unwrap();
+        fs::create_dir(dir.path().join("run")).unwrap();
+        let mounted = dir.path().join("mounted");
+        fs::create_dir(&mounted).unwrap();
+        let image_id = format!("sha256:{}", "e".repeat(64));
+        let digest = digest_of(&target.metadata);
+        let mut host = Fixture::new(dir.path());
+        host.proof_port = true;
+        fs::write(
+            host.receipt(),
+            Value::Object(target.metadata.clone()).to_string(),
         )
-        .unwrap_err();
-    assert!(signalled.0.starts_with("sh failed (exit -"), "{signalled}");
-    assert!(!signalled.0.contains("private-argument"));
-    let stderr = Real
-        .run(
-            &["sh", "-c", "echo '  why  ' >&2; exit 3"],
-            Duration::from_secs(5),
+        .unwrap();
+        let (id, mount) = (image_id.clone(), mounted.to_string_lossy().into_owned());
+        host.respond = Box::new(move |argv| {
+            if argv.iter().any(|word| word == "{{.Id}}") {
+                return Ok(id.clone());
+            }
+            if argv.iter().any(|word| word == "{{.Digest}}") {
+                return Ok(digest.clone());
+            }
+            if argv[..3] == ["podman", "image", "mount"] {
+                return Ok(mount.clone());
+            }
+            Ok(String::new())
+        });
+        assert_eq!(import_image(&host).unwrap(), image_id);
+        let calls = host.calls.borrow();
+        let validate: Vec<String> = [
+            "/usr/libexec/tilo-installer-offline-target",
+            "dev-target-uki",
+            "validate-image",
+            "--image-root",
+            &mounted.to_string_lossy(),
+        ]
+        .iter()
+        .map(|word| (*word).to_owned())
+        .collect();
+        assert!(calls.contains(&validate), "{calls:?}");
+        assert!(calls.contains(&vec![
+            "podman".to_owned(),
+            "image".into(),
+            "unmount".into(),
+            image_id
+        ]));
+        assert!(!calls.iter().any(|argv| {
+            argv.iter()
+                .any(|word| word == "commit" || word == "build" || word == "push")
+        }));
+    }
+
+    phase command_failure_retains_exit_status_without_arguments;
+    {
+        struct Real;
+        impl Host for Real {}
+        let failed = Real
+            .run(
+                &["sh", "-c", "exit 125", "private-argument"],
+                Duration::from_secs(5),
+            )
+            .unwrap_err();
+        assert_eq!(failed.0, "sh failed (exit 125): no diagnostic stderr");
+        let signalled = Real
+            .run(
+                &["sh", "-c", "kill -9 $$", "private-argument"],
+                Duration::from_secs(5),
+            )
+            .unwrap_err();
+        assert!(signalled.0.starts_with("sh failed (exit -"), "{signalled}");
+        assert!(!signalled.0.contains("private-argument"));
+        let stderr = Real
+            .run(
+                &["sh", "-c", "echo '  why  ' >&2; exit 3"],
+                Duration::from_secs(5),
+            )
+            .unwrap_err();
+        assert_eq!(stderr.0, "sh failed (exit 3): why");
+    }
+
+    phase import_rejects_metadata_changed_after_preflight;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut target = fixture(dir.path());
+        let host = Fixture::new(dir.path());
+        fs::create_dir(dir.path().join("run")).unwrap();
+        fs::write(
+            host.receipt(),
+            Value::Object(target.metadata.clone()).to_string(),
         )
-        .unwrap_err();
-    assert_eq!(stderr.0, "sh failed (exit 3): why");
-}
+        .unwrap();
+        let mut origin = update();
+        origin.pop();
+        origin.push('b');
+        target
+            .metadata
+            .insert("update_origin".into(), json!(origin));
+        write_metadata(&target.root, &target.metadata);
+        // The changed origin no longer names a supported child, or differs from the
+        // receipt: either way nothing runs.
+        let error = import_image(&host).unwrap_err();
+        assert!(
+            error.0.contains("changed after verified preflight"),
+            "{error}"
+        );
+        assert!(host.calls.borrow().is_empty());
+    }
 
-#[test]
-fn manifest_signature_and_slsa_bind_selected_target() {
-    let dir = tempfile::tempdir().unwrap();
-    let target = fixture(dir.path());
-    fs::write(dir.path().join("cosign.pub"), "test public key").unwrap();
-    fs::write(dir.path().join("cosign"), "test").unwrap();
-    let host = Fixture {
-        queue: RefCell::new([target.signature.clone(), target.attestation.clone()].into()),
-        ..Fixture::new(dir.path())
-    };
-    let result = verify(&host).unwrap();
-    assert_eq!(result["target_digest"], target.metadata["target_digest"]);
-    assert_eq!(result["provenance"]["source_revision"], SOURCE);
-    assert_eq!(result["provenance"]["invocation_id"], "12345");
-    assert_eq!(result["provenance"]["generation"], 1);
-    assert_eq!(result["verifier_key_sha256"], sha256(b"test public key"));
-    let receipt: Value =
-        serde_json::from_str(&fs::read_to_string(host.receipt()).unwrap()).unwrap();
-    assert_eq!(receipt["update_origin"], update());
-    let calls = host.calls.borrow();
-    assert_eq!(calls[0][1..4], ["verify", "--offline", "--key"]);
-    assert_eq!(calls[1][1..3], ["verify-attestation", "--offline"]);
-}
-
-#[test]
-fn generic_child_binds_signed_generation_origin() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut target = fixture(dir.path());
-    let digest = digest_of(&target.metadata);
-    target
-        .metadata
-        .insert("hardware_profile".into(), json!("generic"));
-    target.metadata.insert(
-        "target_ref".into(),
-        json!(format!("registry.tilo.so/tilo/tilo@{digest}")),
-    );
-    target.metadata.insert(
-        "update_origin".into(),
-        json!("registry.tilo.so/tilo/tilo:gen2"),
-    );
-    write_metadata(&target.root, &target.metadata);
-    read_target(&Fixture::new(dir.path()), &target.root).unwrap();
-    let mut statement = statement(&digest);
-    let definition = &mut statement["predicate"]["buildDefinition"];
-    definition["externalParameters"] = json!({"generation": 2});
-    definition["resolvedDependencies"]
-        .as_array_mut()
-        .unwrap()
-        .pop();
-    let signed = json!([{"payload": b64(statement.to_string().as_bytes())}]).to_string();
-    let provenance = checked_provenance(&signed, &target.metadata).unwrap();
-    assert_eq!(provenance["generation"], 2);
-    assert_eq!(provenance["firmware_candidate"], Value::Null);
-    target.metadata.insert(
-        "update_origin".into(),
-        json!("registry.tilo.so/tilo/tilo:gen3"),
-    );
-    let error = checked_provenance(&signed, &target.metadata).unwrap_err();
-    assert!(error.0.contains("SLSA"), "{error}");
-}
-
-#[test]
-fn tampered_manifest_or_origin_fails() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut target = fixture(dir.path());
-    let host = Fixture::new(dir.path());
-    let blob = target
-        .root
-        .join("oci/blobs/sha256")
-        .join(&digest_of(&target.metadata)[7..]);
-    let original = fs::read(&blob).unwrap();
-    fs::write(&blob, [original.as_slice(), b"x"].concat()).unwrap();
-    let error = read_target(&host, &target.root).unwrap_err();
-    assert!(error.0.contains("manifest differs"), "{error}");
-    fs::write(&blob, &original).unwrap();
-    let mut origin = update();
-    origin.pop();
-    origin.push('b');
-    target
-        .metadata
-        .insert("update_origin".into(), json!(origin));
-    let error = checked_provenance(&target.attestation, &target.metadata).unwrap_err();
-    assert!(error.0.contains("SLSA"), "{error}");
-}
-
-#[test]
-fn ambiguous_or_unsigned_target_fails() {
-    let dir = tempfile::tempdir().unwrap();
-    let target = fixture(dir.path());
-    let index_path = target.root.join("oci/index.json");
-    let mut index: Value = serde_json::from_str(&fs::read_to_string(&index_path).unwrap()).unwrap();
-    let first = index["manifests"][0].clone();
-    index["manifests"].as_array_mut().unwrap().push(first);
-    fs::write(&index_path, index.to_string()).unwrap();
-    let error = read_target(&Fixture::new(dir.path()), &target.root).unwrap_err();
-    assert!(error.0.contains("unique target"), "{error}");
-    index["manifests"].as_array_mut().unwrap().pop();
-    fs::write(&index_path, index.to_string()).unwrap();
-    fs::write(dir.path().join("cosign.pub"), "test public key").unwrap();
-    fs::write(dir.path().join("cosign"), "test").unwrap();
-    let wrong = json!([{"critical": {"image": {
-        "docker-manifest-digest": format!("sha256:{}", "f".repeat(64))}}}])
-    .to_string();
-    let mut host = Fixture::new(dir.path());
-    host.respond = Box::new(move |_| Ok(wrong.clone()));
-    let error = verify(&host).unwrap_err();
-    assert!(error.0.contains("signature does not bind"), "{error}");
-    assert!(!host.receipt().exists());
-}
-
-#[test]
-fn tampered_config_fails_before_disk_work() {
-    let dir = tempfile::tempdir().unwrap();
-    let target = fixture(dir.path());
-    let blobs = target.root.join("oci/blobs/sha256");
-    let manifest: Value =
-        serde_json::from_slice(&fs::read(blobs.join(&digest_of(&target.metadata)[7..])).unwrap())
-            .unwrap();
-    let config_path = blobs.join(&manifest["config"]["digest"].as_str().unwrap()[7..]);
-    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
-    config["architecture"] = json!("amd64");
-    fs::write(&config_path, config.to_string()).unwrap();
-    let error = read_target(&Fixture::new(dir.path()), &target.root).unwrap_err();
-    assert!(error.0.contains("config differs"), "{error}");
-}
-
-#[test]
-fn import_rejects_metadata_changed_after_preflight() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut target = fixture(dir.path());
-    let host = Fixture::new(dir.path());
-    fs::create_dir(dir.path().join("run")).unwrap();
-    fs::write(
-        host.receipt(),
-        Value::Object(target.metadata.clone()).to_string(),
-    )
-    .unwrap();
-    let mut origin = update();
-    origin.pop();
-    origin.push('b');
-    target
-        .metadata
-        .insert("update_origin".into(), json!(origin));
-    write_metadata(&target.root, &target.metadata);
-    // The changed origin no longer names a supported child, or differs from the
-    // receipt: either way nothing runs.
-    let error = import_image(&host).unwrap_err();
-    assert!(
-        error.0.contains("changed after verified preflight"),
-        "{error}"
-    );
-    assert!(host.calls.borrow().is_empty());
-}
-
-#[test]
-fn the_installer_runs_the_compiled_helper() {
-    let backend = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/usr/libexec/tilo-install"),
-    )
-    .unwrap();
-    assert!(backend.contains("LOCAL_IMG=\"$(/usr/libexec/tilo-installer-offline-target import)\""));
-    assert!(backend.contains("/usr/libexec/tilo-installer-offline-target verify >/dev/null"));
-    assert!(backend.contains("\"$(/usr/libexec/tilo-installer-offline-target receipt)\""));
-    assert!(!backend.contains("tilo-installer-offline-target.py"));
-    let _ = Error::new("");
+    phase the_installer_runs_the_compiled_helper;
+    {
+        let backend = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/usr/libexec/tilo-install"),
+        )
+        .unwrap();
+        assert!(backend.contains("LOCAL_IMG=\"$(/usr/libexec/tilo-installer-offline-target import)\""));
+        assert!(backend.contains("/usr/libexec/tilo-installer-offline-target verify >/dev/null"));
+        assert!(backend.contains("\"$(/usr/libexec/tilo-installer-offline-target receipt)\""));
+        assert!(!backend.contains("tilo-installer-offline-target.py"));
+        let _ = Error::new("");
+    }
 }

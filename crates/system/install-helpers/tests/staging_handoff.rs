@@ -370,33 +370,6 @@ fn facts(outcome: &Outcome) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
-#[test]
-fn exact_staged_plan_is_accepted_and_reports_its_facts() {
-    let fixture = Fixture::new();
-    let result = fixture.check("guided", &[]);
-    assert_eq!(result.code, 0, "{result:?}");
-    let facts = facts(&result);
-    assert_eq!(facts["INTERNAL_OWNED_BOOT_ENTRY"], "0104");
-    assert_eq!(facts["INTERNAL_DISK_GUID"], DISK_GUID);
-    assert_eq!(facts["INTERNAL_STAGING_ROOT_PARTUUID"], ROOT_UUID);
-    assert_eq!(facts["INTERNAL_STAGING_ESP_PARTUUID"], ESP_UUID);
-    assert_eq!(facts["INTERNAL_HOST_OS"], "windows");
-    assert_eq!(
-        result
-            .stdout
-            .lines()
-            .map(|l| l.split('=').next().unwrap())
-            .collect::<Vec<_>>(),
-        [
-            "INTERNAL_DISK_GUID",
-            "INTERNAL_HOST_OS",
-            "INTERNAL_OWNED_BOOT_ENTRY",
-            "INTERNAL_STAGING_ESP_PARTUUID",
-            "INTERNAL_STAGING_ROOT_PARTUUID"
-        ]
-    );
-}
-
 /// lsblk without a udev database: every GPT identity field is empty, and sfdisk
 /// reports the GPT itself.
 fn udevless(fixture: &Fixture, edit: impl Fn(&mut Value)) {
@@ -420,250 +393,289 @@ fn udevless(fixture: &Fixture, edit: impl Fn(&mut Value)) {
     *fixture.sfdisk.borrow_mut() = Some(table);
 }
 
-#[test]
-fn identities_missing_from_lsblk_are_read_from_the_gpt() {
-    // Catches the guard depending on udev: in a container or early boot lsblk
-    // reports no GPT identities, and the facts must then come from the GPT.
-    let fixture = Fixture::new();
-    udevless(&fixture, |_| {});
-    let result = fixture.check("guided", &[]);
-    assert_eq!(result.code, 0, "{result:?}");
-    assert!(
-        result
-            .stdout
-            .contains(&format!("INTERNAL_DISK_GUID={DISK_GUID}"))
-    );
-}
+tilo_test_env::scenario! {
+    fn a_staged_plan_is_read_and_accepted;
 
-#[test]
-fn a_gpt_that_disagrees_with_lsblk_is_refused() {
-    let fixture = Fixture::new();
-    udevless(&fixture, |table| {
-        table["id"] = json!("99999999-2222-4333-8444-555555555555");
-    });
-    assert_refused(&fixture.check("guided", &[]), "disk GUID differs");
-}
-
-#[test]
-fn strict_parser_rejects_unknown_duplicate_and_malformed_fields() {
-    let fixture = Fixture::new();
-    let mut cases = Vec::new();
-    let mut extra = handoff_document();
-    extra["target_disk"] = json!(DISK);
-    cases.push(extra.to_string());
-    let plain = handoff_document().to_string();
-    cases.push(format!("{}, \"schema\": 1}}", &plain[..plain.len() - 1]));
-    let mut bad_entry = handoff_document();
-    bad_entry["owned_boot_entry"] = json!("0104; reboot");
-    cases.push(bad_entry.to_string());
-    let mut profile = handoff_document();
-    profile["profile"]["password"] = json!("secret");
-    cases.push(profile.to_string());
-    let mut in_order = handoff_document();
-    in_order["original_boot_order"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!("0104"));
-    cases.push(in_order.to_string());
-    let mut boolean = handoff_document();
-    boolean["disk_size_bytes"] = json!(true);
-    cases.push(boolean.to_string());
-    cases.push(format!("{plain}{}", " ".repeat(64 * 1024)));
-    for text in &cases {
-        fixture.set_handoff_text(text, false);
+    phase exact_staged_plan_is_accepted_and_reports_its_facts;
+    {
+        let fixture = Fixture::new();
+        let result = fixture.check("guided", &[]);
+        assert_eq!(result.code, 0, "{result:?}");
+        let facts = facts(&result);
+        assert_eq!(facts["INTERNAL_OWNED_BOOT_ENTRY"], "0104");
+        assert_eq!(facts["INTERNAL_DISK_GUID"], DISK_GUID);
+        assert_eq!(facts["INTERNAL_STAGING_ROOT_PARTUUID"], ROOT_UUID);
+        assert_eq!(facts["INTERNAL_STAGING_ESP_PARTUUID"], ESP_UUID);
+        assert_eq!(facts["INTERNAL_HOST_OS"], "windows");
         assert_eq!(
-            fixture.check("guided", &[]).code,
-            1,
-            "{}",
-            &text[..200.min(text.len())]
+            result
+                .stdout
+                .lines()
+                .map(|l| l.split('=').next().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "INTERNAL_DISK_GUID",
+                "INTERNAL_HOST_OS",
+                "INTERNAL_OWNED_BOOT_ENTRY",
+                "INTERNAL_STAGING_ESP_PARTUUID",
+                "INTERNAL_STAGING_ROOT_PARTUUID"
+            ]
+        );
+    }
+
+    phase identities_missing_from_lsblk_are_read_from_the_gpt;
+    {
+        // Catches the guard depending on udev: in a container or early boot lsblk
+        // reports no GPT identities, and the facts must then come from the GPT.
+        let fixture = Fixture::new();
+        udevless(&fixture, |_| {});
+        let result = fixture.check("guided", &[]);
+        assert_eq!(result.code, 0, "{result:?}");
+        assert!(
+            result
+                .stdout
+                .contains(&format!("INTERNAL_DISK_GUID={DISK_GUID}"))
+        );
+    }
+
+    phase a_gpt_that_disagrees_with_lsblk_is_refused;
+    {
+        let fixture = Fixture::new();
+        udevless(&fixture, |table| {
+            table["id"] = json!("99999999-2222-4333-8444-555555555555");
+        });
+        assert_refused(&fixture.check("guided", &[]), "disk GUID differs");
+    }
+
+    phase strict_parser_rejects_unknown_duplicate_and_malformed_fields;
+    {
+        let fixture = Fixture::new();
+        let mut cases = Vec::new();
+        let mut extra = handoff_document();
+        extra["target_disk"] = json!(DISK);
+        cases.push(extra.to_string());
+        let plain = handoff_document().to_string();
+        cases.push(format!("{}, \"schema\": 1}}", &plain[..plain.len() - 1]));
+        let mut bad_entry = handoff_document();
+        bad_entry["owned_boot_entry"] = json!("0104; reboot");
+        cases.push(bad_entry.to_string());
+        let mut profile = handoff_document();
+        profile["profile"]["password"] = json!("secret");
+        cases.push(profile.to_string());
+        let mut in_order = handoff_document();
+        in_order["original_boot_order"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("0104"));
+        cases.push(in_order.to_string());
+        let mut boolean = handoff_document();
+        boolean["disk_size_bytes"] = json!(true);
+        cases.push(boolean.to_string());
+        cases.push(format!("{plain}{}", " ".repeat(64 * 1024)));
+        for text in &cases {
+            fixture.set_handoff_text(text, false);
+            assert_eq!(
+                fixture.check("guided", &[]).code,
+                1,
+                "{}",
+                &text[..200.min(text.len())]
+            );
+        }
+    }
+
+    phase refusals_name_invalid_fields_with_bounded_diagnostics;
+    {
+        let fixture = Fixture::new();
+        let plain = handoff_document().to_string();
+        fixture.set_handoff_text(
+            &format!("{}, \"schema\": 1}}", &plain[..plain.len() - 1]),
+            false,
+        );
+        assert_refused(
+            &fixture.check("guided", &[]),
+            "handoff repeats the field 'schema'",
+        );
+        fixture.set_handoff_text(&format!("{plain}{}", " ".repeat(64 * 1024)), false);
+        assert_refused(&fixture.check("guided", &[]), "is larger than 65536 bytes");
+        let mut document = handoff_document();
+        document["staging_root"]["partuuid"] = json!(ESP_UUID);
+        fixture.set_handoff(&document, false);
+        assert_refused(
+            &fixture.check("guided", &[]),
+            "handoff GUIDs are not distinct",
+        );
+        let mut document = handoff_document();
+        document["staging_esp"]["last_lba"] = json!(1);
+        fixture.set_handoff(&document, false);
+        assert_refused(
+            &fixture.check("guided", &[]),
+            "handoff field staging_esp ends before it starts",
+        );
+        let mut document = handoff_document();
+        document["profile"]["hostname"] = json!("h".repeat(257));
+        fixture.set_handoff(&document, false);
+        assert_refused(
+            &fixture.check("guided", &[]),
+            // The shared native profile parser names the same invalid field, rather than
+            // repeating the Python parser's size-specific wording.
+            "handoff profile field hostname is not a bounded string",
         );
     }
 }
 
-#[test]
-fn refusals_name_invalid_fields_with_bounded_diagnostics() {
-    let fixture = Fixture::new();
-    let plain = handoff_document().to_string();
-    fixture.set_handoff_text(
-        &format!("{}, \"schema\": 1}}", &plain[..plain.len() - 1]),
-        false,
-    );
-    assert_refused(
-        &fixture.check("guided", &[]),
-        "handoff repeats the field 'schema'",
-    );
-    fixture.set_handoff_text(&format!("{plain}{}", " ".repeat(64 * 1024)), false);
-    assert_refused(&fixture.check("guided", &[]), "is larger than 65536 bytes");
-    let mut document = handoff_document();
-    document["staging_root"]["partuuid"] = json!(ESP_UUID);
-    fixture.set_handoff(&document, false);
-    assert_refused(
-        &fixture.check("guided", &[]),
-        "handoff GUIDs are not distinct",
-    );
-    let mut document = handoff_document();
-    document["staging_esp"]["last_lba"] = json!(1);
-    fixture.set_handoff(&document, false);
-    assert_refused(
-        &fixture.check("guided", &[]),
-        "handoff field staging_esp ends before it starts",
-    );
-    let mut document = handoff_document();
-    document["profile"]["hostname"] = json!("h".repeat(257));
-    fixture.set_handoff(&document, false);
-    assert_refused(
-        &fixture.check("guided", &[]),
-        // The shared native profile parser names the same invalid field, rather than
-        // repeating the Python parser's size-specific wording.
-        "handoff profile field hostname is not a bounded string",
-    );
-}
+tilo_test_env::scenario! {
+    fn a_plan_that_does_not_fit_the_disk_is_refused;
 
-#[test]
-fn whole_disk_and_prepared_modes_are_refused_on_the_live_disk() {
-    let fixture = Fixture::new();
-    for mode in ["erase", "prepared"] {
-        assert_refused(&fixture.check(mode, &[]), "accepts only guided alongside");
+    phase whole_disk_and_prepared_modes_are_refused_on_the_live_disk;
+    {
+        let fixture = Fixture::new();
+        for mode in ["erase", "prepared"] {
+            assert_refused(&fixture.check(mode, &[]), "accepts only guided alongside");
+        }
+        let invalid = fixture.check("other", &[]);
+        assert_eq!(invalid.code, 2);
+        assert!(
+            invalid
+                .stderr
+                .contains("argument --mode: invalid choice: 'other'")
+        );
     }
-    let invalid = fixture.check("other", &[]);
-    assert_eq!(invalid.code, 2);
-    assert!(
-        invalid
-            .stderr
-            .contains("argument --mode: invalid choice: 'other'")
-    );
+
+    phase mismatched_disk_guid_or_size_is_refused;
+    {
+        let fixture = Fixture::new();
+        let mut document = lsblk_document();
+        document["blockdevices"][0]["ptuuid"] = json!("99999999-2222-4333-8444-555555555555");
+        *fixture.lsblk.borrow_mut() = document;
+        assert_refused(&fixture.check("guided", &[]), "disk GUID differs");
+        let mut document = lsblk_document();
+        document["blockdevices"][0]["size"] = json!(DISK_SECTORS * 512 + 512);
+        *fixture.lsblk.borrow_mut() = document;
+        assert_refused(&fixture.check("guided", &[]), "disk size differs");
+    }
+
+    phase extent_that_is_no_longer_unallocated_is_refused;
+    {
+        let fixture = Fixture::new();
+        let mut document = lsblk_document();
+        document["blockdevices"][0]["children"]
+            .as_array_mut()
+            .unwrap()
+            .push(partition(
+                &format!("{DISK}p5"),
+                "00000000-0000-4000-8000-00000000000c",
+                LINUX_TYPE,
+                (TARGET.0 + 2048, TARGET.0 + 4095),
+                &[],
+            ));
+        *fixture.lsblk.borrow_mut() = document;
+        assert_refused(&fixture.check("guided", &[]), "no longer unallocated");
+    }
+
+    phase handoff_whose_extents_overlap_is_refused;
+    {
+        let fixture = Fixture::new();
+        let mut document = handoff_document();
+        document["target_extent"]["last_lba"] = json!(STAGING_ESP.0);
+        fixture.set_handoff(&document, false);
+        assert_refused(&fixture.check("guided", &[]), "overlap");
+    }
+
+    phase guided_plan_must_equal_the_staged_extent_and_end_at_staging;
+    {
+        let fixture = Fixture::new();
+        assert_refused(
+            &fixture.check(
+                "guided",
+                &[("free-start-bytes", TARGET.0 * 512 + 1024 * 1024)],
+            ),
+            "differs from the staged target extent",
+        );
+        let shorter = (TARGET.1 - TARGET.0 + 1) * 512 - 2 * GIB - 1024 * 1024;
+        assert_refused(
+            &fixture.check("guided", &[("root-size-bytes", shorter)]),
+            "end exactly where the staged installer begins",
+        );
+    }
 }
 
-#[test]
-fn mismatched_disk_guid_or_size_is_refused() {
-    let fixture = Fixture::new();
-    let mut document = lsblk_document();
-    document["blockdevices"][0]["ptuuid"] = json!("99999999-2222-4333-8444-555555555555");
-    *fixture.lsblk.borrow_mut() = document;
-    assert_refused(&fixture.check("guided", &[]), "disk GUID differs");
-    let mut document = lsblk_document();
-    document["blockdevices"][0]["size"] = json!(DISK_SECTORS * 512 + 512);
-    *fixture.lsblk.borrow_mut() = document;
-    assert_refused(&fixture.check("guided", &[]), "disk size differs");
-}
+tilo_test_env::scenario! {
+    fn a_plan_for_another_staging_medium_is_refused;
 
-#[test]
-fn extent_that_is_no_longer_unallocated_is_refused() {
-    let fixture = Fixture::new();
-    let mut document = lsblk_document();
-    document["blockdevices"][0]["children"]
-        .as_array_mut()
-        .unwrap()
-        .push(partition(
-            &format!("{DISK}p5"),
-            "00000000-0000-4000-8000-00000000000c",
-            LINUX_TYPE,
-            (TARGET.0 + 2048, TARGET.0 + 4095),
-            &[],
-        ));
-    *fixture.lsblk.borrow_mut() = document;
-    assert_refused(&fixture.check("guided", &[]), "no longer unallocated");
-}
+    phase handoff_naming_a_different_esp_than_the_booted_one_is_refused;
+    {
+        let fixture = Fixture::new();
+        fixture.set_loader("dddddddd-0000-4000-8000-000000000004");
+        assert_refused(&fixture.check("guided", &[]), "different ESP");
+    }
 
-#[test]
-fn handoff_whose_extents_overlap_is_refused() {
-    let fixture = Fixture::new();
-    let mut document = handoff_document();
-    document["target_extent"]["last_lba"] = json!(STAGING_ESP.0);
-    fixture.set_handoff(&document, false);
-    assert_refused(&fixture.check("guided", &[]), "overlap");
-}
+    phase ui_copy_must_match_the_booted_staging_esp;
+    {
+        let fixture = Fixture::new();
+        let mut document = handoff_document();
+        document["target_extent"]["first_lba"] = json!(TARGET.0 + 2048);
+        fixture.set_handoff(&document, true);
+        assert_refused(
+            &fixture.check("guided", &[]),
+            "differs from the staging ESP",
+        );
+        fs::remove_file(fixture.esp.join("EFI/tilo-staging/handoff.json")).unwrap();
+        assert_refused(&fixture.check("guided", &[]), "no longer holds a handoff");
+    }
 
-#[test]
-fn guided_plan_must_equal_the_staged_extent_and_end_at_staging() {
-    let fixture = Fixture::new();
-    assert_refused(
-        &fixture.check(
-            "guided",
-            &[("free-start-bytes", TARGET.0 * 512 + 1024 * 1024)],
-        ),
-        "differs from the staged target extent",
-    );
-    let shorter = (TARGET.1 - TARGET.0 + 1) * 512 - 2 * GIB - 1024 * 1024;
-    assert_refused(
-        &fixture.check("guided", &[("root-size-bytes", shorter)]),
-        "end exactly where the staged installer begins",
-    );
-}
+    phase live_root_elsewhere_or_foreign_mounts_are_refused;
+    {
+        let fixture = Fixture::new();
+        let mut document = lsblk_document();
+        document["blockdevices"][0]["children"][3]["mountpoints"] = json!([null]);
+        *fixture.lsblk.borrow_mut() = document;
+        assert_refused(&fixture.check("guided", &[]), "not the staging root");
+        let mut document = lsblk_document();
+        document["blockdevices"][0]["children"][1]["mountpoints"] = json!(["/mnt/windows"]);
+        *fixture.lsblk.borrow_mut() = document;
+        assert_refused(
+            &fixture.check("guided", &[]),
+            "only the staged installer may be in use",
+        );
+    }
 
-#[test]
-fn handoff_naming_a_different_esp_than_the_booted_one_is_refused() {
-    let fixture = Fixture::new();
-    fixture.set_loader("dddddddd-0000-4000-8000-000000000004");
-    assert_refused(&fixture.check("guided", &[]), "different ESP");
-}
+    phase staging_partition_with_changed_identity_is_refused;
+    {
+        let fixture = Fixture::new();
+        let mut document = lsblk_document();
+        document["blockdevices"][0]["children"][2]["parttype"] = json!(LINUX_TYPE);
+        *fixture.lsblk.borrow_mut() = document;
+        assert_refused(
+            &fixture.check("guided", &[]),
+            "staging ESP has an unexpected partition type",
+        );
+        let mut document = lsblk_document();
+        document["blockdevices"][0]["children"][3]["start"] = json!(STAGING_ROOT.0 + 2048);
+        *fixture.lsblk.borrow_mut() = document;
+        assert_refused(&fixture.check("guided", &[]), "staging root extent differs");
+        let mut document = lsblk_document();
+        document["blockdevices"][0]["children"][3]["parttype"] = json!(LINUX_TYPE);
+        *fixture.lsblk.borrow_mut() = document;
+        assert_refused(
+            &fixture.check("guided", &[]),
+            "staging root has an unexpected partition type",
+        );
+    }
 
-#[test]
-fn ui_copy_must_match_the_booted_staging_esp() {
-    let fixture = Fixture::new();
-    let mut document = handoff_document();
-    document["target_extent"]["first_lba"] = json!(TARGET.0 + 2048);
-    fixture.set_handoff(&document, true);
-    assert_refused(
-        &fixture.check("guided", &[]),
-        "differs from the staging ESP",
-    );
-    fs::remove_file(fixture.esp.join("EFI/tilo-staging/handoff.json")).unwrap();
-    assert_refused(&fixture.check("guided", &[]), "no longer holds a handoff");
-}
-
-#[test]
-fn live_root_elsewhere_or_foreign_mounts_are_refused() {
-    let fixture = Fixture::new();
-    let mut document = lsblk_document();
-    document["blockdevices"][0]["children"][3]["mountpoints"] = json!([null]);
-    *fixture.lsblk.borrow_mut() = document;
-    assert_refused(&fixture.check("guided", &[]), "not the staging root");
-    let mut document = lsblk_document();
-    document["blockdevices"][0]["children"][1]["mountpoints"] = json!(["/mnt/windows"]);
-    *fixture.lsblk.borrow_mut() = document;
-    assert_refused(
-        &fixture.check("guided", &[]),
-        "only the staged installer may be in use",
-    );
-}
-
-#[test]
-fn staging_partition_with_changed_identity_is_refused() {
-    let fixture = Fixture::new();
-    let mut document = lsblk_document();
-    document["blockdevices"][0]["children"][2]["parttype"] = json!(LINUX_TYPE);
-    *fixture.lsblk.borrow_mut() = document;
-    assert_refused(
-        &fixture.check("guided", &[]),
-        "staging ESP has an unexpected partition type",
-    );
-    let mut document = lsblk_document();
-    document["blockdevices"][0]["children"][3]["start"] = json!(STAGING_ROOT.0 + 2048);
-    *fixture.lsblk.borrow_mut() = document;
-    assert_refused(&fixture.check("guided", &[]), "staging root extent differs");
-    let mut document = lsblk_document();
-    document["blockdevices"][0]["children"][3]["parttype"] = json!(LINUX_TYPE);
-    *fixture.lsblk.borrow_mut() = document;
-    assert_refused(
-        &fixture.check("guided", &[]),
-        "staging root has an unexpected partition type",
-    );
-}
-
-#[test]
-fn check_mounts_accepts_only_the_staging_partitions_in_use() {
-    let fixture = Fixture::new();
-    let copy = fixture.copy.to_string_lossy().into_owned();
-    let result = fixture.run(&["check-mounts", "--handoff", &copy, "--disk", DISK]);
-    assert_eq!((result.code, result.stdout.as_str()), (0, ""), "{result:?}");
-    let mut document = lsblk_document();
-    document["blockdevices"][0]["children"][1]["mountpoints"] = json!(["/mnt/windows"]);
-    *fixture.lsblk.borrow_mut() = document;
-    assert_refused(
-        &fixture.run(&["check-mounts", "--handoff", &copy, "--disk", DISK]),
-        "only the staged installer may be in use",
-    );
+    phase check_mounts_accepts_only_the_staging_partitions_in_use;
+    {
+        let fixture = Fixture::new();
+        let copy = fixture.copy.to_string_lossy().into_owned();
+        let result = fixture.run(&["check-mounts", "--handoff", &copy, "--disk", DISK]);
+        assert_eq!((result.code, result.stdout.as_str()), (0, ""), "{result:?}");
+        let mut document = lsblk_document();
+        document["blockdevices"][0]["children"][1]["mountpoints"] = json!(["/mnt/windows"]);
+        *fixture.lsblk.borrow_mut() = document;
+        assert_refused(
+            &fixture.run(&["check-mounts", "--handoff", &copy, "--disk", DISK]),
+            "only the staged installer may be in use",
+        );
+    }
 }
 
 fn detect(fixture: &Fixture) -> (PathBuf, PathBuf, Outcome) {
@@ -680,53 +692,57 @@ fn detect(fixture: &Fixture) -> (PathBuf, PathBuf, Outcome) {
     (out, error, result)
 }
 
-#[test]
-fn detect_publishes_a_normalized_copy_for_the_unprivileged_ui() {
-    let fixture = Fixture::new();
-    let (out, error, result) = detect(&fixture);
-    let published: Value = serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
-    assert_eq!(published["disk_guid"], DISK_GUID);
-    assert_eq!(published["staging_esp"]["partuuid"], ESP_UUID);
-    let mode = std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&out).unwrap().permissions());
-    assert_eq!(mode & 0o777, 0o644);
-    assert!(!error.exists());
-    assert_eq!(
-        result.stdout,
-        format!("tilo-staging-handoff: staged installation for disk {DISK_GUID} recognised\n")
-    );
-    // Canonical: sorted keys, no spaces, one newline.
-    let text = fs::read_to_string(&out).unwrap();
-    assert!(text.starts_with(
-        "{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":"
-    ));
-    assert!(text.ends_with("}\n"));
-}
+tilo_test_env::scenario! {
+    fn detect_publishes_only_the_booted_handoff;
 
-#[test]
-fn usb_media_without_a_handoff_publish_nothing() {
-    let fixture = Fixture::new();
-    fs::remove_file(fixture.esp.join("EFI/tilo-staging/handoff.json")).unwrap();
-    let (out, error, _) = detect(&fixture);
-    assert!(!out.exists());
-    assert!(!error.exists());
-}
+    phase detect_publishes_a_normalized_copy_for_the_unprivileged_ui;
+    {
+        let fixture = Fixture::new();
+        let (out, error, result) = detect(&fixture);
+        let published: Value = serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(published["disk_guid"], DISK_GUID);
+        assert_eq!(published["staging_esp"]["partuuid"], ESP_UUID);
+        let mode = std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&out).unwrap().permissions());
+        assert_eq!(mode & 0o777, 0o644);
+        assert!(!error.exists());
+        assert_eq!(
+            result.stdout,
+            format!("tilo-staging-handoff: staged installation for disk {DISK_GUID} recognised\n")
+        );
+        // Canonical: sorted keys, no spaces, one newline.
+        let text = fs::read_to_string(&out).unwrap();
+        assert!(text.starts_with(
+            "{\"disk_guid\":\"11111111-2222-4333-8444-555555555555\",\"disk_size_bytes\":"
+        ));
+        assert!(text.ends_with("}\n"));
+    }
 
-#[test]
-fn handoff_naming_another_esp_is_reported_not_published() {
-    let fixture = Fixture::new();
-    fixture.set_loader("dddddddd-0000-4000-8000-000000000004");
-    let (out, error, result) = detect(&fixture);
-    assert!(!out.exists());
-    assert!(
-        fs::read_to_string(&error)
-            .unwrap()
-            .contains("different ESP")
-    );
-    assert!(
-        result
-            .stderr
-            .starts_with("tilo-staging-handoff: the staging handoff names a different ESP")
-    );
+    phase usb_media_without_a_handoff_publish_nothing;
+    {
+        let fixture = Fixture::new();
+        fs::remove_file(fixture.esp.join("EFI/tilo-staging/handoff.json")).unwrap();
+        let (out, error, _) = detect(&fixture);
+        assert!(!out.exists());
+        assert!(!error.exists());
+    }
+
+    phase handoff_naming_another_esp_is_reported_not_published;
+    {
+        let fixture = Fixture::new();
+        fixture.set_loader("dddddddd-0000-4000-8000-000000000004");
+        let (out, error, result) = detect(&fixture);
+        assert!(!out.exists());
+        assert!(
+            fs::read_to_string(&error)
+                .unwrap()
+                .contains("different ESP")
+        );
+        assert!(
+            result
+                .stderr
+                .starts_with("tilo-staging-handoff: the staging handoff names a different ESP")
+        );
+    }
 }
 
 fn finalize(fixture: &Fixture, extra: &[&str]) -> Outcome {
@@ -757,276 +773,284 @@ fn add_target_entry(fixture: &Fixture, entry_id: &str) {
     );
 }
 
-#[test]
-fn matching_owned_entry_is_deleted_and_bootnext_targets_tilo() {
-    let fixture = Fixture::new();
-    add_target_entry(&fixture, "0006");
-    let before = fixture.var("BootOrder");
-    let result = finalize(&fixture, &[]);
-    assert_eq!(result.code, 0, "{result:?}");
-    assert_eq!(fixture.var("Boot0104"), None);
-    assert_eq!(fixture.var("BootNext"), Some(ids(&["0006"])));
-    assert_eq!(
-        fixture.var("BootOrder"),
-        before,
-        "BootOrder must stay unchanged"
-    );
-    assert!(fixture.var("Boot0001").is_some());
-    assert_eq!(
-        result.stdout,
-        "removed the staging boot entry Boot0104\n\
-         the next restart starts the installed Tilo (Boot0006) once; the default is unchanged\n"
-    );
-}
+tilo_test_env::scenario! {
+    fn finalize_edits_only_its_own_boot_entries;
 
-#[test]
-fn owned_entry_that_no_longer_points_at_staging_is_left_alone() {
-    let fixture = Fixture::new();
-    add_target_entry(&fixture, "0006");
-    let foreign = load_option(
-        "00000000-0000-4000-8000-00000000000a",
-        WIN_ESP.0,
-        204_800,
-        1,
-        "\\EFI\\BOOT\\BOOTX64.EFI",
-        "Tilo installer",
-    );
-    fixture.write_var("Boot0104", &foreign, EFI_GLOBAL);
-    let result = finalize(&fixture, &[]);
-    assert_eq!(result.code, 3, "{result:?}");
-    assert_eq!(fixture.var("Boot0104"), Some(foreign));
-    assert!(!fixture.log.borrow().iter().any(|line| line.contains("-B")));
-    // Tilo is still what the next restart starts.
-    assert_eq!(fixture.var("BootNext"), Some(ids(&["0006"])));
-}
-
-#[test]
-fn owned_entry_with_a_different_extent_is_left_alone() {
-    let fixture = Fixture::new();
-    add_target_entry(&fixture, "0006");
-    let moved = staging_option(
-        ESP_UUID,
-        STAGING_ESP.0 + 2048,
-        STAGING_ESP.1 - STAGING_ESP.0 + 1,
-    );
-    fixture.write_var("Boot0104", &moved, EFI_GLOBAL);
-    assert_eq!(finalize(&fixture, &[]).code, 3);
-    assert_eq!(fixture.var("Boot0104"), Some(moved));
-}
-
-#[test]
-fn missing_target_entry_is_created_without_changing_bootorder() {
-    let fixture = Fixture::new();
-    *fixture.create.borrow_mut() = Some(load_option(
-        TARGET_ESP_UUID,
-        TARGET.0,
-        4_194_304,
-        5,
-        "\\EFI\\systemd\\systemd-bootx64.efi",
-        "Tilo",
-    ));
-    let before = fixture.var("BootOrder");
-    let result = finalize(
-        &fixture,
-        &[
-            "--target-disk",
-            DISK,
-            "--target-esp-partition-number",
-            "5",
-            "--loader",
-            "\\EFI\\systemd\\systemd-bootx64.efi",
-        ],
-    );
-    assert_eq!(result.code, 0, "{result:?}");
-    assert_eq!(fixture.var("BootNext"), Some(ids(&["0105"])));
-    assert_eq!(fixture.var("BootOrder"), before);
-    assert!(
-        fixture
-            .log
-            .borrow()
-            .iter()
-            .any(|line| line == "-q -o 0001,0000")
-    );
-}
-
-#[test]
-fn ambiguous_or_absent_target_entry_does_not_set_bootnext() {
-    let fixture = Fixture::new();
-    assert_eq!(finalize(&fixture, &[]).code, 1);
-    assert_eq!(fixture.var("BootNext"), None);
-    // The staging entry is gone already; the next run reports that.
-    add_target_entry(&fixture, "0006");
-    add_target_entry(&fixture, "0007");
-    let result = finalize(&fixture, &[]);
-    assert_eq!(result.code, 1);
-    assert!(
-        result.stderr.contains("exactly one firmware entry"),
-        "{result:?}"
-    );
-    assert!(
-        result
-            .stdout
-            .contains("staging boot entry Boot0104 is already gone")
-    );
-    assert_eq!(fixture.var("BootNext"), None);
-}
-
-#[test]
-fn record_binds_both_staging_identities_and_the_adjacent_target_root() {
-    let fixture = Fixture::new();
-    let var = fixture.root.join("state/os/default/var");
-    fs::create_dir_all(&var).unwrap();
-    let root_start = TARGET.0 * 512 + 3 * GIB;
-    let root_size = (TARGET.1 + 1) * 512 - root_start;
-    let copy = fixture.copy.to_string_lossy().into_owned();
-    let var_text = var.to_string_lossy().into_owned();
-    let start = root_start.to_string();
-    let record = |size: i64| {
-        let size = size.to_string();
-        fixture.run(&[
-            "write-reclaim-record",
-            "--handoff",
-            &copy,
-            "--target-var",
-            &var_text,
-            "--target-root-partuuid",
-            "EEEEEEEE-0000-4000-8000-000000000005",
-            "--target-esp-partuuid",
-            TARGET_ESP_UUID,
-            "--target-root-start-bytes",
-            &start,
-            "--sector-size",
-            "512",
-            "--target-root-size-bytes",
-            &size,
-        ])
-    };
-    let result = record(root_size);
-    assert_eq!(result.code, 0, "{result:?}");
-    assert_eq!(
-        result.stdout,
-        "recorded staging reclaim for the installed system\n"
-    );
-    let record_path = var.join("lib/tilo/staging-reclaim.json");
-    let written: Value = serde_json::from_str(&fs::read_to_string(&record_path).unwrap()).unwrap();
-    let mode =
-        std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&record_path).unwrap().permissions());
-    assert_eq!(mode & 0o777, 0o600);
-    assert_eq!(written["disk_guid"], DISK_GUID);
-    assert_eq!(written["staging_esp"]["partuuid"], ESP_UUID);
-    assert_eq!(written["staging_root"]["last_lba"], STAGING_ROOT.1);
-    assert_eq!(
-        written["target_root"]["partuuid"],
-        "eeeeeeee-0000-4000-8000-000000000005"
-    );
-    assert_eq!(
-        written["target_root"]["last_lba"].as_i64().unwrap() + 1,
-        STAGING_ESP.0
-    );
-    assert_eq!(written["sector_bytes"], 512);
-    let short = record(root_size - 1024 * 1024);
-    assert_eq!(
-        short.code, 1,
-        "a root that does not end at staging is not reclaimable"
-    );
-}
-
-#[test]
-fn native_reclaim_record_publishes_private_migration_for_every_policy() {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-    let candidate = parser_parity_cases()
-        .into_iter()
-        .find(|case| case["name"] == "migration default copy")
-        .expect("candidate migration fixture");
-    for policy in [
-        None,
-        Some("copy"),
-        Some("access-read-only"),
-        Some("access-read-write"),
-    ] {
-        let temporary = tempfile::tempdir().unwrap();
-        let handoff = temporary.path().join("handoff.json");
-        let target_var = temporary.path().join("var");
-        fs::create_dir(&target_var).unwrap();
-        let mut document = candidate["normalized"].clone();
-        if let Some(policy) = policy {
-            document["migration"]["home_policy"] = json!(policy);
-        }
-        fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
-        let invoke = || {
-            Command::new(tilo_test_env::package_binary!("tilo-staging-handoff"))
-                .args(["write-reclaim-record", "--handoff"])
-                .arg(&handoff)
-                .arg("--target-var")
-                .arg(&target_var)
-                .args([
-                    "--target-root-partuuid",
-                    "eeeeeeee-0000-4000-8000-000000000005",
-                    "--target-esp-partuuid",
-                    TARGET_ESP_UUID,
-                    "--target-root-start-bytes",
-                    &(TARGET.0 * 512).to_string(),
-                    "--target-root-size-bytes",
-                    &((TARGET.1 - TARGET.0 + 1) * 512).to_string(),
-                    "--sector-size",
-                    "512",
-                ])
-                .output_locked()
-                .unwrap()
-        };
-        let result = invoke();
-        assert!(result.status.success(), "{policy:?}: {result:?}");
-        assert!(result.stderr.is_empty(), "{result:?}");
+    phase matching_owned_entry_is_deleted_and_bootnext_targets_tilo;
+    {
+        let fixture = Fixture::new();
+        add_target_entry(&fixture, "0006");
+        let before = fixture.var("BootOrder");
+        let result = finalize(&fixture, &[]);
+        assert_eq!(result.code, 0, "{result:?}");
+        assert_eq!(fixture.var("Boot0104"), None);
+        assert_eq!(fixture.var("BootNext"), Some(ids(&["0006"])));
+        assert_eq!(
+            fixture.var("BootOrder"),
+            before,
+            "BootOrder must stay unchanged"
+        );
+        assert!(fixture.var("Boot0001").is_some());
         assert_eq!(
             result.stdout,
-            b"recorded staging reclaim for the installed system\n"
+            "removed the staging boot entry Boot0104\n\
+         the next restart starts the installed Tilo (Boot0006) once; the default is unchanged\n"
         );
-        let seed = target_var.join("lib/tilo/migration-plan.json");
-        let reclaim = target_var.join("lib/tilo/staging-reclaim.json");
-        let bytes = fs::read(&seed).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<Value>(&bytes).unwrap(),
-            document["migration"]
-        );
-        let metadata = fs::metadata(&seed).unwrap();
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-        let recorded = fs::read(&reclaim).unwrap();
-        assert_eq!(
-            fs::metadata(&reclaim).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        let record: Value = serde_json::from_slice(&recorded).unwrap();
-        assert_eq!(record["operation_id"], document["operation_id"]);
-        assert_eq!(record["target_root"]["last_lba"], TARGET.1);
+    }
 
-        let retry = invoke();
-        assert!(retry.status.success(), "{retry:?}");
-        assert_eq!(fs::read(&seed).unwrap(), bytes);
-        assert_eq!(fs::metadata(&seed).unwrap().ino(), metadata.ino());
-        assert_eq!(fs::read(&reclaim).unwrap(), recorded);
+    phase owned_entry_that_no_longer_points_at_staging_is_left_alone;
+    {
+        let fixture = Fixture::new();
+        add_target_entry(&fixture, "0006");
+        let foreign = load_option(
+            "00000000-0000-4000-8000-00000000000a",
+            WIN_ESP.0,
+            204_800,
+            1,
+            "\\EFI\\BOOT\\BOOTX64.EFI",
+            "Tilo installer",
+        );
+        fixture.write_var("Boot0104", &foreign, EFI_GLOBAL);
+        let result = finalize(&fixture, &[]);
+        assert_eq!(result.code, 3, "{result:?}");
+        assert_eq!(fixture.var("Boot0104"), Some(foreign));
+        assert!(!fixture.log.borrow().iter().any(|line| line.contains("-B")));
+        // Tilo is still what the next restart starts.
+        assert_eq!(fixture.var("BootNext"), Some(ids(&["0006"])));
+    }
 
-        // A valid but different plan must never replace already-published consent.
-        document["migration"]["home"]["inode"] = json!(124);
-        fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
-        let conflict = invoke();
-        assert_eq!(conflict.status.code(), Some(1), "{conflict:?}");
-        assert!(conflict.stdout.is_empty(), "{conflict:?}");
+    phase owned_entry_with_a_different_extent_is_left_alone;
+    {
+        let fixture = Fixture::new();
+        add_target_entry(&fixture, "0006");
+        let moved = staging_option(
+            ESP_UUID,
+            STAGING_ESP.0 + 2048,
+            STAGING_ESP.1 - STAGING_ESP.0 + 1,
+        );
+        fixture.write_var("Boot0104", &moved, EFI_GLOBAL);
+        assert_eq!(finalize(&fixture, &[]).code, 3);
+        assert_eq!(fixture.var("Boot0104"), Some(moved));
+    }
+
+    phase missing_target_entry_is_created_without_changing_bootorder;
+    {
+        let fixture = Fixture::new();
+        *fixture.create.borrow_mut() = Some(load_option(
+            TARGET_ESP_UUID,
+            TARGET.0,
+            4_194_304,
+            5,
+            "\\EFI\\systemd\\systemd-bootx64.efi",
+            "Tilo",
+        ));
+        let before = fixture.var("BootOrder");
+        let result = finalize(
+            &fixture,
+            &[
+                "--target-disk",
+                DISK,
+                "--target-esp-partition-number",
+                "5",
+                "--loader",
+                "\\EFI\\systemd\\systemd-bootx64.efi",
+            ],
+        );
+        assert_eq!(result.code, 0, "{result:?}");
+        assert_eq!(fixture.var("BootNext"), Some(ids(&["0105"])));
+        assert_eq!(fixture.var("BootOrder"), before);
         assert!(
-            String::from_utf8_lossy(&conflict.stderr).contains("migration intent conflicts"),
-            "{conflict:?}"
+            fixture
+                .log
+                .borrow()
+                .iter()
+                .any(|line| line == "-q -o 0001,0000")
         );
-        assert_eq!(fs::read(&seed).unwrap(), bytes);
-        assert_eq!(fs::read(&reclaim).unwrap(), recorded);
+    }
 
-        // A handoff without migration retains the original reclaim-only behavior.
-        document.as_object_mut().unwrap().remove("migration");
-        fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
-        fs::remove_file(&seed).unwrap();
-        let legacy = invoke();
-        assert!(legacy.status.success(), "{legacy:?}");
-        assert!(!seed.exists());
-        assert_eq!(fs::read(&reclaim).unwrap(), recorded);
+    phase ambiguous_or_absent_target_entry_does_not_set_bootnext;
+    {
+        let fixture = Fixture::new();
+        assert_eq!(finalize(&fixture, &[]).code, 1);
+        assert_eq!(fixture.var("BootNext"), None);
+        // The staging entry is gone already; the next run reports that.
+        add_target_entry(&fixture, "0006");
+        add_target_entry(&fixture, "0007");
+        let result = finalize(&fixture, &[]);
+        assert_eq!(result.code, 1);
+        assert!(
+            result.stderr.contains("exactly one firmware entry"),
+            "{result:?}"
+        );
+        assert!(
+            result
+                .stdout
+                .contains("staging boot entry Boot0104 is already gone")
+        );
+        assert_eq!(fixture.var("BootNext"), None);
+    }
+}
+
+tilo_test_env::scenario! {
+    fn the_staging_record_binds_and_publishes;
+
+    phase record_binds_both_staging_identities_and_the_adjacent_target_root;
+    {
+        let fixture = Fixture::new();
+        let var = fixture.root.join("state/os/default/var");
+        fs::create_dir_all(&var).unwrap();
+        let root_start = TARGET.0 * 512 + 3 * GIB;
+        let root_size = (TARGET.1 + 1) * 512 - root_start;
+        let copy = fixture.copy.to_string_lossy().into_owned();
+        let var_text = var.to_string_lossy().into_owned();
+        let start = root_start.to_string();
+        let record = |size: i64| {
+            let size = size.to_string();
+            fixture.run(&[
+                "write-reclaim-record",
+                "--handoff",
+                &copy,
+                "--target-var",
+                &var_text,
+                "--target-root-partuuid",
+                "EEEEEEEE-0000-4000-8000-000000000005",
+                "--target-esp-partuuid",
+                TARGET_ESP_UUID,
+                "--target-root-start-bytes",
+                &start,
+                "--sector-size",
+                "512",
+                "--target-root-size-bytes",
+                &size,
+            ])
+        };
+        let result = record(root_size);
+        assert_eq!(result.code, 0, "{result:?}");
+        assert_eq!(
+            result.stdout,
+            "recorded staging reclaim for the installed system\n"
+        );
+        let record_path = var.join("lib/tilo/staging-reclaim.json");
+        let written: Value = serde_json::from_str(&fs::read_to_string(&record_path).unwrap()).unwrap();
+        let mode =
+            std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&record_path).unwrap().permissions());
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(written["disk_guid"], DISK_GUID);
+        assert_eq!(written["staging_esp"]["partuuid"], ESP_UUID);
+        assert_eq!(written["staging_root"]["last_lba"], STAGING_ROOT.1);
+        assert_eq!(
+            written["target_root"]["partuuid"],
+            "eeeeeeee-0000-4000-8000-000000000005"
+        );
+        assert_eq!(
+            written["target_root"]["last_lba"].as_i64().unwrap() + 1,
+            STAGING_ESP.0
+        );
+        assert_eq!(written["sector_bytes"], 512);
+        let short = record(root_size - 1024 * 1024);
+        assert_eq!(
+            short.code, 1,
+            "a root that does not end at staging is not reclaimable"
+        );
+    }
+
+    phase native_reclaim_record_publishes_private_migration_for_every_policy;
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let candidate = parser_parity_cases()
+            .into_iter()
+            .find(|case| case["name"] == "migration default copy")
+            .expect("candidate migration fixture");
+        for policy in [
+            None,
+            Some("copy"),
+            Some("access-read-only"),
+            Some("access-read-write"),
+        ] {
+            let temporary = tempfile::tempdir().unwrap();
+            let handoff = temporary.path().join("handoff.json");
+            let target_var = temporary.path().join("var");
+            fs::create_dir(&target_var).unwrap();
+            let mut document = candidate["normalized"].clone();
+            if let Some(policy) = policy {
+                document["migration"]["home_policy"] = json!(policy);
+            }
+            fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
+            let invoke = || {
+                Command::new(tilo_test_env::package_binary!("tilo-staging-handoff"))
+                    .args(["write-reclaim-record", "--handoff"])
+                    .arg(&handoff)
+                    .arg("--target-var")
+                    .arg(&target_var)
+                    .args([
+                        "--target-root-partuuid",
+                        "eeeeeeee-0000-4000-8000-000000000005",
+                        "--target-esp-partuuid",
+                        TARGET_ESP_UUID,
+                        "--target-root-start-bytes",
+                        &(TARGET.0 * 512).to_string(),
+                        "--target-root-size-bytes",
+                        &((TARGET.1 - TARGET.0 + 1) * 512).to_string(),
+                        "--sector-size",
+                        "512",
+                    ])
+                    .output_locked()
+                    .unwrap()
+            };
+            let result = invoke();
+            assert!(result.status.success(), "{policy:?}: {result:?}");
+            assert!(result.stderr.is_empty(), "{result:?}");
+            assert_eq!(
+                result.stdout,
+                b"recorded staging reclaim for the installed system\n"
+            );
+            let seed = target_var.join("lib/tilo/migration-plan.json");
+            let reclaim = target_var.join("lib/tilo/staging-reclaim.json");
+            let bytes = fs::read(&seed).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&bytes).unwrap(),
+                document["migration"]
+            );
+            let metadata = fs::metadata(&seed).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+            let recorded = fs::read(&reclaim).unwrap();
+            assert_eq!(
+                fs::metadata(&reclaim).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let record: Value = serde_json::from_slice(&recorded).unwrap();
+            assert_eq!(record["operation_id"], document["operation_id"]);
+            assert_eq!(record["target_root"]["last_lba"], TARGET.1);
+
+            let retry = invoke();
+            assert!(retry.status.success(), "{retry:?}");
+            assert_eq!(fs::read(&seed).unwrap(), bytes);
+            assert_eq!(fs::metadata(&seed).unwrap().ino(), metadata.ino());
+            assert_eq!(fs::read(&reclaim).unwrap(), recorded);
+
+            // A valid but different plan must never replace already-published consent.
+            document["migration"]["home"]["inode"] = json!(124);
+            fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
+            let conflict = invoke();
+            assert_eq!(conflict.status.code(), Some(1), "{conflict:?}");
+            assert!(conflict.stdout.is_empty(), "{conflict:?}");
+            assert!(
+                String::from_utf8_lossy(&conflict.stderr).contains("migration intent conflicts"),
+                "{conflict:?}"
+            );
+            assert_eq!(fs::read(&seed).unwrap(), bytes);
+            assert_eq!(fs::read(&reclaim).unwrap(), recorded);
+
+            // A handoff without migration retains the original reclaim-only behavior.
+            document.as_object_mut().unwrap().remove("migration");
+            fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
+            fs::remove_file(&seed).unwrap();
+            let legacy = invoke();
+            assert!(legacy.status.success(), "{legacy:?}");
+            assert!(!seed.exists());
+            assert_eq!(fs::read(&reclaim).unwrap(), recorded);
+        }
     }
 }
 
@@ -1132,111 +1156,115 @@ fn authenticated_parity_cases() -> Vec<Value> {
     .unwrap()
 }
 
-#[test]
-fn native_migration_requires_nullable_identity_and_nonnull_inventory() {
-    let cases = parser_parity_cases();
-    let mut document = cases
-        .iter()
-        .filter_map(|case| case.get("normalized"))
-        .find(|document| document.get("migration").is_some())
-        .unwrap()
-        .clone();
-    document["migration"]["home"]
-        .as_object_mut()
-        .unwrap()
-        .remove("subvolume");
-    assert!(parse_handoff(&serde_json::to_vec(&document).unwrap()).is_err());
-    document["migration"]["home"]["subvolume"] = Value::Null;
-    document["migration"]["flatpak_inventory"] = Value::Null;
-    assert!(parse_handoff(&serde_json::to_vec(&document).unwrap()).is_err());
-}
+tilo_test_env::scenario! {
+    fn migration_plans_parse_as_the_candidate_does;
 
-#[test]
-fn candidate_python_profile_and_migration_parser_parity() {
-    let mut failures = Vec::new();
-    for case in parser_parity_cases() {
-        let input = case["input"].as_str().unwrap();
-        let actual = parse_handoff(input.as_bytes());
-        if let Some(refusal) = case.get("native_refusal") {
-            assert!(
-                case["native_reason"]
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty())
-            );
-            let error = actual
-                .expect_err("native identity validation must remain stricter than the oracle");
-            assert!(
-                error.to_string().contains(refusal.as_str().unwrap()),
-                "{}: {error:?}",
-                case["name"]
-            );
-            continue;
-        }
-        match (case.get("normalized"), actual) {
-            (Some(expected), Ok(handoff)) if handoff.json() == *expected => {}
-            (None, Err(_)) => {}
-            (expected, actual) => failures.push(format!(
-                "{}: expected {}, got {}",
-                case["name"],
-                if expected.is_some() {
-                    "normalized acceptance"
-                } else {
-                    "refusal"
-                },
-                match actual {
-                    Ok(handoff) => format!("acceptance: {}", handoff.json()),
-                    Err(error) => format!("{error:?}"),
-                }
-            )),
-        }
+    phase native_migration_requires_nullable_identity_and_nonnull_inventory;
+    {
+        let cases = parser_parity_cases();
+        let mut document = cases
+            .iter()
+            .filter_map(|case| case.get("normalized"))
+            .find(|document| document.get("migration").is_some())
+            .unwrap()
+            .clone();
+        document["migration"]["home"]
+            .as_object_mut()
+            .unwrap()
+            .remove("subvolume");
+        assert!(parse_handoff(&serde_json::to_vec(&document).unwrap()).is_err());
+        document["migration"]["home"]["subvolume"] = Value::Null;
+        document["migration"]["flatpak_inventory"] = Value::Null;
+        assert!(parse_handoff(&serde_json::to_vec(&document).unwrap()).is_err());
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
 
-#[test]
-fn accepted_candidate_migrations_revalidate_source_identity_before_install() {
-    for case in parser_parity_cases() {
-        let Some(expected) = case.get("normalized") else {
-            continue;
-        };
-        if expected.get("migration").is_none() {
-            continue;
+    phase candidate_python_profile_and_migration_parser_parity;
+    {
+        let mut failures = Vec::new();
+        for case in parser_parity_cases() {
+            let input = case["input"].as_str().unwrap();
+            let actual = parse_handoff(input.as_bytes());
+            if let Some(refusal) = case.get("native_refusal") {
+                assert!(
+                    case["native_reason"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty())
+                );
+                let error = actual
+                    .expect_err("native identity validation must remain stricter than the oracle");
+                assert!(
+                    error.to_string().contains(refusal.as_str().unwrap()),
+                    "{}: {error:?}",
+                    case["name"]
+                );
+                continue;
+            }
+            match (case.get("normalized"), actual) {
+                (Some(expected), Ok(handoff)) if handoff.json() == *expected => {}
+                (None, Err(_)) => {}
+                (expected, actual) => failures.push(format!(
+                    "{}: expected {}, got {}",
+                    case["name"],
+                    if expected.is_some() {
+                        "normalized acceptance"
+                    } else {
+                        "refusal"
+                    },
+                    match actual {
+                        Ok(handoff) => format!("acceptance: {}", handoff.json()),
+                        Err(error) => format!("{error:?}"),
+                    }
+                )),
+            }
         }
-        let fixture = Fixture::new();
-        fixture.set_handoff_text(case["input"].as_str().unwrap(), false);
-        let volume = &expected["migration"]["home"]["volume"];
-        {
-            let mut devices = fixture.lsblk.borrow_mut();
-            let source = &mut devices["blockdevices"][0]["children"][1];
-            source["uuid"] = volume["filesystem_uuid"].clone();
-            source["fstype"] = volume["filesystem"].clone();
-        }
-        let accepted = fixture.check("guided", &[]);
-        if let Some(refusal) = case.get("native_refusal") {
-            // Source revalidation cannot authorize a malformed retained identity,
-            // even when lsblk reports the UUID claimed by the Python fixture.
-            assert_eq!(accepted.code, 1, "{}: {accepted:?}", case["name"]);
-            assert!(accepted.stdout.is_empty(), "{accepted:?}");
-            assert!(
-                accepted.stderr.contains(refusal.as_str().unwrap()),
-                "{accepted:?}"
-            );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    phase accepted_candidate_migrations_revalidate_source_identity_before_install;
+    {
+        for case in parser_parity_cases() {
+            let Some(expected) = case.get("normalized") else {
+                continue;
+            };
+            if expected.get("migration").is_none() {
+                continue;
+            }
+            let fixture = Fixture::new();
+            fixture.set_handoff_text(case["input"].as_str().unwrap(), false);
+            let volume = &expected["migration"]["home"]["volume"];
+            {
+                let mut devices = fixture.lsblk.borrow_mut();
+                let source = &mut devices["blockdevices"][0]["children"][1];
+                source["uuid"] = volume["filesystem_uuid"].clone();
+                source["fstype"] = volume["filesystem"].clone();
+            }
+            let accepted = fixture.check("guided", &[]);
+            if let Some(refusal) = case.get("native_refusal") {
+                // Source revalidation cannot authorize a malformed retained identity,
+                // even when lsblk reports the UUID claimed by the Python fixture.
+                assert_eq!(accepted.code, 1, "{}: {accepted:?}", case["name"]);
+                assert!(accepted.stdout.is_empty(), "{accepted:?}");
+                assert!(
+                    accepted.stderr.contains(refusal.as_str().unwrap()),
+                    "{accepted:?}"
+                );
+                assert!(
+                    fixture.log.borrow().is_empty(),
+                    "validation must not modify firmware"
+                );
+                continue;
+            }
+            assert_eq!(accepted.code, 0, "{}: {accepted:?}", case["name"]);
+            fixture.lsblk.borrow_mut()["blockdevices"][0]["children"][1]["uuid"] =
+                json!("44444444-4444-4444-8444-444444444444");
+            let refused = fixture.check("guided", &[]);
+            assert_eq!(refused.code, 1, "{}: {refused:?}", case["name"]);
+            assert!(refused.stdout.is_empty(), "{refused:?}");
             assert!(
                 fixture.log.borrow().is_empty(),
                 "validation must not modify firmware"
             );
-            continue;
         }
-        assert_eq!(accepted.code, 0, "{}: {accepted:?}", case["name"]);
-        fixture.lsblk.borrow_mut()["blockdevices"][0]["children"][1]["uuid"] =
-            json!("44444444-4444-4444-8444-444444444444");
-        let refused = fixture.check("guided", &[]);
-        assert_eq!(refused.code, 1, "{}: {refused:?}", case["name"]);
-        assert!(refused.stdout.is_empty(), "{refused:?}");
-        assert!(
-            fixture.log.borrow().is_empty(),
-            "validation must not modify firmware"
-        );
     }
 }
 
@@ -1364,48 +1392,52 @@ fn native_authenticated_retained_delivery_matches_candidate_responses() {
     }
 }
 
-#[test]
-fn native_authenticated_retained_commands_reject_unbounded_or_ambiguous_input() {
-    let runtime = native_retained_runtime();
-    let temporary = tempfile::tempdir().unwrap();
-    let duplicate = br#"{"schema":1,"schema":1}"#.to_vec();
-    let invalid_utf8 = vec![0xff];
-    let oversized = vec![b' '; 64 * 1024 + 32769];
-    for input in [duplicate, invalid_utf8, oversized] {
-        for (command, args) in [
-            (
-                "deliver-retained",
-                vec!["--target-var", temporary.path().to_str().unwrap()],
-            ),
-            (
-                "preflight-retained",
-                vec!["--disk", "/dev/no-such-staging-parity-disk"],
-            ),
-        ] {
-            let result = native_retained_command(runtime.path(), command, &args, &input);
-            assert_eq!(result.status.code(), Some(1), "{command}: {result:?}");
-            assert!(result.stdout.is_empty(), "{result:?}");
-            assert!(
-                String::from_utf8_lossy(&result.stderr).starts_with("error: staged installation:"),
-                "{result:?}"
-            );
-            assert!(!temporary.path().join("lib").exists());
+tilo_test_env::scenario! {
+    fn native_retained_commands_refuse_what_they_cannot_bind;
+
+    phase native_authenticated_retained_commands_reject_unbounded_or_ambiguous_input;
+    {
+        let runtime = native_retained_runtime();
+        let temporary = tempfile::tempdir().unwrap();
+        let duplicate = br#"{"schema":1,"schema":1}"#.to_vec();
+        let invalid_utf8 = vec![0xff];
+        let oversized = vec![b' '; 64 * 1024 + 32769];
+        for input in [duplicate, invalid_utf8, oversized] {
+            for (command, args) in [
+                (
+                    "deliver-retained",
+                    vec!["--target-var", temporary.path().to_str().unwrap()],
+                ),
+                (
+                    "preflight-retained",
+                    vec!["--disk", "/dev/no-such-staging-parity-disk"],
+                ),
+            ] {
+                let result = native_retained_command(runtime.path(), command, &args, &input);
+                assert_eq!(result.status.code(), Some(1), "{command}: {result:?}");
+                assert!(result.stdout.is_empty(), "{result:?}");
+                assert!(
+                    String::from_utf8_lossy(&result.stderr).starts_with("error: staged installation:"),
+                    "{result:?}"
+                );
+                assert!(!temporary.path().join("lib").exists());
+            }
         }
     }
-}
 
-#[test]
-fn native_retained_preflight_without_a_source_never_probes_the_disk() {
-    let runtime = native_retained_runtime();
-    let result = native_retained_command(
-        runtime.path(),
-        "preflight-retained",
-        &["--disk", "/dev/no-such-staging-parity-disk"],
-        br#"{"schema":1}"#,
-    );
-    assert!(result.status.success(), "{result:?}");
-    assert!(
-        result.stdout.is_empty() && result.stderr.is_empty(),
-        "{result:?}"
-    );
+    phase native_retained_preflight_without_a_source_never_probes_the_disk;
+    {
+        let runtime = native_retained_runtime();
+        let result = native_retained_command(
+            runtime.path(),
+            "preflight-retained",
+            &["--disk", "/dev/no-such-staging-parity-disk"],
+            br#"{"schema":1}"#,
+        );
+        assert!(result.status.success(), "{result:?}");
+        assert!(
+            result.stdout.is_empty() && result.stderr.is_empty(),
+            "{result:?}"
+        );
+    }
 }

@@ -228,48 +228,52 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn reads_origins_as_configparser_did() {
-        let ini = Ini::parse(
-            "# bootc\n[image]\nManifest_Digest = sha256:a\n[origin]\ncontainer-image-reference: x\n  continued\n\n[boot]\nboot_type=bls\ndigest=d\n",
-        )
-        .unwrap();
-        assert_eq!(ini.get("image", "manifest_digest").unwrap(), "sha256:a");
-        assert_eq!(
-            ini.get("origin", "container-image-reference").unwrap(),
-            "x\ncontinued"
-        );
-        assert_eq!(ini.get("boot", "boot_type").unwrap(), "bls");
-        assert!(ini.get("image", "missing").is_err());
-        assert!(ini.get("missing", "x").is_err());
-    }
+    tilo_test_env::scenario! {
+        fn ini_reads_and_writes_as_configparser_did;
 
-    #[test]
-    fn strict_refusals() {
-        assert!(Ini::parse("[a]\nx=1\n[a]\n").is_err());
-        assert!(Ini::parse("[a]\nx=1\nX=2\n").is_err());
-        assert!(Ini::parse("x=1\n").is_err());
-        assert!(Ini::parse("[a]\njunk\n").is_err());
-        assert!(Ini::parse("[a]\n=1\n").is_err());
-    }
+        phase reads_origins_as_configparser_did;
+        {
+            let ini = Ini::parse(
+                "# bootc\n[image]\nManifest_Digest = sha256:a\n[origin]\ncontainer-image-reference: x\n  continued\n\n[boot]\nboot_type=bls\ndigest=d\n",
+            )
+            .unwrap();
+            assert_eq!(ini.get("image", "manifest_digest").unwrap(), "sha256:a");
+            assert_eq!(
+                ini.get("origin", "container-image-reference").unwrap(),
+                "x\ncontinued"
+            );
+            assert_eq!(ini.get("boot", "boot_type").unwrap(), "bls");
+            assert!(ini.get("image", "missing").is_err());
+            assert!(ini.get("missing", "x").is_err());
+        }
 
-    #[test]
-    fn writes_what_configparser_wrote() {
-        let mut ini = Ini::parse(
-            "[origin]\ncontainer-image-reference=x\n  continued\n[boot]\nboot_type=bls\ndigest=d\n",
-        )
-        .unwrap();
-        ini.set("boot", "boot_type", "uki").unwrap();
-        assert!(ini.set("missing", "x", "y").is_err());
-        assert_eq!(
-            ini.write(),
-            "[origin]\ncontainer-image-reference = x\n\tcontinued\n\n[boot]\nboot_type = uki\ndigest = d\n\n"
-        );
-    }
+        phase strict_refusals;
+        {
+            assert!(Ini::parse("[a]\nx=1\n[a]\n").is_err());
+            assert!(Ini::parse("[a]\nx=1\nX=2\n").is_err());
+            assert!(Ini::parse("x=1\n").is_err());
+            assert!(Ini::parse("[a]\njunk\n").is_err());
+            assert!(Ini::parse("[a]\n=1\n").is_err());
+        }
 
-    #[test]
-    fn defaults_apply_to_every_section() {
-        let ini = Ini::parse("[DEFAULT]\nk=v\n[a]\n").unwrap();
-        assert_eq!(ini.get("a", "k").unwrap(), "v");
+        phase writes_what_configparser_wrote;
+        {
+            let mut ini = Ini::parse(
+                "[origin]\ncontainer-image-reference=x\n  continued\n[boot]\nboot_type=bls\ndigest=d\n",
+            )
+            .unwrap();
+            ini.set("boot", "boot_type", "uki").unwrap();
+            assert!(ini.set("missing", "x", "y").is_err());
+            assert_eq!(
+                ini.write(),
+                "[origin]\ncontainer-image-reference = x\n\tcontinued\n\n[boot]\nboot_type = uki\ndigest = d\n\n"
+            );
+        }
+
+        phase defaults_apply_to_every_section;
+        {
+            let ini = Ini::parse("[DEFAULT]\nk=v\n[a]\n").unwrap();
+            assert_eq!(ini.get("a", "k").unwrap(), "v");
+        }
     }
 }

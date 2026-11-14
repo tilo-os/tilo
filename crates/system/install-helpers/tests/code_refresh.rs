@@ -226,454 +226,358 @@ fn files(rows: &[(&str, &[u8])]) -> Files {
         .collect()
 }
 
-#[test]
-fn fragmented_transport_binds_the_source_content() {
-    let raw = packet(&[(HELPER, b"#!/bin/bash\necho development\n")]);
-    let (mut port, _) = Duplex::new(framed(&raw));
-    let (files, receipt) = receive(&mut port).unwrap();
-    assert_eq!(
-        files,
-        vec![(
-            HELPER.to_owned(),
-            b"#!/bin/bash\necho development\n".to_vec()
-        )]
-    );
-    assert_eq!(
-        receipt["source"],
-        json!({"revision": "a".repeat(40), "dirty": true})
-    );
-    assert_eq!(receipt["sha256"], json!(sha256_hex(&raw)));
-    let (mut port, written) = Duplex::new(Vec::new());
-    write_all(&mut port, &framed(&raw)).unwrap();
-    assert_eq!(*written.borrow(), framed(&raw));
-}
+tilo_test_env::scenario! {
+    fn the_refresh_transaction_binds_rolls_back_and_reports;
 
-#[test]
-fn bad_hash_path_duplicates_and_packet_size_refused() {
-    let raw = packet(&[(HELPER, b"helper\n")]);
-    let document: Value = serde_json::from_slice(&raw).unwrap();
-    for (variant, message) in [
-        ("hash", "code refresh content differs from its bounded hash"),
-        ("path", "code refresh path is not uniquely allowlisted"),
-        ("duplicate", "code refresh path is not uniquely allowlisted"),
-        (
-            "dev-target-uki",
-            "code refresh path is not uniquely allowlisted",
-        ),
-        ("revision", "invalid code refresh metadata"),
-        ("empty", "invalid code refresh file inventory"),
-    ] {
-        let mut changed = document.clone();
-        let rows = changed["files"].as_array_mut().unwrap();
-        match variant {
-            "hash" => rows[0]["sha256"] = json!("b".repeat(64)),
-            "path" => rows[0]["path"] = json!("../../etc/shadow"),
-            "duplicate" => rows.push(rows[0].clone()),
-            "dev-target-uki" => {
-                rows[0]["path"] = json!("usr/libexec/tilo-installer-dev-target-uki.py");
-            }
-            "revision" => changed["source"]["revision"] = json!("A".repeat(40)),
-            _ => rows.clear(),
-        }
-        let error = validate(&code_refresh::canonical(&changed)).unwrap_err();
-        assert_eq!(error.0, message, "{variant}");
-    }
-    let (mut port, _) = Duplex::new((u32::try_from(LIMIT).unwrap() + 1).to_be_bytes().to_vec());
-    assert_eq!(
-        receive(&mut port).unwrap_err().0,
-        "code refresh packet exceeds its bound"
-    );
-    let (mut port, _) = Duplex::new(vec![0, 0, 0, 9, b'{']);
-    assert_eq!(
-        receive(&mut port).unwrap_err().0,
-        "code refresh stream ended early"
-    );
-    for duplicated in [
-        &br#"{"schema":1,"schema":2}"#[..],
-        br#"{"files":[],"schema":"x","source":{"dirty":true,"dirty":false}}"#,
-    ] {
+    phase binding_preserves_destination_mode_and_label_and_records_applied_state;
+    {
+        let fixture = Fixture::new();
+        let destination = fixture.helper(HELPER, b"original helper");
+        let receipt = receipt('a');
+        let applied = apply(&fixture, &files(&[(HELPER, b"updated helper")]), &receipt).unwrap();
+        assert_eq!(applied, receipt);
+        let staged = fixture.base.join("a".repeat(64)).join("tilo-install");
+        assert_eq!(fs::read(&staged).unwrap(), b"updated helper");
         assert_eq!(
-            validate(duplicated).unwrap_err().0,
-            "duplicate code refresh field"
+            fs::metadata(&staged).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(
+            *fixture.labels.borrow(),
+            vec![(destination.clone(), staged.clone())]
+        );
+        let destination = destination.to_string_lossy().into_owned();
+        assert_eq!(
+            fixture.mounts(),
+            vec![
+                vec![
+                    "mount".to_owned(),
+                    "--bind".into(),
+                    staged.to_string_lossy().into_owned(),
+                    destination.clone()
+                ],
+                vec![
+                    "mount".into(),
+                    "-o".into(),
+                    "remount,bind,ro".into(),
+                    destination
+                ],
+            ]
+        );
+        // The receipt the backend and the install proof read, as json.dumps wrote it.
+        assert_eq!(
+            fs::read_to_string(fixture.marker()).unwrap(),
+            format!(
+                "{{\"files\": [], \"schema\": \"{SCHEMA}\", \"sha256\": \"{}\", \"source\": {{}}, \"state\": \"applied\"}}\n",
+                "a".repeat(64)
+            )
+        );
+        assert_eq!(
+            fs::metadata(fixture.marker()).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // The same packet again is already in place: no new generation or mount.
+        assert_eq!(
+            apply(&fixture, &files(&[(HELPER, b"updated helper")]), &receipt).unwrap(),
+            receipt
+        );
+        assert_eq!(fixture.mounts().len(), 2);
+        // A different one after it is a new generation.
+        apply(
+            &fixture,
+            &files(&[(HELPER, b"third helper")]),
+            &self::receipt('b'),
+        )
+        .unwrap();
+        assert_eq!(fixture.mounts().len(), 4);
+    }
+
+    phase failed_second_mount_rolls_back_new_binds_and_keeps_old_receipt;
+    {
+        let mut fixture = Fixture::new();
+        let first = fixture.helper(HELPER, b"old");
+        fixture.helper(CONTRACT, b"old");
+        fixture.respond = Box::new(|argv| {
+            if argv[..2] == ["mount", "--bind"] && argv[3].ends_with("tilo-boot-mount-contract") {
+                return Err(Error::new("simulated mount failure"));
+            }
+            Ok(String::new())
+        });
+        let previous = json!({"sha256": "b".repeat(64), "state": "applied"});
+        fs::write(fixture.marker(), previous.to_string()).unwrap();
+        let error = apply(
+            &fixture,
+            &files(&[(HELPER, b"first"), (CONTRACT, b"second")]),
+            &receipt('a'),
+        )
+        .unwrap_err();
+        assert_eq!(error.0, "simulated mount failure");
+        assert_eq!(
+            fixture.calls.borrow().last().unwrap(),
+            &vec!["umount".to_owned(), first.to_string_lossy().into_owned()]
+        );
+        let marker: Value = serde_json::from_slice(&fs::read(fixture.marker()).unwrap()).unwrap();
+        assert_eq!(marker, previous);
+    }
+
+    phase failed_rollback_stops_greeter_and_keeps_incomplete_marker;
+    {
+        let mut fixture = Fixture::new();
+        fixture.helper(HELPER, b"old");
+        fixture.respond = Box::new(|argv| {
+            if argv[0] == "umount" || argv[..2] == ["mount", "-o"] {
+                return Err(Error::new("simulated transaction failure"));
+            }
+            Ok(String::new())
+        });
+        let error = apply(&fixture, &files(&[(HELPER, b"new")]), &receipt('a')).unwrap_err();
+        assert_eq!(error.0, "simulated transaction failure");
+        assert_eq!(
+            fixture.calls.borrow().last().unwrap(),
+            &vec![
+                "systemctl".to_owned(),
+                "stop".into(),
+                "greetd.service".into()
+            ]
+        );
+        let marker: Value = serde_json::from_slice(&fs::read(fixture.marker()).unwrap()).unwrap();
+        assert_eq!(marker["state"], json!("applying"));
+    }
+
+    phase incomplete_or_repeated_generations_are_refused;
+    {
+        let fixture = Fixture::new();
+        fixture.helper(HELPER, b"old");
+        fs::write(fixture.marker(), r#"{"state":"applying"}"#).unwrap();
+        assert_eq!(
+            apply(&fixture, &files(&[(HELPER, b"new")]), &receipt('a'))
+                .unwrap_err()
+                .0,
+            "previous refresh is incomplete; restart this VM"
+        );
+        fs::remove_file(fixture.marker()).unwrap();
+        fs::create_dir(fixture.base.join("a".repeat(64))).unwrap();
+        assert_eq!(
+            apply(&fixture, &files(&[(HELPER, b"new")]), &receipt('a'))
+                .unwrap_err()
+                .0,
+            "this installer code generation was already attempted; restart this VM"
+        );
+        assert!(fixture.mounts().is_empty());
+    }
+
+    phase readiness_only_after_successful_first_application;
+    {
+        let mut fixture = Fixture::new();
+        fixture.helper(HELPER, b"old");
+        let listed = Cell::new(0);
+        fixture.respond = Box::new(move |argv| {
+            if argv[..2] == ["systemctl", "list-units"] {
+                listed.set(listed.get() + 1);
+                if listed.get() == 1 {
+                    return Ok("tilo-install-1.service loaded active running task".into());
+                }
+            }
+            Ok(String::new())
+        });
+        let raw = packet(&[(HELPER, b"new\n")]);
+        let (busy, refused) = Duplex::new(framed(&raw));
+        let (fresh, answered) = Duplex::new(framed(&raw));
+        fixture.ports = RefCell::new(vec![busy, fresh]);
+        fixture.pauses.set(1);
+        assert_eq!(code_refresh::serve(&fixture).unwrap_err().0, "end test");
+        assert_eq!(fixture.readies.get(), 1);
+        assert_eq!(
+            *refused.borrow(),
+            b"{\"error\":\"installer transient unit is running; code refresh refused\",\"ok\":false}\n"
+        );
+        let response: Value = serde_json::from_slice(&answered.borrow()).unwrap();
+        let (_, receipt) = validate(&raw).unwrap();
+        assert_eq!(
+            response,
+            json!({"ok": true, "receipt": receipt, "runtime": {
+                "schema": "tilo.installer-code-runtime-probe.v1", "backend": null}})
         );
     }
 }
 
-#[test]
-fn python_host_bundle_validates_to_the_identical_receipt() {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let module = repo.join("os/dev/installer-code-bootstrap/tilo-installer-code-protocol.py");
-    let checkout = tempfile::tempdir().unwrap();
-    for (relative, data) in [
-        (
-            "os/usr/libexec/tilo-install",
-            "#!/bin/bash\necho development\n",
-        ),
-        ("os/usr/libexec/tilo-boot-mount-contract", "contract é\n"),
-    ] {
-        let path = checkout.path().join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, data).unwrap();
+tilo_test_env::scenario! {
+    fn refresh_packets_and_the_bootstrap_handshake;
+
+    phase fragmented_transport_binds_the_source_content;
+    {
+        let raw = packet(&[(HELPER, b"#!/bin/bash\necho development\n")]);
+        let (mut port, _) = Duplex::new(framed(&raw));
+        let (files, receipt) = receive(&mut port).unwrap();
+        assert_eq!(
+            files,
+            vec![(
+                HELPER.to_owned(),
+                b"#!/bin/bash\necho development\n".to_vec()
+            )]
+        );
+        assert_eq!(
+            receipt["source"],
+            json!({"revision": "a".repeat(40), "dirty": true})
+        );
+        assert_eq!(receipt["sha256"], json!(sha256_hex(&raw)));
+        let (mut port, written) = Duplex::new(Vec::new());
+        write_all(&mut port, &framed(&raw)).unwrap();
+        assert_eq!(*written.borrow(), framed(&raw));
     }
-    let script = "import importlib.util, json, sys\n\
+
+    phase bad_hash_path_duplicates_and_packet_size_refused;
+    {
+        let raw = packet(&[(HELPER, b"helper\n")]);
+        let document: Value = serde_json::from_slice(&raw).unwrap();
+        for (variant, message) in [
+            ("hash", "code refresh content differs from its bounded hash"),
+            ("path", "code refresh path is not uniquely allowlisted"),
+            ("duplicate", "code refresh path is not uniquely allowlisted"),
+            (
+                "dev-target-uki",
+                "code refresh path is not uniquely allowlisted",
+            ),
+            ("revision", "invalid code refresh metadata"),
+            ("empty", "invalid code refresh file inventory"),
+        ] {
+            let mut changed = document.clone();
+            let rows = changed["files"].as_array_mut().unwrap();
+            match variant {
+                "hash" => rows[0]["sha256"] = json!("b".repeat(64)),
+                "path" => rows[0]["path"] = json!("../../etc/shadow"),
+                "duplicate" => rows.push(rows[0].clone()),
+                "dev-target-uki" => {
+                    rows[0]["path"] = json!("usr/libexec/tilo-installer-dev-target-uki.py");
+                }
+                "revision" => changed["source"]["revision"] = json!("A".repeat(40)),
+                _ => rows.clear(),
+            }
+            let error = validate(&code_refresh::canonical(&changed)).unwrap_err();
+            assert_eq!(error.0, message, "{variant}");
+        }
+        let (mut port, _) = Duplex::new((u32::try_from(LIMIT).unwrap() + 1).to_be_bytes().to_vec());
+        assert_eq!(
+            receive(&mut port).unwrap_err().0,
+            "code refresh packet exceeds its bound"
+        );
+        let (mut port, _) = Duplex::new(vec![0, 0, 0, 9, b'{']);
+        assert_eq!(
+            receive(&mut port).unwrap_err().0,
+            "code refresh stream ended early"
+        );
+        for duplicated in [
+            &br#"{"schema":1,"schema":2}"#[..],
+            br#"{"files":[],"schema":"x","source":{"dirty":true,"dirty":false}}"#,
+        ] {
+            assert_eq!(
+                validate(duplicated).unwrap_err().0,
+                "duplicate code refresh field"
+            );
+        }
+    }
+
+    phase python_host_bundle_validates_to_the_identical_receipt;
+    {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let module = repo.join("os/dev/installer-code-bootstrap/tilo-installer-code-protocol.py");
+        let checkout = tempfile::tempdir().unwrap();
+        for (relative, data) in [
+            (
+                "os/usr/libexec/tilo-install",
+                "#!/bin/bash\necho development\n",
+            ),
+            ("os/usr/libexec/tilo-boot-mount-contract", "contract é\n"),
+        ] {
+            let path = checkout.path().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, data).unwrap();
+        }
+        let script = "import importlib.util, json, sys\n\
         spec = importlib.util.spec_from_file_location('protocol', sys.argv[1])\n\
         protocol = importlib.util.module_from_spec(spec); spec.loader.exec_module(protocol)\n\
         raw = protocol.bundle(sys.argv[2], 'c' * 40, False)\n\
         print(json.dumps({'raw': raw.decode(), 'receipt': protocol.validate(raw)[1],\n\
                           'allowlist': sorted(protocol.ALLOWLIST)}))\n";
-    let output = Command::new("python3")
-        .args(["-I", "-c", script])
-        .arg(&module)
-        .arg(checkout.path())
-        .output_locked()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let python: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let mut allowlist = code_refresh::ALLOWLIST.to_vec();
-    allowlist.sort_unstable();
-    assert_eq!(python["allowlist"], json!(allowlist));
-    let (files, receipt) = validate(python["raw"].as_str().unwrap().as_bytes()).unwrap();
-    assert_eq!(files.len(), 2);
-    assert_eq!(receipt, python["receipt"]);
-    assert_eq!(
-        Dumps::SORTED.dumps(&receipt),
-        Dumps::SORTED.dumps(&python["receipt"])
-    );
-}
+        let output = Command::new("python3")
+            .args(["-I", "-c", script])
+            .arg(&module)
+            .arg(checkout.path())
+            .output_locked()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let python: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let mut allowlist = code_refresh::ALLOWLIST.to_vec();
+        allowlist.sort_unstable();
+        assert_eq!(python["allowlist"], json!(allowlist));
+        let (files, receipt) = validate(python["raw"].as_str().unwrap().as_bytes()).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(receipt, python["receipt"]);
+        assert_eq!(
+            Dumps::SORTED.dumps(&receipt),
+            Dumps::SORTED.dumps(&python["receipt"])
+        );
+    }
 
-#[test]
-fn binding_preserves_destination_mode_and_label_and_records_applied_state() {
-    let fixture = Fixture::new();
-    let destination = fixture.helper(HELPER, b"original helper");
-    let receipt = receipt('a');
-    let applied = apply(&fixture, &files(&[(HELPER, b"updated helper")]), &receipt).unwrap();
-    assert_eq!(applied, receipt);
-    let staged = fixture.base.join("a".repeat(64)).join("tilo-install");
-    assert_eq!(fs::read(&staged).unwrap(), b"updated helper");
-    assert_eq!(
-        fs::metadata(&staged).unwrap().permissions().mode() & 0o777,
-        0o755
-    );
-    assert_eq!(
-        *fixture.labels.borrow(),
-        vec![(destination.clone(), staged.clone())]
-    );
-    let destination = destination.to_string_lossy().into_owned();
-    assert_eq!(
-        fixture.mounts(),
-        vec![
-            vec![
-                "mount".to_owned(),
-                "--bind".into(),
-                staged.to_string_lossy().into_owned(),
-                destination.clone()
-            ],
-            vec![
-                "mount".into(),
-                "-o".into(),
-                "remount,bind,ro".into(),
-                destination
-            ],
-        ]
-    );
-    // The receipt the backend and the install proof read, as json.dumps wrote it.
-    assert_eq!(
-        fs::read_to_string(fixture.marker()).unwrap(),
-        format!(
-            "{{\"files\": [], \"schema\": \"{SCHEMA}\", \"sha256\": \"{}\", \"source\": {{}}, \"state\": \"applied\"}}\n",
-            "a".repeat(64)
-        )
-    );
-    assert_eq!(
-        fs::metadata(fixture.marker()).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    // The same packet again is already in place: no new generation or mount.
-    assert_eq!(
-        apply(&fixture, &files(&[(HELPER, b"updated helper")]), &receipt).unwrap(),
-        receipt
-    );
-    assert_eq!(fixture.mounts().len(), 2);
-    // A different one after it is a new generation.
-    apply(
-        &fixture,
-        &files(&[(HELPER, b"third helper")]),
-        &self::receipt('b'),
-    )
-    .unwrap();
-    assert_eq!(fixture.mounts().len(), 4);
-}
-
-#[test]
-fn real_backend_flock_refuses_refresh_before_write() {
-    let fixture = Fixture::new();
-    let _held = advisory_lock::FileLock::try_exclusive(
-        fs::File::create(fixture.base.join("lock")).unwrap(),
-    )
-    .unwrap();
-    let error = apply(&fixture, &files(&[]), &receipt('a')).unwrap_err();
-    assert_eq!(
-        error.0,
-        "installer backend is running; code refresh refused"
-    );
-    assert!(fixture.calls.borrow().is_empty());
-    assert!(!fixture.marker().exists());
-}
-
-#[test]
-fn old_backend_independent_unit_and_process_checks() {
-    let mut fixture = Fixture::new();
-    fixture.respond =
-        Box::new(|_| Ok("tilo-install-123.service loaded activating start task".into()));
-    assert_eq!(
-        idle(&fixture).unwrap_err().0,
-        "installer transient unit is running; code refresh refused"
-    );
-    fixture.respond = Box::new(|_| Ok("tilo-install-7.service loaded failed failed task\n".into()));
-    let process = fixture.proc_root.join("123");
-    fs::create_dir(&process).unwrap();
-    fs::write(
-        process.join("cmdline"),
-        b"/usr/libexec/tilo/tilo-installer\0--fullscreen\0",
-    )
-    .unwrap();
-    fs::create_dir(fixture.proc_root.join("self")).unwrap();
-    fs::write(
-        fixture.proc_root.join("self/cmdline"),
-        b"/usr/libexec/tilo-install\0",
-    )
-    .unwrap();
-    idle(&fixture).unwrap();
-    fs::write(
-        process.join("cmdline"),
-        b"/bin/bash\0/usr/libexec/tilo-install\0--disk\0/dev/test",
-    )
-    .unwrap();
-    assert_eq!(
-        idle(&fixture).unwrap_err().0,
-        "installer helper process is running; code refresh refused"
-    );
-}
-
-#[test]
-fn failed_second_mount_rolls_back_new_binds_and_keeps_old_receipt() {
-    let mut fixture = Fixture::new();
-    let first = fixture.helper(HELPER, b"old");
-    fixture.helper(CONTRACT, b"old");
-    fixture.respond = Box::new(|argv| {
-        if argv[..2] == ["mount", "--bind"] && argv[3].ends_with("tilo-boot-mount-contract") {
-            return Err(Error::new("simulated mount failure"));
+    phase bootstrap_transport_resynchronizes_bounded_early_and_repeated_hellos;
+    {
+        let raw = packet(&[(HELPER, b"helper\n")]);
+        let mut script = b"LO-1\n".to_vec();
+        for _ in 0..20 {
+            script.extend_from_slice(b"TILO-CODE-HELLO-1\n");
         }
-        Ok(String::new())
-    });
-    let previous = json!({"sha256": "b".repeat(64), "state": "applied"});
-    fs::write(fixture.marker(), previous.to_string()).unwrap();
-    let error = apply(
-        &fixture,
-        &files(&[(HELPER, b"first"), (CONTRACT, b"second")]),
-        &receipt('a'),
-    )
-    .unwrap_err();
-    assert_eq!(error.0, "simulated mount failure");
-    assert_eq!(
-        fixture.calls.borrow().last().unwrap(),
-        &vec!["umount".to_owned(), first.to_string_lossy().into_owned()]
-    );
-    let marker: Value = serde_json::from_slice(&fs::read(fixture.marker()).unwrap()).unwrap();
-    assert_eq!(marker, previous);
-}
+        script.extend_from_slice(&framed(&raw));
+        let (mut port, written) = Duplex::new(script);
+        let (files, _) = bootstrap_receive(&mut port).unwrap();
+        assert_eq!(files, vec![(HELPER.to_owned(), b"helper\n".to_vec())]);
+        let written = String::from_utf8(written.borrow().clone()).unwrap();
+        assert_eq!(written.matches("installer-code-ready").count(), 20);
+        let (mut port, _) = Duplex::new(b"TILO-CODE-HELLO-1\n".repeat(66));
+        assert_eq!(
+            bootstrap_receive(&mut port).unwrap_err().0,
+            "too many repeated bootstrap hellos"
+        );
+    }
 
-#[test]
-fn failed_rollback_stops_greeter_and_keeps_incomplete_marker() {
-    let mut fixture = Fixture::new();
-    fixture.helper(HELPER, b"old");
-    fixture.respond = Box::new(|argv| {
-        if argv[0] == "umount" || argv[..2] == ["mount", "-o"] {
-            return Err(Error::new("simulated transaction failure"));
-        }
-        Ok(String::new())
-    });
-    let error = apply(&fixture, &files(&[(HELPER, b"new")]), &receipt('a')).unwrap_err();
-    assert_eq!(error.0, "simulated transaction failure");
-    assert_eq!(
-        fixture.calls.borrow().last().unwrap(),
-        &vec![
-            "systemctl".to_owned(),
-            "stop".into(),
-            "greetd.service".into()
-        ]
-    );
-    let marker: Value = serde_json::from_slice(&fs::read(fixture.marker()).unwrap()).unwrap();
-    assert_eq!(marker["state"], json!("applying"));
-}
-
-#[test]
-fn incomplete_or_repeated_generations_are_refused() {
-    let fixture = Fixture::new();
-    fixture.helper(HELPER, b"old");
-    fs::write(fixture.marker(), r#"{"state":"applying"}"#).unwrap();
-    assert_eq!(
-        apply(&fixture, &files(&[(HELPER, b"new")]), &receipt('a'))
-            .unwrap_err()
-            .0,
-        "previous refresh is incomplete; restart this VM"
-    );
-    fs::remove_file(fixture.marker()).unwrap();
-    fs::create_dir(fixture.base.join("a".repeat(64))).unwrap();
-    assert_eq!(
-        apply(&fixture, &files(&[(HELPER, b"new")]), &receipt('a'))
-            .unwrap_err()
-            .0,
-        "this installer code generation was already attempted; restart this VM"
-    );
-    assert!(fixture.mounts().is_empty());
-}
-
-#[test]
-fn readiness_only_after_successful_first_application() {
-    let mut fixture = Fixture::new();
-    fixture.helper(HELPER, b"old");
-    let listed = Cell::new(0);
-    fixture.respond = Box::new(move |argv| {
-        if argv[..2] == ["systemctl", "list-units"] {
-            listed.set(listed.get() + 1);
-            if listed.get() == 1 {
-                return Ok("tilo-install-1.service loaded active running task".into());
+    phase the_bootstrap_handshake_is_the_seed_receipt_not_an_environment_variable;
+    {
+        // `exchange` picks the bootstrap transport when the guest reports the seed
+        // handed over. That decision must come from the receipt the seed writes into
+        // its root-owned runtime directory, never from an environment variable.
+        struct Seed(PathBuf);
+        impl Guest for Seed {
+            fn base(&self) -> PathBuf {
+                self.0.clone()
             }
         }
-        Ok(String::new())
-    });
-    let raw = packet(&[(HELPER, b"new\n")]);
-    let (busy, refused) = Duplex::new(framed(&raw));
-    let (fresh, answered) = Duplex::new(framed(&raw));
-    fixture.ports = RefCell::new(vec![busy, fresh]);
-    fixture.pauses.set(1);
-    assert_eq!(code_refresh::serve(&fixture).unwrap_err().0, "end test");
-    assert_eq!(fixture.readies.get(), 1);
-    assert_eq!(
-        *refused.borrow(),
-        b"{\"error\":\"installer transient unit is running; code refresh refused\",\"ok\":false}\n"
-    );
-    let response: Value = serde_json::from_slice(&answered.borrow()).unwrap();
-    let (_, receipt) = validate(&raw).unwrap();
-    assert_eq!(
-        response,
-        json!({"ok": true, "receipt": receipt, "runtime": {
-            "schema": "tilo.installer-code-runtime-probe.v1", "backend": null}})
-    );
-}
-
-#[test]
-fn backend_probe_requires_actual_transient_enforcing_helper_identity() {
-    let fixture = Fixture::new();
-    let helper = b"# TILO_VM_CODE_REFRESH_PROBE_V1:\nactual helper bytes\n";
-    let valid = json!({"schema": "tilo.installer-code-backend-probe.v1", "transient": 1,
-        "enforcing": true, "domain": "system_u:system_r:init_t:s0",
-        "helper_sha256": sha256_hex(helper)});
-    for changed in [
-        json!({}),
-        json!({"enforcing": false}),
-        json!({"transient": 0}),
-        json!({"domain": "system_u:system_r:xdm_t:s0"}),
-        json!({"helper_sha256": "a".repeat(64)}),
-    ] {
-        let mut row = valid.clone();
-        for (key, value) in changed.as_object().unwrap() {
-            row[key] = value.clone();
-        }
-        let mut stdout = b"boot noise\n".to_vec();
-        stdout.extend_from_slice(row.to_string().as_bytes());
-        *fixture.probe.borrow_mut() = Some(Output {
-            code: Some(0),
-            stdout,
-            stderr: Vec::new(),
-        });
-        let result = backend_probe(&fixture, &files(&[(HELPER, helper)]));
-        if changed == json!({}) {
-            assert_eq!(result.unwrap(), valid);
-        } else {
-            assert_eq!(
-                result.unwrap_err().0,
-                "backend probe does not match the executed enforcing transient helper"
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path().join("code-refresh");
+        fs::create_dir_all(&base).unwrap();
+        let guest = Seed(base.clone());
+        assert!(
+            !guest.bootstrap_handshake(),
+            "a runtime directory without the seed's receipt is not a bootstrap"
+        );
+        fs::write(base.join("bootstrap.json"), b"{}").unwrap();
+        assert!(
+            guest.bootstrap_handshake(),
+            "the seed's receipt must select the bootstrap transport"
+        );
+        // Nothing in the crate may fall back to a `TILO_*` seam in its place: a
+        // variable would make the bootstrap transport reachable from outside the seed
+        // that owns the receipt.
+        for entry in walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
+            let text = fs::read_to_string(&entry).unwrap();
+            assert!(
+                !text.contains("TILO_CODE_BOOTSTRAP_HANDSHAKE"),
+                "{} still reads the retired environment seam",
+                entry.display()
             );
         }
-    }
-    *fixture.probe.borrow_mut() = Some(Output {
-        code: Some(3),
-        stdout: b"out ".to_vec(),
-        stderr: b"err".to_vec(),
-    });
-    assert_eq!(
-        backend_probe(&fixture, &files(&[(HELPER, helper)]))
-            .unwrap_err()
-            .0,
-        "refreshed backend execution probe failed (exit 3): out err"
-    );
-    // A helper without the probe is not executed.
-    assert_eq!(
-        backend_probe(&fixture, &files(&[(HELPER, b"plain")])).unwrap(),
-        Value::Null
-    );
-}
-
-#[test]
-fn bootstrap_transport_resynchronizes_bounded_early_and_repeated_hellos() {
-    let raw = packet(&[(HELPER, b"helper\n")]);
-    let mut script = b"LO-1\n".to_vec();
-    for _ in 0..20 {
-        script.extend_from_slice(b"TILO-CODE-HELLO-1\n");
-    }
-    script.extend_from_slice(&framed(&raw));
-    let (mut port, written) = Duplex::new(script);
-    let (files, _) = bootstrap_receive(&mut port).unwrap();
-    assert_eq!(files, vec![(HELPER.to_owned(), b"helper\n".to_vec())]);
-    let written = String::from_utf8(written.borrow().clone()).unwrap();
-    assert_eq!(written.matches("installer-code-ready").count(), 20);
-    let (mut port, _) = Duplex::new(b"TILO-CODE-HELLO-1\n".repeat(66));
-    assert_eq!(
-        bootstrap_receive(&mut port).unwrap_err().0,
-        "too many repeated bootstrap hellos"
-    );
-}
-
-#[test]
-fn the_bootstrap_handshake_is_the_seed_receipt_not_an_environment_variable() {
-    // `exchange` picks the bootstrap transport when the guest reports the seed
-    // handed over. That decision must come from the receipt the seed writes into
-    // its root-owned runtime directory, never from an environment variable.
-    struct Seed(PathBuf);
-    impl Guest for Seed {
-        fn base(&self) -> PathBuf {
-            self.0.clone()
-        }
-    }
-    let directory = tempfile::tempdir().unwrap();
-    let base = directory.path().join("code-refresh");
-    fs::create_dir_all(&base).unwrap();
-    let guest = Seed(base.clone());
-    assert!(
-        !guest.bootstrap_handshake(),
-        "a runtime directory without the seed's receipt is not a bootstrap"
-    );
-    fs::write(base.join("bootstrap.json"), b"{}").unwrap();
-    assert!(
-        guest.bootstrap_handshake(),
-        "the seed's receipt must select the bootstrap transport"
-    );
-    // Nothing in the crate may fall back to a `TILO_*` seam in its place: a
-    // variable would make the bootstrap transport reachable from outside the seed
-    // that owns the receipt.
-    for entry in walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
-        let text = fs::read_to_string(&entry).unwrap();
-        assert!(
-            !text.contains("TILO_CODE_BOOTSTRAP_HANDSHAKE"),
-            "{} still reads the retired environment seam",
-            entry.display()
-        );
     }
 }
 
@@ -695,86 +599,194 @@ fn walk(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-#[test]
-fn the_shipped_daemon_refuses_outside_the_development_vm() {
-    let output = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
-        .arg("code-refresh")
-        .output_locked()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "tilo-vm-install-proof code-refresh: installer code refresh requires the opted-in development scenario VM\n"
-    );
-    assert!(output.stdout.is_empty());
-}
+tilo_test_env::scenario! {
+    fn the_refresh_checks_the_backend_and_the_development_vm;
 
-#[test]
-fn the_transient_backend_owns_the_lock_and_refuses_an_unapplied_refresh() {
-    // The backend's own lock block, run as the launcher re-execs it.
-    let backend = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/usr/libexec/tilo-install"),
-    )
-    .unwrap();
-    let start = backend
-        .find("# Only the transient backend owns this lock.")
+    phase real_backend_flock_refuses_refresh_before_write;
+    {
+        let fixture = Fixture::new();
+        let _held = advisory_lock::FileLock::try_exclusive(
+            fs::File::create(fixture.base.join("lock")).unwrap(),
+        )
         .unwrap();
-    let end = backend
-        .get(start..)
-        .unwrap()
-        .find("# TILO_VM_CODE_REFRESH_PROBE_V1:")
-        .unwrap()
-        + start;
-    assert!(
-        start
-            > backend
-                .find("if [ -z \"${TILO_INSTALL_TRANSIENT:-}\" ]; then")
-                .unwrap()
-    );
-    let directory = tempfile::tempdir().unwrap();
-    let state = directory.path().join("code-refresh");
-    fs::create_dir(&state).unwrap();
-    let block = backend
-        .get(start..end)
-        .unwrap()
-        .replace("/run/tilo-installer/code-refresh", state.to_str().unwrap())
-        .replace(
-            "/usr/libexec/tilo-vm-install-proof",
-            tilo_test_env::package_binary!("tilo-vm-install-proof")
-                .to_str()
-                .unwrap(),
+        let error = apply(&fixture, &files(&[]), &receipt('a')).unwrap_err();
+        assert_eq!(
+            error.0,
+            "installer backend is running; code refresh refused"
         );
-    let script = directory.path().join("launcher.sh");
-    fs::write(
-        &script,
-        format!(
-            "#!/bin/bash\nset -euo pipefail\nif [ -z \"${{TILO_INSTALL_TRANSIENT:-}}\" ]; then\n \
-             TILO_INSTALL_TRANSIENT=1 bash \"$0\"; exit $?\nfi\n{block}echo backend-ran\n"
-        ),
-    )
-    .unwrap();
-    let run = || Command::new("bash").arg(&script).output_locked().unwrap();
-    let ran = run();
-    assert!(
-        ran.status.success(),
-        "{}",
-        String::from_utf8_lossy(&ran.stderr)
-    );
-    assert_eq!(ran.stdout, b"backend-ran\n");
-    fs::write(
-        state.join("active.json"),
-        r#"{"state":"applied","sha256":"a"}"#,
-    )
-    .unwrap();
-    assert_eq!(run().stdout, b"backend-ran\n");
-    for marker in [r#"{"state":"applying"}"#, "{}", "not json"] {
-        fs::write(state.join("active.json"), marker).unwrap();
-        let refused = run();
-        assert!(!refused.status.success(), "{marker}");
-        assert!(refused.stdout.is_empty(), "{marker}");
+        assert!(fixture.calls.borrow().is_empty());
+        assert!(!fixture.marker().exists());
     }
-    fs::write(state.join("active.json"), r#"{"state":"applying"}"#).unwrap();
-    assert!(
-        String::from_utf8_lossy(&run().stderr).contains("installer code refresh is incomplete")
-    );
+
+    phase old_backend_independent_unit_and_process_checks;
+    {
+        let mut fixture = Fixture::new();
+        fixture.respond =
+            Box::new(|_| Ok("tilo-install-123.service loaded activating start task".into()));
+        assert_eq!(
+            idle(&fixture).unwrap_err().0,
+            "installer transient unit is running; code refresh refused"
+        );
+        fixture.respond = Box::new(|_| Ok("tilo-install-7.service loaded failed failed task\n".into()));
+        let process = fixture.proc_root.join("123");
+        fs::create_dir(&process).unwrap();
+        fs::write(
+            process.join("cmdline"),
+            b"/usr/libexec/tilo/tilo-installer\0--fullscreen\0",
+        )
+        .unwrap();
+        fs::create_dir(fixture.proc_root.join("self")).unwrap();
+        fs::write(
+            fixture.proc_root.join("self/cmdline"),
+            b"/usr/libexec/tilo-install\0",
+        )
+        .unwrap();
+        idle(&fixture).unwrap();
+        fs::write(
+            process.join("cmdline"),
+            b"/bin/bash\0/usr/libexec/tilo-install\0--disk\0/dev/test",
+        )
+        .unwrap();
+        assert_eq!(
+            idle(&fixture).unwrap_err().0,
+            "installer helper process is running; code refresh refused"
+        );
+    }
+
+    phase backend_probe_requires_actual_transient_enforcing_helper_identity;
+    {
+        let fixture = Fixture::new();
+        let helper = b"# TILO_VM_CODE_REFRESH_PROBE_V1:\nactual helper bytes\n";
+        let valid = json!({"schema": "tilo.installer-code-backend-probe.v1", "transient": 1,
+            "enforcing": true, "domain": "system_u:system_r:init_t:s0",
+            "helper_sha256": sha256_hex(helper)});
+        for changed in [
+            json!({}),
+            json!({"enforcing": false}),
+            json!({"transient": 0}),
+            json!({"domain": "system_u:system_r:xdm_t:s0"}),
+            json!({"helper_sha256": "a".repeat(64)}),
+        ] {
+            let mut row = valid.clone();
+            for (key, value) in changed.as_object().unwrap() {
+                row[key] = value.clone();
+            }
+            let mut stdout = b"boot noise\n".to_vec();
+            stdout.extend_from_slice(row.to_string().as_bytes());
+            *fixture.probe.borrow_mut() = Some(Output {
+                code: Some(0),
+                stdout,
+                stderr: Vec::new(),
+            });
+            let result = backend_probe(&fixture, &files(&[(HELPER, helper)]));
+            if changed == json!({}) {
+                assert_eq!(result.unwrap(), valid);
+            } else {
+                assert_eq!(
+                    result.unwrap_err().0,
+                    "backend probe does not match the executed enforcing transient helper"
+                );
+            }
+        }
+        *fixture.probe.borrow_mut() = Some(Output {
+            code: Some(3),
+            stdout: b"out ".to_vec(),
+            stderr: b"err".to_vec(),
+        });
+        assert_eq!(
+            backend_probe(&fixture, &files(&[(HELPER, helper)]))
+                .unwrap_err()
+                .0,
+            "refreshed backend execution probe failed (exit 3): out err"
+        );
+        // A helper without the probe is not executed.
+        assert_eq!(
+            backend_probe(&fixture, &files(&[(HELPER, b"plain")])).unwrap(),
+            Value::Null
+        );
+    }
+
+    phase the_shipped_daemon_refuses_outside_the_development_vm;
+    {
+        let output = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
+            .arg("code-refresh")
+            .output_locked()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "tilo-vm-install-proof code-refresh: installer code refresh requires the opted-in development scenario VM\n"
+        );
+        assert!(output.stdout.is_empty());
+    }
+
+    phase the_transient_backend_owns_the_lock_and_refuses_an_unapplied_refresh;
+    {
+        // The backend's own lock block, run as the launcher re-execs it.
+        let backend = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/usr/libexec/tilo-install"),
+        )
+        .unwrap();
+        let start = backend
+            .find("# Only the transient backend owns this lock.")
+            .unwrap();
+        let end = backend
+            .get(start..)
+            .unwrap()
+            .find("# TILO_VM_CODE_REFRESH_PROBE_V1:")
+            .unwrap()
+            + start;
+        assert!(
+            start
+                > backend
+                    .find("if [ -z \"${TILO_INSTALL_TRANSIENT:-}\" ]; then")
+                    .unwrap()
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("code-refresh");
+        fs::create_dir(&state).unwrap();
+        let block = backend
+            .get(start..end)
+            .unwrap()
+            .replace("/run/tilo-installer/code-refresh", state.to_str().unwrap())
+            .replace(
+                "/usr/libexec/tilo-vm-install-proof",
+                tilo_test_env::package_binary!("tilo-vm-install-proof")
+                    .to_str()
+                    .unwrap(),
+            );
+        let script = directory.path().join("launcher.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/bash\nset -euo pipefail\nif [ -z \"${{TILO_INSTALL_TRANSIENT:-}}\" ]; then\n \
+             TILO_INSTALL_TRANSIENT=1 bash \"$0\"; exit $?\nfi\n{block}echo backend-ran\n"
+            ),
+        )
+        .unwrap();
+        let run = || Command::new("bash").arg(&script).output_locked().unwrap();
+        let ran = run();
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(ran.stdout, b"backend-ran\n");
+        fs::write(
+            state.join("active.json"),
+            r#"{"state":"applied","sha256":"a"}"#,
+        )
+        .unwrap();
+        assert_eq!(run().stdout, b"backend-ran\n");
+        for marker in [r#"{"state":"applying"}"#, "{}", "not json"] {
+            fs::write(state.join("active.json"), marker).unwrap();
+            let refused = run();
+            assert!(!refused.status.success(), "{marker}");
+            assert!(refused.stdout.is_empty(), "{marker}");
+        }
+        fs::write(state.join("active.json"), r#"{"state":"applying"}"#).unwrap();
+        assert!(
+            String::from_utf8_lossy(&run().stderr).contains("installer code refresh is incomplete")
+        );
+    }
 }
