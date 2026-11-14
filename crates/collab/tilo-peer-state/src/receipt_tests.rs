@@ -742,9 +742,9 @@ fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
             policy,
             now(),
         );
-        let actor = format!("bot:{}", crate::state::bot_members_tests::BOT);
         let invoker = |appearance: Option<tilo_actions::Appearance>| {
-            tilo_actions::ActionInvoker::bot(actor.clone()).with_appearance(appearance)
+            tilo_actions::ActionInvoker::bot(crate::state::bot_members_tests::BOT)
+                .with_appearance(appearance)
         };
         let shown = guest_write_by(
             &peer,
