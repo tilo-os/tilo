@@ -30,6 +30,13 @@ impl Session {
 /// a grant the person revokes later stays revoked. Nothing an environment
 /// held is moved or deleted: what its home in the store held before stays
 /// where it is, granted read-only so the shell still reads it at that path.
+///
+/// # Errors
+///
+/// The record could not be changed, or the environment is another
+/// workspace's than the primary one and its tree could not be made: it does
+/// not open, rather than open with a home in the store, outside the
+/// workspace's files, where nothing of the workspace is and nobody looks.
 pub fn with_home(
     records: &Records,
     store: &Store,
@@ -45,6 +52,12 @@ pub fn with_home(
     if !workspace.is_dir()
         && let Err(error) = std::fs::create_dir_all(workspace)
     {
+        if !store.workspace_id().is_primary() {
+            return Err(RecordError::Refused(format!(
+                "the workspace's files, {}, could not be made: {error}",
+                workspace.display()
+            )));
+        }
         tracing::warn!(
             home = %workspace.display(),
             %error,

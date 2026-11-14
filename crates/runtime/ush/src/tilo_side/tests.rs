@@ -433,6 +433,48 @@ tilo_test_env::scenario! {
         let _ = err.take();
     }
 
+    phase a_workspace_environment_whose_tree_cannot_be_made_does_not_open_elsewhere;
+    {
+        const W1: &str = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let files = root.join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        // Where the workspaces' trees go is no folder: the tree cannot be made, whoever asks.
+        std::fs::write(files.join(".workspaces"), "not a folder\n").unwrap();
+        let store = crate::store::Store::at(root.join("store"))
+            .with_workspace(&files)
+            .for_workspace(&crate::workspace::WorkspaceId::parse(Some(W1)).unwrap());
+        let mut state = crate::broker::tests::state(&root);
+        let records = crate::records::Records::of(&store);
+        records
+            .create(&state.environment.key, &state.environment.current())
+            .unwrap();
+        state.environment.records = records;
+
+        let opened = crate::home::with_home(
+            &state.environment.records,
+            &store,
+            &state.environment.key,
+            state.environment.current(),
+        );
+        let tree = files.join(".workspaces").join(W1);
+        let Err(why) = opened else {
+            panic!(
+                "an environment of {W1} opened with its tree unmade: home {:?}",
+                opened.map(|environment| environment.home_dir)
+            );
+        };
+        assert!(
+            why.to_string().contains(&tree.display().to_string()),
+            "the reason names the tree: {why}"
+        );
+        assert!(
+            state.environment.current().home_dir.is_empty(),
+            "no other home is written in its record"
+        );
+    }
+
     phase an_existing_environment_gets_home_without_losing_anything;
     {
         let dir = tempfile::tempdir().unwrap();
