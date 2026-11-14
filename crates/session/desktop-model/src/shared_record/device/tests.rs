@@ -10,6 +10,9 @@ use crate::width::WindowWidth;
 const LAPTOP: &str = "aa";
 const DESK: &str = "bb";
 const PERSON: &str = "ada";
+/// An app that says its windows run only on the device that opened them: a
+/// page lives in that device's engine.
+const BROWSER_APP: &str = "so.tilo.browser";
 
 /// What the device numbered `actor` mints: ids `actor * 1000 + n`.
 const fn minted(actor: u64, n: u64) -> u64 {
@@ -43,28 +46,25 @@ impl Device {
         }
     }
 
-    /// The workspace as other devices are to see it: legacy windows this
-    /// device runs are hosted on it.
+    /// What this device's certificate calls it.
+    fn name(&self) -> &'static str {
+        if self.key == LAPTOP { "Laptop" } else { "Desk" }
+    }
+
+    /// The workspace as other devices are to see it: the windows that run
+    /// only on this device, a legacy window and one whose app says so, are
+    /// hosted on it.
     fn published(&self) -> Workspace {
-        let mut published = self.workspace.clone();
-        for tab in published
-            .strips
-            .iter_mut()
-            .flat_map(|s| &mut s.window_groups)
-            .flat_map(|g| &mut g.tabs)
-        {
-            if let TileContent::Foreign { app_id, .. } = &tab.tile
-                && app_id.starts_with("org.")
-            {
-                tab.tile = TileContent::HostedWindow {
-                    app_id: app_id.clone(),
-                    label: tab.title.clone(),
-                    host: self.key.to_owned(),
-                    host_label: String::new(),
-                };
-            }
-        }
-        published
+        let actor = self.actor;
+        published(
+            self.workspace.clone(),
+            &Host {
+                device: self.key,
+                name: self.name(),
+                runs_here: &|app| app.starts_with("org.") || app == BROWSER_APP,
+            },
+            &|id| id / 1000 == actor,
+        )
     }
 
     /// Write the workspace as it stands here; whether the record changed.
@@ -205,6 +205,32 @@ fn close(workspace: &mut Workspace, tab: u64) {
     }
 }
 
+/// A window of an app that says its windows run only on the device that opened
+/// them, live on that device.
+fn browser(id: u64) -> Tab {
+    Tab {
+        id,
+        title: "Browser".into(),
+        tile: TileContent::Foreign {
+            app_id: BROWSER_APP.into(),
+            surface_id: 88,
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    }
+}
+
+/// The laptop's Browser window, as every other device holds it.
+fn browser_on_the_laptop() -> TileContent {
+    TileContent::HostedWindow {
+        app_id: BROWSER_APP.into(),
+        label: "Browser".into(),
+        host: LAPTOP.into(),
+        host_label: "Laptop".into(),
+    }
+}
+
 const MAIN: u64 = minted(1, 1);
 const LATER: u64 = minted(1, 2);
 const NOTES_GROUP: u64 = minted(1, 10);
@@ -213,6 +239,8 @@ const LATER_GROUP: u64 = minted(1, 12);
 const NOTES: u64 = minted(1, 100);
 const EDITOR: u64 = minted(1, 101);
 const LATER_NOTES: u64 = minted(1, 102);
+const BROWSER_GROUP: u64 = minted(1, 13);
+const BROWSER: u64 = minted(1, 103);
 
 /// The laptop opens a notes window and a legacy editor on its main strip,
 /// and notes on a second strip; both devices hold that.
@@ -417,7 +445,7 @@ fn a_window_runs_on_its_device_and_is_shown_there_wherever_it_is_placed() {
             app_id: "org.gnome.TextEditor".into(),
             label: "Text Editor".into(),
             host: LAPTOP.into(),
-            host_label: String::new(),
+            host_label: "Laptop".into(),
         }
     );
     // A Tilo app opens its own instance everywhere.
@@ -437,6 +465,85 @@ fn a_window_runs_on_its_device_and_is_shown_there_wherever_it_is_placed() {
     );
     assert_eq!(laptop.tab(EDITOR).tile, editor(EDITOR).tile);
     assert_eq!(laptop.tab(NOTES).tile, notes(NOTES).tile);
+}
+
+/// The laptop opens a Browser window beside what [`two_devices`] hold, and the
+/// desk hears of it.
+fn with_a_browser_on_the_laptop() -> (Device, Device) {
+    let (mut laptop, mut desk) = two_devices();
+    laptop.change(|w| {
+        w.strips[0]
+            .window_groups
+            .push(group(BROWSER_GROUP, vec![browser(BROWSER)]));
+    });
+    desk.hear(&mut laptop);
+    (laptop, desk)
+}
+
+#[test]
+fn a_window_bound_to_its_device_is_hosted_there_and_stays_its_own_whatever_another_desk_writes() {
+    let (mut laptop, mut desk) = with_a_browser_on_the_laptop();
+    // The desk holds the laptop's Browser as that window, running on the
+    // laptop: not as an app's window it would open an instance of.
+    assert_eq!(desk.tab(BROWSER).tile, browser_on_the_laptop());
+    // A window that shows a record is still one every device opens for
+    // itself.
+    assert!(matches!(
+        &desk.tab(NOTES).tile,
+        TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.notes"
+    ));
+
+    // The desk lays the laptop's Browser elsewhere and writes: the laptop
+    // shows its own live window there, and the desk still holds it as the
+    // laptop's.
+    desk.change(|w| move_tab(w, BROWSER, LATER, LATER_GROUP));
+    laptop.hear(&mut desk);
+    assert_eq!(laptop.tab(BROWSER).tile, browser(BROWSER).tile);
+    assert!(
+        laptop.places().contains(&(LATER, LATER_GROUP, BROWSER)),
+        "the window is where the other desk put it: {:?}",
+        laptop.places()
+    );
+    assert_eq!(desk.tab(BROWSER).tile, browser_on_the_laptop());
+
+    // Neither desk writing again changes whose window it is.
+    laptop.write();
+    desk.write();
+    desk.hear(&mut laptop);
+    laptop.hear(&mut desk);
+    assert_eq!(laptop.tab(BROWSER).tile, browser(BROWSER).tile);
+    assert_eq!(desk.tab(BROWSER).tile, browser_on_the_laptop());
+}
+
+#[test]
+fn a_bound_window_another_desk_wrote_as_an_app_s_window_is_its_device_s_again() {
+    let (mut laptop, mut desk) = with_a_browser_on_the_laptop();
+    // A desk that took the window for one it opens itself writes it so: the
+    // record now lists an app's window under the laptop's tab.
+    desk.change(|w| {
+        let tab = w
+            .strips
+            .iter_mut()
+            .flat_map(|s| &mut s.window_groups)
+            .flat_map(|g| &mut g.tabs)
+            .find(|tab| tab.id == BROWSER)
+            .unwrap();
+        tab.tile = TileContent::LocalApp {
+            app_id: BROWSER_APP.into(),
+            label: "Browser".into(),
+            note: String::new(),
+        };
+    });
+    laptop.hear(&mut desk);
+    // The laptop's window keeps its tab and its tile.
+    assert_eq!(laptop.tab(BROWSER).tile, browser(BROWSER).tile);
+    assert!(laptop.places().contains(&(MAIN, BROWSER_GROUP, BROWSER)));
+    // Its next write says whose window it is again, and the other desk
+    // holds it as the laptop's, with nothing of its own to open.
+    assert!(laptop.write(), "the laptop publishes its window again");
+    desk.hear(&mut laptop);
+    assert_eq!(desk.tab(BROWSER).tile, browser_on_the_laptop());
+    assert_eq!(laptop.tab(BROWSER).tile, browser(BROWSER).tile);
 }
 
 #[test]

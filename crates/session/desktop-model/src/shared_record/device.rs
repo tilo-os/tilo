@@ -70,6 +70,54 @@ fn written(tile: &TileContent) -> TileContent {
     }
 }
 
+/// This device as the host of the windows that run only on it.
+pub struct Host<'a> {
+    /// This device's key, in hex.
+    pub device: &'a str,
+    /// What its certificate calls it.
+    pub name: &'a str,
+    /// Whether a window of the app `app` runs only on the device that opened
+    /// it, as the app says of its windows: what it shows lives in its process
+    /// there, not in a record another device opens.
+    pub runs_here: &'a dyn Fn(&str) -> bool,
+}
+
+/// `workspace`, this device's desk, as it publishes it to the others: a window
+/// of its own whose app says its windows run only on the device that opened
+/// them is that window hosted on this device ([`TileContent::HostedWindow`]),
+/// which every other device leaves as published and opens no instance for.
+/// `mine` says which windows this device minted: only those are its own to
+/// publish so, and a window an app shows here under another device's id is
+/// that device's.
+#[must_use]
+pub fn published(workspace: Workspace, host: &Host<'_>, mine: &dyn Fn(u64) -> bool) -> Workspace {
+    let mut published = workspace;
+    if host.device.is_empty() {
+        return published;
+    }
+    for tab in published
+        .strips
+        .iter_mut()
+        .flat_map(|strip| &mut strip.window_groups)
+        .flat_map(|group| &mut group.tabs)
+    {
+        let (TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. }) =
+            &tab.tile
+        else {
+            continue;
+        };
+        if mine(tab.id) && (host.runs_here)(app_id) {
+            tab.tile = TileContent::HostedWindow {
+                app_id: app_id.clone(),
+                label: tab.title.clone(),
+                host: host.device.to_owned(),
+                host_label: host.name.to_owned(),
+            };
+        }
+    }
+    published
+}
+
 /// The record's workspace for `identity`: the one under the slot derived from it,
 /// else the first.
 fn record_workspace(
@@ -126,8 +174,9 @@ impl Writer<'_> {
 /// Write `workspace`, the layout of `workspace` as other devices are to see it,
 /// into the record `doc`, changing only what differs from what it holds.
 ///
-/// `workspace` is this device's, with its own legacy windows already turned
-/// into [`TileContent::HostedWindow`]s naming it. A window whose content is
+/// `workspace` is this device's as it publishes it ([`published`]): the
+/// windows that run only on it are [`TileContent::HostedWindow`]s naming it. A
+/// window whose content is
 /// what the record holds to every device keeps the record's value; what this
 /// device made is written as made by `writer.person`. Returns whether it
 /// changed the record.
