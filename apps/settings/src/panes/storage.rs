@@ -14,6 +14,7 @@ use runtime_fs::storage::{
     StorageClient, SyncStorageSnapshot,
 };
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use provider_settings_ui::bound::SettingRows as _;
@@ -21,7 +22,7 @@ use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, EffectReply, Effected, ViewCx};
 use ui::i18n::ArgValue;
 use ui::tilo_resource;
-use ui::widget::{Button, Element};
+use ui::widget::{Button, Element, ListRow};
 
 use crate::area::AreaContext;
 use crate::device_read::{Landed, Landing};
@@ -31,7 +32,7 @@ use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
-    Item, SettingsSection, note, rows, section, section_with, value_row,
+    Item, SettingsSection, block, caption, note, row, rows, section, section_with, value_row,
 };
 
 crate::effects::effect_family!(StorageEffect => answer);
@@ -308,6 +309,9 @@ pub(crate) struct StorageScan {
     pub(crate) snapshot: StorageSnapshot,
     pub(crate) cleanup: Option<CleanupPreview>,
     pub(crate) capacity: Option<os_actions::DiskCapacity>,
+    /// What each installed app is called, by the id the scan filed its tree
+    /// under (the registry's or the manifest's): a tree is named, never its id.
+    pub(crate) names: BTreeMap<String, crate::installed::AppName>,
 }
 
 impl StorageScan {
@@ -319,6 +323,7 @@ impl StorageScan {
                 .as_deref()
                 .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok()),
             capacity: disk.and_then(|path| os_actions::disk_capacity(path).ok()),
+            names: crate::installed::names(),
         }
     }
 
@@ -334,6 +339,7 @@ impl StorageScan {
             },
             cleanup: None,
             capacity: None,
+            names: BTreeMap::new(),
         }
     }
 }
@@ -519,6 +525,45 @@ struct SyncRead {
     residency: Option<DeviceResidency>,
 }
 
+/// Why the pane cannot show sync storage numbers.
+enum Unread {
+    /// No storage service runs on this device: nothing answers its socket.
+    NotRunning,
+    /// The service answered and refused, in its own words.
+    Refused(String),
+    /// The read failed and the operating system's words would say nothing.
+    Unreadable,
+}
+
+impl Unread {
+    fn of(error: &std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+                Self::NotRunning
+            }
+            std::io::ErrorKind::Other => Self::Refused(error.to_string()),
+            _ => Self::Unreadable,
+        }
+    }
+
+    fn said(&self) -> String {
+        match self {
+            Self::NotRunning => t("settings-storage-not-running"),
+            Self::Refused(message) => t_args(
+                "settings-storage-service-unavailable",
+                &[("error", message.as_str().into())],
+            ),
+            Self::Unreadable => t("settings-storage-unreadable"),
+        }
+    }
+}
+
+/// `error` as the pane says it: the state of this device when no service runs,
+/// the service's words when it refused, and never the operating system's own.
+fn unread(error: &std::io::Error) -> String {
+    Unread::of(error).said()
+}
+
 impl SyncRead {
     fn now() -> Self {
         crate::device_read::off_ui_thread();
@@ -526,12 +571,12 @@ impl SyncRead {
             Ok(client) => client,
             Err(error) => {
                 return Self {
-                    snapshot: Err(error.to_string()),
+                    snapshot: Err(unread(&error)),
                     residency: None,
                 };
             }
         };
-        let snapshot = client.snapshot().map_err(|error| error.to_string());
+        let snapshot = client.snapshot().map_err(|error| unread(&error));
         let residency = client.residency().ok().map(|summary| DeviceResidency {
             key: String::new(),
             label: String::new(),
@@ -611,7 +656,7 @@ impl StorageModel {
                     }
                     client.set_cache_policy(policy).map(Ok)
                 })
-                .map_err(|error| error.to_string())
+                .map_err(|error| unread(&error))
                 .and_then(|changed| changed)
         });
         self.policy_result = Some(PolicyAnswer { effect, receiver });
@@ -737,7 +782,7 @@ impl StorageModel {
         let receiver = Landing::start(move || -> Result<String, String> {
             StorageClient::connect(DEFAULT_STORAGE_SOCKET)
                 .and_then(|mut client| job(&mut client))
-                .map_err(|error| error.to_string())
+                .map_err(|error| unread(&error))
         });
         self.residency_job = Some((id, receiver));
     }
@@ -751,7 +796,7 @@ impl StorageModel {
             let receiver = Landing::start(move || -> Result<EvictionReport, String> {
                 StorageClient::connect(DEFAULT_STORAGE_SOCKET)
                     .and_then(|mut client| client.evict(selected))
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| unread(&error))
             });
             self.sync_result = Some(receiver);
         } else {
@@ -1018,22 +1063,28 @@ impl StorageModel {
         };
         let mut largest = scan.snapshot.entries.clone();
         largest.sort_by_key(|e| std::cmp::Reverse(e.bytes));
-        let largest_rows = largest
-            .into_iter()
-            .take(8)
-            .map(|e| {
-                value_row(
-                    &t_args(
-                        "settings-storage-item-meta",
-                        &[
-                            ("owner", e.owner.as_str().into()),
-                            ("category", category_label(e.category).into()),
-                        ],
-                    ),
-                    &ui::format::size(e.bytes),
-                )
-            })
-            .collect();
+        let mut largest_rows: Vec<Item> = Vec::new();
+        let mut said_category: Option<StorageCategory> = None;
+        for entry in largest.into_iter().take(8) {
+            // An app reads by the name and mark it goes by everywhere; the
+            // category is said once above the items that come from it, never
+            // after every name.
+            let named = scan.names.get(&entry.owner);
+            if entry.category != StorageCategory::InstalledApps
+                && said_category != Some(entry.category)
+            {
+                said_category = Some(entry.category);
+                largest_rows.push(block(caption(&category_label(entry.category))));
+            }
+            let title = named.map_or(entry.owner.as_str(), |app| app.name.as_str());
+            let category = named.and_then(|app| app.category.as_deref());
+            let glyph = ui::icons::app_glyph(entry.owner.as_str(), category);
+            largest_rows.push(row(Box::new(
+                ListRow::new(format!("storage.largest/{}", entry.path.display()), title)
+                    .icon(glyph)
+                    .value(ui::format::size(entry.bytes)),
+            )));
+        }
         section(
             &t("settings-storage-largest"),
             if scan.snapshot.entries.is_empty() {
@@ -1233,10 +1284,9 @@ impl StorageModel {
             }
             Err(error) => {
                 self.sync_snapshot = None;
-                self.sync_message = Some(t_args(
-                    "settings-storage-service-unavailable",
-                    &[("error", error.into())],
-                ));
+                // Already the pane's words: [`unread`] said them where the
+                // read happened.
+                self.sync_message = Some(error);
             }
         }
         match read.residency {
@@ -1272,7 +1322,9 @@ fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelecti
 mod tests {
     use super::*;
 
-    fn window_over(device: DeviceStorage) -> ui::prelude::TestApp<crate::SettingsShell> {
+    fn window_over(
+        device: impl StorageDevice + 'static,
+    ) -> ui::prelude::TestApp<crate::SettingsShell> {
         let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
         app.with_widget::<crate::window::Inspected, _>(move |settings| {
             let held = area(settings).unwrap();
@@ -1520,6 +1572,7 @@ mod tests {
                 },
                 cleanup: None,
                 capacity: None,
+                names: BTreeMap::new(),
             }
         }
 
@@ -1694,5 +1747,181 @@ mod tests {
         assert!(cache_budget("7 GB").is_err());
         assert!(cache_budget("lots").is_err());
         assert_eq!(cache_size(Some(123)), None);
+    }
+
+    struct FixedScan(StorageScan);
+
+    impl StorageDevice for FixedScan {
+        fn scan(&self) -> StorageScan {
+            self.0.clone()
+        }
+
+        fn clean_up(&self, _: &CleanupPreview) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn open_tool(&self, _: ToolIntent, _: Option<[u8; 16]>) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// What a device holds, and what its installed apps are called.
+    fn held(entries: Vec<(&str, StorageCategory, u64)>, names: &[(&str, &str)]) -> StorageScan {
+        StorageScan {
+            snapshot: StorageSnapshot {
+                entries: entries
+                    .into_iter()
+                    .map(|(owner, category, bytes)| desktop_policy::StorageEntry {
+                        category,
+                        owner: owner.to_owned(),
+                        path: format!("/trees/{owner}").into(),
+                        bytes,
+                        files: 1,
+                        reclaimable: false,
+                    })
+                    .collect(),
+                unavailable: Vec::new(),
+            },
+            cleanup: None,
+            capacity: None,
+            names: names
+                .iter()
+                .map(|(id, name)| {
+                    (
+                        (*id).to_owned(),
+                        crate::installed::AppName {
+                            name: (*name).to_owned(),
+                            category: None,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// The largest items name each app as it is called everywhere and say a
+    /// category once, never the id or "in Installed apps" after every name.
+    #[test]
+    fn the_largest_items_name_apps_and_say_a_category_once() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = window_over(FixedScan(held(
+            vec![
+                ("so.tilo.chat", StorageCategory::InstalledApps, 7_300_000),
+                ("so.tilo.chat", StorageCategory::Cache, 900_000),
+                ("so.tilo.browser", StorageCategory::Cache, 400_000),
+                ("so.tilo.notes", StorageCategory::AppData, 300_000),
+            ],
+            &[
+                ("so.tilo.chat", "Chat"),
+                ("so.tilo.browser", "Browser"),
+                ("so.tilo.notes", "Notes"),
+            ],
+        )));
+        let text = said(&mut app);
+        // The group as the pane shows it: from its heading to the next one.
+        let start = text
+            .iter()
+            .position(|line| line == &t("settings-storage-largest"))
+            .expect("the pane lists the largest items");
+        let end = text
+            .iter()
+            .position(|line| line == &t("settings-storage-cleanup"))
+            .expect("the cleanup group follows it");
+        let largest = &text[start..end];
+        let says = |needle: &str| largest.iter().any(|line| line.contains(needle));
+        for name in ["Chat", "Browser", "Notes"] {
+            assert!(says(name), "{name} is shown by name: {largest:#?}");
+        }
+        assert!(says(&ui::format::size(7_300_000)), "{largest:#?}");
+        assert!(
+            !says("so.tilo."),
+            "a tree is named, never by its id: {largest:#?}"
+        );
+        for category in [
+            "settings-storage-cat-apps",
+            "settings-storage-cat-cache",
+            "settings-storage-cat-data",
+        ] {
+            assert!(
+                !says(&format!(" in {}", t(category))),
+                "an item carries no category after its name: {largest:#?}"
+            );
+        }
+        assert_eq!(
+            largest
+                .iter()
+                .filter(|line| *line == &t("settings-storage-cat-apps"))
+                .count(),
+            0,
+            "an app item needs no category line: {largest:#?}"
+        );
+        for category in ["settings-storage-cat-cache", "settings-storage-cat-data"] {
+            assert_eq!(
+                largest.iter().filter(|line| *line == &t(category)).count(),
+                1,
+                "{category} is said once above its items: {largest:#?}"
+            );
+        }
+    }
+
+    /// No sync storage service is a state of this device, not an operating
+    /// system error: the pane says so and shows no error text.
+    #[test]
+    fn no_sync_storage_service_reads_as_a_state_never_an_os_error() {
+        ui::i18n::I18nManager::init("en-US");
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::ConnectionRefused,
+        ] {
+            assert_eq!(
+                unread(&std::io::Error::from(kind)),
+                t("settings-storage-not-running")
+            );
+        }
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::WouldBlock,
+        ] {
+            let said = unread(&std::io::Error::from(kind));
+            assert_eq!(said, t("settings-storage-unreadable"));
+            assert!(!said.contains("os error"), "{said}");
+        }
+        // A service that answered and refused keeps its own words.
+        assert_eq!(
+            unread(&std::io::Error::other("the replica is locked")),
+            t_args(
+                "settings-storage-service-unavailable",
+                &[("error", "the replica is locked".into())]
+            )
+        );
+        let mut app = window_over(FixedScan(held(Vec::new(), &[])));
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
+            let mut model = area(settings).unwrap().model().borrow_mut();
+            model.take_read(SyncRead {
+                snapshot: Err(unread(&std::io::Error::from(std::io::ErrorKind::NotFound))),
+                residency: None,
+            });
+            model.changed = true;
+        })
+        .expect("the Settings window is mounted");
+        app.settle();
+        let text = said(&mut app);
+        let state = t("settings-storage-not-running");
+        assert!(
+            text.iter().any(|line| line == &state),
+            "the section says the state in its own words: {text:#?}"
+        );
+        assert!(
+            text.iter()
+                .all(|line| !line.contains(&t("settings-storage-service-ended"))),
+            "{text:#?}"
+        );
+        for line in &text {
+            assert!(
+                !line.contains("os error") && !line.contains("No such file"),
+                "no operating system error reaches the pane: {line}"
+            );
+        }
     }
 }

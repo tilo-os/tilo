@@ -1829,6 +1829,8 @@ settings-storage-nothing-reclaimable = Nothing can be freed right now.
 settings-storage-offline = You are offline. Local synced content stays available and cannot be reclaimed.
 settings-storage-accounting-unavailable = How much synced storage this device holds can't be read.
 settings-storage-service-unavailable = Synced storage can’t be reached: { $error }
+settings-storage-not-running = Synced storage isn’t running on this device.
+settings-storage-unreadable = Synced storage couldn’t be read.
 settings-storage-service-ended = Reading synced storage stopped unexpectedly. Try again.
 settings-storage-freed-queued = Freed { $size } from { $evicted } { $evicted ->
     [one] synced file
@@ -2136,7 +2138,6 @@ settings-printers-driverless = Driverless printer
 settings-region-preview-week = Week starts on
 settings-region-shared-body = Apps use these formats for dates, times, numbers and measurements.
 settings-region-shared-card = Shared formats
-settings-storage-item-meta = { $owner } in { $category }
 settings-storage-tools-caption = Use Backups to protect files before making storage changes.
 settings-storage-this-device = { $device } (this device)
 settings-storage-this-device-unnamed = This device

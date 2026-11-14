@@ -71,25 +71,11 @@ fn installed_notification_apps_from(
     desktop_entries: &[desktop_entry::DesktopEntry],
 ) -> Vec<InstalledNotificationApp> {
     let mut apps = BTreeMap::new();
-    for entry in package_store::list_installed().unwrap_or_default() {
-        let Ok(manifest) = tilo_app_package::view::read_manifest(&entry.manifest_path) else {
-            continue;
-        };
-        if manifest.entrypoint.gui_bin().is_none() {
+    for app in crate::installed::installed() {
+        if app.manifest.entrypoint.gui_bin().is_none() || !valid_app_id(&app.package_id) {
             continue;
         }
-        let id = if manifest.package_id.is_empty() {
-            entry.id
-        } else {
-            manifest.package_id
-        };
-        if !valid_app_id(&id) {
-            continue;
-        }
-        let name = manifest
-            .name
-            .unwrap_or_else(|| package_store::display_name_for_package_id(&id));
-        apps.entry(id).or_insert(name);
+        apps.entry(app.package_id).or_insert(app.name);
     }
     for entry in desktop_entries {
         let id = match &entry.source {

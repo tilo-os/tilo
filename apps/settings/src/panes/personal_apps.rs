@@ -408,27 +408,17 @@ fn open_workspace_defaults() -> Result<(), String> {
 /// under the same names), so a default the host set is named here rather than shown as an id.
 pub fn installed_candidates() -> Vec<AppCandidate> {
     let mut out = Vec::new();
-    for entry in package_store::list_installed().unwrap_or_default() {
-        let Ok(manifest) = tilo_app_package::view::read_manifest(&entry.manifest_path) else {
-            continue;
-        };
-        if manifest.entrypoint.gui_bin().is_none() {
+    for app in crate::installed::installed() {
+        if app.manifest.entrypoint.gui_bin().is_none() {
             continue;
         }
-        let package_id = if manifest.package_id.is_empty() {
-            entry.id
-        } else {
-            manifest.package_id
-        };
         out.push(AppCandidate::package(
-            package_id.clone(),
-            manifest
-                .name
-                .unwrap_or_else(|| package_store::display_name_for_package_id(&package_id)),
-            &manifest.opens_ext,
-            &manifest.opens_mime,
-            &manifest.opens_schemes,
-            manifest.opens_secondary,
+            app.package_id,
+            app.name,
+            &app.manifest.opens_ext,
+            &app.manifest.opens_mime,
+            &app.manifest.opens_schemes,
+            app.manifest.opens_secondary,
         ));
     }
     out.extend(host_candidates(&out));

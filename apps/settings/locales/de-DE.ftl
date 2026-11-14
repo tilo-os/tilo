@@ -1829,6 +1829,8 @@ settings-storage-nothing-reclaimable = Im Moment lässt sich nichts freigeben.
 settings-storage-offline = Du bist offline. Lokale synchronisierte Inhalte bleiben verfügbar und können nicht freigegeben werden.
 settings-storage-accounting-unavailable = Wie viel synchronisierter Speicher auf diesem Gerät liegt, lässt sich nicht lesen.
 settings-storage-service-unavailable = Synchronisierter Speicher ist nicht erreichbar: { $error }
+settings-storage-not-running = Synchronisierter Speicher läuft auf diesem Gerät nicht.
+settings-storage-unreadable = Synchronisierter Speicher konnte nicht gelesen werden.
 settings-storage-service-ended = Das Lesen des synchronisierten Speichers wurde unerwartet beendet. Versuche es erneut.
 settings-storage-freed-queued = { $size } aus { $evicted } { $evicted ->
     [one] synchronisierten Datei
@@ -2136,7 +2138,6 @@ settings-printers-driverless = Drucker ohne zusätzlichen Treiber
 settings-region-preview-week = Wochenbeginn
 settings-region-shared-body = Apps verwenden diese Formate für Datum, Uhrzeit, Zahlen und Maße.
 settings-region-shared-card = Gemeinsame Formate
-settings-storage-item-meta = { $owner } in { $category }
 settings-storage-tools-caption = Sichere Dateien mit Sicherungen, bevor du Änderungen am Speicher vornimmst.
 settings-storage-this-device = { $device } (dieses Gerät)
 settings-storage-this-device-unnamed = Dieses Gerät
