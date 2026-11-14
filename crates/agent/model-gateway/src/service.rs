@@ -3182,12 +3182,14 @@ mod tests {
         }
     }
 
-    /// The launcher handoff bytes are pinned; local vision input is closed and bounded, never routes to
-    /// a LAN or hosted endpoint, requires an immutable model revision, and uses a fixed prompt with no
-    /// identity request; local face input is bounded and never requests identity.
-    #[test]
-    fn local_vision_is_pinned_bounded_local_and_never_asks_identity() {
-        // Phase: launcher_handoff_bytes_are_pinned.
+    tilo_test_env::scenario! {
+        /// The launcher handoff bytes are pinned; local vision input is closed and bounded, never
+        /// routes to a LAN or hosted endpoint, requires an immutable model revision, and uses a
+        /// fixed prompt with no identity request; local face input is bounded and never requests
+        /// identity.
+        fn local_vision_is_pinned_bounded_local_and_never_asks_identity;
+
+        phase launcher_handoff_bytes_are_pinned;
         // The launcher's handoff: a little-endian `u32` length, then JSON.
         {
             use std::io::Write as _;
@@ -3205,7 +3207,7 @@ mod tests {
             assert_eq!(handoff.unwrap().app_id, AGENT_APP);
         }
 
-        // Phase: local_vision_input_is_closed_and_bounded.
+        phase local_vision_input_is_closed_and_bounded;
         {
             assert!(validate_vision_image(&vision_image()).is_ok());
             let mut foreign = vision_image();
@@ -3219,7 +3221,7 @@ mod tests {
             assert!(validate_vision_image(&bad_hash).is_err());
         }
 
-        // Phase: local_vision_prompt_is_fixed_and_contains_no_identity_request.
+        phase local_vision_prompt_is_fixed_and_contains_no_identity_request;
         {
             let body = local_vision_body("vision-model", &vision_image());
             let encoded = body.to_string();
@@ -3229,7 +3231,7 @@ mod tests {
             assert_eq!(body["model"], "vision-model");
         }
 
-        // Phase: local_face_input_is_bounded_and_prompt_never_requests_identity.
+        phase local_face_input_is_bounded_and_prompt_never_requests_identity;
         {
             let face = FaceImage {
                 photo_id: "photos.photo:one".into(),
@@ -3384,12 +3386,13 @@ mod tests {
         (result, fake.into_inner())
     }
 
-    /// Transient provider failures are retried at the gateway, settled ones are not, Retry-After and
-    /// transient statuses are classified on the HTTP side, and retries never consume room needed for an
-    /// answer.
-    #[test]
-    fn the_gateway_retries_only_transient_failures_within_the_answer_budget() {
-        // Phase: transient_provider_failures_are_retried_at_the_gateway.
+    tilo_test_env::scenario! {
+        /// Transient provider failures are retried at the gateway, settled ones are not,
+        /// Retry-After and transient statuses are classified on the HTTP side, and retries never
+        /// consume room needed for an answer.
+        fn the_gateway_retries_only_transient_failures_within_the_answer_budget;
+
+        phase transient_provider_failures_are_retried_at_the_gateway;
         {
             let (result, fake) = run_retries(
                 Duration::from_secs(20),
@@ -3403,7 +3406,7 @@ mod tests {
             );
         }
 
-        // Phase: settled_provider_failures_are_not_retried.
+        phase settled_provider_failures_are_not_retried;
         {
             for status in [400, 401, 403, 404, 422] {
                 let (result, fake) = run_retries(Duration::from_secs(20), &[Err((status, None))]);
@@ -3413,7 +3416,7 @@ mod tests {
             }
         }
 
-        // Phase: retry_after_and_transient_statuses_are_classified_on_the_http_side.
+        phase retry_after_and_transient_statuses_are_classified_on_the_http_side;
         {
             for status in [408, 429, 500, 502, 503, 504, 529] {
                 assert_eq!(again_after(status, None), Again::Soon(None));
@@ -3425,7 +3428,7 @@ mod tests {
             assert_eq!(again_after(401, Some("1")), Again::Never);
         }
 
-        // Phase: retries_never_consume_room_needed_for_an_answer.
+        phase retries_never_consume_room_needed_for_an_answer;
         {
             let (result, fake) = run_retries(Duration::from_secs(3), &[Err((529, Some("1")))]);
             assert!(result.is_err());
