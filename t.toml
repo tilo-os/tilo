@@ -5599,6 +5599,30 @@ outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/sig
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1200
 
+# A fresh tilo.sh stack admits a page: the site's own page, in a headless Chromium, reaches the
+# host over the browser's WebTransport and is let into the Lounge through its door, on a stack
+# brought up fresh from what the checks beside it built (so it compiles nothing). One flow of
+# test-e2e.sh's, not the whole gate, so a page the stack turns away fails here by name in about a
+# minute, where the entry-speed flows would show it only as a slower number.
+#
+# Nested, because the stack's services are sandboxed with bwrap (stack.sh), which needs namespaces
+# of its own.
+[[check]]
+name = "tilo-sh-admits-a-page"
+# No egress: as e2e, the page and the stack meet on loopback alone.
+run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/entry entry"
+needs = ["lounge-gate-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
+# changes as updates land, from mirrors no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+env = { TILO_CLI_BIN = "/target/publish/lounge-gate/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/entry/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_SH_ENTRY_VISITS = "1" }
+requires = ["arch=x86_64"]
+isolation = "nested"
+# What it found, not what it ran: the visitor's page and console, and the stack's own logs.
+outputs = ["/target/entry/*.log", "/target/entry/entry/**", "/target/entry/state/logs/*.log"]
+evidence = ["/target/entry/state/logs/**"]
+timeout_secs = 600
+
 # One returning person reloading their workspace page twenty times in one browser, on the e2e
 # stack: per reload, how long the old page held the navigation and what its pagehide listeners
 # took, and the count of reloads that crashed the tab or never came back; then a second tab
