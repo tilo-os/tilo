@@ -109,116 +109,120 @@ fn valid_shortcut(key: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Keys are validated, unique and never shadow a reserved command.
-    #[test]
-    fn reader_keys_are_validated_and_unique() {
-        let mut keys = ReaderKeys::default();
-        assert_eq!(keys.shortcut("next-page", "."), ".");
-        assert!(keys.set_shortcut("next-page", "J"));
-        assert_eq!(keys.shortcut("next-page", "."), "j");
-        assert!(
-            !keys.set_shortcut("bookmark", "j"),
-            "another command has it"
-        );
-        assert!(!keys.set_shortcut("bookmark", "t"), "reserved");
-        assert!(!keys.set_shortcut("bookmark", "−"), "reserved");
-        assert!(!keys.set_shortcut("bookmark", "\n"), "not printable");
-        assert!(!keys.set_shortcut("bookmark", "ab"), "not one key");
-        assert!(keys.set_shortcut("bookmark", "x"));
-        assert_eq!(keys.shortcut("bookmark", "b"), "x");
-    }
+    tilo_test_env::scenario! {
+        fn reader_keys_bind_validate_and_roam;
 
-    /// Each key that is refused, and why; a refusal binds nothing and leaves
-    /// the keys already chosen as they were.
-    #[test]
-    fn a_refused_key_binds_nothing() {
-        let mut keys = ReaderKeys::default();
-        assert!(keys.set_shortcut("next-page", "j"));
-        for (key, why) in [
-            ("", "no key at all"),
-            (" ", "a space"),
-            ("\u{a0}", "a no-break space"),
-            ("\t", "a tab"),
-            ("\u{0}", "a control character"),
-            ("\u{7f}", "delete"),
-            ("jj", "one key twice"),
-            ("J", "another command has it, in capitals"),
-            ("T", "reserved, in capitals"),
-            ("4", "a reserved digit"),
-            ("=", "reserved"),
-        ] {
-            assert!(!keys.set_shortcut("bookmark", key), "{why}: {key:?}");
-            assert_eq!(keys.shortcut("bookmark", "b"), "b", "{why}: {key:?}");
-            assert_eq!(keys.shortcut("next-page", "."), "j", "{why}: {key:?}");
-        }
-        assert!(
-            keys.set_shortcut("next-page", "J"),
-            "a command may be given the key it has"
-        );
-        assert_eq!(keys.shortcut("next-page", "."), "j");
-    }
-
-    /// No more bindings are kept than the bound: one command more is
-    /// refused, while a command that has a key can still change it.
-    #[test]
-    fn the_bindings_kept_are_bounded() {
-        let key = |n: usize| {
-            char::from_u32(0x4e00 + u32::try_from(n).unwrap())
-                .unwrap()
-                .to_string()
-        };
-        let mut keys = ReaderKeys::default();
-        for n in 0..MAX_BINDINGS {
+        phase reader_keys_are_validated_and_unique;
+        // Keys are validated, unique and never shadow a reserved command.
+        {
+            let mut keys = ReaderKeys::default();
+            assert_eq!(keys.shortcut("next-page", "."), ".");
+            assert!(keys.set_shortcut("next-page", "J"));
+            assert_eq!(keys.shortcut("next-page", "."), "j");
             assert!(
-                keys.set_shortcut(&format!("command-{n}"), &key(n)),
-                "binding {n} of {MAX_BINDINGS}"
+                !keys.set_shortcut("bookmark", "j"),
+                "another command has it"
             );
+            assert!(!keys.set_shortcut("bookmark", "t"), "reserved");
+            assert!(!keys.set_shortcut("bookmark", "−"), "reserved");
+            assert!(!keys.set_shortcut("bookmark", "\n"), "not printable");
+            assert!(!keys.set_shortcut("bookmark", "ab"), "not one key");
+            assert!(keys.set_shortcut("bookmark", "x"));
+            assert_eq!(keys.shortcut("bookmark", "b"), "x");
         }
-        let spare = key(MAX_BINDINGS);
-        assert!(
-            !keys.set_shortcut("one-more", &spare),
-            "a command beyond the bound is refused"
-        );
-        assert_eq!(keys.shortcut("one-more", "m"), "m");
-        assert!(
-            keys.set_shortcut("command-0", &spare),
-            "a command that has a key changes it at the bound"
-        );
-        assert_eq!(keys.shortcut("command-0", "0"), spare);
-        let last = MAX_BINDINGS - 1;
-        assert_eq!(keys.shortcut(&format!("command-{last}"), "0"), key(last));
-    }
 
-    /// A key kept before the reader reserved it, or written by something
-    /// other than the reader (the settings roam between devices and
-    /// versions), is not the command's key: the command reads its default.
-    #[test]
-    fn a_kept_key_the_reader_would_refuse_reads_as_the_default() {
-        for (kept, read) in [
-            ("x", "x"),
-            ("t", "b"),
-            ("T", "b"),
-            ("4", "b"),
-            ("\u{2212}", "b"),
-            ("ab", "b"),
-            ("", "b"),
-            (" ", "b"),
-            ("\n", "b"),
-        ] {
-            let keys = ReaderKeys {
-                stored: None,
-                unsaved: ReaderKeySettings {
-                    shortcuts: BTreeMap::from([("bookmark".to_owned(), kept.to_owned())]),
-                },
+        phase a_refused_key_binds_nothing;
+        // Each key that is refused, and why; a refusal binds nothing and leaves
+        // the keys already chosen as they were.
+        {
+            let mut keys = ReaderKeys::default();
+            assert!(keys.set_shortcut("next-page", "j"));
+            for (key, why) in [
+                ("", "no key at all"),
+                (" ", "a space"),
+                ("\u{a0}", "a no-break space"),
+                ("\t", "a tab"),
+                ("\u{0}", "a control character"),
+                ("\u{7f}", "delete"),
+                ("jj", "one key twice"),
+                ("J", "another command has it, in capitals"),
+                ("T", "reserved, in capitals"),
+                ("4", "a reserved digit"),
+                ("=", "reserved"),
+            ] {
+                assert!(!keys.set_shortcut("bookmark", key), "{why}: {key:?}");
+                assert_eq!(keys.shortcut("bookmark", "b"), "b", "{why}: {key:?}");
+                assert_eq!(keys.shortcut("next-page", "."), "j", "{why}: {key:?}");
+            }
+            assert!(
+                keys.set_shortcut("next-page", "J"),
+                "a command may be given the key it has"
+            );
+            assert_eq!(keys.shortcut("next-page", "."), "j");
+        }
+
+        phase the_bindings_kept_are_bounded;
+        // No more bindings are kept than the bound: one command more is
+        // refused, while a command that has a key can still change it.
+        {
+            let key = |n: usize| {
+                char::from_u32(0x4e00 + u32::try_from(n).unwrap())
+                    .unwrap()
+                    .to_string()
             };
-            assert_eq!(keys.shortcut("bookmark", "b"), read, "{kept:?}");
+            let mut keys = ReaderKeys::default();
+            for n in 0..MAX_BINDINGS {
+                assert!(
+                    keys.set_shortcut(&format!("command-{n}"), &key(n)),
+                    "binding {n} of {MAX_BINDINGS}"
+                );
+            }
+            let spare = key(MAX_BINDINGS);
+            assert!(
+                !keys.set_shortcut("one-more", &spare),
+                "a command beyond the bound is refused"
+            );
+            assert_eq!(keys.shortcut("one-more", "m"), "m");
+            assert!(
+                keys.set_shortcut("command-0", &spare),
+                "a command that has a key changes it at the bound"
+            );
+            assert_eq!(keys.shortcut("command-0", "0"), spare);
+            let last = MAX_BINDINGS - 1;
+            assert_eq!(keys.shortcut(&format!("command-{last}"), "0"), key(last));
         }
-    }
 
-    /// The keys a person chooses are their own settings, which roam to
-    /// their other devices.
-    #[test]
-    fn reader_keys_are_personal_settings() {
-        assert_eq!(ReaderKeySettings::SCOPE, Scope::Personal);
+        phase a_kept_key_the_reader_would_refuse_reads_as_the_default;
+        // A key kept before the reader reserved it, or written by something
+        // other than the reader (the settings roam between devices and
+        // versions), is not the command's key: the command reads its default.
+        {
+            for (kept, read) in [
+                ("x", "x"),
+                ("t", "b"),
+                ("T", "b"),
+                ("4", "b"),
+                ("\u{2212}", "b"),
+                ("ab", "b"),
+                ("", "b"),
+                (" ", "b"),
+                ("\n", "b"),
+            ] {
+                let keys = ReaderKeys {
+                    stored: None,
+                    unsaved: ReaderKeySettings {
+                        shortcuts: BTreeMap::from([("bookmark".to_owned(), kept.to_owned())]),
+                    },
+                };
+                assert_eq!(keys.shortcut("bookmark", "b"), read, "{kept:?}");
+            }
+        }
+
+        phase reader_keys_are_personal_settings;
+        // The keys a person chooses are their own settings, which roam to
+        // their other devices.
+        {
+            assert_eq!(ReaderKeySettings::SCOPE, Scope::Personal);
+        }
     }
 }

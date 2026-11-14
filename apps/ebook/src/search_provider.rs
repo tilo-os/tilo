@@ -807,389 +807,6 @@ mod tests {
         crate::content::load_sample_library()
     }
 
-    /// Metadata and full-text hits (including cross-boundary phrases and remote books) resolve to exact canonical resources and locations.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    fn search_hits_resolve_to_canonical_book_locations() {
-        {
-            let books = sample_books();
-            let provider = BookSearchProvider::new(&books, &[]);
-            let hit = provider
-                .search("")
-                .into_iter()
-                .find(|hit| hit.kind == CHAPTER_KIND)
-                .expect("chapter");
-            let address = hit.action_id;
-            let resource = provider
-                .books
-                .resolve(&address)
-                .expect("exact local resource");
-            assert_eq!(resource.id.as_str(), address);
-            assert!(resource.children.is_empty());
-            assert_eq!(resource.actions.len(), 1);
-        }
-
-        {
-            let books: Arc<Vec<Arc<Book>>> =
-                Arc::new(sample_books().into_iter().map(Arc::new).collect());
-            let needle = books[0].chapters[0]
-                .blocks
-                .iter()
-                .map(crate::model::Block::plain_text)
-                .find_map(|text| {
-                    text.split_whitespace()
-                        .find(|word| word.len() > 7)
-                        .map(str::to_owned)
-                })
-                .expect("prose");
-            let provider = BookSearchProvider::new_shared(
-                Arc::clone(&books),
-                Arc::new(Vec::new()),
-                Arc::new(Vec::new()),
-                7,
-            );
-            assert!(
-                provider
-                    .search(&needle)
-                    .iter()
-                    .any(|hit| hit.kind == LOCATION_KIND)
-            );
-            assert!(provider.body_entries() > 0);
-            assert!(Arc::ptr_eq(&books, &provider.books.books));
-        }
-
-        {
-            let books = vec![Book {
-                id: "stable-book".into(),
-                title: "Exact places".into(),
-                chapters: vec![crate::model::Chapter {
-                    title: "Opening".into(),
-                    blocks: vec![
-                        crate::model::Block::Paragraph {
-                            spans: vec![crate::model::Span::plain("an earlier paragraph")],
-                        },
-                        crate::model::Block::Paragraph {
-                            spans: vec![crate::model::Span::plain("the unique needle is here")],
-                        },
-                    ],
-                }],
-                ..Book::default()
-            }];
-            let provider = BookSearchProvider::new(&books, &[]);
-            let hit = provider
-                .search("unique needle")
-                .into_iter()
-                .find(|hit| hit.kind == LOCATION_KIND)
-                .expect("precise full-text location");
-            let address = hit.action_id;
-            assert_eq!(address, "ebook.location:stable-book:0:1");
-            let resource = provider
-                .books
-                .resolve(&address)
-                .expect("exact lazy location resource");
-            let open = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "open")
-                .expect("open action");
-            let encoded = open
-                .build_json(&serde_json::Map::new())
-                .expect("a bound open takes no arguments");
-            assert_eq!(
-                BooksEffect::from_payload(&encoded.payload).unwrap(),
-                BooksEffect::Open {
-                    book: "stable-book".into(),
-                    chapter: 0,
-                    page: 0,
-                    block: Some(1),
-                }
-            );
-        }
-
-        {
-            let mut beta = crate::model::Span::plain("beta");
-            beta.space_before = true;
-            let books = vec![Book {
-                id: "boundaries".into(),
-                title: "Boundaries".into(),
-                chapters: vec![crate::model::Chapter {
-                    title: "Boundaries".into(),
-                    blocks: vec![
-                        crate::model::Block::Paragraph {
-                            spans: vec![crate::model::Span::plain("alpha"), beta],
-                        },
-                        crate::model::Block::Paragraph {
-                            spans: vec![crate::model::Span::plain("gamma")],
-                        },
-                    ],
-                }],
-                ..Book::default()
-            }];
-            let provider = BookSearchProvider::new(&books, &[]);
-            let locations = |query: &str| {
-                provider
-                    .search(query)
-                    .into_iter()
-                    .filter(|result| result.kind == LOCATION_KIND)
-                    .count()
-            };
-            // Spans of one block read as one text; each block is its own
-            // location, so a phrase never runs from one into the next.
-            assert_eq!(locations("alpha beta"), 1);
-            assert_eq!(locations("beta gamma"), 0);
-        }
-
-        {
-            let entry = LibraryEntry {
-                id: "book:remote".into(),
-                title: "Remote Atlas".into(),
-                author: "Mira Peer".into(),
-                subject: "Maps".into(),
-                shared: true,
-                added: 1,
-                content: ui::tilo_resource::Bytes::Empty,
-                index: ui::tilo_resource::Bytes::Empty,
-            };
-            let provider = BookSearchProvider::new_with_registry(&[], &[], &[entry]);
-            let hit = provider.search("mira").pop().expect("metadata");
-            let resource = provider
-                .books
-                .resolve(&hit.action_id)
-                .expect("actionable remote resource");
-            let open = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "download")
-                .expect("download");
-            assert_eq!(open.label, "Download and open");
-            assert!(matches!(
-                open.contract.execution,
-                tilo_actions::ExecutionMode::Background { .. }
-            ));
-            let operation = open
-                .build_json(&serde_json::Map::new())
-                .expect("a bound download takes no arguments");
-            assert_eq!(
-                BooksEffect::from_payload(&operation.payload).unwrap(),
-                BooksEffect::Download {
-                    book: "book:remote".into(),
-                }
-            );
-            let remove = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "remove-from-library")
-                .expect("remote remove");
-            assert_eq!(remove.contract.risk, RiskLevel::Destructive);
-            assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
-            assert!(!remove.contract.can_be_undone());
-        }
-    }
-
-    /// The index retains no prose, finds late hits within bounds without library scans, and reuses allocations across rebuilds.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    fn index_bounds_work_and_memory_on_large_libraries() {
-        {
-            let books = Arc::new(vec![Arc::new(Book {
-                id: "large".into(),
-                title: "Large book".into(),
-                chapters: vec![crate::model::Chapter {
-                    title: "Long chapter".into(),
-                    blocks: vec![crate::model::Block::Math {
-                        expr: ui::math::MathExpr::new(),
-                        source: format!("{} tail-needle", "x".repeat(1_000_000)),
-                        display: false,
-                    }],
-                }],
-                ..Book::default()
-            })]);
-            let provider = BookSearchProvider::new_shared(
-                Arc::clone(&books),
-                Arc::new(Vec::new()),
-                Arc::new(Vec::new()),
-                3,
-            );
-            let mut cursor = None;
-            let mut found = false;
-            loop {
-                let page = provider.search_page(&"tail-needle".into(), cursor.as_ref(), 32, 8);
-                found |= page.results.iter().any(|hit| hit.kind == LOCATION_KIND);
-                let Some(next) = page.next else { break };
-                cursor = Some(next);
-            }
-            assert!(found);
-            // The catalogue keeps the books' prose by reference, not a copy.
-            assert_eq!(Arc::strong_count(&books), 2);
-        }
-
-        {
-            let (provider, hit) =
-                assert_late_hit_reachable(|corpus| late_hit_library(corpus, false), 3_000);
-            assert_eq!(hit.kind, BOOK_KIND);
-            assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let address = hit.action_id;
-            assert_eq!(address, crate::resource::book_place_resource("book:002999"));
-            assert!(provider.books.resolve(&address).is_some());
-        }
-
-        {
-            let (provider, hit) =
-                assert_late_hit_reachable(|corpus| late_hit_library(corpus, true), 3_000);
-            assert_eq!(hit.kind, LOCATION_KIND);
-            let address = hit.action_id;
-            assert_eq!(address, "ebook.location:book:002999:0:0");
-            assert!(provider.books.resolve(&address).is_some());
-        }
-
-        {
-            let books = (0..3_000)
-                .map(|i| Book {
-                    id: format!("book:{i:06}"),
-                    title: format!("Library volume {i}"),
-                    ..Book::default()
-                })
-                .collect::<Vec<_>>();
-            let provider = BookSearchProvider::new(&books, &[]);
-            let page = provider.search_page(&"volume 2999".into(), None, 4, 4);
-            assert_eq!(page.inspected, 1);
-            assert_eq!(page.results.len(), 1);
-            assert_eq!(page.results[0].title, "Library volume 2999");
-        }
-
-        {
-            let books = (0..1_000)
-                .map(|index| Book {
-                    id: format!("book-{index}"),
-                    title: "Shelf".into(),
-                    chapters: vec![crate::model::Chapter {
-                        title: "Opening".into(),
-                        blocks: vec![crate::model::Block::Paragraph {
-                            spans: vec![crate::model::Span::plain("present words only")],
-                        }],
-                    }],
-                    ..Book::default()
-                })
-                .collect::<Vec<_>>();
-            let provider = BookSearchProvider::new(&books, &[]);
-            let first = provider.search_page(&"absent".into(), None, 3, 3);
-            assert!(first.results.is_empty());
-            assert_eq!(first.inspected, 0);
-            assert!(first.next.is_none(), "no chapter holds the query's grams");
-        }
-
-        {
-            // Every chapter holds each word of "dog cat" but not the phrase.
-            let books = (0..40)
-                .map(|index| Book {
-                    id: format!("book-{index}"),
-                    chapters: vec![crate::model::Chapter {
-                        blocks: vec![crate::model::Block::Paragraph {
-                            spans: vec![crate::model::Span::plain("cat dog g ca")],
-                        }],
-                        ..crate::model::Chapter::default()
-                    }],
-                    ..Book::default()
-                })
-                .collect::<Vec<_>>();
-            let provider = BookSearchProvider::new(&books, &[]);
-            let mut cursor = None;
-            let mut inspected = 0;
-            loop {
-                let page = provider.search_page(&"dog cat".into(), cursor.as_ref(), 7, 7);
-                assert!(page.results.is_empty());
-                assert!(page.inspected <= 7);
-                inspected += page.inspected;
-                let Some(next) = page.next else { break };
-                cursor = Some(next);
-            }
-            assert_eq!(inspected, 0);
-        }
-
-        {
-            let books: Arc<Vec<Arc<Book>>> =
-                Arc::new(sample_books().into_iter().map(Arc::new).collect());
-            let first = BookSearchProvider::new_shared(
-                Arc::clone(&books),
-                Arc::new(Vec::new()),
-                Arc::new(Vec::new()),
-                1,
-            );
-            assert!(first.body_entries() > 0);
-            assert!(first.shares_prose_index_with(&first));
-            let mut annotation = Annotation::new(&books[0].id, AnnoKind::Note, 0, 0);
-            annotation.note = "a fresh note".into();
-            let annotated = BookSearchProvider::new_shared_after(
-                &first,
-                Arc::clone(&books),
-                Arc::new(vec![annotation]),
-                Arc::new(Vec::new()),
-                2,
-            );
-            assert!(annotated.shares_prose_index_with(&first));
-            assert!(
-                annotated
-                    .search("fresh note")
-                    .iter()
-                    .any(|hit| hit.kind == ANNOTATION_KIND)
-            );
-
-            let mut fewer = (*books).clone();
-            let removed = fewer.remove(0);
-            let rebuilt = BookSearchProvider::new_shared_after(
-                &annotated,
-                Arc::new(fewer),
-                Arc::new(Vec::new()),
-                Arc::new(Vec::new()),
-                3,
-            );
-            assert!(
-                rebuilt.shares_prose_index_with(&annotated),
-                "the books a rebuild keeps are not re-read"
-            );
-            let needle = removed.chapters[0]
-                .blocks
-                .iter()
-                .map(crate::model::Block::plain_text)
-                .find(|text| text.len() > 40)
-                .expect("prose");
-            assert!(
-                rebuilt.search(&needle).iter().all(|hit| !hit
-                    .subtitle
-                    .as_deref()
-                    .unwrap_or("")
-                    .contains(&removed.title)),
-                "a removed book's prose is no longer indexed"
-            );
-        }
-
-        {
-            let books: Arc<Vec<Arc<Book>>> = Arc::new(vec![Arc::new(Book {
-                id: "kept".into(),
-                chapters: vec![crate::model::Chapter {
-                    blocks: vec![crate::model::Block::Math {
-                        expr: ui::math::MathExpr::new(),
-                        source: "reader-owned body".into(),
-                        display: false,
-                    }],
-                    ..crate::model::Chapter::default()
-                }],
-                ..Book::default()
-            })]);
-            let mut next = Arc::clone(&books);
-            Arc::make_mut(&mut next).push(Arc::new(Book::default()));
-            assert!(Arc::ptr_eq(&books[0], &next[0]));
-            Arc::make_mut(&mut next).remove(1);
-            assert!(Arc::ptr_eq(&books[0], &next[0]));
-        }
-    }
-
     fn late_hit_library(
         corpus: impl Iterator<Item = CorpusRow>,
         in_body: bool,
@@ -1220,253 +837,628 @@ mod tests {
         BookSearchProvider::new(&books, &[])
     }
 
-    #[test]
-    fn body_pages_clamp_and_resume_without_prose_copies() {
+    tilo_test_env::scenario! {
+        fn book_search_resolves_bounds_and_fails_closed;
+
+        phase search_hits_resolve_to_canonical_book_locations;
+        // Metadata and full-text hits (including cross-boundary phrases and remote books) resolve to exact canonical resources and locations.
         {
-            let books = (0..257)
-                .map(|i| Book {
-                    id: format!("book:{i}"),
-                    title: "Other".into(),
+            {
+                let books = sample_books();
+                let provider = BookSearchProvider::new(&books, &[]);
+                let hit = provider
+                    .search("")
+                    .into_iter()
+                    .find(|hit| hit.kind == CHAPTER_KIND)
+                    .expect("chapter");
+                let address = hit.action_id;
+                let resource = provider
+                    .books
+                    .resolve(&address)
+                    .expect("exact local resource");
+                assert_eq!(resource.id.as_str(), address);
+                assert!(resource.children.is_empty());
+                assert_eq!(resource.actions.len(), 1);
+            }
+
+            {
+                let books: Arc<Vec<Arc<Book>>> =
+                    Arc::new(sample_books().into_iter().map(Arc::new).collect());
+                let needle = books[0].chapters[0]
+                    .blocks
+                    .iter()
+                    .map(crate::model::Block::plain_text)
+                    .find_map(|text| {
+                        text.split_whitespace()
+                            .find(|word| word.len() > 7)
+                            .map(str::to_owned)
+                    })
+                    .expect("prose");
+                let provider = BookSearchProvider::new_shared(
+                    Arc::clone(&books),
+                    Arc::new(Vec::new()),
+                    Arc::new(Vec::new()),
+                    7,
+                );
+                assert!(
+                    provider
+                        .search(&needle)
+                        .iter()
+                        .any(|hit| hit.kind == LOCATION_KIND)
+                );
+                assert!(provider.body_entries() > 0);
+                assert!(Arc::ptr_eq(&books, &provider.books.books));
+            }
+
+            {
+                let books = vec![Book {
+                    id: "stable-book".into(),
+                    title: "Exact places".into(),
                     chapters: vec![crate::model::Chapter {
-                        title: "Chapter".into(),
+                        title: "Opening".into(),
+                        blocks: vec![
+                            crate::model::Block::Paragraph {
+                                spans: vec![crate::model::Span::plain("an earlier paragraph")],
+                            },
+                            crate::model::Block::Paragraph {
+                                spans: vec![crate::model::Span::plain("the unique needle is here")],
+                            },
+                        ],
+                    }],
+                    ..Book::default()
+                }];
+                let provider = BookSearchProvider::new(&books, &[]);
+                let hit = provider
+                    .search("unique needle")
+                    .into_iter()
+                    .find(|hit| hit.kind == LOCATION_KIND)
+                    .expect("precise full-text location");
+                let address = hit.action_id;
+                assert_eq!(address, "ebook.location:stable-book:0:1");
+                let resource = provider
+                    .books
+                    .resolve(&address)
+                    .expect("exact lazy location resource");
+                let open = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "open")
+                    .expect("open action");
+                let encoded = open
+                    .build_json(&serde_json::Map::new())
+                    .expect("a bound open takes no arguments");
+                assert_eq!(
+                    BooksEffect::from_payload(&encoded.payload).unwrap(),
+                    BooksEffect::Open {
+                        book: "stable-book".into(),
+                        chapter: 0,
+                        page: 0,
+                        block: Some(1),
+                    }
+                );
+            }
+
+            {
+                let mut beta = crate::model::Span::plain("beta");
+                beta.space_before = true;
+                let books = vec![Book {
+                    id: "boundaries".into(),
+                    title: "Boundaries".into(),
+                    chapters: vec![crate::model::Chapter {
+                        title: "Boundaries".into(),
+                        blocks: vec![
+                            crate::model::Block::Paragraph {
+                                spans: vec![crate::model::Span::plain("alpha"), beta],
+                            },
+                            crate::model::Block::Paragraph {
+                                spans: vec![crate::model::Span::plain("gamma")],
+                            },
+                        ],
+                    }],
+                    ..Book::default()
+                }];
+                let provider = BookSearchProvider::new(&books, &[]);
+                let locations = |query: &str| {
+                    provider
+                        .search(query)
+                        .into_iter()
+                        .filter(|result| result.kind == LOCATION_KIND)
+                        .count()
+                };
+                // Spans of one block read as one text; each block is its own
+                // location, so a phrase never runs from one into the next.
+                assert_eq!(locations("alpha beta"), 1);
+                assert_eq!(locations("beta gamma"), 0);
+            }
+
+            {
+                let entry = LibraryEntry {
+                    id: "book:remote".into(),
+                    title: "Remote Atlas".into(),
+                    author: "Mira Peer".into(),
+                    subject: "Maps".into(),
+                    shared: true,
+                    added: 1,
+                    content: ui::tilo_resource::Bytes::Empty,
+                    index: ui::tilo_resource::Bytes::Empty,
+                };
+                let provider = BookSearchProvider::new_with_registry(&[], &[], &[entry]);
+                let hit = provider.search("mira").pop().expect("metadata");
+                let resource = provider
+                    .books
+                    .resolve(&hit.action_id)
+                    .expect("actionable remote resource");
+                let open = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "download")
+                    .expect("download");
+                assert_eq!(open.label, "Download and open");
+                assert!(matches!(
+                    open.contract.execution,
+                    tilo_actions::ExecutionMode::Background { .. }
+                ));
+                let operation = open
+                    .build_json(&serde_json::Map::new())
+                    .expect("a bound download takes no arguments");
+                assert_eq!(
+                    BooksEffect::from_payload(&operation.payload).unwrap(),
+                    BooksEffect::Download {
+                        book: "book:remote".into(),
+                    }
+                );
+                let remove = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "remove-from-library")
+                    .expect("remote remove");
+                assert_eq!(remove.contract.risk, RiskLevel::Destructive);
+                assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
+                assert!(!remove.contract.can_be_undone());
+            }
+        }
+
+        phase index_bounds_work_and_memory_on_large_libraries;
+        // The index retains no prose, finds late hits within bounds without library scans, and reuses allocations across rebuilds.
+        {
+            {
+                let books = Arc::new(vec![Arc::new(Book {
+                    id: "large".into(),
+                    title: "Large book".into(),
+                    chapters: vec![crate::model::Chapter {
+                        title: "Long chapter".into(),
                         blocks: vec![crate::model::Block::Math {
                             expr: ui::math::MathExpr::new(),
-                            source: "common body term".into(),
+                            source: format!("{} tail-needle", "x".repeat(1_000_000)),
                             display: false,
                         }],
                     }],
                     ..Book::default()
-                })
-                .collect::<Vec<_>>();
-            let provider = BookSearchProvider::new(&books, &[]);
-            let mut cursor = None;
-            let mut seen = 0;
-            loop {
-                let page = provider.search_page(&"common".into(), cursor.as_ref(), 17, 5);
-                assert!(page.inspected <= 17);
-                assert!(page.results.len() <= 5);
-                seen += page.results.len();
-                let Some(next) = page.next else { break };
-                cursor = Some(next);
+                })]);
+                let provider = BookSearchProvider::new_shared(
+                    Arc::clone(&books),
+                    Arc::new(Vec::new()),
+                    Arc::new(Vec::new()),
+                    3,
+                );
+                let mut cursor = None;
+                let mut found = false;
+                loop {
+                    let page = provider.search_page(&"tail-needle".into(), cursor.as_ref(), 32, 8);
+                    found |= page.results.iter().any(|hit| hit.kind == LOCATION_KIND);
+                    let Some(next) = page.next else { break };
+                    cursor = Some(next);
+                }
+                assert!(found);
+                // The catalogue keeps the books' prose by reference, not a copy.
+                assert_eq!(Arc::strong_count(&books), 2);
             }
-            assert_eq!(seen, 257);
-        }
 
-        {
-            let books = vec![Book {
-                id: "huge".into(),
-                title: "Huge".into(),
-                chapters: vec![crate::model::Chapter {
-                    title: "One block".into(),
-                    blocks: vec![crate::model::Block::Paragraph {
-                        spans: vec![crate::model::Span::plain(format!(
-                            "{}needle-at-the-end",
-                            "x".repeat(4_096)
-                        ))],
-                    }],
-                }],
-                ..Book::default()
-            }];
-            let provider = BookSearchProvider::new(&books, &[]);
-            let page = provider.search_page(&"needle-at-the-end".into(), None, 1, 1);
-            assert_eq!(page.inspected, 1);
-            assert_eq!(page.results.len(), 1, "the index finds the tail directly");
-        }
+            {
+                let (provider, hit) =
+                    assert_late_hit_reachable(|corpus| late_hit_library(corpus, false), 3_000);
+                assert_eq!(hit.kind, BOOK_KIND);
+                assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+                let address = hit.action_id;
+                assert_eq!(address, crate::resource::book_place_resource("book:002999"));
+                assert!(provider.books.resolve(&address).is_some());
+            }
 
-        {
-            let mut tail = crate::model::Span::plain("tail-needle");
-            tail.space_before = true;
-            let books = vec![Book {
-                id: "multi-span".into(),
-                title: "Multi span".into(),
-                chapters: vec![crate::model::Chapter {
-                    title: "One paragraph".into(),
-                    blocks: vec![crate::model::Block::Paragraph {
-                        spans: vec![crate::model::Span::plain("x".repeat(1_000_000)), tail],
-                    }],
-                }],
-                ..Book::default()
-            }];
-            let provider = BookSearchProvider::new(&books, &[]);
-            let page = provider.search_page(&"tail-needle".into(), None, 1, 1);
-            assert_eq!(page.inspected, 1);
-            assert!(
-                page.results
+            {
+                let (provider, hit) =
+                    assert_late_hit_reachable(|corpus| late_hit_library(corpus, true), 3_000);
+                assert_eq!(hit.kind, LOCATION_KIND);
+                let address = hit.action_id;
+                assert_eq!(address, "ebook.location:book:002999:0:0");
+                assert!(provider.books.resolve(&address).is_some());
+            }
+
+            {
+                let books = (0..3_000)
+                    .map(|i| Book {
+                        id: format!("book:{i:06}"),
+                        title: format!("Library volume {i}"),
+                        ..Book::default()
+                    })
+                    .collect::<Vec<_>>();
+                let provider = BookSearchProvider::new(&books, &[]);
+                let page = provider.search_page(&"volume 2999".into(), None, 4, 4);
+                assert_eq!(page.inspected, 1);
+                assert_eq!(page.results.len(), 1);
+                assert_eq!(page.results[0].title, "Library volume 2999");
+            }
+
+            {
+                let books = (0..1_000)
+                    .map(|index| Book {
+                        id: format!("book-{index}"),
+                        title: "Shelf".into(),
+                        chapters: vec![crate::model::Chapter {
+                            title: "Opening".into(),
+                            blocks: vec![crate::model::Block::Paragraph {
+                                spans: vec![crate::model::Span::plain("present words only")],
+                            }],
+                        }],
+                        ..Book::default()
+                    })
+                    .collect::<Vec<_>>();
+                let provider = BookSearchProvider::new(&books, &[]);
+                let first = provider.search_page(&"absent".into(), None, 3, 3);
+                assert!(first.results.is_empty());
+                assert_eq!(first.inspected, 0);
+                assert!(first.next.is_none(), "no chapter holds the query's grams");
+            }
+
+            {
+                // Every chapter holds each word of "dog cat" but not the phrase.
+                let books = (0..40)
+                    .map(|index| Book {
+                        id: format!("book-{index}"),
+                        chapters: vec![crate::model::Chapter {
+                            blocks: vec![crate::model::Block::Paragraph {
+                                spans: vec![crate::model::Span::plain("cat dog g ca")],
+                            }],
+                            ..crate::model::Chapter::default()
+                        }],
+                        ..Book::default()
+                    })
+                    .collect::<Vec<_>>();
+                let provider = BookSearchProvider::new(&books, &[]);
+                let mut cursor = None;
+                let mut inspected = 0;
+                loop {
+                    let page = provider.search_page(&"dog cat".into(), cursor.as_ref(), 7, 7);
+                    assert!(page.results.is_empty());
+                    assert!(page.inspected <= 7);
+                    inspected += page.inspected;
+                    let Some(next) = page.next else { break };
+                    cursor = Some(next);
+                }
+                assert_eq!(inspected, 0);
+            }
+
+            {
+                let books: Arc<Vec<Arc<Book>>> =
+                    Arc::new(sample_books().into_iter().map(Arc::new).collect());
+                let first = BookSearchProvider::new_shared(
+                    Arc::clone(&books),
+                    Arc::new(Vec::new()),
+                    Arc::new(Vec::new()),
+                    1,
+                );
+                assert!(first.body_entries() > 0);
+                assert!(first.shares_prose_index_with(&first));
+                let mut annotation = Annotation::new(&books[0].id, AnnoKind::Note, 0, 0);
+                annotation.note = "a fresh note".into();
+                let annotated = BookSearchProvider::new_shared_after(
+                    &first,
+                    Arc::clone(&books),
+                    Arc::new(vec![annotation]),
+                    Arc::new(Vec::new()),
+                    2,
+                );
+                assert!(annotated.shares_prose_index_with(&first));
+                assert!(
+                    annotated
+                        .search("fresh note")
+                        .iter()
+                        .any(|hit| hit.kind == ANNOTATION_KIND)
+                );
+
+                let mut fewer = (*books).clone();
+                let removed = fewer.remove(0);
+                let rebuilt = BookSearchProvider::new_shared_after(
+                    &annotated,
+                    Arc::new(fewer),
+                    Arc::new(Vec::new()),
+                    Arc::new(Vec::new()),
+                    3,
+                );
+                assert!(
+                    rebuilt.shares_prose_index_with(&annotated),
+                    "the books a rebuild keeps are not re-read"
+                );
+                let needle = removed.chapters[0]
+                    .blocks
                     .iter()
-                    .any(|result| result.kind == LOCATION_KIND)
-            );
-        }
-    }
+                    .map(crate::model::Block::plain_text)
+                    .find(|text| text.len() > 40)
+                    .expect("prose");
+                assert!(
+                    rebuilt.search(&needle).iter().all(|hit| !hit
+                        .subtitle
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains(&removed.title)),
+                    "a removed book's prose is no longer indexed"
+                );
+            }
 
-    /// Continuations from an earlier projection and duplicate rows fail closed.
-    #[test]
-    fn hostile_or_stale_cursors_and_rows_fail_closed() {
-        {
-            let book = Book {
-                id: "duplicate".into(),
-                ..Book::default()
-            };
-            let provider = BookSearchProvider::new(&[book.clone(), book], &[]);
-            assert!(provider.search("duplicate").is_empty());
-            assert!(
-                provider
-                    .books
-                    .resolve(&crate::resource::book_place_resource("duplicate"))
-                    .is_none(),
-                "an ambiguous projection publishes no row"
-            );
-        }
-    }
-
-    /// Exact book and annotation resources export the reader's actions, index labels compactly and invalidate stale sessions.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    fn exact_resources_share_the_reader_action_contracts() {
-        {
-            let mut note = Annotation::new("book", AnnoKind::Note, 0, 0).with_note("keep me");
-            note.id = uuid::Uuid::from_u128(42);
-            let books = vec![Book {
-                id: "book".into(),
-                ..Book::default()
-            }];
-            let provider = BookSearchProvider::new(&books, &[note.clone()]);
-            let hit = provider.search("keep").pop().expect("annotation row");
-            let resource = provider
-                .books
-                .resolve(&hit.action_id)
-                .expect("exact annotation resource");
-            let delete = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "delete-annotation")
-                .expect("the library's delete, bound to the note");
-            let encoded = delete
-                .build_json(&serde_json::Map::new())
-                .expect("a bound delete takes no arguments");
-            let action: <crate::resource::Ebook as ui::tilo_resource::Resource>::Action =
-                serde_json::from_slice(&encoded.payload).expect("the library's action");
-            let mut library = ui::tilo_resource::Replica::<crate::resource::Ebook>::from_doc(
-                crate::resource::doc_with(&[], std::slice::from_ref(&note)),
-            );
-            library.apply_action(&action).unwrap();
-            assert!(
-                library.state().unwrap().marks().is_empty(),
-                "the search hit's delete deletes the note it names"
-            );
-        }
-
-        {
-            let book = Book {
-                id: "book".into(),
-                title: "Contract book".into(),
-                chapters: vec![crate::model::Chapter {
-                    blocks: vec![crate::model::Block::Paragraph {
-                        spans: vec![crate::model::Span::plain("body")],
+            {
+                let books: Arc<Vec<Arc<Book>>> = Arc::new(vec![Arc::new(Book {
+                    id: "kept".into(),
+                    chapters: vec![crate::model::Chapter {
+                        blocks: vec![crate::model::Block::Math {
+                            expr: ui::math::MathExpr::new(),
+                            source: "reader-owned body".into(),
+                            display: false,
+                        }],
+                        ..crate::model::Chapter::default()
                     }],
-                    ..crate::model::Chapter::default()
-                }],
-                ..Book::default()
-            };
-            let group = uuid::Uuid::from_u128(7);
-            let highlight = Annotation::new("book", AnnoKind::Highlight, 0, 0)
-                .with_group(group)
-                .with_excerpt("amber passage");
-            let comment = Annotation::new("book", AnnoKind::Note, 0, 0)
-                .with_group(group)
-                .with_note("peer comment");
-            let note = Annotation::new("book", AnnoKind::Note, 0, 0).with_note("reader note");
-            let provider = BookSearchProvider::new(&[book], &[highlight, comment, note]);
+                    ..Book::default()
+                })]);
+                let mut next = Arc::clone(&books);
+                Arc::make_mut(&mut next).push(Arc::new(Book::default()));
+                assert!(Arc::ptr_eq(&books[0], &next[0]));
+                Arc::make_mut(&mut next).remove(1);
+                assert!(Arc::ptr_eq(&books[0], &next[0]));
+            }
+        }
 
-            let book_resource = provider
-                .books
-                .resolve(
-                    &provider
-                        .search("contract book")
-                        .into_iter()
-                        .find(|result| result.kind == BOOK_KIND)
-                        .map(|result| result.action_id)
-                        .expect("book address"),
-                )
-                .expect("book resource");
-            let share = book_resource
-                .actions
-                .iter()
-                .find(|action| action.id == "share")
-                .expect("share");
-            assert!(matches!(
-                share.contract.execution,
-                tilo_actions::ExecutionMode::Background { .. }
-            ));
-            assert_eq!(share.contract.retry, tilo_actions::RetryPolicy::Idempotent);
-            assert_eq!(share.contract.result, tilo_actions::ResultSpec::Job);
-            let remove = book_resource
-                .actions
-                .iter()
-                .find(|action| action.id == "remove-from-library")
-                .expect("remove");
-            assert_eq!(remove.contract.risk, RiskLevel::Destructive);
-            assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
-            // Undo puts the row back but not this device's access to the
-            // book's file, so removing asks first through every door.
-            assert!(!remove.contract.can_be_undone());
+        phase body_pages_clamp_and_resume_without_prose_copies;
+        {
+            {
+                let books = (0..257)
+                    .map(|i| Book {
+                        id: format!("book:{i}"),
+                        title: "Other".into(),
+                        chapters: vec![crate::model::Chapter {
+                            title: "Chapter".into(),
+                            blocks: vec![crate::model::Block::Math {
+                                expr: ui::math::MathExpr::new(),
+                                source: "common body term".into(),
+                                display: false,
+                            }],
+                        }],
+                        ..Book::default()
+                    })
+                    .collect::<Vec<_>>();
+                let provider = BookSearchProvider::new(&books, &[]);
+                let mut cursor = None;
+                let mut seen = 0;
+                loop {
+                    let page = provider.search_page(&"common".into(), cursor.as_ref(), 17, 5);
+                    assert!(page.inspected <= 17);
+                    assert!(page.results.len() <= 5);
+                    seen += page.results.len();
+                    let Some(next) = page.next else { break };
+                    cursor = Some(next);
+                }
+                assert_eq!(seen, 257);
+            }
 
-            let highlight_resource = provider
-                .books
-                .resolve(
-                    &provider
-                        .search("amber")
-                        .pop()
-                        .map(|result| result.action_id)
-                        .expect("highlight address"),
-                )
-                .expect("highlight resource");
-            let mut highlight_actions = highlight_resource
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
-                .collect::<Vec<_>>();
-            highlight_actions.sort_unstable();
-            assert_eq!(
-                highlight_actions,
-                [
-                    "add-comment",
-                    "change-color",
-                    "delete-highlight",
-                    "open",
-                    "read-highlight"
-                ]
-            );
+            {
+                let books = vec![Book {
+                    id: "huge".into(),
+                    title: "Huge".into(),
+                    chapters: vec![crate::model::Chapter {
+                        title: "One block".into(),
+                        blocks: vec![crate::model::Block::Paragraph {
+                            spans: vec![crate::model::Span::plain(format!(
+                                "{}needle-at-the-end",
+                                "x".repeat(4_096)
+                            ))],
+                        }],
+                    }],
+                    ..Book::default()
+                }];
+                let provider = BookSearchProvider::new(&books, &[]);
+                let page = provider.search_page(&"needle-at-the-end".into(), None, 1, 1);
+                assert_eq!(page.inspected, 1);
+                assert_eq!(page.results.len(), 1, "the index finds the tail directly");
+            }
 
-            for (query, expected) in [
-                (
-                    "peer comment",
-                    ["delete-annotation", "open", "read-annotation"].as_slice(),
-                ),
-                (
-                    "reader note",
-                    ["delete-annotation", "open", "read-annotation"].as_slice(),
-                ),
-            ] {
+            {
+                let mut tail = crate::model::Span::plain("tail-needle");
+                tail.space_before = true;
+                let books = vec![Book {
+                    id: "multi-span".into(),
+                    title: "Multi span".into(),
+                    chapters: vec![crate::model::Chapter {
+                        title: "One paragraph".into(),
+                        blocks: vec![crate::model::Block::Paragraph {
+                            spans: vec![crate::model::Span::plain("x".repeat(1_000_000)), tail],
+                        }],
+                    }],
+                    ..Book::default()
+                }];
+                let provider = BookSearchProvider::new(&books, &[]);
+                let page = provider.search_page(&"tail-needle".into(), None, 1, 1);
+                assert_eq!(page.inspected, 1);
+                assert!(
+                    page.results
+                        .iter()
+                        .any(|result| result.kind == LOCATION_KIND)
+                );
+            }
+        }
+
+        phase hostile_or_stale_cursors_and_rows_fail_closed;
+        // Continuations from an earlier projection and duplicate rows fail closed.
+        {
+            {
+                let book = Book {
+                    id: "duplicate".into(),
+                    ..Book::default()
+                };
+                let provider = BookSearchProvider::new(&[book.clone(), book], &[]);
+                assert!(provider.search("duplicate").is_empty());
+                assert!(
+                    provider
+                        .books
+                        .resolve(&crate::resource::book_place_resource("duplicate"))
+                        .is_none(),
+                    "an ambiguous projection publishes no row"
+                );
+            }
+        }
+
+        phase exact_resources_share_the_reader_action_contracts;
+        // Exact book and annotation resources export the reader's actions, index labels compactly and invalidate stale sessions.
+        {
+            {
+                let mut note = Annotation::new("book", AnnoKind::Note, 0, 0).with_note("keep me");
+                note.id = uuid::Uuid::from_u128(42);
+                let books = vec![Book {
+                    id: "book".into(),
+                    ..Book::default()
+                }];
+                let provider = BookSearchProvider::new(&books, &[note.clone()]);
+                let hit = provider.search("keep").pop().expect("annotation row");
                 let resource = provider
+                    .books
+                    .resolve(&hit.action_id)
+                    .expect("exact annotation resource");
+                let delete = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "delete-annotation")
+                    .expect("the library's delete, bound to the note");
+                let encoded = delete
+                    .build_json(&serde_json::Map::new())
+                    .expect("a bound delete takes no arguments");
+                let action: <crate::resource::Ebook as ui::tilo_resource::Resource>::Action =
+                    serde_json::from_slice(&encoded.payload).expect("the library's action");
+                let mut library = ui::tilo_resource::Replica::<crate::resource::Ebook>::from_doc(
+                    crate::resource::doc_with(&[], std::slice::from_ref(&note)),
+                );
+                library.apply_action(&action).unwrap();
+                assert!(
+                    library.state().unwrap().marks().is_empty(),
+                    "the search hit's delete deletes the note it names"
+                );
+            }
+
+            {
+                let book = Book {
+                    id: "book".into(),
+                    title: "Contract book".into(),
+                    chapters: vec![crate::model::Chapter {
+                        blocks: vec![crate::model::Block::Paragraph {
+                            spans: vec![crate::model::Span::plain("body")],
+                        }],
+                        ..crate::model::Chapter::default()
+                    }],
+                    ..Book::default()
+                };
+                let group = uuid::Uuid::from_u128(7);
+                let highlight = Annotation::new("book", AnnoKind::Highlight, 0, 0)
+                    .with_group(group)
+                    .with_excerpt("amber passage");
+                let comment = Annotation::new("book", AnnoKind::Note, 0, 0)
+                    .with_group(group)
+                    .with_note("peer comment");
+                let note = Annotation::new("book", AnnoKind::Note, 0, 0).with_note("reader note");
+                let provider = BookSearchProvider::new(&[book], &[highlight, comment, note]);
+
+                let book_resource = provider
                     .books
                     .resolve(
                         &provider
-                            .search(query)
+                            .search("contract book")
+                            .into_iter()
+                            .find(|result| result.kind == BOOK_KIND)
+                            .map(|result| result.action_id)
+                            .expect("book address"),
+                    )
+                    .expect("book resource");
+                let share = book_resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "share")
+                    .expect("share");
+                assert!(matches!(
+                    share.contract.execution,
+                    tilo_actions::ExecutionMode::Background { .. }
+                ));
+                assert_eq!(share.contract.retry, tilo_actions::RetryPolicy::Idempotent);
+                assert_eq!(share.contract.result, tilo_actions::ResultSpec::Job);
+                let remove = book_resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "remove-from-library")
+                    .expect("remove");
+                assert_eq!(remove.contract.risk, RiskLevel::Destructive);
+                assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
+                // Undo puts the row back but not this device's access to the
+                // book's file, so removing asks first through every door.
+                assert!(!remove.contract.can_be_undone());
+
+                let highlight_resource = provider
+                    .books
+                    .resolve(
+                        &provider
+                            .search("amber")
                             .pop()
                             .map(|result| result.action_id)
-                            .expect("annotation address"),
+                            .expect("highlight address"),
                     )
-                    .expect("annotation resource");
-                let mut actions = resource
+                    .expect("highlight resource");
+                let mut highlight_actions = highlight_resource
                     .actions
                     .iter()
                     .map(|action| action.id.as_str())
                     .collect::<Vec<_>>();
-                actions.sort_unstable();
-                assert_eq!(actions, expected, "{query}");
+                highlight_actions.sort_unstable();
+                assert_eq!(
+                    highlight_actions,
+                    [
+                        "add-comment",
+                        "change-color",
+                        "delete-highlight",
+                        "open",
+                        "read-highlight"
+                    ]
+                );
+
+                for (query, expected) in [
+                    (
+                        "peer comment",
+                        ["delete-annotation", "open", "read-annotation"].as_slice(),
+                    ),
+                    (
+                        "reader note",
+                        ["delete-annotation", "open", "read-annotation"].as_slice(),
+                    ),
+                ] {
+                    let resource = provider
+                        .books
+                        .resolve(
+                            &provider
+                                .search(query)
+                                .pop()
+                                .map(|result| result.action_id)
+                                .expect("annotation address"),
+                        )
+                        .expect("annotation resource");
+                    let mut actions = resource
+                        .actions
+                        .iter()
+                        .map(|action| action.id.as_str())
+                        .collect::<Vec<_>>();
+                    actions.sort_unstable();
+                    assert_eq!(actions, expected, "{query}");
+                }
             }
         }
     }

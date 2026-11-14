@@ -1012,119 +1012,123 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_book_whose_index_the_room_did_not_take_is_not_built_again() {
-        let pumped = ui::background::Pumped::new();
-        let mut index = LibraryIndex::default().with_background(pumped.background());
-        let books = [Arc::new(book(vec![vec!["Call me Ishmael."]]))];
-        let entries = [LibraryEntry {
-            id: "book:test".into(),
-            ..LibraryEntry::default()
-        }];
-        index.build_missing(&books, &entries);
-        pumped.run_pending();
-        assert_eq!(index.take_built().len(), 1, "built once");
-        // The row still names no index: the workspace refused it, or has not
-        // taken it yet. Building it again would only send it again.
-        index.build_missing(&books, &entries);
-        pumped.run_pending();
-        assert!(index.take_built().is_empty(), "not built again");
-    }
+    tilo_test_env::scenario! {
+        fn a_books_index_segment_is_built_once_and_finds_its_paragraphs;
 
-    #[test]
-    fn a_segment_finds_the_paragraph_holding_every_word_the_last_as_a_prefix() {
-        let book = book(vec![
-            vec!["Call me Ishmael.", "Some years ago, never mind how long."],
-            vec![
-                "The whale surfaced beside the boat.",
-                "Ishmael watched the whale go down.",
-            ],
-        ]);
-        let segment = Segment::decode(&Segment::build(&book).encode()).expect("it reads back");
-        assert_eq!(
-            segment.find("ishmael whale", 10),
-            [Place {
-                chapter: 1,
-                block: 1
-            }]
-        );
-        assert_eq!(
-            segment.find("ishm", 10),
-            [
-                Place {
-                    chapter: 0,
-                    block: 0
-                },
-                Place {
+        phase a_book_whose_index_the_room_did_not_take_is_not_built_again;
+        {
+            let pumped = ui::background::Pumped::new();
+            let mut index = LibraryIndex::default().with_background(pumped.background());
+            let books = [Arc::new(book(vec![vec!["Call me Ishmael."]]))];
+            let entries = [LibraryEntry {
+                id: "book:test".into(),
+                ..LibraryEntry::default()
+            }];
+            index.build_missing(&books, &entries);
+            pumped.run_pending();
+            assert_eq!(index.take_built().len(), 1, "built once");
+            // The row still names no index: the workspace refused it, or has not
+            // taken it yet. Building it again would only send it again.
+            index.build_missing(&books, &entries);
+            pumped.run_pending();
+            assert!(index.take_built().is_empty(), "not built again");
+        }
+
+        phase a_segment_finds_the_paragraph_holding_every_word_the_last_as_a_prefix;
+        {
+            let book = book(vec![
+                vec!["Call me Ishmael.", "Some years ago, never mind how long."],
+                vec![
+                    "The whale surfaced beside the boat.",
+                    "Ishmael watched the whale go down.",
+                ],
+            ]);
+            let segment = Segment::decode(&Segment::build(&book).encode()).expect("it reads back");
+            assert_eq!(
+                segment.find("ishmael whale", 10),
+                [Place {
                     chapter: 1,
                     block: 1
-                }
-            ]
-        );
-        // Folded as the search folds: case does not matter.
-        assert_eq!(segment.find("SURFACED", 10).len(), 1);
-        assert!(segment.find("kraken", 10).is_empty());
-        assert_eq!(segment.find("whale", 1).len(), 1, "at most the limit");
-    }
-
-    #[test]
-    fn words_in_most_paragraphs_of_a_long_book_are_kept_by_name_alone() {
-        let mut blocks = vec!["the tide came in"; COMMON_FLOOR];
-        blocks.push("the lighthouse keeper");
-        let book = book(vec![blocks]);
-        let segment = Segment::build(&book);
-        assert!(segment.common.iter().any(|word| word == "the"));
-        // A common word narrows nothing; the rarer one finds the paragraph.
-        assert_eq!(
-            segment.find("the lighthouse", 10),
-            [Place {
-                chapter: 0,
-                block: COMMON_FLOOR
-            }]
-        );
-        assert!(segment.find("the", 10).is_empty(), "common words alone");
-    }
-
-    #[test]
-    fn a_name_in_a_tenth_of_a_long_books_paragraphs_still_finds_them() {
-        let mut blocks = vec!["the tide came in"; 270];
-        blocks.extend(vec!["the prince and andrew spoke"; 30]);
-        blocks.push("prince andrew looked away");
-        let segment = Segment::build(&book(vec![blocks]));
-        assert_eq!(segment.find("prince andrew", 100).len(), 31);
-        assert_eq!(
-            segment.find("prince andrew looked", 100),
-            [Place {
-                chapter: 0,
-                block: 300
-            }]
-        );
-    }
-
-    #[test]
-    fn many_words_and_runs_read_back_alike() {
-        let texts: Vec<String> = (0..500)
-            .map(|n| format!("word{n:04} filler{}", n % 7))
-            .collect();
-        let book = book(vec![texts.iter().map(String::as_str).collect()]);
-        let built = Segment::build(&book);
-        let segment = Segment::decode(&built.encode()).expect("it reads back");
-        assert_eq!(segment, built);
-        for n in [0, 15, 16, 17, 250, 499] {
+                }]
+            );
             assert_eq!(
-                segment.find(&format!("word{n:04}"), 10),
+                segment.find("ishm", 10),
+                [
+                    Place {
+                        chapter: 0,
+                        block: 0
+                    },
+                    Place {
+                        chapter: 1,
+                        block: 1
+                    }
+                ]
+            );
+            // Folded as the search folds: case does not matter.
+            assert_eq!(segment.find("SURFACED", 10).len(), 1);
+            assert!(segment.find("kraken", 10).is_empty());
+            assert_eq!(segment.find("whale", 1).len(), 1, "at most the limit");
+        }
+
+        phase words_in_most_paragraphs_of_a_long_book_are_kept_by_name_alone;
+        {
+            let mut blocks = vec!["the tide came in"; COMMON_FLOOR];
+            blocks.push("the lighthouse keeper");
+            let book = book(vec![blocks]);
+            let segment = Segment::build(&book);
+            assert!(segment.common.iter().any(|word| word == "the"));
+            // A common word narrows nothing; the rarer one finds the paragraph.
+            assert_eq!(
+                segment.find("the lighthouse", 10),
                 [Place {
                     chapter: 0,
-                    block: n
-                }],
-                "word{n:04}"
+                    block: COMMON_FLOOR
+                }]
+            );
+            assert!(segment.find("the", 10).is_empty(), "common words alone");
+        }
+
+        phase a_name_in_a_tenth_of_a_long_books_paragraphs_still_finds_them;
+        {
+            let mut blocks = vec!["the tide came in"; 270];
+            blocks.extend(vec!["the prince and andrew spoke"; 30]);
+            blocks.push("prince andrew looked away");
+            let segment = Segment::build(&book(vec![blocks]));
+            assert_eq!(segment.find("prince andrew", 100).len(), 31);
+            assert_eq!(
+                segment.find("prince andrew looked", 100),
+                [Place {
+                    chapter: 0,
+                    block: 300
+                }]
             );
         }
-        assert_eq!(
-            segment.find("word01", 1000).len(),
-            100,
-            "a prefix over runs"
-        );
-        assert!(Segment::decode(b"not a segment").is_none());
+
+        phase many_words_and_runs_read_back_alike;
+        {
+            let texts: Vec<String> = (0..500)
+                .map(|n| format!("word{n:04} filler{}", n % 7))
+                .collect();
+            let book = book(vec![texts.iter().map(String::as_str).collect()]);
+            let built = Segment::build(&book);
+            let segment = Segment::decode(&built.encode()).expect("it reads back");
+            assert_eq!(segment, built);
+            for n in [0, 15, 16, 17, 250, 499] {
+                assert_eq!(
+                    segment.find(&format!("word{n:04}"), 10),
+                    [Place {
+                        chapter: 0,
+                        block: n
+                    }],
+                    "word{n:04}"
+                );
+            }
+            assert_eq!(
+                segment.find("word01", 1000).len(),
+                100,
+                "a prefix over runs"
+            );
+            assert!(Segment::decode(b"not a segment").is_none());
+        }
     }
 }

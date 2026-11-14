@@ -376,123 +376,127 @@ impl RemoteSource for SampleStore {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_catalogue_page_reads_as_its_books_in_order() {
-        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+    tilo_test_env::scenario! {
+        fn the_store_reads_its_catalogue_pages_and_knows_when_it_is_asked;
+
+        phase a_catalogue_page_reads_as_its_books_in_order;
+        {
+            let xml = r#"<?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
 <entry><id>https://www.gutenberg.org/ebooks/authors/search.opds/?query=moby</id><title>Authors</title><content type="text">One author name matches your search.</content></entry>
 <entry><id>https://www.gutenberg.org/ebooks/2701.opds</id><title>Moby Dick; Or, The Whale</title><content type="text">Herman Melville</content></entry>
 <entry><id>https://www.gutenberg.org/ebooks/15.opds</id><title>Moby-Dick; or, The Whale</title><content type="text">Herman Melville</content></entry>
 </feed>"#;
-        let books = parse_page(xml);
-        assert_eq!(
-            books,
-            [
-                StoreBook {
-                    id: 2701,
-                    title: "Moby Dick; Or, The Whale".into(),
-                    author: "Herman Melville".into(),
-                },
-                StoreBook {
-                    id: 15,
-                    title: "Moby-Dick; or, The Whale".into(),
-                    author: "Herman Melville".into(),
-                },
-            ]
-        );
-        assert!(parse_page("not xml").is_empty());
-        assert!(parse_page("").is_empty());
-    }
-
-    /// What a page keeps of one entry: a book has a catalogue number and a
-    /// title, and anything else is left out.
-    #[test]
-    fn a_catalogue_entry_reads_as_a_book_or_as_nothing() {
-        const BOOK: &str = "https://www.gutenberg.org/ebooks/11.opds";
-        let alice = |author: &str| StoreBook {
-            id: 11,
-            title: "Alice".into(),
-            author: author.into(),
-        };
-        for (what, entries, expected) in [
-            ("a feed without entries", String::new(), vec![]),
-            (
-                "a book without an author",
-                format!("<entry><id>{BOOK}</id><title>Alice</title></entry>"),
-                vec![alice("")],
-            ),
-            (
-                "space around each text",
-                format!(
-                    "<entry><id> {BOOK} </id><title> Alice </title>\
-                     <content type=\"text\"> Lewis Carroll </content></entry>"
-                ),
-                vec![alice("Lewis Carroll")],
-            ),
-            (
-                "no title",
-                format!(
-                    "<entry><id>{BOOK}</id><content type=\"text\">Lewis Carroll</content></entry>"
-                ),
-                vec![],
-            ),
-            (
-                "a title of spaces",
-                format!("<entry><id>{BOOK}</id><title>  </title></entry>"),
-                vec![],
-            ),
-            (
-                "an empty title",
-                format!("<entry><id>{BOOK}</id><title></title></entry>"),
-                vec![],
-            ),
-            (
-                "no id",
-                "<entry><title>Alice</title></entry>".to_owned(),
-                vec![],
-            ),
-            (
-                "an id that is no number",
-                "<entry><id>https://www.gutenberg.org/ebooks/subjects.opds</id>\
-                 <title>Subjects</title></entry>"
-                    .to_owned(),
-                vec![],
-            ),
-            (
-                "an id that is no catalogue page",
-                "<entry><id>https://www.gutenberg.org/ebooks/11</id><title>Alice</title></entry>"
-                    .to_owned(),
-                vec![],
-            ),
-            (
-                "a number no catalogue reaches",
-                "<entry><id>https://www.gutenberg.org/ebooks/99999999999999999999999.opds</id>\
-                 <title>Alice</title></entry>"
-                    .to_owned(),
-                vec![],
-            ),
-        ] {
-            let xml = format!(
-                r#"<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom">{entries}</feed>"#
+            let books = parse_page(xml);
+            assert_eq!(
+                books,
+                [
+                    StoreBook {
+                        id: 2701,
+                        title: "Moby Dick; Or, The Whale".into(),
+                        author: "Herman Melville".into(),
+                    },
+                    StoreBook {
+                        id: 15,
+                        title: "Moby-Dick; or, The Whale".into(),
+                        author: "Herman Melville".into(),
+                    },
+                ]
             );
-            assert_eq!(parse_page(&xml), expected, "{what}");
+            assert!(parse_page("not xml").is_empty());
+            assert!(parse_page("").is_empty());
         }
-    }
 
-    #[test]
-    fn the_store_is_not_asked_inside_a_book() {
-        let text = QuerySpec::text("whale");
-        assert!(store_accepts(&text));
-        assert!(!store_accepts(&QuerySpec::text("  ")));
-        let inside = text.toggled(&ui::framework::views::Chip::value(
-            crate::search_provider::BOOK_FACET,
-            "Moby-Dick",
-        ));
-        assert!(!store_accepts(&inside));
-        let by = QuerySpec::text("whale").toggled(&ui::framework::views::Chip::value(
-            AUTHOR_FACET,
-            "Herman Melville",
-        ));
-        assert_eq!(store_words(&by), "whale Herman Melville");
+        phase a_catalogue_entry_reads_as_a_book_or_as_nothing;
+        // What a page keeps of one entry: a book has a catalogue number and a
+        // title, and anything else is left out.
+        {
+            const BOOK: &str = "https://www.gutenberg.org/ebooks/11.opds";
+            let alice = |author: &str| StoreBook {
+                id: 11,
+                title: "Alice".into(),
+                author: author.into(),
+            };
+            for (what, entries, expected) in [
+                ("a feed without entries", String::new(), vec![]),
+                (
+                    "a book without an author",
+                    format!("<entry><id>{BOOK}</id><title>Alice</title></entry>"),
+                    vec![alice("")],
+                ),
+                (
+                    "space around each text",
+                    format!(
+                        "<entry><id> {BOOK} </id><title> Alice </title>\
+                     <content type=\"text\"> Lewis Carroll </content></entry>"
+                    ),
+                    vec![alice("Lewis Carroll")],
+                ),
+                (
+                    "no title",
+                    format!(
+                        "<entry><id>{BOOK}</id><content type=\"text\">Lewis Carroll</content></entry>"
+                    ),
+                    vec![],
+                ),
+                (
+                    "a title of spaces",
+                    format!("<entry><id>{BOOK}</id><title>  </title></entry>"),
+                    vec![],
+                ),
+                (
+                    "an empty title",
+                    format!("<entry><id>{BOOK}</id><title></title></entry>"),
+                    vec![],
+                ),
+                (
+                    "no id",
+                    "<entry><title>Alice</title></entry>".to_owned(),
+                    vec![],
+                ),
+                (
+                    "an id that is no number",
+                    "<entry><id>https://www.gutenberg.org/ebooks/subjects.opds</id>\
+                 <title>Subjects</title></entry>"
+                        .to_owned(),
+                    vec![],
+                ),
+                (
+                    "an id that is no catalogue page",
+                    "<entry><id>https://www.gutenberg.org/ebooks/11</id><title>Alice</title></entry>"
+                        .to_owned(),
+                    vec![],
+                ),
+                (
+                    "a number no catalogue reaches",
+                    "<entry><id>https://www.gutenberg.org/ebooks/99999999999999999999999.opds</id>\
+                 <title>Alice</title></entry>"
+                        .to_owned(),
+                    vec![],
+                ),
+            ] {
+                let xml = format!(
+                    r#"<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom">{entries}</feed>"#
+                );
+                assert_eq!(parse_page(&xml), expected, "{what}");
+            }
+        }
+
+        phase the_store_is_not_asked_inside_a_book;
+        {
+            let text = QuerySpec::text("whale");
+            assert!(store_accepts(&text));
+            assert!(!store_accepts(&QuerySpec::text("  ")));
+            let inside = text.toggled(&ui::framework::views::Chip::value(
+                crate::search_provider::BOOK_FACET,
+                "Moby-Dick",
+            ));
+            assert!(!store_accepts(&inside));
+            let by = QuerySpec::text("whale").toggled(&ui::framework::views::Chip::value(
+                AUTHOR_FACET,
+                "Herman Melville",
+            ));
+            assert_eq!(store_words(&by), "whale Herman Melville");
+        }
     }
 }
