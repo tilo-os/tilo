@@ -427,6 +427,7 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
             },
             Box::new(testing::Directory {
                 policy: policy.clone(),
+                founds: Arc::new(std::sync::atomic::AtomicBool::new(id == 0)),
             }),
             Arc::new(tilo_channels::Gates::default()),
         )
