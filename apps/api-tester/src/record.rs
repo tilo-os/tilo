@@ -439,57 +439,61 @@ impl Workspace {
 mod tests {
     use super::*;
 
-    /// A request keeps everything but its credential through the record,
-    /// rows keeping their ids.
-    #[test]
-    fn a_request_round_trips_without_its_credential() {
-        let mut request = model::Request::new("List users");
-        request.method = HttpMethod::Post;
-        request.url = "https://api.example.com/users".into();
-        request.params = vec![KeyValue::new("page", "1")];
-        request.headers = vec![KeyValue::new("Accept", "application/json")];
-        request.form = vec![KeyValue::new("name", "Ada")];
-        request.body_mode = BodyMode::Json;
-        request.body_text = "{}".into();
-        request.auth = Auth::Basic {
-            username: "ada".into(),
-            password: "hunter2".into(),
-        };
-        let record = RequestRecord::of(&request);
-        assert_eq!(record.auth.username, "ada");
-        let shown = record.shown(&request.id);
-        assert_eq!(
-            shown.auth,
-            Auth::Basic {
-                username: "ada".into(),
-                password: String::new(),
-            },
-            "the password is not in the record"
-        );
-        assert_eq!(
-            model::Request {
-                auth: request.auth.without_secret(),
-                ..request
-            },
-            shown
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_record_and_its_route_keep_credentials_out;
 
-    /// History is labelled by a route that leaves out what could be a
-    /// credential.
-    #[test]
-    fn a_sent_requests_route_hides_credentials_and_query_values() {
-        assert_eq!(
-            route_of(
-                HttpMethod::Get,
-                "https://user:pw@api.example.com/users?token=abc#top",
-                200
-            ),
-            "GET https://api.example.com/users returned status 200"
-        );
-        assert_eq!(
-            route_of(HttpMethod::Post, "not a url", 500),
-            "POST request returned status 500"
-        );
+        phase a_request_round_trips_without_its_credential;
+        // A request keeps everything but its credential through the record,
+        // rows keeping their ids.
+        {
+            let mut request = model::Request::new("List users");
+            request.method = HttpMethod::Post;
+            request.url = "https://api.example.com/users".into();
+            request.params = vec![KeyValue::new("page", "1")];
+            request.headers = vec![KeyValue::new("Accept", "application/json")];
+            request.form = vec![KeyValue::new("name", "Ada")];
+            request.body_mode = BodyMode::Json;
+            request.body_text = "{}".into();
+            request.auth = Auth::Basic {
+                username: "ada".into(),
+                password: "hunter2".into(),
+            };
+            let record = RequestRecord::of(&request);
+            assert_eq!(record.auth.username, "ada");
+            let shown = record.shown(&request.id);
+            assert_eq!(
+                shown.auth,
+                Auth::Basic {
+                    username: "ada".into(),
+                    password: String::new(),
+                },
+                "the password is not in the record"
+            );
+            assert_eq!(
+                model::Request {
+                    auth: request.auth.without_secret(),
+                    ..request
+                },
+                shown
+            );
+        }
+
+        phase a_sent_requests_route_hides_credentials_and_query_values;
+        // History is labelled by a route that leaves out what could be a
+        // credential.
+        {
+            assert_eq!(
+                route_of(
+                    HttpMethod::Get,
+                    "https://user:pw@api.example.com/users?token=abc#top",
+                    200
+                ),
+                "GET https://api.example.com/users returned status 200"
+            );
+            assert_eq!(
+                route_of(HttpMethod::Post, "not a url", 500),
+                "POST request returned status 500"
+            );
+        }
     }
 }

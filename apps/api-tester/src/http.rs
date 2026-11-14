@@ -459,258 +459,262 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn query_params_precede_fragments_and_reuse_query_separators() {
-        for (base, expected) in [
-            (
-                "/search#section?ignored",
-                "/search?q=rust%20lang#section?ignored",
-            ),
-            ("/search?sort=id#top", "/search?sort=id&q=rust%20lang#top"),
-            ("/search?#", "/search?q=rust%20lang#"),
-            ("/search?sort=id&", "/search?sort=id&q=rust%20lang"),
-        ] {
-            let mut req = Request::new("r");
-            req.url = "{{base}}".into();
-            req.params = vec![KeyValue::new("q", "rust lang")];
-            let out = build_outgoing(&req, &env(&[("base", base)]));
-            assert_eq!(out.url, expected, "base: {base}");
+    tilo_test_env::scenario! {
+        fn an_outgoing_request_carries_its_query_rows_auth_and_body;
 
-            req.params.clear();
-            assert_eq!(build_outgoing(&req, &env(&[("base", base)])).url, base);
-        }
-    }
-
-    #[test]
-    fn trailing_path_ampersand_does_not_start_a_query() {
-        for suffix in ["", "#section?ignored"] {
-            let mut req = Request::new("r");
-            req.url = format!("https://example.com/items&{suffix}");
-            req.params = vec![KeyValue::new("q", "test")];
-            assert_eq!(
-                build_outgoing(&req, &HashMap::new()).url,
-                format!("https://example.com/items&?q=test{suffix}")
-            );
-        }
-    }
-
-    #[test]
-    fn build_outgoing_encodes_query_auth_and_body() {
+        phase query_params_precede_fragments_and_reuse_query_separators;
         {
-            let mut req = Request::new("r");
-            req.url = "{{base}}/search".into();
-            req.params = vec![KeyValue::new("q", "rust lang"), {
-                let mut d = KeyValue::new("debug", "1");
-                d.enabled = false;
-                d
-            }];
-            let out = build_outgoing(&req, &env(&[("base", "https://api.example.com")]));
-            assert_eq!(
-                out.url, "https://api.example.com/search?q=rust%20lang",
-                "case query string"
-            );
+            for (base, expected) in [
+                (
+                    "/search#section?ignored",
+                    "/search?q=rust%20lang#section?ignored",
+                ),
+                ("/search?sort=id#top", "/search?sort=id&q=rust%20lang#top"),
+                ("/search?#", "/search?q=rust%20lang#"),
+                ("/search?sort=id&", "/search?sort=id&q=rust%20lang"),
+            ] {
+                let mut req = Request::new("r");
+                req.url = "{{base}}".into();
+                req.params = vec![KeyValue::new("q", "rust lang")];
+                let out = build_outgoing(&req, &env(&[("base", base)]));
+                assert_eq!(out.url, expected, "base: {base}");
+
+                req.params.clear();
+                assert_eq!(build_outgoing(&req, &env(&[("base", base)])).url, base);
+            }
         }
 
+        phase trailing_path_ampersand_does_not_start_a_query;
         {
-            let mut req = Request::new("r");
-            req.url = "https://x.test".into();
-            req.auth = Auth::Bearer {
-                token: "{{tok}}".into(),
+            for suffix in ["", "#section?ignored"] {
+                let mut req = Request::new("r");
+                req.url = format!("https://example.com/items&{suffix}");
+                req.params = vec![KeyValue::new("q", "test")];
+                assert_eq!(
+                    build_outgoing(&req, &HashMap::new()).url,
+                    format!("https://example.com/items&?q=test{suffix}")
+                );
+            }
+        }
+
+        phase build_outgoing_encodes_query_auth_and_body;
+        {
+            {
+                let mut req = Request::new("r");
+                req.url = "{{base}}/search".into();
+                req.params = vec![KeyValue::new("q", "rust lang"), {
+                    let mut d = KeyValue::new("debug", "1");
+                    d.enabled = false;
+                    d
+                }];
+                let out = build_outgoing(&req, &env(&[("base", "https://api.example.com")]));
+                assert_eq!(
+                    out.url, "https://api.example.com/search?q=rust%20lang",
+                    "case query string"
+                );
+            }
+
+            {
+                let mut req = Request::new("r");
+                req.url = "https://x.test".into();
+                req.auth = Auth::Bearer {
+                    token: "{{tok}}".into(),
+                };
+                let out = build_outgoing(&req, &env(&[("tok", "secret123")]));
+                assert!(
+                    out.headers
+                        .iter()
+                        .any(|(k, v)| k == "Authorization" && v == "Bearer secret123"),
+                    "case bearer auth"
+                );
+            }
+
+            {
+                let mut req = Request::new("r");
+                req.url = "https://x.test".into();
+                req.auth = Auth::Basic {
+                    username: "user".into(),
+                    password: "pass".into(),
+                };
+                let out = build_outgoing(&req, &HashMap::new());
+                // base64("user:pass") == "dXNlcjpwYXNz"
+                assert!(
+                    out.headers
+                        .iter()
+                        .any(|(k, v)| k == "Authorization" && v == "Basic dXNlcjpwYXNz"),
+                    "case basic auth"
+                );
+            }
+
+            {
+                let mut req = Request::new("r");
+                req.method = HttpMethod::Post;
+                req.url = "https://x.test".into();
+                req.body_mode = BodyMode::Json;
+                req.body_text = "{\"a\":1}".into();
+                let out = build_outgoing(&req, &HashMap::new());
+                assert_eq!(out.body.as_deref(), Some("{\"a\":1}"), "case json body");
+                assert!(
+                    out.headers
+                        .iter()
+                        .any(|(k, v)| k == "Content-Type" && v == "application/json"),
+                    "case json body"
+                );
+            }
+
+            {
+                let mut req = Request::new("r");
+                req.method = HttpMethod::Post;
+                req.url = "https://x.test".into();
+                req.body_mode = BodyMode::Form;
+                req.form = vec![
+                    KeyValue::new("name", "Jane Doe"),
+                    KeyValue::new("role", "admin"),
+                ];
+                let out = build_outgoing(&req, &HashMap::new());
+                assert_eq!(
+                    out.body.as_deref(),
+                    Some("name=Jane%20Doe&role=admin"),
+                    "case form body"
+                );
+            }
+        }
+
+        phase only_switched_on_named_rows_are_sent_and_a_given_content_type_is_kept;
+        // A row that is switched off or has no name is not sent, a body is sent only in a mode
+        // that has one, and a request keeps the content type it was given.
+        {
+            let off = |key: &str, value: &str| {
+                let mut row = KeyValue::new(key, value);
+                row.enabled = false;
+                row
             };
-            let out = build_outgoing(&req, &env(&[("tok", "secret123")]));
-            assert!(
-                out.headers
-                    .iter()
-                    .any(|(k, v)| k == "Authorization" && v == "Bearer secret123"),
-                "case bearer auth"
-            );
+            let vars = env(&[("trace", "abc"), ("id", "7"), ("name", "Grün")]);
+            let json = "{\"id\":7}";
+            let fields = "q=a%26b%3Dc&name=Gr%C3%BCn";
+            let urlencoded = "application/x-www-form-urlencoded";
+            let vendor = "application/vnd.api+json";
+            for (mode, given, body, kind) in [
+                (BodyMode::None, None, None, None),
+                (
+                    BodyMode::None,
+                    Some("text/csv"),
+                    None,
+                    Some(("content-type", "text/csv")),
+                ),
+                (BodyMode::Raw, None, Some(json), None),
+                (
+                    BodyMode::Json,
+                    None,
+                    Some(json),
+                    Some(("Content-Type", "application/json")),
+                ),
+                (
+                    BodyMode::Json,
+                    Some(vendor),
+                    Some(json),
+                    Some(("content-type", vendor)),
+                ),
+                (
+                    BodyMode::Form,
+                    None,
+                    Some(fields),
+                    Some(("Content-Type", urlencoded)),
+                ),
+                (
+                    BodyMode::Form,
+                    Some("text/plain"),
+                    Some(fields),
+                    Some(("content-type", "text/plain")),
+                ),
+            ] {
+                let mut req = Request::new("r");
+                req.url = "https://x.test".into();
+                req.headers = vec![
+                    KeyValue::new("X-Trace", "{{trace}}"),
+                    off("X-Off", "1"),
+                    KeyValue::new("  ", "unnamed"),
+                ];
+                req.headers
+                    .extend(given.map(|value| KeyValue::new("content-type", value)));
+                req.body_mode = mode;
+                req.body_text = "{\"id\":{{id}}}".into();
+                req.form = vec![
+                    KeyValue::new("q", "a&b=c"),
+                    off("debug", "1"),
+                    KeyValue::new("", "unnamed"),
+                    KeyValue::new("name", "{{name}}"),
+                ];
+                let out = build_outgoing(&req, &vars);
+                let mut headers = vec![("X-Trace", "abc")];
+                headers.extend(kind);
+                assert_eq!(sent(&out), headers, "{mode:?} given {given:?}: headers");
+                assert_eq!(out.body.as_deref(), body, "{mode:?} given {given:?}: body");
+                assert_eq!(out.url, "https://x.test", "{mode:?} given {given:?}: url");
+            }
         }
 
+        phase auth_adds_a_header_only_from_what_the_request_holds;
+        // Auth becomes a header only from what the request itself holds: none, a reference to a
+        // credential kept on the device and an API key without a header name add nothing.
         {
-            let mut req = Request::new("r");
-            req.url = "https://x.test".into();
-            req.auth = Auth::Basic {
-                username: "user".into(),
-                password: "pass".into(),
-            };
-            let out = build_outgoing(&req, &HashMap::new());
-            // base64("user:pass") == "dXNlcjpwYXNz"
-            assert!(
-                out.headers
-                    .iter()
-                    .any(|(k, v)| k == "Authorization" && v == "Basic dXNlcjpwYXNz"),
-                "case basic auth"
-            );
-        }
-
-        {
-            let mut req = Request::new("r");
-            req.method = HttpMethod::Post;
-            req.url = "https://x.test".into();
-            req.body_mode = BodyMode::Json;
-            req.body_text = "{\"a\":1}".into();
-            let out = build_outgoing(&req, &HashMap::new());
-            assert_eq!(out.body.as_deref(), Some("{\"a\":1}"), "case json body");
-            assert!(
-                out.headers
-                    .iter()
-                    .any(|(k, v)| k == "Content-Type" && v == "application/json"),
-                "case json body"
-            );
-        }
-
-        {
-            let mut req = Request::new("r");
-            req.method = HttpMethod::Post;
-            req.url = "https://x.test".into();
-            req.body_mode = BodyMode::Form;
-            req.form = vec![
-                KeyValue::new("name", "Jane Doe"),
-                KeyValue::new("role", "admin"),
-            ];
-            let out = build_outgoing(&req, &HashMap::new());
-            assert_eq!(
-                out.body.as_deref(),
-                Some("name=Jane%20Doe&role=admin"),
-                "case form body"
-            );
-        }
-    }
-
-    /// A row that is switched off or has no name is not sent, a body is sent only in a mode
-    /// that has one, and a request keeps the content type it was given.
-    #[test]
-    fn only_switched_on_named_rows_are_sent_and_a_given_content_type_is_kept() {
-        let off = |key: &str, value: &str| {
-            let mut row = KeyValue::new(key, value);
-            row.enabled = false;
-            row
-        };
-        let vars = env(&[("trace", "abc"), ("id", "7"), ("name", "Grün")]);
-        let json = "{\"id\":7}";
-        let fields = "q=a%26b%3Dc&name=Gr%C3%BCn";
-        let urlencoded = "application/x-www-form-urlencoded";
-        let vendor = "application/vnd.api+json";
-        for (mode, given, body, kind) in [
-            (BodyMode::None, None, None, None),
-            (
-                BodyMode::None,
-                Some("text/csv"),
-                None,
-                Some(("content-type", "text/csv")),
-            ),
-            (BodyMode::Raw, None, Some(json), None),
-            (
-                BodyMode::Json,
-                None,
-                Some(json),
-                Some(("Content-Type", "application/json")),
-            ),
-            (
-                BodyMode::Json,
-                Some(vendor),
-                Some(json),
-                Some(("content-type", vendor)),
-            ),
-            (
-                BodyMode::Form,
-                None,
-                Some(fields),
-                Some(("Content-Type", urlencoded)),
-            ),
-            (
-                BodyMode::Form,
-                Some("text/plain"),
-                Some(fields),
-                Some(("content-type", "text/plain")),
-            ),
-        ] {
-            let mut req = Request::new("r");
-            req.url = "https://x.test".into();
-            req.headers = vec![
-                KeyValue::new("X-Trace", "{{trace}}"),
-                off("X-Off", "1"),
-                KeyValue::new("  ", "unnamed"),
-            ];
-            req.headers
-                .extend(given.map(|value| KeyValue::new("content-type", value)));
-            req.body_mode = mode;
-            req.body_text = "{\"id\":{{id}}}".into();
-            req.form = vec![
-                KeyValue::new("q", "a&b=c"),
-                off("debug", "1"),
-                KeyValue::new("", "unnamed"),
-                KeyValue::new("name", "{{name}}"),
-            ];
-            let out = build_outgoing(&req, &vars);
-            let mut headers = vec![("X-Trace", "abc")];
-            headers.extend(kind);
-            assert_eq!(sent(&out), headers, "{mode:?} given {given:?}: headers");
-            assert_eq!(out.body.as_deref(), body, "{mode:?} given {given:?}: body");
-            assert_eq!(out.url, "https://x.test", "{mode:?} given {given:?}: url");
-        }
-    }
-
-    /// Auth becomes a header only from what the request itself holds: none, a reference to a
-    /// credential kept on the device and an API key without a header name add nothing.
-    #[test]
-    fn auth_adds_a_header_only_from_what_the_request_holds() {
-        let vars = env(&[
-            ("user", "ada"),
-            ("pass", "s3cr3t"),
-            ("name", "X-Api-Key"),
-            ("key", "k1"),
-        ]);
-        for (case, auth, headers) in [
-            ("none", Auth::None, vec![]),
-            (
-                "a reference",
-                Auth::SecretRef {
-                    id: "cred-1".into(),
-                    scheme: "Bearer".into(),
-                },
-                vec![],
-            ),
-            (
-                "an API key without a header name",
-                Auth::ApiKey {
-                    header: "  ".into(),
-                    value: "{{key}}".into(),
-                },
-                vec![],
-            ),
-            (
-                "an API key",
-                Auth::ApiKey {
-                    header: "{{name}}".into(),
-                    value: "{{key}}".into(),
-                },
-                vec![("X-Api-Key", "k1")],
-            ),
-            (
-                "basic from variables",
-                Auth::Basic {
-                    username: "{{user}}".into(),
-                    password: "{{pass}}".into(),
-                },
-                // base64("ada:s3cr3t") == "YWRhOnMzY3IzdA=="
-                vec![("Authorization", "Basic YWRhOnMzY3IzdA==")],
-            ),
-            (
-                "a bearer token that does not resolve",
-                Auth::Bearer {
-                    token: "{{missing}}".into(),
-                },
-                vec![("Authorization", "Bearer {{missing}}")],
-            ),
-        ] {
-            let mut req = Request::new("r");
-            req.url = "https://x.test/{{missing}}".into();
-            req.auth = auth;
-            let out = build_outgoing(&req, &vars);
-            assert_eq!(sent(&out), headers, "{case}: headers");
-            assert_eq!(out.url, "https://x.test/{{missing}}", "{case}: url");
-            assert!(out.body.is_none(), "{case}: body");
+            let vars = env(&[
+                ("user", "ada"),
+                ("pass", "s3cr3t"),
+                ("name", "X-Api-Key"),
+                ("key", "k1"),
+            ]);
+            for (case, auth, headers) in [
+                ("none", Auth::None, vec![]),
+                (
+                    "a reference",
+                    Auth::SecretRef {
+                        id: "cred-1".into(),
+                        scheme: "Bearer".into(),
+                    },
+                    vec![],
+                ),
+                (
+                    "an API key without a header name",
+                    Auth::ApiKey {
+                        header: "  ".into(),
+                        value: "{{key}}".into(),
+                    },
+                    vec![],
+                ),
+                (
+                    "an API key",
+                    Auth::ApiKey {
+                        header: "{{name}}".into(),
+                        value: "{{key}}".into(),
+                    },
+                    vec![("X-Api-Key", "k1")],
+                ),
+                (
+                    "basic from variables",
+                    Auth::Basic {
+                        username: "{{user}}".into(),
+                        password: "{{pass}}".into(),
+                    },
+                    // base64("ada:s3cr3t") == "YWRhOnMzY3IzdA=="
+                    vec![("Authorization", "Basic YWRhOnMzY3IzdA==")],
+                ),
+                (
+                    "a bearer token that does not resolve",
+                    Auth::Bearer {
+                        token: "{{missing}}".into(),
+                    },
+                    vec![("Authorization", "Bearer {{missing}}")],
+                ),
+            ] {
+                let mut req = Request::new("r");
+                req.url = "https://x.test/{{missing}}".into();
+                req.auth = auth;
+                let out = build_outgoing(&req, &vars);
+                assert_eq!(sent(&out), headers, "{case}: headers");
+                assert_eq!(out.url, "https://x.test/{{missing}}", "{case}: url");
+                assert!(out.body.is_none(), "{case}: body");
+            }
         }
     }
 }

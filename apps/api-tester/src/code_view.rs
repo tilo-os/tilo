@@ -384,157 +384,161 @@ mod tests {
         FrameHarness::for_root(ui::State::new(), view, (600, 400), Theme::dark())
     }
 
-    #[test]
-    fn the_fold_gutter_sits_beside_the_line_numbers() {
-        let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();
-        let d = harness(CodeView::json("Body", &body));
-        let view = d.root::<CodeView>();
-        let m = view.metrics.clone().expect("measured");
-        let numbers_end = view.rect.x0 + m.pad_x + m.number_w;
-        assert!(!view.folds.is_empty(), "the object folds");
-        for (rect, _) in &view.folds {
-            assert!(
-                rect.x0 + 2.0 >= numbers_end,
-                "caret starts at {} after the numbers end at {numbers_end}",
-                rect.x0 + 2.0
-            );
-        }
-    }
+    tilo_test_env::scenario! {
+        fn the_code_view_numbers_folds_and_clips_what_it_paints;
 
-    #[test]
-    fn pressing_a_caret_folds_and_unfolds_its_block() {
-        let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();
-        let mut d = harness(CodeView::json("Body", &body));
-        let all = d.root::<CodeView>().visible().len();
-        let (caret, _) = d.root::<CodeView>().folds[0];
-        d.click_at(caret.center().x, caret.center().y);
-        let folded = d.root::<CodeView>().visible().len();
-        assert!(
-            folded < all,
-            "the block folded away: {folded} of {all} lines"
-        );
-        let (caret, _) = d.root::<CodeView>().folds[0];
-        d.click_at(caret.center().x, caret.center().y);
-        assert_eq!(d.root::<CodeView>().visible().len(), all);
-    }
-
-    #[test]
-    fn folding_a_nonfinal_container_keeps_its_siblings_visible() {
-        let mut view = CodeView::json(
-            "Body",
-            r#"{"a":{"items":[1,2],"empty":{}},"b":[3,4],"c":true}"#,
-        );
-        let all = view.visible();
-        let line_text = |line: &JsonLine| {
-            line.tokens
-                .iter()
-                .map(|token| token.text.as_str())
-                .collect::<String>()
-        };
-        let a = view
-            .lines
-            .iter()
-            .position(|line| line_text(line).contains("\"a\""))
-            .unwrap();
-        let b = view
-            .lines
-            .iter()
-            .position(|line| line_text(line).contains("\"b\""))
-            .unwrap();
-        let c = view
-            .lines
-            .iter()
-            .position(|line| line_text(line).contains("\"c\""))
-            .unwrap();
-        assert_eq!(view.lines[a].close_line, Some(b - 1));
-        assert_eq!(view.lines[0].close_line, Some(view.lines.len() - 1));
-        view.toggle(a);
-        assert_eq!(view.visible(), vec![0, a, b, b + 1, b + 2, b + 3, c, c + 1]);
-        view.toggle(b);
-        assert_eq!(view.visible(), vec![0, a, b, c, c + 1]);
-        view.toggle(a);
-        view.toggle(b);
-        assert_eq!(view.visible(), all);
-    }
-
-    /// A line far longer than the view is wide is drawn only as far as it shows, so a
-    /// minified megabyte does not freeze the pane.
-    #[test]
-    fn a_long_line_paints_only_what_fits() {
-        let body = format!("{}\nshort", "a".repeat(1024 * 1024));
-        let d = harness(CodeView::plain("Body", &body));
-        let view = d.root::<CodeView>();
-        assert_eq!(view.visible().len(), 2);
-        assert!(
-            view.painted_chars > "short".len() + 20,
-            "the long line's start is drawn: {}",
-            view.painted_chars
-        );
-        assert!(
-            view.painted_chars < 2_000,
-            "a 600-pixel view draws no megabyte: {}",
-            view.painted_chars
-        );
-        assert_eq!(prefix("grün", 3), "grü");
-        assert_eq!(prefix("ab", 5), "ab");
-    }
-
-    /// Plain text has a row for each of its lines and no fold, whatever it looks like.
-    #[test]
-    fn plain_text_is_numbered_without_folds() {
-        let rows: [(&str, usize); 6] = [
-            ("one\ntwo\nthree", 3),
-            ("one", 1),
-            ("", 0),
-            ("one\n", 1),
-            ("\n\n", 2),
-            ("{\n  \"a\": [\n    1\n  ]\n}", 5),
-        ];
-        for (body, lines) in rows {
-            let d = harness(CodeView::plain("Body", body));
+        phase the_fold_gutter_sits_beside_the_line_numbers;
+        {
+            let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();
+            let d = harness(CodeView::json("Body", &body));
             let view = d.root::<CodeView>();
-            assert!(view.folds.is_empty(), "{body:?} has no folds");
-            assert_eq!(view.visible().len(), lines, "{body:?}");
-            let mut drawn: Vec<usize> = view.painted.keys().copied().collect();
-            drawn.sort_unstable();
-            assert_eq!(
-                drawn,
-                (0..lines).collect::<Vec<_>>(),
-                "{body:?}: each line was drawn"
-            );
+            let m = view.metrics.clone().expect("measured");
+            let numbers_end = view.rect.x0 + m.pad_x + m.number_w;
+            assert!(!view.folds.is_empty(), "the object folds");
+            for (rect, _) in &view.folds {
+                assert!(
+                    rect.x0 + 2.0 >= numbers_end,
+                    "caret starts at {} after the numbers end at {numbers_end}",
+                    rect.x0 + 2.0
+                );
+            }
         }
-    }
 
-    /// A long token is cut at a whole character, and the columns asked of it cover the width
-    /// that is left at any advance.
-    #[test]
-    fn a_token_is_cut_at_a_character_within_the_columns_that_fit() {
-        for (text, count, kept) in [
-            ("grün", 2, "gr"),
-            ("grün", 4, "grün"),
-            ("ab", 2, "ab"),
-            ("ab", 0, ""),
-            ("", 0, ""),
-            ("", 3, ""),
-            ("€uro", 1, "€"),
-        ] {
-            assert_eq!(prefix(text, count), kept, "prefix({text:?}, {count})");
-        }
-        for (width, advance, columns) in [
-            (80.0, 8.0, 21),
-            (81.0, 8.0, 23),
-            (0.0, 8.0, 1),
-            (-8.0, 8.0, 1),
-            (10.0, 0.0, 21),
-            (10.0, -3.0, 21),
-            (f64::INFINITY, 8.0, usize::MAX),
-            (f64::NAN, 8.0, 1),
-        ] {
-            assert_eq!(
-                columns_within(width, advance),
-                columns,
-                "columns_within({width}, {advance})"
+        phase pressing_a_caret_folds_and_unfolds_its_block;
+        {
+            let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();
+            let mut d = harness(CodeView::json("Body", &body));
+            let all = d.root::<CodeView>().visible().len();
+            let (caret, _) = d.root::<CodeView>().folds[0];
+            d.click_at(caret.center().x, caret.center().y);
+            let folded = d.root::<CodeView>().visible().len();
+            assert!(
+                folded < all,
+                "the block folded away: {folded} of {all} lines"
             );
+            let (caret, _) = d.root::<CodeView>().folds[0];
+            d.click_at(caret.center().x, caret.center().y);
+            assert_eq!(d.root::<CodeView>().visible().len(), all);
+        }
+
+        phase folding_a_nonfinal_container_keeps_its_siblings_visible;
+        {
+            let mut view = CodeView::json(
+                "Body",
+                r#"{"a":{"items":[1,2],"empty":{}},"b":[3,4],"c":true}"#,
+            );
+            let all = view.visible();
+            let line_text = |line: &JsonLine| {
+                line.tokens
+                    .iter()
+                    .map(|token| token.text.as_str())
+                    .collect::<String>()
+            };
+            let a = view
+                .lines
+                .iter()
+                .position(|line| line_text(line).contains("\"a\""))
+                .unwrap();
+            let b = view
+                .lines
+                .iter()
+                .position(|line| line_text(line).contains("\"b\""))
+                .unwrap();
+            let c = view
+                .lines
+                .iter()
+                .position(|line| line_text(line).contains("\"c\""))
+                .unwrap();
+            assert_eq!(view.lines[a].close_line, Some(b - 1));
+            assert_eq!(view.lines[0].close_line, Some(view.lines.len() - 1));
+            view.toggle(a);
+            assert_eq!(view.visible(), vec![0, a, b, b + 1, b + 2, b + 3, c, c + 1]);
+            view.toggle(b);
+            assert_eq!(view.visible(), vec![0, a, b, c, c + 1]);
+            view.toggle(a);
+            view.toggle(b);
+            assert_eq!(view.visible(), all);
+        }
+
+        phase a_long_line_paints_only_what_fits;
+        // A line far longer than the view is wide is drawn only as far as it shows, so a
+        // minified megabyte does not freeze the pane.
+        {
+            let body = format!("{}\nshort", "a".repeat(1024 * 1024));
+            let d = harness(CodeView::plain("Body", &body));
+            let view = d.root::<CodeView>();
+            assert_eq!(view.visible().len(), 2);
+            assert!(
+                view.painted_chars > "short".len() + 20,
+                "the long line's start is drawn: {}",
+                view.painted_chars
+            );
+            assert!(
+                view.painted_chars < 2_000,
+                "a 600-pixel view draws no megabyte: {}",
+                view.painted_chars
+            );
+            assert_eq!(prefix("grün", 3), "grü");
+            assert_eq!(prefix("ab", 5), "ab");
+        }
+
+        phase plain_text_is_numbered_without_folds;
+        // Plain text has a row for each of its lines and no fold, whatever it looks like.
+        {
+            let rows: [(&str, usize); 6] = [
+                ("one\ntwo\nthree", 3),
+                ("one", 1),
+                ("", 0),
+                ("one\n", 1),
+                ("\n\n", 2),
+                ("{\n  \"a\": [\n    1\n  ]\n}", 5),
+            ];
+            for (body, lines) in rows {
+                let d = harness(CodeView::plain("Body", body));
+                let view = d.root::<CodeView>();
+                assert!(view.folds.is_empty(), "{body:?} has no folds");
+                assert_eq!(view.visible().len(), lines, "{body:?}");
+                let mut drawn: Vec<usize> = view.painted.keys().copied().collect();
+                drawn.sort_unstable();
+                assert_eq!(
+                    drawn,
+                    (0..lines).collect::<Vec<_>>(),
+                    "{body:?}: each line was drawn"
+                );
+            }
+        }
+
+        phase a_token_is_cut_at_a_character_within_the_columns_that_fit;
+        // A long token is cut at a whole character, and the columns asked of it cover the width
+        // that is left at any advance.
+        {
+            for (text, count, kept) in [
+                ("grün", 2, "gr"),
+                ("grün", 4, "grün"),
+                ("ab", 2, "ab"),
+                ("ab", 0, ""),
+                ("", 0, ""),
+                ("", 3, ""),
+                ("€uro", 1, "€"),
+            ] {
+                assert_eq!(prefix(text, count), kept, "prefix({text:?}, {count})");
+            }
+            for (width, advance, columns) in [
+                (80.0, 8.0, 21),
+                (81.0, 8.0, 23),
+                (0.0, 8.0, 1),
+                (-8.0, 8.0, 1),
+                (10.0, 0.0, 21),
+                (10.0, -3.0, 21),
+                (f64::INFINITY, 8.0, usize::MAX),
+                (f64::NAN, 8.0, 1),
+            ] {
+                assert_eq!(
+                    columns_within(width, advance),
+                    columns,
+                    "columns_within({width}, {advance})"
+                );
+            }
         }
     }
 

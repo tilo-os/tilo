@@ -88,46 +88,50 @@ pub fn resolve(auth: &Auth, store: &SecretStore) -> Result<Auth, &'static str> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn authentication_is_reference_only_and_resolves_from_injected_store() {
-        let store = SecretStore::memory("so.tilo.api-tester");
-        for auth in [
-            Auth::Bearer {
-                token: "private-token".into(),
-            },
-            Auth::Basic {
-                username: "private-user".into(),
-                password: "private-password".into(),
-            },
-            Auth::ApiKey {
-                header: "X-API-Key".into(),
-                value: "private-key".into(),
-            },
-        ] {
-            assert!(serde_json::to_string(&auth).is_err());
-            assert!(!format!("{auth:?}").contains("private-"));
-            let reference = seal(&auth, &store).unwrap();
-            let json = serde_json::to_string(&reference).unwrap();
-            assert!(!json.contains("private-"));
-            assert_eq!(
-                resolve(&serde_json::from_str(&json).unwrap(), &store).unwrap(),
-                auth
-            );
-            assert!(resolve(&reference, &SecretStore::memory("other-host")).is_err());
-        }
-    }
+    tilo_test_env::scenario! {
+        fn a_credential_is_sealed_as_a_reference_that_resolves_only_from_its_store;
 
-    #[test]
-    fn a_plaintext_credential_is_sealed_and_resolves_from_the_store() {
-        let legacy: Auth =
-            serde_json::from_str(r#"{"Bearer":{"token":"legacy-plaintext"}}"#).unwrap();
-        let store = SecretStore::memory("test");
-        let reference = seal(&legacy, &store).unwrap();
-        assert_eq!(resolve(&reference, &store).unwrap(), legacy);
-        assert!(
-            !serde_json::to_string(&reference)
-                .unwrap()
-                .contains("legacy-plaintext")
-        );
+        phase authentication_is_reference_only_and_resolves_from_injected_store;
+        {
+            let store = SecretStore::memory("so.tilo.api-tester");
+            for auth in [
+                Auth::Bearer {
+                    token: "private-token".into(),
+                },
+                Auth::Basic {
+                    username: "private-user".into(),
+                    password: "private-password".into(),
+                },
+                Auth::ApiKey {
+                    header: "X-API-Key".into(),
+                    value: "private-key".into(),
+                },
+            ] {
+                assert!(serde_json::to_string(&auth).is_err());
+                assert!(!format!("{auth:?}").contains("private-"));
+                let reference = seal(&auth, &store).unwrap();
+                let json = serde_json::to_string(&reference).unwrap();
+                assert!(!json.contains("private-"));
+                assert_eq!(
+                    resolve(&serde_json::from_str(&json).unwrap(), &store).unwrap(),
+                    auth
+                );
+                assert!(resolve(&reference, &SecretStore::memory("other-host")).is_err());
+            }
+        }
+
+        phase a_plaintext_credential_is_sealed_and_resolves_from_the_store;
+        {
+            let legacy: Auth =
+                serde_json::from_str(r#"{"Bearer":{"token":"legacy-plaintext"}}"#).unwrap();
+            let store = SecretStore::memory("test");
+            let reference = seal(&legacy, &store).unwrap();
+            assert_eq!(resolve(&reference, &store).unwrap(), legacy);
+            assert!(
+                !serde_json::to_string(&reference)
+                    .unwrap()
+                    .contains("legacy-plaintext")
+            );
+        }
     }
 }

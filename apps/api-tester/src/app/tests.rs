@@ -106,127 +106,274 @@ fn constructors_start_live_empty_demo_seeded_and_persist_through_crdt() {
     assert_eq!(b.environments.len(), a.environments.len());
 }
 
-#[test]
-fn request_builder_resolves_environment_and_loads_saved_requests() {
-    let (mut a, mut doc) = demo();
-    assert_eq!(
-        a.env_vars().get("base_url").map(String::as_str),
-        Some("https://api.example.com/v2")
-    );
-    let out = outgoing(&mut a, &doc);
-    assert!(out.url.starts_with("https://api.example.com/v2/users"));
-    assert!(out.url.contains("page=1"));
-    assert!(out.url.contains("per_page=25"));
-    assert!(!out.url.contains("sort="), "a disabled row is not sent");
+tilo_test_env::scenario! {
+    fn the_builder_loads_files_and_edits_its_request;
 
-    // The URL the person typed is what is sent, not the model's copy.
-    let url = Workspace::paths().request.url;
-    submit(&mut a, &mut doc, url.replace("{{base_url}}/typed"));
-    assert!(outgoing(&mut a, &doc).url.contains("/v2/typed"));
+    phase request_builder_resolves_environment_and_loads_saved_requests;
+    {
+        let (mut a, mut doc) = demo();
+        assert_eq!(
+            a.env_vars().get("base_url").map(String::as_str),
+            Some("https://api.example.com/v2")
+        );
+        let out = outgoing(&mut a, &doc);
+        assert!(out.url.starts_with("https://api.example.com/v2/users"));
+        assert!(out.url.contains("page=1"));
+        assert!(out.url.contains("per_page=25"));
+        assert!(!out.url.contains("sort="), "a disabled row is not sent");
 
-    push(&a, Cmd::LoadRequest(0, 2));
-    assert!(drain(&mut a, &mut doc));
-    assert_eq!(a.request.method, HttpMethod::Post);
-    assert_eq!(a.request.body_mode, BodyMode::Json);
-    assert_eq!(a.selected, Some((0, 2)));
-    let stored = record(&doc);
-    assert_eq!(stored.request.url, "{{base_url}}/users");
-    assert_eq!(stored.request.method, HttpMethod::Post);
-    assert!(stored.request.body.contains("Grace Hopper"));
-    assert_eq!(a.active_tab, RequestTab::Params);
+        // The URL the person typed is what is sent, not the model's copy.
+        let url = Workspace::paths().request.url;
+        submit(&mut a, &mut doc, url.replace("{{base_url}}/typed"));
+        assert!(outgoing(&mut a, &doc).url.contains("/v2/typed"));
+
+        push(&a, Cmd::LoadRequest(0, 2));
+        assert!(drain(&mut a, &mut doc));
+        assert_eq!(a.request.method, HttpMethod::Post);
+        assert_eq!(a.request.body_mode, BodyMode::Json);
+        assert_eq!(a.selected, Some((0, 2)));
+        let stored = record(&doc);
+        assert_eq!(stored.request.url, "{{base_url}}/users");
+        assert_eq!(stored.request.method, HttpMethod::Post);
+        assert!(stored.request.body.contains("Grace Hopper"));
+        assert_eq!(a.active_tab, RequestTab::Params);
+    }
+
+    phase saving_a_request_files_it_and_selects_it;
+    {
+        let (mut a, mut doc) = demo();
+        submit(&mut a, &mut doc, Workspace::NEW_REQUEST.with(()));
+        let paths = Workspace::paths().request;
+        submit(&mut a, &mut doc, paths.name.replace("Health"));
+        submit(&mut a, &mut doc, paths.url.replace("{{base_url}}/health"));
+        resync(&mut a, &doc);
+        a.open_form(FormMode::SaveRequest, FormTarget::default());
+        push(&a, Cmd::SubmitForm);
+        drain(&mut a, &mut doc);
+        let (ci, ri) = a.selected.expect("the saved request is selected");
+        let saved = &a.collections[ci].requests[ri];
+        assert_eq!(saved.name, "Health");
+        assert_eq!(saved.url, "{{base_url}}/health");
+        assert_eq!(a.request.name, "Health");
+    }
+
+    phase auth_fields_edit_the_request;
+    // The auth tab edits the scheme the request is composed with; its credential stays on the
+    // device.
+    {
+        let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+        let auth = Workspace::paths().request.auth;
+        app.invoke(Invoke::edit(&auth.scheme.set(crate::record::AuthScheme::Basic)).unwrap())
+            .unwrap();
+        app.invoke(Invoke::edit(&auth.username.replace("ada")).unwrap())
+            .unwrap();
+        app.effect(&ApiTesterEffect::SetCredential {
+            secret: "secret".into(),
+        })
+        .unwrap();
+        app.settle();
+        assert_eq!(
+            app.with_surface::<ApiTesterApp, _>(|surface| surface.request.auth.clone())
+                .unwrap(),
+            Auth::Basic {
+                username: "ada".into(),
+                password: "secret".into()
+            }
+        );
+        assert_eq!(
+            app.state().request.auth.shown(),
+            Auth::Basic {
+                username: "ada".into(),
+                password: String::new()
+            },
+            "the record holds the auth scheme and username, with no credential"
+        );
+        let first_reference = app.state().request.auth.reference;
+        assert!(first_reference.starts_with("request-auth/"));
+        let saved = app.read_document(|doc| doc.clone().save());
+        assert!(!saved.windows(6).any(|window| window == b"secret"));
+        app.effect(&ApiTesterEffect::SetCredential {
+            secret: "replacement-credential".into(),
+        })
+        .unwrap();
+        app.settle();
+        assert_ne!(app.state().request.auth.reference, first_reference);
+        let saved = app.read_document(|doc| doc.clone().save());
+        assert!(
+            !saved
+                .windows(22)
+                .any(|window| window == b"replacement-credential")
+        );
+        app.invoke(Invoke::edit(&auth.scheme.set(crate::record::AuthScheme::ApiKey)).unwrap())
+            .unwrap();
+        app.invoke(Invoke::edit(&auth.header.replace("X-Api-Key")).unwrap())
+            .unwrap();
+        app.settle();
+        assert!(
+            matches!(app.state().request.auth.shown(), Auth::ApiKey { ref header, .. } if header == "X-Api-Key")
+        );
+    }
 }
 
-#[test]
-fn replaying_history_fills_the_builder_without_sending() {
-    let (mut a, mut doc) = demo();
-    push(&a, Cmd::ReplayHistory(1));
-    drain(&mut a, &mut doc);
-    assert_eq!(a.request.method, HttpMethod::Post);
-    assert_eq!(record(&doc).request.url, "https://api.example.com/v2/users");
-    assert!(!a.state().sending);
-    assert_eq!(a.selected, None);
-}
+tilo_test_env::scenario! {
+    fn the_history_replays_saves_and_forgets_the_requests_it_kept;
 
-/// A history row offers replay, keep-as-request or forget; a saved request's row offers its
-/// own two, and neither is offered a control that would do nothing.
-#[test]
-fn history_rows_offer_replay_save_and_delete() {
-    let (mut a, doc) = demo();
-    let lift = vello::kurbo::Rect::new(0.0, 100.0, 240.0, 124.0);
+    phase replaying_history_fills_the_builder_without_sending;
+    {
+        let (mut a, mut doc) = demo();
+        push(&a, Cmd::ReplayHistory(1));
+        drain(&mut a, &mut doc);
+        assert_eq!(a.request.method, HttpMethod::Post);
+        assert_eq!(record(&doc).request.url, "https://api.example.com/v2/users");
+        assert!(!a.state().sending);
+        assert_eq!(a.selected, None);
+    }
 
-    a.open_row_menu("history:1", lift, vello::kurbo::Point::new(40.0, 110.0));
-    let open = a.menu.as_ref().expect("a history row has a menu");
-    let labels: Vec<&str> = open
-        .menu
-        .items()
-        .iter()
-        .filter_map(MenuItem::label)
-        .collect();
-    assert_eq!(
-        labels,
-        ["Replay request", "Save as request…", "Delete from history"]
-    );
-    let commands: Vec<String> = open.commands.iter().map(|cmd| format!("{cmd:?}")).collect();
-    assert_eq!(
-        commands,
-        ["ReplayHistory(1)", "SaveHistory(1)", "DeleteHistory(1)"]
-    );
+    phase history_rows_offer_replay_save_and_delete;
+    // A history row offers replay, keep-as-request or forget; a saved request's row offers its
+    // own two, and neither is offered a control that would do nothing.
+    {
+        let (mut a, doc) = demo();
+        let lift = vello::kurbo::Rect::new(0.0, 100.0, 240.0, 124.0);
 
-    a.open_row_menu("request:0:0", lift, vello::kurbo::Point::new(40.0, 110.0));
-    let open = a.menu.as_ref().expect("a saved request has a menu");
-    let labels: Vec<&str> = open
-        .menu
-        .items()
-        .iter()
-        .filter_map(MenuItem::label)
-        .collect();
-    assert_eq!(labels, ["Rename request", "Delete request"]);
+        a.open_row_menu("history:1", lift, vello::kurbo::Point::new(40.0, 110.0));
+        let open = a.menu.as_ref().expect("a history row has a menu");
+        let labels: Vec<&str> = open
+            .menu
+            .items()
+            .iter()
+            .filter_map(MenuItem::label)
+            .collect();
+        assert_eq!(
+            labels,
+            ["Replay request", "Save as request…", "Delete from history"]
+        );
+        let commands: Vec<String> = open.commands.iter().map(|cmd| format!("{cmd:?}")).collect();
+        assert_eq!(
+            commands,
+            ["ReplayHistory(1)", "SaveHistory(1)", "DeleteHistory(1)"]
+        );
 
-    // A collection header offers nothing at all.
-    a.menu = None;
-    a.open_row_menu("collection:0", lift, vello::kurbo::Point::new(40.0, 110.0));
-    assert!(a.menu.is_none(), "no menu for a row with no actions");
-    drop(doc);
-}
+        a.open_row_menu("request:0:0", lift, vello::kurbo::Point::new(40.0, 110.0));
+        let open = a.menu.as_ref().expect("a saved request has a menu");
+        let labels: Vec<&str> = open
+            .menu
+            .items()
+            .iter()
+            .filter_map(MenuItem::label)
+            .collect();
+        assert_eq!(labels, ["Rename request", "Delete request"]);
 
-#[test]
-fn a_sent_request_is_saved_as_a_request_or_forgotten() {
-    let (mut a, mut doc) = demo();
-    let before = record(&doc).history_shown().len();
-    assert!(before > 0, "the demo sent something");
-    let builder = a.request.url.clone();
+        // A collection header offers nothing at all.
+        a.menu = None;
+        a.open_row_menu("collection:0", lift, vello::kurbo::Point::new(40.0, 110.0));
+        assert!(a.menu.is_none(), "no menu for a row with no actions");
+        drop(doc);
+    }
 
-    push(&a, Cmd::SaveHistory(0));
-    drain(&mut a, &mut doc);
-    let form = a.form.as_ref().expect("the sheet opens");
-    assert_eq!(form.mode, FormMode::SaveSent);
-    assert!(
-        !form.fields.name.get().is_empty(),
-        "the name starts from the route it sent"
-    );
-    assert_eq!(a.request.url, builder, "the builder keeps its request");
-    form.fields.name.set("Failures at 14:02".into());
-    push(&a, Cmd::SubmitForm);
-    drain(&mut a, &mut doc);
-    let stored = record(&doc);
-    let shown = stored.collections_shown();
-    let saved: Vec<&str> = shown
-        .iter()
-        .flat_map(|collection| collection.requests.iter().map(|r| r.name.as_str()))
-        .collect();
-    assert!(
-        saved.contains(&"Failures at 14:02"),
-        "the sent request is a saved one now: {saved:?}"
-    );
-    assert_eq!(a.request.url, builder, "and the builder is still the one");
+    phase a_sent_request_is_saved_as_a_request_or_forgotten;
+    {
+        let (mut a, mut doc) = demo();
+        let before = record(&doc).history_shown().len();
+        assert!(before > 0, "the demo sent something");
+        let builder = a.request.url.clone();
 
-    push(&a, Cmd::DeleteHistory(0));
-    drain(&mut a, &mut doc);
-    assert_eq!(
-        record(&doc).history_shown().len(),
-        before - 1,
-        "the entry is gone from the history"
-    );
+        push(&a, Cmd::SaveHistory(0));
+        drain(&mut a, &mut doc);
+        let form = a.form.as_ref().expect("the sheet opens");
+        assert_eq!(form.mode, FormMode::SaveSent);
+        assert!(
+            !form.fields.name.get().is_empty(),
+            "the name starts from the route it sent"
+        );
+        assert_eq!(a.request.url, builder, "the builder keeps its request");
+        form.fields.name.set("Failures at 14:02".into());
+        push(&a, Cmd::SubmitForm);
+        drain(&mut a, &mut doc);
+        let stored = record(&doc);
+        let shown = stored.collections_shown();
+        let saved: Vec<&str> = shown
+            .iter()
+            .flat_map(|collection| collection.requests.iter().map(|r| r.name.as_str()))
+            .collect();
+        assert!(
+            saved.contains(&"Failures at 14:02"),
+            "the sent request is a saved one now: {saved:?}"
+        );
+        assert_eq!(a.request.url, builder, "and the builder is still the one");
+
+        push(&a, Cmd::DeleteHistory(0));
+        drain(&mut a, &mut doc);
+        assert_eq!(
+            record(&doc).history_shown().len(),
+            before - 1,
+            "the entry is gone from the history"
+        );
+    }
+
+    phase a_history_entry_keeps_the_whole_request_it_sent;
+    // The history keeps the request that was sent, so replaying brings its headers, body and
+    // parameters back, and never a credential's value.
+    {
+        let (mut a, mut doc) = demo();
+        // Give the builder's request something to lose: an address and a body.
+        a.submit(
+            Workspace::paths()
+                .request
+                .url
+                .replace("https://api.example.com/users?page=2".to_owned()),
+        );
+        a.submit(
+            Workspace::paths()
+                .request
+                .body
+                .replace("{\"name\":\"Ada\"}".to_owned()),
+        );
+        drain(&mut a, &mut doc);
+        let authored = record(&doc).request_shown();
+        assert!(!authored.body_text.is_empty(), "the request has a body");
+        submit(
+            &mut a,
+            &mut doc,
+            Workspace::RECORD_SENT.with(crate::resource::workspace::RecordSent {
+                method: authored.method.as_str().to_owned(),
+                url: authored.url.clone(),
+                status: 201,
+                duration_ms: 12,
+            }),
+        );
+
+        let entry = &record(&doc).history_shown()[0];
+        let replay = entry
+            .replay
+            .as_ref()
+            .expect("the entry keeps the request it sent");
+        assert_eq!(replay.url, authored.url);
+        assert_eq!(replay.method, authored.method);
+        assert_eq!(
+            replay.headers.len(),
+            authored.headers.len(),
+            "every header came along"
+        );
+        assert_eq!(replay.headers[0].key, authored.headers[0].key);
+        assert_eq!(replay.body, authored.body_text);
+        assert_eq!(replay.params.len(), authored.params.len());
+        assert_eq!(
+            replay.scheme,
+            authored.auth.scheme(),
+            "the scheme is public; the credential itself is not recorded"
+        );
+
+        // Replaying fills the builder with all of it, not just a method and URL.
+        resync(&mut a, &doc);
+        a.request = crate::seed::blank_request();
+        push(&a, Cmd::ReplayHistory(0));
+        drain(&mut a, &mut doc);
+        assert_eq!(a.request.method, authored.method);
+        assert_eq!(a.request.url, authored.url);
+        assert_eq!(a.request.headers.len(), authored.headers.len());
+        assert_eq!(a.request.body_text, authored.body_text);
+    }
 }
 
 #[test]
@@ -285,40 +432,69 @@ fn selecting_environment_dispatches_the_set_active_action() {
     assert_eq!(a.env_state.get(), target.name, "a command is not a value");
 }
 
-#[test]
-fn renaming_the_active_environment_keeps_it_active() {
-    let (mut a, mut doc) = demo();
-    let active = a
-        .active_env
-        .clone()
-        .expect("demo has an active environment");
-    a.open_form(FormMode::RenameEnvironment, FormTarget::default());
-    a.form
-        .as_ref()
-        .expect("sheet open")
-        .fields
-        .name
-        .set("Live".into());
-    push(&a, Cmd::SubmitForm);
-    drain(&mut a, &mut doc);
-    resync(&mut a, &doc);
-    assert_eq!(a.active_env.as_ref(), Some(&active));
-    assert_eq!(a.env_state.get(), "Live");
+tilo_test_env::scenario! {
+    fn environments_keep_their_selection_and_order_through_renames_and_rereads;
 
-    push(
-        &a,
-        Cmd::PickEnvironment("Delete environment\u{2026}".into()),
-    );
-    drain(&mut a, &mut doc);
-    resync(&mut a, &doc);
-    assert!(a.environments.iter().all(|e| e.id != active));
-    assert_eq!(a.active_env, None);
-    assert_eq!(
-        a.environments.len(),
-        2,
-        "only the environment itself was deleted"
-    );
-    assert_eq!(a.env_state.get(), NO_ENV);
+    phase renaming_the_active_environment_keeps_it_active;
+    {
+        let (mut a, mut doc) = demo();
+        let active = a
+            .active_env
+            .clone()
+            .expect("demo has an active environment");
+        a.open_form(FormMode::RenameEnvironment, FormTarget::default());
+        a.form
+            .as_ref()
+            .expect("sheet open")
+            .fields
+            .name
+            .set("Live".into());
+        push(&a, Cmd::SubmitForm);
+        drain(&mut a, &mut doc);
+        resync(&mut a, &doc);
+        assert_eq!(a.active_env.as_ref(), Some(&active));
+        assert_eq!(a.env_state.get(), "Live");
+
+        push(
+            &a,
+            Cmd::PickEnvironment("Delete environment\u{2026}".into()),
+        );
+        drain(&mut a, &mut doc);
+        resync(&mut a, &doc);
+        assert!(a.environments.iter().all(|e| e.id != active));
+        assert_eq!(a.active_env, None);
+        assert_eq!(
+            a.environments.len(),
+            2,
+            "only the environment itself was deleted"
+        );
+        assert_eq!(a.env_state.get(), NO_ENV);
+    }
+
+    phase rereading_the_document_keeps_the_order_on_screen;
+    // The document returns records in the order of their ids, so a pick or a rename must not
+    // shuffle the lists a person arranged.
+    {
+        let (mut app, mut doc) = demo();
+        let names = |app: &ApiTesterApp| -> Vec<String> {
+            app.environments.iter().map(|e| e.name.clone()).collect()
+        };
+        let collections = |app: &ApiTesterApp| -> Vec<String> {
+            app.collections.iter().map(|c| c.name.clone()).collect()
+        };
+        let before = (names(&app), collections(&app));
+        for _ in 0..8 {
+            resync(&mut app, &doc);
+            assert_eq!((names(&app), collections(&app)), before);
+        }
+        let first = app.environments[0].id.clone();
+        let second = app.environments[1].id.clone();
+        app.pick_environment("Staging");
+        drain(&mut app, &mut doc);
+        assert_eq!(app.active_env.as_ref(), Some(&second));
+        assert_ne!(app.active_env.as_ref(), Some(&first));
+        assert_eq!((names(&app), collections(&app)), before);
+    }
 }
 
 #[expect(
@@ -444,24 +620,6 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
 }
 
 #[test]
-fn saving_a_request_files_it_and_selects_it() {
-    let (mut a, mut doc) = demo();
-    submit(&mut a, &mut doc, Workspace::NEW_REQUEST.with(()));
-    let paths = Workspace::paths().request;
-    submit(&mut a, &mut doc, paths.name.replace("Health"));
-    submit(&mut a, &mut doc, paths.url.replace("{{base_url}}/health"));
-    resync(&mut a, &doc);
-    a.open_form(FormMode::SaveRequest, FormTarget::default());
-    push(&a, Cmd::SubmitForm);
-    drain(&mut a, &mut doc);
-    let (ci, ri) = a.selected.expect("the saved request is selected");
-    let saved = &a.collections[ci].requests[ri];
-    assert_eq!(saved.name, "Health");
-    assert_eq!(saved.url, "{{base_url}}/health");
-    assert_eq!(a.request.name, "Health");
-}
-
-#[test]
 fn view_commands_stay_device_local() {
     let (mut a, mut doc) = demo();
     let heads = doc.get_heads();
@@ -549,63 +707,6 @@ fn key_value_tables_edit_the_request() {
     );
     drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count);
-}
-
-/// The auth tab edits the scheme the request is composed with; its credential stays on the
-/// device.
-#[test]
-fn auth_fields_edit_the_request() {
-    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
-    let auth = Workspace::paths().request.auth;
-    app.invoke(Invoke::edit(&auth.scheme.set(crate::record::AuthScheme::Basic)).unwrap())
-        .unwrap();
-    app.invoke(Invoke::edit(&auth.username.replace("ada")).unwrap())
-        .unwrap();
-    app.effect(&ApiTesterEffect::SetCredential {
-        secret: "secret".into(),
-    })
-    .unwrap();
-    app.settle();
-    assert_eq!(
-        app.with_surface::<ApiTesterApp, _>(|surface| surface.request.auth.clone())
-            .unwrap(),
-        Auth::Basic {
-            username: "ada".into(),
-            password: "secret".into()
-        }
-    );
-    assert_eq!(
-        app.state().request.auth.shown(),
-        Auth::Basic {
-            username: "ada".into(),
-            password: String::new()
-        },
-        "the record holds the auth scheme and username, with no credential"
-    );
-    let first_reference = app.state().request.auth.reference;
-    assert!(first_reference.starts_with("request-auth/"));
-    let saved = app.read_document(|doc| doc.clone().save());
-    assert!(!saved.windows(6).any(|window| window == b"secret"));
-    app.effect(&ApiTesterEffect::SetCredential {
-        secret: "replacement-credential".into(),
-    })
-    .unwrap();
-    app.settle();
-    assert_ne!(app.state().request.auth.reference, first_reference);
-    let saved = app.read_document(|doc| doc.clone().save());
-    assert!(
-        !saved
-            .windows(22)
-            .any(|window| window == b"replacement-credential")
-    );
-    app.invoke(Invoke::edit(&auth.scheme.set(crate::record::AuthScheme::ApiKey)).unwrap())
-        .unwrap();
-    app.invoke(Invoke::edit(&auth.header.replace("X-Api-Key")).unwrap())
-        .unwrap();
-    app.settle();
-    assert!(
-        matches!(app.state().request.auth.shown(), Auth::ApiKey { ref header, .. } if header == "X-Api-Key")
-    );
 }
 
 #[test]
@@ -829,144 +930,316 @@ fn the_new_environment_sheet_is_as_tall_as_its_one_field() {
     );
 }
 
-#[test]
-fn a_wide_window_keeps_each_value_beside_its_key() {
-    let mut app = TestApp::<ApiTesterShell>::capture_at(None, (2560, 1440)).unwrap();
-    app.settle();
-    let targets = app.harness().targets();
-    let field = |suffix: &str| {
-        targets
-            .iter()
-            .find(|(id, _)| id.starts_with("api.kv.Params.") && id.ends_with(suffix))
-            .map_or_else(
-                || panic!("the blank parameter row's {suffix} field"),
-                |(_, rect)| *rect,
-            )
-    };
-    let (key, value) = (field(".key"), field(".value"));
-    let readable = f64::from(Theme::dark().tokens.metrics.readable_width);
-    assert!(
-        value.x0 - key.x0 <= readable / 3.0 + 1.0,
-        "the value {value:?} starts within a third of the readable measure of its key {key:?}"
-    );
-}
+tilo_test_env::scenario! {
+    fn the_window_keeps_values_beside_their_keys_and_flips_its_sidebar;
 
-/// Send with no URL says what is missing, instead of doing nothing or, in a browser,
-/// fetching the page itself.
-#[test]
-fn send_without_a_url_asks_for_one() {
-    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
-    let mut request = Request::new("No address");
-    request.url = "  ".into();
-    request.params.push(KeyValue::new("q", "1"));
-    open(&mut app, &request);
-    let _ = app.start_effect(&ApiTesterEffect::Send);
-    app.settle();
-    app.with_surface::<ApiTesterApp, _>(|surface| {
-        assert!(!surface.state().sending, "nothing was sent");
-        assert!(surface.state().response.is_none());
-        assert_eq!(
-            surface.state().error.as_deref(),
-            Some("Enter a URL to send the request to.")
+    phase a_wide_window_keeps_each_value_beside_its_key;
+    {
+        let mut app = TestApp::<ApiTesterShell>::capture_at(None, (2560, 1440)).unwrap();
+        app.settle();
+        let targets = app.harness().targets();
+        let field = |suffix: &str| {
+            targets
+                .iter()
+                .find(|(id, _)| id.starts_with("api.kv.Params.") && id.ends_with(suffix))
+                .map_or_else(
+                    || panic!("the blank parameter row's {suffix} field"),
+                    |(_, rect)| *rect,
+                )
+        };
+        let (key, value) = (field(".key"), field(".value"));
+        let readable = f64::from(Theme::dark().tokens.metrics.readable_width);
+        assert!(
+            value.x0 - key.x0 <= readable / 3.0 + 1.0,
+            "the value {value:?} starts within a third of the readable measure of its key {key:?}"
         );
-        assert!(!surface.stale.response, "the pane shows it");
-    })
-    .unwrap();
-    assert!(app.state().history.is_empty());
+    }
+
+    phase the_window_bars_sidebar_button_flips_the_sidebar;
+    // The bar's sidebar button flips the sidebar on every click, in a wide window and in a
+    // narrow one.
+    {
+        ui::framework::testing::check_window_sidebar_button(
+            ui::framework::testing::TestApp::<ApiTesterShell>::new,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+    }
 }
 
-/// A guest's Save opens the save form at once: the button reaches nothing outside, and
-/// saving into a collection is an edit.
-#[test]
-fn a_guests_save_opens_the_form_unasked() {
-    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
-    open(&mut app, &Request::new("Kept"));
-    app.set_role(ui::permissions::Role::Editor);
-    app.harness().click_named("api.save-request").unwrap();
-    app.settle();
-    assert!(
-        app.asking().is_none(),
-        "Save asks nothing: {:?}",
-        app.harness().asking_why()
-    );
-    app.with_surface::<ApiTesterApp, _>(|surface| {
-        assert_eq!(
-            surface.form.as_ref().map(|form| form.mode),
-            Some(FormMode::SaveRequest),
-            "the save form opened"
+tilo_test_env::scenario! {
+    fn the_response_pane_shows_what_a_send_came_to;
+
+    phase send_without_a_url_asks_for_one;
+    // Send with no URL says what is missing, instead of doing nothing or, in a browser,
+    // fetching the page itself.
+    {
+        let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+        let mut request = Request::new("No address");
+        request.url = "  ".into();
+        request.params.push(KeyValue::new("q", "1"));
+        open(&mut app, &request);
+        let _ = app.start_effect(&ApiTesterEffect::Send);
+        app.settle();
+        app.with_surface::<ApiTesterApp, _>(|surface| {
+            assert!(!surface.state().sending, "nothing was sent");
+            assert!(surface.state().response.is_none());
+            assert_eq!(
+                surface.state().error.as_deref(),
+                Some("Enter a URL to send the request to.")
+            );
+            assert!(!surface.stale.response, "the pane shows it");
+        })
+        .unwrap();
+        assert!(app.state().history.is_empty());
+    }
+
+    phase a_huge_response_is_shown_in_part_without_downloading_it_whole;
+    // A response larger than the pane can lay out is downloaded only as far as it is shown.
+    {
+        let total = 4 * crate::http::MAX_SHOWN_BODY_BYTES;
+        let (url, _served) = serve_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n".to_owned(),
+            vec![b'a'; total],
         );
-    })
-    .unwrap();
-}
-
-/// Escape answers the window's ask "no", as Cancel does: the ask closes, nothing is sent,
-/// and no empty search is left open.
-#[test]
-fn escape_closes_a_guests_ask_without_leaving_a_search() {
-    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
-    let mut request = Request::new("No address");
-    request.url = "  ".into();
-    open(&mut app, &request);
-    app.set_role(ui::permissions::Role::Editor);
-    app.harness().click_named("api.send").unwrap();
-    app.settle();
-    assert!(app.asking().is_some(), "the guest is asked");
-    app.harness().key("Escape");
-    app.settle();
-    assert!(app.asking().is_none(), "Escape closed the ask");
-    let fields: Vec<_> = app
-        .harness()
-        .controls()
-        .into_iter()
-        .filter(|control| control.role == ui::accesskit::Role::TextInput)
-        .filter_map(|control| control.name)
-        .collect();
-    assert!(
-        !fields.iter().any(|name| name == "Search"),
-        "no palette search is left open: {fields:?}"
-    );
-    app.with_surface::<ApiTesterApp, _>(|surface| {
-        assert!(surface.state().error.is_none(), "not sent");
-    })
-    .unwrap();
-}
-
-/// A guest pressing Send reaches a server outside the workspace, so the workspace's grants
-/// ask first: the guest is asked in the window.
-#[test]
-fn a_guests_send_is_asked_in_the_window_saying_who_decides() {
-    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
-    let mut request = Request::new("No address");
-    request.url = "  ".into();
-    open(&mut app, &request);
-    app.set_role(ui::permissions::Role::Editor);
-    app.harness().click_named("api.send").unwrap();
-    app.settle();
-    assert!(
-        app.asking().is_some(),
-        "the guest is asked: {:?}",
-        app.harness().control_failures()
-    );
-    assert!(
-        app.harness()
-            .asking_why()
-            .is_some_and(|why| why.contains("you decide")),
-        "the ask says who decides: {:?}",
-        app.harness().asking_why()
-    );
-    app.with_surface::<ApiTesterApp, _>(|surface| {
-        assert!(surface.state().error.is_none(), "not sent yet");
-    })
-    .unwrap();
-    app.confirm_asked();
-    app.with_surface::<ApiTesterApp, _>(|surface| {
-        assert_eq!(
-            surface.state().error.as_deref(),
-            Some("Enter a URL to send the request to."),
-            "the confirmed Send ran"
+        let response = sent_response(url);
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body.len(), crate::http::MAX_SHOWN_BODY_BYTES);
+        assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
+        assert!(!response.binary);
+        assert!(
+            !response.size_exact,
+            "with no declared length, the size is what arrived before the download stopped"
         );
-    })
-    .unwrap();
+        assert!(response::size_caption(&response).starts_with("More than "));
+        assert!(
+            response::shown_caption(&response).is_some_and(|shown| shown.starts_with("First ")),
+            "the pane says it shows the start"
+        );
+
+        // With a declared length, the size is the body's own.
+        let (url, _served) = serve_once(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+            ),
+            vec![b'a'; total],
+        );
+        let response = sent_response(url);
+        assert_eq!(response.size_bytes, total);
+        assert!(response.size_exact);
+        assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
+    }
+
+    phase a_binary_response_is_shown_as_hex_at_its_size;
+    // A binary body is shown as hex at its true size, not as replacement characters.
+    {
+        let png: Vec<u8> = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+            .into_iter()
+            .chain((0..=255).cycle().take(1000))
+            .collect();
+        let (url, _served) = serve_once(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                png.len()
+            ),
+            png.clone(),
+        );
+        let response = sent_response(url);
+        assert_eq!(
+            response.size_bytes,
+            png.len(),
+            "the size counts bytes received"
+        );
+        assert!(response.size_exact);
+        assert!(response.binary);
+        assert!(!response.is_json());
+        assert!(
+            response.body.starts_with(
+                "00000000  89 50 4e 47 0d 0a 1a 0a 00 01 02 03 04 05 06 07  .PNG............\n"
+            ),
+            "{}",
+            response.body.lines().next().unwrap_or_default()
+        );
+        assert_eq!(response.body.lines().count(), png.len().div_ceil(16));
+        assert!(!response.body.contains('\u{FFFD}'));
+        assert_eq!(
+            response::shown_caption(&response).as_deref(),
+            Some("Shown as hex")
+        );
+
+        // Text in another encoding stays text, with its stray bytes replaced.
+        let latin1 = b"caf\xe9".to_vec();
+        let (url, _served) = serve_once(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".to_owned(),
+            latin1,
+        );
+        let response = sent_response(url);
+        assert!(!response.binary);
+        assert_eq!(response.body, "caf\u{FFFD}");
+        assert_eq!(response::shown_caption(&response), None);
+    }
+
+    phase a_failed_request_is_shown_in_the_response_pane;
+    {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+        let mut request = Request::new("Failure proof");
+        request.url = format!("http://{address}/unreachable");
+        open(&mut app, &request);
+        app.start_effect(&ApiTesterEffect::Send).unwrap();
+        tilo_test_env::wait_until("the failed HTTP worker", || {
+            app.settle();
+            app.effect_progress()
+                .iter()
+                .any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Failed { .. }))
+        });
+        let failure = app
+            .effect_progress()
+            .into_iter()
+            .find_map(|update| match update {
+                ui::tilo_actions::InvocationUpdate::Failed { error, .. } => Some(error.message),
+                _ => None,
+            })
+            .expect("the worker reported why it failed");
+        app.with_surface::<ApiTesterApp, _>(|surface| {
+            assert!(surface.state().response.is_none());
+            assert_eq!(surface.state().error.as_deref(), Some(failure.as_str()));
+            assert!(!surface.stale.response, "the pane was rebuilt");
+        })
+        .unwrap();
+    }
+
+    phase cancelling_a_request_in_flight_stops_waiting_for_it;
+    // Cancelling a request in flight stops waiting for it and says so.
+    {
+        let (mut a, mut doc) = demo();
+        a.state().sending = true;
+        let flag = std::sync::Arc::clone(&a.state().send_cancel);
+        a.state().cancel_send();
+        assert!(!a.state().sending, "the app is no longer waiting");
+        assert!(flag.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(
+            a.state().error.as_deref(),
+            Some("The request was cancelled."),
+            "the pane says what happened"
+        );
+        drain(&mut a, &mut doc);
+    }
+
+    phase copying_part_of_a_response_that_is_not_there_is_refused;
+    // Copying a response part with nothing to copy is a refusal with a reason, and a part that
+    // does not exist is refused by name.
+    {
+        let a = ApiTesterApp::new_demo();
+        let mut state = a.state();
+        state.response = None;
+        state.error = None;
+        assert!(state.copy_body().is_err());
+        assert!(state.copy_headers().is_err());
+        assert!(
+            state.error.is_some(),
+            "the pane says why nothing was copied"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_guest_is_asked_before_a_send_and_not_before_a_save;
+
+    phase a_guests_save_opens_the_form_unasked;
+    // A guest's Save opens the save form at once: the button reaches nothing outside, and
+    // saving into a collection is an edit.
+    {
+        let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+        open(&mut app, &Request::new("Kept"));
+        app.set_role(ui::permissions::Role::Editor);
+        app.harness().click_named("api.save-request").unwrap();
+        app.settle();
+        assert!(
+            app.asking().is_none(),
+            "Save asks nothing: {:?}",
+            app.harness().asking_why()
+        );
+        app.with_surface::<ApiTesterApp, _>(|surface| {
+            assert_eq!(
+                surface.form.as_ref().map(|form| form.mode),
+                Some(FormMode::SaveRequest),
+                "the save form opened"
+            );
+        })
+        .unwrap();
+    }
+
+    phase escape_closes_a_guests_ask_without_leaving_a_search;
+    // Escape answers the window's ask "no", as Cancel does: the ask closes, nothing is sent,
+    // and no empty search is left open.
+    {
+        let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+        let mut request = Request::new("No address");
+        request.url = "  ".into();
+        open(&mut app, &request);
+        app.set_role(ui::permissions::Role::Editor);
+        app.harness().click_named("api.send").unwrap();
+        app.settle();
+        assert!(app.asking().is_some(), "the guest is asked");
+        app.harness().key("Escape");
+        app.settle();
+        assert!(app.asking().is_none(), "Escape closed the ask");
+        let fields: Vec<_> = app
+            .harness()
+            .controls()
+            .into_iter()
+            .filter(|control| control.role == ui::accesskit::Role::TextInput)
+            .filter_map(|control| control.name)
+            .collect();
+        assert!(
+            !fields.iter().any(|name| name == "Search"),
+            "no palette search is left open: {fields:?}"
+        );
+        app.with_surface::<ApiTesterApp, _>(|surface| {
+            assert!(surface.state().error.is_none(), "not sent");
+        })
+        .unwrap();
+    }
+
+    phase a_guests_send_is_asked_in_the_window_saying_who_decides;
+    // A guest pressing Send reaches a server outside the workspace, so the workspace's grants
+    // ask first: the guest is asked in the window.
+    {
+        let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+        let mut request = Request::new("No address");
+        request.url = "  ".into();
+        open(&mut app, &request);
+        app.set_role(ui::permissions::Role::Editor);
+        app.harness().click_named("api.send").unwrap();
+        app.settle();
+        assert!(
+            app.asking().is_some(),
+            "the guest is asked: {:?}",
+            app.harness().control_failures()
+        );
+        assert!(
+            app.harness()
+                .asking_why()
+                .is_some_and(|why| why.contains("you decide")),
+            "the ask says who decides: {:?}",
+            app.harness().asking_why()
+        );
+        app.with_surface::<ApiTesterApp, _>(|surface| {
+            assert!(surface.state().error.is_none(), "not sent yet");
+        })
+        .unwrap();
+        app.confirm_asked();
+        app.with_surface::<ApiTesterApp, _>(|surface| {
+            assert_eq!(
+                surface.state().error.as_deref(),
+                Some("Enter a URL to send the request to."),
+                "the confirmed Send ran"
+            );
+        })
+        .unwrap();
+    }
 }
 
 /// A server that answers one request with `head` and then `body`, and stops writing when
@@ -1053,124 +1326,6 @@ fn send_answers_its_caller_with_the_response() {
     );
 }
 
-/// A response larger than the pane can lay out is downloaded only as far as it is shown.
-#[test]
-fn a_huge_response_is_shown_in_part_without_downloading_it_whole() {
-    let total = 4 * crate::http::MAX_SHOWN_BODY_BYTES;
-    let (url, _served) = serve_once(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n".to_owned(),
-        vec![b'a'; total],
-    );
-    let response = sent_response(url);
-    assert_eq!(response.status, 200);
-    assert_eq!(response.body.len(), crate::http::MAX_SHOWN_BODY_BYTES);
-    assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
-    assert!(!response.binary);
-    assert!(
-        !response.size_exact,
-        "with no declared length, the size is what arrived before the download stopped"
-    );
-    assert!(response::size_caption(&response).starts_with("More than "));
-    assert!(
-        response::shown_caption(&response).is_some_and(|shown| shown.starts_with("First ")),
-        "the pane says it shows the start"
-    );
-
-    // With a declared length, the size is the body's own.
-    let (url, _served) = serve_once(
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
-        ),
-        vec![b'a'; total],
-    );
-    let response = sent_response(url);
-    assert_eq!(response.size_bytes, total);
-    assert!(response.size_exact);
-    assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
-}
-
-/// A binary body is shown as hex at its true size, not as replacement characters.
-#[test]
-fn a_binary_response_is_shown_as_hex_at_its_size() {
-    let png: Vec<u8> = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
-        .into_iter()
-        .chain((0..=255).cycle().take(1000))
-        .collect();
-    let (url, _served) = serve_once(
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            png.len()
-        ),
-        png.clone(),
-    );
-    let response = sent_response(url);
-    assert_eq!(
-        response.size_bytes,
-        png.len(),
-        "the size counts bytes received"
-    );
-    assert!(response.size_exact);
-    assert!(response.binary);
-    assert!(!response.is_json());
-    assert!(
-        response.body.starts_with(
-            "00000000  89 50 4e 47 0d 0a 1a 0a 00 01 02 03 04 05 06 07  .PNG............\n"
-        ),
-        "{}",
-        response.body.lines().next().unwrap_or_default()
-    );
-    assert_eq!(response.body.lines().count(), png.len().div_ceil(16));
-    assert!(!response.body.contains('\u{FFFD}'));
-    assert_eq!(
-        response::shown_caption(&response).as_deref(),
-        Some("Shown as hex")
-    );
-
-    // Text in another encoding stays text, with its stray bytes replaced.
-    let latin1 = b"caf\xe9".to_vec();
-    let (url, _served) = serve_once(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".to_owned(),
-        latin1,
-    );
-    let response = sent_response(url);
-    assert!(!response.binary);
-    assert_eq!(response.body, "caf\u{FFFD}");
-    assert_eq!(response::shown_caption(&response), None);
-}
-
-#[test]
-
-fn a_failed_request_is_shown_in_the_response_pane() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    drop(listener);
-    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
-    let mut request = Request::new("Failure proof");
-    request.url = format!("http://{address}/unreachable");
-    open(&mut app, &request);
-    app.start_effect(&ApiTesterEffect::Send).unwrap();
-    tilo_test_env::wait_until("the failed HTTP worker", || {
-        app.settle();
-        app.effect_progress()
-            .iter()
-            .any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Failed { .. }))
-    });
-    let failure = app
-        .effect_progress()
-        .into_iter()
-        .find_map(|update| match update {
-            ui::tilo_actions::InvocationUpdate::Failed { error, .. } => Some(error.message),
-            _ => None,
-        })
-        .expect("the worker reported why it failed");
-    app.with_surface::<ApiTesterApp, _>(|surface| {
-        assert!(surface.state().response.is_none());
-        assert_eq!(surface.state().error.as_deref(), Some(failure.as_str()));
-        assert!(!surface.stale.response, "the pane was rebuilt");
-    })
-    .unwrap();
-}
-
 fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
     let mut workspace = Replica::<Workspace>::new();
     let mut requests = ui::tilo_resource::Collection::new();
@@ -1207,31 +1362,6 @@ fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
             .any(|action| action.id == "save-request"),
         "the collection offers its verbs"
     );
-}
-
-/// The document returns records in the order of their ids, so a pick or a rename must not
-/// shuffle the lists a person arranged.
-#[test]
-fn rereading_the_document_keeps_the_order_on_screen() {
-    let (mut app, mut doc) = demo();
-    let names = |app: &ApiTesterApp| -> Vec<String> {
-        app.environments.iter().map(|e| e.name.clone()).collect()
-    };
-    let collections = |app: &ApiTesterApp| -> Vec<String> {
-        app.collections.iter().map(|c| c.name.clone()).collect()
-    };
-    let before = (names(&app), collections(&app));
-    for _ in 0..8 {
-        resync(&mut app, &doc);
-        assert_eq!((names(&app), collections(&app)), before);
-    }
-    let first = app.environments[0].id.clone();
-    let second = app.environments[1].id.clone();
-    app.pick_environment("Staging");
-    drain(&mut app, &mut doc);
-    assert_eq!(app.active_env.as_ref(), Some(&second));
-    assert_ne!(app.active_env.as_ref(), Some(&first));
-    assert_eq!((names(&app), collections(&app)), before);
 }
 
 /// The retained navigation paints long saved-request and history labels within its measured
@@ -1379,111 +1509,4 @@ fn the_requests_name_and_commands_are_in_the_window_bar() {
         );
     })
     .unwrap();
-}
-
-/// The history keeps the request that was sent, so replaying brings its headers, body and
-/// parameters back, and never a credential's value.
-#[test]
-fn a_history_entry_keeps_the_whole_request_it_sent() {
-    let (mut a, mut doc) = demo();
-    // Give the builder's request something to lose: an address and a body.
-    a.submit(
-        Workspace::paths()
-            .request
-            .url
-            .replace("https://api.example.com/users?page=2".to_owned()),
-    );
-    a.submit(
-        Workspace::paths()
-            .request
-            .body
-            .replace("{\"name\":\"Ada\"}".to_owned()),
-    );
-    drain(&mut a, &mut doc);
-    let authored = record(&doc).request_shown();
-    assert!(!authored.body_text.is_empty(), "the request has a body");
-    submit(
-        &mut a,
-        &mut doc,
-        Workspace::RECORD_SENT.with(crate::resource::workspace::RecordSent {
-            method: authored.method.as_str().to_owned(),
-            url: authored.url.clone(),
-            status: 201,
-            duration_ms: 12,
-        }),
-    );
-
-    let entry = &record(&doc).history_shown()[0];
-    let replay = entry
-        .replay
-        .as_ref()
-        .expect("the entry keeps the request it sent");
-    assert_eq!(replay.url, authored.url);
-    assert_eq!(replay.method, authored.method);
-    assert_eq!(
-        replay.headers.len(),
-        authored.headers.len(),
-        "every header came along"
-    );
-    assert_eq!(replay.headers[0].key, authored.headers[0].key);
-    assert_eq!(replay.body, authored.body_text);
-    assert_eq!(replay.params.len(), authored.params.len());
-    assert_eq!(
-        replay.scheme,
-        authored.auth.scheme(),
-        "the scheme is public; the credential itself is not recorded"
-    );
-
-    // Replaying fills the builder with all of it, not just a method and URL.
-    resync(&mut a, &doc);
-    a.request = crate::seed::blank_request();
-    push(&a, Cmd::ReplayHistory(0));
-    drain(&mut a, &mut doc);
-    assert_eq!(a.request.method, authored.method);
-    assert_eq!(a.request.url, authored.url);
-    assert_eq!(a.request.headers.len(), authored.headers.len());
-    assert_eq!(a.request.body_text, authored.body_text);
-}
-
-/// Cancelling a request in flight stops waiting for it and says so.
-#[test]
-fn cancelling_a_request_in_flight_stops_waiting_for_it() {
-    let (mut a, mut doc) = demo();
-    a.state().sending = true;
-    let flag = std::sync::Arc::clone(&a.state().send_cancel);
-    a.state().cancel_send();
-    assert!(!a.state().sending, "the app is no longer waiting");
-    assert!(flag.load(std::sync::atomic::Ordering::Acquire));
-    assert_eq!(
-        a.state().error.as_deref(),
-        Some("The request was cancelled."),
-        "the pane says what happened"
-    );
-    drain(&mut a, &mut doc);
-}
-
-/// Copying a response part with nothing to copy is a refusal with a reason, and a part that
-/// does not exist is refused by name.
-#[test]
-fn copying_part_of_a_response_that_is_not_there_is_refused() {
-    let a = ApiTesterApp::new_demo();
-    let mut state = a.state();
-    state.response = None;
-    state.error = None;
-    assert!(state.copy_body().is_err());
-    assert!(state.copy_headers().is_err());
-    assert!(
-        state.error.is_some(),
-        "the pane says why nothing was copied"
-    );
-}
-
-/// The bar's sidebar button flips the sidebar on every click, in a wide window and in a
-/// narrow one.
-#[test]
-fn the_window_bars_sidebar_button_flips_the_sidebar() {
-    ui::framework::testing::check_window_sidebar_button(
-        ui::framework::testing::TestApp::<ApiTesterShell>::new,
-    )
-    .unwrap_or_else(|error| panic!("{error}"));
 }
