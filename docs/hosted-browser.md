@@ -191,11 +191,15 @@ It reports on its standard output: `ready`, then `up <provider>` once the
 window is live (an agent names it `browser@<provider>`), then `used` whenever
 the page is used.
 
-Door agents' calls go to the workspace host's device. So the relay forwards
-a page action addressed to the hosted Browser window to the device holding
-it, as it already carries remote actions between a workspace's devices. The
-action runs on the window, and History records it as the caller's: the
-agent's run, for the person it acts for.
+Door agents' calls go to the workspace host's device. So the relay lists
+the hosted Browser window among what runs in the workspace, as it lists the
+records it serves itself, and forwards what is addressed to the window — a
+listing of what it offers, a page action — to the device holding it, as it
+already carries remote actions between a workspace's devices. The window's
+answers reach the caller as the host's, the device it asked. The action runs
+on the window, and History records it as the caller's: the agent's run, for
+the person it acts for. A device that addresses the window itself hears the
+window.
 
 The window opens for an agent rather than for the person: it browses as a
 visitor, on a fresh profile of the VM's own, so an agent reads and fills the

@@ -189,7 +189,7 @@ fn hand_routed(
     (decoded, frame): (&tilo_actions::remote::RemoteActionFrame, Vec<u8>),
     route: crate::app_serving::Routing,
 ) -> Option<Envelope> {
-    match route {
+    let handed = match route {
         crate::app_serving::Routing::Device(holder) => {
             hand_over(peer, session, wr, workspace_id, version, holder, frame)
         }
@@ -197,9 +197,24 @@ fn hand_routed(
             hand_over_replaced(peer, session, wr, (workspace_id, version), to, *message)
         }
         crate::app_serving::Routing::Answer(answer) => {
-            answered_by_plane(session, peer, workspace_id, version, decoded, answer)
+            return answered_by_plane(session, peer, workspace_id, version, decoded, answer);
         }
-    }
+    };
+    // The caller asked this host: a frame the device holding the window could
+    // not take is undeliverable from this host, the device it addressed, or
+    // the caller waits for an answer that never names it.
+    handed.map(|refused| match refused {
+        Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            reason,
+            ..
+        } => Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            to_device_public_key: *session.own_device_public_key,
+            reason,
+        },
+        other => other,
+    })
 }
 
 /// [`hand_over`] of the frame `message` writes in place of the caller's: what
@@ -269,12 +284,24 @@ fn hand_over(
     {
         frame = encoded;
     }
+    // What a device answers a caller whose frame this host handed it (a
+    // Browser window in the workspace's VM) reaches that caller as this
+    // host's: the caller asked this host, and hears its answer from the
+    // device it asked. Who ran what stays the window's own record of it, as
+    // the caller's.
+    let (from_device_public_key, from_user_public_key) = if let Some(plane) = session.app_serving
+        && plane.answers_for_host(workspace_id, peer.device_public_key, to)
+    {
+        (*session.own_device_public_key, *session.own_user_public_key)
+    } else {
+        (peer.device_public_key, peer.user_public_key)
+    };
     let stamped = Envelope::RemoteAction {
         workspace_id,
         version,
         to_device_public_key: to,
-        from_device_public_key: peer.device_public_key,
-        from_user_public_key: peer.user_public_key,
+        from_device_public_key,
+        from_user_public_key,
         frame,
     };
     let delivered = wr.route_directed(&to, stamped);

@@ -18,8 +18,9 @@ use tilo_relay_protocol::hosted::Material;
 use tilo_runtime::mcp::{McpServer, Surface};
 use tilo_session_core::remote::SessionActions;
 
-/// The provider a fake environment's window publishes under.
-const WINDOW: &str = "browser@7";
+/// The provider a fake environment's window publishes under: its peer
+/// in the session holding it, as a window's is.
+const WINDOW: &str = "4711";
 
 /// Places environments in-process: each starts with the material the relay
 /// hands it, and answers the window the relay routes page actions to.
@@ -42,6 +43,75 @@ impl BrowserSessions for Environments {
     }
 
     fn stop(&self, _: &str) {}
+}
+
+/// The session the environment `material` started, holding the window: its
+/// device joins the workspace, and it answers what the relay hands it — a
+/// listing of the window with the page its window offers (none here).
+async fn window_session(relay: &tilo_relay::daemon::Relay, person: [u8; 32], material: &Material) {
+    use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+    use tilo_relay::Envelope;
+    let workspace_id = material.workspace_id;
+    let client = tilo_relay::RelayClient::connect(
+        iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .bind()
+            .await
+            .unwrap(),
+        relay.node_addr(),
+        person,
+        material.device.clone(),
+        material.key().unwrap(),
+        tilo_user_identity::RevocationList::new(),
+    )
+    .await
+    .expect("the window's device dials the host");
+    client.send(Envelope::Subscribe { workspace_id }).unwrap();
+    // A governed workspace hands a device what it holds before it is ready.
+    loop {
+        match tilo_test_env::within("the window joins", client.recv()).await {
+            Some(Envelope::Ready { .. }) => break,
+            Some(_) => {}
+            None => panic!("the window's device was let go before it joined"),
+        }
+    }
+    let window = material.device.device_public_key;
+    tokio::spawn(async move {
+        while let Some(envelope) = client.recv().await {
+            let Envelope::RemoteAction {
+                from_device_public_key,
+                frame,
+                ..
+            } = envelope
+            else {
+                continue;
+            };
+            let Ok(RemoteActionFrame {
+                message: RemoteActionMessage::CatalogueRequest { correlation, .. },
+                ..
+            }) = RemoteActionFrame::decode(&frame)
+            else {
+                continue;
+            };
+            let answer = RemoteActionFrame::new(RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result: Ok(CataloguePage {
+                    revision: "window".into(),
+                    exhausted: true,
+                    ..CataloguePage::default()
+                }),
+            })
+            .encode()
+            .unwrap();
+            let _ = client.send(Envelope::RemoteAction {
+                workspace_id,
+                version: tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: from_device_public_key,
+                from_device_public_key: window,
+                from_user_public_key: person,
+                frame: answer,
+            });
+        }
+    });
 }
 
 /// Counts the page actions a window ran, and admits them all.
@@ -160,9 +230,23 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
         "the workspace has the window"
     );
 
-    // A second open attaches to the window already up, on the same record.
+    window_session(&hosted.relay, root.verifying_key().to_bytes(), &started[0]).await;
+
+    // The window runs in the workspace's VM, and the workspace lists it as
+    // running: the agent's listing finds it, not an app still to open.
+    let apps = hosted_documents::tool(&server, "tilo_ls", json!({})).await;
+    eprintln!("the workspace's apps: {apps}");
+    assert!(
+        apps.lines()
+            .any(|line| line.starts_with("browser ") && line.ends_with("running")),
+        "Browser runs in the workspace: {apps}"
+    );
+
+    // A second open attaches to the window already up, on the same record:
+    // the agent is told it runs.
     let (again, _) = hosted_documents::act(&server, "browser#open", json!({})).await;
     eprintln!("a second browser#open answered {again}");
+    assert!(again.contains("running"), "{again}");
     assert_eq!(
         environments.started()[0].record,
         record,

@@ -140,6 +140,16 @@ pub trait AppServingPlane: Send + Sync {
         None
     }
 
+    /// Whether what device `from` sends `to` in `workspace_id` answers frames
+    /// this plane routed from `to` to `from` ([`Self::route`]): the host then
+    /// stamps it as its own, since `to` asked this host and hears its answers
+    /// from the device it asked. `false` by default: a frame is stamped with
+    /// the device that sent it.
+    fn answers_for_host(&self, workspace_id: WorkspaceId, from: [u8; 32], to: [u8; 32]) -> bool {
+        let _ = (workspace_id, from, to);
+        false
+    }
+
     /// Whether this plane waits on answers to frames of `workspace_id`: the
     /// host decodes what it forwards there for [`Self::relayed`], and reads
     /// the rest untouched.

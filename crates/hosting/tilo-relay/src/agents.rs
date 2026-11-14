@@ -494,6 +494,12 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
             .is_some_and(|browsers| browsers.tracks(workspace_id))
     }
 
+    fn answers_for_host(&self, workspace_id: WorkspaceId, from: [u8; 32], to: [u8; 32]) -> bool {
+        self.browsers
+            .as_ref()
+            .is_some_and(|browsers| browsers.answers_for_host(workspace_id, from, to))
+    }
+
     fn content(&self) -> Option<Arc<WorkspaceStores>> {
         Some(Arc::clone(&self.stores))
     }
@@ -557,6 +563,12 @@ impl crate::AppServingPlane for HostActionsPlane {
         self.browsers
             .as_ref()
             .is_some_and(|browsers| browsers.tracks(workspace_id))
+    }
+
+    fn answers_for_host(&self, workspace_id: WorkspaceId, from: [u8; 32], to: [u8; 32]) -> bool {
+        self.browsers
+            .as_ref()
+            .is_some_and(|browsers| browsers.answers_for_host(workspace_id, from, to))
     }
 
     fn content(&self) -> Option<Arc<WorkspaceStores>> {
@@ -625,6 +637,16 @@ fn serve_with_browser(
         _ => None,
     };
     let Some(invocation) = opens else {
+        // A listing of what runs in the workspace names the Browser window
+        // its VM holds beside what this host serves itself.
+        if let (Some(browsers), RemoteActionMessage::CatalogueRequest { query, .. }) =
+            (browsers, &message)
+        {
+            let (browsers, query) = (Arc::clone(browsers), query.clone());
+            return Some(
+                serve(message)?.map(move |answer| browsers.listed(workspace_id, &query, answer)),
+            );
+        }
         return serve(message);
     };
     let Some(browsers) = browsers else {

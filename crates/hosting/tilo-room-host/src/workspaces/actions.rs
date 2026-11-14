@@ -2084,6 +2084,12 @@ impl AppServingPlane for GovernedPlane {
             .as_ref()
             .is_some_and(|apps| apps.tracks(workspace_id))
     }
+
+    fn answers_for_host(&self, workspace_id: WorkspaceId, from: [u8; 32], to: [u8; 32]) -> bool {
+        self.apps
+            .as_ref()
+            .is_some_and(|apps| apps.answers_for_host(workspace_id, from, to))
+    }
 }
 
 #[cfg(test)]

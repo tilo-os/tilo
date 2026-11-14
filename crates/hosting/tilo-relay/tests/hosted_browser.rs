@@ -15,8 +15,9 @@ use std::time::{Duration, Instant};
 
 use tilo_actions::remote::host_account::{NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
-    ActionHostError, Caller, Confirmation, ConfirmedInvocation, InvocationReceipt, InvokeArgument,
-    InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, Confirmation,
+    ConfirmedInvocation, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
+    RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_relay::certify::ConfirmationAnswer;
@@ -41,6 +42,10 @@ const WS: WorkspaceId = WorkspaceId::from_u128(21);
 const OTHER_WS: WorkspaceId = WorkspaceId::from_u128(22);
 const WS_NAME: &str = "11111111-1111-4111-8111-111111111111";
 const WINDOW: &str = "browser@42";
+/// What the host publishes for the workspace itself.
+const HOST_PROVIDER: &str = "workspace:11111111-1111-4111-8111-111111111111";
+/// The revision the window's own listing answers at.
+const WINDOW_REVISION: &str = "window";
 
 /// Places environments in-process: each "environment" is the device the
 /// relay certified, which the test's client then joins the workspace as.
@@ -48,6 +53,9 @@ const WINDOW: &str = "browser@42";
 struct InProcessEnvironments {
     starts: Mutex<Vec<Material>>,
     stops: Mutex<Vec<String>>,
+    /// While set, a start waits until it is taken: a session whose VM is
+    /// still waking.
+    waking: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl InProcessEnvironments {
@@ -66,6 +74,10 @@ impl InProcessEnvironments {
 
 impl BrowserSessions for InProcessEnvironments {
     fn start(&self, material: &Material) -> Result<Window, String> {
+        let waking = self.waking.lock().unwrap().take();
+        if let Some(woken) = waking {
+            let _ = woken.recv();
+        }
         self.starts.lock().unwrap().push(material.clone());
         Ok(Window {
             device: material.device.device_public_key,
@@ -105,13 +117,36 @@ impl BrowserMeter for Counting {
 struct Routing(Arc<HostedBrowsers>);
 
 impl AppServingPlane for Routing {
+    /// A listing naming no provider is the host's own: it publishes the
+    /// workspace itself, and lists the Browser window its VM holds beside it.
     fn serve(
         &self,
-        _workspace_id: WorkspaceId,
+        workspace_id: WorkspaceId,
         _caller: &Caller,
-        _message: RemoteActionMessage,
+        message: RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<RemoteActionMessage>> {
-        None
+        let RemoteActionMessage::CatalogueRequest { correlation, query } = message else {
+            return None;
+        };
+        let own = CataloguePage {
+            revision: "host".into(),
+            providers: vec![CatalogueProvider {
+                provider: HOST_PROVIDER.into(),
+                app_id: String::new(),
+                workspace: WS_NAME.into(),
+                record_id: String::new(),
+                browsable: false,
+            }],
+            ..CataloguePage::default()
+        };
+        Some(tilo_actions::remote::Pending::ready(self.0.listed(
+            workspace_id,
+            &query,
+            RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result: Ok(own),
+            },
+        )))
     }
 
     fn route(
@@ -145,6 +180,10 @@ impl AppServingPlane for Routing {
 
     fn tracks(&self, workspace_id: WorkspaceId) -> bool {
         self.0.tracks(workspace_id)
+    }
+
+    fn answers_for_host(&self, workspace_id: WorkspaceId, from: [u8; 32], to: [u8; 32]) -> bool {
+        self.0.answers_for_host(workspace_id, from, to)
     }
 }
 
@@ -440,8 +479,30 @@ async fn window_session(
             let Ok(RemoteActionFrame { message, .. }) = RemoteActionFrame::decode(&frame) else {
                 continue;
             };
-            let RemoteActionMessage::Invoke(request) = message else {
-                continue;
+            let request = match message {
+                RemoteActionMessage::Invoke(request) => request,
+                // What the window offers, read from the window.
+                RemoteActionMessage::CatalogueRequest { correlation, .. } => {
+                    let answer = RemoteActionFrame::new(RemoteActionMessage::CatalogueResponse {
+                        correlation,
+                        result: Ok(CataloguePage {
+                            revision: WINDOW_REVISION.into(),
+                            ..CataloguePage::default()
+                        }),
+                    })
+                    .encode()
+                    .unwrap();
+                    let _ = client.send(Envelope::RemoteAction {
+                        workspace_id,
+                        version: REMOTE_ACTION_ENVELOPE_VERSION,
+                        to_device_public_key: from_device_public_key,
+                        from_device_public_key: holder,
+                        from_user_public_key: person,
+                        frame: answer,
+                    });
+                    continue;
+                }
+                _ => continue,
             };
             // Only the host that certified this window, for this very
             // invocation and action, answers for the person.
@@ -747,8 +808,8 @@ async fn a_page_action_reaches_the_window_as_the_caller() {
     };
     assert_eq!(to_device_public_key, fixture.agent.device_pubkey());
     assert_eq!(
-        from_device_public_key, material.device.device_public_key,
-        "the answer comes from the window's device"
+        from_device_public_key, fixture.home,
+        "the answer comes from the host the caller asked, which handed it to the window"
     );
     let RemoteActionMessage::Receipt(receipt) = RemoteActionFrame::decode(&answer).unwrap().message
     else {
@@ -765,6 +826,148 @@ async fn a_page_action_reaches_the_window_as_the_caller() {
         "the window ran it as the caller, not as the relay: History records the agent's run"
     );
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 1, "counted");
+}
+
+/// The window runs in the workspace's VM, yet a caller asking the host what
+/// runs in the workspace finds it there, and a listing of the window is read
+/// from the window: both answered as the host's, the device the caller asked.
+/// A device that addresses the window itself hears the window.
+#[tokio::test]
+async fn the_host_lists_the_window_and_hands_its_listing_to_it() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let material = fixture.environments.material();
+    window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Never).await;
+    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    let listing = |correlation, provider: Option<&str>| {
+        frame(RemoteActionMessage::CatalogueRequest {
+            correlation,
+            query: CatalogueQuery {
+                provider: provider.map(str::to_owned),
+                ..CatalogueQuery::default()
+            },
+        })
+    };
+    let answered = |envelope: Envelope| {
+        let Envelope::RemoteAction {
+            from_device_public_key,
+            frame,
+            ..
+        } = envelope
+        else {
+            panic!("a listing is answered: {envelope:?}");
+        };
+        let RemoteActionMessage::CatalogueResponse {
+            result: Ok(page), ..
+        } = RemoteActionFrame::decode(&frame).unwrap().message
+        else {
+            panic!("a listing is answered with a page");
+        };
+        (from_device_public_key, page)
+    };
+
+    // Before the host handed it anything of theirs, a device that asks the
+    // window itself hears the window.
+    caller
+        .send(to_host(
+            WS,
+            material.device.device_public_key,
+            listing(3, Some(WINDOW)),
+        ))
+        .unwrap();
+    let (from, _) = answered(next(&caller, "caller").await);
+    assert_eq!(
+        from, material.device.device_public_key,
+        "a device that asked the window hears the window"
+    );
+
+    caller
+        .send(to_host(WS, fixture.home, listing(1, None)))
+        .unwrap();
+    let (from, page) = answered(next(&caller, "caller").await);
+    assert_eq!(from, fixture.home);
+    let window = page
+        .providers
+        .iter()
+        .find(|listed| listed.provider == WINDOW)
+        .unwrap_or_else(|| panic!("the window is listed: {:?}", page.providers));
+    assert_eq!(window.app_id, "so.tilo.browser");
+    assert_eq!(
+        window.record_id, "record-1",
+        "on the record it was opened on"
+    );
+    assert_eq!(
+        window.workspace, WS_NAME,
+        "named as the workspace's other publishers"
+    );
+    assert!(window.browsable);
+    assert!(
+        page.providers
+            .iter()
+            .any(|listed| listed.provider == HOST_PROVIDER),
+        "beside what the host publishes itself"
+    );
+
+    caller
+        .send(to_host(WS, fixture.home, listing(2, Some(WINDOW))))
+        .unwrap();
+    let (from, page) = answered(next(&caller, "caller").await);
+    assert_eq!(
+        page.revision, WINDOW_REVISION,
+        "the window answered its own listing"
+    );
+    assert_eq!(from, fixture.home, "as the host the caller asked");
+}
+
+/// A session takes as long to start as its VM takes to wake: meanwhile the
+/// windows already up, and the workspace's listing, are answered at once.
+#[tokio::test]
+async fn a_listing_is_answered_while_another_window_is_placed() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let material = fixture.environments.material();
+    window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Never).await;
+    let (wake, waking) = std::sync::mpsc::channel();
+    *fixture.environments.waking.lock().unwrap() = Some(waking);
+    let browsers = Arc::clone(&fixture.browsers);
+    let placing = std::thread::spawn(move || {
+        browsers.place("22222222-2222-4222-8222-222222222222", OTHER_WS, "record-2")
+    });
+    while fixture.environments.waking.lock().unwrap().is_some() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let caller = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    for (correlation, provider) in [(1, None), (2, Some(WINDOW))] {
+        caller
+            .send(to_host(
+                WS,
+                fixture.home,
+                frame(RemoteActionMessage::CatalogueRequest {
+                    correlation,
+                    query: CatalogueQuery {
+                        provider: provider.map(str::to_owned),
+                        ..CatalogueQuery::default()
+                    },
+                }),
+            ))
+            .unwrap();
+    }
+    for _ in 0..2 {
+        let answer = tokio::time::timeout(Duration::from_secs(5), caller.recv())
+            .await
+            .expect("the listing is answered while the other window is placed");
+        assert!(
+            matches!(answer, Some(Envelope::RemoteAction { .. })),
+            "{answer:?}"
+        );
+    }
+
+    wake.send(()).unwrap();
+    placing
+        .join()
+        .unwrap()
+        .expect("the other window was placed");
 }
 
 #[tokio::test]

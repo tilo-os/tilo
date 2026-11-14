@@ -21,7 +21,12 @@
 //!   window reaches this host (a door agent's calls go to the workspace's
 //!   host device) and is handed to the device holding the window, stamped
 //!   with the caller, so it runs there as the caller's: History records the
-//!   agent's run for the person it acts for. The relay runs none of it.
+//!   agent's run for the person it acts for. The relay runs none of it. A
+//!   listing of the window is handed over the same way, and the workspace's
+//!   own listing names the window among its publishers
+//!   ([`HostedBrowsers::listed`]), so a caller finds it as it finds any
+//!   app's window. What the window answers such a caller reaches it as this
+//!   host's, the device it asked ([`HostedBrowsers::answers_for_host`]).
 //! - **Ask** ([`HostedBrowsers::ask`]): a page action asks the person first,
 //!   and nobody stands in front of a window in a VM to ask. The window refuses
 //!   such an action for want of their answer; this host puts the question to
@@ -359,8 +364,25 @@ struct Open {
     /// The workspace, by its UUID, as its VM is named.
     workspace: String,
     window: Window,
+    /// The record the window was opened on.
+    record: String,
     /// The device the workspace lists for it, forgotten when it stops.
     device: DeviceCert,
+    /// The devices whose frames this host handed the window: what the window
+    /// answers them reaches them as this host's, the device they asked.
+    callers: std::collections::HashSet<[u8; 32]>,
+}
+
+impl Open {
+    /// `caller`'s frames are handed to the window from now on, and its
+    /// answers reach `caller` as this host's. Bounded as what is handed is:
+    /// a host that has handed the window more callers than that starts over.
+    fn answers(&mut self, caller: [u8; 32]) {
+        if self.callers.len() >= HANDED && !self.callers.contains(&caller) {
+            self.callers.clear();
+        }
+        self.callers.insert(caller);
+    }
 }
 
 /// A page action handed to a window, as the host handed it there: whose it
@@ -420,6 +442,8 @@ pub struct HostedBrowsers {
     account: String,
     /// The windows up now, by workspace.
     open: Mutex<BTreeMap<WorkspaceId, Open>>,
+    /// Held while a window is placed: what makes two opens one session.
+    placing: Mutex<()>,
     /// The Linux apps sessions up now, by workspace: each holds the windows
     /// of the apps it started, which it shares with the workspace itself.
     apps: Mutex<BTreeMap<WorkspaceId, Open>>,
@@ -458,6 +482,7 @@ impl HostedBrowsers {
             meter,
             account,
             open: Mutex::default(),
+            placing: Mutex::default(),
             apps: Mutex::default(),
             authority: Mutex::default(),
             handed: Arc::default(),
@@ -551,6 +576,56 @@ impl HostedBrowsers {
             .map(|open| open.window.clone())
     }
 
+    /// `answer`, this host's own answer to `query` in `workspace_id`, with
+    /// the Browser window among the publishers it lists while one is up: the
+    /// window runs in the workspace's VM, not on this host, yet it is the
+    /// workspace's like any app's window, so a caller asking what runs there
+    /// finds it, and reads and acts on it through this host. Only a listing
+    /// naming no provider lists publishers; any other answer is as it was.
+    #[must_use]
+    pub fn listed(
+        &self,
+        workspace_id: WorkspaceId,
+        query: &tilo_actions::remote::CatalogueQuery,
+        mut answer: RemoteActionMessage,
+    ) -> RemoteActionMessage {
+        if query.provider.is_some() {
+            return answer;
+        }
+        let RemoteActionMessage::CatalogueResponse {
+            result: Ok(page), ..
+        } = &mut answer
+        else {
+            return answer;
+        };
+        let open = self.open.lock_recover();
+        let Some(up) = open.get(&workspace_id) else {
+            return answer;
+        };
+        if page
+            .providers
+            .iter()
+            .any(|listed| listed.provider == up.window.provider)
+        {
+            return answer;
+        }
+        // Named as the workspace's other publishers are, so a caller holding
+        // the listing to its own workspace keeps it.
+        let workspace = page
+            .providers
+            .first()
+            .map_or_else(|| up.workspace.clone(), |listed| listed.workspace.clone());
+        page.providers
+            .push(tilo_actions::remote::CatalogueProvider {
+                provider: up.window.provider.clone(),
+                app_id: APP.to_owned(),
+                workspace,
+                record_id: up.record.clone(),
+                browsable: true,
+            });
+        answer
+    }
+
     /// Where `workspace_id`'s page action goes: to the device holding its
     /// window, once the meter admits it for the workspace's account; answered
     /// here with the host's typed refusal otherwise. `None` for an action
@@ -599,6 +674,18 @@ impl HostedBrowsers {
             && let Some(answered) = self.environment_asked(workspace_id, caller, request)
         {
             return Some(answered);
+        }
+        // What the window offers is read from the window: a listing of its
+        // provider is handed to the device holding it, as its page actions
+        // are, and answered there as the caller's.
+        if let RemoteActionMessage::CatalogueRequest { query, .. } = message {
+            let mut open = self.open.lock_recover();
+            let up = open.get_mut(&workspace_id)?;
+            if query.provider.as_deref() != Some(up.window.provider.as_str()) {
+                return None;
+            }
+            up.answers(*caller.device_public_key()?);
+            return Some(crate::app_serving::Routing::Device(up.window.device));
         }
         let RemoteActionMessage::Invoke(request) = message else {
             if let RemoteActionMessage::Confirm {
@@ -665,6 +752,9 @@ impl HostedBrowsers {
         let request = operated.as_ref().unwrap_or(request);
         match self.meter.admit(&self.account) {
             Ok(()) => {
+                if let Some(up) = self.open.lock_recover().get_mut(&workspace_id) {
+                    up.answers(device);
+                }
                 self.hand_over(workspace_id, caller.clone(), window, request);
                 Some(match operated {
                     // The window is handed the action with the person's
@@ -1066,6 +1156,22 @@ impl HostedBrowsers {
             && witness.argument == argument_digest(request.argument.to_slot().as_deref())
     }
 
+    /// Whether what device `from` sends `to` in `workspace_id` is the
+    /// Browser window answering a caller whose frames this host handed it:
+    /// `to` asked this host, so it hears the answer from this host's device.
+    #[must_use]
+    pub fn answers_for_host(
+        &self,
+        workspace_id: WorkspaceId,
+        from: [u8; 32],
+        to: [u8; 32],
+    ) -> bool {
+        self.open
+            .lock_recover()
+            .get(&workspace_id)
+            .is_some_and(|up| up.window.device == from && up.callers.contains(&to))
+    }
+
     /// Whether `workspace_id` has a page action with a window, whose answer
     /// this host counts.
     #[must_use]
@@ -1148,8 +1254,12 @@ impl HostedBrowsers {
         workspace_id: WorkspaceId,
         record: &str,
     ) -> Result<Window, String> {
-        let mut open = self.open.lock_recover();
-        if let Some(up) = open.get(&workspace_id) {
+        // One placement at a time, so two opens make one session; the windows
+        // already up stay readable meanwhile, since a session's start takes
+        // as long as its VM's wake and every frame of the workspace asks
+        // about them.
+        let _placing = self.placing.lock_recover();
+        if let Some(up) = self.open.lock_recover().get(&workspace_id) {
             return Ok(up.window.clone());
         }
         let (device, material) = {
@@ -1192,12 +1302,20 @@ impl HostedBrowsers {
             }
         };
         self.list(workspace_id, &device, true);
-        open.insert(
+        tracing::info!(
+            %workspace,
+            provider = %window.provider,
+            device = %hex::encode(window.device),
+            "the workspace's Browser window is up in its VM"
+        );
+        self.open.lock_recover().insert(
             workspace_id,
             Open {
                 workspace: workspace.to_owned(),
                 window: window.clone(),
+                record: record.to_owned(),
                 device,
+                callers: std::collections::HashSet::new(),
             },
         );
         Ok(window)
@@ -1282,7 +1400,9 @@ impl HostedBrowsers {
                 Open {
                     workspace: workspace.to_owned(),
                     window: window.clone(),
+                    record: record.to_owned(),
                     device,
+                    callers: std::collections::HashSet::new(),
                 },
             );
         }
@@ -1345,6 +1465,14 @@ impl HostedBrowsers {
                 Some(_) | None => None,
             }
         };
+        if let Some(stopped) = stopped.as_ref().or(stopped_apps.as_ref()) {
+            tracing::info!(
+                workspace = %stopped.workspace,
+                device = %hex::encode(device),
+                "a session in the workspace's VM stopped: its device's last connection here ended {}s ago",
+                self.reconnect.as_secs()
+            );
+        }
         self.refuse(std::iter::once((device, until_ns)));
         if let Some(stopped) = &stopped {
             self.sessions.stop(&stopped.workspace);
@@ -1850,7 +1978,10 @@ pub fn placed(
         .and_then(|workspace| browsers.place(&workspace, workspace_id, &record));
     match placement {
         Ok(_) => message,
-        Err(reason) => refused(invocation, format!("Browser did not open: {reason}")),
+        Err(reason) => {
+            tracing::warn!(%workspace_id, %reason, "the workspace's Browser did not open");
+            refused(invocation, format!("Browser did not open: {reason}"))
+        }
     }
 }
 
