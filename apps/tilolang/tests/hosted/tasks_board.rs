@@ -833,10 +833,12 @@ fn show_acting(
 ) {
     let (agent, _) = crate::change_marks::run();
     let shown = app.harness().update_presence(|presence| {
-        presence.names.insert(
-            ui::permissions::MemberId::person(agent.key()),
-            "Helper".into(),
-        );
+        let member = agent
+            .acting
+            .member_id()
+            .expect("the agent is a member")
+            .clone();
+        presence.names.insert(member, "Helper".into());
         presence
             .apply_interaction(event)
             .expect("a well-formed interaction applies")
