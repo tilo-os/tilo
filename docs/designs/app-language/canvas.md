@@ -83,7 +83,9 @@ sharp at the screen's real size.
   fills the rectangle with the found view; a question posts to the person's agent conversation
   and places the turn's view at the point, recording the rectangle as the turn's anchor so the
   agent's `place` steps fill it (`beside`/`within` from the turn, as `open` takes `beside`
-  today).
+  today). The map reports what the person sees as they point (`seen`), and the caret passes it
+  on (`seen_x`, `seen_y`, `seen_width`, `seen_height`): the turn's steps that stand beside it
+  take free room inside it (`free_place_within`).
 - **Places** are `ui.MapPin`s holding the resource's view with no `ui.WindowFrame`; the handle
   is a shell view shown on hover and selection.
 - **The arrangement** records each place's resource, view, point and size (`ArrangementPlace`);
@@ -116,3 +118,17 @@ is shown to anyone.
 - **Things arrive from where they were asked.** A place grows out of the caret or rectangle it
   answers (the theme's motion), never pops. Pan and zoom follow the hand at the display's refresh
   rate.
+- **Everything stays in view.** A new place, turn or answer never stands partly off-screen: the
+  canvas pans (never zooms) so the newest turn and its answer are in view together, and keeps the
+  turn in view as its words grow. The person's turn wins over the agent's later placement: the
+  camera never chases a place the agent puts off-screen at the cost of the turn. The agent's views
+  beside a turn take free room inside what the person saw when they asked (`seen`), smaller when
+  only a smaller room is free. A card hugs what it holds up to the visible area and no further:
+  its text wraps and the card scrolls.
+- **Captions name the thing.** A place's caption is what it shows, by the name of the view it
+  stands through ("All inboxes", "Notes"), never the first record or account of its app's root.
+  A place under another keeps its caption clear of it: they stand the caption's band and the
+  canvas's gap apart.
+- **Places hug what they show.** A list found at a click is as tall as its rows up to its room:
+  a scroll region says what its content comes to when it is asked, so no card stands with an
+  empty foot.

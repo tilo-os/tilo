@@ -43,6 +43,10 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
     // The place a right press pointed at, by its key: what the words said there are about.
     // Empty for free space and for a click.
     state pointed_at: Text = ""
+    // What the person saw of the canvas as they pointed, in canvas pixels (`x`, `y`, width,
+    // height): the agent's views beside their answer stand in free room inside it, so what they
+    // asked for stays in view (canvas.md §7).
+    state seen: List<Int> = []
     ui.Map(
         name: name,
         ground: true,
@@ -51,6 +55,7 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
         fill,
     ) {
         on drop(target: host.Resource, at: List<Int>): place_dropped(target, at)
+        on seen(at: List<Int>): set(seen, at)
         on press(at: List<Int>): set(pointed, at).then(set(pointed_at, ""))
         on frame(at: List<Int>): set(pointed, at).then(set(pointed_at, ""))
         // A right press the canvas answers itself — free space, or a place whose content took
@@ -105,6 +110,10 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
                             y: pointed.at(1) ?? 0,
                             width: pointed.at(2) ?? 0,
                             height: pointed.at(3) ?? 0,
+                            seen_x: seen.at(0) ?? 0,
+                            seen_y: seen.at(1) ?? 0,
+                            seen_width: seen.at(2) ?? 0,
+                            seen_height: seen.at(3) ?? 0,
                         )
                         .then(set(typed, ""))
                         .then(set(pointed, []))

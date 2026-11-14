@@ -182,6 +182,13 @@ pub struct MapProps {
     /// corner stays where it stood; the view gives the place that size.
     #[component(event(value = String, at = Vec<i64>))]
     pub resize: Event,
+    /// The person pointed on the map's free space (a click, a dragged rectangle, a right press):
+    /// carries the part of the canvas they see as they point, in canvas pixels, its x, its y, its
+    /// width and its height. It is reported before the pointing itself (`press`, `frame`,
+    /// `context`), so what answers it can stand in free room where they look (canvas.md §7,
+    /// "Everything stays in view").
+    #[component(event(value = Vec<i64>))]
+    pub seen: Event,
     /// A rectangle the view points at, in canvas pixels (`x`, `y`, width, height), drawn as the
     /// light outline a drag across the canvas draws: the rectangle the person dragged, kept while
     /// they say what fills it.
@@ -357,6 +364,10 @@ pub struct Map {
     placed: Rc<RefCell<HashMap<String, crate::motion::Placed>>>,
     /// Where the region laid each pin out last, by key, written by its own solve.
     laid: Rc<RefCell<HashMap<String, Rect>>>,
+    /// The pins that hug what they hold but whose view said no height of its own at the last
+    /// solve (a turn before its words arrive), by key: laid out at their most, which is not yet
+    /// how tall they are, so the camera does not follow them there.
+    unsaid: Rc<RefCell<std::collections::HashSet<String>>>,
     /// Where each pin stands on the canvas, in the order of `pins`, as the region reads it at each
     /// solve: a pin moved in place ([`Described::set_props`]) is laid out where it stands now,
     /// though the region was built while it stood elsewhere.
@@ -404,6 +415,8 @@ pub struct Map {
     context: Event,
     /// What dragging a pin's edge or corner does: the map reports the pin and its new size.
     resize: Event,
+    /// What pointing reports first: the part of the canvas the person sees as they point.
+    seen: Event,
     /// The edge or corner being dragged, until it is let go.
     edge_drag: Option<EdgeDrag>,
     /// The rectangle the view points at, in canvas pixels, drawn as a light outline.
@@ -423,6 +436,12 @@ pub struct Map {
     /// the corner of a dragged rectangle, a right press's point, where a drop landed. What
     /// arrives on the map after it is the answer to that pointing, and grows out of it.
     asked: Option<Point>,
+    /// The place that answers the person's last pointing, by its key: of the places arriving
+    /// after it that grow from where it was asked, the one standing nearest that point (the turn
+    /// at the caret, the thing found at a click). The camera keeps it whole in view as it grows,
+    /// and a place arriving later (an agent's view beside it) is shown only as far as that keeps
+    /// it in view (`map_answer.rs`). The person's own pan or zoom lets it go.
+    answer: Option<String>,
 }
 
 /// What a map leaves for the one a rebuild puts in its place ([`crate::motion::keep`]): the
@@ -437,6 +456,7 @@ struct Lens {
     pins: Vec<String>,
     reveal: Option<String>,
     asked: Option<Point>,
+    answer: Option<String>,
 }
 
 impl Drop for Map {
@@ -454,6 +474,7 @@ impl Drop for Map {
                 pins: self.pins.iter().map(|(key, _, _)| key.clone()).collect(),
                 reveal: self.reveal.take(),
                 asked: self.asked,
+                answer: self.answer.take(),
             },
         );
     }
@@ -485,6 +506,7 @@ impl Map {
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
             placed: Rc::default(),
             laid: Rc::default(),
+            unsaid: Rc::default(),
             standing: Rc::default(),
             reveal: None,
             glide: None,
@@ -500,6 +522,7 @@ impl Map {
             frame: Event::None,
             context: Event::None,
             resize: Event::None,
+            seen: Event::None,
             edge_drag: None,
             outline: None,
             key: String::new(),
@@ -507,6 +530,7 @@ impl Map {
             editing: None,
             hint: None,
             asked: None,
+            answer: None,
         }
     }
 
@@ -533,6 +557,8 @@ impl Map {
     /// Look with `camera`: where the person left the canvas on this device.
     pub fn set_camera(&mut self, camera: MapCamera) {
         self.dirty = true;
+        // The person moved the lens themselves: the camera no longer keeps their answer in view.
+        self.answer = None;
         // The person's own hand is on the canvas: it stands where they put it, whether or not a
         // reveal was on its way there.
         self.glide = None;
@@ -560,6 +586,7 @@ impl Map {
         // What the person pointed at before the map was built again is still what an arriving
         // place answers.
         self.asked = self.asked.or(lens.asked);
+        self.take_answer(&lens.pins, lens.answer);
         self.reveal = self
             .pins
             .iter()
@@ -595,7 +622,7 @@ impl Map {
     fn point_at_context(&mut self, pin: String) {
         let pin = self.item_of(pin);
         let at = self.camera.to_canvas(self.rect.origin(), self.cursor);
-        self.asked = Some(at);
+        self.point_at(at);
         self.context.fire(Some(crate::component::Value::List(vec![
             crate::component::Value::Text(pin),
             crate::component::Value::List(vec![
@@ -663,20 +690,19 @@ impl Map {
         let top = self.camera.origin.y;
         let right = left + width / zoom.max(f64::EPSILON);
         let bottom = top + height / zoom.max(f64::EPSILON);
-        let dx = if area.x0 < left {
-            area.x0 - left
-        } else if area.x1 > right {
-            area.x1 - right
-        } else {
-            0.0
+        // An area wider or taller than the view shows its start, so the camera rests there
+        // rather than going back and forth between its two edges.
+        let least = |(low, high): (f64, f64), (start, end): (f64, f64)| {
+            if high - low > end - start || low < start {
+                low - start
+            } else if high > end {
+                high - end
+            } else {
+                0.0
+            }
         };
-        let dy = if area.y0 < top {
-            area.y0 - top
-        } else if area.y1 > bottom {
-            area.y1 - bottom
-        } else {
-            0.0
-        };
+        let dx = least((area.x0, area.x1), (left, right));
+        let dy = least((area.y0, area.y1), (top, bottom));
         if dx.abs() < 0.5 && dy.abs() < 0.5 {
             return None;
         }
@@ -772,16 +798,22 @@ impl Map {
         let Some((_, place, _)) = self.pins.iter().find(|(held, _, _)| *held == key) else {
             return;
         };
+        let zoom = self.camera.zoom.max(f64::EPSILON);
         let canvas = |place: &PinPlace| {
             // A place whose height its view says is as tall as a window is wide over tall; one
             // that hugs what it holds is shown by its top, so a short answer in a tall room
-            // does not carry the camera to the room's foot.
+            // does not carry the camera to the room's foot. Its caption's band over it is shown
+            // with it.
             let height = match place.height {
                 Some(height) if place.hug => height.min(LEAST_SIDE),
                 Some(height) => height,
                 None => place.width.max(1.0) / 1.6,
             };
-            Rect::from_origin_size(Point::new(place.x, place.y), (place.width.max(1.0), height))
+            let band = place.band / zoom;
+            Rect::from_origin_size(
+                Point::new(place.x, place.y - band),
+                (place.width.max(1.0), height + band),
+            )
         };
         let area = canvas(place);
         // What the person was looking at: every other place standing wholly in the viewport.
@@ -807,6 +839,19 @@ impl Map {
             .filter(|rect| within(rect))
             .collect();
         let margin = ARRIVAL_MARGIN / self.camera.zoom.max(f64::EPSILON);
+        // The person's answer wins over what arrives after it: the camera shows what arrived only
+        // as far as the answer stays whole in view, and never chases a place put off-screen.
+        if let Some(held) = self
+            .answer
+            .clone()
+            .filter(|answer| *answer != key)
+            .and_then(|answer| self.area_of(&answer))
+        {
+            if let Some(camera) = self.revealing_keeping(area, margin, &kept, held) {
+                self.pan_to(camera);
+            }
+            return;
+        }
         if let Some(camera) = self.revealing_with(area, margin, &kept) {
             self.pan_to(camera);
         }
@@ -900,8 +945,12 @@ impl Map {
         let moving = Rc::clone(&self.placed);
         let motion = self.motion;
         let laid: Rc<RefCell<HashMap<String, Rect>>> = Rc::clone(&self.laid);
+        let unsaid = Rc::clone(&self.unsaid);
         let mut region = Manual::new(move |cx| -> Result<Size<f32>, WidgetLayoutError> {
             let available = cx.available();
+            // The tallest a hugging place stands: the viewport, less the room a place that
+            // arrives keeps from its edges.
+            let room = f64::from(available.height) - 2.0 * ARRIVAL_MARGIN;
             let camera = shown.get();
             // A camera that moved since the last solve carries the places: the ground moves under
             // them, and they stand where it took them, with the windows in their wells.
@@ -913,6 +962,7 @@ impl Map {
             let mut moving = moving.borrow_mut();
             let places = places.borrow();
             let mut out: HashMap<String, Rect> = HashMap::with_capacity(places.len());
+            let mut silent = std::collections::HashSet::new();
             for index in 0..cx.len() {
                 let Some(place) = places.get(index) else {
                     continue;
@@ -940,9 +990,22 @@ impl Map {
                 let natural = f64::from(size.height);
                 let height = place.height.map_or(natural, |height| {
                     let most = (height * camera.zoom).max(1.0) + place.band;
+                    // What hugs what it holds never grows past what the person sees: a long
+                    // answer stands as tall as the viewport leaves it, and scrolls.
+                    let most = if place.hug {
+                        most.min(room).max(LEAST_SIDE.min(most))
+                    } else {
+                        most
+                    };
                     // A view that says no height of its own (a list that scrolls is as tall as
                     // the room it is given) fills its most: it cannot hug what it holds.
                     let says = natural - place.band >= LEAST_NATURAL * camera.zoom;
+                    if place.hug
+                        && !says
+                        && let Some(key) = keys.get(index)
+                    {
+                        silent.insert(key.clone());
+                    }
                     if place.hug && says {
                         natural.min(most)
                     } else {
@@ -965,6 +1028,7 @@ impl Map {
                 cx.place(index, rect)?;
             }
             *laid.borrow_mut() = out;
+            *unsaid.borrow_mut() = silent;
             // The region is its viewport: a canvas does not grow with what it holds.
             Ok(Size {
                 width: available.width.max(0.0),
@@ -993,12 +1057,14 @@ impl Described for Map {
             frame,
             context,
             resize,
+            seen,
             outline,
             hint,
         } = props;
         let mut map = Self::new();
         map.hint = hint.filter(|hint| !hint.trim().is_empty());
         map.resize = resize;
+        map.seen = seen;
         map.outline = outline_of(&outline);
         map.ground = ground;
         map.name = name.unwrap_or_default();
@@ -1046,6 +1112,7 @@ impl Described for Map {
             frame,
             context,
             resize,
+            seen,
             outline,
             hint,
         } = props;
@@ -1055,6 +1122,7 @@ impl Described for Map {
             self.dirty = true;
         }
         self.resize = resize;
+        self.seen = seen;
         let outline = outline_of(&outline);
         if outline != self.outline {
             self.outline = outline;
@@ -1311,14 +1379,10 @@ impl Map {
     /// frame they are pointing at before they let go (`canvas.md` §1, §5). Nothing is drawn when
     /// no such drag is under way, or while it is still a click.
     fn draw_frame_outline(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let look = OutlineLook::of(theme);
+        let zoom = self.shown.get().zoom;
         let outline = |scene: &mut Scene, rect: &Rect| {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                transform,
-                theme.border_focus,
-                None,
-                rect,
-            );
+            look.stroke(scene, transform, *rect, zoom);
         };
         // A place's edge being dragged shows the size it is taking.
         if let Some(drag) = &self.edge_drag {
@@ -1346,13 +1410,7 @@ impl Map {
         if rect.width() < 1.0 && rect.height() < 1.0 {
             return;
         }
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
-            transform,
-            theme.border_focus,
-            None,
-            &rect,
-        );
+        outline(scene, &rect);
     }
 
     /// Draw the region's pins, each posed by its own [`crate::motion::Placed`]: a pin that just
@@ -1686,7 +1744,7 @@ impl Map {
                         from.x.max(to.x),
                         from.y.max(to.y),
                     );
-                    self.asked = Some(rect.origin());
+                    self.point_at(rect.origin());
                     self.frame.fire(Some(crate::component::Value::List(vec![
                         crate::component::Value::Int(rect.x0.round() as i64),
                         crate::component::Value::Int(rect.y0.round() as i64),
@@ -1694,7 +1752,7 @@ impl Map {
                         crate::component::Value::Int(rect.height().round() as i64),
                     ])));
                 } else {
-                    self.asked = Some(from);
+                    self.point_at(from);
                     self.press.fire(Some(crate::component::Value::List(vec![
                         crate::component::Value::Int(from.x.round() as i64),
                         crate::component::Value::Int(from.y.round() as i64),
@@ -1861,6 +1919,9 @@ impl Widget for Map {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(tree, node, origin);
         self.rect = crate::widget::layout_rect(tree, node, origin);
+        // The answer the person asked for stands whole in view as it grows: laid out now, the
+        // camera follows it to where it has grown, the least it takes.
+        self.keep_answer();
     }
 
     fn layout_needs_measure(&self) -> bool {
@@ -2047,7 +2108,7 @@ impl Widget for Map {
                 && !resource.is_empty()
             {
                 let at = self.camera.to_canvas(self.rect.origin(), landed.pointer);
-                self.asked = Some(at);
+                self.point_at(at);
                 self.drop.fire(Some(crate::component::Value::List(vec![
                     crate::component::Value::Resource(resource),
                     crate::component::Value::List(vec![
@@ -2114,6 +2175,10 @@ fn f32_of(v: f64) -> f32 {
     v as f32
 }
 
+#[path = "map_answer.rs"]
+mod answer;
+use answer::OutlineLook;
+
 #[cfg(test)]
 #[path = "map_motion_tests.rs"]
 mod motion_tests;
@@ -2125,3 +2190,7 @@ mod pointing_tests;
 #[cfg(test)]
 #[path = "map_canvas_tests.rs"]
 mod canvas_tests;
+
+#[cfg(test)]
+#[path = "map_answer_tests.rs"]
+mod answer_tests;

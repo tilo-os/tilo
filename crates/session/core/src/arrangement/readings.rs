@@ -207,6 +207,10 @@ fn collect_targets(resource: &ResourceSpec, out: &mut BTreeMap<String, Target>) 
                     .iter()
                     .find(|view| view.place)
                     .map(|view| view.id.clone()),
+                place_title: views
+                    .iter()
+                    .find(|view| view.place)
+                    .map_or_else(String::new, |view| view.label.clone()),
                 views: views.into_iter().map(|view| view.id.clone()).collect(),
                 title: resource.label.clone(),
                 kind: resource.kind.clone(),

@@ -39,7 +39,7 @@ default view note_editor for Note
 
 row view note_row for Note
 
-place view all_notes for Notebook
+place view notes for Notebook
 
 /// Starts a note at the top of the tree. Its title starts empty: what is typed first names it.
 primary action new_note(nb: Notebook) -> Note (icon: .plus) {
@@ -472,7 +472,7 @@ view note_node(n: Note) {
 
 /// The notes standing on their own, as a place shows them: each note a row, in the notebook's
 /// order, opening beside the list. None of the window's tree, editor or bar is around them.
-view all_notes(nb: Notebook) {
+view notes(nb: Notebook) {
     if nb.notes.is_empty() {
         ui.EmptyState("No notes yet", icon: .file_text)
     } else {

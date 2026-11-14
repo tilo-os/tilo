@@ -2824,14 +2824,17 @@ mod tests {
         );
         assert!(Turn::of(&channel, "missing").is_none());
         let tree = turn::turn(&turn_of_q1, &view_cx(&channel));
+        // The card stands in a scroll, so a long answer scrolls inside it rather than growing
+        // past what the canvas shows (`views_turn_tests`).
+        let card = tree.children.first().expect("the card in its scroll");
         assert!(
-            tree.kind == "stack"
-                && tree.props.get("padding") == Some(&Value::text("section"))
-                && !tree.props.contains_key("fill"),
+            card.kind == "stack"
+                && card.props.get("padding") == Some(&Value::text("section"))
+                && !card.props.contains_key("fill"),
             "the turn is a card keeping its padding at its sides and hugging its words, never a \
              page that takes its pane's height: {} {:?}",
-            tree.kind,
-            tree.props
+            card.kind,
+            card.props
         );
         let said = texts(&tree);
         assert!(

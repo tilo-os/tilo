@@ -28,10 +28,17 @@
 # mount, its secret store and the scratch directory go with it.
 #
 # Usage:
-#   dist/dev/shell-run.sh [--no-build] [--size WxH] [--scale S] [--no-apps] [--dev-rust-views]
+#   dist/dev/shell-run.sh [--no-build] [--profile P] [--size WxH] [--scale S] [--no-apps]
+#                         [--dev-rust-views]
 #
 # Options:
-#   --no-build    use the binaries already in target/debug
+#   --no-build    use the binaries already built (target/debug, or the --profile's)
+#   --profile P   run the session and its tools from the build profile P: `debug` (the default,
+#                 built here) or `nested`, the optimised development build
+#                 `dist/dev/nested-session-build.sh` makes into target/nested (release without
+#                 LTO, with the development overrides the test-control socket needs). What a
+#                 person feels — frame times, a pan's cost — is measured on `nested`: a debug
+#                 build's frames are the unoptimised code's, not the product's
 #   --no-apps     start without the seeded apps, as a bare session does
 #   --size WxH    the headless output's mode in pixels, or a window's size in the host's
 #                 logical pixels (both default 1280x800). A window draws at the desktop's own
@@ -79,9 +86,11 @@ apps=(--seed-apps)
 rust_views=0
 window=0
 model_record=
+profile=debug
 while (($#)); do
     case $1 in
         --no-build) build=0; shift ;;
+        --profile) profile=${2:?--profile needs debug or nested}; shift 2 ;;
         --no-apps) apps=(); rust_views=0; shift ;;
         --size) size=${2:?--size needs WxH}; shift 2 ;;
         --scale) scale=${2:?--scale needs a number}; shift 2 ;;
@@ -93,8 +102,19 @@ while (($#)); do
     esac
 done
 
-bin=$repo_root/target/debug
-if ((build)); then
+case $profile in
+    debug | nested) ;;
+    *) die "unknown profile $profile (debug or nested)" ;;
+esac
+((rust_views)) && [[ $profile != debug ]] && die "--dev-rust-views is a debug build's"
+bin=$repo_root/target/$profile
+if ((build)) && [[ $profile == nested ]]; then
+    # The optimised development build is the nested session's own: its host programs, its thin
+    # apps (the Rust apps this session installs) and its tilolang host, from one script, so the
+    # build a session is measured on is the one a nested session runs.
+    say "building the nested profile (dist/dev/nested-session-build.sh)"
+    TILO_NESTED_APPS="${rust_apps[*]}" "$repo_root/dist/dev/nested-session-build.sh"
+elif ((build)); then
     say "building tilo-session, tilo-quick-settings, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
     # A shot of a Rust app's view on the canvas builds the session with Tube's sample
     # resources and views linked (`--dev-rust-views`, development builds only).
@@ -517,12 +537,15 @@ fi
 start_session --shell screen --admit-repl "$bin/tilolang" "${apps[@]}"
 # The door is announced once the session's own doors are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
+# A debug build serves it where `TILO_AGENT_DOOR` names; an optimised one at the seat's own
+# path in this session's runtime directory, which it announces the same way.
 tries=600
-until grep -q "^TILO_AGENT_DOOR=$door\$" "$log"; do
+until grep -q "^TILO_AGENT_DOOR=$runtime/" "$log"; do
     kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its agent door"; }
     ((tries--)) || { tail -40 "$log" >&2; die "the session serves no agent door"; }
     sleep 0.1
 done
+door=$(sed -n "s|^TILO_AGENT_DOOR=\($runtime/.*\)\$|\1|p" "$log" | tail -1)
 
 if [[ -n $model_record ]]; then
     env -u WAYLAND_DISPLAY -u DISPLAY -u DBUS_SESSION_BUS_ADDRESS \

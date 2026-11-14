@@ -945,3 +945,37 @@ fn a_menu_opened_again_keeps_its_rows_heights() {
         "where the second opening's rows stand, and how tall"
     );
 }
+
+/// The person's own menu on a bar is their avatar, whole (`canvas.md` §7, "The canvas is the whole
+/// screen"): one face is drawn as the avatar itself at an avatar's size, with the menu behind it,
+/// where several stay a group of faces.
+#[test]
+fn one_persons_menu_is_their_whole_avatar() {
+    use crate::component::Described;
+    let own = MenuButton::from_props(
+        "me",
+        MenuButtonProps {
+            label: "Sam Rivera: desk style and workspaces".into(),
+            faces: vec!["Sam Rivera".into()],
+            ..MenuButtonProps::default()
+        },
+    );
+    assert_eq!(
+        own.button.people_shown(),
+        (Some("Sam Rivera"), false),
+        "their avatar, not a group of faces"
+    );
+    let group = MenuButton::from_props(
+        "people",
+        MenuButtonProps {
+            label: "Who is here".into(),
+            faces: vec!["Sam Rivera".into(), "Ana Ruiz".into()],
+            ..MenuButtonProps::default()
+        },
+    );
+    assert_eq!(
+        group.button.people_shown(),
+        (None, true),
+        "several people are a group"
+    );
+}

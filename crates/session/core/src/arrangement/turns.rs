@@ -28,19 +28,20 @@ const TURN_HEIGHT: i64 = 240;
 /// cut at its last line.
 const TURN_MOST: i64 = 480;
 /// The gap between a turn standing at a rectangle's top and the room left under it: the canvas's
-/// own gap between places, so a place filling the room stands where the canvas would keep it.
-const TURN_GAP: i64 = tilo_desktop_model::CANVAS_GAP as i64;
+/// own gap between a place and the one under it, so a place filling the room stands where the
+/// canvas would keep it and its caption stands clear of the turn.
+const TURN_GAP: i64 = tilo_desktop_model::CANVAS_ROW_GAP as i64;
 /// The least room under a turn that the agent's views fill: a rectangle shorter than this is
 /// filled whole, and the turn's own view keeps its band over it.
 const LEAST_ROOM: i64 = 160;
 
 /// A rectangle on the canvas, in canvas pixels: its top-left corner and its size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct CanvasRect {
-    pub(super) x: i64,
-    pub(super) y: i64,
-    pub(super) width: i64,
-    pub(super) height: i64,
+pub struct CanvasRect {
+    pub x: i64,
+    pub y: i64,
+    pub width: i64,
+    pub height: i64,
 }
 
 /// Where the places an agent makes in a turn stand (canvas.md §3, §6): the turn's own place, and
@@ -55,6 +56,9 @@ pub(super) struct TurnAnchor {
     pub(super) conversation: String,
     /// The order the turns stood in: a later turn has a greater one.
     pub(super) stood: u64,
+    /// The part of the canvas the person saw when they asked: what the turn's views stand beside
+    /// it take free room inside.
+    pub(super) seen: Option<CanvasRect>,
 }
 
 /// What a session reads which message Chat posted for the ask numbered so through, once Chat
@@ -80,10 +84,19 @@ fn key_parts(key: &str) -> Option<(&str, &str)> {
 
 /// The size a turn stands at for an ask at `at` of `size` (`None`: a click), and the room under it
 /// a dragged rectangle leaves for the answer's views.
-fn turn_geometry(at: (i64, i64), size: Option<(i64, i64)>) -> (i64, i64, Option<CanvasRect>) {
+fn turn_geometry(
+    at: (i64, i64),
+    size: Option<(i64, i64)>,
+    seen: Option<CanvasRect>,
+) -> (i64, i64, Option<CanvasRect>) {
     let Some((width, height)) = size else {
-        // At a click the turn hugs its answer up to its most; a rectangle sets its band.
-        return (TURN_WIDTH, TURN_MOST, None);
+        // At a click the turn hugs its answer up to its most, at an answer's measure as far as
+        // the room to the edge of what the person sees allows; a rectangle sets its band.
+        return (
+            super::width_in_view(at.0, TURN_WIDTH, seen),
+            TURN_MOST,
+            None,
+        );
     };
     let band = TURN_HEIGHT.min(height);
     let left = height.saturating_sub(band).saturating_sub(TURN_GAP);
@@ -104,10 +117,10 @@ fn turn_geometry(at: (i64, i64), size: Option<(i64, i64)>) -> (i64, i64, Option<
 pub(super) enum TurnRoom {
     /// The room under the turn, which this step takes.
     Fill(CanvasRect),
-    /// Beside the turn's place.
-    Beside(u64),
-    /// Beside where the turn will stand once its view does.
-    BesideAsked(CanvasRect),
+    /// Beside the turn's place, inside what the person saw when they asked, when that is known.
+    Beside(u64, Option<CanvasRect>),
+    /// Beside where the turn will stand once its view does, inside what the person saw.
+    BesideAsked(CanvasRect, Option<CanvasRect>),
 }
 
 /// An ask sent from the canvas whose turn does not stand yet: where it stands once Chat said
@@ -124,6 +137,8 @@ pub(super) struct AwaitedTurn {
     at: (i64, i64),
     /// The rectangle they dragged, when they dragged one.
     size: Option<(i64, i64)>,
+    /// What they saw of the canvas when they asked.
+    seen: Option<CanvasRect>,
     /// A step of the turn filled the room under it before the turn stood.
     room_taken: bool,
 }
@@ -141,8 +156,8 @@ impl Arrangement {
         asked: &str,
         sent: u64,
         strip: Option<u64>,
-        at: (i64, i64),
-        size: Option<(i64, i64)>,
+        (at, size): ((i64, i64), Option<(i64, i64)>),
+        seen: Option<CanvasRect>,
     ) {
         self.awaiting.borrow_mut().push(AwaitedTurn {
             asked: asked.to_owned(),
@@ -150,6 +165,7 @@ impl Arrangement {
             strip,
             at,
             size,
+            seen,
             room_taken: false,
         });
     }
@@ -207,7 +223,7 @@ impl Arrangement {
             self.bring_forward(asked, held, busy)?;
             return Ok(Some(held));
         }
-        let (width, height, room) = turn_geometry(at, ask.size);
+        let (width, height, room) = turn_geometry(at, ask.size, ask.seen);
         // A step of the turn taken before the turn stood filled the room already.
         let room = room.filter(|_| !ask.room_taken);
         let surface = self.surface_at_strip(ask.strip)?;
@@ -242,6 +258,7 @@ impl Arrangement {
                 room,
                 conversation: turn.conversation.clone(),
                 stood,
+                seen: ask.seen,
             },
         );
         Ok(Some(surface.place))
@@ -334,7 +351,7 @@ impl Arrangement {
         let key = key.trim();
         if let Some(turn) = self.turn_of(key) {
             let Some(room) = turn.room else {
-                return Some(TurnRoom::Beside(turn.place));
+                return Some(TurnRoom::Beside(turn.place, turn.seen));
             };
             if let Some(held) = self.turns.borrow_mut().get_mut(key) {
                 held.room = None;
@@ -344,17 +361,20 @@ impl Arrangement {
         let at = self.awaited_of(key)?;
         let mut awaiting = self.awaiting.borrow_mut();
         let ask = awaiting.get_mut(at)?;
-        let (width, height, room) = turn_geometry(ask.at, ask.size);
+        let (width, height, room) = turn_geometry(ask.at, ask.size, ask.seen);
         if let Some(room) = room.filter(|_| !ask.room_taken) {
             ask.room_taken = true;
             return Some(TurnRoom::Fill(room));
         }
-        Some(TurnRoom::BesideAsked(CanvasRect {
-            x: ask.at.0,
-            y: ask.at.1,
-            width,
-            height,
-        }))
+        Some(TurnRoom::BesideAsked(
+            CanvasRect {
+                x: ask.at.0,
+                y: ask.at.1,
+                width,
+                height,
+            },
+            ask.seen,
+        ))
     }
 }
 

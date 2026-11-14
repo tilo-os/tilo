@@ -141,8 +141,36 @@ fn mail_root() -> Placed {
         title: "Mail".into(),
         kind: "tl.so.tilo.lang.mail.Mail".into(),
         place_view: Some("all_inboxes".into()),
+        place_title: "All inboxes".into(),
         app_title: "Mail".into(),
     }
+}
+
+/// A place standing through its resource's place view is called by that view, never by the record
+/// the resource's own label names (an app's root goes by its first account or note): "my mails"
+/// stands captioned "All inboxes", not the account's address (canvas.md §7, "Captions name the
+/// thing").
+#[test]
+fn a_place_through_its_place_view_is_called_by_the_view() {
+    let mail = Placed {
+        title: "sam@rivera.example".into(),
+        ..mail_root()
+    };
+    assert_eq!(mail.title_through("all_inboxes"), "All inboxes");
+    assert_eq!(
+        mail.title_through("mail"),
+        "sam@rivera.example",
+        "through another view, the resource's own label"
+    );
+    let unnamed = Placed {
+        place_title: String::new(),
+        ..mail
+    };
+    assert_eq!(
+        unnamed.title_through("all_inboxes"),
+        "sam@rivera.example",
+        "a place view with no name of its own leaves the label"
+    );
 }
 
 /// Words that name the thing place it through its place view; words that name the app alone place
@@ -201,4 +229,36 @@ fn what_text_places_is_the_resource_and_its_view() {
         Some(("tl:so.tilo.lang.mail:root".into(), String::new()))
     );
     assert_eq!(found_place(&hits, "my mails", |_| None), None);
+}
+
+/// What stands at a click takes its own width as far as the room to the edge of what the person
+/// sees allows, never so narrow a row cannot read: then it keeps its width and the canvas pans.
+#[test]
+fn a_thing_at_a_click_is_as_wide_as_the_room_in_view() {
+    let seen = Some(super::CanvasRect {
+        x: 0,
+        y: 0,
+        width: 1280,
+        height: 760,
+    });
+    assert_eq!(
+        super::width_in_view(100, 720, seen),
+        720,
+        "room for all of it"
+    );
+    assert_eq!(
+        super::width_in_view(830, 720, seen),
+        1280 - 830 - 24,
+        "as wide as the room to the edge"
+    );
+    assert_eq!(
+        super::width_in_view(1100, 720, seen),
+        720,
+        "too little room: its own"
+    );
+    assert_eq!(
+        super::width_in_view(830, 720, None),
+        720,
+        "nothing seen said"
+    );
 }

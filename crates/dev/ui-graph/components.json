@@ -1415,7 +1415,7 @@
         },
         {
           "name": "faces",
-          "doc": "Whose menu it is, as their faces in place of the label and icon: the person's own menu on a bar is their face. The label names it to assistive technology.",
+          "doc": "Whose menu it is, as their faces in place of the label and icon: the person's own menu on a bar is their face, one person's at an avatar's full size. The label names it to assistive technology.",
           "type": {
             "list": "text"
           }
@@ -2942,6 +2942,13 @@
           "doc": "A place's trailing edge, bottom edge or corner was dragged and let go: carries the key of the pin it resized and its new size in canvas pixels, its width then its height. Its corner stays where it stood; the view gives the place that size.",
           "value": "text",
           "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "seen",
+          "doc": "The person pointed on the map's free space (a click, a dragged rectangle, a right press): carries the part of the canvas they see as they point, in canvas pixels, its x, its y, its width and its height. It is reported before the pointing itself (`press`, `frame`, `context`), so what answers it can stand in free room where they look (canvas.md §7, \"Everything stays in view\").",
+          "value": {
             "list": "int"
           }
         }
