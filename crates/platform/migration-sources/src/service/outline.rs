@@ -133,7 +133,7 @@ pub fn review(server: &str, key: &str) -> Result<Vec<ReviewGroup>, ServiceError>
             let mut items = vec![ReviewItem {
                 key: format!("{COLLECTION}{id}"),
                 title: name.to_owned(),
-                detail: String::new(),
+                facts: Vec::new(),
             }];
             items.extend(
                 source
@@ -144,9 +144,13 @@ pub fn review(server: &str, key: &str) -> Result<Vec<ReviewGroup>, ServiceError>
                     .map(|document| ReviewItem {
                         key: text(document, "id").to_owned(),
                         title: titled(text(document, "title")),
-                        detail: parent_document(document)
-                            .and_then(|parent| titles.get(parent))
-                            .map_or_else(|| name.to_owned(), |parent| format!("{name} › {parent}")),
+                        facts: std::iter::once(name.to_owned())
+                            .chain(
+                                parent_document(document)
+                                    .and_then(|parent| titles.get(parent))
+                                    .map(ToString::to_string),
+                            )
+                            .collect(),
                     }),
             );
             ReviewGroup {

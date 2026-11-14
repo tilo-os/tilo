@@ -129,14 +129,17 @@ pub fn review(server: &str, key: &str) -> Result<Vec<ReviewGroup>, ServiceError>
         group.items.push(ReviewItem {
             key: text(&issue, "id").to_owned(),
             title: text(&issue, "title").to_owned(),
-            detail: format!(
-                "{} · {}",
+            facts: [
                 text(&issue, "identifier"),
                 issue
                     .pointer("/state/name")
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-            ),
+                    .unwrap_or_default(),
+            ]
+            .into_iter()
+            .filter(|fact| !fact.is_empty())
+            .map(str::to_owned)
+            .collect(),
         });
     }
     Ok(teams.into_values().collect())

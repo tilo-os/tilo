@@ -235,7 +235,7 @@ fn outline_review_choose_and_land_pages_with_hierarchy_pictures_and_links() {
         .map(|item| item.title.as_str())
         .collect();
     assert_eq!(titles, ["Handbook", "Welcome", "Onboarding checklist"]);
-    assert_eq!(handbook.items[2].detail, "Handbook › Welcome");
+    assert_eq!(handbook.items[2].facts, ["Handbook", "Welcome"]);
     reviewed.choose("col-archive", false).unwrap();
     assert_eq!(reviewed.chosen_count(), 3);
 
@@ -394,7 +394,7 @@ fn linear_issues_land_with_state_labels_assignee_comments_links_and_source() {
         .map(|group| (group.title.as_str(), group.items.len()))
         .collect();
     assert_eq!(teams, [("ENG", 3), ("OPS", 1)]);
-    assert_eq!(reviewed.groups[0].items[0].detail, "ENG-1 · started");
+    assert_eq!(reviewed.groups[0].items[0].facts, ["ENG-1", "started"]);
     reviewed.choose("t-ops", false).unwrap();
 
     let mut journal = ServiceJournal::new(reviewed);

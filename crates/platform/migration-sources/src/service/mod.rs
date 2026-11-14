@@ -167,8 +167,9 @@ pub struct ReviewItem {
     /// The source's own stable id for it.
     pub key: String,
     pub title: String,
-    /// How the item reads beside its title: a document's place, an issue's identifier.
-    pub detail: String,
+    /// What reads beside its title, each fact on its own: a document's collection and the
+    /// document it sits under, an issue's identifier and state.
+    pub facts: Vec<String>,
 }
 
 /// A group the person chooses as a whole: an Outline collection, a Linear team, a mail account.

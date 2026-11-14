@@ -473,7 +473,7 @@ impl Services {
             )
             .with_label_placement(Some(LabelPlacement::Above))
         };
-        let mut form = Column::new().with_gap(8.0);
+        let mut form = Column::new().with_rhythm(ui::tokens::Rhythm::Related);
         match kind {
             ServiceKind::Outline => {
                 form = form
@@ -552,21 +552,23 @@ impl Services {
 
     fn review_view(&self, index: usize, journal: &ServiceJournal) -> Column {
         let review = &journal.review;
-        let mut card = Column::new().with_gap(6.0).push(Box::new(
-            ListRow::new(
-                format!("import.services.review-title.{index}"),
-                review.title.clone(),
-            )
-            .icon(icon(review.kind))
-            .secondary(t_args(
-                "imager-services-chosen",
-                &[
-                    ("chosen", (review.chosen_count() as i64).into()),
-                    ("count", (review.item_count() as i64).into()),
-                    ("landed", (journal.landed.len() as i64).into()),
-                ],
-            )),
-        ));
+        let mut card = Column::new()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .push(Box::new(
+                ListRow::new(
+                    format!("import.services.review-title.{index}"),
+                    review.title.clone(),
+                )
+                .icon(icon(review.kind))
+                .secondary(t_args(
+                    "imager-services-chosen",
+                    &[
+                        ("chosen", (review.chosen_count() as i64).into()),
+                        ("count", (review.item_count() as i64).into()),
+                        ("landed", (journal.landed.len() as i64).into()),
+                    ],
+                )),
+            ));
         let running = journal.state == JournalState::Running;
         for (group_index, group) in review.groups.iter().enumerate() {
             let shown: Vec<String> = group
@@ -709,10 +711,10 @@ impl Services {
     /// workspace over: what a screenshot of the review shows, without reaching either service.
     pub(super) fn staged_for_shot(store: Arc<MigrationStore>) -> Self {
         use imager_backend::service_sources::{ReviewGroup, ReviewItem};
-        let item = |key: &str, title: &str, detail: &str| ReviewItem {
+        let item = |key: &str, title: &str, facts: &[&str]| ReviewItem {
             key: key.into(),
             title: title.into(),
-            detail: detail.into(),
+            facts: facts.iter().map(|fact| (*fact).to_owned()).collect(),
         };
         let mut services = Self::at(Some(Arc::clone(&store)), None, None);
         let outline = ServiceReview {
@@ -724,12 +726,16 @@ impl Services {
                     key: "handbook".into(),
                     title: "Handbook".into(),
                     items: vec![
-                        item("c-handbook", "Handbook", ""),
-                        item("d-welcome", "Welcome", "Handbook"),
-                        item("d-onboarding", "Onboarding checklist", "Handbook › Welcome"),
-                        item("d-holidays", "Holidays", "Handbook"),
-                        item("d-expenses", "Expenses", "Handbook"),
-                        item("d-security", "Security basics", "Handbook"),
+                        item("c-handbook", "Handbook", &[]),
+                        item("d-welcome", "Welcome", &["Handbook"]),
+                        item(
+                            "d-onboarding",
+                            "Onboarding checklist",
+                            &["Handbook", "Welcome"],
+                        ),
+                        item("d-holidays", "Holidays", &["Handbook"]),
+                        item("d-expenses", "Expenses", &["Handbook"]),
+                        item("d-security", "Security basics", &["Handbook"]),
                     ],
                     chosen: true,
                 },
@@ -737,9 +743,9 @@ impl Services {
                     key: "product".into(),
                     title: "Product".into(),
                     items: vec![
-                        item("c-product", "Product", ""),
-                        item("d-roadmap", "Roadmap 2027", "Product"),
-                        item("d-pricing", "Pricing", "Product"),
+                        item("c-product", "Product", &[]),
+                        item("d-roadmap", "Roadmap 2027", &["Product"]),
+                        item("d-pricing", "Pricing", &["Product"]),
                     ],
                     chosen: true,
                 },
@@ -747,8 +753,8 @@ impl Services {
                     key: "archive".into(),
                     title: "Archive".into(),
                     items: vec![
-                        item("c-archive", "Archive", ""),
-                        item("d-old", "Old plans", "Archive"),
+                        item("c-archive", "Archive", &[]),
+                        item("d-old", "Old plans", &["Archive"]),
                     ],
                     chosen: false,
                 },
@@ -762,9 +768,9 @@ impl Services {
                 key: "eng".into(),
                 title: "Engineering".into(),
                 items: vec![
-                    item("i-1", "Ship the migration", "ENG-1 · In Progress"),
-                    item("i-2", "Write the review page", "ENG-2 · Todo"),
-                    item("i-3", "Old importer gone", "ENG-3 · Done"),
+                    item("i-1", "Ship the migration", &["ENG-1", "In Progress"]),
+                    item("i-2", "Write the review page", &["ENG-2", "Todo"]),
+                    item("i-3", "Old importer gone", &["ENG-3", "Done"]),
                 ],
                 chosen: true,
             }],

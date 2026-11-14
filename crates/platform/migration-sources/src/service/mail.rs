@@ -81,7 +81,7 @@ pub fn review(account: &Account) -> (String, Vec<ReviewGroup>) {
             items: vec![ReviewItem {
                 key: account.id.0.clone(),
                 title,
-                detail: host.to_owned(),
+                facts: vec![host.to_owned()],
             }],
             chosen: true,
         }],
