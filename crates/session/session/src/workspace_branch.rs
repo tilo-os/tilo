@@ -66,8 +66,8 @@ pub(crate) fn stays(app: &str, record: &str) -> bool {
         // Every conversation, and each person's drafts and read marks. The workspace's own emoji
         // and agents are Chat's to keep but the workspace's, so they come along.
         CHAT => collab_types::workspace_record(app, record).is_none(),
-        // The runtime branches the environments, with their own files; the branch's desk is
-        // written from its own windows, never the source's record of everyone's.
+        // The runtime branches the environments, with their own files; the branch's layout is
+        // written from its own windows, never the source's layout of everyone's.
         TERMINAL | tilo_desktop_model::ownership::DESKTOP_APP => true,
         _ => collab_types::workspace_record(app, record)
             .is_some_and(|known| (known.app, known.kind) == PERSONAL_PLACES),
@@ -427,7 +427,14 @@ fn placed(path: &Path, from: &str, to: &str) -> Option<PathBuf> {
             return None;
         }
         Some(&tilo_desktop_model::ownership::DESKTOP_APP) => return None,
-        Some(&TERMINAL) if environment_records(&parts, from) => return None,
+        // The runtime branches the environments; a workspace's own record another app keeps in
+        // Terminal's store (the emoji) comes along like every copy of it.
+        Some(&TERMINAL)
+            if environment_records(&parts, from)
+                && record_of(&parts, from).is_none_or(|(app, record)| stays(&app, &record)) =>
+        {
+            return None;
+        }
         _ => {}
     }
     let name = parts.last().copied().unwrap_or_default();
@@ -451,10 +458,9 @@ fn placed(path: &Path, from: &str, to: &str) -> Option<PathBuf> {
     )
 }
 
-/// Whether `parts` are in Terminal's environment records of the workspace `from`
-/// (`…/so.tilo.terminal/rooms/<from>/records`), which the runtime branches. Another app's records
-/// Terminal keeps beside its own (the workspace's emoji) are not: they come along as every copy of
-/// them does.
+/// Whether `parts` are in Terminal's documents of the workspace `from`
+/// (`…/so.tilo.terminal/workspaces/<from>/documents`), which the runtime branches. Another app's
+/// documents Terminal keeps beside its own are not: they come along as every copy of them does.
 fn environment_records(parts: &[&str], from: &str) -> bool {
     parts.windows(4).any(|window| {
         window
@@ -468,7 +474,7 @@ fn environment_records(parts: &[&str], from: &str) -> bool {
 }
 
 /// The app and record a document at `path` (relative to the workspace's app directories) is,
-/// when it is a record: `<app dir>/…/<app>/rooms/<workspace>/records/<record>`.
+/// when it is a record: `<app dir>/…/<app>/workspaces/<workspace>/documents/<record>`.
 fn record_of(parts: &[&str], workspace: &str) -> Option<(String, String)> {
     let at = parts.windows(3).position(|window| {
         window
@@ -995,9 +1001,9 @@ mod tests {
         let rooms = data.join("tilo-workspaces");
         let notes = rooms
             .join(FROM)
-            .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
+            .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
             .join(FROM)
-            .join("records/uuid-plan");
+            .join("documents/uuid-plan");
         std::fs::create_dir_all(&notes).unwrap();
         std::fs::write(notes.join("state.automerge"), record(FROM, "plan").save()).unwrap();
         std::fs::write(notes.join("actor"), b"source writer").unwrap();
@@ -1007,19 +1013,19 @@ mod tests {
         std::fs::write(&settings, b"theme = 'dark'").unwrap();
         let chat = rooms
             .join(FROM)
-            .join("so.tilo.chat/.local/share/so.tilo.chat/rooms")
+            .join("so.tilo.chat/.local/share/so.tilo.chat/workspaces")
             .join(FROM);
-        std::fs::create_dir_all(chat.join("records/messages")).unwrap();
+        std::fs::create_dir_all(chat.join("documents/messages")).unwrap();
         std::fs::write(
-            chat.join("records/messages/state.automerge"),
+            chat.join("documents/messages/state.automerge"),
             record(FROM, "hi").save(),
         )
         .unwrap();
         let environment = rooms
             .join(FROM)
-            .join("so.tilo.terminal/.local/share/so.tilo.terminal/rooms")
+            .join("so.tilo.terminal/.local/share/so.tilo.terminal/workspaces")
             .join(FROM)
-            .join("records/env-1");
+            .join("documents/env-1");
         std::fs::create_dir_all(&environment).unwrap();
         std::fs::write(environment.join("state.automerge"), b"an environment").unwrap();
         let tree = files.join(".workspaces").join(FROM);
@@ -1041,9 +1047,9 @@ mod tests {
 
         let copied = rooms
             .join(TO)
-            .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
+            .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
             .join(TO)
-            .join("records/uuid-plan");
+            .join("documents/uuid-plan");
         let doc = load(&copied.join("state.automerge"));
         assert_eq!(body(&doc), "plan");
         assert_eq!(ui::record::workspace_scope(&doc).as_deref(), Some(TO));
@@ -1063,9 +1069,9 @@ mod tests {
         assert!(
             !rooms
                 .join(TO)
-                .join("so.tilo.terminal/.local/share/so.tilo.terminal/rooms")
+                .join("so.tilo.terminal/.local/share/so.tilo.terminal/workspaces")
                 .join(TO)
-                .join("records")
+                .join("documents")
                 .exists(),
             "the runtime branches the environments, not a copy of their files"
         );
@@ -1266,9 +1272,9 @@ mod tests {
                 .join(app)
                 .join(".local/share")
                 .join(owner)
-                .join("rooms")
+                .join("workspaces")
                 .join(workspace)
-                .join("records")
+                .join("documents")
                 .join(record)
                 .join("state.automerge")
         };
