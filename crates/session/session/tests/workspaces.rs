@@ -421,6 +421,34 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
         .map(|(_, name, _)| name)
         .collect();
     assert!(names.contains(&"Question 2".to_owned()), "{names:?}");
+    // The person is told it is ready, and not that it is not complete (with what did not come
+    // along, which is the notice's body).
+    let told = |session: &Session| -> Vec<(String, String)> {
+        let centre = session.notifications();
+        let log = centre.log();
+        log.history()
+            .iter()
+            .chain(log.active().iter())
+            .map(|notice| (notice.title.clone(), notice.body.clone()))
+            .collect()
+    };
+    step_until(
+        &mut session,
+        "the person told how the branch went",
+        |session| {
+            told(session)
+                .iter()
+                .any(|(title, _)| title.contains("is ready") || title.contains("is not complete"))
+        },
+    );
+    let told = told(&session);
+    assert!(
+        told.iter().any(|(title, _)| title.contains("is ready"))
+            && !told
+                .iter()
+                .any(|(title, _)| title.contains("is not complete")),
+        "{told:?}"
+    );
     what_the_branch_keeps(data.path(), &source, &kept, &branch);
     drop(session);
 
