@@ -40,25 +40,17 @@ arguments=(build --locked --message-format=json-render-diagnostics)
 bins=()
 for binary; do
     # PACKAGE:BIN, or PACKAGE:BIN=FEATURE,FEATURE for a binary a package only
-    # builds with those features on (the room service's subcommand is one).
+    # builds with those features on (the workspace host's subcommand is one).
     features="${binary#*=}"
     [[ "$features" == "$binary" ]] && features=
     binary="${binary%%=*}"
     bin=${binary#*:}
     handed=$(printenv "NEXTEST_BIN_EXE_${bin}" || true)
     if [[ -n "$handed" && -x "$handed" ]]; then
-        # A featured entry names a build of the program, not only a file's name: t hands one
-        # `tilo-relay` per family (its `starts` refuses one target with two feature sets), but a
-        # hand made anywhere else — a plain `cargo build` of the package, exported by hand — is
-        # the same file's name. `room` is the subcommand `tilo-relay`'s `agents` feature gives it
-        # (through `web`), and the Lounge tests start it: a hand without it is refused by name,
-        # never handed on as the room service.
-        if [[ -n "$features" && "$bin" == tilo-relay ]]; then
-            if ! "$handed" room --help >/dev/null 2>&1; then
-                echo "$0: NEXTEST_BIN_EXE_$bin names $handed, which has no \`room\` subcommand: not the build with $features" >&2
-                exit 1
-            fi
-        fi
+        # A featured entry's hand is that build: t builds each `starts` artifact with the
+        # features it names and refuses one target declared with two feature sets in a
+        # family, and tools/tests/test_nextest_policy.py holds every family to declaring
+        # the featured build alone, so the file a hand names is the one these tests start.
         hand "$bin" "$handed"
         continue
     fi

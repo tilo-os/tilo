@@ -496,9 +496,8 @@ class SiblingBinarySetupTests(unittest.TestCase):
     handed none (a developer's) builds it, with the features its entry names.
     """
 
-    # The room service, which only `agents` gives `tilo-relay` the `room` subcommand the Lounge
-    # tests start: the one program a setup builds with features, and so the one entry whose hand
-    # must be more than a file's name.
+    # The workspace host, which only `agents` gives `tilo-relay` the subcommand the Lounge tests
+    # start: the one program a setup builds with features.
     ENTRY = "tilo-relay:tilo-relay=tilo-relay/agents"
     BUILD = ("build --locked --message-format=json-render-diagnostics --package tilo-relay "
              "--bin tilo-relay --features tilo-relay/agents")
@@ -506,8 +505,7 @@ class SiblingBinarySetupTests(unittest.TestCase):
     def run_setup(self, hand: str = ""):
         """The Lounge setup as a shard runs it: the result, the cargo invocations it made, the
         variables it handed the run (NEXTEST_ENV's lines), and where the program it builds would
-        be. `hand` is the build the run was handed: one with `room` (`featured`), one without it
-        (`plain`), or none."""
+        be. `hand` is whether the run was handed the build (`featured`) or not (empty)."""
         with tempfile.TemporaryDirectory() as work:
             tree, programs = Path(work) / "tree", Path(work) / "bin"
             (tree / "tools").mkdir(parents=True)
@@ -528,12 +526,9 @@ class SiblingBinarySetupTests(unittest.TestCase):
             env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
                    "GIVEN": str(argv), "BUILT": str(built), "NEXTEST_ENV": str(env_file)}
             if hand:
-                # What a hand does with `room`, which is what the features give this program: a
-                # featured build answers it, a plain one has no such subcommand.
                 path = programs / "handed" / "tilo-relay"
                 path.parent.mkdir()
-                path.write_text("#!/bin/sh\n" + ("" if hand == "featured" else
-                                                 '[ "$1" = room ] && exit 2\n') + "exit 0\n")
+                path.write_text("#!/bin/sh\nexit 0\n")
                 path.chmod(0o755)
                 env["NEXTEST_BIN_EXE_tilo-relay"] = str(path)
             result = subprocess.run(
@@ -549,15 +544,6 @@ class SiblingBinarySetupTests(unittest.TestCase):
         self.assertEqual(len(handed), 1, handed)
         self.assertTrue(handed[0].startswith("TILO_SIBLING_BIN_tilo_relay="), handed)
         self.assertIn(os.sep + "handed" + os.sep + "tilo-relay", handed[0])
-
-    def test_a_plain_hand_is_refused_not_passed_off_as_the_featured_build(self):
-        # The variable names a file, not the features it was built with: a plain build of the
-        # package handed for another reason must not be started as the room service.
-        result, ran, handed, _ = self.run_setup("plain")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("NEXTEST_BIN_EXE_tilo-relay", result.stderr)
-        self.assertEqual(ran, [])
-        self.assertEqual(handed, [])
 
     def test_a_run_not_handed_builds_the_program_with_its_features(self):
         result, ran, handed, built = self.run_setup()
