@@ -16,8 +16,24 @@ sys.modules["check_format_migrations"] = formats
 spec.loader.exec_module(formats)
 
 
+GOLDEN = "golden/fixture-state/v2.hex"
+READS_GOLDEN = f'#[test]\nfn kept() {{ assert_golden_bytes(STATE.name, include_str!("../{GOLDEN}"), r, w); }}\n'
+
+
+def keep_golden(crate, reads=True):
+    """The golden bytes of the fixture's version 2 in `crate`, and a test
+    that reads them unless `reads` is false."""
+    (crate / "Cargo.toml").write_text("[package]\n")
+    (crate / GOLDEN).parent.mkdir(parents=True, exist_ok=True)
+    (crate / GOLDEN).write_text("02 6b\n")
+    if reads:
+        (crate / "tests").mkdir(exist_ok=True)
+        (crate / "tests/golden.rs").write_text(READS_GOLDEN)
+
+
 def declaration(oldest):
     return f'''
+pub(crate) const STATE_VERSION: u32 = 2;
 pub(crate) const STATE: tilo_files::native::migration::Format =
     tilo_files::native::migration::Format {{
         name: "fixture state",
@@ -40,6 +56,7 @@ class FormatMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root, "crates/x/src/lib.rs")
             path.parent.mkdir(parents=True)
+            keep_golden(Path(root, "crates/x"))
             loader = "fn open(p: &Path, b: Vec<u8>, v: u32) { STATE.bring_up(p, b, v); }\n"
             path.write_text(declaration("FIRST") + loader)
             self.assertEqual(len(formats.check(Path(root))), 1)
@@ -94,7 +111,7 @@ class FormatMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             crate = Path(root, "crates/x")
             (crate / "src").mkdir(parents=True)
-            (crate / "Cargo.toml").write_text("[package]\n")
+            keep_golden(crate)
             for name, text in files.items():
                 (crate / "src" / name).write_text(text)
             return formats.check(Path(root))
@@ -131,6 +148,52 @@ class FormatMigrationTests(unittest.TestCase):
             "    STATE.bring_up_moved(o, p, b, 1); STATE.bring_up(p, b, v); }\n"
         self.assertEqual(self.loaded({"lib.rs": moved}), [])
 
+    def test_each_version_keeps_the_bytes_it_wrote_and_a_test_reads_them(self):
+        loader = "fn open(p: &Path, b: Vec<u8>, v: u32) { STATE.bring_up(p, b, v); }\n"
+        with tempfile.TemporaryDirectory() as root:
+            crate = Path(root, "crates/x")
+            (crate / "src").mkdir(parents=True)
+            (crate / "src/lib.rs").write_text(declaration(1) + loader)
+            (crate / "Cargo.toml").write_text("[package]\n")
+            found = formats.check(Path(root))
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("keeps no golden bytes at crates/x/golden/fixture-state/v2.hex", found[0])
+            keep_golden(crate, reads=False)
+            self.assertIn("no test of its crate reads", formats.check(Path(root))[0])
+            keep_golden(crate)
+            self.assertEqual(formats.check(Path(root)), [])
+            # A version that is no number of the crate cannot name its bytes.
+            (crate / "src/lib.rs").write_text(
+                declaration(1).replace("const STATE_VERSION: u32 = 2;", "") + loader
+            )
+            self.assertIn("write the number", formats.check(Path(root))[0])
+
+    def test_golden_bytes_a_version_wrote_never_change(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.git(root, "init", "-q", "-b", "main")
+            self.git(root, "config", "user.email", "t@example.com")
+            self.git(root, "config", "user.name", "t")
+            crate = root / "crates/x"
+            (crate / "src").mkdir(parents=True)
+            (crate / "src/lib.rs").write_text(declaration(1))
+            keep_golden(crate)
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "base")
+            self.assertEqual(formats.against("main", root), [])
+            # The layout changed and the bytes were written again under the
+            # same version: what a device's certificate went through.
+            (crate / GOLDEN).write_text("02 6f\n")
+            found = formats.against("main", root)
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("golden bytes changed", found[0])
+            (crate / GOLDEN).unlink()
+            self.assertIn("are gone", formats.against("main", root)[0])
+            # A new version keeps its own bytes beside the old ones.
+            (crate / GOLDEN).write_text("02 6b\n")
+            (crate / "golden/fixture-state/v3.hex").write_text("03\n")
+            self.assertEqual(formats.against("main", root), [])
+
     def test_the_repository_holds_to_it(self):
         self.assertEqual(formats.check(), [])
         declared = formats.declarations(formats.sources(formats.ROOT))
@@ -138,6 +201,7 @@ class FormatMigrationTests(unittest.TestCase):
         # declaration written as `Format { .. }` is found too.
         self.assertIn("sign-in record", declared)
         self.assertIn("room wait list", declared)
+        self.assertIn("device certificate", declared)
 
 
 if __name__ == "__main__":
