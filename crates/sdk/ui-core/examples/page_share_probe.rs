@@ -21,8 +21,20 @@
 //! the view said it wanted a frame. And always: how large the page is whatever the share carried
 //! of it, its whole frame and every image it names, read from the engine.
 //!
+//! What arrived is also printed item by item where asked (`--items`): every run of text with
+//! the box it is drawn in, its family list, the class of face a device without those families
+//! sets it in, its size, weight and colour, and every fill, border and vector drawing, each
+//! with the part of its element it is. The suite compares that with what the page's own script
+//! measures of the engine's layout. `--focus` gives the page the keyboard, as a window in front
+//! does, so the engine draws its ring around the field being edited; `--zoom LEVEL` zooms the
+//! page as the Browser's zoom does; `--settle-ms N` turns the loop that long before the page
+//! is read, for what the page still changes after its text arrived. `--snapshot PATH` writes
+//! the engine's own layout snapshot of the page there, as the engine hands it over: what the
+//! converter's tests keep as their fixtures.
+//!
 //! `page-share-probe HOST PROFILE URL WIDTH HEIGHT [--watched-before-load] [--within-ms N]
-//! [--expect TEXT]... [--has TEXT]... [--changes N] [--still-ms N]`, run by
+//! [--expect TEXT]... [--has TEXT]... [--changes N] [--still-ms N] [--items] [--focus]
+//! [--zoom LEVEL] [--settle-ms N] [--snapshot PATH]`, run by
 //! `apps/browser/chromium/tests/page_share.py` on pages of its own.
 #![allow(
     clippy::unwrap_used,
@@ -154,6 +166,16 @@ struct Asked {
     changes: usize,
     /// How long to measure a page nothing changes, watched and then unwatched.
     still: Duration,
+    /// Whether to print what arrived item by item.
+    items: bool,
+    /// Whether the page has the keyboard.
+    focus: bool,
+    /// The zoom level the page is set to once loaded.
+    zoom: Option<f64>,
+    /// How long the loop turns before the page is read.
+    settle: Duration,
+    /// Where to write the engine's layout snapshot of the page.
+    snapshot: Option<String>,
 }
 
 impl Asked {
@@ -177,6 +199,11 @@ impl Asked {
             has: Vec::new(),
             changes: 0,
             still: Duration::ZERO,
+            items: false,
+            focus: false,
+            zoom: None,
+            settle: Duration::ZERO,
+            snapshot: None,
         };
         let mut rest = args[5..].iter();
         while let Some(arg) = rest.next() {
@@ -204,6 +231,23 @@ impl Asked {
                             .expect("milliseconds"),
                     );
                 }
+                "--items" => asked.items = true,
+                "--focus" => asked.focus = true,
+                "--zoom" => {
+                    asked.zoom = Some(
+                        rest.next()
+                            .and_then(|level| level.parse().ok())
+                            .expect("a zoom level"),
+                    );
+                }
+                "--settle-ms" => {
+                    asked.settle = Duration::from_millis(
+                        rest.next()
+                            .and_then(|ms| ms.parse().ok())
+                            .expect("milliseconds"),
+                    );
+                }
+                "--snapshot" => asked.snapshot = Some(rest.next().expect("a path").clone()),
                 other => assert!(other.is_empty(), "unknown argument {other}"),
             }
         }
@@ -476,13 +520,109 @@ fn page_size(engine: &SharedEngine) -> serde_json::Value {
     })
 }
 
+/// Most items of a page the probe prints.
+const MAX_ITEMS: usize = 6000;
+
+/// What arrived, item by item, each in the page's viewport: what the suite compares with the
+/// engine's own layout.
+fn items(handed: &Handed) -> Vec<serde_json::Value> {
+    let Some(frame) = handed.receiver.frame() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (id, layer) in &frame.layers {
+        let Some((offset, _)) = frame.layer_to_viewport(*id) else {
+            continue;
+        };
+        for item in &layer.items {
+            if out.len() >= MAX_ITEMS {
+                return out;
+            }
+            let Some(rect) = item.rect() else {
+                continue;
+            };
+            let rect = rect.translate(offset.x, offset.y);
+            let key = item.key();
+            let mut said = serde_json::json!({
+                "node": key.node,
+                "part": key.part,
+                "r": [rect.x, rect.y, rect.w, rect.h],
+            });
+            let more = match item {
+                Item::Text {
+                    text, font, color, ..
+                } => serde_json::json!({
+                    "k": "text",
+                    "text": text,
+                    "family": font.family,
+                    "class": paint::font_class(&font.family).name(),
+                    "size": font.size,
+                    "weight": font.weight,
+                    "italic": font.italic,
+                    "color": color.0,
+                }),
+                Item::Fill { color, radius, .. } => {
+                    serde_json::json!({"k": "fill", "color": color.0, "radius": radius})
+                }
+                Item::Border {
+                    widths,
+                    colors,
+                    radius,
+                    ..
+                } => serde_json::json!({
+                    "k": "border",
+                    "widths": widths,
+                    "color": colors[0].0,
+                    "radius": radius,
+                }),
+                Item::Image { .. } => serde_json::json!({"k": "image"}),
+                Item::Vector { shapes, .. } => {
+                    serde_json::json!({"k": "vector", "shapes": shapes.len()})
+                }
+                Item::Layer(_) => continue,
+            };
+            if let (Some(said), Some(more)) = (said.as_object_mut(), more.as_object()) {
+                said.extend(more.clone());
+            }
+            out.push(said);
+        }
+    }
+    out
+}
+
+/// The engine's own layout snapshot of the page, asked of the engine itself once nothing else
+/// is: the share's capture keeps its snapshots to itself. `None` when the engine hands none
+/// over within ten seconds.
+fn snapshot(native: &SharedEngine) -> Option<String> {
+    const REQUEST: u32 = 0x7fff_fff0;
+    native.send(WebViewCommand::PaintCapture {
+        request_id: REQUEST,
+    });
+    let deadline = tilo_ui::time::now()
+        .checked_add(Duration::from_secs(10))
+        .expect("a bounded wait");
+    while tilo_ui::time::now() < deadline {
+        for event in native.drain_events() {
+            if let WebViewEvent::PaintSnapshot {
+                request_id: REQUEST,
+                snapshot: Some(snapshot),
+            } = event
+            {
+                return Some(snapshot);
+            }
+        }
+        pause();
+    }
+    None
+}
+
 fn main() {
     let asked = Asked::read();
     let native: SharedEngine =
         ChromiumEngine::with_host(Path::new(&asked.host), Path::new(&asked.profile))
             .expect("the engine host");
     // As Browser's windows run it: drawn from its pixels, captured only while watched.
-    let engine: SharedEngine = PaintEngine::streaming(native);
+    let engine: SharedEngine = PaintEngine::streaming(native.clone());
     let wakes = Arc::new(AtomicUsize::new(0));
     engine.set_waker(Box::new({
         let wakes = Arc::clone(&wakes);
@@ -497,6 +637,12 @@ fn main() {
         paint::set_share_watched(true);
     }
     load(&mut window, &engine, &asked.url, &mut handed);
+    if asked.focus {
+        engine.send(WebViewCommand::SetFocused(true));
+    }
+    if let Some(level) = asked.zoom {
+        engine.send(WebViewCommand::SetZoomLevel(level));
+    }
     // A desk asks for the window's page: the session tells the app.
     if !asked.watched_before_load {
         paint::set_share_watched(true);
@@ -509,6 +655,9 @@ fn main() {
         served: wakes.load(Ordering::Relaxed),
     };
     let (complete_ms, frames) = watch(&mut turning, &asked);
+    if !asked.settle.is_zero() {
+        turning.run(asked.settle);
+    }
     let change_ms = if asked.changes > 0 {
         turning.changes(asked.changes, Duration::from_secs(30))
     } else {
@@ -529,6 +678,15 @@ fn main() {
     let size = page_size(&engine);
     paint::set_share_watched(false);
     let texts = handed.texts();
+    let items = if asked.items {
+        items(&handed)
+    } else {
+        Vec::new()
+    };
+    if let Some(path) = &asked.snapshot {
+        let said = snapshot(&native).expect("the engine's layout snapshot of the page");
+        std::fs::write(path, said).expect("the snapshot's file");
+    }
     println!(
         "{}",
         serde_json::json!({
@@ -552,8 +710,10 @@ fn main() {
             "still_watched": watched.as_ref().map(Cost::json),
             "still_unwatched": unwatched.as_ref().map(Cost::json),
             "texts": texts.iter().take(64).collect::<Vec<_>>(),
+            "items": items,
         })
     );
     drop(window);
     drop(engine);
+    drop(native);
 }
