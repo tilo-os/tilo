@@ -19,10 +19,15 @@ fn picked(session: &mut Session) -> Vec<String> {
     picked
 }
 
-/// A Tasks window of `route`'s workspace, whose host keeps what it keeps in `storage`.
-fn tasks(route: &RouteSpec, storage: Option<std::path::PathBuf>) -> Session {
+/// The window of Tasks of `route`'s workspace that takes the desk's tab `tab`, whose host keeps
+/// what it keeps in `storage`.
+fn tasks(route: &RouteSpec, tab: u64, storage: Option<std::path::PathBuf>) -> Session {
     let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
-    Session::tasks_over_in(route, chunks, storage)
+    let spec = super::Spec::new(super::TASKS, route.cluster_id.to_string(), tab, "ada")
+        .in_language("en-US");
+    let mut session = Session::brokered_as(route, spec, chunks, storage, super::Window::in_harness);
+    session.settle();
+    session
 }
 
 /// The person picks `place` in the sidebar.
@@ -49,7 +54,7 @@ fn the_place_a_person_picks_and_what_they_saw_are_theirs_again_after_a_restart()
     let storage = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("hosted-personal-restart");
     let _ = std::fs::remove_dir_all(&storage);
     let route = RouteSpec::app(super::TASKS, uuid::Uuid::new_v4());
-    let mut first = tasks(&route, Some(storage.clone()));
+    let mut first = tasks(&route, 1, Some(storage.clone()));
     assert_ne!(picked(&mut first), ["Inbox"], "the window opens elsewhere");
     pick(&mut first, "Inbox");
     // They review a run: every change it made is seen.
@@ -77,7 +82,7 @@ fn the_place_a_person_picks_and_what_they_saw_are_theirs_again_after_a_restart()
     first.close();
 
     // The window opens again over what the device kept.
-    let mut again = tasks(&route, Some(storage));
+    let mut again = tasks(&route, 1, Some(storage));
     assert_eq!(
         picked(&mut again),
         ["Inbox"],
@@ -91,16 +96,6 @@ fn the_place_a_person_picks_and_what_they_saw_are_theirs_again_after_a_restart()
             .mark_run_seen("ada", "run-1"),
         "the run they reviewed is still seen"
     );
-}
-
-/// The window of Tasks that takes the desk's tab `tab` in `route`'s workspace.
-fn tasks_in_tab(route: &RouteSpec, tab: u64) -> Session {
-    let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
-    let spec = super::Spec::new(super::TASKS, route.cluster_id.to_string(), tab, "ada")
-        .in_language("en-US");
-    let mut session = Session::brokered_as(route, spec, chunks, None, super::Window::in_harness);
-    session.settle();
-    session
 }
 
 /// What `from` sent on the route of the record of each person's own state, delivered to `to` as
@@ -131,8 +126,8 @@ fn relay(from: &Session, to: &mut Session) {
 fn the_place_a_person_picks_reaches_their_other_device() {
     let route = RouteSpec::app(super::TASKS, uuid::Uuid::new_v4());
     // The same window, the desk's same tab, on the laptop and on the phone.
-    let mut laptop = tasks_in_tab(&route, 1);
-    let mut phone = tasks_in_tab(&route, 1);
+    let mut laptop = tasks(&route, 1, None);
+    let mut phone = tasks(&route, 1, None);
     laptop.wire().1.borrow_mut().clear();
     pick(&mut laptop, "Inbox");
     assert_ne!(picked(&mut phone), ["Inbox"]);
@@ -147,8 +142,8 @@ fn the_place_a_person_picks_reaches_their_other_device() {
 #[test]
 fn each_window_of_an_app_keeps_its_own_place() {
     let route = RouteSpec::app(super::TASKS, uuid::Uuid::new_v4());
-    let mut first = tasks_in_tab(&route, 1);
-    let mut second = tasks_in_tab(&route, 2);
+    let mut first = tasks(&route, 1, None);
+    let mut second = tasks(&route, 2, None);
     let before = picked(&mut second);
     first.wire().1.borrow_mut().clear();
     pick(&mut first, "Inbox");
