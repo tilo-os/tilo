@@ -164,6 +164,10 @@ pub struct SearchOptions {
     /// ([`tilo_desktop_search::providers::tree`]): a page's Files are the workspace's own tree, so
     /// the page hands search that tree rather than an index of a disk it does not have.
     pub workspace_files: Option<Held>,
+    /// What the workspace's host finds in what the workspace holds
+    /// ([`tilo_desktop_search::providers::hosted`]), where this host holds only the records it
+    /// opened: a page, whose store has none of a notebook it never showed.
+    pub host_search: Option<Held>,
     /// Sources a test mounts beside the session's own, asked exactly as the host's are: an index
     /// that answers slowly stands here to prove the loop never waits for one. No production host
     /// sets it, and a search over no extra source is the one the device's own sources answer.
@@ -225,6 +229,8 @@ pub struct SessionSearch {
     records: Option<Records>,
     /// The files of the workspace in front, where the host holds them without a disk.
     workspace_files: Option<Held>,
+    /// The workspace host's search, where this host holds only part of the workspace.
+    host_search: Option<Held>,
     /// Sources a test mounts beside the session's own, asked as the host's are ([`SearchOptions::extra_sources`]).
     extra_sources: Vec<Held>,
     /// What the session itself publishes, as of the last frame: the desk cannot read its own tree
@@ -351,6 +357,7 @@ impl SessionSearch {
             places,
             records,
             workspace_files,
+            host_search,
             extra_sources,
         } = options;
         let reading = lists.as_ref().map(|lists| lists.reading());
@@ -382,6 +389,7 @@ impl SessionSearch {
             apps,
             records,
             workspace_files,
+            host_search,
             extra_sources,
             own: RefCell::default(),
             own_types: RefCell::default(),
@@ -547,6 +555,7 @@ impl SessionSearch {
         sources.extend(kept.content.clone());
         sources.extend(kept.files.clone());
         sources.extend(self.workspace_files.clone());
+        sources.extend(self.host_search.clone());
         if let Some(records) = &self.records {
             sources.push(Held::new(record_rows::Records::new(
                 workspace,

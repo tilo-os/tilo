@@ -166,6 +166,15 @@ impl PageActions {
     }
 }
 
+/// The workspace's host as this page's search asks it: its search of what the workspace holds,
+/// over the session the page holds with it.
+pub(crate) struct WorkspaceHost {
+    pub search: Arc<dyn tilo_actions::remote::ResourceSearch>,
+    pub workspace: String,
+    /// What asks for the desk's pass that lists the host's answer.
+    pub wake: Arc<dyn Fn() + Send + Sync>,
+}
+
 /// The session's search over this page's desk, mounted as a native desktop mounts it: the bundle's
 /// apps as the apps installed here, the records the workspace's indexes name as `store` holds them
 /// (what the page's replication took in, noted in its one stream of record changes), the page's
@@ -174,12 +183,22 @@ impl PageActions {
 pub(crate) fn mount(
     handle: &DesktopHandle,
     person: &str,
-    store: tilo_session::platform::Store,
-    content: tilo_content::ContentStore,
+    (store, content): (tilo_session::platform::Store, tilo_content::ContentStore),
     files: Option<tilo_desktop_search::Held>,
+    host: Option<WorkspaceHost>,
     wake: Arc<dyn Fn() + Send + Sync>,
     reveals: crate::browser::Reveals,
 ) -> Rc<SessionSearch> {
+    // The page holds the records of the apps it opened; the workspace's host holds the rest and
+    // ranks them, over the session the page already holds with it.
+    let host_search = host.map(|host| {
+        tilo_desktop_search::Held::new(tilo_desktop_search::providers::hosted::HostSearch::new(
+            host.search,
+            tilo_actions::remote::Caller::local_person(person),
+            host.workspace,
+            host.wake,
+        ))
+    });
     let search = Rc::new(SessionSearch::new(
         SearchOptions {
             preferences: SearchPreferences::default(),
@@ -188,6 +207,7 @@ pub(crate) fn mount(
                 crate::replicated::changes(),
             )),
             workspace_files: files,
+            host_search,
             ..SearchOptions::default()
         },
         Some(Arc::new(crate::page_apps::PageApps) as Arc<dyn Apps>),

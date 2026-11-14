@@ -1269,6 +1269,8 @@ fn search_options(
         )),
         // A desktop's files are its disk's, which the indexes above read.
         workspace_files: None,
+        // A desktop holds every record of the workspaces it is in: its own records answer.
+        host_search: None,
         preferences: tilo_desktop_search::SearchPreferences::from_values(
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),

@@ -574,6 +574,13 @@ pub trait Source {
     fn poll(&self) -> bool {
         false
     }
+    /// Whether an answer it asked for elsewhere (a host across the wire) is still coming for the
+    /// query it was last asked: the search holds "Searching…" for it while nothing else matched,
+    /// and the host looks again ([`crate::palette::ANSWER_POLL`]) until it comes. A source stops
+    /// saying so once it has waited long enough, so one that never answers holds nothing back.
+    fn waiting(&self) -> bool {
+        false
+    }
     /// This source as a worker asks it, when nothing in it belongs to the frame thread:
     /// a query then runs off the frame, and a frame merely collects what came back.
     /// `None` (the default) means the source holds frame state — a running app's own
@@ -652,6 +659,9 @@ impl Source for Held {
     fn poll(&self) -> bool {
         self.0.poll()
     }
+    fn waiting(&self) -> bool {
+        self.0.waiting()
+    }
 }
 
 /// A source a host keeps between searches (its index built once) is
@@ -684,6 +694,9 @@ impl<S: Source + Send + Sync + 'static> Source for Arc<S> {
     }
     fn poll(&self) -> bool {
         (**self).poll()
+    }
+    fn waiting(&self) -> bool {
+        (**self).waiting()
     }
 }
 

@@ -11,6 +11,7 @@ pub mod downloaded;
 pub mod files;
 pub mod happening;
 pub mod host_apps;
+pub mod hosted;
 pub mod jobs;
 pub mod people;
 pub mod places;

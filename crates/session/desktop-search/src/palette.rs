@@ -195,7 +195,9 @@ impl Sources {
     }
 
     fn waiting(&self) -> bool {
-        self.content.waiting() || self.window.as_ref().is_some_and(WindowSearch::waiting)
+        self.content.waiting()
+            || self.window.as_ref().is_some_and(WindowSearch::waiting)
+            || self.host.iter().any(super::model::Source::waiting)
     }
 }
 
@@ -835,8 +837,9 @@ impl DesktopSearch {
         // in, and the slower sources answer in later frames: while either
         // is still coming, an empty list says it is searching rather than
         // that nothing matched.
-        self.palette
-            .set_searching(!ui::search::engine_ready() || (rows.is_empty() && pending));
+        self.palette.set_searching(
+            !ui::search::engine_ready() || (rows.is_empty() && (pending || self.waiting())),
+        );
         self.rows = rows;
         self.shown_query = Some(query.to_owned());
         self.shown_generation = generation;
@@ -1162,11 +1165,16 @@ fn switches(sources: &Sources, all: &[&dyn Source]) -> Option<Switches> {
     if sources.host.is_empty() {
         return None;
     }
-    let names = all
-        .iter()
-        .filter(|source| crate::preferences::switchable(source.id()))
-        .map(|source| (source.id().to_owned(), source.name()))
-        .collect();
+    // Two sources may search one kind of thing under one id (the records this device holds and
+    // the host's search of the rest): one switch turns both off.
+    let mut names: Vec<(String, String)> = Vec::new();
+    for source in all {
+        if crate::preferences::switchable(source.id())
+            && !names.iter().any(|(id, _)| id == source.id())
+        {
+            names.push((source.id().to_owned(), source.name()));
+        }
+    }
     Some(Switches::new(names, &sources.preferences))
 }
 

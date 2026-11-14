@@ -1346,14 +1346,35 @@ fn mount_search(
     ),
     files: Option<&Rc<crate::page_files::WorkspaceFiles>>,
     reveals: crate::browser::Reveals,
+    woken: &Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Rc<tilo_session::search::SessionSearch>, JsValue> {
     let wake = proxy()?;
+    // The workspace's host, over the session this page holds with it: what it finds in the
+    // records this page never opened. Its answer arrives between the desk's passes, so it asks
+    // for the desk's next pass, which lists it, as the desk's own wake does.
+    let desk = proxy()?;
+    let woken = Arc::clone(woken);
+    let host = config.peer.and_then(|peer| {
+        let workspace = crate::peer::workspace_id(&config.workspace).ok()?;
+        let search = tilo_actions::remote::ActionHost::resource_search(
+            &crate::peer_sync::actions_of(peer, workspace)?,
+        )?;
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            woken.store(true, std::sync::atomic::Ordering::Release);
+            let _ = desk.send_event(id);
+        });
+        Some(crate::page_search::WorkspaceHost {
+            search,
+            workspace: config.workspace.clone(),
+            wake,
+        })
+    });
     Ok(crate::page_search::mount(
         handle,
         &config.author(),
-        records_store,
-        content_store,
+        (records_store, content_store),
         files.map(|files| crate::page_files::WorkspaceFiles::source(files)),
+        host,
         Arc::new(move || {
             let _ = wake.send_event(id);
         }),
@@ -1451,6 +1472,7 @@ fn present_desktop(
         (records_store, content_store),
         files.as_ref(),
         asks.reveals(),
+        &shared.woken,
     )?;
     let carrying = carrying_of(config, &shared);
     Ok(Presentation {

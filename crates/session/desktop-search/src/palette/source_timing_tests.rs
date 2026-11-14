@@ -7,8 +7,8 @@
 //! the rest, and the page drew that frame only when its clock turned the minute. The frame that
 //! typed now asks the one source that holds the frame's state, and every other source answers on a
 //! worker, whose answer wakes the desk.
-use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::model::{Held, Hit, Source, Target};
@@ -65,6 +65,60 @@ impl Source for Failing {
             "the files index could not be read"
         );
         Vec::new()
+    }
+}
+
+/// Where the host's answer to one query is completed.
+type Answer = tilo_actions::remote::Completer<
+    Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionHostError>,
+>;
+
+/// A workspace host whose answer the test hands over, as the session brings it.
+#[derive(Default)]
+struct Host {
+    asked: Mutex<Vec<(String, Answer)>>,
+}
+
+impl tilo_actions::remote::ResourceSearch for Host {
+    fn find(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        needle: &str,
+    ) -> tilo_actions::remote::Pending<
+        Result<Vec<tilo_actions::remote::Found>, tilo_actions::remote::ActionHostError>,
+    > {
+        let (done, answer) = tilo_actions::remote::pending();
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((needle.to_owned(), done));
+        answer
+    }
+}
+
+impl Host {
+    /// Answer `needle` with the note that says it.
+    fn answer(&self, needle: &str) {
+        let done = {
+            let mut asked = self
+                .asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let at = asked
+                .iter()
+                .position(|(asked, _)| asked == needle)
+                .expect("the host was asked");
+            asked.remove(at).1
+        };
+        done.complete(Ok(vec![tilo_actions::remote::Found {
+            resource: "notebook/pages/1".into(),
+            kind: "notes.page".into(),
+            label: "Supplier contract".into(),
+            open: Some("open".into()),
+            arguments: serde_json::Map::new(),
+            app: Some("so.tilo.notes".into()),
+            provider: None,
+        }]));
     }
 }
 
@@ -244,5 +298,36 @@ tilo_test_env::scenario! {
             "the card says nothing matched: {:?}",
             search.palette().empty_text()
         );
+    }
+
+    phase the_hosts_answer_shows_when_it_comes_and_the_card_waits_for_it;
+    // A note this device never opened is found by the workspace's host: the card says it is
+    // searching while only that answer is coming, and lists it when it comes.
+    {
+        let host = Arc::new(Host::default());
+        let mut data = super::tests::data();
+        data.sources.push(Held::new(crate::providers::hosted::HostSearch::new(
+            Arc::clone(&host) as Arc<dyn tilo_actions::remote::ResourceSearch>,
+            tilo_actions::remote::Caller::local_person("ana"),
+            "w",
+            Arc::new(|| {}),
+        )));
+        let mut search = DesktopSearch::new();
+        search.open(data);
+        search.set_room(600.0, 400.0);
+        frames_until(&mut search, |search| !search.results().is_empty());
+        search.set_query("net 30");
+        search.refresh();
+        frames_until(&mut search, |search| !search.answering());
+        assert!(
+            search.palette().is_searching() && search.results().is_empty(),
+            "only the host's answer is coming: {:?}",
+            titles(&search)
+        );
+        host.answer("net 30");
+        frames_until(&mut search, |search| {
+            titles(search).iter().any(|title| title == "Supplier contract")
+        });
+        assert!(!search.palette().is_searching(), "the search is over");
     }
 }
