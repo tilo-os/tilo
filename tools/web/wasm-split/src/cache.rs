@@ -49,18 +49,29 @@ impl EmitCache {
         self.dir.join(format!("{key}.wasm"))
     }
 
-    /// The module emitted from `key` before, if this cache kept it.
+    /// The module emitted from `key` before, if this cache kept it whole.
+    /// A file a stopped write or a copy left empty is no module: it is
+    /// dropped here, and the caller emits that module again.
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
-        let bytes = std::fs::read(self.path(key)).ok()?;
+        let path = self.path(key);
+        let bytes = std::fs::read(&path).ok()?;
+        if bytes.is_empty() {
+            remove(&path).ok();
+            return None;
+        }
         self.used.lock().expect("cache lock").insert(key.to_owned());
         Some(bytes)
     }
 
     /// Keep `bytes` as the module emitted from `key`. Written beside and
-    /// renamed in, so a split that stops leaves no half module under a key.
+    /// renamed in, so a split that stops leaves no half module under a key,
+    /// and made again when the directory went away under the split: what a
+    /// stopped build removed costs the write, never the module.
     pub fn put(&self, key: &str, bytes: &[u8]) -> Result<()> {
         let path = self.path(key);
         let partial = self.dir.join(format!(".{key}.{}", std::process::id()));
+        std::fs::create_dir_all(&self.dir)
+            .with_context(|| format!("creating {}", self.dir.display()))?;
         std::fs::write(&partial, bytes)
             .with_context(|| format!("writing {}", partial.display()))?;
         std::fs::rename(&partial, &path).with_context(|| format!("writing {}", path.display()))?;
@@ -72,11 +83,27 @@ impl EmitCache {
     /// changed is never asked for again under its old key.
     pub fn prune(&self) -> Result<()> {
         let used = self.used.lock().expect("cache lock");
-        for entry in std::fs::read_dir(&self.dir)? {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            // A directory a stopped build's cleanup removed under this split
+            // holds nothing to prune: the split's modules are written.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", self.dir.display()));
+            }
+        };
+        for entry in entries {
             let path = entry?.path();
-            // Only this cache's modules: the directory holds the analysis
-            // too (analysis.rs), which is not this cache's to prune.
-            if !path.extension().is_some_and(|e| e == "wasm") {
+            // Only this cache's finished modules: the directory holds the
+            // analysis too (analysis.rs), which is not this cache's to prune,
+            // and hidden partials that a split writing beside this one is
+            // still filling.
+            if !path.extension().is_some_and(|e| e == "wasm")
+                || path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_none_or(|name| name.starts_with('.'))
+            {
                 continue;
             }
             let keep = path

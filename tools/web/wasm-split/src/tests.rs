@@ -383,6 +383,97 @@ fn a_split_from_the_analysis_cache_writes_what_emitting_writes() -> Result<()> {
     result
 }
 
+/// A cache file a stopped build left empty, and a cache directory a stopped
+/// build removed, cost the module written again, never the split.
+#[test]
+fn a_cache_a_stopped_build_broke_is_made_again() -> Result<()> {
+    let fixture = build_fixture("broke")?;
+    let linked = &fixture.linked;
+    let dir = scratch("broke-cache");
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let fresh = written_modules(Splitter::new(linked, linked)?.emit_with(None)?);
+        let cached = |dir: &std::path::Path| -> Result<_> {
+            let outputs = Splitter::new(linked, linked)?.emit_with(Some(&EmitCache::at(dir)?))?;
+            let reused = outputs.reused;
+            let count = outputs.modules.len() + outputs.chunks.len();
+            Ok((written_modules(outputs), reused, count))
+        };
+        let (first, reused, count) = cached(&dir)?;
+        assert_eq!(reused, 0, "an empty cache holds no module");
+        assert!(
+            first == fresh,
+            "a split filling the cache wrote other modules"
+        );
+        let (again, reused, _) = cached(&dir)?;
+        assert_eq!(reused, count, "the second split read nothing back");
+        assert!(again == fresh, "a split from the cache wrote other modules");
+        // The directory a stopped build's cleanup removed is made again for
+        // the module this split writes.
+        std::fs::remove_dir_all(&dir)?;
+        let (remade, _, count) = cached(&dir)?;
+        assert!(
+            remade == fresh,
+            "a split into a removed cache wrote other modules"
+        );
+        assert!(count > 0);
+        // An entry left empty is no module: it is emitted again rather than
+        // failed on.
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<_>>()?;
+        entries.retain(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "wasm")
+        });
+        assert!(!entries.is_empty(), "the split kept no module");
+        std::fs::write(&entries[0], b"")?;
+        let (after, reused, count) = cached(&dir)?;
+        assert_eq!(reused, count - 1, "an empty entry was read as a module");
+        assert!(
+            after == fresh,
+            "the module made again after an empty entry differs"
+        );
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// A split leaves what another split beside it is still writing alone: its
+/// cache directory holds one file that is not a finished module.
+#[test]
+fn a_split_being_written_beside_this_one_is_not_pruned() -> Result<()> {
+    let dir = scratch("prune");
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let cache = EmitCache::at(&dir)?;
+        cache.put("kept", b"module")?;
+        // Another split's module, half written, and the analysis beside them.
+        std::fs::write(dir.join(".writing.1234.wasm"), b"half")?;
+        std::fs::write(dir.join("analysis.bin"), b"analysis")?;
+        // A module from an older split that this one did not ask for.
+        std::fs::write(dir.join("gone.wasm"), b"old")?;
+        cache.prune()?;
+        assert!(dir.join("kept.wasm").exists(), "a used module was pruned");
+        assert!(
+            dir.join(".writing.1234.wasm").exists(),
+            "a half-written module was pruned"
+        );
+        assert!(dir.join("analysis.bin").exists(), "the analysis was pruned");
+        assert!(
+            !dir.join("gone.wasm").exists(),
+            "a module this split did not ask for was kept"
+        );
+        // A directory that went away holds nothing to prune.
+        std::fs::remove_dir_all(&dir)?;
+        cache.prune()?;
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
 /// The same linked input splits into the same bytes every time, so web
 /// bundles are reproducible and their caches stay valid.
 #[test]

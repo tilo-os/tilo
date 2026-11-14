@@ -47,6 +47,17 @@ use anyhow::{Context, Result, bail};
 /// as `other` in `split.json`.
 const START_PART_FLOOR: u64 = 8 * 1024;
 
+/// Write `bytes` to `path`, naming the path when it cannot be written, and
+/// making the directory it goes in: a directory a stopped build removed, or a
+/// fetch that brought the output back without it, then costs the write and
+/// not the split.
+fn write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
+}
+
 fn main() -> Result<()> {
     let started = std::time::Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -74,7 +85,7 @@ fn main() -> Result<()> {
     let outputs = splitter.emit()?;
 
     let main_file = format!("{name}_bg.wasm");
-    std::fs::write(out.join(&main_file), &outputs.main.bytes)?;
+    write(&out.join(&main_file), &outputs.main.bytes)?;
     let mut manifest = serde_json::json!({
         "schema": 1,
         "main": {"file": main_file, "bytes": outputs.main.bytes.len()},
@@ -89,7 +100,7 @@ fn main() -> Result<()> {
     let mut shared_files = Vec::new();
     for (index, chunk) in outputs.chunks.iter().enumerate() {
         let file = format!("{name}.shared{index}.wasm");
-        std::fs::write(out.join(&file), &chunk.bytes)?;
+        write(&out.join(&file), &chunk.bytes)?;
         writeln!(
             glue,
             "const shared{index} = loader({file:?}, []);\nexport const __wasm_split_load_chunk_{index} = shared{index}.export;"
@@ -102,7 +113,7 @@ fn main() -> Result<()> {
     }
     for module in &outputs.modules {
         let file = format!("{name}.{}.wasm", module.module_name);
-        std::fs::write(out.join(&file), &module.bytes)?;
+        write(&out.join(&file), &module.bytes)?;
         let mut needs: Vec<usize> = module.relies_on_chunks.iter().copied().collect();
         needs.sort_unstable();
         let deps = needs
@@ -133,10 +144,10 @@ fn main() -> Result<()> {
                 "shared": needs.iter().map(|index| &shared_files[*index]).collect::<Vec<_>>(),
             }));
     }
-    std::fs::write(out.join("__wasm_split.js"), glue)?;
-    std::fs::write(
-        out.join("split.json"),
-        serde_json::to_string_pretty(&manifest)? + "\n",
+    write(&out.join("__wasm_split.js"), glue.as_bytes())?;
+    write(
+        &out.join("split.json"),
+        (serde_json::to_string_pretty(&manifest)? + "\n").as_bytes(),
     )?;
     eprintln!(
         "wasm-split: start module {} bytes, {} modules, {} shared ({} of them kept from the last split), in {:.1} s",
@@ -185,7 +196,7 @@ fn unsplit(bindgened: &str, out: &std::path::Path) -> Result<()> {
             _ => {}
         }
     }
-    std::fs::write(out.join("__wasm_split.js"), glue)?;
+    write(&out.join("__wasm_split.js"), glue.as_bytes())?;
     eprintln!("wasm-split: left whole, {points} split points answered in place");
     Ok(())
 }

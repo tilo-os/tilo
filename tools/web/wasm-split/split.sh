@@ -52,6 +52,9 @@ tool_copy=$pkg/.wasm-split.$$
 bindgened=$pkg/.bindgened.wasm
 trap 'rm -f "$tool_copy" "$bindgened"' EXIT
 cp -- "$splitter" "$tool_copy"
+# The directory a stopped build removed is made again: what it costs is this
+# split's writes, never the split.
+mkdir -p "$pkg"
 if [[ $original == --unsplit ]]; then
   "$tool_copy" --unsplit "$pkg/tilo_browser_runtime_bg.wasm" "$pkg"
   exit
