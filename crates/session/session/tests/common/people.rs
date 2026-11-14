@@ -1288,6 +1288,9 @@ impl Device {
             .env("XDG_CACHE_HOME", root.join("cache"))
             .env("XDG_RUNTIME_DIR", root.join("runtime"))
             .env("TILO_IDENTITY_ROOT", root.join("identity"))
+            // This device's files daemon serves beside the session in its own runtime directory,
+            // where the session finds the daemon's link to the network (`fs::net`).
+            .env("TILO_FS_BLOB_SOCKET", root.join("runtime/fs-blobs.sock"))
             // The apps installed on this device: what its desk opens, and what it starts them from.
             .env("TILO_APPS_DATA_DIR", root.join("data/tilo-apps"))
             // This device keeps the channel keys of the workspaces it is in here, as a machine with

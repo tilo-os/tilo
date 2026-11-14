@@ -123,7 +123,7 @@ impl Hydrator {
         }
         let connection = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            self.endpoint.connect(peer.clone(), iroh_blobs::ALPN),
+            self.net.connect(peer.clone(), iroh_blobs::ALPN),
         )
         .await
         .map_err(|_| anyhow!("connecting to {} timed out", peer.id))??;

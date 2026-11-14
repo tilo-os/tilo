@@ -19,7 +19,6 @@ use fs::full_replica::{
     prune_obsolete_workspace_content, save_status, validate_home_peer_set,
 };
 use fs::namespace::ROOT_INO;
-use fs::reachability;
 use fs::sync;
 use fs::workspace_authority::{
     WorkspaceAuthority, WorkspaceAuthorityEnvelope, load_persisted_content_peers,
@@ -113,6 +112,22 @@ struct AclArgs {
     acl_once: bool,
 }
 
+/// Where a mount serves its local services, and how it reaches the network.
+#[derive(Args, Debug, Clone, Default)]
+struct SocketArgs {
+    /// Serve typed hydration accounting and safe eviction here.
+    #[arg(long)]
+    storage_sock: Option<PathBuf>,
+    /// Serve the scoped document-media capability here.
+    #[arg(long)]
+    blob_sock: Option<PathBuf>,
+    /// Reach the network through the session's endpoint, linking to it at this file, instead of
+    /// binding an endpoint of this mount's own under the device key: a device has one endpoint id,
+    /// the session's (see `fs::net`).
+    #[arg(long, value_name = "FILE")]
+    session_link: Option<PathBuf>,
+}
+
 /// Which local data plane serves the workspace.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 enum DataPlaneChoice {
@@ -196,12 +211,8 @@ enum Command {
         /// Seed the workspace from this directory's current contents.
         #[arg(short, long)]
         seed: Option<PathBuf>,
-        /// Serve typed hydration accounting and safe eviction here.
-        #[arg(long)]
-        storage_sock: Option<PathBuf>,
-        /// Serve the scoped document-media capability here.
-        #[arg(long)]
-        blob_sock: Option<PathBuf>,
+        #[command(flatten)]
+        sockets: SocketArgs,
         #[command(flatten)]
         acl: AclArgs,
         #[command(flatten)]
@@ -218,12 +229,8 @@ enum Command {
         /// Persistent content cache directory (the iroh-blobs store root).
         #[arg(short, long)]
         cache_dir: Option<PathBuf>,
-        /// Serve typed hydration accounting and safe eviction here.
-        #[arg(long)]
-        storage_sock: Option<PathBuf>,
-        /// Serve the scoped document-media capability here.
-        #[arg(long)]
-        blob_sock: Option<PathBuf>,
+        #[command(flatten)]
+        sockets: SocketArgs,
         #[command(flatten)]
         acl: AclArgs,
         #[command(flatten)]
@@ -386,8 +393,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             mount_point,
             cache_dir,
             seed,
-            storage_sock,
-            blob_sock,
+            sockets,
             acl,
             data_plane,
         } => {
@@ -401,8 +407,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 mount_point,
                 cache_dir,
                 seed,
-                storage_sock,
-                blob_sock,
+                sockets,
                 acl,
                 data_plane,
             ))
@@ -412,22 +417,10 @@ async fn run_command(cli: Cli) -> Result<()> {
             mount_point,
             ticket,
             cache_dir,
-            storage_sock,
-            blob_sock,
+            sockets,
             acl,
             data_plane,
-        } => {
-            mount(
-                mount_point,
-                ticket,
-                cache_dir,
-                storage_sock,
-                blob_sock,
-                acl,
-                data_plane,
-            )
-            .await
-        }
+        } => mount(mount_point, ticket, cache_dir, sockets, acl, data_plane).await,
         #[cfg(target_os = "linux")]
         Command::CloudService {
             mounts_root,
@@ -787,6 +780,50 @@ fn native_content_dir(_data_plane: &DataPlaneArgs, _workspace: uuid::Uuid) -> Op
     None
 }
 
+/// A mount's network: the session's endpoint when it was given the session's link, else an
+/// endpoint of its own under the device key ([`fs::net`]).
+async fn network(secret: &iroh::SecretKey, session_link: Option<&Path>) -> Result<fs::net::Net> {
+    if let Some(file) = session_link {
+        return Ok(fs::net::Net::Session(
+            fs::net::SessionLink::bind(secret.public(), file).await?,
+        ));
+    }
+    let (endpoint, lookup) = sync::bind_endpoint_with_key(secret.clone()).await?;
+    Ok(fs::net::Net::Direct { endpoint, lookup })
+}
+
+/// Keep the saved ticket naming where peers reach this device: through the session, its address
+/// is the session's, known once the session says hello.
+fn follow_session_address(
+    net: &fs::net::Net,
+    cache_dir: PathBuf,
+    mut ticket: Ticket,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let fs::net::Net::Session(link) = net else {
+        return None;
+    };
+    let mut hellos = link.hellos();
+    Some(tokio::spawn(async move {
+        loop {
+            let device = hellos
+                .borrow_and_update()
+                .as_ref()
+                .map(|hello| hello.device.clone());
+            if let Some(device) = device
+                && device != ticket.node
+            {
+                ticket.node = device;
+                if let Err(error) = save_workspace_ticket(&cache_dir, &ticket) {
+                    eprintln!("could not save the workspace ticket: {error:#}");
+                }
+            }
+            if hellos.changed().await.is_err() {
+                return;
+            }
+        }
+    }))
+}
+
 fn workspace_ticket_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join("workspace-ticket")
 }
@@ -1035,7 +1072,11 @@ async fn replica_workspace(
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret).await?;
     let store = Arc::new(open_store(Some(bundle.cache_dir.clone())).await?);
     let _replica_content = spawn_replica_content(&bundle.cache_dir, Arc::clone(&store));
-    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
+    let net = fs::net::Net::Direct {
+        endpoint: endpoint.clone(),
+        lookup,
+    };
+    let hydrator = Arc::new(Hydrator::new(net.clone(), Arc::clone(&store)));
     let namespace_path = namespace_path(Some(&bundle.cache_dir));
     let bootstrap = bootstrap_peers(&ticket, Some(&bundle.cache_dir))?;
     for peer in &bootstrap {
@@ -1049,8 +1090,7 @@ async fn replica_workspace(
     // tree is the Files record it follows, and the content it hydrates.
     let workspace = Workspace::join(
         sync::SyncNode {
-            endpoint: endpoint.clone(),
-            lookup,
+            net,
             store,
             hydrator: Arc::clone(&hydrator),
             namespace: Arc::clone(&namespace),
@@ -1212,11 +1252,15 @@ async fn serve(
     mount_point: PathBuf,
     cache_dir: Option<PathBuf>,
     seed: Option<PathBuf>,
-    storage_sock: Option<PathBuf>,
-    blob_sock: Option<PathBuf>,
+    sockets: SocketArgs,
     acl_args: AclArgs,
     data_plane: DataPlaneArgs,
 ) -> Result<()> {
+    let SocketArgs {
+        storage_sock,
+        blob_sock,
+        session_link,
+    } = sockets;
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let np = namespace_path(cache_dir.as_deref());
     let thumb_dir = thumb_path(cache_dir.as_deref());
@@ -1235,24 +1279,11 @@ async fn serve(
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
     let history = cache_dir.as_deref().map(|_| history_actor);
-    // The relays wait until something means another party may dial this mount
-    // (`fs::reachability`): each trace of one wakes them.
-    let (endpoint, lookup, reachability) =
-        sync::bind_dormant_endpoint_with_key(device.secret.clone()).await?;
+    let net = network(&device.secret, session_link.as_deref()).await?;
     // Files act as the certified person by default; transport authorship and
     // device-specific grants continue to use the endpoint/device key.
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
-    let _acl_reachability = if let Some(caps) = &caps {
-        reachability::wake_when_acl_admits_others(
-            &reachability,
-            &caps.handle(),
-            "the capability list names someone else",
-        )
-    } else {
-        reachability::wake(&reachability, "the mount enforces no capability list");
-        None
-    };
     let _reload = caps
         .map(|c| spawn_acl_reload(c, acl_args.acl_once))
         .transpose()?;
@@ -1260,20 +1291,12 @@ async fn serve(
     // it here keeps the record mesh on the NAS UUID after `fs.service` restarts.
     let remote_ticket = persisted_remote_workspace_ticket(cache_dir.as_deref())?;
     let workspace_id = remote_ticket.as_ref().map_or_else(
-        || Ticket::workspace_id_for_topic(*endpoint.id().as_bytes()),
+        || Ticket::workspace_id_for_topic(*net.id().as_bytes()),
         Ticket::workspace_id,
     );
-    if remote_ticket.is_some() {
-        reachability::wake(
-            &reachability,
-            "this device joined another device's workspace",
-        );
-    }
     let store = Arc::new(open_workspace_store(cache_dir.clone(), &data_plane, workspace_id).await?);
-    let author = endpoint.id().to_string();
-    let hydrator = Arc::new(
-        Hydrator::new(endpoint.clone(), store.clone()).with_reachability(reachability.clone()),
-    );
+    let author = net.id().to_string();
+    let hydrator = Arc::new(Hydrator::new(net.clone(), store.clone()));
     if let Some(cache_dir) = cache_dir.as_deref() {
         for peer in load_persisted_content_peers(cache_dir)? {
             hydrator.add_peer(peer.endpoint);
@@ -1339,13 +1362,6 @@ async fn serve(
         None => None,
     };
     let allow_history_baseline = remote_ticket.is_none();
-    let _authority_reachability = workspace_authority.as_ref().and_then(|authority| {
-        reachability::wake_when_acl_admits_others(
-            &reachability,
-            &authority.handle(),
-            "the workspace authority names someone else",
-        )
-    });
     let authority_reload = workspace_authority
         .as_ref()
         .zip(share_issuer.as_ref())
@@ -1419,8 +1435,7 @@ async fn serve(
         .and_then(|_| blob_sock.clone())
         .map(ServedSocket);
     let node = sync::SyncNode {
-        endpoint: endpoint.clone(),
-        lookup,
+        net: net.clone(),
         store: store.clone(),
         hydrator: hydrator.clone(),
         namespace: namespace.clone(),
@@ -1438,7 +1453,7 @@ async fn serve(
         (workspace, ticket, false)
     };
 
-    println!("Iroh NodeID: {}", endpoint.id());
+    println!("Iroh NodeID: {}", net.id());
     if joined_remote {
         println!("Joined workspace from authenticated content discovery.");
     } else {
@@ -1450,6 +1465,10 @@ async fn serve(
     if let Some(cache_dir) = &cache_dir {
         save_workspace_ticket(cache_dir, &ticket)?;
     }
+    let _ticket_address = cache_dir
+        .clone()
+        .filter(|_| !joined_remote)
+        .and_then(|cache_dir| follow_session_address(&net, cache_dir, ticket.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     let mount_outcome = run_mount(
         MountConfig {
@@ -1503,11 +1522,15 @@ async fn mount(
     mount_point: PathBuf,
     ticket: String,
     cache_dir: Option<PathBuf>,
-    storage_sock: Option<PathBuf>,
-    blob_sock: Option<PathBuf>,
+    sockets: SocketArgs,
     acl_args: AclArgs,
     data_plane: DataPlaneArgs,
 ) -> Result<()> {
+    let SocketArgs {
+        storage_sock,
+        blob_sock,
+        session_link,
+    } = sockets;
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let ticket = Ticket::decode(&ticket)?;
     if let Some(cache_dir) = &cache_dir {
@@ -1528,7 +1551,7 @@ async fn mount(
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
     };
     let history = cache_dir.as_deref().map(|_| history_actor);
-    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
+    let net = network(&device.secret, session_link.as_deref()).await?;
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
     let _reload = caps
@@ -1537,8 +1560,8 @@ async fn mount(
     let store = Arc::new(
         open_workspace_store(cache_dir.clone(), &data_plane, ticket.workspace_id()).await?,
     );
-    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-    let author = endpoint.id().to_string();
+    let hydrator = Arc::new(Hydrator::new(net.clone(), store.clone()));
+    let author = net.id().to_string();
     let bootstrap = bootstrap_peers(&ticket, cache_dir.as_deref())?;
     for peer in &bootstrap {
         hydrator.add_peer(peer.clone());
@@ -1574,8 +1597,7 @@ async fn mount(
         .map(ServedSocket);
     let workspace = Workspace::join(
         sync::SyncNode {
-            endpoint: endpoint.clone(),
-            lookup,
+            net: net.clone(),
             store: store.clone(),
             hydrator: hydrator.clone(),
             namespace: namespace.clone(),
@@ -1586,7 +1608,7 @@ async fn mount(
         None,
     )?;
 
-    println!("Iroh NodeID: {}", endpoint.id());
+    println!("Iroh NodeID: {}", net.id());
     println!("Joined workspace.");
 
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));

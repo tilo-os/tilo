@@ -285,20 +285,6 @@ impl WorkspaceAcl {
             .collect()
     }
 
-    /// Whether anyone but the mount itself may be named here: a direct entry for an identity no
-    /// binding answers for, or a capability that does not reach the mount. The shipped list, which
-    /// grants the mount's own person, names nobody else, so only the person's own devices can be
-    /// admitted ([`crate::reachability`]).
-    #[must_use]
-    pub fn names_others(&self) -> bool {
-        let own: HashSet<IdentityKey> = self.bindings.iter().map(|b| b.identity).collect();
-        self.entries.iter().any(|e| !own.contains(&e.identity))
-            || self
-                .bindings
-                .iter()
-                .any(|b| b.caps.iter().any(|cap| !cap.reaches(&b.acting)))
-    }
-
     /// Whether `identity` holds `access` on `path`. Fail-closed: `true` only if a direct entry whose
     /// prefix covers `path` grants it, or a bound capability decides `Allow`. Both routes use
     /// [`collab_types::path_covers`], the function the capability model matches `FsPath` with.

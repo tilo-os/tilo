@@ -60,11 +60,11 @@ pub mod namespace_persist;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod native;
 #[cfg(feature = "filesystem")]
+pub mod net;
+#[cfg(feature = "filesystem")]
 pub mod peer_auth;
 #[cfg(feature = "document-media")]
 pub mod public_content;
-#[cfg(feature = "filesystem")]
-pub mod reachability;
 #[cfg(feature = "filesystem")]
 pub mod replica_content;
 #[cfg(feature = "filesystem")]

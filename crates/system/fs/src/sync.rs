@@ -9,10 +9,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
+use futures_util::FutureExt as _;
+use futures_util::future::BoxFuture;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
-use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh_base::EndpointAddr;
+use iroh::protocol::{AcceptError, ProtocolHandler as _, Router};
+use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::RevocationList;
 
@@ -23,6 +25,7 @@ use crate::clock::unix_now_ns;
 use crate::hydration::Hydrator;
 use crate::identity::PeerCredentials;
 use crate::namespace::Namespace;
+use crate::net::{Answer, Net};
 use crate::peer_auth::AuthenticatedFsPeer;
 use crate::store::ContentStore;
 use crate::workspace_authority::{
@@ -112,22 +115,23 @@ impl FsTransportIdentity {
     }
 }
 
+/// Authenticate the peer `remote` as a certified device, as this device `local` sees it: the ids
+/// are the ones the network authenticated, which a link through the session names rather than the
+/// connection.
 async fn authenticate_connection(
-    endpoint: &Endpoint,
-    connection: &Connection,
+    local: EndpointId,
+    remote: EndpointId,
     recv: &mut RecvStream,
     send: &mut SendStream,
     identity: &FsTransportIdentity,
 ) -> Result<AuthenticatedFsPeer> {
-    let remote_id = connection.remote_id();
-    let remote = *remote_id.as_bytes();
     let revocations = identity.revocation_snapshot()?;
     let peer = authenticate_fs_peer_parts_at(
         recv,
         send,
         &identity.credentials,
-        *endpoint.id().as_bytes(),
-        remote,
+        *local.as_bytes(),
+        *remote.as_bytes(),
         &revocations,
         unix_now_ns(),
         AuthenticatedTransportConfig::default(),
@@ -181,27 +185,6 @@ pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint
     Ok((endpoint, lookup))
 }
 
-/// [`bind_endpoint_with_key`], with the person's relays held back until something may need to dial
-/// this device: no home relay, net report, address discovery or port mapping until the returned
-/// [`crate::reachability::Reachability`] is woken. For a daemon that waits to be dialled.
-pub async fn bind_dormant_endpoint_with_key(
-    secret: iroh::SecretKey,
-) -> Result<(Endpoint, MemoryLookup, crate::reachability::Reachability)> {
-    let lookup = MemoryLookup::new();
-    let relays = tilo_endpoint_reachability::relays();
-    let endpoint = endpoint_builder(secret, &lookup, &relays)
-        .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()))
-        .bind()
-        .await?;
-    let reachability = crate::reachability::Reachability::defer(
-        &endpoint,
-        &relays.relays,
-        tokio::runtime::Handle::current(),
-        None,
-    );
-    Ok((endpoint, lookup, reachability))
-}
-
 /// How long a connection, and each of its paths, may go without traffic before it sends a
 /// keep-alive. iroh's default of 5 s costs both ends a wakeup per path on an idle connection, such
 /// as a share recipient's held stream. 25 s keeps the NAT binding of a UDP flow and stays below a
@@ -222,21 +205,7 @@ fn endpoint_builder(
     lookup: &MemoryLookup,
     relays: &tilo_endpoint_reachability::EndpointRelays,
 ) -> iroh::endpoint::Builder {
-    use iroh::endpoint::{QuicTransportConfig, VarInt};
-    /// Unacknowledged bytes one stream, and one connection, may have in flight. QUIC's defaults
-    /// cap a stream at about 30 MB/s and a connection at about 250 MB/s over a 40 ms round trip;
-    /// content transfer needs a few bandwidth-delay products.
-    const STREAM_WINDOW: u32 = 16 * 1024 * 1024;
-    const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
-    let transport = QuicTransportConfig::builder()
-        .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
-        .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
-        .send_window(u64::from(CONNECTION_WINDOW))
-        .keep_alive_interval(IDLE_KEEP_ALIVE)
-        .default_path_keep_alive_interval(IDLE_KEEP_ALIVE)
-        .default_path_max_idle_timeout(Duration::from_millis(u64::from(IDLE_TIMEOUT_MS)))
-        .max_idle_timeout(Some(VarInt::from_u32(IDLE_TIMEOUT_MS).into()))
-        .build();
+    let transport = transport();
     let mut builder = Endpoint::builder(presets::Minimal)
         .relay_mode(iroh::RelayMode::Custom(relays.relays.clone()))
         .transport_config(transport)
@@ -246,6 +215,26 @@ fn endpoint_builder(
         builder = builder.address_lookup(tilo_endpoint_reachability::Watchonly);
     }
     builder
+}
+
+/// The transport a files endpoint runs: windows wide enough for content, and keep-alives so an
+/// idle connection, such as the daemon's link to the session, stays open.
+pub(crate) fn transport() -> iroh::endpoint::QuicTransportConfig {
+    use iroh::endpoint::{QuicTransportConfig, VarInt};
+    /// Unacknowledged bytes one stream, and one connection, may have in flight. QUIC's defaults
+    /// cap a stream at about 30 MB/s and a connection at about 250 MB/s over a 40 ms round trip;
+    /// content transfer needs a few bandwidth-delay products.
+    const STREAM_WINDOW: u32 = 16 * 1024 * 1024;
+    const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
+    QuicTransportConfig::builder()
+        .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
+        .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
+        .send_window(u64::from(CONNECTION_WINDOW))
+        .keep_alive_interval(IDLE_KEEP_ALIVE)
+        .default_path_keep_alive_interval(IDLE_KEEP_ALIVE)
+        .default_path_max_idle_timeout(Duration::from_millis(u64::from(IDLE_TIMEOUT_MS)))
+        .max_idle_timeout(Some(VarInt::from_u32(IDLE_TIMEOUT_MS).into()))
+        .build()
 }
 
 /// Bind an endpoint under a freshly generated key. The node id differs on every call, so nothing
@@ -454,6 +443,9 @@ impl BlobGuard {
     }
 }
 
+/// The peer on each blob connection being answered, by iroh-blobs' connection id.
+type BlobPeers = Arc<Mutex<HashMap<u64, EndpointId>>>;
+
 /// Closed connections whose caller the blob guard still recognises.
 const RETAINED_CLOSED_CALLERS: usize = 256;
 
@@ -473,6 +465,7 @@ fn blob_guard(
     namespace: Arc<Mutex<Namespace>>,
     store: Arc<ContentStore>,
     identity: Option<FsTransportIdentity>,
+    peers: BlobPeers,
 ) -> Option<iroh_blobs::provider::events::EventSender> {
     use iroh_blobs::provider::events::{
         AbortReason, ConnectMode, EventMask, EventSender, ObserveMode, ProviderMessage,
@@ -518,7 +511,10 @@ fn blob_guard(
             match msg {
                 ProviderMessage::ClientConnected(msg) => {
                     let id = msg.inner.connection_id;
-                    let verdict = guard.admit(identity.as_ref(), msg.inner.endpoint_id, id);
+                    // Who reached the device, as its network authenticated them: the connection
+                    // itself names the session when the device's link carried it.
+                    let peer = peers.lock_recover().get(&id).copied();
+                    let verdict = guard.admit(identity.as_ref(), peer, id);
                     if verdict.is_ok() {
                         let n = open.entry(id).or_default();
                         *n = n.saturating_add(1);
@@ -626,7 +622,14 @@ pub async fn submit_workspace_authority(
 ) -> Result<Option<crate::workspace_authority::WorkspaceAuthorityEnvelope>> {
     let connection = endpoint.connect(remote, TILO_FS_AUTHORITY_ALPN).await?;
     let (mut send, mut recv) = connection.open_bi().await?;
-    let _ = authenticate_connection(endpoint, &connection, &mut recv, &mut send, identity).await?;
+    let _ = authenticate_connection(
+        endpoint.id(),
+        connection.remote_id(),
+        &mut recv,
+        &mut send,
+        identity,
+    )
+    .await?;
     write_authority_frame(&mut send, &AuthorityRequest { workspace, publish }).await?;
     send.finish()?;
     let response: AuthorityResponse = read_authority_frame(&mut recv).await?;
@@ -642,7 +645,8 @@ pub struct Workspace {
 }
 #[derive(Clone)]
 struct AuthorityProtocol {
-    endpoint: Endpoint,
+    /// This device, as peers know it.
+    local: EndpointId,
     identity: FsTransportIdentity,
     policy: PeerPolicy,
     authority: Arc<WorkspaceAuthority>,
@@ -655,18 +659,13 @@ impl std::fmt::Debug for AuthorityProtocol {
     }
 }
 
-impl ProtocolHandler for AuthorityProtocol {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+impl AuthorityProtocol {
+    async fn answer(&self, connection: Connection, remote: EndpointId) -> Result<(), AcceptError> {
         let (mut send, mut recv) = connection.accept_bi().await?;
-        let peer = authenticate_connection(
-            &self.endpoint,
-            &connection,
-            &mut recv,
-            &mut send,
-            &self.identity,
-        )
-        .await
-        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        let peer =
+            authenticate_connection(self.local, remote, &mut recv, &mut send, &self.identity)
+                .await
+                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let request: AuthorityRequest = read_authority_frame(&mut recv)
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
@@ -718,8 +717,7 @@ fn authority_response(
 /// hydrator, the namespace it projects, its transport identity and the [`PeerPolicy`] it serves
 /// through.
 pub struct SyncNode {
-    pub endpoint: Endpoint,
-    pub lookup: MemoryLookup,
+    pub net: Net,
     pub store: Arc<ContentStore>,
     pub hydrator: Arc<Hydrator>,
     pub namespace: Arc<Mutex<Namespace>>,
@@ -735,9 +733,9 @@ impl Workspace {
         node: SyncNode,
         authority: Option<&Arc<WorkspaceAuthority>>,
     ) -> Result<(Workspace, Ticket)> {
-        let topic = *node.endpoint.id().as_bytes();
+        let topic = *node.net.id().as_bytes();
         let ticket = Ticket {
-            node: node.endpoint.addr(),
+            node: node.net.addr(),
             workspace: topic,
         };
         let workspace = Self::start(node, ticket.workspace_id(), &[], authority);
@@ -766,8 +764,7 @@ impl Workspace {
         authority: Option<&Arc<WorkspaceAuthority>>,
     ) -> Workspace {
         let SyncNode {
-            endpoint,
-            lookup,
+            net,
             store,
             hydrator,
             namespace,
@@ -775,34 +772,71 @@ impl Workspace {
             policy,
         } = node;
         for address in bootstrap {
-            lookup.add_endpoint_info(address.clone());
+            net.learn(address);
             hydrator.add_peer(address.clone());
         }
-        let builder = Router::builder(endpoint.clone()).accept(
-            iroh_blobs::ALPN,
-            store.blobs_protocol(blob_guard(
+        let peers = BlobPeers::default();
+        let answers = Answers {
+            blobs: store.blobs_protocol(blob_guard(
                 policy.clone(),
                 namespace.clone(),
                 store.clone(),
                 Some(identity.clone()),
+                Arc::clone(&peers),
             )),
-        );
-        let builder = match authority {
-            Some(authority) => builder.accept(
-                TILO_FS_AUTHORITY_ALPN,
-                AuthorityProtocol {
-                    endpoint,
-                    identity,
-                    policy,
-                    authority: Arc::clone(authority),
-                    workspace_id,
-                },
-            ),
-            None => builder,
+            peers,
+            authority: authority.map(|authority| AuthorityProtocol {
+                local: net.id(),
+                identity,
+                policy,
+                authority: Arc::clone(authority),
+                workspace_id,
+            }),
         };
         Workspace {
             namespace,
-            _router: builder.spawn(),
+            _router: net.serve(Arc::new(answers)),
         }
+    }
+}
+
+/// What a workspace answers its peers: its blobs, and its signed authority where it keeps one.
+struct Answers {
+    blobs: iroh_blobs::BlobsProtocol,
+    peers: BlobPeers,
+    authority: Option<AuthorityProtocol>,
+}
+
+impl Answer for Answers {
+    fn alpns(&self) -> Vec<&'static [u8]> {
+        let mut alpns = vec![iroh_blobs::ALPN];
+        if self.authority.is_some() {
+            alpns.push(TILO_FS_AUTHORITY_ALPN);
+        }
+        alpns
+    }
+
+    fn answer(
+        &self,
+        alpn: &[u8],
+        remote: EndpointId,
+        connection: Connection,
+    ) -> BoxFuture<'static, Result<(), AcceptError>> {
+        if alpn == TILO_FS_AUTHORITY_ALPN
+            && let Some(authority) = self.authority.clone()
+        {
+            return async move { authority.answer(connection, remote).await }.boxed();
+        }
+        let blobs = self.blobs.clone();
+        let peers = Arc::clone(&self.peers);
+        async move {
+            // iroh-blobs names a connection by its stable id in the events the guard reads.
+            let id = u64::try_from(connection.stable_id()).unwrap_or(u64::MAX);
+            peers.lock_recover().insert(id, remote);
+            let answered = blobs.accept(connection).await;
+            peers.lock_recover().remove(&id);
+            answered
+        }
+        .boxed()
     }
 }

@@ -336,6 +336,9 @@ tilo-native-media = { path = "../native-media" }
 # The MCP projection of the action host, which the agent door serves a
 # program of this login through once the person admits it.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
+# The files daemon's link to the network: the session answers and dials for it
+# on the device's endpoint (`fs::net`).
+fs = { package = "tilo-fs", path = "../../system/fs", default-features = false, features = ["filesystem"] }
 # The host of an agent task's programs, which the door runs for each
 # connection that sends one, and the sealed memfd its modules come in.
 tilolang-host = { path = "../../platform/tilolang-host" }
@@ -497,9 +500,8 @@ rqrr = { workspace = true, default-features = true }
 wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 # A display tool speaking `wlr-output-management` to the session's compositor.
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-# The mount's own namespace, and the document its tree record is read as: a
-# test runs the files daemon's writer against a session, as a mount does.
-fs = { package = "tilo-fs", path = "../../system/fs", default-features = false, features = ["filesystem"] }
+# The document a tree record is read as: a test runs the files daemon's writer
+# against a session, as a mount does.
 fs-protocol = { path = "../../system/fs-protocol" }
 # The input method a text field's client runs for the seat, as the person's
 # on-screen keyboard does.

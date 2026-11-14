@@ -109,6 +109,8 @@ mod door_find_loop;
 mod fabric;
 #[path = "file_clipboard.rs"]
 mod file_clipboard;
+#[path = "files_link.rs"]
+mod files_link;
 #[path = "files_tree.rs"]
 mod files_tree;
 #[path = "find_records.rs"]

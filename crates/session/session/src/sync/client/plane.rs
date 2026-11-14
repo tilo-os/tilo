@@ -548,6 +548,18 @@ async fn listening(
     // What the session serves beside its own planes: this device's exit for the person's other
     // devices, when it offers one.
     served.extend(protocols);
+    // The device's files daemon reaches the network through this endpoint rather than one of its
+    // own under the same key: a device has one endpoint id (`fs::net`).
+    if identity.is_some() {
+        let woken = reachability.clone();
+        served.extend(fs::net::DaemonLink::serve(
+            endpoint.clone(),
+            launcher::services::blob_socket().with_file_name(fs::net::LINK_FILE),
+            Arc::new(move || {
+                woken.wake("the files daemon reaches a peer");
+            }),
+        ));
+    }
     let _ = bound.endpoint.set(endpoint.clone());
     if let Some(device) =
         identity.map(|identity| DeviceActions::start(identity, endpoint.clone(), engine.cloned()))

@@ -16,7 +16,6 @@ use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
-use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
 use iroh_blobs::Hash;
 use tokio::sync::{Mutex as AsyncMutex, OnceCell};
@@ -76,7 +75,8 @@ pub trait ContentSource: Send + Sync {
 }
 
 pub struct Hydrator {
-    pub endpoint: Endpoint,
+    /// Where peers are dialled from.
+    pub net: crate::net::Net,
     pub store: Arc<ContentStore>,
     peers: Arc<RwLock<Vec<PeerHealth>>>,
     /// Number of hydration fetches in flight for each blob, refcounted rather than a set: two
@@ -97,8 +97,6 @@ pub struct Hydrator {
     blob_connections:
         AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
-    /// Woken by the first peer: a device that knows a peer may be dialled by it.
-    reachability: crate::reachability::Reachability,
     source: Option<Arc<dyn ContentSource>>,
 }
 
@@ -125,9 +123,9 @@ impl Drop for FetchGuard {
 }
 
 impl Hydrator {
-    pub fn new(endpoint: Endpoint, store: Arc<ContentStore>) -> Self {
+    pub fn new(net: impl Into<crate::net::Net>, store: Arc<ContentStore>) -> Self {
         Self {
-            endpoint,
+            net: net.into(),
             store,
             peers: Arc::new(RwLock::new(Vec::new())),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
@@ -145,7 +143,6 @@ impl Hydrator {
             blob_bytes: std::sync::atomic::AtomicU64::new(0),
             blob_connections: AsyncMutex::new(HashMap::new()),
             runtime_handle: tokio::runtime::Handle::current(),
-            reachability: crate::reachability::Reachability::default(),
             source: None,
         }
     }
@@ -187,14 +184,6 @@ impl Hydrator {
         )
         .await;
         results.into_iter().filter_map(Result::err).collect()
-    }
-
-    /// Wake `reachability` when the first peer is added: every peer the daemon learns of passes
-    /// through [`Self::add_peer`].
-    #[must_use]
-    pub fn with_reachability(mut self, reachability: crate::reachability::Reachability) -> Self {
-        self.reachability = reachability;
-        self
     }
 
     /// Whether a fetch of blob `hash` is in flight right now.
@@ -257,7 +246,6 @@ impl Hydrator {
 
     /// Register a peer we can hydrate blobs from. Idempotent per endpoint id.
     pub fn add_peer(&self, addr: EndpointAddr) {
-        crate::reachability::wake(&self.reachability, "a content peer is known");
         let mut peers = self.peers.write_recover();
         let now = Instant::now();
         if let Some(peer) = peers.iter_mut().find(|peer| peer.addr.id == addr.id) {
@@ -862,7 +850,7 @@ pub(crate) mod test_peers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iroh::endpoint::presets;
+    use iroh::endpoint::{Endpoint, presets};
     use iroh::protocol::Router;
 
     #[tokio::test]

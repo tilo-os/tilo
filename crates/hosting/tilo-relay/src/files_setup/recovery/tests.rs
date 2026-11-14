@@ -218,8 +218,10 @@ fn serve_host(
     ));
     let (hosted, ticket) = fs::Workspace::host(
         fs::sync::SyncNode {
-            endpoint: host.endpoint.clone(),
-            lookup: host.lookup.clone(),
+            net: fs::net::Net::Direct {
+                endpoint: host.endpoint.clone(),
+                lookup: host.lookup.clone(),
+            },
             store,
             hydrator,
             namespace,

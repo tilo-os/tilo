@@ -105,6 +105,8 @@ fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result
         .arg(paths.storage.join("storage.sock"))
         .arg("--blob-sock")
         .arg(paths.runtime.join("fs-blobs.sock"))
+        .arg("--session-link")
+        .arg(paths.runtime.join(fs::net::LINK_FILE))
         .env("TILO_IDENTITY_ROOT", &paths.identity)
         .env("TILO_AUTHORITY_SOCKET_DIR", &paths.runtime);
     Ok(serve)
