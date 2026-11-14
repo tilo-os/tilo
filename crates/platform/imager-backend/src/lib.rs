@@ -134,6 +134,7 @@ pub mod model;
 pub mod plan;
 pub mod platform;
 pub mod service_selection;
+pub mod service_sources;
 pub mod session;
 pub mod setup;
 

@@ -18,11 +18,15 @@ use super::migration::{CopyProgress, CopyReport, OwnedTemporary, PinnedDirectory
 use super::migration_durability;
 use super::migration_worker::{MigrationJob, WorkerOutcome};
 use super::nofollow::{metadata_nofollow, same_directory_identity};
+use super::service_sources::ServiceJournal;
 
 const STORE_FILE: &str = "operations.json";
 const MAX_STORE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OPERATIONS: usize = 256;
 const ISSUE_PREVIEW: usize = 8;
+const CONTINUATION_BYTES: u64 = 256 * 1024;
+const SERVICE_PREFIX: &str = "service-";
+const MAX_SERVICE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ISSUE_BYTES: u64 = 128 * 1024;
 static NEXT_REPORT: AtomicU64 = AtomicU64::new(0);
 
@@ -503,18 +507,72 @@ impl MigrationStore {
     }
 
     pub fn load_continuation_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        self.load_named(
+            tilo_paths::login::IMPORTER_CONTINUATION_FILE,
+            CONTINUATION_BYTES,
+        )
+    }
+
+    pub fn save_continuation_bytes(&self, bytes: &[u8]) -> Result<(), String> {
+        self.save_named(
+            tilo_paths::login::IMPORTER_CONTINUATION_FILE,
+            bytes,
+            CONTINUATION_BYTES,
+        )
+    }
+
+    /// Every service migration's journal this store keeps, a run a process left running read
+    /// as interrupted.
+    pub fn load_services(&self) -> Result<Vec<ServiceJournal>, String> {
+        let mut names: Vec<String> = fs::read_dir(&self.root_path)
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| {
+                name.strip_prefix(SERVICE_PREFIX)
+                    .and_then(|rest| rest.strip_suffix(".json"))
+                    .is_some_and(crate::service_sources::valid_id)
+            })
+            .collect();
+        names.sort();
+        let mut journals = Vec::new();
+        for name in names.into_iter().take(MAX_OPERATIONS) {
+            if let Some(bytes) = self.load_named(&name, MAX_SERVICE_BYTES)? {
+                let mut journal = ServiceJournal::from_bytes(&bytes)?;
+                journal.recovered();
+                journals.push(journal);
+            }
+        }
+        Ok(journals)
+    }
+
+    /// Keep `journal` durably: written whole to a private temporary file, synced, renamed over
+    /// the last one and the directory synced, as the operations are.
+    pub fn save_service(&self, journal: &ServiceJournal) -> Result<(), String> {
+        if !crate::service_sources::valid_id(&journal.id) {
+            return Err("service journal id is invalid".into());
+        }
+        let bytes = journal.to_bytes()?;
+        self.save_named(
+            &format!("{SERVICE_PREFIX}{}.json", journal.id),
+            &bytes,
+            MAX_SERVICE_BYTES,
+        )
+    }
+
+    fn load_named(&self, name: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
         self.validate_ownership()?;
         self.root
             .validate_destination()
             .map_err(|e| e.to_string())?;
-        let name = Path::new(tilo_paths::login::IMPORTER_CONTINUATION_FILE);
+        let name = Path::new(name);
         let expected = match metadata_nofollow(&self.root.file, name) {
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.to_string()),
         };
-        if !expected.is_file() || expected.is_symlink() || expected.len() > 256 * 1024 {
-            return Err("continuation is not a bounded regular file".into());
+        if !expected.is_file() || expected.is_symlink() || expected.len() > limit {
+            return Err("migration state is not a bounded regular file".into());
         }
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No).nonblock(true);
@@ -525,28 +583,28 @@ impl MigrationStore {
             &expected,
             &Metadata::from_file(&file).map_err(|e| e.to_string())?,
         ) {
-            return Err("continuation changed while opening".into());
+            return Err("migration state changed while opening".into());
         }
         let mut bytes = Vec::new();
         (&mut file)
-            .take(256 * 1024 + 1)
+            .take(limit + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
-        if bytes.len() > 256 * 1024 {
-            return Err("continuation exceeds bounds".into());
+        if bytes.len() as u64 > limit {
+            return Err("migration state exceeds bounds".into());
         }
         Ok(Some(bytes))
     }
 
-    pub fn save_continuation_bytes(&self, bytes: &[u8]) -> Result<(), String> {
-        if bytes.len() > 256 * 1024 {
-            return Err("continuation exceeds bounds".into());
+    fn save_named(&self, name: &str, bytes: &[u8], limit: u64) -> Result<(), String> {
+        if bytes.len() as u64 > limit {
+            return Err("migration state exceeds bounds".into());
         }
         self.validate_ownership()?;
         self.root
             .validate_destination()
             .map_err(|e| e.to_string())?;
-        let name = OsStr::new(tilo_paths::login::IMPORTER_CONTINUATION_FILE);
+        let name = OsStr::new(name);
         let mut temporary = OwnedTemporary::create(&self.root, name).map_err(|e| e.to_string())?;
         temporary.file.write_all(bytes).map_err(|e| e.to_string())?;
         migration_durability::sync_file(&temporary.file).map_err(|e| e.to_string())?;
