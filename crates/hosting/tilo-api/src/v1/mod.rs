@@ -571,8 +571,15 @@ impl<'a> Caller<'a> {
                     "cursor",
                     cursor.as_ref(),
                 );
-                let listing = match self.call("tilo_ls", args).await {
-                    Ok(listed) => parsed::<answers::Listing>(listed)?,
+                // A listing that answers why it has nothing (an app installed
+                // but not running holds nothing to list) is named like a
+                // resource that does not read, and the walk goes on.
+                let listed = self
+                    .call("tilo_ls", args)
+                    .await
+                    .and_then(parsed::<answers::Listing>);
+                let listing = match listed {
+                    Ok(listing) => listing,
                     Err(refused) => {
                         unread.push(answers::Unread {
                             path: path.clone().unwrap_or_default(),
