@@ -195,108 +195,87 @@ mod tests {
         grants
     }
 
-    tilo_test_env::scenario! {
-        fn a_launch_is_granted_what_its_workspace_gives_this_app;
+    #[test]
+    fn a_launch_writes_the_grants_the_launcher_reads_and_names_nothing_else() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        assert_eq!(workspace.id, "workspace-7");
+        assert!(workspace.is_workspace());
+        assert_eq!(
+            workspace.write_grants("so.tilo.notes").expect("written"),
+            None,
+            "nothing granted, no capability file and no flag"
+        );
 
-        phase a_launch_writes_the_grants_the_launcher_reads_and_names_nothing_else;
-        {
-            let directory = tempfile::tempdir().expect("a directory");
-            let mut workspace = Workspace::under(directory.path(), "workspace-7");
-            assert_eq!(workspace.id, "workspace-7");
-            assert!(workspace.is_workspace());
-            assert_eq!(
-                workspace.write_grants("so.tilo.notes").expect("written"),
-                None,
-                "nothing granted, no capability file and no flag"
-            );
+        workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
+        let path = workspace
+            .write_grants("so.tilo.notes")
+            .expect("written")
+            .expect("a capability file");
+        assert!(path.starts_with(directory.path().join("tilo").join("capabilities")));
+        let read: LaunchGrants =
+            serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
+        assert_eq!(
+            read, workspace.grants,
+            "the launcher reads back what was granted"
+        );
+        let mode = {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::metadata(&path)
+                .expect("the file")
+                .permissions()
+                .mode()
+        };
+        assert_eq!(mode & 0o777, 0o600, "the person's grants are owner-only");
+    }
 
-            workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
-            let path = workspace
-                .write_grants("so.tilo.notes")
-                .expect("written")
-                .expect("a capability file");
-            assert!(path.starts_with(directory.path().join("tilo").join("capabilities")));
-            let read: LaunchGrants =
-                serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
-            assert_eq!(
-                read, workspace.grants,
-                "the launcher reads back what was granted"
-            );
-            let mode = {
-                use std::os::unix::fs::PermissionsExt as _;
-                std::fs::metadata(&path)
-                    .expect("the file")
-                    .permissions()
-                    .mode()
-            };
-            assert_eq!(mode & 0o777, 0o600, "the person's grants are owner-only");
-        }
-
-        phase the_file_manager_is_handed_this_devices_home;
-        {
-            let directory = tempfile::tempdir().expect("a directory");
-            let mut workspace = Workspace::under(directory.path(), "workspace-7");
-            workspace.person = "person-7".to_owned();
-            let home = PathBuf::from("/home/you");
-            assert_eq!(
-                workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
-                LaunchGrants {
-                    author: false,
-                    sandbox: vec![
-                        CapOverride::grant(
-                            Grantee::person("person-7"),
-                            Scope::FsPath(home.display().to_string()),
-                            Access::Write,
-                        )
-                        .through("so.tilo.file-explorer"),
-                    ],
-                }
-            );
-            assert!(
-                workspace.grants.sandbox.is_empty(),
-                "the workspace's synced record never names this machine's home"
-            );
-            assert!(
-                workspace
-                    .grants_for_launch("so.tilo.notes", Some(home))
-                    .is_empty(),
-                "no other app browses the device's files"
-            );
-
-            // Every launch path writes it where the launcher reads it, from the
-            // home this machine is actually running as.
-            let Some(home) = tilo_paths::home() else {
-                return;
-            };
-            let path = workspace
-                .write_grants("so.tilo.file-explorer")
-                .expect("written")
-                .expect("a capability file");
-            let read: LaunchGrants =
-                serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
-            assert_eq!(
-                read,
-                workspace.grants_for_launch("so.tilo.file-explorer", Some(home)),
-                "the launcher is handed the home of this device"
-            );
-        }
-
-        phase a_workspace_refuses_a_launch_whose_app_id_could_leave_its_directory;
-        {
-            let directory = tempfile::tempdir().expect("a directory");
-            let mut workspace = Workspace::under(directory.path(), "workspace");
-            workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
-            for app in ["", "../escape", "so.tilo/notes"] {
-                assert!(
-                    workspace.write_grants(app).is_err(),
-                    "{app:?} must not name a path"
-                );
+    #[test]
+    fn the_file_manager_is_handed_this_devices_home() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let mut workspace = Workspace::under(directory.path(), "workspace-7");
+        workspace.person = "person-7".to_owned();
+        let home = PathBuf::from("/home/you");
+        assert_eq!(
+            workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
+            LaunchGrants {
+                author: false,
+                sandbox: vec![
+                    CapOverride::grant(
+                        Grantee::person("person-7"),
+                        Scope::FsPath(home.display().to_string()),
+                        Access::Write,
+                    )
+                    .through("so.tilo.file-explorer"),
+                ],
             }
-            assert!(
-                !Workspace::under(directory.path(), "").is_workspace(),
-                "a launch outside a workspace names no workspace"
-            );
-        }
+        );
+        assert!(
+            workspace.grants.sandbox.is_empty(),
+            "the workspace's synced record never names this machine's home"
+        );
+        assert!(
+            workspace
+                .grants_for_launch("so.tilo.notes", Some(home))
+                .is_empty(),
+            "no other app browses the device's files"
+        );
+
+        // Every launch path writes it where the launcher reads it, from the
+        // home this machine is actually running as.
+        let Some(home) = tilo_paths::home() else {
+            return;
+        };
+        let path = workspace
+            .write_grants("so.tilo.file-explorer")
+            .expect("written")
+            .expect("a capability file");
+        let read: LaunchGrants =
+            serde_json::from_slice(&std::fs::read(&path).expect("readable")).expect("JSON");
+        assert_eq!(
+            read,
+            workspace.grants_for_launch("so.tilo.file-explorer", Some(home)),
+            "the launcher is handed the home of this device"
+        );
     }
 
     #[test]
@@ -333,6 +312,23 @@ mod tests {
         assert!(
             read.author,
             "the person may change the workspace through the app"
+        );
+    }
+
+    #[test]
+    fn a_workspace_refuses_a_launch_whose_app_id_could_leave_its_directory() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let mut workspace = Workspace::under(directory.path(), "workspace");
+        workspace.grants = granted(&workspace, "so.tilo.notes", "/home/you/notes");
+        for app in ["", "../escape", "so.tilo/notes"] {
+            assert!(
+                workspace.write_grants(app).is_err(),
+                "{app:?} must not name a path"
+            );
+        }
+        assert!(
+            !Workspace::under(directory.path(), "").is_workspace(),
+            "a launch outside a workspace names no workspace"
         );
     }
 }
