@@ -435,3 +435,43 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
         }
     }
 }
+
+/// Chat opens on a device alone, in a workspace the person makes on it (one this device keeps
+/// and no site hosts, as on the e2e-ws-branch box) and in a branch of that workspace: the person
+/// opens it from the applications list and its window comes. On that box it left no window, no
+/// process and no word; a refusal by the session or the app's end is what this says when it does
+/// not come.
+#[test]
+fn chat_opens_on_a_device_alone_in_a_workspace_it_made_and_in_its_branch() {
+    let ada = Person::new("Ada");
+    let mut laptop = ada.device("Ada's laptop");
+    laptop.install_chat();
+    laptop.start();
+    tilo_test_env::wait_for("the laptop showing a workspace", || laptop.showing());
+    let made = laptop.act_wait(
+        "so.tilo.session",
+        "desktop:chrome\u{1f}new-workspace",
+        &serde_json::json!({"name": "Research"}),
+    );
+    assert!(
+        made.get("err").is_none(),
+        "a workspace of the person's: {made}"
+    );
+    let research = tilo_test_env::wait_for("Research in front", || {
+        laptop.showing().filter(|shown| !shown.is_empty())
+    });
+    laptop.open("so.tilo.chat");
+    laptop.wait_for_window("so.tilo.chat");
+
+    let branched = laptop.act_wait(
+        "so.tilo.session",
+        "desktop:chrome\u{1f}branch-workspace",
+        &serde_json::json!({"source": research, "name": "Question A"}),
+    );
+    assert!(branched.get("err").is_none(), "the branch: {branched}");
+    tilo_test_env::wait_for("the branch in front", || {
+        laptop.showing().filter(|shown| *shown != research)
+    });
+    laptop.open("so.tilo.chat");
+    laptop.wait_for_window("so.tilo.chat");
+}
