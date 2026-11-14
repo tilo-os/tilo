@@ -5444,6 +5444,31 @@ run = "cargo build --locked -p tilo-local"
 outputs = ["/target/debug/tilo-local"]
 default = false
 
+# The probe `e2e/tilolang` installs as an app to try the broker's routes, built where cargo has its
+# registry, as tilo-local-binaries is.
+[[check]]
+name = "collab-probe-binary"
+run = "cargo build --locked -p collab-probe --bin tilo-collab-probe"
+outputs = ["/target/debug/tilo-collab-probe"]
+default = false
+
+# The session's end-to-end proofs (scripts/headless-examples/README.md), on the session the
+# nested-session check built: run when named (`t test e2e/two-people`) and on main's newest head
+# when t has room. Their verdicts, screenshots and logs: `t outputs e2e/<proof> --to DIR`.
+[[check]]
+name = "e2e/{proof}"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/test-env.sh bash tools/ci/session-proofs.sh {proof}"
+needs = ["nested-session", "collab-probe-binary"]
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_COLLAB_PROBE = "/target/debug/tilo-collab-probe", TILO_TEST_NTFS_FIXTURES = "0" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/e2e/{proof}/**"]
+timeout_secs = 2400
+on = ["dispatch", "idle"]
+[check.matrix]
+proof = ["tilolang", "two-people", "agent-sessions", "session-lock"]
+
 # `cargo headless --check` and `cargo desktop --check` (crates/dev/tilo-local) on the session the
 # nested-session check built: each starts the development session the way a developer does, asks
 # it something (its actions; its window, opened on a throwaway headless Tilo standing in for the

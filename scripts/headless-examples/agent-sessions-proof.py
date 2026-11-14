@@ -45,7 +45,7 @@ from real_apps import Agent  # noqa: E402
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # The one place that picks a session's private runtime directory.
 SESSION_LAUNCHER = REPO / "dist" / "dev" / "nested-session.sh"
-# The nightly step points this at the binary Cargo built for the run.
+# tools/ci/session-proofs.sh points this at the session build the run made.
 SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "tilo-session"))
 # What each client calls itself, and the agent of its own the MCP server admits it as:
 # the first connection of that client on this device.

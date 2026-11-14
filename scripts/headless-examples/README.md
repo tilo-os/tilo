@@ -10,14 +10,19 @@ rendering itself.
 
 ## Proofs
 
-Two proofs start a headless session of their own, on a scratch home, and read
-every claim back off that session rather than off the thing that asked for it.
-`tools/ci/session-proofs.sh` runs both, and the nightly workflow runs that.
+These proofs start headless sessions of their own, on scratch homes, and read
+every claim back off those sessions rather than off the thing that asked for
+it. `tools/ci/session-proofs.sh PROOF` runs one on the session build
+`dist/dev/nested-session-build.sh` made; t runs each as the check `e2e/PROOF`
+(`t test e2e/two-people`, `t test 'e2e/*'` for all four), and
+`t outputs e2e/PROOF --to DIR` fetches its verdict, screenshots and logs.
 
 | Proof | What it asserts |
 |---|---|
-| `agent-sessions-proof.py` | Two agents at the session's MCP server, each admitted as itself through the workspace's governance, each served its own tools, the shell's Stop ending one of their connections alone. |
-| `session-lock-proof.py` | The shell's own lock action locks the session, the lock screen's own frame covers the shell, a password that is not the person's is refused, and the person's own password brings the shell back. |
+| `tilolang-e2e.py` (`e2e/tilolang`) | The tilolang apps installed and run as real apps: their registry entries, sandboxes, hosts, windows, actions and routes. |
+| `hosted-names-proof.py` (`e2e/two-people`) | Two people in one workspace, in two sessions, read each other by name in tilolang Chat: "Ada is typing…", her message under her name, and her own window naming her. |
+| `agent-sessions-proof.py` (`e2e/agent-sessions`) | Two agents at the session's MCP server, each admitted as itself through the workspace's governance, each served its own tools, the shell's Stop ending one of their connections alone. |
+| `session-lock-proof.py` (`e2e/session-lock`) | The shell's own lock action locks the session, the lock screen's own frame covers the shell, a password that is not the person's is refused, and the person's own password brings the shell back. |
 
 `agent-files-story.py` drives a desktop with the tree's own apps as an agent
 does, through the session's MCP server and nothing else: it names Files as the
@@ -30,8 +35,7 @@ bar's bell says so. The person only answers the sheets that ask about the agent.
 `notes-persist-proof.py` is the same kind of proof for a desktop with the
 tree's own apps: it opens Notes, types into a page, stops the session and starts
 it again, and reads the text back off the record on disk. It needs the session
-and its apps built (`dist/dev/nested-session-build.sh`) and so is not part of
-`tools/ci/session-proofs.sh`.
+and its apps built (`dist/dev/nested-session-build.sh`).
 
 `notes-caret-proof.py` opens Notes the same way, types a page with no input
 method running, and checks that the shell holds the body's caret, that it follows

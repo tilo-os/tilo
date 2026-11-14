@@ -62,8 +62,8 @@ app gets on a real system:
 Usage:
   scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep]
 
-Without --no-build it builds the nested session remotely (nested-session.sh:
-with cargo), and the tilolang tool and the probe with cargo. Each run
+Without --no-build it builds the nested session (dist/dev/nested-session-build.sh,
+which builds the tilolang tool too) and the probe with cargo. Each run
 uses a fresh throwaway session state in OUT/state and removes its compositor,
 runtime directory and processes at the end; --keep leaves the session running
 (stop it with `kill $(cat OUT/state/session.pid)`). The verdict is OUT/summary.json; the
@@ -1084,7 +1084,7 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
     and as Tasks (which declares no read): each package is the app's own, with
     the probe as its entrypoint and the routes to try in its payload. Bakes the
     probe's runtime bundle into the session, signed by its runtime publisher."""
-    probe = TARGET / "debug/tilo-collab-probe"
+    probe = Path(os.environ.get("TILO_COLLAB_PROBE") or TARGET / "debug/tilo-collab-probe")
     if not probe.is_file():
         raise Failed(f"no probe at {probe} (cargo build -p collab-probe)")
     bundle = state / "runtimes" / PROBE_RUNTIME
@@ -1230,7 +1230,7 @@ def main() -> int:
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
     state = out / "state"
-    tool = TARGET / "debug/tilolang"
+    tool = BIN / "tilolang"
     os.environ.setdefault("TMPDIR", str(Path.home() / "tmp"))
     Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
 
@@ -1238,10 +1238,8 @@ def main() -> int:
     prepare(state, apps="notes", built=not args.no_build,
             remote=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"))
     if not args.no_build:
-        print("==> building the tilolang tool and the probe", file=sys.stderr)
-        run(["cargo", "build", "-p", "tilolang-cli", "--bin", "tilolang",
-             "-p", "collab-probe", "--bin", "tilo-collab-probe",
-             "-p", "tilolang-host", "--example", "components"], cwd=REPO)
+        print("==> building the probe", file=sys.stderr)
+        run(["cargo", "build", "-p", "collab-probe", "--bin", "tilo-collab-probe"], cwd=REPO)
     runtime = (state / "runtimes/.version").read_text().strip()
     print("==> tilolang build", file=sys.stderr)
     run([tool, "build", REPO / "apps/tl/today", "--search", REPO / "apps/tl", "--out", out / "build",
