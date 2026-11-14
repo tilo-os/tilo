@@ -224,3 +224,260 @@ fn entry_of(doc: &Doc, node: &ObjId) -> TreeEntry {
         record_id: record_of(doc, node, RECORD_ID_KEY),
     }
 }
+
+/// Prefix of a node's key derived from its stable record id, so every device
+/// that writes or rebuilds the same record makes the same node object.
+pub const RECORD_NODE_ID_PREFIX: &str = "record:";
+
+/// The node key every device derives for the record `record_id`.
+#[must_use]
+pub fn record_node_id(record_id: FileRecordId) -> String {
+    format!("{RECORD_NODE_ID_PREFIX}{}", record_id.0)
+}
+
+/// What a device puts into a tree where the files are not on a disk of its
+/// own (a browser's page): a folder, or a file whose content the device keeps
+/// under `hash`, the hex digest of its content manifest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placing<'a> {
+    Folder,
+    File { hash: &'a str, size: u64 },
+}
+
+/// One node placed into a tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    /// Its node key.
+    pub id: String,
+    /// The name it took: the one asked for, or the first free one beside it
+    /// ([`free_name`]).
+    pub name: String,
+}
+
+/// The name `wanted` takes in the folder `parent` of `tree`: itself when no
+/// live node there has it, else the first of `name (2).ext`, `name (3).ext`…
+/// that is free, as a file manager keeps both when a copy meets a name.
+#[must_use]
+pub fn free_name(tree: &Tree, parent: &str, wanted: &str) -> String {
+    let taken = |name: &str| {
+        tree.nodes
+            .values()
+            .any(|node| node.parent.as_deref() == Some(parent) && node.name == name)
+    };
+    if !taken(wanted) {
+        return wanted.to_owned();
+    }
+    // A leading dot names a hidden file, not an extension.
+    let (stem, extension) = match wanted.rfind('.') {
+        Some(dot) if dot > 0 => (
+            wanted.get(..dot).unwrap_or(wanted),
+            wanted.get(dot..).unwrap_or(""),
+        ),
+        _ => (wanted, ""),
+    };
+    // A folder holds fewer names than this, so one of them is free.
+    (2..=u64::try_from(tree.nodes.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(2))
+        .map(|n| format!("{stem} ({n}){extension}"))
+        .find(|name| !taken(name))
+        .unwrap_or_else(|| wanted.to_owned())
+}
+
+/// The live folder named `name` in `parent`, when `tree` holds one.
+#[must_use]
+pub fn folder_named(tree: &Tree, parent: &str, name: &str) -> Option<String> {
+    tree.children(parent)
+        .into_iter()
+        .find(|(_, node)| node.kind == FileNodeKind::Directory && node.name == name)
+        .map(|(id, _)| id.to_owned())
+}
+
+/// Put `placing` named `name` into the folder `parent` of the tree `doc`
+/// holds, written as the filesystem writes a node it creates, so a mounted
+/// copy of the tree shows it as a file or folder of its own; `tree` is what
+/// `doc` holds and takes the node too, so the next placement sees it. A name
+/// the folder already has is kept beside it ([`free_name`]).
+///
+/// # Errors
+///
+/// A name no file can have (empty, `.`, `..`, or with a `/`), a parent the
+/// tree does not hold, or a document that refused the write.
+pub fn place(
+    doc: &mut Doc,
+    tree: &mut Tree,
+    parent: &str,
+    name: &str,
+    placing: Placing<'_>,
+    (mtime, author): (u64, &str),
+) -> Result<Placed, ModelError> {
+    use automerge::transaction::Transactable as _;
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return Err(ModelError::invalid(format!("{name:?} is no file's name")));
+    }
+    if parent != ROOT_ID && (tree.node(parent).is_none() || tree.trashed(parent)) {
+        return Err(ModelError::invalid("the folder to put it in is gone"));
+    }
+    let name = free_name(tree, parent, name);
+    let nodes = match nodes_of(doc) {
+        Some(nodes) => nodes,
+        None => doc.put_object(&ROOT, NODES_KEY, ObjType::Map)?,
+    };
+    let record_id = FileRecordId::new();
+    let id = record_node_id(record_id);
+    let node = doc.put_object(&nodes, &id, ObjType::Map)?;
+    doc.put(&node, PARENT_KEY, parent)?;
+    doc.put(&node, PREV_PARENT_KEY, parent)?;
+    doc.put(&node, NAME_KEY, name.as_bytes().to_vec())?;
+    doc.put(&node, PLACEMENT_NAME_KEY, name.as_bytes().to_vec())?;
+    let (kind, hash, size) = match placing {
+        Placing::Folder => (FileNodeKind::Directory, None, 0),
+        Placing::File { hash, size } => (FileNodeKind::File, Some(hash), size),
+    };
+    doc.put(
+        &node,
+        KIND_KEY,
+        if kind == FileNodeKind::Directory {
+            "dir"
+        } else {
+            "file"
+        },
+    )?;
+    if let Some(hash) = hash {
+        doc.put(&node, HASH_KEY, hash)?;
+    }
+    doc.put(&node, SIZE_KEY, size)?;
+    doc.put(&node, MTIME_KEY, mtime)?;
+    doc.put(&node, AUTHOR_KEY, author)?;
+    doc.put(&node, RECORD_ID_KEY, record_id.0.to_string())?;
+    tree.nodes.insert(
+        id.clone(),
+        TreeEntry {
+            parent: Some(parent.to_owned()),
+            name: FileNameV1::from(name.as_str()),
+            kind,
+            hash: hash.map(str::to_owned),
+            size,
+            mtime,
+            record_id: Some(record_id),
+            author: Some(author.to_owned()),
+        },
+    );
+    Ok(Placed { id, name })
+}
+
+#[cfg(test)]
+mod placing_tests {
+    use super::*;
+
+    fn read(doc: &Doc) -> Tree {
+        FilesTree::read(doc).unwrap()
+    }
+
+    #[test]
+    fn a_placed_folder_and_file_read_back_as_the_filesystem_writes_them_and_names_keep_both() {
+        let mut doc = Doc::new();
+        let mut tree = Tree::default();
+        let docs = place(
+            &mut doc,
+            &mut tree,
+            ROOT_ID,
+            "docs",
+            Placing::Folder,
+            (5, "page"),
+        )
+        .unwrap();
+        let hash = "ab".repeat(32);
+        let file = Placing::File {
+            hash: &hash,
+            size: 12,
+        };
+        let plan = place(&mut doc, &mut tree, &docs.id, "plan.md", file, (6, "page")).unwrap();
+        let again = place(&mut doc, &mut tree, &docs.id, "plan.md", file, (7, "page")).unwrap();
+        let hidden = place(&mut doc, &mut tree, &docs.id, ".env", file, (7, "page")).unwrap();
+        let hidden_again = place(&mut doc, &mut tree, &docs.id, ".env", file, (7, "page")).unwrap();
+        assert_eq!(again.name, "plan (2).md");
+        assert_eq!(hidden_again.name, ".env (2)");
+        assert_eq!(read(&doc), tree, "what was written is what the tree holds");
+        let node = tree.node(&plan.id).unwrap();
+        assert_eq!(node.kind, FileNodeKind::File);
+        assert_eq!(node.hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(node.size, 12);
+        assert_eq!(plan.id, record_node_id(node.record_id.unwrap()));
+        assert_eq!(tree.node(&docs.id).unwrap().kind, FileNodeKind::Directory);
+        assert_eq!(folder_named(&tree, ROOT_ID, "docs"), Some(docs.id.clone()));
+        assert_eq!(folder_named(&tree, ROOT_ID, "plan.md"), None);
+        assert_eq!(tree.children(&docs.id).len(), 4);
+        assert_eq!(hidden.name, ".env");
+    }
+
+    #[test]
+    fn a_name_no_file_has_or_a_folder_that_is_gone_is_refused() {
+        let mut doc = Doc::new();
+        let mut tree = Tree::default();
+        for name in ["", ".", "..", "a/b"] {
+            assert!(
+                place(
+                    &mut doc,
+                    &mut tree,
+                    ROOT_ID,
+                    name,
+                    Placing::Folder,
+                    (0, "p")
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            place(
+                &mut doc,
+                &mut tree,
+                "record:gone",
+                "a",
+                Placing::Folder,
+                (0, "p")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_page_placing_into_a_tree_a_mount_wrote_keeps_the_mounts_nodes() {
+        // The mount's tree, with its nodes map and a file in place.
+        let mut mount = Doc::new();
+        let mut mount_tree = Tree::default();
+        place(
+            &mut mount,
+            &mut mount_tree,
+            ROOT_ID,
+            "kept.txt",
+            Placing::File {
+                hash: "00",
+                size: 1,
+            },
+            (1, "fs"),
+        )
+        .unwrap();
+        let mut page = mount.fork();
+        let mut page_tree = read(&page);
+        place(
+            &mut page,
+            &mut page_tree,
+            ROOT_ID,
+            "kept.txt",
+            Placing::File {
+                hash: "11",
+                size: 2,
+            },
+            (2, "page"),
+        )
+        .unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut mount, &mut page).unwrap();
+        let names: Vec<String> = read(&mount)
+            .children(ROOT_ID)
+            .iter()
+            .map(|(_, node)| String::from_utf8_lossy(node.name.as_bytes()).into_owned())
+            .collect();
+        assert_eq!(names, ["kept (2).txt", "kept.txt"]);
+    }
+}

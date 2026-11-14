@@ -35,12 +35,9 @@ pub use fs_protocol::tree::ROOT_ID;
 // the same document the mount writes.
 use fs_protocol::tree::{
     CONTENT_REVISION_KEY, NODES_KEY, PLACEMENT_NAME_KEY, RECORD_ID_KEY, ROOT_RECORD_ID_KEY,
-    TRASH_ID,
+    TRASH_ID, record_node_id,
 };
 const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
-/// Prefix of a node id derived from its stable record id, so every device
-/// independently rebuilding the same record log creates the same node object.
-const RECORD_NODE_ID_PREFIX: &str = "record:";
 /// Bounded fixed-point rounds for sibling name conflicts: each round gives a losing
 /// record a longer, record-id-specific name, so a directory settles in a few dozen rounds.
 const MAX_STRUCTURAL_CONFLICT_ROUNDS: usize = 64;
@@ -458,11 +455,6 @@ fn revision_from_scalar(value: &ScalarValue) -> Option<ContentRevisionV1> {
             .and_then(|bytes| revision_from_bytes(&bytes)),
         _ => None,
     }
-}
-
-/// The Automerge object key every device derives for one stable record.
-fn record_node_id(record_id: FileRecordId) -> String {
-    format!("{RECORD_NODE_ID_PREFIX}{}", record_id.0)
 }
 
 /// A bounded, valid sibling name for a record that lost a name to a smaller stable record
