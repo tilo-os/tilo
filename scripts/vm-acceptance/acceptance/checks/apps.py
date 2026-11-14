@@ -366,9 +366,9 @@ def terminal(ctx, res):
     ready = core.wait_new_terminal_shell(ctx, shells, SHELL_READY_S)
     res.metrics["seconds_to_shell"] = ready
     if ready is None:
-        # Nothing reads what is typed now. Enter on a Terminal whose environment
-        # cannot start takes its offer of the device's own shell, which asks the
-        # person first, so typing would only raise that prompt.
+        # Nothing reads what is typed now: a Terminal whose environment cannot
+        # start asks for the device's own shell instead, so typing would only
+        # reach that question.
         ctx.shot("A01-terminal-no-shell")
         ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
         refusal = core.ush_environment_refusal(ctx)
