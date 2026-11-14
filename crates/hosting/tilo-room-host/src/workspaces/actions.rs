@@ -830,6 +830,25 @@ fn asks_as_person(caller: &Caller, certificate: &DeviceCert) -> bool {
             && caller.acting().is_agent())
 }
 
+/// How `caller`, on the device `certificate` names, asks the host's own
+/// operations: as its person ([`asks_as_person`]), every operation its
+/// certificate allows; as an agent's run on a person's own device (a
+/// computer the person logged in, whose session says it is their agent's
+/// run), only what reads what the host keeps for that person; `None`: not at
+/// all.
+fn asks_host(caller: &Caller, certificate: &DeviceCert) -> Option<host::Asking> {
+    if asks_as_person(caller, certificate) {
+        Some(host::Asking::AsPerson)
+    } else if certificate.capabilities.agent.is_none()
+        && caller.is_session_delegated()
+        && caller.acting().is_agent()
+    {
+        Some(host::Asking::Reading)
+    } else {
+        None
+    }
+}
+
 /// Whether `caller` is the person's server key `certificate` certifies,
 /// reaching every workspace of its person: what may read that person's
 /// account. An agent the person connected through consent does not.
@@ -962,10 +981,10 @@ impl Workspaces {
             offer.add(GOVERNANCE, workspace.workspace(), rows);
         }
         if wants(HOST_ACTIONS_PROVIDER)
-            && let Some(certificate) =
-                certificate.filter(|certificate| asks_as_person(caller, certificate))
+            && let Some(certificate) = certificate
+            && let Some(asking) = asks_host(caller, certificate)
         {
-            offer.add(host::HOST, "", self.host_rows(certificate));
+            offer.add(host::HOST, "", self.host_rows(certificate, asking));
         }
         offer.page(query)
     }
@@ -989,12 +1008,13 @@ impl Workspaces {
                 // Unknown and forbidden are the same answer.
                 let certificate = certificate
                     .filter(|certificate| {
-                        asks_as_person(caller, certificate)
-                            && caller.device_public_key() == Some(&certificate.device_public_key)
+                        caller.device_public_key() == Some(&certificate.device_public_key)
                             && caller.user_public_key() == Some(&certificate.user_public_key)
                     })
                     .ok_or(ActionHostError::UnknownAction)?;
-                self.host_invoke(certificate, request).await
+                let asking =
+                    asks_host(caller, certificate).ok_or(ActionHostError::UnknownAction)?;
+                self.host_invoke(certificate, asking, request).await
             }
             (agent_door::PROVIDER, _) => {
                 self.door_keeper(caller, certificate)?;

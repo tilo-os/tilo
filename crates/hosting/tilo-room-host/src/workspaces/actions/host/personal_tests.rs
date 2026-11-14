@@ -716,3 +716,86 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
     session.abort();
     relay.shutdown().await;
 }
+
+/// A computer the person logged in is one of their own devices, and its session is their agent's
+/// run: it reads the person's workspace list (its folders are named after their workspaces),
+/// and changes nothing of the person's account on the host.
+#[tokio::test]
+async fn an_agents_run_on_a_persons_own_device_reads_their_list_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let root = SigningKey::from_bytes(&rand::random());
+    // The site let the person in: an invitation into its home names them.
+    let home = workspaces.create("Lounge").await.unwrap().workspace;
+    assert!(workspaces.admit_own_through(&home));
+    workspaces
+        .issue(
+            &home,
+            workspaces.serving_certificate(),
+            crate::workspaces::IssueInvitationRequest {
+                request_id: rand::random(),
+                role: tilo_peer_state::join::Role::Viewer,
+                recipient_user_public_key: Some(root.verifying_key().to_bytes()),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let desktop = key_of(&root, "studio", DeviceCapabilities::member());
+    let created: CreatedWorkspace = serde_json::from_value(
+        invoke(
+            &host,
+            &desktop,
+            CREATE_OWN_ROOM,
+            json!({"name": "My workspace"}),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    let laptop = key_of(&root, "Claude Code on laptop", DeviceCapabilities::member());
+    let run = tilo_actions::remote::Caller::authenticated(
+        laptop.user_public_key,
+        laptop.device_public_key,
+    )
+    .delegated_to("Claude Code");
+    let ask = |action: &str, argument: Value| {
+        settled(
+            host.as_host(&laptop)
+                .invoke(&run, host_request(action, argument)),
+        )
+    };
+
+    let receipt = ask(LIST_PERSONAL, json!({})).await.unwrap();
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("the run reads its person's list: {receipt:?}");
+    };
+    let list: PersonalList = serde_json::from_value(output.value.unwrap()).unwrap();
+    assert!(
+        list.workspaces
+            .iter()
+            .any(|listed| listed.workspace == created.workspace.workspace
+                && listed.name == "My workspace"),
+        "{list:?}"
+    );
+    for (action, argument) in [
+        (CREATE_OWN_ROOM, json!({"name": "Another"})),
+        (KEEP_PERSONAL, json!({"list": {"workspaces": []}})),
+    ] {
+        let refused = ask(action, argument).await;
+        assert!(
+            matches!(refused, Err(ActionHostError::UnknownAction)),
+            "{action}: {refused:?}"
+        );
+    }
+    relay.shutdown().await;
+}

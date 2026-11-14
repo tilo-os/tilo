@@ -426,13 +426,42 @@ fn first_invitation(
     }))
 }
 
+/// How a caller asks the host's operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Asking {
+    /// As the person its device is, or an agent's grant of theirs: what the
+    /// certificate allows.
+    AsPerson,
+    /// As an agent's run on a person's own device: only what reads what the
+    /// host keeps for the person (their workspaces, their list, the
+    /// revocations), never what changes anything.
+    Reading,
+}
+
+impl Asking {
+    fn reaches(self, operation: HostOperation) -> bool {
+        match self {
+            Self::AsPerson => true,
+            Self::Reading => matches!(
+                operation,
+                HostOperation::ListWorkspaces
+                    | HostOperation::ReadPersonalList
+                    | HostOperation::ListRevocations
+            ),
+        }
+    }
+}
+
 impl Workspaces {
-    /// The host's operations `device` may run.
-    pub(super) fn host_rows(&self, device: &DeviceCert) -> Vec<CatalogueRow> {
+    /// The host's operations `device` may run, asked as `asking`.
+    pub(super) fn host_rows(&self, device: &DeviceCert, asking: Asking) -> Vec<CatalogueRow> {
         let now = tilo_clock::unix_now_ns();
         HOST_VERBS
             .iter()
-            .filter(|(_, operation)| self.permits(device, None, WorkspaceOp::Host(*operation), now))
+            .filter(|(_, operation)| {
+                asking.reaches(*operation)
+                    && self.permits(device, None, WorkspaceOp::Host(*operation), now)
+            })
             .map(|(verb, _)| verb.row(HOST, HOST_ROOMS_RESOURCE, LABEL))
             .collect()
     }
@@ -442,6 +471,7 @@ impl Workspaces {
     pub(super) async fn host_invoke(
         &self,
         device: &DeviceCert,
+        asking: Asking,
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
         let address = &request.target.address;
@@ -453,6 +483,7 @@ impl Workspaces {
             .ok_or(ActionHostError::UnknownAction)?;
         // Unknown and forbidden are the same answer.
         if address.resource != HOST_ROOMS_RESOURCE
+            || !asking.reaches(operation)
             || !self.permits(device, None, WorkspaceOp::Host(operation), now)
         {
             return Err(ActionHostError::UnknownAction);
