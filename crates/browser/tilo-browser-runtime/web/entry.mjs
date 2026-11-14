@@ -22,6 +22,7 @@ import {wireFetchProxy} from './fetch-proxy.mjs';
 import {takeLinkSecrets} from './link-secrets.mjs';
 import {UNAVAILABLE, openTarget} from './open-target.mjs';
 import {startRouter} from './router.mjs';
+import {createTabAttention} from './tab-attention.mjs';
 import {sealedHandle, sealedLink} from './sealed-link.mjs';
 import {nameSiteHost} from './site-host.mjs';
 import {listedAt, listedWorkspaces, workspaceAt} from './workspaces.mjs';
@@ -76,14 +77,11 @@ function hostname(site) {
   }
 }
 
-/** `onStatus` that also titles the tab after the workspace in front. */
-function titled(window, forward) {
+/** `onStatus` that also titles the tab after the workspace in front
+ * (`tab`, `tab-attention.mjs`). */
+function titled(tab, forward) {
   return status => {
-    const name = status?.workspaceName;
-    if (window.document && typeof name === 'string' && name) {
-      const title = `Tilo · ${name}`;
-      if (window.document.title !== title) window.document.title = title;
-    }
+    tab.setWorkspace(status?.workspaceName);
     forward?.(status);
   };
 }
@@ -251,7 +249,7 @@ export const HTML_APPS = new Set(['so.tilo.notes']);
 /** Mount what `route` shows, then show its target. `directory` is what the
  * desktop's workspace directory browses (`deps.directory`), handed to
  * whichever mount draws the desk: the page's own, or a peer's. */
-export async function present({route, peer, surface, mountDesktop, directory = null, diagnostics = {}, onStatus, onNavigation}) {
+export async function present({route, peer, surface, mountDesktop, directory = null, diagnostics = {}, onStatus, onNavigation, onAttention}) {
   const {target, mode} = route;
   const mount = peer ? (element, options) => peer.mountDesktop(element, options) : mountDesktop;
   const shown = {...(directory ? {directory} : {}), ...diagnostics};
@@ -264,7 +262,7 @@ export async function present({route, peer, surface, mountDesktop, directory = n
     await openTarget({mount: mounted, target, mode});
     return {mount: mounted};
   }
-  const mounted = await mount(surface, {...shown, onStatus, onNavigation: controller => {
+  const mounted = await mount(surface, {...shown, onStatus, ...(onAttention ? {onAttention} : {}), onNavigation: controller => {
     navigation = controller;
     onNavigation?.(controller);
   }});
@@ -414,13 +412,16 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // nothing admission needs waits on.
   const unsupported = await deps.rendererUnavailable?.();
   if (unsupported) return {peer, rendererUnavailable: unsupported};
+  // What the tab says while the person is elsewhere: the workspace, and what
+  // needs them there.
+  const tab = createTabAttention({window});
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop, directory: deps.directory?.() ?? null,
     diagnostics: {...(workspaceName ? {workspaceName} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
       ...(entry.layout ? {layout: entry.layout} : {}),
       ...(linkOffer ? {linkOffer} : {}),
       ...(invite ? {invite} : {}), ...diagnostics},
-    onStatus: titled(window, diagnostics.onStatus)});
+    onStatus: titled(tab, diagnostics.onStatus), onAttention: attention => tab.update(attention)});
   // `show` reads the router it was given, so the address can name what a
   // link opened once it is shown.
   let router;

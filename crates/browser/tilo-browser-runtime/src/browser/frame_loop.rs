@@ -434,6 +434,17 @@ impl ApplicationHandler<u64> for Runner {
                 if let Some(due) = end_paused_wheel(m, id, now) {
                     wake(due);
                 }
+                // A hidden tab draws nothing, and the workspace's news still
+                // arrives: the person hears it where they are.
+                if (m.hidden || !page_visible())
+                    && let Some(desktop) = m.desktop.as_ref()
+                {
+                    desktop.hear_news();
+                    if let Some(at) = desktop.news_due(now) {
+                        wake(at);
+                    }
+                }
+                super::attention::tell(id, m);
                 if m.hidden || m.error.is_some() || !m.presents() || m.viewport.suspended() {
                     return Ok(());
                 }

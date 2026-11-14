@@ -80,6 +80,10 @@ impl Desktop {
             let notice =
                 finished_notice(&agent, summary.as_ref(), &mut self.told_runs.borrow_mut());
             if let Some(notice) = notice {
+                super::attention::tell_browser_of_agent(
+                    &notice,
+                    ui::presence::agent_client(&agent.label),
+                );
                 self.post(notice);
             }
         }
@@ -103,6 +107,15 @@ impl Desktop {
     /// an agent's notice opens its card in Console.
     pub(super) fn follow_notice_choices(&self) {
         use tilo_desktop_surface::NotificationOutcome;
+        // The person chose the browser's notification of an agent: its card, as the desk's own
+        // notice opens it.
+        for client in super::attention::take_chosen_agents() {
+            self.shared
+                .ask_app_action(tilo_desktop::launchpad::LaunchpadAppAction::ask_agent(
+                    &client,
+                    tilo_desktop::profile_card::AgentAsk::Card,
+                ));
+        }
         for outcome in self.persistence.notifications.take_outcomes() {
             let NotificationOutcome::Activated {
                 action: Some(action),

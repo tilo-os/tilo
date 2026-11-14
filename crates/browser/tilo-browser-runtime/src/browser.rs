@@ -1218,6 +1218,7 @@ pub fn close(id: u64) -> Result<JsValue, JsValue> {
             .map_err(|_| error("the runtime is busy (an owned mount callback)"))?;
         REQUESTS.with_borrow_mut(|r| r.remove(&id));
         DESKTOPS.with_borrow_mut(|desktops| desktops.remove(&id));
+        attention::forget(id);
         let Some(lease) = lease.as_mut() else { return Ok(js_sys::Array::new().into()); };
         let mut mount = lease.take_mount().map_err(|_| error("closed mount"))?;
     if let Some(peer) = mount.peer {
@@ -3231,6 +3232,7 @@ impl Mount {
 /// Rejects an unknown kind or a closed mount.
 mod agent_notices;
 mod app_window;
+mod attention;
 use app_window::AppPage;
 use app_window::present_component;
 mod desktop_exports;

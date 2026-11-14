@@ -115,6 +115,22 @@ impl QuestionSheet for PageSheet {
     }
 }
 
+/// The agents waiting for the person to answer them, each once, by the
+/// name their client goes by ("Claude Code" for "Claude Code #2"): what the
+/// tab says while the person is elsewhere.
+pub(crate) fn waiting_agents() -> Vec<String> {
+    WAITING.with_borrow(|waiting| {
+        let mut agents: Vec<String> = Vec::new();
+        for asked in waiting {
+            let client = ui::presence::agent_client(&asked.question.agent_label).to_owned();
+            if !agents.contains(&client) {
+                agents.push(client);
+            }
+        }
+        agents
+    })
+}
+
 /// The sheet `question` is asked on, as a native session words it.
 fn dialog(question: &PendingConfirmation) -> Dialog {
     AgentQuestion {

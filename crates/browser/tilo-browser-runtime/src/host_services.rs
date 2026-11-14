@@ -413,6 +413,9 @@ use tilo_session::platform::notice::Toolkit;
 thread_local! {
     static NOTIFIER: RefCell<Option<Arc<AppNotifier>>> = const { RefCell::new(None) };
     static BACKGROUND: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    /// The browser's notifications themselves, beside the desktop's: what the page tells the
+    /// person directly while they are elsewhere.
+    static BROWSER: RefCell<Option<Arc<dyn ui::notify::Notifier>>> = const { RefCell::new(None) };
 }
 
 /// Install the page's services as the process default. `wake` schedules
@@ -420,6 +423,7 @@ thread_local! {
 pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
     crate::page_theme::install(Arc::clone(&wake));
     let system = ui::host::HostServices::system(None);
+    BROWSER.with_borrow_mut(|slot| *slot = Some(Arc::clone(&system.notifications)));
     let notifier = Arc::new(AppNotifier::new(
         Arc::clone(&system.notifications),
         BACKGROUND.with(Arc::clone),
@@ -453,6 +457,19 @@ pub fn notification_inbox() -> Option<AppInbox> {
 pub fn set_hidden(hidden: bool) {
     let forward = hidden && notification_permission().as_deref() == Some("granted");
     BACKGROUND.with(|background| background.store(forward, Ordering::Release));
+}
+
+/// Show `notification` in the browser's notifications, only while the page
+/// is out of view and the person allows them: the desk tells them of it
+/// itself otherwise.
+pub(crate) fn tell_browser(notification: &ui::notify::Notification) {
+    if !notifies_browser() {
+        return;
+    }
+    let browser = BROWSER.with_borrow(Clone::clone);
+    if let Some(Err(error)) = browser.map(|browser| browser.show(notification)) {
+        tracing::debug!(%error, "no browser notification");
+    }
 }
 
 /// Whether notifications go to the browser's now: the page is out of view
