@@ -1578,11 +1578,12 @@ scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrom
 
 [[cargo]]
 package = "tilo-desktop-surface"
-# The page the peer page test's engine shows: a snapshot the paint stream's own tests keep. The
+# The pages the peer page test's engine shows: snapshots the paint stream's own tests keep. The
 # search test opens every app the web page offers, taking its list from the page's shipped
 # catalogue.
 inputs = [
   "crates/browser/paint-stream/tests/fixtures/layers.top.json",
+  "crates/browser/paint-stream/tests/fixtures/controls.json",
   "crates/browser/tilo-web-desktop/apps.json",
 ]
 readers = [
@@ -1592,8 +1593,11 @@ readers = [
 
 [[cargo]]
 package = "ui-examples"
-# The page the page view shots' publisher draws: the same snapshot of the paint stream's tests.
-inputs = ["crates/browser/paint-stream/tests/fixtures/layers.top.json"]
+# The pages the page view shots' publisher draws: the same snapshots of the paint stream's tests.
+inputs = [
+  "crates/browser/paint-stream/tests/fixtures/layers.top.json",
+  "crates/browser/paint-stream/tests/fixtures/controls.json",
+]
 readers = ["crates/dev/ui-examples/examples/page_view_shots.rs"]
 
 [[cargo]]

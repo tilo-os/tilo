@@ -661,6 +661,14 @@ impl WebViewEngine for UnavailableEngine {
                     bytes: None,
                 });
             }
+            WebViewCommand::PaintShown { request_id, .. } => {
+                self.shared.event(WebViewEvent::PaintShown {
+                    request_id,
+                    shown: None,
+                    classes: Vec::new(),
+                    settled: true,
+                });
+            }
             _ => {}
         }
     }
@@ -2138,6 +2146,23 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && !url.is_empty()
                 && url.len() <= 1 << 20
         }
+        WebViewCommand::PaintShown {
+            request_id,
+            nodes,
+            families,
+        } => {
+            *request_id > 0
+                && i32::try_from(*request_id).is_ok()
+                && !(nodes.is_empty() && families.is_empty())
+                && nodes.len() <= super::paint::MAX_SHOWN_FIELDS
+                && nodes
+                    .iter()
+                    .all(|node| *node > 0 && i32::try_from(*node).is_ok())
+                && families.len() <= super::paint::MAX_SHOWN_FAMILIES
+                && families.iter().all(|family| {
+                    !family.is_empty() && family.len() <= super::paint::MAX_FAMILY_LIST
+                })
+        }
         WebViewCommand::ExtensionAccess {
             id,
             permissions,
@@ -2529,6 +2554,33 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
                 .then(|| value["snapshot"].as_str().map(str::to_owned))
                 .flatten(),
         },
+        "paint_shown" => WebViewEvent::PaintShown {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            shown: value["ok"]
+                .as_bool()?
+                .then(|| {
+                    Some(
+                        value["fields"]
+                            .as_array()?
+                            .iter()
+                            .filter_map(|field| {
+                                Some((field["node"].as_u64()?, field["text"].as_str()?.to_owned()))
+                            })
+                            .collect(),
+                    )
+                })
+                .flatten(),
+            classes: value["faces"]
+                .as_array()
+                .map(|faces| {
+                    faces
+                        .iter()
+                        .map(|face| face.as_str().unwrap_or_default().to_owned())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            settled: value["settled"].as_bool().unwrap_or(true),
+        },
         "paint_resource" => WebViewEvent::PaintResource {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             bytes: value["ok"]
@@ -2814,6 +2866,19 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::PaintResource { request_id, url } => {
             json!({"op":"paint_resource","request_id":request_id,"url":url})
         }
+        // A capture that names fields: an engine that knows the ask says what they show,
+        // and one that predates it reads a capture and answers with a snapshot.
+        WebViewCommand::PaintShown {
+            request_id,
+            nodes,
+            families,
+        } => json!({
+            "op": "paint_capture",
+            "request_id": request_id,
+            "styles": tilo_paint_stream::snapshot::COMPUTED_STYLES,
+            "shown": nodes,
+            "faces": families,
+        }),
         WebViewCommand::StartDownload { uri } => json!({"op":"download_start","url":uri}),
         WebViewCommand::SetDownloadDestination { .. }
         | WebViewCommand::CancelDownload { .. }

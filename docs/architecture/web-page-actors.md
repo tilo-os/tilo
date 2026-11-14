@@ -311,12 +311,82 @@ device that shows it: no picture of the window is captured. A window that
 protects itself from capture hands over no page. The review read and the
 record are what say who set what; the page is what the window shows.
 
-The display list carries what each field holds too: an input's text, a
-textarea's lines, the option a select shows, and whether a checkbox or a
-radio button is chosen, which the engine's own theme paints and a layout
-snapshot does not carry. A password travels as dots. The tile that draws the
-page on another device names its text, each run where it is drawn, for a
-reader who cannot see it; it takes no input.
+**What the watching device draws.** The page is captured as the engine's
+layout: every box, and every line of text in the box the engine laid it out
+in. The watching device sets each line in that box with its own text stack,
+so a line breaks where the engine broke it whatever face the device has. It
+sets the line in the first family of the page's list it has, or in one drawn
+with the same measures (a page that asks for Times New Roman is set in
+Liberation Serif where that is what is installed, which is the face the
+engine itself picks there), and otherwise in its own face of the same class:
+serif, sans or fixed-width. The class is the list's generic family or what a
+named face is known to be; a page that names no face is set by the engine in
+its standard one, a serif. What a list asks for is not always what its
+engine set: a machine without the face sets another, and a face the page
+brought itself is of a class no name tells. So the sharing device asks the
+engine which generic family it sets each list like, measured in the page's
+frame in a world the page's scripts do not share, once for each list of a
+document and again while the page still loads faces. Where the engine set a
+list in another class than it asks for, the list is carried as the faces of
+it no name tells the class of, then the class the engine set. A page is not
+handed over while the engine has still to say this of a list its text is
+set in, so no page arrives in one face to arrive again in another; an
+engine that predates the ask, or does not answer within three seconds,
+leaves each list as its page computed it. What the engine says of a list
+is put on the page as it is handed over, and what it says a field shows
+into the capture it already gave, which is converted again: the page is not
+captured again for either, so a page's first hand-over costs its engine one
+capture. The engine is asked for no capture while it is still to answer,
+since behind a capture its answer would wait as long as the capture takes.
+The files of a page's own faces are not carried. A line is fitted to its box's
+width, drawn narrower rather than run into what follows it. A zoomed page is
+laid out larger than its styles say, by a factor its root element gives, and
+every length a style gives (a text's size, a border, a radius) is carried at
+the size the engine drew it. A line the page draws on text, under it or
+through it, is carried as a line.
+
+**A form as its person sees it.** A layout snapshot does not carry what the
+engine's own theme paints of a control, nor what a field shows where that is
+not what it holds. Both reach the watching device as items it already draws
+(a fill, a border, a vector drawing, text), made by the sharing device from
+what the snapshot says of each control, so a watching device on an older
+build draws them too:
+
+- what a field holds, in the room the field has for it: at its own width,
+  from the side the field aligns it to, cut with an ellipsis where it is
+  longer than the field;
+- a date, a time and a number as the engine words them for whoever reads the
+  page ("03/01/2027", not the "2027-03-01" the field holds; "mm/dd/yyyy"
+  where none is set), and the words on a button the page gave none. Only the
+  engine can say these: the sharing device asks it for what such a field
+  shows whenever the field holds something new, and the field is drawn empty
+  until it has said. An engine that predates the ask leaves the field drawn
+  with what it holds;
+- the option a select shows, with the mark that says it opens, and the
+  picker mark of a date or a time;
+- a checkbox and a radio button as the theme draws them: a grey ring while
+  empty, the page's accent and a tick or a dot once chosen;
+- a slider's groove and its thumb where the value puts it, and a colour's
+  swatch;
+- a field, a select and a button the page left unstyled, with the theme's
+  hairline and small radius rather than the border their style computes to;
+  a fieldset's border, which starts halfway down its legend and is not drawn
+  behind it;
+- the hint of an empty field, in the hint's grey; a disabled control in the
+  dimmed colours the engine computes for it;
+- the ring the engine draws around the field being edited, which is how a
+  reviewer tells where an agent is working, and any outline a page draws.
+
+**A secret is never carried.** Of a password field, a field that was one (a
+page that shows a password on request turns it into plain text), a field
+the page says holds a card's number or security code, a password or a
+one-time code, and one the page draws as dots, the watching device is sent a
+dot for each character and no character: the same fields the tab's record
+keeps the content of to itself. The engine is never asked what such a field
+shows.
+
+The tile that draws the page on another device names its text, each run
+where it is drawn, for a reader who cannot see it; it takes no input.
 
 **Whose page it is.** One Browser process serves every Browser window of a
 workspace. Each window has its own engine, its own connection to the
@@ -346,10 +416,14 @@ device that asks for the page of a window nobody shared is sent nothing.
 
 **How large a page may be.** The page handed over is the whole document, not
 the part in view. Measured on the engine, in a window of 1280 by 800: a
-form of eight questions is a whole frame of 1.6 KB, a form of 240 questions
-47 KB, an article of 180 paragraphs 109 KB with ten photographs of 3.1 MB
-together (the largest 1.35 MB), a table of 2000 rows 1.8 MB, a table of 5000
-rows more than 4 MB. One message from the app to its session carries less than 1 MiB, so a
+form of eight questions is a whole frame of 1.8 KB, a form of 240 questions
+45 KB, an article of 180 paragraphs 109 KB with ten photographs of 3.1 MB
+together (the largest 1.35 MB), a table of 2000 rows 1.7 MB, a table of 5000
+rows more than 4 MB. What the theme paints of a form's controls is about
+300 bytes of the eight questions. The sizes are of the machine that
+measured: every run of text carries its family list, and that machine's
+engine sets a page that names no face in its sans, which is a shorter list
+than the engine's standard face by name. One message from the app to its session carries less than 1 MiB, so a
 payload goes in parts of at most 700 KiB, in order, and the app sends only
 as much as its connection has room for, the rest once the session has read
 on; the session joins the parts. The plane carries a payload as one object
@@ -371,8 +445,15 @@ over, measured over four seconds watched and four unwatched. A change the
 page makes to itself is in what was handed over about 20 ms later. The
 changes are taken where the engine's events are taken, so none waits for a
 frame to be drawn; a change that comes sooner after a capture than those
-50 ms is captured when they have passed, at a wake the view asks for, and a
-capture the engine does not answer within three seconds is asked again.
+50 ms is captured when they have passed, at a wake the view asks for. A
+capture is asked for once, and its answer is the page however long the
+engine takes over it: a large page on a busy machine takes longer than
+three seconds, and asking again would have the engine start over. An engine
+that has not answered after three seconds is asked something small behind
+the capture, and again each time after twice as long. What an engine is
+asked behind a capture it answers behind it, so one still at work answers
+the capture first, and one that lost the request answers the small ask
+alone and is then asked for the capture again.
 
 ## A form as typed actions
 
@@ -795,9 +876,11 @@ down.
   arrives without it, which the device showing the page cannot tell from a
   picture still loading. A page that grows too large while it is watched
   stays on the watching device as it last arrived, and that device is not
-  told. A page so large that the engine cannot capture it within three
-  seconds (a table of 12000 rows) is never handed over, and is said as a
-  page its app has not handed over. A Browser built before this, with two
+  told. A page so large that the engine takes longer than three seconds
+  over its capture (a table of 12000 rows) was never handed over, each
+  capture given up and asked for again; its capture is now waited for, and
+  until it comes the page is said as one its app has not handed over. A
+  Browser built before this, with two
   windows in one process, still mixes their frames on its side; the session
   cannot tell them apart, since such frames name no window. Each session says how far its live plane
   came, what a share waits for, whether a shared window went out and whether

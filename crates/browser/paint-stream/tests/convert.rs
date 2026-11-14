@@ -1,6 +1,13 @@
 //! The converter and patches against snapshots recorded from a real engine
 //! (`tools/record-fixture.mjs` over `fixtures/layers.html` and
 //! `fixtures/form.html`, 800x600).
+//!
+//! `fixtures/controls.json` is the engine suite's form with every common
+//! control, its first field being edited, as the suite's own engine laid it
+//! out at 1280x800: the page `CONTROLS` of
+//! `apps/browser/chromium/tests/page_share.py`, which prints the snapshot
+//! when run with `TILO_PAGE_SHARE_RECORD` set. It was asked for with every
+//! style of today's list, so it says what the engine's theme paints.
 
 #![allow(
     clippy::expect_used,
@@ -9,10 +16,13 @@
     reason = "in a test these are the assertion, not a hazard; fixtures are checked in"
 )]
 
-use tilo_paint_stream::snapshot::{CHOICE_BOX, CHOICE_MARK, convert};
+use tilo_paint_stream::fonts::FontClass;
+use tilo_paint_stream::snapshot::{
+    CHOICE_BOX, CHOICE_MARK, FIELD_MARK, FIELD_VALUE, OUTLINE, Told, convert, convert_with,
+};
 use tilo_paint_stream::{
-    Anchor, BlobRef, Color, Frame, Item, LayerId, Patch, PatchError, Point, ROOT, Rect, decode,
-    encode,
+    Anchor, BlobRef, Color, Frame, Item, ItemKey, LayerId, Patch, PatchError, Point, ROOT, Rect,
+    decode, encode,
 };
 
 const VIEWPORT: Point = Point { x: 800.0, y: 600.0 };
@@ -501,4 +511,465 @@ fn answering_a_form_reaches_a_viewer_as_a_patch() {
     viewer.apply(&patch).expect("apply");
     assert_eq!(viewer, filled);
     assert_eq!(parts(&viewer, CHOICE_MARK).len(), 2);
+}
+
+/// The snapshot of `fixtures/form.html` with every answer given, as recorded.
+fn filled_form() -> serde_json::Value {
+    let path = format!(
+        "{}/tests/fixtures/form.filled.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture")).expect("fixture json")
+}
+
+/// Lay every box of `boxes` out `times` as large and as far from the page's corner.
+fn enlarge(boxes: &mut serde_json::Value, times: f64) {
+    for held in boxes.as_array_mut().expect("boxes") {
+        for edge in held.as_array_mut().expect("a box") {
+            *edge = serde_json::json!(edge.as_f64().expect("a number") * times);
+        }
+    }
+}
+
+#[test]
+fn a_zoomed_page_carries_its_lengths_at_the_size_the_engine_drew_them() {
+    // An engine lays a zoomed page out larger, while a style still computes to what the
+    // page wrote and the page's own script still measures in the page's pixels. The same
+    // form zoomed to twice its size: every box and line twice as large and as far.
+    let plain = convert(&filled_form(), VIEWPORT, 1).expect("convert");
+    let mut snapshot = filled_form();
+    let document = &mut snapshot["documents"][0];
+    enlarge(&mut document["layout"]["bounds"], 2.0);
+    enlarge(&mut document["textBoxes"]["bounds"], 2.0);
+    let viewport = Point {
+        x: VIEWPORT.x * 2.0,
+        y: VIEWPORT.y * 2.0,
+    };
+    let zoomed = convert(&snapshot, viewport, 1).expect("convert");
+    let twice = |held: Rect| Rect::new(held.x * 2.0, held.y * 2.0, held.w * 2.0, held.h * 2.0);
+    let near = |first: Rect, second: Rect| {
+        [
+            first.x - second.x,
+            first.y - second.y,
+            first.w - second.w,
+            first.h - second.h,
+        ]
+        .iter()
+        .all(|apart| apart.abs() < 0.01)
+    };
+    let (mut texts, mut borders) = (0, 0);
+    for (id, layer) in &plain.layers {
+        let large = &zoomed.layers[id].items;
+        assert_eq!(layer.items.len(), large.len(), "layer {id}");
+        for (was, now) in layer.items.iter().zip(large) {
+            match (was, now) {
+                (
+                    Item::Text {
+                        rect, font, text, ..
+                    },
+                    Item::Text {
+                        rect: large_rect,
+                        font: large_font,
+                        text: large_text,
+                        ..
+                    },
+                ) => {
+                    texts += 1;
+                    assert_eq!(text, large_text);
+                    assert!(
+                        (large_font.size - font.size * 2.0).abs() < 0.01,
+                        "{text:?} is set at {} where the engine drew it at twice {}",
+                        large_font.size,
+                        font.size
+                    );
+                    assert!(
+                        near(twice(*rect), *large_rect),
+                        "{text:?} in {large_rect:?}"
+                    );
+                }
+                (
+                    Item::Border {
+                        key, rect, widths, ..
+                    },
+                    Item::Border {
+                        rect: large_rect,
+                        widths: large_widths,
+                        ..
+                    },
+                ) if key.part == 1 => {
+                    borders += 1;
+                    assert!(near(twice(*rect), *large_rect));
+                    for (width, large_width) in widths.iter().zip(large_widths) {
+                        assert!(
+                            (large_width - width * 2.0).abs() < 0.01,
+                            "an edge {width} wide arrives {large_width} wide"
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        texts >= 10 && borders >= 3,
+        "{texts} runs, {borders} borders"
+    );
+}
+
+/// The window the form with every control was laid out in.
+const WINDOW: Point = Point {
+    x: 1280.0,
+    y: 800.0,
+};
+
+/// The engine's snapshot of the form with every common control.
+fn controls() -> serde_json::Value {
+    let path = format!(
+        "{}/tests/fixtures/controls.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture")).expect("fixture json")
+}
+
+/// The engine's number for the element of `snapshot` whose `id` is `id`.
+fn node_of(snapshot: &serde_json::Value, id: &str) -> u64 {
+    let strings = snapshot["strings"].as_array().expect("strings");
+    let string = |index: &serde_json::Value| {
+        index
+            .as_u64()
+            .and_then(|at| strings.get(usize::try_from(at).ok()?))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+    };
+    let nodes = &snapshot["documents"][0]["nodes"];
+    let found = nodes["attributes"]
+        .as_array()
+        .expect("attributes")
+        .iter()
+        .position(|held| {
+            held.as_array()
+                .expect("an element's attributes")
+                .chunks_exact(2)
+                .any(|pair| string(&pair[0]) == "id" && string(&pair[1]) == id)
+        })
+        .unwrap_or_else(|| panic!("no element is called {id}"));
+    nodes["backendNodeId"][found].as_u64().expect("a node")
+}
+
+/// What a frame draws of one element.
+fn drawn(frame: &Frame, node: u64) -> Vec<&Item> {
+    frame
+        .layers
+        .values()
+        .flat_map(|layer| layer.items.iter())
+        .filter(|item| item.key().node == node && !matches!(item, Item::Layer(_)))
+        .collect()
+}
+
+/// What a field holds as a frame shows it: its text drawn in the field's room.
+fn held(frame: &Frame, node: u64) -> Vec<String> {
+    drawn(frame, node)
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::Text { key, text, .. } if key.part & ItemKey::SLOT != 0 => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The parts of `node` a frame draws.
+fn parts_of(frame: &Frame, node: u64) -> Vec<u32> {
+    drawn(frame, node)
+        .into_iter()
+        .map(|item| item.key().part)
+        .collect()
+}
+
+#[test]
+fn a_date_is_drawn_as_the_engine_words_it_and_empty_until_the_engine_has() {
+    let snapshot = controls();
+    let date = node_of(&snapshot, "date");
+    // A caller that asks no engine: the field is drawn with what it holds, as before.
+    let unasked = convert_with(&snapshot, WINDOW, 1, &Told::default()).expect("convert");
+    assert_eq!(held(&unasked.frame, date), ["2027-03-01"]);
+    // What only the engine can say: the dates, the time, the number, and the words on the
+    // button the page gave none. No secret is among them.
+    let asked: Vec<(u64, &str)> = unasked
+        .asks
+        .iter()
+        .map(|(node, value)| (*node, value.as_str()))
+        .collect();
+    for (id, value) in [
+        ("date", "2027-03-01"),
+        ("nodate", ""),
+        ("time", "14:30"),
+        ("number", "1234.5"),
+        ("submit", ""),
+    ] {
+        assert!(
+            asked.contains(&(node_of(&snapshot, id), value)),
+            "{id} in {asked:?}"
+        );
+    }
+    assert_eq!(asked.len(), 5, "{asked:?}");
+
+    // A caller that asks: nothing is drawn of the field until the engine has said.
+    let mut told = Told {
+        asking: true,
+        ..Told::default()
+    };
+    let waiting = convert_with(&snapshot, WINDOW, 1, &told).expect("convert");
+    assert!(
+        held(&waiting.frame, date).is_empty(),
+        "what the field holds is not what it shows"
+    );
+    assert!(
+        parts_of(&waiting.frame, date).contains(&FIELD_MARK),
+        "the field itself is there, with its picker"
+    );
+
+    told.shown.insert(
+        date,
+        ("2027-03-01".to_owned(), Some("03/01/2027".to_owned())),
+    );
+    let said = convert_with(&snapshot, WINDOW, 1, &told).expect("convert");
+    assert_eq!(held(&said.frame, date), ["03/01/2027"]);
+
+    // What the engine said of another value is not what the field shows now.
+    told.shown.insert(
+        date,
+        ("2026-12-31".to_owned(), Some("12/31/2026".to_owned())),
+    );
+    let stale = convert_with(&snapshot, WINDOW, 1, &told).expect("convert");
+    assert!(held(&stale.frame, date).is_empty());
+
+    // An engine that could not say leaves the field drawn with what it holds.
+    told.shown.insert(date, ("2027-03-01".to_owned(), None));
+    let unsaid = convert_with(&snapshot, WINDOW, 1, &told).expect("convert");
+    assert_eq!(held(&unsaid.frame, date), ["2027-03-01"]);
+}
+
+#[test]
+fn no_character_of_a_secret_is_drawn_whatever_kind_of_field_holds_it() {
+    let snapshot = controls();
+    let converted = convert_with(&snapshot, WINDOW, 1, &Told::default()).expect("convert");
+    let frame = &converted.frame;
+    let all = all_texts(frame);
+    // A password, and a card's number in a field of plain text the page says holds one.
+    for secret in ["hunter2-secret", "4111111111111111"] {
+        for part in secret.as_bytes().windows(4) {
+            let part = std::str::from_utf8(part).expect("letters and digits");
+            assert!(
+                all.iter().all(|text| !text.contains(part)),
+                "{part:?} of a secret is drawn: {all:?}"
+            );
+        }
+    }
+    let (password, card) = (node_of(&snapshot, "password"), node_of(&snapshot, "card"));
+    assert_eq!(held(frame, password), ["\u{2022}".repeat(14)]);
+    assert_eq!(held(frame, card), ["\u{2022}".repeat(16)]);
+    assert_eq!(converted.passwords, [password]);
+    assert!(
+        converted
+            .asks
+            .iter()
+            .all(|(node, _)| *node != password && *node != card),
+        "the engine is never asked what a secret field shows"
+    );
+
+    // A field that was a password field stays one when its page turns it into plain text.
+    let name = node_of(&snapshot, "name");
+    assert_eq!(held(frame, name), ["Ada Lovelace"]);
+    let told = Told {
+        secret: [name].into(),
+        ..Told::default()
+    };
+    let shown = convert_with(&snapshot, WINDOW, 1, &told).expect("convert");
+    assert_eq!(held(&shown.frame, name), ["\u{2022}".repeat(12)]);
+}
+
+#[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "the widths and radii are whole pixels the converter sets, compared with what it sets"
+)]
+fn a_control_is_drawn_as_the_engines_theme_draws_it() {
+    let snapshot = controls();
+    let frame = convert(&snapshot, WINDOW, 1).expect("convert");
+    let node = |id: &str| node_of(&snapshot, id);
+    let grey = Color([118, 118, 118, 255]);
+    let accent = Color([0, 117, 255, 255]);
+
+    // A field the page left alone: the theme's hairline and small radius, not the two
+    // pixels of inset border its style computes to.
+    let edge = |id: &str| {
+        drawn(&frame, node(id))
+            .into_iter()
+            .find_map(|item| match item {
+                Item::Border {
+                    key,
+                    widths,
+                    colors,
+                    radius,
+                    ..
+                } if key.part == 1 => Some((*widths, colors[0], *radius)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{id} has no edge"))
+    };
+    assert_eq!(edge("name"), ([1.0; 4], grey, 2.0));
+    assert_eq!(edge("send"), ([1.0; 4], grey, 2.0));
+    assert_eq!(edge("country"), ([1.0; 4], grey, 2.0));
+    assert_eq!(
+        edge("disabled").1,
+        Color([118, 118, 118, 77]),
+        "a field that takes no answer is dimmed"
+    );
+
+    // What opens says so: a select, a date and a time; a plain field does not.
+    for id in ["country", "closed", "date", "nodate", "time"] {
+        let marks = drawn(&frame, node(id))
+            .into_iter()
+            .filter(|item| matches!(item, Item::Vector { key, .. } if key.part == FIELD_MARK))
+            .count();
+        assert_eq!(marks, 1, "{id}");
+    }
+    assert!(!parts_of(&frame, node("name")).contains(&FIELD_MARK));
+    assert_eq!(held(&frame, node("country")), ["Brazil"]);
+    assert_eq!(held(&frame, node("empty")), ["Type a name"]);
+
+    // A ticked box is filled with the accent and ticked; an empty one is a grey ring.
+    let ring = |id: &str| {
+        drawn(&frame, node(id))
+            .into_iter()
+            .find_map(|item| match item {
+                Item::Border { key, colors, .. } if key.part == CHOICE_BOX => Some(colors[0]),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{id} has no box"))
+    };
+    assert_eq!(ring("agree"), accent);
+    assert_eq!(ring("news"), grey);
+    assert_eq!(ring("no"), accent);
+    assert_eq!(ring("yes"), grey);
+    assert_eq!(
+        ring("off"),
+        Color([0, 117, 255, 77]),
+        "a box that takes no answer is dimmed"
+    );
+    for (id, ticked) in [
+        ("agree", true),
+        ("news", false),
+        ("off", true),
+        ("yes", false),
+        ("no", true),
+    ] {
+        assert_eq!(
+            parts_of(&frame, node(id)).contains(&CHOICE_MARK),
+            ticked,
+            "{id}"
+        );
+    }
+}
+
+#[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "the widths are whole pixels the converter sets, compared with what it sets"
+)]
+fn a_value_and_the_field_being_edited_are_drawn_as_the_engine_marks_them() {
+    let snapshot = controls();
+    let frame = convert(&snapshot, WINDOW, 1).expect("convert");
+    let node = |id: &str| node_of(&snapshot, id);
+
+    // A slider's thumb stands seven tenths of the way along, and a colour shows its swatch.
+    let value = |id: &str| {
+        drawn(&frame, node(id))
+            .into_iter()
+            .find_map(|item| match item {
+                Item::Fill {
+                    key, rect, color, ..
+                } if key.part == FIELD_VALUE => Some((*rect, *color)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{id} shows no value"))
+    };
+    let (thumb, _) = value("level");
+    let groove = drawn(&frame, node("level"))
+        .into_iter()
+        .find_map(|item| match item {
+            Item::Fill { key, rect, .. } if key.part == CHOICE_BOX => Some(*rect),
+            _ => None,
+        })
+        .expect("the slider's groove");
+    let along = (thumb.x + thumb.w / 2.0 - groove.x) / groove.w;
+    assert!((along - 0.7).abs() < 0.08, "{along}");
+    assert_eq!(value("colour").1, Color([255, 136, 0, 255]));
+
+    // The field being edited wears the engine's ring, and no other does.
+    let rings: Vec<(u64, [f32; 4], Color)> = frame
+        .layers
+        .values()
+        .flat_map(|layer| layer.items.iter())
+        .filter_map(|item| match item {
+            Item::Border {
+                key,
+                widths,
+                colors,
+                ..
+            } if key.part == OUTLINE => Some((key.node, *widths, colors[0])),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rings,
+        [(node("name"), [2.0; 4], Color([16, 16, 16, 255]))],
+        "one ring, around the field being edited"
+    );
+}
+
+#[test]
+fn text_is_sent_in_the_class_of_face_the_engine_said_it_set() {
+    let snapshot = controls();
+    let unasked = convert_with(&snapshot, WINDOW, 1, &Told::default()).expect("convert");
+    // The lists the page's text is set in: the engine's standard face for what the page
+    // named none for, its own for fields, and the fixed-width one of a date.
+    assert_eq!(
+        unasked.families,
+        ["\"Times New Roman\"", "Arial", "monospace"]
+    );
+    let families = |frame: &Frame| -> Vec<String> {
+        let mut families: Vec<String> = frame
+            .layers
+            .values()
+            .flat_map(|layer| layer.items.iter())
+            .filter_map(|item| match item {
+                Item::Text { font, .. } => Some(font.family.clone()),
+                _ => None,
+            })
+            .collect();
+        families.sort();
+        families.dedup();
+        families
+    };
+    assert_eq!(families(&unasked.frame), unasked.families);
+
+    // A machine that has no Times sets the page's text in its sans, and says so; of a
+    // fixed-width face it said nothing.
+    let told = Told {
+        classes: [
+            ("\"Times New Roman\"".to_owned(), Some(FontClass::Sans)),
+            ("Arial".to_owned(), Some(FontClass::Sans)),
+            ("monospace".to_owned(), None),
+        ]
+        .into(),
+        ..Told::default()
+    };
+    let said = convert_with(&snapshot, WINDOW, 1, &told).expect("convert");
+    assert!(
+        said.families.is_empty(),
+        "nothing is left to ask: {:?}",
+        said.families
+    );
+    assert_eq!(families(&said.frame), ["Arial", "monospace", "sans-serif"]);
 }

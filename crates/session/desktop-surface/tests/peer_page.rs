@@ -157,6 +157,140 @@ fn a_viewer_draws_the_frame_its_publisher_holds() {
     );
 }
 
+/// A form with every common control, its first field being edited, as an engine laid it out
+/// in a window of 1280 by 800.
+const FORM: &str = include_str!("../../../browser/paint-stream/tests/fixtures/controls.json");
+
+/// The engine's number for the element of the form whose `id` is `id`.
+fn form_node(id: &str) -> u64 {
+    let form: serde_json::Value = serde_json::from_str(FORM).expect("the fixture");
+    let string = |index: &serde_json::Value| {
+        index
+            .as_u64()
+            .and_then(|at| form["strings"].get(usize::try_from(at).ok()?))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
+    let nodes = &form["documents"][0]["nodes"];
+    let found = nodes["attributes"]
+        .as_array()
+        .expect("attributes")
+        .iter()
+        .position(|held| {
+            held.as_array().is_some_and(|held| {
+                held.chunks_exact(2)
+                    .any(|pair| string(&pair[0]) == "id" && string(&pair[1]) == id)
+            })
+        })
+        .expect("an element of that id");
+    nodes["backendNodeId"][found].as_u64().expect("a node")
+}
+
+/// The form as the tile of a watching desk draws it in `theme`, 1280 by 800 pixels.
+fn form_tile(theme: &ui::Theme) -> Vec<u8> {
+    let test = TestEngine::new();
+    test.set_paint_snapshot(FORM);
+    test.set_paint_shown([(form_node("date"), "03/01/2027".to_owned())]);
+    let engine = PaintEngine::with_interval(test, Duration::ZERO);
+    engine.send(WebViewCommand::Resize {
+        width: 1280,
+        height: 800,
+        scale_factor: 1.0,
+    });
+    for _ in 0..6 {
+        drop(engine.paint_frame());
+        drop(engine.drain_events());
+    }
+    let mut stream = PageStream::new();
+    for object in payloads(&engine) {
+        stream.apply(&object);
+    }
+    let stream = Rc::new(RefCell::new(stream));
+    let mut harness = FrameHarness::new_with_theme(
+        ui::state::State::new(),
+        PageStream::view(&stream, "Browser".into()),
+        (1280, 800),
+        theme.clone(),
+    );
+    harness.relayout();
+    harness.render_rgba()
+}
+
+/// The pixels of `picture` (1280 wide) in the box from (`left`, `top`), `width` by `height`.
+fn pixels_in(picture: &[u8], left: usize, top: usize, width: usize, height: usize) -> Vec<[u8; 3]> {
+    let across = left..left.saturating_add(width);
+    let down = top..top.saturating_add(height);
+    picture
+        .chunks_exact(4)
+        .enumerate()
+        .filter(|(index, _)| across.contains(&(index % 1280)) && down.contains(&(index / 1280)))
+        .map(|(_, pixel)| [pixel[0], pixel[1], pixel[2]])
+        .collect()
+}
+
+/// What the engine's own theme paints of a form reaches a watching desk as the sharing
+/// person sees it: the ring around the field being edited, a select's mark, a ticked box in
+/// the accent, a date as the engine words it. The page is the page's: it is drawn the same
+/// in a dark theme and in a light one.
+#[test]
+fn a_form_is_drawn_with_what_the_engines_theme_paints_of_it_in_any_theme() {
+    let dark = form_tile(&ui::Theme::dark());
+    let light = form_tile(&ui::Theme::light());
+    assert_eq!(
+        OffscreenRenderer::pixels_differing_beyond_aa(&dark, &light),
+        0,
+        "a page is drawn in its own colours whatever the desk's theme"
+    );
+    let is_dark = |pixel: &[u8; 3]| pixel.iter().all(|channel| *channel < 96);
+    // The field being edited ("Name", from 57 to 263 across, 86 to 110 down) wears the
+    // engine's ring, two pixels wide just outside its edge; the field after it wears none.
+    let ring = pixels_in(&dark, 55, 90, 2, 12);
+    assert!(
+        ring.iter().all(is_dark),
+        "the ring around the field being edited: {ring:?}"
+    );
+    let no_ring = pixels_in(&dark, 316, 90, 2, 12);
+    assert!(
+        !no_ring.iter().any(is_dark),
+        "no ring around a field nobody edits: {no_ring:?}"
+    );
+    // The select's mark, in the sixteen pixels before its right edge.
+    let mark = pixels_in(&dark, 116, 250, 16, 16);
+    assert!(
+        mark.iter().filter(|pixel| is_dark(pixel)).count() >= 8,
+        "a select says that it opens"
+    );
+    // The ticked box, filled with the accent, its tick white.
+    let ticked = pixels_in(&dark, 12, 289, 13, 13);
+    let accent = ticked
+        .iter()
+        .filter(|[r, g, b]| *r < 60 && (90..150).contains(g) && *b > 200)
+        .count();
+    let tick = ticked
+        .iter()
+        .filter(|pixel| pixel.iter().all(|c| *c > 200))
+        .count();
+    assert!(
+        accent >= 60 && tick >= 6,
+        "{accent} of the accent, {tick} of the tick"
+    );
+    // The date, as the engine words it: ten letters of ink in the field's room, which the
+    // eight of what it holds would not reach.
+    let date = pixels_in(&dark, 51, 210, 100, 16);
+    let inked: Vec<usize> = date
+        .iter()
+        .enumerate()
+        .filter(|(_, pixel)| is_dark(pixel))
+        .map(|(index, _)| index % 100)
+        .collect();
+    assert!(
+        inked.iter().max().is_some_and(|right| *right >= 60),
+        "the date is drawn: ink reaches {:?}",
+        inked.iter().max()
+    );
+}
+
 #[test]
 fn the_page_view_code_hands_over_the_tile_a_viewer_draws() {
     use tilo_desktop_surface::page_code::PAGE;

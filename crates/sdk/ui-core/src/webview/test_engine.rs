@@ -36,6 +36,20 @@ struct Inner {
     visibility: Vec<bool>,
     paint_snapshot: Option<String>,
     paint_resources: std::collections::HashMap<String, Vec<u8>>,
+    /// What the engine says fields show, by node; `None` for an engine that predates the
+    /// ask and answers it with a snapshot.
+    paint_shown: Option<std::collections::HashMap<u64, String>>,
+    /// The generic family the engine sets a family list like, by the list.
+    paint_classes: std::collections::HashMap<String, String>,
+    /// The answers to what the paint source asked that the engine holds back, in the order
+    /// it was asked; `None` for an engine that answers at once.
+    paint_held: Option<Vec<WebViewEvent>>,
+    /// How many of the next paint captures the engine never answers.
+    paint_captures_lost: usize,
+    /// Whether the engine never says what fields show and what face it sets.
+    paint_asks_lost: bool,
+    /// Whether the engine says its page still loads faces of its own.
+    paint_faces_loading: bool,
     /// What a capture answers with; a test page's own pixels until one sets others.
     page_capture: Option<Vec<u8>>,
     measures_document: bool,
@@ -108,6 +122,66 @@ impl TestEngine {
     /// JSON), as a real engine would for its current page.
     pub fn set_paint_snapshot(&self, snapshot: impl Into<String>) {
         self.lock_inner().paint_snapshot = Some(snapshot.into());
+    }
+
+    /// Say what the fields `shown` names show when asked, as a real engine says a date in
+    /// its own words. An engine never told this answers the ask with a layout snapshot, as
+    /// one that predates the ask does.
+    pub fn set_paint_shown(&self, shown: impl IntoIterator<Item = (u64, String)>) {
+        self.lock_inner().paint_shown = Some(shown.into_iter().collect());
+    }
+
+    /// Say which generic family the engine sets each family list of `classes` like when
+    /// asked, as a real engine says of its machine's faces; of a list not named it says it
+    /// is like none. The engine answers the ask from now on.
+    pub fn set_paint_classes<'a>(&self, classes: impl IntoIterator<Item = (&'a str, &'a str)>) {
+        let mut inner = self.lock_inner();
+        inner.paint_classes = classes
+            .into_iter()
+            .map(|(list, generic)| (list.to_owned(), generic.to_owned()))
+            .collect();
+        inner.paint_shown.get_or_insert_default();
+    }
+
+    /// Hold back every answer to what the paint source asks from now on, as an engine does
+    /// that is still at work on a capture: it answers nothing meanwhile, and then
+    /// everything in the order it was asked ([`Self::release_paint`]).
+    pub fn hold_paint(&self) {
+        self.lock_inner().paint_held.get_or_insert_default();
+    }
+
+    /// Answer what was held back ([`Self::hold_paint`]), oldest first, and answer at once
+    /// again from now on.
+    pub fn release_paint(&self) {
+        let mut inner = self.lock_inner();
+        let held = inner.paint_held.take().unwrap_or_default();
+        inner.events.extend(held);
+    }
+
+    /// Never answer the next `count` paint captures, as an engine does that lost the
+    /// request: what it is asked after them it answers.
+    pub fn lose_paint_captures(&self, count: usize) {
+        self.lock_inner().paint_captures_lost = count;
+    }
+
+    /// Never say what fields show or what class of face a family list is set in from now
+    /// on, as an engine does that takes the ask and loses it.
+    pub fn lose_paint_asks(&self) {
+        self.lock_inner().paint_asks_lost = true;
+    }
+
+    /// Say with every later answer that the page still loads faces of its own, as an
+    /// engine does until the last of them is there.
+    pub fn set_paint_faces_loading(&self) {
+        self.lock_inner().paint_faces_loading = true;
+    }
+
+    /// Answer what the paint source asked: at once, or when what is held back is released.
+    fn answer_paint_locked(inner: &mut Inner, event: WebViewEvent) {
+        match &mut inner.paint_held {
+            Some(held) => held.push(event),
+            None => inner.events.push(event),
+        }
     }
 
     /// Say the engine measures its document (answers
@@ -828,17 +902,54 @@ impl WebViewEngine for TestEngine {
                     .push(WebViewEvent::PageResult { request_id, result });
             }
             WebViewCommand::PaintCapture { request_id } => {
-                let snapshot = inner.paint_snapshot.clone();
-                inner.events.push(WebViewEvent::PaintSnapshot {
-                    request_id,
-                    snapshot,
-                });
+                if inner.paint_captures_lost > 0 {
+                    inner.paint_captures_lost = inner.paint_captures_lost.saturating_sub(1);
+                } else {
+                    let snapshot = inner.paint_snapshot.clone();
+                    Self::answer_paint_locked(
+                        &mut inner,
+                        WebViewEvent::PaintSnapshot {
+                            request_id,
+                            snapshot,
+                        },
+                    );
+                }
+            }
+            WebViewCommand::PaintShown {
+                request_id,
+                nodes,
+                families,
+            } => {
+                let event = match &inner.paint_shown {
+                    Some(shown) => WebViewEvent::PaintShown {
+                        request_id,
+                        shown: Some(
+                            nodes
+                                .iter()
+                                .filter_map(|node| Some((*node, shown.get(node)?.clone())))
+                                .collect(),
+                        ),
+                        classes: families
+                            .iter()
+                            .map(|list| inner.paint_classes.get(list).cloned().unwrap_or_default())
+                            .collect(),
+                        settled: !inner.paint_faces_loading,
+                    },
+                    None => WebViewEvent::PaintSnapshot {
+                        request_id,
+                        snapshot: inner.paint_snapshot.clone(),
+                    },
+                };
+                if !inner.paint_asks_lost {
+                    Self::answer_paint_locked(&mut inner, event);
+                }
             }
             WebViewCommand::PaintResource { request_id, url } => {
                 let bytes = inner.paint_resources.get(&url).cloned();
-                inner
-                    .events
-                    .push(WebViewEvent::PaintResource { request_id, bytes });
+                Self::answer_paint_locked(
+                    &mut inner,
+                    WebViewEvent::PaintResource { request_id, bytes },
+                );
             }
             WebViewCommand::StartDownload { uri } => {
                 if !(uri.starts_with("http://") || uri.starts_with("https://")) {

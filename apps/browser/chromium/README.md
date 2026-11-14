@@ -1070,7 +1070,12 @@ startup need additional renderer lifecycle support before admission.
 What an agent host relies on — the process budget (the browser, its storage
 service and one renderer per site; Linux adds its sandbox zygotes), hidden
 pages painting nothing yet answering page actions, and the paint stream's
-`paint_capture` / `paint_resource` ops:
+`paint_capture` / `paint_resource` ops (a capture that names fields, `shown`,
+is answered with `paint_shown`: what each field shows where that is not what
+it holds, a date as the engine words it, read from the engine's own tree
+inside the field and never from a password field; and one that names family
+lists, `faces`, with the generic family the engine sets each like on this
+machine, measured in a world of the page's frame its scripts do not share):
 
 ```sh
 python3 apps/browser/chromium/tests/agent_host.py target/chromium/tilo-chromium-host
@@ -1081,7 +1086,12 @@ What a shared window hands over — a real page, captured as Browser captures it
 with someone watching), drawn by the web view and put whole into the share's
 outbox within seconds of being asked, for a share that starts on a loaded page
 and for one that starts before the page loaded, with what the page's fields
-hold (the toolkit's `page-share-probe` example plays the session's ask):
+hold (the toolkit's `page-share-probe` example plays the session's ask). What
+is handed over is compared, item by item, with what the engine laid out: each
+page measures itself (every line box, the class of face the engine set it
+in, what every control holds) and the suite holds the page that arrived to
+it, for a styled article, a table, a form with every common control and two
+secrets, text in both directions with emoji, and a zoomed page:
 
 ```sh
 cargo build -p tilo-ui --example page-share-probe
