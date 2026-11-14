@@ -201,7 +201,7 @@ fn keep_released_secrets(
     }
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
 impl MailApp {
     /// Take what the host answered about the person's accounts and the
     /// window's asks, so the mailbox follows the store the host keeps.
