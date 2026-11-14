@@ -1,2 +1,2 @@
-# What the desk is called to assistive technology.
+# What the desktop is called to assistive technology.
 desktop = Desktop

@@ -101,7 +101,7 @@ fn a_tile_is_a_reachable_target_at_scale_2() {
         wifi.height() >= 39.5,
         "a tile is the Large control height, not a row: {wifi:?}"
     );
-    // The panel fills the window the desk gives a popover, so the app's root
+    // The panel fills the window the shell gives a popover, so the app's root
     // area is the card's rect (as `layout.rs` reads it too).
     let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]");
     assert!(

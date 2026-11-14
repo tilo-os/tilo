@@ -110,16 +110,20 @@ fn workspace() -> Replica {
             .expect("the shell record is made");
     }
     replica.host.migrate();
-    // The desk's root the session writes, as the session makes it.
-    let desk_ty = meta
+    // The layout's root the session writes, as the session makes it.
+    let layout_ty = meta
         .roots
         .iter()
-        .find(|ty| meta.types.iter().any(|t| &&t.id == ty && t.name == "Desk"))
+        .find(|ty| {
+            meta.types
+                .iter()
+                .any(|t| &&t.id == ty && t.name == "Arrangement")
+        })
         .cloned();
-    if let Some(ty) = desk_ty {
+    if let Some(ty) = layout_ty {
         let root = replica.host.root_record(APP, &ty).unwrap();
         let meta = replica.host.package(APP).unwrap().meta;
-        let person = crate::fixtures::field_id(&meta, "Desk", "person");
+        let person = crate::fixtures::field_id(&meta, "Arrangement", "person");
         replica
             .host
             .runtime()
@@ -131,18 +135,18 @@ fn workspace() -> Replica {
                 }],
                 None,
             )
-            .expect("the session writes the desk");
+            .expect("the session writes the layout");
     }
     publish_platform(&replica);
     replica.commit();
     replica
 }
 
-/// The readings the desk's views read of the device and Settings.
+/// The readings the shell's views read of the device and Settings.
 fn publish_platform(replica: &Replica) {
-    // The device's and Settings' readings the desk's views read: published as the session
+    // The device's and Settings' readings the shell's views read: published as the session
     // publishes them, an empty reading until a service says more. A view that reads a
-    // resource with no reading at all traps as the desk opens.
+    // resource with no reading at all traps as the shell opens.
     for (resource, ty) in tilolang_tilo::platform_apps::platform_roots() {
         let target = tilolang_tilo::runtime::ResourceRef::parse_id(resource, ty).unwrap();
         replica.host.runtime().set_reading(&target, "{}").unwrap();
@@ -316,9 +320,9 @@ fn shell_ref(r: &Replica) -> Value {
     Value::resource(&r.host.root_record(APP, &ty).unwrap())
 }
 
-/// The screen the session shows (the arrangement's default view, `desk_view`), laid out as the
-/// person sees it: the bar and the dock over the desk and the person's shell record.
-fn desk_view(r: &Replica) -> tilolang_runtime::ViewInstance {
+/// The screen the session shows (the arrangement's default view, `shell_view`), laid out as the
+/// person sees it: the bar and the dock over the shell and the person's shell record.
+fn shell_view(r: &Replica) -> tilolang_runtime::ViewInstance {
     r.host
         .open_layer(
             APP,
@@ -327,7 +331,7 @@ fn desk_view(r: &Replica) -> tilolang_runtime::ViewInstance {
                 view: None,
             },
         )
-        .expect("the desk opens")
+        .expect("the shell opens")
 }
 
 /// Every node of `view`'s tree that is `kind`, depth first: what a preset's layout is read
@@ -363,21 +367,21 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
     r.commit();
     // The default: a bar at the top with its parts, and a dock at the bottom along its
     // horizontal run.
-    let default = desk_view(&r);
+    let default = shell_view(&r);
     let runs = nodes(&default, "ui.DragRun");
     let card = |view: &tilolang_runtime::ViewInstance| format!("{:?}", view.tree());
 
-    // The full-width classic bar, always shown: no dock, so no `ui.DragRun` on the desk at
+    // The full-width classic bar, always shown: no dock, so no `ui.DragRun` on the shell at
     // all — the bar's own run is there, the dock's is not.
     use_preset(&mut r, "windows");
     assert!(is(&r, "preset", "Layout", "windows"));
     assert!(!flag(&r, "bar_shown"), "the Windows preset has no top bar");
     assert!(flag(&r, "dock_shown"), "and its dock is the taskbar");
     assert!(is(&r, "dock_fit", "Fit", "full"));
-    let windows = card(&desk_view(&r));
+    let windows = card(&shell_view(&r));
     assert!(
         windows.contains("Launcher"),
-        "the dock's items show on the desk: {windows}"
+        "the dock's items show on the shell: {windows}"
     );
     assert!(
         windows.contains("4:28 PM") && windows.contains("Notifications"),
@@ -395,7 +399,7 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
     assert!(is(&r, "bar_showing", "Showing", "edge_reveal"));
     assert!(!flag(&r, "dock_shown"));
     // Nothing reached for: no bar at rest.
-    let minimal = desk_view(&r);
+    let minimal = shell_view(&r);
     assert!(
         !says(&minimal, "Notifications"),
         "the minimal shell has no chrome at rest: {}",
@@ -406,7 +410,7 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
     use_preset(&mut r, "tilo");
     assert!(is(&r, "bar_showing", "Showing", "always"));
     assert!(
-        says(&desk_view(&r), "Notifications"),
+        says(&shell_view(&r), "Notifications"),
         "the bar is back at rest"
     );
     assert!(!runs.is_empty(), "the dock and the bar are runs");
@@ -418,11 +422,11 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
 fn the_bars_material_is_the_one_its_style_names() {
     /// The material the bar's chrome takes in the view the person sees, as the theme reads it.
     fn material(r: &Replica) -> String {
-        let view = desk_view(r);
+        let view = shell_view(r);
         let bar = nodes(&view, "ui.Chrome")
             .into_iter()
             .find(|node| matches!(node.props.get("name"), Some(Value::Text(name)) if name == "Top bar"))
-            .unwrap_or_else(|| panic!("the desk shows a bar: {:?}", view.tree()));
+            .unwrap_or_else(|| panic!("the shell shows a bar: {:?}", view.tree()));
         format!("{:?}", bar.props.get("material"))
     }
     let mut r = workspace();
@@ -479,7 +483,7 @@ fn a_charging_pack_shows_the_charging_battery() {
         &mut r,
         r#"{"present": true, "percentage": 61, "state": "charging", "on_battery": false}"#,
     );
-    let taking = desk_view(&r);
+    let taking = shell_view(&r);
     assert!(
         says(&taking, "61%, charging"),
         "the charge says it takes charge: {:?}",
@@ -495,14 +499,14 @@ fn a_charging_pack_shows_the_charging_battery() {
         r#"{"present": true, "percentage": 61, "state": "pending-charge", "on_battery": true}"#,
     );
     assert!(
-        charging_glyph(&desk_view(&r)),
+        charging_glyph(&shell_view(&r)),
         "a pack waiting for its charger shows it too"
     );
     charge(
         &mut r,
         r#"{"present": true, "percentage": 61, "state": "discharging", "on_battery": true}"#,
     );
-    let draining = desk_view(&r);
+    let draining = shell_view(&r);
     assert!(
         says(&draining, "61%") && !says(&draining, "charging"),
         "a pack that drains says the charge alone: {:?}",
@@ -537,17 +541,17 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
     // goes to the workspace.
     let arrangement = scenario(&r, APP, "a canvas of spaces");
     let meta = r.host.package(APP).unwrap().meta;
-    let desk = meta
+    let shell = meta
         .views
         .iter()
-        .find(|v| v.name == "desk_view")
-        .expect("the desk's view")
+        .find(|v| v.name == "shell_view")
+        .expect("the shell's view")
         .id
         .clone();
     let mut macos = r
         .host
         .runtime()
-        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .open_view(&Principal::new("ada"), &shell, vec![arrangement])
         .unwrap();
     // A desktop's output: 1280 by 800, where the bar has room for the window's commands.
     macos.set_space("", tilolang_runtime::Space::from_rem(80.0, 50.0));
@@ -555,7 +559,7 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
     let card = |view: &tilolang_runtime::ViewInstance| format!("{:?}", view.tree());
     // The menu the bar names the window in front by: a button of the bar that holds commands,
     // the shell filling them from the declarations of the resource the window shows (`subject`).
-    // The bar carries the shell's own menus too (the workspace, the preset the desk shows).
+    // The bar carries the shell's own menus too (the workspace, the preset the shell shows).
     let bar: Vec<tilolang_runtime::UiNode> = nodes(&macos, "ui.MenuButton")
         .into_iter()
         .filter(|menu| menu.props.get("role") == Some(&Value::Text("bar".to_owned())))
@@ -644,7 +648,7 @@ fn a_window_is_named_by_its_window_and_app_never_an_id() {
     let tree = format!("{:?}", view.tree());
     assert!(
         !tree.contains("so.tilo.lang.chat\""),
-        "the desk never shows the id it opens a place by: {tree}"
+        "the shell never shows the id it opens a place by: {tree}"
     );
 }
 
@@ -655,17 +659,17 @@ fn a_bar_that_hides_until_reached_for_shows_when_the_pointer_comes_to_the_edge()
     use_preset(&mut r, "minimal");
     assert!(is(&r, "bar_showing", "Showing", "edge_reveal"));
     // Nothing reached for yet: the bar is not drawn.
-    assert!(!says(&desk_view(&r), "Notifications"));
+    assert!(!says(&shell_view(&r), "Notifications"));
     // The session says the pointer has come to the top edge (what it publishes when the
     // pointer rests there).
     set_screen(&mut r, "bar_reached", true);
     assert!(
-        says(&desk_view(&r), "Notifications"),
+        says(&shell_view(&r), "Notifications"),
         "the bar shows when the pointer comes to its edge"
     );
     // And hides again when it leaves.
     set_screen(&mut r, "bar_reached", false);
-    assert!(!says(&desk_view(&r), "Notifications"));
+    assert!(!says(&shell_view(&r), "Notifications"));
 }
 
 #[test]
@@ -675,22 +679,22 @@ fn a_bar_that_hides_when_a_window_overlaps_it_hides_only_while_one_does() {
     use_preset(&mut r, "macos");
     assert!(is(&r, "dock_showing", "Showing", "no_overlap"));
     // Nothing overlaps it: the dock's items show.
-    assert!(says(&desk_view(&r), "Launcher"), "the dock shows at rest");
+    assert!(says(&shell_view(&r), "Launcher"), "the dock shows at rest");
     // A window stands where the dock rides.
     set_screen(&mut r, "dock_covered", true);
     assert!(
-        !says(&desk_view(&r), "Launcher"),
+        !says(&shell_view(&r), "Launcher"),
         "the dock hides while a window covers it"
     );
     // The window goes: the dock comes back.
     set_screen(&mut r, "dock_covered", false);
     assert!(
-        says(&desk_view(&r), "Launcher"),
+        says(&shell_view(&r), "Launcher"),
         "and shows once it is clear"
     );
 }
 
-/// The desk's quick settings stand over the desk with every tile when the device's overlays
+/// The shell's quick settings stand over the shell with every tile when the device's overlays
 /// name them, read from the device's and Settings' published resources: here no other is
 /// published, so each reads as absent (off, empty).
 #[test]
@@ -706,7 +710,7 @@ fn the_quick_settings_stand_over_the_desk() {
         r.host.runtime().set_reading(&target, reading).unwrap();
     }
     r.commit();
-    let view = desk_view(&r);
+    let view = shell_view(&r);
     for words in [
         "Quick settings",
         "Bluetooth",
@@ -722,10 +726,10 @@ fn the_quick_settings_stand_over_the_desk() {
     }
 }
 
-/// The overview reads the workspace's strips in one chain over the desk's windows: each strip
+/// The overview reads the workspace's strips in one chain over the shell's windows: each strip
 /// once, top to bottom, and a window's menu offers the strips of its workspace it is not on.
 /// The chain is a list in an order the index answers, sized by the run its filter chose, so a
-/// desk whose windows this host wrote and has not indexed yet still pictures them.
+/// shell whose windows this host wrote and has not indexed yet still pictures them.
 #[test]
 fn the_overviews_strips_are_read_once_each_in_the_order_they_stand() {
     /// Every `ui.Section`'s title, depth first: the overview's strips.
@@ -754,7 +758,7 @@ fn the_overviews_strips_are_read_once_each_in_the_order_they_stand() {
     r.commit();
     scenario(&r, APP, "the overview");
     r.commit();
-    let view = desk_view(&r);
+    let view = shell_view(&r);
     let mut titles = Vec::new();
     walk(view.tree(), &mut titles);
     let strips: Vec<&str> = titles
@@ -868,17 +872,17 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
     // The arrangement is the session's (`origin: session.arrangement`): the scenario writes it
     // in this host, as the session's reading would, and nothing of it goes to the workspace.
     let arrangement = scenario(&r, APP, "a canvas of spaces");
-    let desk = meta
+    let shell = meta
         .views
         .iter()
-        .find(|v| v.name == "desk_view")
-        .expect("the desk's view")
+        .find(|v| v.name == "shell_view")
+        .expect("the shell's view")
         .id
         .clone();
     let view = r
         .host
         .runtime()
-        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .open_view(&Principal::new("ada"), &shell, vec![arrangement])
         .unwrap();
     let tree = format!("{:?}", view.tree());
     // Each note's place is the notes app's own editor, drawn inline (its body's input, which
@@ -909,17 +913,17 @@ fn resources_standing_as_content_stand_on_the_spaces_canvas() {
     r.commit();
     let meta = r.host.package(APP).unwrap().meta;
     let arrangement = scenario(&r, APP, "resources standing as content");
-    let desk = meta
+    let shell = meta
         .views
         .iter()
-        .find(|v| v.name == "desk_view")
-        .expect("the desk's view")
+        .find(|v| v.name == "shell_view")
+        .expect("the shell's view")
         .id
         .clone();
     let view = r
         .host
         .runtime()
-        .open_view(&Principal::new("ada"), &desk, vec![arrangement])
+        .open_view(&Principal::new("ada"), &shell, vec![arrangement])
         .unwrap();
     let tree = format!("{:?}", view.tree());
     // The scenario's strip stands on the canvas, so its places do: four notes as their editor,
@@ -965,9 +969,9 @@ fn notice_shown(r: &Replica, number: u64, body: &str, from: &str) {
         .expect("the session publishes its notifications");
 }
 
-/// What the desk's banner shows under its title, as the desk lays it out: the notice's body and
+/// What the shell's banner shows under its title, as the shell lays it out: the notice's body and
 /// sender, each where the layout shows it — the message and the source the banner carries on a
-/// roomy desk, else the row's secondary line and meta.
+/// roomy shell, else the row's secondary line and meta.
 fn banner_line_of(r: &Replica) -> (Option<String>, Option<String>) {
     fn text(props: &std::collections::BTreeMap<String, Value>, key: &str) -> Option<String> {
         match props.get(key) {
@@ -975,8 +979,8 @@ fn banner_line_of(r: &Replica) -> (Option<String>, Option<String>) {
             _ => None,
         }
     }
-    let mut view = desk_view(r);
-    // A desk with room for the toolkit's banner: the width a display's window has.
+    let mut view = shell_view(r);
+    // A shell with room for the toolkit's banner: the width a display's window has.
     view.set_space("", tilolang_runtime::Space::from_rem(90.0, 50.0));
     view.poll_patches().unwrap();
     if let Some(banner) = nodes(&view, "ui.Banner").first() {
@@ -988,7 +992,7 @@ fn banner_line_of(r: &Replica) -> (Option<String>, Option<String>) {
     let row = nodes(&view, "ui.ListRow")
         .into_iter()
         .find(|row| row.props.contains_key("title"))
-        .unwrap_or_else(|| panic!("the desk shows the notice: {:?}", view.tree()));
+        .unwrap_or_else(|| panic!("the shell shows the notice: {:?}", view.tree()));
     (text(&row.props, "secondary"), text(&row.props, "meta"))
 }
 

@@ -1,16 +1,16 @@
-/// The window switcher: the windows of the desk in the order Alt+Tab walks them, in a panel over
+/// The window switcher: the windows of the shell in the order Alt+Tab walks them, in a panel over
 /// what the person is in. Holding the modifier and pressing Tab is the session's walk; this view
 /// shows where the walk has reached, and what letting go chooses.
 ///
-/// It reads the desk's windows (`session.window`), whose `recency` is their place in the walk,
+/// It reads the shell's windows (`session.window`), whose `recency` is their place in the walk,
 /// and lifts the one the walk reached (`focused`). Alt+` walks only the app in front's windows,
 /// so with `switcher_scope` `app` the panel is those windows alone, named by the app and how far
 /// along them the walk is. Each card shows the window's own live picture where the compositor
 /// has it, else the app's glyph, over its title and the app it shows; the keys under the cards
-/// are the ones the walk answers to. A desk holding more windows than fit shows the page the
+/// are the ones the walk answers to. A shell holding more windows than fit shows the page the
 /// walk has reached, with its place among them.
 ///
-/// A flick past Alt+Tab only switches windows: the desk shows this panel once the session says
+/// A flick past Alt+Tab only switches windows: the shell shows this panel once the session says
 /// its walk has outlasted the flick (`switcher_revealed`), so nothing flashes at a person
 /// bouncing between two windows.
 ///
@@ -20,14 +20,14 @@
 /// Every choice it offers is the session's action: going to a window is `session.focus`, the
 /// same as a press on its strip.
 view switcher() {
-    let desk = device.windows.all
+    let all = device.windows.all
         .filter(w -> w.workspace_key == front_workspace())
         .sort_by(w -> w.recency)
-    let pick = desk.find(w -> w.focused)
+    let pick = all.find(w -> w.focused)
     let front_app = if let p = pick { p.app_key } else { "" }
     let windows = if device.overlays.switcher_scope == "app" {
-        desk.filter(w -> w.app_key == front_app)
-    } else { desk }
+        all.filter(w -> w.app_key == front_app)
+    } else { all }
     let count = windows.len()
     let per_page = page_size(space.compact, space.width, space.height)
     let at = if let p = pick { walk_place(windows, p) } else { 1 }
@@ -88,7 +88,7 @@ fn page_size(compact: Bool, width: Float, height: Float) -> Int {
 }
 
 /// A window's place in the walk over `windows`: one for the first one it visits. The walk's own
-/// order (`recency`) is the desk's, so two windows of one app keep their places among the rest
+/// order (`recency`) is the shell's, so two windows of one app keep their places among the rest
 /// and the app's page counts them alone.
 fn walk_place(windows: List<device.Window>, w: device.Window) -> Int {
     return windows.filter(v -> v.recency <= w.recency).len()

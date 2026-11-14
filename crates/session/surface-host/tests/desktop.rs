@@ -32,7 +32,7 @@ fn window(id: u64, app: &str) -> WindowInfo {
     }
 }
 
-/// Every tab the desk holds, in tree order: its id, what it shows and what it
+/// Every tab the desktop holds, in tree order: its id, what it shows and what it
 /// holds.
 fn tabs(host: &DesktopHost) -> Vec<(u64, String, TileContent)> {
     host.with_policy(|policy| {
@@ -48,7 +48,7 @@ fn tabs(host: &DesktopHost) -> Vec<(u64, String, TileContent)> {
     })
 }
 
-/// The tab of the window `id`, when the desk holds one.
+/// The tab of the window `id`, when the desktop holds one.
 fn window_tab(host: &DesktopHost, id: u64) -> Option<(u64, String, TileContent)> {
     tabs(host).into_iter().find(
         |(_, _, tile)| matches!(tile, TileContent::Foreign { surface_id, .. } if *surface_id == id),
@@ -348,7 +348,7 @@ fn an_x11_window_is_a_tab_of_its_class_that_retitles_and_reopens() {
         host.with_policy(DesktopPolicy::reopen_closed),
         "the newest close is undone"
     );
-    // The desk carries the command out on its next pass, as it does for the
+    // The desktop carries the command out on its next pass, as it does for the
     // session's loop.
     host.with_widgets(tilo_surface_host::WidgetHost::relayout);
     let (reopened, title, shown) = tabs(&host).pop().expect("the tab is back");
@@ -413,13 +413,13 @@ fn a_window_opened_beyond_the_visible_strip_stands_on_the_output_at_once() {
         let opened = window(id, app);
         let size = policy
             .initial_size(&opened, &outputs)
-            .expect("the desk holds a place for the window");
+            .expect("the desktop holds a place for the window");
         let at = policy.place(&opened, size, &outputs);
         mapped.push((opened, LayoutRect::new(at, size.into())));
         // What the compositor asks once the buffer that maps the window arrived.
         let arranged = policy
             .arrange(&mapped, &outputs)
-            .expect("the desk places windows");
+            .expect("the desktop places windows");
         let placed = arranged.iter().find(|a| a.id == id).expect("its place");
         on_output(placed, app, "in the frame that maps it");
         let at = placed.location;
@@ -434,7 +434,7 @@ fn a_window_opened_beyond_the_visible_strip_stands_on_the_output_at_once() {
         }
         let arranged = policy
             .arrange(&mapped, &outputs)
-            .expect("the desk places windows");
+            .expect("the desktop places windows");
         let placed = arranged.iter().find(|a| a.id == id).expect("its place");
         on_output(placed, app, "two frames on");
         assert_eq!(

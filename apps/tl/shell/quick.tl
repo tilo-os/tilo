@@ -7,7 +7,7 @@ use so.tilo.settings as settings
 /// and each press is that resource's own published action, so the settings app, the keys and
 /// the agent change the same thing this panel shows, and nothing here holds a copy of it.
 ///
-/// It is a floating panel at the desk's trailing edge, over what it covers, beside the
+/// It is a floating panel at the shell's trailing edge, over what it covers, beside the
 /// notification centre and on the same material; the bar's status opens it.
 view quick_settings() {
     row(fill, distribute: .end, padding: .related) {

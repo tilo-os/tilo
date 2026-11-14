@@ -1,5 +1,5 @@
-/// The strips shell: the person's desk as a desk of windows (docs/designs/app-language/shell.md
-/// §2, §3). A *row* is a band across the desk holding *strips*, a *strip* is a column of
+/// The strips shell: the person's layout drawn as rows of windows (docs/designs/app-language/
+/// shell.md §2, §3). A *row* is a band across the shell holding *strips*, a *strip* is a column of
 /// *places*, and a *place* is one window. A window is a window: its strip fills the room the row
 /// gives it, its bar runs across its top edge, and its content fills everything under that one
 /// bar. A strip of several places shows them as its tabs, the place in front filling the window;
@@ -15,7 +15,7 @@
 ///
 /// Rows of several strips stand side by side across the row's width, each strip taking the share
 /// its own width names against the rest: a row of more windows than it holds gives each a
-/// narrower window rather than pushing one off the desk, so every window of the row stays on it,
+/// narrower window rather than pushing one off the screen, so every window of the row stays on it,
 /// on a phone as on a laptop.
 /// The places of the strip `strip`, in the order the record keeps them.
 fn places_of(a: Arrangement, strip: Text) -> List<ArrangementPlace> {
@@ -33,21 +33,21 @@ fn rows_of(a: Arrangement, workspace: Text) -> List<ArrangementRow> {
 }
 
 /// The strip the shell shows in front: the one the person brought forward, or the window that
-/// came to the desk last, so the desk's front follows what arrived on it.
+/// came last, so the strip in front follows what arrived.
 fn strip_in_front(a: Arrangement, v: Viewing) -> Text {
     if v.focused != "" { v.focused } else { a.strips.last()?.key ?? "" }
 }
 
-/// The strips standing maximized: each shows alone as the window the desk is, the others behind
+/// The strips standing maximized: each shows alone, filling the shell, the others behind
 /// it. Empty while none is.
 fn maximized_strips(a: Arrangement) -> List<ArrangementStrip> {
     a.strips.filter(s -> s.maximized)
 }
 
-/// The style switch: every desk style every installed package offers, the one in use lit, so a
+/// The style switch: every style every installed package offers, the one in use lit, so a
 /// person moves between the shipped four and any they or their agent wrote, as shell.md §6
 /// picks. Each is listed by its own doc line, in its author's words. Switching keeps every
-/// place where it was, drawn the other way. The desk carries it in its own bar (`style_menu`);
+/// place where it was, drawn the other way. The shell carries it in its own bar (`style_menu`);
 /// this is the page Settings shows.
 view style_switch(v: Viewing) {
     row(gap: .tight, align: .center, wrap: true) {
@@ -72,13 +72,13 @@ fn style_label(style: device.DeskStyle) -> Text {
 }
 
 /// Whether a style is one a person can pick: a named style, or one whose package is named. A
-/// style nothing names (no view, no doc line, no package) stands for nothing on the desk, so
+/// style nothing names (no view, no doc line, no package) stands for nothing in the shell, so
 /// the switch lists none: an empty row is a band of the panel with nothing in it.
 fn style_listed(style: device.DeskStyle) -> Bool {
     style.line != "" or style.name != "" or style.package != ""
 }
 
-/// The style the desk shows, named in the bar's menu by the same name it is listed under
+/// The style the shell shows, named in the bar's menu by the same name it is listed under
 /// (`style_label`): one name for a style in the bar and in Settings, never a different one in the
 /// seat from the one in the list.
 fn style_title(v: Viewing) -> Text {
@@ -88,9 +88,9 @@ fn style_title(v: Viewing) -> Text {
     "Strips"
 }
 
-/// The style the desk shows as a menu of the bar's own: the same switch the Settings page
-/// offers, where the person passes it on the desk, so the desk's windows start at the bar's edge
-/// and no second row stands between them and it. The menu names the style the desk shows, so the
+/// The style the shell shows as a menu of the bar's own: the same switch the Settings page
+/// offers, where the person passes it in the shell, so the shell's windows start at the bar's edge
+/// and no second row stands between them and it. The menu names the style the shell shows, so the
 /// bar says what a person is looking at; its items list every style by its own doc line.
 view style_menu(v: Viewing) {
     ui.MenuButton(
@@ -106,9 +106,9 @@ view style_menu(v: Viewing) {
                 }
             }
         }
-        // The one settings place the desk style's own settings live in (`shell.md` §6, "Two
-        // ways to change a desk"): the menu opens them where the style was picked, so a person
-        // changes the desk they look at without hunting for an app. The entry says which
+        // The one settings place a style's own settings live in (`shell.md` §6): the menu opens
+        // them where the style was picked, so a person changes the shell they look at without
+        // hunting for an app. The entry says which
         // style's settings it opens, by the same name the menu lists the style under.
         ui.MenuItem("Settings for {style_title(v)}", icon: .settings) {
             on choose: open_style_settings(shell)
@@ -116,15 +116,15 @@ view style_menu(v: Viewing) {
     }
 }
 
-/// The desk's windows, filling the room between the bar and the dock: the maximized strips alone
+/// The shell's windows, filling the room between the bar and the dock: the maximized strips alone
 /// when one is, else each row of the workspace in front with its strips side by side. The rows
-/// stand in a desk that fills the room it is given, so a window is as tall as the desk and its
+/// stand in a shell that fills the room it is given, so a window takes the shell's height and its
 /// app is the whole of it under the window's one bar.
 ///
-/// A desk holds every workspace the person is in and shows one: the one in front (the session's
-/// `current`). The others are a switch away in the bar, not a second desk under this one, so the
+/// A shell holds every workspace the person is in and shows one: the one in front (the session's
+/// `current`). The others are a switch away in the bar, not a second shell under this one, so the
 /// view draws the front workspace's rows and no other's — two workspaces side by side would halve
-/// the room every window has, and an empty one would take a desk's half for nothing.
+/// the room every window has, and an empty one would take half of it for nothing.
 view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
     let maximizing = maximized_strips(a)
     if not maximizing.is_empty() {
@@ -138,7 +138,7 @@ view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
             workspace_rows(a, v, workspace.key, lists, fill(1))
         }
     } else {
-        // A desk the session has published no workspace of yet: it holds nothing to draw.
+        // A shell the session has published no workspace of yet: it holds nothing to draw.
         scroll(axis: .both) {
             stack(gap: .group, fill) {
                 ui.EmptyState("No window here yet", inline: true)
@@ -147,7 +147,7 @@ view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
     }
 }
 
-/// The workspace the desk shows: the one in front, else the first it holds — a desk that has not
+/// The workspace the shell shows: the one in front, else the first it holds — a shell that has not
 /// said which is in front still shows its first rather than nothing.
 fn shown_workspace(a: Arrangement) -> Option<ArrangementWorkspace> {
     if let current = a.workspaces.find(w -> w.current) {
@@ -156,26 +156,26 @@ fn shown_workspace(a: Arrangement) -> Option<ArrangementWorkspace> {
     a.workspaces.first()
 }
 
-/// The rows of one workspace, filling the room the desk gives them: a workspace's rows stand
-/// under one another, each the height of its share of the desk.
+/// The rows of one workspace, filling the room the shell gives them: a workspace's rows stand
+/// under one another, each the height of its share of the shell.
 view workspace_rows(a: Arrangement, v: Viewing, workspace: Text, lists: Bool) {
     stack(gap: .group, fill) {
         for held in rows_of(a, workspace) {
-            rows_of_the_desk(a, v, held, lists, fill(1))
+            rows_of_the_shell(a, v, held, lists, fill(1))
         }
     }
 }
 
-/// One row of the desk: the band across it, with its strips side by side along it, each the share
-/// of the desk its width names, so two windows the desk holds stand side by side and its app keeps
-/// its room (`row_window`). A row holding more windows than the desk shows scrolls along it, as the
-/// chrome's own row does. A phone's output is too narrow for two
-/// windows side by side, so there it shows the strip in front alone, filling the desk, as the
-/// chrome's desk does.
+/// One row of the shell: the band across it, with its strips side by side along it, each the share
+/// of the shell its width names, so two windows the shell holds stand side by side and each app
+/// keeps its room (`row_window`). A row holding more windows than the shell shows scrolls along
+/// it, as the chrome's own row does. A phone's output is too narrow for two
+/// windows side by side, so there it shows the strip in front alone, filling the shell, as the
+/// chrome's shell does.
 ///
 /// A row is not named here: the strip a person is in is what the bar's strip pill says, and the
-/// desk itself carries no label of its own (docs/design-language.md, `BarChip`).
-view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
+/// row itself carries no label of its own (docs/design-language.md, `BarChip`).
+view rows_of_the_shell(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
     let strips = strips_of(a, held.key)
     let front = strips.find(s -> s.key == strip_in_front(a, v)) ?? strips.last()
     stack(gap: .related, fill) {
@@ -200,10 +200,10 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
     }
 }
 
-/// One strip's window as its row stands it: its share of the desk, the per-mille width the person
-/// gave it (a usual window where it names none), so two windows the desk holds stand half each
+/// One strip's window as its row stands it: its share of the shell, the per-mille width the person
+/// gave it (a usual window where it names none), so two windows the shell holds stand half each
 /// and a lone window takes the room its neighbours left. Never narrower than 44rem — the room a
-/// window's bar, its tabs and an app's own layout need — so a row of more windows than the desk
+/// window's bar, its tabs and an app's own layout need — so a row of more windows than the shell
 /// holds keeps their width and scrolls along it, as the chrome's own row does.
 view row_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
     strip_window(a, v, s, lists, fill: if s.width <= 0 { 667 } else { s.width }, min: 44rem)
@@ -221,7 +221,7 @@ view row_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
 /// While it shows them, a strip of several places has tabs a person rearranges: choosing one
 /// shows its place and brings the strip forward, a press on its close takes that place out of
 /// the strip, a drag within the bar ranks it among the others, and a drag out of the bar into
-/// the desk gives it a window of its own (or, when the desk is the traditional one, the window
+/// the shell gives it a window of its own (or, when the shell is the traditional one, the window
 /// of the place it was let go under). Every one is an arranging action of the session's, so a
 /// press, a key and an agent make the same change, attributed and undoable. A window's bar
 /// likewise carries its place's record, so another window's bar takes it as a tab.
@@ -308,7 +308,7 @@ fn place_key(place: session.Place) -> Text {
 }
 
 /// Rank the place `place` at `at` among its strip's tabs: what dragging a pill within the
-/// window's bar does, as the desk's own `move` with the place it goes before. The strip reports
+/// window's bar does, as the shell's own `move` with the place it goes before. The strip reports
 /// the pill's place among the tabs with the moved pill taken out, so the tab it lands before is
 /// that index of the others; the last place goes last.
 action reorder_place(a: Arrangement, s: ArrangementStrip, place: session.Place, at: Int) (
@@ -336,8 +336,8 @@ action reorder_place(a: Arrangement, s: ArrangementStrip, place: session.Place, 
 }
 
 /// Give the place `place` a window of its own: what dragging a tab out of its window's bar does,
-/// as the desk's own `split-right` for the window in front. The place stands in front of its new
-/// window, and that window comes to the front of the desk.
+/// as the shell's own `split-right` for the window in front. The place stands in front of its new
+/// window, and that window comes to the front of the shell.
 action detach_place(v: Viewing, s: ArrangementStrip, place: session.Place) (
     icon: .columns_2,
     label: "Its own window",
@@ -367,7 +367,7 @@ fn place_in_front(s: ArrangementStrip) -> Option<session.Place> {
 
 /// Shows the place `place` and brings its strip forward with it: what choosing a tab does, and
 /// the same arranging action a script or an agent runs. The strip's own reading moves first, the
-/// desk then brings the place in front of its strip.
+/// shell then brings the place in front of its strip.
 action show_place(v: Viewing, strip: Text, place: session.Place) {
     focus_strip(v, strip)
     session.activate(place: place)
@@ -376,8 +376,8 @@ action show_place(v: Viewing, strip: Text, place: session.Place) {
 /// A window's own controls, in the pill at the trailing end of its one bar: the window's menu,
 /// which lists the actions its resource publishes and then its width, its coming to the front,
 /// and the place's pin and row, then maximize or restore and close. A bar shows one "…": each
-/// control is one action of the session's or the app's, so a press and an agent change the desk
-/// the same way, and none of them ever asks for a bar of its own. Where the desk's bar already
+/// control is one action of the session's or the app's, so a press and an agent change the shell
+/// the same way, and none of them ever asks for a bar of its own. Where the shell's bar already
 /// names the window in front's resource (`listed`), this menu keeps the shell's controls alone,
 /// so every action stands once.
 view window_controls(

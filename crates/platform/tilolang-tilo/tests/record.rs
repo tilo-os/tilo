@@ -368,27 +368,27 @@ fn queue_one(window: &Window, root: &tilolang_tilo::runtime::ResourceRef, who: &
     queued
 }
 
-/// A desk its origin derives: what the origin writes of it stays in the store's unsaved layer,
-/// open in the same document the counter's changes are written in.
-const DESK: &str = r#"app so.tilo.test.desk "Desk"
+/// A layout its origin derives: what the origin writes of it stays in the store's unsaved
+/// layer, open in the same document the counter's changes are written in.
+const LAYOUT: &str = r#"app so.tilo.test.layout "Layout"
 
-type Desk (origin: session.arrangement) {
+type Layout (origin: session.arrangement) {
   clock: Text merge register
 }
 
-root Desk
+root Layout
 
-default view bar for Desk
+default view bar for Layout
 
-view bar(d: Desk) {
+view bar(d: Layout) {
   text(d.clock)
 }
 "#;
 
 /// Each action the person takes is written once, as the change replaying it makes, whatever else
-/// its document holds open: the desk its origin derives, written there and never saved, and a
+/// its document holds open: the layout its origin derives, written there and never saved, and a
 /// second action queued before the record took the first. A peer replaying every new change gets
-/// the same change, and the desk still reads what its origin wrote.
+/// the same change, and the layout still reads what its origin wrote.
 #[test]
 fn an_action_is_written_once_whatever_else_its_document_holds_open() {
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
@@ -397,9 +397,9 @@ fn an_action_is_written_once_whatever_else_its_document_holds_open() {
     });
     let (mut ada, root) = ada_window(&route, &platform);
     let host = ada.instance.host().unwrap();
-    let desk_package = host.load_builtin(DESK, "").unwrap();
-    let desk = host.root_of("so.tilo.test.desk").unwrap();
-    let clock = tilolang_tilo::origin::origin_types(&desk_package.meta, "session")
+    let layout_package = host.load_builtin(LAYOUT, "").unwrap();
+    let layout = host.root_of("so.tilo.test.layout").unwrap();
+    let clock = tilolang_tilo::origin::origin_types(&layout_package.meta, "session")
         .into_iter()
         .find(|ty| ty.kind == "session.arrangement")
         .unwrap()
@@ -412,7 +412,7 @@ fn an_action_is_written_once_whatever_else_its_document_holds_open() {
         .apply_origin(
             "session",
             vec![tilolang_runtime::origin::OriginWrite::Set {
-                target: desk.clone(),
+                target: layout.clone(),
                 fields: vec![(
                     clock,
                     tilolang_tilo::runtime::Value::Text("12:01".to_owned()),
@@ -421,7 +421,7 @@ fn an_action_is_written_once_whatever_else_its_document_holds_open() {
             Some("2026-10-28T10:00:00Z".to_owned()),
         )
         .unwrap();
-    assert!(host.take_committed().is_empty(), "the desk is no change");
+    assert!(host.take_committed().is_empty(), "the layout is no change");
     let before = ada.workspace.marks();
     let written = host.store().stats().written_once;
 
@@ -438,9 +438,9 @@ fn an_action_is_written_once_whatever_else_its_document_holds_open() {
         "each add is written once, as the change it makes"
     );
     assert_eq!(
-        host.runtime().read(&desk, "clock").ok(),
+        host.runtime().read(&layout, "clock").ok(),
         Some(tilolang_tilo::runtime::Value::Text("12:01".to_owned())),
-        "the desk reads what its origin wrote"
+        "the layout reads what its origin wrote"
     );
 
     let mut registry = tilo_actions::ActionRegistry::new();

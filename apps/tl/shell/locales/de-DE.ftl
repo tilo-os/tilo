@@ -19,7 +19,7 @@ d-id3ec54i = Plätze
     .doc = Jeder Platz, jeder nennt die Leiste, in der er ist, damit die Ansichten nicht durch den Baum laufen müssen.
 
 d-wydxt4zu = Arbeitsbereich der Anordnung
-    .doc = Ein Arbeitsbereich, den der Schreibtisch der Person zeigt.
+    .doc = Ein Arbeitsbereich, den das Layout der Person zeigt.
     .noun = { $count ->
         [one] Arbeitsbereich der Anordnung
        *[other] Arbeitsbereiche der Anordnung
@@ -30,12 +30,12 @@ d-6m3fzjng = Schlüssel
 d-tljqo2yo = Name
 
 d-3uxxhan3 = Aktuell
-    .doc = Ob es der Arbeitsbereich vorn ist, den der Schreibtisch zeigt.
+    .doc = Ob es der Arbeitsbereich vorn ist, den die Shell zeigt.
 
 d-wydxt4zu-filter-current = Aktuell
 
 d-k6bv5cxt = Zeile der Anordnung
-    .doc = Eine Zeile des Schreibtischs: ein Band über die Breite eines Arbeitsbereichs, das Leisten hält.
+    .doc = Eine Zeile des Layouts: ein Band über die Breite eines Arbeitsbereichs, das Leisten hält.
     .noun = { $count ->
         [one] Zeile der Anordnung
        *[other] Zeilen der Anordnung
@@ -141,7 +141,7 @@ d-nkjtmr33 = Sicht
     }
 
 d-kna5sco4 = Stil
-    .doc = Der Schreibtischstil, den die Person zeigt, als Ansichtsreferenz: ein Paket und eine Ansicht (`so.tilo.shell:strips`, `me.styles:timeline`).
+    .doc = Der Stil, den die Person zeigt, als Ansichtsreferenz: ein Paket und eine Ansicht (`so.tilo.shell:strips`, `me.styles:timeline`).
 
 d-nl27ikjq = Zeigt
     .doc = Die Vorgabe, die die Person zeigte, bevor Stile Ansichten waren.
@@ -311,7 +311,7 @@ d-nfufnx7j = Die ganze nutzbare Breite der Zeile
     .doc = Die ganze nutzbare Breite der Zeile.
 
 d-vvznzcd4 = Vorgabe
-    .doc = Eine Art, dieselben Ressourcen und Aktionen anzuordnen, die eine Person gewählt hat, bevor der Schreibtisch Stile hatte: `Viewing.showing` hielt eine.
+    .doc = Eine Art, dieselben Ressourcen und Aktionen anzuordnen, die eine Person gewählt hat, bevor die Shell Stile hatte: `Viewing.showing` hielt eine.
 
 d-25lm42aq = Spalten aus Plätzen, waagerecht gescrollt, mit Leisten gestapelt und senkrecht gescrollt
     .doc = Spalten aus Plätzen, waagerecht gescrollt, mit Leisten gestapelt und senkrecht gescrollt.
@@ -322,8 +322,8 @@ d-3ha7yyn2 = Plätze an Punkten auf einer verschiebbaren, zoombaren Fläche, jed
 d-whadpf2h = Plätze an Punkten, jeder als eigene Ansicht gezeichnet: Ressourcen stehen als Inhalt auf einer Fläche, gruppiert danach, wo sie sind, statt nach einem Rahmen um sie
     .doc = Plätze an Punkten, jeder als eigene Ansicht gezeichnet: Ressourcen stehen als Inhalt auf einer Fläche, gruppiert danach, wo sie sind, statt nach einem Rahmen um sie.
 
-d-6uzzl3rd = Der traditionelle Schreibtisch: Rahmen auf einem schwebenden Schreibtisch, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen
-    .doc = Der traditionelle Schreibtisch: Rahmen auf einem schwebenden Schreibtisch, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen.
+d-6uzzl3rd = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen
+    .doc = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen.
 
 d-nxjnwtsd = Kante
     .doc = Die Shell der Person: welche Teile die obere Leiste und das Dock haben, in welcher Reihenfolge, an welcher Kante, wie sie aussehen und wann sie zeigen.
@@ -424,8 +424,8 @@ d-cqbe6g3k = Die obere Leiste allein; die Übersicht auf Abruf
 d-hyr6xrfo = Kein Rahmen in Ruhe; die Kanten zeigen, was die Person braucht
     .doc = Kein Rahmen in Ruhe; die Kanten zeigen, was die Person braucht.
 
-d-poagvor7 = Der traditionelle Schreibtisch: Rahmen auf einem schwebenden Schreibtisch, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen
-    .doc = Der traditionelle Schreibtisch: Rahmen auf einem schwebenden Schreibtisch, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen.
+d-poagvor7 = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen
+    .doc = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen.
 
 d-q7rxwd72 = Platz der Leiste
     .doc = Wie viel Platz die obere Leiste hat: für das Menü des fokussierten Fensters und für ihre Teile.
@@ -440,10 +440,10 @@ d-7caakb5b = Am wenigsten: das Menü steht als Symbol des Fensters, und nur, was
     .doc = Am wenigsten: das Menü steht als Symbol des Fensters, und nur, was ein Telefon behält, bleibt.
 
 d-p4bqyuzt = Stil benennen
-    .doc = Ein Schreibtischstil, gewählt, bevor Stile Ansichten waren: der Name der Vorgabe, gewendet in die Ansicht dieses Pakets davon (`strips` zu `so.tilo.shell:strips`), damit die Wahl der Person bleibt.
+    .doc = Ein Stil, gewählt, bevor Stile Ansichten waren: der Name der Vorgabe, gewendet in die Ansicht dieses Pakets davon (`strips` zu `so.tilo.shell:strips`), damit die Wahl der Person bleibt.
 
 d-7j7tzynq = Zeigen als
-    .doc = Zeigt den Schreibtisch durch den Stil `style`: ein Paket und eine Ansicht (`so.tilo.shell:strips`).
+    .doc = Zeigt die Shell durch den Stil `style`: ein Paket und eine Ansicht (`so.tilo.shell:strips`).
     .w-it-is-shown-that-way-already = Er wird schon so gezeigt
 
 d-7j7tzynq-style = Stil
@@ -502,7 +502,7 @@ d-fdnwo2gt-size = Größe
 d-fcxzqnum = Die obere Leiste zeigen
     .doc = Zeigt oder verbirgt die obere Leiste: das eine Bedienelement, das sie ein- und ausschaltet, sodass eine Person sieht, ob sie an ist, wo sie drückt.
 
-d-fcxzqnum-on = Auf dem Schreibtisch
+d-fcxzqnum-on = Gezeigt
 
 d-5l5rmk47 = Dock an
     .doc = Verschiebt das Dock an `edge` und behält, wie es gebaut ist.
@@ -528,7 +528,7 @@ d-quwdhi4n-size = Größe
 d-23faedwo = Das Dock zeigen
     .doc = Zeigt oder verbirgt das Dock: das eine Bedienelement, das es ein- und ausschaltet, sodass eine Person sieht, ob es an ist, wo sie drückt.
 
-d-23faedwo-on = Auf dem Schreibtisch
+d-23faedwo-on = Gezeigt
 
 d-exyxrzml = Laufende Apps
     .doc = Ob das Dock die laufenden Apps zeigt, die niemand angeheftet hat.
@@ -600,7 +600,7 @@ d-5yz5iwzs = Vom Dock entfernen
 d-5yz5iwzs-item = Eintrag
 
 d-aitkuflo = Eintrag öffnen
-    .doc = Was ein Druck auf einen Dock-Eintrag tut, nach der App, für die der Eintrag steht: ein Fenster dieser App auf diesem Schreibtisch kommt nach vorn, sodass der Schreibtisch sagt, in welchem Fenster die Person ist, und die Befehle der oberen Leiste seine eigenen sind; das Fenster ist das, für das der Eintrag gezeichnet wurde, sodass ein Druck nie eine zweite Kopie öffnet.
+    .doc = Was ein Druck auf einen Dock-Eintrag tut, nach der App, für die der Eintrag steht: ein Fenster dieser App auf diesem Bildschirm kommt nach vorn, sodass die Shell sagt, in welchem Fenster die Person ist, und die Befehle der oberen Leiste seine eigenen sind; das Fenster ist das, für das der Eintrag gezeichnet wurde, sodass ein Druck nie eine zweite Kopie öffnet.
 
 d-aitkuflo-key = App
 
@@ -641,8 +641,6 @@ d-b3rfswle-strip = Leiste
 
 d-b3rfswle-place = Platz
 
-d-i6ll2n4j = Schreibtischansicht
-
 d-72tgr4px = Uhr
     .w-paused = Pausiert
 
@@ -680,7 +678,7 @@ d-moh3hzne = Glocke
     .w-unread = { $name }, { $waiting } ungelesen
 
 d-fniigjed = Einstellungen der Sicht
-    .w-desk = Schreibtisch
+    .w-shell = Shell
     .w-switching-a-style-keeps-every-window = Ein Stilwechsel lässt jedes Fenster, wo es ist.
 
 d-gapwwnqc = Stil zeigen~present
@@ -749,12 +747,6 @@ d-dpqvjh2f = Launcher
     .w-all-apps = Alle Apps
 
 d-tst43bqy = Fensterzeile
-
-d-hlv2uw7o = Türen des Schreibtischs
-    .w-the-desk = Der Schreibtisch
-    .w-overview = Übersicht
-    .w-workspaces = Arbeitsbereiche
-    .w-notifications = Benachrichtigungen
 
 d-outvdzmi = Layouts
     .w-layout = Layout
@@ -925,9 +917,6 @@ d-qrahog47 = Leistenansicht
 
 d-4qeo26jr = Zeilen der Arbeitsbereiche
 
-d-7qrrtifg = Zeilen des Schreibtischs
-    .w-no-window-here-yet = Noch kein Fenster hier
-
 d-7sxqbtn2 = Zeilenfenster
 
 d-2fofsa7f = Leistenfenster
@@ -960,7 +949,7 @@ d-mmqndkio = Einstellungen eines Stils
     .w-comes-from-and-its-settings-are = { $style_label } kommt aus { $package }, und seine Einstellungen gehören seinem Paket.
 
 d-5o2gn6hf = Einstellungen eines Stils
-    .doc = Ein Schreibtisch mit einer Notiz im genannten Stil, dieser Platz vorn, und die eigenen Einstellungen des Stils darüber geöffnet: was eine Person sieht, die sie aus dem Stilmenü der Leiste öffnet.
+    .doc = Eine Shell mit einer Notiz im genannten Stil, dieser Platz vorn, und die eigenen Einstellungen des Stils darüber geöffnet: was eine Person sieht, die sie aus dem Stilmenü der Leiste öffnet.
 
 d-5o2gn6hf-style = Stil
 
@@ -986,7 +975,7 @@ d-3bxeb2i2 = Fensterkopf
 
 d-sk6mvhah = Fensterbild
 
-d-4hp326dv = Traditioneller Schreibtisch
+d-4hp326dv = Traditioneller Desktop
     .w-desktop = Desktop
 
 d-uekksuqv = Vorderes Fenster
@@ -1057,7 +1046,7 @@ d-e6vecsii = Titel
 d-xhyuztvt = Art
 
 d-4zknrelh = Einstellungen offen
-    .doc = Ob die eigenen Einstellungen des gewählten Stils über dem Schreibtisch stehen (`style_settings`), geöffnet aus dem Stilmenü der Leiste: der eine Ort, an dem eine Person den gezeigten Stil ohne Agent ändert, wie es `shell.md` §6, „Zwei Wege, einen Schreibtisch zu ändern“, sagt.
+    .doc = Ob die eigenen Einstellungen des gewählten Stils über der Shell stehen (`style_settings`), geöffnet aus dem Stilmenü der Leiste: der eine Ort, an dem eine Person den gezeigten Stil ohne Agent ändert, wie es `shell.md` §6 sagt.
 
 d-dwct4abs = Reihen-Tabs
     .doc = Reihen: ob eine Reihe mit mehreren Plätzen ihre Tableiste zeigt.
@@ -1079,7 +1068,7 @@ d-nljxfsom-target = Ziel
 d-nljxfsom-at = Bei
 
 d-5giytccr = Erstes öffnen
-    .doc = Was Enter bei einer Anfrage tut: Die erste App, die der Text findet, öffnet sich, sodass „no“ und Enter Notizen öffnen; eine Anfrage, die keine App nennt, beantwortet die Suche überall, wie Enter es schon immer für das tat, was die eigenen Zeilen des Schreibtischs nicht enthalten.
+    .doc = Was Enter bei einer Anfrage tut: Die erste App, die der Text findet, öffnet sich, sodass „no“ und Enter Notizen öffnen; eine Anfrage, die keine App nennt, beantwortet die Suche überall, wie Enter es schon immer für das tat, was die eigenen Zeilen der Shell nicht enthalten.
 
 d-5giytccr-query = Anfrage
 
@@ -1105,7 +1094,7 @@ d-mtt6d3af-s = S
 d-mtt6d3af-target = Ziel
 
 d-n2ez6yop = Umsortieren
-    .doc = Stellt den Platz `place` an die Stelle `at` unter den Tabs seiner Reihe: was das Ziehen einer Pille innerhalb der Fensterleiste tut, als das eigene `move` des Schreibtischs mit dem Platz, vor dem er steht.
+    .doc = Stellt den Platz `place` an die Stelle `at` unter den Tabs seiner Reihe: was das Ziehen einer Pille innerhalb der Fensterleiste tut, als das eigene `move` der Shell mit dem Platz, vor dem er steht.
 
 d-n2ez6yop-s = S
 
@@ -1114,19 +1103,19 @@ d-n2ez6yop-place = Platz
 d-n2ez6yop-at = Bei
 
 d-d64rg4sw = Eigenes Fenster
-    .doc = Gibt dem Platz `place` ein eigenes Fenster: was das Herausziehen eines Tabs aus seiner Fensterleiste tut, als das eigene `split-right` des Schreibtischs für das vordere Fenster.
+    .doc = Gibt dem Platz `place` ein eigenes Fenster: was das Herausziehen eines Tabs aus seiner Fensterleiste tut, als das eigene `split-right` der Shell für das vordere Fenster.
 
 d-d64rg4sw-s = S
 
 d-d64rg4sw-place = Platz
 
-d-jipcl6u3 = Einstellungen des Schreibtischstils
-    .doc = Die eigenen Einstellungen des Schreibtischstils und die zwei Wege, einen Schreibtisch zu ändern (`docs/designs/app-language/ shell.md` §6): ohne Agent, an dem einen Ort, an dem die Einstellungen einer Person liegen, und mit Agent, über dieselben Aktionen, die die Bedienelemente der Person ausführen.
+d-jipcl6u3 = Einstellungen des Stils
+    .doc = Die eigenen Einstellungen des Stils und die zwei Wege, einen Stil zu ändern (`docs/designs/app-language/ shell.md` §6): ohne Agent, an dem einen Ort, an dem die Einstellungen einer Person liegen, und mit Agent, über dieselben Aktionen, die die Bedienelemente der Person ausführen.
 
 d-wxxxvca4 = Schließen
     .doc = Schließt sie.
 
-d-33wxlq7h = Einstellungen des Schreibtischstils
+d-33wxlq7h = Einstellungen des Stils
     .doc = Zeigt oder verbirgt sie: ein Bedienelement für beides, damit eine Person den Zustand dort sieht, wo sie drückt.
 
 d-33wxlq7h-on = An
@@ -1195,3 +1184,14 @@ d-st426t4p = Ein vorderer Arbeitsbereich
     .doc = Fügt `a` den vorderen Arbeitsbereich mit seiner vorderen Zeile hinzu und gibt den Schlüssel der Zeile zurück.
 
 d-st426t4p-name = Name
+
+d-fcxy4mu5 = Shell-Ansicht
+
+d-iavyg4wt = Shell-Oberflächen
+    .w-the-shell = Die Shell
+    .w-overview = Übersicht
+    .w-workspaces = Arbeitsbereiche
+    .w-notifications = Benachrichtigungen
+
+d-54b5rqo4 = Zeilen der Shell
+    .w-no-window-here-yet = Noch kein Fenster hier

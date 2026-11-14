@@ -1,6 +1,6 @@
 //! The shell's windows as a person sees them, staged from its own scenarios through the UI
 //! host's path: windows standing with their apps' content, one bar per window, filling the
-//! strips the desk gives them, and the trailing parts of the top bar at its edge.
+//! strips the shell gives them, and the trailing parts of the top bar at its edge.
 
 use std::path::Path;
 use std::rc::Rc;
@@ -658,7 +658,7 @@ fn the_traditional_desktop(
 }
 
 /// The traditional desktop as a person meets it, from one build of the shell: its windows at a
-/// desk's size and what they read out, its top bar and its counts at three sizes, and the window
+/// screen's size and what they read out, its top bar and its counts at three sizes, and the window
 /// in front on a phone. Every part reads a window staged at its own size and theme; the one
 /// window two parts share is only read by the first, and laid out again by the second, last.
 #[test]
@@ -668,9 +668,9 @@ fn the_traditional_desktop_stands_as_a_person_reads_it() {
     {
         // Gone before the next window is staged: one window stands at a time, as when each part
         // was a test of its own.
-        let mut desk = the_traditional_desktop(&app, &packages, (1280, 800), ui::Theme::light());
-        its_windows_show_their_apps_content_under_one_bar_each(&desk);
-        its_people_are_called_by_their_names_never_their_ids(&mut desk);
+        let mut shell = the_traditional_desktop(&app, &packages, (1280, 800), ui::Theme::light());
+        its_windows_show_their_apps_content_under_one_bar_each(&shell);
+        its_people_are_called_by_their_names_never_their_ids(&mut shell);
     }
     for (width, height, text) in [(1280, 800, 1.0), (768, 1024, 1.0), (320, 568, 1.5)] {
         let staged = the_traditional_desktop(
@@ -692,7 +692,11 @@ fn the_traditional_desktop_stands_as_a_person_reads_it() {
 fn its_windows_show_their_apps_content_under_one_bar_each(staged: &stage::Staged) {
     let root = staged.harness().root_widget();
     let frames = named(root, "WindowFrame");
-    assert_eq!(frames.len(), 3, "two notes and a channel stand on the desk");
+    assert_eq!(
+        frames.len(),
+        3,
+        "two notes and a channel stand in the shell"
+    );
     for frame in frames {
         let window = frame.get_rect();
         // What the window holds is cut at its edge, so a list
@@ -740,32 +744,32 @@ fn its_windows_show_their_apps_content_under_one_bar_each(staged: &stage::Staged
     }
 }
 
-/// A desk of places as a person meets it, from one build of the shell and one window of the desk
-/// at 1280×800: each window's bar keeps one door, each place shows its app, and its strips stand
-/// as windows. No part changes the window: each reads its widgets, and the second the places the
-/// desk's own record holds.
+/// A layout of places as a person meets it, from one build of the shell and one window of the
+/// shell at 1280×800: each window's bar keeps one door, each place shows its app, and its strips
+/// stand as windows. No part changes the window: each reads its widgets, and the second the
+/// places the layout's own record holds.
 #[test]
-fn a_desk_of_places_stands_as_windows_that_show_their_apps() {
+fn a_layout_of_places_stands_as_windows_that_show_their_apps() {
     tilo_ui_host::i18n::ensure();
     let (app, packages) = packages();
-    let desk = stage::Staged::over(
+    let shell = stage::Staged::over(
         &app,
         &packages,
-        "a desk of places",
+        "a layout of places",
         (1280, 800),
         ui::Theme::light(),
         None,
         &[],
     )
     .expect("the scenario stages");
-    // The two parts that read the desk alone come first. The last stages a second window from
-    // the same build, as it did in a test of its own, and nothing reads the desk after that.
-    a_window_bar_keeps_one_overflow_menu(&desk);
-    a_place_the_desk_has_shows_its_app(&desk, &packages);
-    the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(&desk, &app, &packages);
+    // The two parts that read the shell alone come first. The last stages a second window from
+    // the same build, as it did in a test of its own, and nothing reads the shell after that.
+    a_window_bar_keeps_one_overflow_menu(&shell);
+    a_place_the_shell_has_shows_its_app(&shell, &packages);
+    the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(&shell, &app, &packages);
 }
 
-/// `staged` is the desk of places; the window of several places beside it is staged here.
+/// `staged` is the layout of places; the window of several places beside it is staged here.
 fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(
     staged: &stage::Staged,
     app: &str,
@@ -774,7 +778,7 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(
     let frames = named(staged.harness().root_widget(), "WindowFrame");
     assert!(
         frames.len() >= 6,
-        "the desk's strips stand as windows, not cards: {} frames",
+        "the layout's strips stand as windows, not cards: {} frames",
         frames.len()
     );
     windows_fill_their_strips(&frames);
@@ -795,8 +799,8 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(
     assert_eq!(group.len(), 2, "a window of places beside a window of one");
     the_places_of_a_strip_are_its_tabs(&group);
 
-    // Two windows the desk holds stand side by side, each the share of the desk its strip's width
-    // names, not the floor two of them would need: a row spreads across the desk while its windows
+    // Two windows the shell holds stand side by side, each the share of the shell its strip's width
+    // names, not the floor two of them would need: a row spreads across the shell while its windows
     // fit, and pans to them whole once they do not.
     let from = group
         .iter()
@@ -808,19 +812,19 @@ fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar(
         .fold(f64::MIN, f64::max);
     assert!(
         to - from >= 1270.0,
-        "the desk's row spreads across it at 1280: {} to {to}",
+        "the layout's row spreads across it at 1280: {} to {to}",
         from.round()
     );
 }
 
 #[test]
-fn a_window_alone_on_the_desk_takes_the_desk() {
+fn a_window_alone_in_the_shell_takes_the_shell() {
     tilo_ui_host::i18n::ensure();
     let (app, packages) = packages();
     let staged = stage::Staged::over(
         &app,
         &packages,
-        "a window alone on the desk",
+        "a window alone in the shell",
         (1280, 800),
         ui::Theme::light(),
         None,
@@ -831,24 +835,24 @@ fn a_window_alone_on_the_desk_takes_the_desk() {
     assert_eq!(
         frames.len(),
         1,
-        "one window on the desk, not {}",
+        "one window in the shell, not {}",
         frames.len()
     );
     let window = frames[0].get_rect();
     assert!(
         window.width() > 1200.0,
-        "a lone window takes the desk's width at 1280: {window:?}"
+        "a lone window takes the shell's width at 1280: {window:?}"
     );
     bar_and_content_in(frames[0], window);
 }
 
 /// A place is made from the resource it shows (`session.Arrangement`'s `record`), so a place
-/// whose app the desk has draws that app's views, that app's header row and, with nothing in it
-/// yet, that app's empty state. `staged` is the desk of places.
-fn a_place_the_desk_has_shows_its_app(staged: &stage::Staged, packages: &Rc<stage::Packages>) {
-    let desk = staged.places();
-    assert!(!desk.is_empty(), "the staged desk holds its places");
-    // The apps the desk's own build has: a place that shows one of them is drawn by it.
+/// whose app the shell has draws that app's views, that app's header row and, with nothing in it
+/// yet, that app's empty state. `staged` is the layout of places.
+fn a_place_the_shell_has_shows_its_app(staged: &stage::Staged, packages: &Rc<stage::Packages>) {
+    let places = staged.places();
+    assert!(!places.is_empty(), "the staged layout holds its places");
+    // The apps the shell's own build has: a place that shows one of them is drawn by it.
     let known: Vec<&str> = packages
         .0
         .iter()
@@ -859,20 +863,22 @@ fn a_place_the_desk_has_shows_its_app(staged: &stage::Staged, packages: &Rc<stag
         .filter_map(|well| well.test_id())
         .collect();
     for key in &wells {
-        let place = desk
+        let place = places
             .iter()
             .find(|place| place.key == *key)
-            .unwrap_or_else(|| panic!("the well {key} stands for a place of the desk: {desk:?}"));
+            .unwrap_or_else(|| {
+                panic!("the well {key} stands for a place of the layout: {places:?}")
+            });
         assert!(
             !known.contains(&place.shows.as_str()),
-            "the place {key} shows {}, whose views the desk has, so its window draws them: it \
+            "the place {key} shows {}, whose views the shell has, so its window draws them: it \
              stands in a well instead, blank",
             place.shows
         );
     }
-    // The same holds for every place the desk draws as a window of its own, whatever it holds: a
+    // The same holds for every place the shell draws as a window of its own, whatever it holds: a
     // place with no resource is another shell's window, and only that stands in a well.
-    for place in &desk {
+    for place in &places {
         if !place.record.is_empty() || known.contains(&place.shows.as_str()) {
             assert!(
                 !wells.contains(&place.key.as_str()),
@@ -884,12 +890,12 @@ fn a_place_the_desk_has_shows_its_app(staged: &stage::Staged, packages: &Rc<stag
 }
 
 /// One bar, one "…": the window's decorations in their floating pill, the app's own controls in
-/// its header row, and one door between them for what does not fit. `staged` is the desk of
+/// its header row, and one door between them for what does not fit. `staged` is the layout of
 /// places.
 fn a_window_bar_keeps_one_overflow_menu(staged: &stage::Staged) {
     let root = staged.harness().root_widget();
     let frames = named(root, "WindowFrame");
-    assert!(!frames.is_empty(), "the desk draws windows");
+    assert!(!frames.is_empty(), "the shell draws windows");
     for frame in frames {
         let window = frame.get_rect();
         let band = ui::kurbo::Rect::new(
@@ -919,10 +925,10 @@ fn a_window_bar_keeps_one_overflow_menu(staged: &stage::Staged) {
     }
 }
 
-/// A window is a window: it fills its strip's whole room, and every window of the desk shares that
-/// height, as the chrome's groups do.
+/// A window is a window: it fills its strip's whole room, and every window of the shell shares
+/// that height, as the chrome's groups do.
 fn windows_fill_their_strips(frames: &[&dyn Widget]) {
-    // The desk's own windows: the overlays the shell stages beside them are frames too.
+    // The shell's own windows: the overlays it stages beside them are frames too.
     let frames: Vec<&dyn Widget> = frames
         .iter()
         .copied()
@@ -934,16 +940,16 @@ fn windows_fill_their_strips(frames: &[&dyn Widget]) {
         .fold(0.0, f64::max);
     assert!(
         height > 500.0,
-        "a window fills the desk's height: {height} at 1280x800"
+        "a window fills the shell's height: {height} at 1280x800"
     );
     for frame in &frames {
         let window = frame.get_rect();
         assert!(
             (window.height() - height).abs() < 1.0,
-            "every window of the desk is as tall as the desk: {window:?} beside {height}"
+            "every window of the shell is as tall as the shell: {window:?} beside {height}"
         );
         // Its share of the row, never narrower than the chrome's own floor: a row of more windows
-        // than the desk holds pans to them whole.
+        // than the shell holds pans to them whole.
         assert!(
             window.width() >= 160.0,
             "a window keeps its share of the row: {window:?}"
@@ -1296,7 +1302,7 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
 fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
     // A window that is a tree of notes keeps a note's actions in the menu
     // of the row it stands for, where a person right-clicks it: the notes
-    // app's icon-less Untag is there, at a desk's width and in a hand's.
+    // app's icon-less Untag is there, at a desktop's width and in a hand's.
     tilo_ui_host::i18n::ensure();
     let packages = app_packages("notes");
     let app = packages.0.last().expect("the app").meta.app.clone();
@@ -1456,9 +1462,9 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
     );
 }
 
-/// `desk` is the traditional desktop staged at 1280×800 in the light theme, which this lays out.
-fn its_people_are_called_by_their_names_never_their_ids(desk: &mut stage::Staged) {
-    let said = desktop_read_out(desk, (1280, 800));
+/// `shell` is the traditional desktop staged at 1280×800 in the light theme, which this lays out.
+fn its_people_are_called_by_their_names_never_their_ids(shell: &mut stage::Staged) {
+    let said = desktop_read_out(shell, (1280, 800));
     let ids: Vec<&String> = said
         .iter()
         .map(|(_, name)| name)
@@ -1474,7 +1480,7 @@ fn its_people_are_called_by_their_names_never_their_ids(desk: &mut stage::Staged
 #[test]
 fn a_scenario_on_two_layers_is_named_apart() {
     // The shots of the window's own layer and of the shell's settings layer must not land in one
-    // file, or the desk's shot is the settings page.
+    // file, or the shell's shot is the settings page.
     assert_eq!(
         super::on_layer("the traditional desktop", None),
         "the traditional desktop"
@@ -1516,7 +1522,7 @@ fn away_at(packages: &Rc<stage::Packages>, size: (u32, u32)) -> stage::Staged {
     staged
 }
 
-/// What a person holds a window with at `size`: a pointer at a desk's width, a finger on one.
+/// What a person holds a window with at `size`: a pointer at a desktop's width, a finger on one.
 fn input_at(size: (u32, u32)) -> ui::interaction::InteractionEnvironment {
     if size.0 < 600 {
         ui::interaction::InteractionEnvironment::TOUCH
@@ -1931,7 +1937,7 @@ fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
 }
 
 /// The one main action an app declares for its window stands in its column's header row as the
-/// primary button, at a desk's width and in a hand's: a person sees at once what the window is for,
+/// primary button, at a desktop's width and in a hand's: a person sees at once what the window is for,
 /// and the action narrows to its icon before it ever leaves the row.
 #[test]
 fn the_windows_main_action_stands_in_its_row_as_the_primary_button() {
@@ -2001,7 +2007,7 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
         if size.0 >= 1280 {
             assert!(
                 control.labelled,
-                "a desk's row says the main action's words at {size:?}: {control:?}"
+                "a desktop's row says the main action's words at {size:?}: {control:?}"
             );
         }
         if size.0 <= 320 {

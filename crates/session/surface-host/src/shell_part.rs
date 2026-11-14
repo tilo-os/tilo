@@ -40,7 +40,7 @@ use tilolang_tilo::tilolang::Compiled;
 use crate::{Placement, WidgetHost};
 
 /// What a shell reads of the session and the names the session publishes it by: every host's,
-/// so the shell's views and the session name one desk.
+/// so the shell's views and the session use the same names.
 pub use tilo_session_core::shell::{
     ARRANGEMENT_RESOURCE, ArrangementPersonReading, ArrangementPlaceReading,
     ArrangementQueryReading, ArrangementReading, ArrangementRefReading, ArrangementRowReading,
@@ -71,7 +71,6 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "chrome.tl",
         include_str!("../../../../apps/tl/shell/chrome.tl"),
     ),
-    ("desk.tl", include_str!("../../../../apps/tl/shell/desk.tl")),
     (
         "docks.tl",
         include_str!("../../../../apps/tl/shell/docks.tl"),
@@ -111,6 +110,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
     (
         "session.tl",
         include_str!("../../../../apps/tl/shell/session.tl"),
+    ),
+    (
+        "shell.tl",
+        include_str!("../../../../apps/tl/shell/shell.tl"),
     ),
     (
         "strips.tl",
@@ -188,15 +191,15 @@ pub const fn shell_catalogue() -> &'static str {
     include_str!("../../../../apps/tl/shell/locales/en-US.ftl")
 }
 
-/// The shell's whole screen: the `desk_view` view over the person's arrangement (the package's
-/// `arrangement` root), which stands the desk's bar, dock and surfaces around the places as the
+/// The shell's whole screen: the `shell_view` view over the person's arrangement (the package's
+/// `arrangement` root), which stands the shell's bar, dock and surfaces around the places as the
 /// preset the person picked lays them out. Each place an app's window shows in is a well, and
 /// the window stands where that well does.
 #[must_use]
 pub fn screen_layer() -> RootView {
     RootView {
         root: Some("arrangement".to_owned()),
-        view: Some("desk_view".to_owned()),
+        view: Some("shell_view".to_owned()),
     }
 }
 
@@ -388,7 +391,7 @@ impl SessionLink {
         !self.asked.borrow().is_empty()
     }
 
-    /// The surface the desk shows now (`none` at rest): what the part covers the outputs for.
+    /// The surface the shell shows now (`none` at rest): what the part covers the outputs for.
     #[must_use]
     pub fn surface(&self) -> String {
         self.readings
@@ -849,7 +852,7 @@ impl Platform for ShellPlatform {
 
     /// The day the person's region starts its week on, as they chose it in Settings: the shell's
     /// views run in the session, which holds their formats, so a day's `start_of_week()` goes
-    /// back to the day their desk's calendar starts a week on.
+    /// back to the day their calendar starts a week on.
     fn week_start(&self) -> i64 {
         i64::from(ui::format::first_weekday().num_days_from_monday())
     }
@@ -955,7 +958,7 @@ pub struct ShellPart {
     /// The outputs a fullscreen window covers, by connector name: the part on one of them
     /// steps aside, as the desktop's own bar does there, and leaves the display to the window.
     fullscreen: Vec<String>,
-    /// A menu the part opened, or a surface of the desk's (its overview, the switcher, the
+    /// A menu the part opened, or a surface of the shell's (its overview, the switcher, the
     /// launcher, the notifications), is up: the part stands over its output even where a
     /// fullscreen window owns it, so what the person opened shows.
     cover: bool,
@@ -993,7 +996,7 @@ pub struct ShellIdentity<'a> {
     pub packages: Vec<Compiled>,
     /// The person the shell is arranged by.
     pub person: &'a str,
-    /// The link the session publishes its desk on and the shell asks through.
+    /// The link the session publishes its readings on and the shell asks through.
     pub link: Rc<SessionLink>,
     /// The shell's record, shared by every part of the shell.
     pub record: Rc<RefCell<tilo_resource::Doc>>,
@@ -1010,7 +1013,7 @@ impl ShellPart {
     /// The views' wells ([`ui::widget::Wells`]) report to `wells`, the handle the window policy
     /// placing the windows they stand for shares (`crate::WellPolicy`).
     ///
-    /// The part is the desk's whole screen ([`screen_layer`]): it shows the person's
+    /// The part is the shell's whole screen ([`screen_layer`]): it shows the person's
     /// arrangement and puts each window in its well.
     #[must_use]
     pub fn new(
@@ -1043,7 +1046,7 @@ impl ShellPart {
                 index_dir: None,
                 record_loader: None,
                 sink: None,
-                // The desk's whole screen, not whatever root the package lists first.
+                // The shell's whole screen, not whatever root the package lists first.
                 root: screen_layer(),
             },
             Rc::new(ShellPlatform {
@@ -1143,8 +1146,8 @@ impl ShellPart {
         self.seen_heads = self.record.borrow().committed_heads();
     }
 
-    /// Stand on this part's whole output: the desk is the screen, its bar and dock over the
-    /// places the windows stand in.
+    /// Stand on this part's whole output: the shell draws the whole screen, its bar and dock
+    /// over the places the windows stand in.
     ///
     /// A part on an output a fullscreen window covers takes no room and draws nothing: the
     /// window owns the display there, as it owns the desktop's own bar's display.
@@ -1174,7 +1177,7 @@ impl ShellPart {
     }
 
     /// Follow whether the part stands over the whole outputs: while a menu it opened is up,
-    /// or while a surface of the desk's is (the overview, the switcher, the launcher, the
+    /// or while a surface of the shell's is (the overview, the switcher, the launcher, the
     /// notifications, the workspaces, the composer).
     fn follow_cover(&mut self) {
         // A menu node a view lays out closed is hidden, and a place's frame carries one: counting
@@ -1186,10 +1189,7 @@ impl ShellPart {
             .a11y_nodes()
             .iter()
             .any(|(_, node)| node.role() == ui::accesskit::Role::Menu && !node.is_hidden());
-        let surface = !matches!(
-            self.origin.borrow().link.surface().as_str(),
-            "" | "none" | "desk"
-        );
+        let surface = !matches!(self.origin.borrow().link.surface().as_str(), "" | "none");
         let cover = menu || surface;
         if cover != self.cover {
             self.cover = cover;
@@ -1313,9 +1313,9 @@ impl ShellPart {
     }
 
     /// Where every node that says `text` (its name, description or value holds it) stands, in the
-    /// desktop's logical layout `(x, y, width, height)`. A name more than one thing on the desk
-    /// carries — a strip's name, which the bar's pill and nothing on the desk says — is read by all
-    /// of them, so what a test asks of a name is what the whole desk says of it.
+    /// desktop's logical layout `(x, y, width, height)`. A name more than one thing on the shell
+    /// carries — a strip's name, which the bar's pill and nothing on the shell says — is read by all
+    /// of them, so what a test asks of a name is what the whole shell says of it.
     pub fn text_bounds_all(&mut self, text: &str) -> Vec<(f64, f64, f64, f64)> {
         let (ox, oy) = self.widgets.placement().origin;
         self.widgets
@@ -1363,7 +1363,7 @@ impl ShellPart {
     }
     /// Draw the shell with `theme`, the person's as their appearance settings make it: a
     /// change of mode (dark mode in the quick settings, a theme chosen in Settings) redraws
-    /// the bar and every surface over the desk in it.
+    /// the bar and every surface over the shell in it.
     pub fn set_theme(&mut self, theme: ui::Theme) {
         self.widgets.set_theme(theme);
         self.again = true;
@@ -1751,7 +1751,7 @@ impl crate::Published for ShellPart {
         // (an assistive technology's activation, `tilo-control click`) changes the shell's
         // record, and the change is drawn by the turn that takes it in. The part wakes for
         // input alone, so a press that did not say so waited for the next deadline — the
-        // clock — the desk drawing the style the person left until then.
+        // clock — the shell drawing the style the person left until then.
         self.input = true;
         crate::Published::press(&mut self.widgets, name)
     }
@@ -1795,7 +1795,7 @@ enum SurfaceKey {
 }
 
 impl ShellPart {
-    /// What `key` means to the shell while a surface of the desk's is up, or as a press that
+    /// What `key` means to the shell while a surface of the shell's is up, or as a press that
     /// opens one. `None` when it belongs to whatever has the keyboard.
     fn surface_key(&self, key: &HostKey) -> Option<SurfaceKey> {
         if key.pressed && key.modifiers.alt {
@@ -1808,7 +1808,7 @@ impl ShellPart {
             }
         }
         let up = self.origin.borrow().link.surface();
-        if matches!(up.as_str(), "" | "none" | "desk") {
+        if matches!(up.as_str(), "" | "none") {
             return None;
         }
         if up == "switcher" && matches!(key.keysym, XKB_ALT_L | 0xffea) && !key.pressed {
@@ -1823,7 +1823,7 @@ impl ShellPart {
 }
 
 impl ShellPart {
-    /// Ask the session for the desk action `action` with `arguments`: what a key of the part's
+    /// Ask the session for the surface action `action` with `arguments`: what a key of the part's
     /// own asks, as a press of the views asks through the session's door.
     fn ask(&self, action: &str, arguments: &[(&str, serde_json::Value)]) {
         let arguments = arguments

@@ -2,7 +2,7 @@
 //! defines them, not the one that calls them.
 //!
 //! A template's body is source in the defining package's namespace: it calls that package's helpers
-//! (`desk_lists`), reads its roots (`shell`) and names its types (`Arrangement`). When another package
+//! (`shell_lists`), reads its roots (`shell`) and names its types (`Arrangement`). When another package
 //! registers the template at import, every such unqualified reference is rewritten to the qualified
 //! `alias.item` the importer's resolver reads, marked [`ast::Ident::from_template_of`] so the resolver
 //! still admits the package's unoffered helpers. Names bound inside the template stand as they are, and

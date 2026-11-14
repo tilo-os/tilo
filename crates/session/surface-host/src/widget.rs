@@ -217,7 +217,7 @@ pub struct WidgetHost {
     /// What an assistive technology knows the tree's window by.
     name: Option<String>,
     /// Something outside the tree asked for its next pass without holding the
-    /// host to ask (a command queued on the desk's handle): the frame that
+    /// host to ask (a command queued on the shell's handle): the frame that
     /// answers it.
     asked: Rc<std::cell::Cell<bool>>,
     /// The toolkit's drag bus as the tree last ran with it ([`ui::widget::drag_bus::revision`]):
@@ -292,7 +292,7 @@ impl WidgetHost {
     }
 
     /// The flag something outside the tree sets to ask for its next pass: what
-    /// wakes the host holding a desk another surface commands, without holding
+    /// wakes the host holding a shell another surface commands, without holding
     /// the host to ask.
     #[must_use]
     pub fn asking(&self) -> Rc<std::cell::Cell<bool>> {
@@ -423,7 +423,7 @@ impl WidgetHost {
     }
 
     /// The desktop surface the tree draws, when it draws one: the strips,
-    /// window bars and edges, whatever wraps them (the desk's own widgets
+    /// window bars and edges, whatever wraps them (the shell's own widgets
     /// and launchpad) around.
     fn with_surface<R>(&mut self, work: impl FnOnce(&mut DesktopSurface) -> R) -> Option<R> {
         self.with_reports(|host| {

@@ -4,36 +4,36 @@ use so.tilo.session as session
 
 root arrangement: Arrangement
 
-default view desk_view for arrangement
+default view shell_view for arrangement
 
 default view shell_settings for Shell
 
-/// The person's desk as a window or a display shows it: the desk style the person picked
+/// The person's layout as a window or a display shows it: the style the person picked
 /// (`Viewing.style`), drawing the arrangement.
 ///
 /// This is the arrangement's default view, so it is the one view a style is drawn *through* and
-/// never one of the styles: a desk style is a view of the arrangement any installed package
+/// never one of the styles: a style is a view of the arrangement any installed package
 /// declares (`shell.md` §6), found by the type its one parameter takes, never a keyword and never
 /// this view's name. `show` draws the style `Viewing.style` names, in the package it names.
 ///
 /// The traditional desktop is the one style that is the chrome's too: picking its layout
-/// (`apply` of `windows_desktop`) lays the desk out that way, as picking it in the switch does.
+/// (`apply` of `windows_desktop`) lays the shell out that way, as picking it in the switch does.
 ///
 /// A style that does not load — its package did not compile against the shell and the session,
 /// or its view failed — draws the built-in strips instead, and the person's choice stays as it
 /// was: the session marks the style `loads: false` with why, and raises a notice naming it
 /// (`shell.md` §6, "Nothing can lock a person out"). Fixing the package flips it back, and the
-/// desk shows the chosen style again without a restart.
-view desk_view(a: Arrangement) {
+/// shell shows the chosen style again without a restart.
+view shell_view(a: Arrangement) {
     let chosen = style_of(viewing)
     layers {
         // The chosen style's own settings, over whatever the style drew: the system's one
-        // settings place for a desk style, opened from the bar's style menu (`style_menu`,
+        // settings place for a style, opened from the bar's style menu (`style_menu`,
         // `strips.tl`) and drawn here rather than by each style, so every style — the shipped
         // four and any a person or agent wrote — gets settings at the same place and by the
-        // same actions (`shell.md` §6, "Two ways to change a desk"). A style that draws no bar
-        // is reached by Settings, which shows the same panel. A phone's desk is narrower than
-        // the settings are wide, so there they take the desk rather than a panel over it.
+        // same actions (`shell.md` §6). A style that draws no bar
+        // is reached by Settings, which shows the same panel. A phone's shell is narrower than
+        // the settings are wide, so there they take the screen rather than a panel over it.
         if shell.settings_open and space.compact {
             style_sheet()
         } else {
@@ -149,7 +149,7 @@ view bar_part(part: BarPart) {
             ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
                 on press: session.overview()
             }
-            // The switch between the desk styles, in the bar's own seat rather than in a row of
+            // The switch between the styles, in the bar's own seat rather than in a row of
             // its own, so nothing stands between a window and the bar. A bar too narrow for it
             // beside the clock and the status gives it up, as it gives up the strip and the
             // focused window's menu; the same switch is a page of Settings, so the style a
@@ -216,7 +216,7 @@ view bar_part(part: BarPart) {
 
 /// The workspace in front, opening the workspaces to switch between and the actions on this
 /// device's workspaces. On a bar too narrow for its name beside the clock and the status (a
-/// phone with large text), it is the workspaces' icon, named for the workspace; a desk whose
+/// phone with large text), it is the workspaces' icon, named for the workspace; a shell whose
 /// workspace the session has not published a name for still opens by the workspaces' name.
 view workspace_menu() {
     let name = if front_workspace_name() != "" { front_workspace_name() } else { "Workspaces" }

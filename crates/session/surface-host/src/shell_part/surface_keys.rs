@@ -10,7 +10,7 @@ use tilo_session_core::surface::{HostKey, KeyClaim, SurfaceHost as _};
 
 /// What the part makes of a key the compositor offers it.
 enum Answer {
-    /// The key is the shell's: the part takes it, and asks the desk for this action with these
+    /// The key is the shell's: the part takes it, and asks the shell for this action with these
     /// arguments, once.
     Asks(&'static str, Vec<(&'static str, serde_json::Value)>),
     /// The key belongs to whatever has the keyboard: the part passes it on and asks nothing.
@@ -24,7 +24,7 @@ struct Offered {
     answer: Answer,
 }
 
-/// A desk showing the surface `here` (`""`: at rest), and the keys its part is offered in turn.
+/// A shell showing the surface `here` (`""`: at rest), and the keys its part is offered in turn.
 struct Case {
     name: &'static str,
     here: &'static str,
@@ -109,14 +109,14 @@ fn cases() -> Vec<Case> {
     cases
 }
 
-/// The desk at rest: only the keys that open the switcher are the shell's.
+/// The shell at rest: only the keys that open the switcher are the shell's.
 fn at_rest() -> Vec<Case> {
     vec![
         Case {
             name: "Alt+Tab from rest",
             here: "",
             keys: vec![
-                // Alt+Tab asks the desk for its switcher; with Shift it walks back.
+                // Alt+Tab asks the shell for its switcher; with Shift it walks back.
                 walks(tab(true, true), -1, "workspace"),
                 // Holding Alt and pressing Tab again walks the switcher on.
                 walks(tab(true, false), 1, "workspace"),
@@ -147,7 +147,7 @@ fn at_rest() -> Vec<Case> {
     ]
 }
 
-/// A surface of the desk's up: the keys that answer it are the shell's too.
+/// A surface of the shell's up: the keys that answer it are the shell's too.
 fn with_a_surface_up() -> Vec<Case> {
     vec![
         Case {
@@ -201,9 +201,9 @@ fn with_a_surface_up() -> Vec<Case> {
 }
 
 /// The compositor offers the part every key before the window in front hears it
-/// (`claim_key`), and hands it the ones it takes (`key`): Alt+Tab and Alt+grave ask the desk to
+/// (`claim_key`), and hands it the ones it takes (`key`): Alt+Tab and Alt+grave ask the shell to
 /// walk its switcher from anywhere, letting Alt go or Enter commit the switcher while it is up,
-/// and Escape closes whatever surface is up. Each key the shell takes asks the desk exactly
+/// and Escape closes whatever surface is up. Each key the shell takes asks the shell exactly
 /// once; every other key (a key let go that is not Alt on the switcher, what is typed into the
 /// launcher), and every key of a locked session, is passed on and asks nothing.
 #[test]
@@ -215,7 +215,7 @@ fn a_key_is_the_shells_only_where_a_surface_answers_it() {
         case.here.clone_into(&mut reading.here);
         reading.revealed = case.here == "switcher";
         let (mut part, link) = part_of(&packages, reading, (1280, 800));
-        // What the desk was asked while its switcher or its launcher came up is no key's.
+        // What the shell was asked while its switcher or its launcher came up is no key's.
         if matches!(case.here, "switcher" | "launcher") {
             link.asked.borrow_mut().clear();
         }
@@ -263,7 +263,7 @@ fn a_surface_up_makes_the_part_cover_the_outputs() {
     assert_eq!(
         part.widgets.placement().size,
         (1280, 800),
-        "the launcher has the desk's room"
+        "the launcher has the shell's room"
     );
     assert!(
         part.accepts_pointer(640.0, 400.0),

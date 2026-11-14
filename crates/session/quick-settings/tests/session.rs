@@ -33,7 +33,7 @@ const WIDTH: i32 = 800;
 const HEIGHT: i32 = 600;
 /// The pointer's primary button, as the compositor names it.
 const BTN_LEFT: u32 = 0x110;
-/// The desk's overlay stack, which the bar's tray press opens the panel in.
+/// The shell's overlay stack, which the bar's tray press opens the panel in.
 const OVERLAYS: &str = "desktop:overlays";
 /// The battery, as the power service publishes it.
 const BATTERY: &str = "power:battery";
@@ -55,9 +55,9 @@ fn panel() -> Surface {
 #[test]
 fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
     let mut session = session_with(&[]);
-    // The desk as it stands before the panel appears: what the panel leaves
+    // The screen as it stands before the panel appears: what the panel leaves
     // alone has to stay exactly this, pixel for pixel.
-    let desk = drawn_desk(&mut session);
+    let screen = drawn_screen(&mut session);
     // Started by itself, with no slot that places it, it stands where its anchor holds it.
     let anchored = panel().anchor(Anchor::TOP | Anchor::RIGHT);
     session.start_surface(&anchored).expect("the panel starts");
@@ -70,18 +70,18 @@ fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
 
     // What it drew is its own frame, composited like any client's: the panel
     // along the output's right edge, and what lies left of it untouched.
-    let frame = drawn(&mut session, &desk);
+    let frame = drawn(&mut session, &screen);
     save(&frame, "session-quick-settings");
     let inside = pixel(&frame, WIDTH - width() / 2, 200);
     assert_ne!(
         inside,
-        pixel(&desk, WIDTH - width() / 2, 200),
+        pixel(&screen, WIDTH - width() / 2, 200),
         "the panel draws its own frame"
     );
     let beside = WIDTH - width() - 20;
     assert_eq!(
         pixel(&frame, beside, 200),
-        pixel(&desk, beside, 200),
+        pixel(&screen, beside, 200),
         "the panel takes exactly its width"
     );
 
@@ -208,47 +208,51 @@ fn went_back(ended: ui::tilo_actions::InvocationUpdate) -> bool {
         .unwrap_or_else(|| panic!("the panel says whether it went back: {:?}", output.value))
 }
 /// The surface the shell shows over the windows now, as the surface stack names it.
-/// The surface the desk shows over its windows now, as its own reading names it.
 fn here(session: &Session) -> String {
     session
         .read("desktop:overlays")
-        .and_then(|desk| desk.get("here").and_then(Value::as_str).map(str::to_owned))
+        .and_then(|reading| {
+            reading
+                .get("here")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
         .unwrap_or_default()
 }
 
 /// The panel on a laptop's screen, the size a person's session gives it: its
-/// card stands over the desk rather than on a ground of its own, and it keeps
+/// card stands over the screen rather than on a ground of its own, and it keeps
 /// to the output instead of running past its edge.
 #[test]
-fn the_panel_on_a_laptops_output_stays_inside_it_over_the_desk() {
+fn the_panel_on_a_laptops_output_stays_inside_it_over_the_screen() {
     const OUTPUT: (i32, i32) = (1280, 800);
     let mut laptop = session_of_device_at(&[panel()], Machine::Owned, OUTPUT);
     let session = &mut laptop.session;
-    let desk = at_rest(session);
-    open_the_panel_over(session, &desk);
+    let screen = at_rest(session);
+    open_the_panel_over(session, &screen);
     until_ready(session, "toggle-wifi");
     let frame = at_rest(session);
     save(&frame, "session-quick-settings-1280x800");
 
-    // What the card paints over the desk is not the desk under it: the panel
+    // What the card paints over the screen is not the screen under it: the panel
     // is there.
     let drew = (0..OUTPUT.1).step_by(4).any(|y| {
         let x = OUTPUT.0 - width() / 2;
-        pixel(&frame, x, y) != pixel(&desk, x, y)
+        pixel(&frame, x, y) != pixel(&screen, x, y)
     });
-    assert!(drew, "the panel drew over the desk");
+    assert!(drew, "the panel drew over the screen");
 
     // It keeps to the output it stands in: the bar above it and the row under
-    // its foot are the desk untouched, so no page runs past the screen.
+    // its foot are the screen untouched, so no page runs past it.
     for x in (OUTPUT.0 - width()..OUTPUT.0).step_by(8) {
         assert_eq!(
             pixel(&frame, x, 0),
-            pixel(&desk, x, 0),
+            pixel(&screen, x, 0),
             "the panel keeps off the output's top edge at {x}"
         );
         assert_eq!(
             pixel(&frame, x, OUTPUT.1 - 1),
-            pixel(&desk, x, OUTPUT.1 - 1),
+            pixel(&screen, x, OUTPUT.1 - 1),
             "the panel keeps off the output's bottom edge at {x}"
         );
     }
@@ -339,7 +343,7 @@ fn the_panel_opens_each_radios_details_in_place() {
 /// How many pixels of `after` differ from `before` by more than a shade.
 fn differing(before: &Screenshot, after: &Screenshot) -> usize {
     // A whole number of pixels, compared as bytes first: most of a frame is
-    // the desk around the panel, the same in both, and a run of equal bytes
+    // the screen around the panel, the same in both, and a run of equal bytes
     // holds no pixel to count. Only the runs that differ are read a pixel at
     // a time, which an unoptimised build does slowly.
     const RUN: usize = 4096;
@@ -453,12 +457,12 @@ fn the_quiet_tile_is_the_published_centres_switch() {
     session.stop_surface("quick-settings");
 }
 
-/// The Notifications row opens the one centre, through the desk the session publishes: the press
-/// reaches the desk as any app's does, and the panel steps aside for the centre it shows. This
-/// session draws no shell of its own, so the centre is the desk's own: its chrome is asked, and
-/// the shell's views are left at rest.
+/// The Notifications row opens the one centre, through the surface stack the session publishes:
+/// the press reaches it as any app's does, and the panel steps aside for the centre it shows.
+/// This session draws no shell of its own, so the centre is the screen's own: its chrome is
+/// asked, and the shell's views are left at rest.
 #[test]
-fn the_notifications_row_opens_the_centre_on_the_desk() {
+fn the_notifications_row_opens_the_centre_on_the_screen() {
     let mut laptop = session_of_device(&[panel()], Machine::Owned);
     let session = &mut laptop.session;
     open_the_panel(session);
@@ -480,7 +484,7 @@ fn the_notifications_row_opens_the_centre_on_the_desk() {
     assert_eq!(
         here(session),
         "none",
-        "the desk draws the centre itself, and the shell's views are left at rest"
+        "the screen draws the centre itself, and the shell's views are left at rest"
     );
 }
 
@@ -581,16 +585,16 @@ fn the_panel_draws_at_scale_2() {
     // The laptop's own panel: 2944x1840 physical, 1472x920 logical at 2x.
     const PIXELS: (i32, i32) = (2944, 1840);
     const SCALE: f64 = 2.0;
-    // The bar's clock stands still between the desk's frame and the panel's:
+    // The bar's clock stands still between the screen's frame and the panel's:
     // a minute that turns over in between repaints the clock, and the columns
     // it changes read as the panel painting from the middle of the bar.
     let _clock = tilo_test_env::held_wall_clock();
     let mut laptop = session_of_device_at_scale(&[panel()], Machine::Owned, PIXELS, SCALE);
     let session = &mut laptop.session;
-    let desk = at_rest(session);
-    open_the_panel_over(session, &desk);
+    let screen = at_rest(session);
+    open_the_panel_over(session, &screen);
     until_ready(session, "toggle-wifi");
-    let frame = drawn_on(session, &desk, PIXELS.0);
+    let frame = drawn_on(session, &screen, PIXELS.0);
     save(&frame, "session-quick-settings-scale-2");
 
     // The panel covers twice the logical width it lays out at on the 2x
@@ -599,7 +603,7 @@ fn the_panel_draws_at_scale_2() {
     for x in (0..PIXELS.0).step_by(4) {
         if (0..PIXELS.1)
             .step_by(8)
-            .any(|y| pixel(&frame, x, y) != pixel(&desk, x, y))
+            .any(|y| pixel(&frame, x, y) != pixel(&screen, x, y))
         {
             drawn.push(x);
         }
@@ -621,7 +625,7 @@ fn the_panel_draws_at_scale_2() {
     for x in (first..=last).step_by(16) {
         assert_eq!(
             pixel(&frame, x, 0),
-            pixel(&desk, x, 0),
+            pixel(&screen, x, 0),
             "the panel keeps off the output's top edge at {x}"
         );
     }
@@ -678,15 +682,15 @@ fn the_panel_opens_the_same_way_in_a_windowed_session() {
 }
 
 /// The frame once the panel has drawn into it and finished arriving.
-fn drawn(session: &mut Session, desk: &Screenshot) -> Screenshot {
-    drawn_on(session, desk, WIDTH)
+fn drawn(session: &mut Session, screen: &Screenshot) -> Screenshot {
+    drawn_on(session, screen, WIDTH)
 }
 
 /// [`drawn`] on an output `output_width` physical pixels across: the panel's
 /// place is measured from that edge, whatever the display's density.
-fn drawn_on(session: &mut Session, desk: &Screenshot, output_width: i32) -> Screenshot {
+fn drawn_on(session: &mut Session, screen: &Screenshot, output_width: i32) -> Screenshot {
     let deadline = Instant::now() + OPENING;
-    let panel = panel_pixel(desk, output_width);
+    let panel = panel_pixel(screen, output_width);
     loop {
         pump(session);
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
@@ -739,18 +743,18 @@ fn pixel(frame: &Screenshot, x: i32, y: i32) -> [u8; 4] {
     frame.pixel(x, y).expect("a pixel of the frame")
 }
 
-/// The panel open on the desk, its app running: what the bar's tray press
+/// The panel open on the screen, its app running: what the bar's tray press
 /// does, which is to open the stack's quick-settings slot.
 fn open_the_panel(session: &mut Session) {
-    // The desk as it stands before the panel, at rest: what changes after it
-    // opens is the panel coming up, never the desk still settling.
-    let desk = at_rest(session);
-    open_the_panel_over(session, &desk);
+    // The screen as it stands before the panel, at rest: what changes after it
+    // opens is the panel coming up, never the screen still settling.
+    let screen = at_rest(session);
+    open_the_panel_over(session, &screen);
 }
 
-/// [`open_the_panel`] over `desk`, the desk at rest as the test just read it:
+/// [`open_the_panel`] over `screen`, the screen at rest as the test just read it:
 /// a test that keeps that frame to compare the panel with reads it once.
-fn open_the_panel_over(session: &mut Session, desk: &Screenshot) {
+fn open_the_panel_over(session: &mut Session, screen: &Screenshot) {
     session
         .invoke(
             OVERLAYS,
@@ -768,23 +772,23 @@ fn open_the_panel_over(session: &mut Session, desk: &Screenshot) {
         );
         pump(session);
     }
-    // The app runs before its first frame reaches the desk, and it is drawn
-    // once the desk shows it: a frame read after this is the panel's.
+    // The app runs before its first frame reaches the screen, and it is drawn
+    // once the screen shows it: a frame read after this is the panel's.
     loop {
         pump(session);
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-        if frame.rgba != desk.rgba {
+        if frame.rgba != screen.rgba {
             return;
         }
         assert!(
             Instant::now() < deadline,
-            "the panel never drew over the desk: {:?}",
+            "the panel never drew over the screen: {:?}",
             session.surfaces().names()
         );
     }
 }
 
-/// A press at `(x, y)` on the desk, wherever that lands.
+/// A press at `(x, y)` on the screen, wherever that lands.
 fn press(session: &mut Session, x: f64, y: f64) {
     session
         .compositor()
@@ -1194,7 +1198,7 @@ fn session_of_device_at_scale(
     session_of_device_prepared_with(surfaces, machine, output, scale, |_options, _root| {})
 }
 
-/// The frame once the desk and the panel show nothing new: the same picture
+/// The frame once the screen and the panel show nothing new: the same picture
 /// twice running, with the panel drawn in it.
 fn settled(session: &mut Session) -> Screenshot {
     let deadline = Instant::now() + OPENING;
@@ -1210,7 +1214,7 @@ fn settled(session: &mut Session) -> Screenshot {
     }
 }
 
-/// The frame once it shows a change on `before`: the desk settled again with
+/// The frame once it shows a change on `before`: the screen settled again with
 /// something else on it.
 fn changed(session: &mut Session, before: &Screenshot) -> Screenshot {
     let deadline = Instant::now() + OPENING;
@@ -1262,9 +1266,9 @@ fn session_with(surfaces: &[Surface]) -> Session {
     .expect("session")
 }
 
-/// The desk as it stands before the surface appears: pumped until it has
+/// The screen as it stands before the surface appears: pumped until it has
 /// drawn, so what the surface leaves alone can be compared with it.
-fn drawn_desk(session: &mut Session) -> Screenshot {
+fn drawn_screen(session: &mut Session) -> Screenshot {
     let deadline = Instant::now() + OPENING;
     let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
     loop {
@@ -1275,7 +1279,7 @@ fn drawn_desk(session: &mut Session) -> Screenshot {
             return frame;
         }
         last = frame;
-        assert!(Instant::now() < deadline, "the desk never drew");
+        assert!(Instant::now() < deadline, "the screen never drew");
     }
 }
 

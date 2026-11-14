@@ -195,7 +195,7 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
         // The panel is the floating card every surface of its kind stands on,
         // and the whole of its surface: as tall as the page it shows, growing
         // and shrinking with it as a section opens and closes, up to the room
-        // the desk gives a popover — a page with more than that scrolls in the
+        // the shell gives a popover — a page with more than that scrolls in the
         // body.
         let card = FloatingPanel::new(Box::new(
             Scrollable::new_vertical()

@@ -22,7 +22,7 @@ pub use desktop::{
     DeskGesture, DesktopHost, PointerSamples, StripPolicy, WindowObserver, desktop, desktop_with,
 };
 pub use shell_part::{SessionLink, ShellPart, ShellWork};
-pub use well_policy::{DeskHost, WellDesk, WellPolicy, well_policy};
+pub use well_policy::{WellHost, WellPolicy, WindowModel, well_policy};
 pub use widget::WidgetHost;
 
 use std::cell::Cell;

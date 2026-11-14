@@ -76,7 +76,7 @@ fn describe(preset: Layout) -> Text {
     } else if preset == .gnome {
         "The top bar alone; the overview on demand."
     } else if preset == .windows_desktop {
-        "A floating desk of windows, each with its own bar, the focused window's commands in the top bar, and a dock at the foot."
+        "Windows floating over the screen, each with its own bar, the focused window's commands in the top bar, and a dock at the foot."
     } else {
         "No chrome at rest: the screen edges reveal the bar and the dock."
     }

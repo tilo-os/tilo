@@ -1,12 +1,12 @@
 /// The workspace overview: every workspace the person is in, to switch to, join, or make one.
-/// It is not the window overview (that is the desk's windows and strips); a workspace is where a
+/// It is not the window overview (that is the layout's windows and strips); a workspace is where a
 /// person and their team work, and a window is where something shows.
 ///
-/// It reads the desk's workspaces (`session.workspace`) and, for the one in front, the people
+/// It reads the layout's workspaces (`session.workspace`) and, for the one in front, the people
 /// here. Switching, joining and making one are the session's actions.
 view workspaces() {
     state name: Text = ""
-    // The cards stand in the desk's page, as the overview's do: their corners round, and a card
+    // The cards stand in the shell's page, as the overview's do: their corners round, and a card
     // on the window's edge has them cut by it.
     page(full) {
         stack(gap: .section) {

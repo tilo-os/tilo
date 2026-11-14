@@ -378,7 +378,7 @@ impl SessionOrigin {
 pub(super) struct PlaceInvoker {
     pub(super) link: Rc<SessionLink>,
     /// The resource each of the session's loose actions is published on, by the action's id
-    /// (`session.show_surface(...)` goes to the desk).
+    /// (`session.show_surface(...)` goes to the shell).
     pub(super) session: BTreeMap<String, String>,
     /// The session's loose actions as its description declares them, by id: a parameter
     /// published as a field of another is sent nested under it.

@@ -49,7 +49,7 @@ settings-store = { path = "../../system/settings-store", features = ["watch"] }
 # The readings the power service publishes are the battery's and the sleep
 # policy's own shapes.
 tilo-power-mgmt = { path = "../../system/power", features = ["service"] }
-# The one now-playing reading, which the desk's music widget, the lock
+# The one now-playing reading, which the shell's music widget, the lock
 # screen's card and the bar's pill show as this panel does.
 tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
 tracing.workspace = true

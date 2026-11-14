@@ -60,9 +60,9 @@ const VIEWS: &str = "views";
 const SEEN_MARKS: &str = "seen";
 const REVIEWED: &str = "runs";
 
-/// The id `view`'s state is kept under for the window that takes the desk's tab `tab`: each
+/// The id `view`'s state is kept under for the window that takes the shell's tab `tab`: each
 /// window of an app is at its own place, so two windows of Tasks stand on two places, and a window
-/// keeps its place on the person's other devices and after a restart, where the desk keeps the
+/// keeps its place on the person's other devices and after a restart, where the shell keeps the
 /// same tab.
 #[must_use]
 pub fn in_window(tab: u64, view: &str) -> String {

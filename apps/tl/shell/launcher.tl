@@ -4,13 +4,13 @@
 ///
 /// The panel is the floating material, because it covers what the person is looking at and
 /// they choose from it: the field in its header, the results in its body, the keys under it.
-/// The results are the installed applications, the desk's windows and the desk's own doors; what
+/// The results are the installed applications, the layout's windows and the shell's own surfaces; what
 /// apps, files and actions hold beyond those is the platform's search, which Enter hands
 /// `submit_search` to, so no list this view keeps can go stale.
 ///
 /// "Open as a tab" is the other way out of a search, beside Enter's: what the text finds joins
 /// the strip in front as its tab (shell.md §2, §3), one arranging action of the person's, so
-/// the desk fills with the person's work rather than a second strip for every result.
+/// the shell fills with the person's work rather than a second strip for every result.
 /// The launcher, with the person's last query in the field.
 view launcher() {
     state query: Text = device.overlays.spotlight
@@ -60,7 +60,7 @@ view launcher() {
                 }
             }
             if not typed {
-                desk_doors()
+                shell_surfaces()
             }
         }
         footer: {
@@ -108,7 +108,7 @@ fn apps_matching(query: Text) -> List<device.App> {
 
 /// Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter
 /// opens Notes; a query that names no app is what search everywhere answers, as Enter has always
-/// done for what the desk's own rows do not hold.
+/// done for what the shell's own rows do not hold.
 action open_first(query: Text) {
     if let a = apps_matching(query).first() {
         session.open_app(app: a.key)
@@ -128,8 +128,8 @@ view app_row(a: device.App) {
     }
 }
 
-/// The key of the strip in front: the one the person brought forward, or else the desk's
-/// last, so a found resource joins the window they are working in. Empty while the desk has
+/// The key of the strip in front: the one the person brought forward, or else the layout's
+/// last, so a found resource joins the window they are working in. Empty while the layout has
 /// no strip.
 fn front_strip() -> Text {
     let a = arrangement
@@ -156,10 +156,10 @@ view window_row(w: device.Window) {
     }
 }
 
-/// The desk's own doors, as rows that open them: each surface, and the ways to make and join a
-/// workspace.
-view desk_doors() {
-    ui.Section("The desk") {
+/// The shell's own surfaces, as rows that open them: each surface, and the ways to make and join
+/// a workspace.
+view shell_surfaces() {
+    ui.Section("The shell") {
         ui.ListRow("Overview", icon: .layout_grid) {
             on activate: device.show_surface(device.overlays, surface: "overview")
         }

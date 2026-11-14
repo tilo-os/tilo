@@ -105,7 +105,7 @@ fn arrangement(record: &str, shows: &str, shown_as: &str) -> ArrangementReading 
         queries: Vec::new(),
         workspaces: vec![ArrangementWorkspaceReading {
             key: "w1".to_owned(),
-            name: "Desk".to_owned(),
+            name: "Home".to_owned(),
             current: true,
         }],
         rows: vec![ArrangementRowReading {
@@ -357,7 +357,7 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     for _ in 0..6 {
         part.prepare_frame();
     }
-    // The bar's preset menu says the desk shows the strips; its items show the framed canvas,
+    // The bar's preset menu says the shell shows the strips; its items show the framed canvas,
     // where the place is drawn through the note's own editor.
     click(&mut part, "Showing Strips");
     click(&mut part, "Frames");

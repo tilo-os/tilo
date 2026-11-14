@@ -12,7 +12,7 @@
 /// Panning and zooming is the map's camera (a middle drag, Ctrl and a wheel, the arrow keys, two
 /// fingers); it moves the lens and nothing in the arrangement, so a place stays where it was
 /// while the person looks around, and the places keep their canvas points.
-/// The map fills the desk under the entry: it cuts off what it holds at its edge, so a map only
+/// The map fills the room under the entry: it cuts off what it holds at its edge, so a map only
 /// as tall as its content would show none of it.
 ///
 /// A resource dragged out of a view — a message's attachment chip, a search hit, a row of
@@ -77,7 +77,7 @@ fn snap_y(at: Int) -> Int {
     if frames_style() and shell.frames_snap { snap(at, canvas_grid()) } else { at }
 }
 
-/// Whether the desk style the person shows is the framed canvas: the style whose own settings
+/// Whether the style the person shows is the framed canvas: the style whose own settings
 /// the grid is.
 fn frames_style() -> Bool {
     style_of(viewing) == "so.tilo.shell:frames"

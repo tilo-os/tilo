@@ -242,8 +242,8 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
             local: true,
         },
         HandoffTarget {
-            id: "desk".into(),
-            label: "Desk computer".into(),
+            id: "desktop".into(),
+            label: "Desktop computer".into(),
             online: true,
             local: false,
         },

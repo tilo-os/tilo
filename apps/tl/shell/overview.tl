@@ -1,15 +1,15 @@
-/// The overview: what the desk holds, to search and move things in, over the windows it
+/// The overview: what the workspace holds, to search and move things in, over the windows it
 /// covers. It reads the arrangement and the windows the session publishes (`device.windows`),
 /// never a copy, and every choice it offers is an action the session publishes
 /// (`so.tilo.session`), so the arrangement stays the session's: each change is attributed and
 /// undoable.
 ///
-/// The picture is the desk's: each strip top to bottom, its windows left to right at the share
-/// of the strip's width they keep on the desk, a group's other tabs as narrower slices beside
+/// The picture is the layout's: each strip top to bottom, its windows left to right at the share
+/// of the strip's width they keep, a group's other tabs as narrower slices beside
 /// the tab in front, under the strip's name. Each place shows the window's own live picture
 /// (`ui.WindowPreview`), the compositor's, under its name in the card's head and the app it
-/// shows below it; it is a surface of the desk: the desk's bar stays above it, so it holds no
-/// sidebar of its own. The page keeps its gutter, so the overview stands inside the desk the way
+/// shows below it; it is a surface of the shell: the shell's bar stays above it, so it holds no
+/// sidebar of its own. The page keeps its gutter, so the overview stands inside the shell the way
 /// every other page does.
 view overview() {
     state query: Text = device.overlays.spotlight
@@ -107,7 +107,7 @@ view picture(windows: List<device.Window>, strip: Text) {
     }
 }
 
-/// The tabs standing behind `w` on the desk, in their order.
+/// The tabs standing behind `w` in its strip, in their order.
 fn behind_tabs(windows: List<device.Window>, w: device.Window) -> List<device.Window> {
     return windows
         .filter(v -> v.group_key == w.group_key and v.tab_index > 0)
@@ -117,7 +117,7 @@ fn behind_tabs(windows: List<device.Window>, w: device.Window) -> List<device.Wi
 /// One window's place: its live picture, the app it shows and the device it runs on when that is
 /// not this one, lifted while it has focus, with a menu that moves it to another strip or
 /// workspace, closes it, or asks about it. Its card takes `weight` of the strip's width, so a
-/// place stands as wide as the window stands on the desk, up to the width a place shows at on
+/// place stands as wide as the window stands in its strip, up to the width a place shows at on
 /// this screen: past that the picture would stand taller than the page it is on, so a window
 /// wider than the screen allows is pictured no wider than that. A compact output holds one place
 /// across, so there the card takes the room it is given instead of a share of a strip.
@@ -255,7 +255,7 @@ fn window_strips(windows: List<device.Window>) -> List<Text> {
     return in_order.group(s -> s).map(p -> p.key)
 }
 
-/// The ids of the strips of the workspace `workspace`, top to bottom, as the desk's windows
+/// The ids of the strips of the workspace `workspace`, top to bottom, as the layout's windows
 /// name them.
 fn strip_keys(workspace: Text) -> List<Text> {
     let in_order = device.windows.all

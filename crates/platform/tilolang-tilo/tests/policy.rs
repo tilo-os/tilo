@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
             Some(standing(Vec::new())),
         );
         let meta = &packages.last().unwrap().meta;
-        let desk = ada.host.root_of("test.letters").unwrap();
+        let letters = ada.host.root_of("test.letters").unwrap();
         ada.commit();
         let new_draft = meta.actions.iter().find(|a| a.name == "new_draft").unwrap();
         ada.host
@@ -154,14 +154,14 @@ tilo_test_env::scenario! {
                 &Principal::new("ada"),
                 (
                     new_draft.id.as_str(),
-                    vec![tilolang_runtime::Value::resource(&desk)],
+                    vec![tilolang_runtime::Value::resource(&letters)],
                 ),
             )
             .unwrap();
         ada.commit();
-        let tilolang_runtime::Value::List(drafts) = ada.host.runtime().read(&desk, "drafts").unwrap()
+        let tilolang_runtime::Value::List(drafts) = ada.host.runtime().read(&letters, "drafts").unwrap()
         else {
-            panic!("the desk lists its drafts");
+            panic!("the letters app lists its drafts");
         };
         let tilolang_runtime::Value::Ref(draft) = &drafts[0] else {
             panic!("a draft is a reference");

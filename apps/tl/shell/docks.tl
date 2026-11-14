@@ -1,6 +1,6 @@
 /// The dock: a run of items on the edge the person set (the launcher, the apps and resources they
 /// pinned, and the apps running now), each with its badge, and the ones that want the person
-/// marked. It is a view of the person's `Shell` record and of the desk; every change it offers is
+/// marked. It is a view of the person's `Shell` record and of the layout; every change it offers is
 /// one of `chrome.tl`'s actions.
 ///
 /// The gesture is Rust (`ui.DragRun`, the toolkit's run): the person picks an item up, the
@@ -91,7 +91,7 @@ view dock_run(s: Shell) {
 
 /// The apps running on this device that the dock's record does not keep, one item an app: the
 /// window of it the person was in last, named and drawn as that window is. A window of another
-/// of the person's devices is not a window of this desk's dock, and an app the record already
+/// of the person's devices is not a window of this shell's dock, and an app the record already
 /// holds (pinned, or pinned and running) stands in the run, once.
 fn unfiled_running(s: Shell) -> List<DockItem> {
     let windows = device.windows.all.filter(w -> w.local).sort_by(w -> w.recency)
@@ -139,7 +139,7 @@ view dock_running_tiles(s: Shell, running: List<DockItem>) {
 }
 
 /// What a press on a dock item does, by the app the item stands for: a window of that app on this
-/// desk comes to the front, so the desk says which window the person is in and the top bar's
+/// screen comes to the front, so the shell says which window the person is in and the top bar's
 /// commands are its own; the window is the one the item was drawn for, so a press never opens a
 /// second copy. An app with no window open is opened (`session.open_app`), and the launcher
 /// shows.

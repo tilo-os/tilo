@@ -17,7 +17,7 @@ impl SurfaceHost for ShellPart {
     }
 
     /// The whole screen lies under the windows, which stand in its wells; the bar rides over
-    /// them. A surface of the desk's (the overview, the switcher, the launcher) or a menu of
+    /// them. A surface of the shell's (the overview, the switcher, the launcher) or a menu of
     /// the part's stands over the windows instead: while one covers the outputs, the part and
     /// the pictures it names are drawn above every window, as what it shows is the person's
     /// to look at rather than a backdrop behind their windows.
@@ -154,7 +154,7 @@ impl SurfaceHost for ShellPart {
     }
 
     fn wants_keyboard(&self) -> bool {
-        // The desk under the windows takes the keys when one of its own controls put the caret
+        // The shell under the windows takes the keys when one of its own controls put the caret
         // somewhere it answers: a field of the bar's, or a canvas's place, which pans with the
         // arrow keys (`ui.Map`). A shell with none leaves the keys to the window in front.
         self.cover || self.text_input().is_some() || self.widgets.takes_keys()
@@ -244,7 +244,7 @@ impl SurfaceHost for ShellPart {
         // pictures load on the toolkit's own threads: it is lent for the process, not this call.
         ui::lend_content(self.content.clone());
         let input = std::mem::take(&mut self.input);
-        // A surface the desk shows, or a menu it opened, makes the part cover the outputs:
+        // A surface the shell shows, or a menu it opened, makes the part cover the outputs:
         // standing over them is what lets a press outside it close it.
         self.follow_cover();
         if input || self.due() {
@@ -264,7 +264,7 @@ impl SurfaceHost for ShellPart {
                 drew |= self.draw();
             }
             // The toolkit took the input in: a menu the part opened, or a surface of the
-            // desk's, may have opened or closed with it.
+            // shell's, may have opened or closed with it.
             self.follow_cover();
             if self.draw() {
                 drew = true;

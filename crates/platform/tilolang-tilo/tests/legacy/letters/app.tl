@@ -14,26 +14,26 @@ type Draft {
 }
 
 /// The workspace's letters.
-type Desk {
+type Layout {
     drafts: Collection<Draft>
 }
 
-root Desk
+root Layout
 
-default view desk for Desk
+default view letters for Layout
 
 default view editor for Draft
 
 row view draft_row for Draft
 
 /// Starts a letter.
-primary action new_draft(desk: Desk) -> Draft (icon: .plus, label: "New letter") {
-    desk.drafts.insert(Draft(subject: "Untitled"))
+primary action new_draft(layout: Layout) -> Draft (icon: .plus, label: "New letter") {
+    layout.drafts.insert(Draft(subject: "Untitled"))
 }
 
 /// Throws a letter away.
-destructive action discard(desk: Desk, d: Draft) (icon: .trash) {
-    desk.drafts.remove(d)
+destructive action discard(layout: Layout, d: Draft) (icon: .trash) {
+    layout.drafts.remove(d)
 }
 
 /// Posts the letter. This leaves the system, so it always asks first, showing the letter.
@@ -53,17 +53,17 @@ view compose(d: Draft) {
     }
 }
 
-/// The desk's window: its letters, each opening in a window of its own, drafts and sent ones
+/// The letters view: each letter opens in a window of its own, drafts and sent ones
 /// apart as a letter's filters say. It opens on the drafts.
-view desk(desk: Desk) {
+view letters(layout: Layout) {
     state query: Text = "is:drafts"
     let places = [Draft.drafts, Draft.sent]
     let everything = "All letters"
     let title = places.find(f -> f.query == query)?.label ?? everything
-    let shown = desk.drafts.matching(query)
+    let shown = layout.drafts.matching(query)
     ui.NavShell(
         content_kind: .document,
-        sidebar_title: .some(meta(desk).title),
+        sidebar_title: .some(meta(layout).title),
         overview_title: .some(title),
         overview_count: .some(shown.len()),
     ) {
@@ -103,94 +103,94 @@ view editor(d: Draft) {
     }
 }
 
-/// A desk with letters on both shelves: enough drafts to scroll.
-scenario "a desk of letters" -> Draft {
-    let desk = root Desk
-    desk.drafts.insert(
+/// A layout with letters on both shelves: enough drafts to scroll.
+scenario "a layout of letters" -> Draft {
+    let layout = root Layout
+    layout.drafts.insert(
         Draft(
             to: "bo@example.org",
             subject: "Dinner on Friday",
             body: "Shall we try the new place on Mill Lane? I can book for eight.",
         ),
     )
-    let boiler = desk.drafts.insert(
+    let boiler = layout.drafts.insert(
         Draft(
             to: "landlord@example.org",
             subject: "Boiler repair",
             body: "The boiler stopped again this morning. Could the engineer come on Tuesday?",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "mia@example.org",
             subject: "Photos from the trip",
             body: "Here are the ones from the lake. The sunset ones came out best.",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "hr@example.org",
             subject: "Holiday in August",
             body: "I would like to take the second and third weeks of August off.",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "sam@example.org",
             subject: "Happy birthday",
             body: "Thirty! Let me know when you are free for a proper celebration.",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "council@example.org",
             subject: "Street light out",
             body: "The light outside number twelve has been out for a week.",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "chen@example.org",
             subject: "Importer review",
             body: "I read through the table handling. Two small comments inline.",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "library@example.org",
             subject: "Renewing two books",
             body: "Could I keep Piranesi and The Dispossessed for another three weeks?",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "dentist@example.org",
             subject: "Moving my appointment",
             body: "Could we move Thursday's check-up to the following week?",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "team@example.org",
             subject: "Notes from the offsite",
             body: "The three things we agreed on, and who is taking each one.",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "editor@example.org",
             subject: "Second draft of the essay",
             body: "I cut the opening and moved the example about rivers to the end.",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "neighbour@example.org",
             subject: "Parcel for you",
             body: "A parcel came for you while you were away. It is in our hallway.",
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "ada@example.org",
             subject: "Thanks for the help",
@@ -198,7 +198,7 @@ scenario "a desk of letters" -> Draft {
             sent: true,
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "bank@example.org",
             subject: "Change of address",
@@ -206,7 +206,7 @@ scenario "a desk of letters" -> Draft {
             sent: true,
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "gran@example.org",
             subject: "See you at Easter",
@@ -214,7 +214,7 @@ scenario "a desk of letters" -> Draft {
             sent: true,
         ),
     )
-    desk.drafts.insert(
+    layout.drafts.insert(
         Draft(
             to: "club@example.org",
             subject: "Cancelling my membership",
@@ -227,8 +227,8 @@ scenario "a desk of letters" -> Draft {
 
 /// A first letter, half written.
 scenario "a first letter" {
-    let desk = root Desk
-    desk.drafts.insert(
+    let layout = root Layout
+    layout.drafts.insert(
         Draft(
             to: "bo@example.org",
             subject: "Plans for the weekend",

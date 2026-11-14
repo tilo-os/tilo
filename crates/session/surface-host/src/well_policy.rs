@@ -5,7 +5,7 @@
 //! [`ui::widget::WindowWell`] where the content goes, and the well reports its rectangle, keyed
 //! by the place, to the [`Wells`] handle the surface host shares with this policy — as
 //! [`DesktopHost`](crate::DesktopHost) and
-//! [`StripPolicy`](crate::StripPolicy) share their desk. The policy answers a window's initial
+//! [`StripPolicy`](crate::StripPolicy) share their desktop. The policy answers a window's initial
 //! size, its place and the arrangement of every window from that: a window maps into the
 //! desktop's tab model (giving it a tab id), and its well is the one keyed by that tab id.
 //!
@@ -53,37 +53,37 @@ const INITIAL_WIDTH_FRACTION: f64 = 0.5;
 const INITIAL_HEIGHT_FRACTION: f64 = 0.6;
 
 /// The desktop both halves share: its window model and the tree it keeps.
-struct Desk {
+struct Desktop {
     policy: DesktopPolicy,
     host: WidgetHost,
 }
 
 /// The desktop model a [`WellPolicy`] keeps its windows' tabs in: the tab a window maps into
 /// is the key its well is reported by.
-pub trait WellDesk {
+pub trait WindowModel {
     /// The desktop's window model.
     fn policy(&self) -> RefMut<'_, DesktopPolicy>;
     /// Lay the desktop's tree out again after its model changed.
     fn relayout(&self);
     /// The outputs the windows stand on, as the compositor knows them now.
     fn cover(&self, _outputs: &[LayoutRect]) {}
-    /// How the desk reads touchpad gestures: `None` leaves every one to the
+    /// How the desktop reads touchpad gestures: `None` leaves every one to the
     /// clients.
     fn gesture_config(&self) -> Option<GestureConfig> {
         None
     }
-    /// The desk took a gesture, and it asked `gesture` of it: it is the same
-    /// desk the strips' policy takes them on, so they reach its chrome the
+    /// The desktop took a gesture, and it asked `gesture` of it: it is the same
+    /// desktop the strips' policy takes them on, so they reach its chrome the
     /// same way.
     fn took_gesture(&self, _gesture: DeskGesture) {}
 }
 
 /// The policy's own desktop ([`well_policy`]).
-struct OwnDesk(Rc<RefCell<Desk>>);
+struct OwnModel(Rc<RefCell<Desktop>>);
 
-impl WellDesk for OwnDesk {
+impl WindowModel for OwnModel {
     fn policy(&self) -> RefMut<'_, DesktopPolicy> {
-        RefMut::map(self.0.borrow_mut(), |desk| &mut desk.policy)
+        RefMut::map(self.0.borrow_mut(), |desktop| &mut desktop.policy)
     }
 
     fn relayout(&self) {
@@ -108,11 +108,11 @@ fn extent(value: f64) -> i32 {
 /// The window policy answered by a tilolang shell's wells, and the host side of the desktop
 /// they place windows of.
 pub struct WellPolicy {
-    desk: Rc<dyn WellDesk>,
+    desktop: Rc<dyn WindowModel>,
     wells: Wells,
     /// The windows given a place, so one gone from the compositor closes its tab.
     mapped: Vec<u64>,
-    /// The touchpad gestures the desk took.
+    /// The touchpad gestures the desktop took.
     gestures: GestureReader,
     /// Those of them that have not shown a buffer yet: they wait in their well, which the
     /// compositor does not list among its windows.
@@ -127,11 +127,11 @@ pub struct WellPolicy {
     followers: WindowFollowers,
 }
 
-/// The desk a tilolang shell places its windows on, and the policy that answers where they go
+/// The desktop a tilolang shell places its windows on, and the policy that answers where they go
 /// with `wells` the shell's views report their wells to. The surface host of the shell's views
 /// installs the same handle before it lays them out (`ui::widget::window_well::install`).
 #[must_use]
-pub fn well_policy(salt: u16, scale: f64) -> (WellPolicy, DeskHost) {
+pub fn well_policy(salt: u16, scale: f64) -> (WellPolicy, WellHost) {
     let (policy, surface) = DesktopPolicy::new(salt);
     let placement = crate::Placement {
         origin: (0, 0),
@@ -139,19 +139,19 @@ pub fn well_policy(salt: u16, scale: f64) -> (WellPolicy, DeskHost) {
         scale,
     };
     let host = WidgetHost::new(Box::new(surface), placement, false);
-    let desk = Rc::new(RefCell::new(Desk { policy, host }));
+    let desktop = Rc::new(RefCell::new(Desktop { policy, host }));
     (
-        WellPolicy::over(Rc::new(OwnDesk(Rc::clone(&desk)))),
-        DeskHost { desk },
+        WellPolicy::over(Rc::new(OwnModel(Rc::clone(&desktop)))),
+        WellHost { desktop },
     )
 }
 
 impl WellPolicy {
-    /// The policy placing the windows of `desk` where the shell's wells stand.
+    /// The policy placing the windows of `desktop` where the shell's wells stand.
     #[must_use]
-    pub fn over(desk: Rc<dyn WellDesk>) -> Self {
+    pub fn over(desktop: Rc<dyn WindowModel>) -> Self {
         Self {
-            desk,
+            desktop,
             wells: Wells::new(),
             mapped: Vec::new(),
             gestures: GestureReader::default(),
@@ -245,7 +245,7 @@ impl WellPolicy {
         if self.mapped.contains(&window.id) {
             return;
         }
-        let mapped = self.desk.policy().map(tilo_desktop_policy::Window {
+        let mapped = self.desktop.policy().map(tilo_desktop_policy::Window {
             id: window.id,
             app_id: window.app_id.clone(),
             title: window.title.clone(),
@@ -259,16 +259,16 @@ impl WellPolicy {
             return;
         }
         self.mapped.push(window.id);
-        self.desk.relayout();
+        self.desktop.relayout();
         // A window launched into a workspace not in front goes there once its tab is made.
-        self.desk.policy().carry_launched();
+        self.desktop.policy().carry_launched();
         self.followers.mapped(window);
     }
 
     /// The tab the desktop gave `window`, as its well names it.
     fn tab(&mut self, window: &WindowInfo) -> Option<String> {
         self.map(window);
-        self.desk
+        self.desktop
             .policy()
             .tab_of(window.id)
             .map(|tab| tab.to_string())
@@ -278,13 +278,16 @@ impl WellPolicy {
     /// mapped (shell.md §8). `None` until it mapped, or for a dialog, which floats over the
     /// window it belongs to and takes no place.
     pub fn well_key(&mut self, window: u64) -> Option<String> {
-        self.desk.policy().tab_of(window).map(|tab| tab.to_string())
+        self.desktop
+            .policy()
+            .tab_of(window)
+            .map(|tab| tab.to_string())
     }
 }
 
 impl WindowPolicy for WellPolicy {
     fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)> {
-        self.desk.cover(outputs);
+        self.desktop.cover(outputs);
         let tab = self.tab(window);
         if !self.pending.contains(&window.id) {
             self.pending.push(window.id);
@@ -298,7 +301,7 @@ impl WindowPolicy for WellPolicy {
         _size: (i32, i32),
         outputs: &[LayoutRect],
     ) -> LayoutPoint {
-        self.desk.cover(outputs);
+        self.desktop.cover(outputs);
         let tab = self.tab(window);
         self.pending.retain(|id| *id != window.id);
         self.place_of(tab.as_deref())
@@ -310,9 +313,9 @@ impl WindowPolicy for WellPolicy {
         windows: &[(WindowInfo, LayoutRect)],
         outputs: &[LayoutRect],
     ) -> Option<Vec<Arrangement>> {
-        self.desk.cover(outputs);
+        self.desktop.cover(outputs);
         // A launched window whose tab came with the last layout goes to its own workspace.
-        self.desk.policy().carry_launched();
+        self.desktop.policy().carry_launched();
         // A window the compositor lists has shown its buffer.
         self.pending
             .retain(|id| !windows.iter().any(|(window, _)| window.id == *id));
@@ -326,20 +329,20 @@ impl WindowPolicy for WellPolicy {
             .collect();
         if !gone.is_empty() {
             for id in &gone {
-                self.desk.policy().unmap(*id);
+                self.desktop.policy().unmap(*id);
                 self.followers.gone(*id);
             }
-            self.desk.relayout();
+            self.desktop.relayout();
         }
         self.mapped.retain(|id| !gone.contains(id));
         self.configured.retain(|id, _| !gone.contains(id));
         let mut arrangements = Vec::with_capacity(windows.len());
         for (window, current) in windows {
             if let Some(title) = &window.title {
-                self.desk.policy().retitle(window.id, title);
+                self.desktop.policy().retitle(window.id, title);
             }
             if let Some(app_id) = &window.app_id {
-                self.desk.policy().set_app_id(window.id, app_id);
+                self.desktop.policy().set_app_id(window.id, app_id);
             }
             let tab = self.tab(window);
             let Some(well) = tab.as_deref().and_then(|key| self.wells.well(key)) else {
@@ -388,62 +391,63 @@ impl WindowPolicy for WellPolicy {
         self.mapped.retain(|id| *id != window.id);
         self.configured.remove(&window.id);
         self.followers.gone(window.id);
-        self.desk.policy().unmap(window.id);
-        self.desk.relayout();
+        self.desktop.policy().unmap(window.id);
+        self.desktop.relayout();
     }
 
     fn focus_on_click(&mut self, window: &WindowInfo) -> bool {
-        let focused = self.desk.policy().focus(window.id);
+        let focused = self.desktop.policy().focus(window.id);
         if focused {
-            self.desk.relayout();
+            self.desktop.relayout();
         }
         true
     }
 
     fn gesture(&mut self, gesture: &GestureEvent) -> bool {
-        let desk = &self.desk;
-        self.gestures.take(gesture, desk.gesture_config(), |asked| {
-            desk.took_gesture(asked);
-        })
+        let desktop = &self.desktop;
+        self.gestures
+            .take(gesture, desktop.gesture_config(), |asked| {
+                desktop.took_gesture(asked);
+            })
     }
 
     fn focused(&mut self) -> Option<u64> {
-        self.desk.policy().focused()
+        self.desktop.policy().focused()
     }
 
     fn activate(&mut self, window: &WindowInfo, fresh: bool) -> bool {
         let changed = if fresh {
-            self.desk.policy().focus(window.id)
+            self.desktop.policy().focus(window.id)
         } else {
-            self.desk.policy().ask_attention(window.id)
+            self.desktop.policy().ask_attention(window.id)
         };
         if changed {
-            self.desk.relayout();
+            self.desktop.relayout();
         }
         fresh
     }
 
     fn take_close_requests(&mut self) -> Vec<u64> {
-        self.desk.policy().take_closed()
+        self.desktop.policy().take_closed()
     }
 }
 
-/// The host side of the desk a [`WellPolicy`] places windows on: its widget tree, and what the
+/// The host side of the desktop a [`WellPolicy`] places windows on: its widget tree, and what the
 /// session drives on it (strips and workspaces, the tree it keeps).
 #[derive(Clone)]
-pub struct DeskHost {
-    desk: Rc<RefCell<Desk>>,
+pub struct WellHost {
+    desktop: Rc<RefCell<Desktop>>,
 }
 
-impl DeskHost {
-    /// The desk's policy, for everything else a session drives on it.
+impl WellHost {
+    /// The desktop's policy, for everything else a session drives on it.
     pub fn with_policy<R>(&self, read: impl FnOnce(&mut DesktopPolicy) -> R) -> R {
-        read(&mut self.desk.borrow_mut().policy)
+        read(&mut self.desktop.borrow_mut().policy)
     }
 
-    /// The desk's widget tree as hosted: what it publishes, its accessibility tree, the
+    /// The desktop's widget tree as hosted: what it publishes, its accessibility tree, the
     /// actions it accepts.
     pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetHost) -> R) -> R {
-        read(&mut self.desk.borrow_mut().host)
+        read(&mut self.desktop.borrow_mut().host)
     }
 }

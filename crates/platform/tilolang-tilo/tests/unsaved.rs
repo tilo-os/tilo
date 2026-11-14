@@ -1,4 +1,4 @@
-//! What an origin derives is never saved to the workspace record: the clock, the desk, the device's
+//! What an origin derives is never saved to the workspace record: the clock, the layout, the device's
 //! state are written into the store's unsaved layer, read at once, and gone at the next start,
 //! when the origin writes them again. A change of one reaches the views and leaves no change
 //! behind to be committed, sent or replayed.
@@ -24,7 +24,7 @@ use tilolang_tilo::record::DynValue;
 /// A package whose root holds a kind its origin derives (`session.arrangement`).
 const SHELL: &str = r#"app so.tilo.test.shell "Shell"
 
-type Desk (origin: session.arrangement) {
+type Layout (origin: session.arrangement) {
   clock: Text merge register
   workspace: Text merge register
   workspaces: Collection<Workspace>
@@ -35,11 +35,11 @@ type Workspace (origin: session.arrangement_workspace) {
   name: Text merge register
 }
 
-root Desk
+root Layout
 
-default view bar for Desk
+default view bar for Layout
 
-view bar(d: Desk) {
+view bar(d: Layout) {
   row {
     text(d.clock)
     text(d.workspace)
@@ -94,8 +94,8 @@ fn apply(_host: &Host, doc: &mut AutoCommit, action: &DynAction) {
     doc.commit();
 }
 
-/// The field id of `name` in the shell's `Desk` type.
-fn desk_field(host: &Host, name: &str) -> String {
+/// The field id of `name` in the shell's `Layout` type.
+fn layout_field(host: &Host, name: &str) -> String {
     let types = tilolang_tilo::origin::origin_types(
         &host.package("so.tilo.test.shell").unwrap().meta,
         "session",
@@ -112,25 +112,25 @@ fn desk_field(host: &Host, name: &str) -> String {
         .clone()
 }
 
-/// Write the desk's clock through its origin, as the session does each minute.
-fn write_clock(host: &Host, desk: &ResourceRef, clock: &str) {
+/// Write the layout's clock through its origin, as the session does each minute.
+fn write_clock(host: &Host, layout: &ResourceRef, clock: &str) {
     host.runtime()
         .apply_origin(
             "session",
             vec![OriginWrite::Set {
-                target: desk.clone(),
-                fields: vec![(desk_field(host, "clock"), Value::Text(clock.to_owned()))],
+                target: layout.clone(),
+                fields: vec![(layout_field(host, "clock"), Value::Text(clock.to_owned()))],
             }],
             Some("2026-10-31T12:00:00Z".to_owned()),
         )
         .unwrap();
 }
 
-fn clock_of(host: &Host, desk: &ResourceRef) -> Option<DynValue> {
+fn clock_of(host: &Host, layout: &ResourceRef) -> Option<DynValue> {
     host.store()
-        .record(&desk.doc)
+        .record(&layout.doc)
         .unwrap()
-        .get(&desk_field(host, "clock"))
+        .get(&layout_field(host, "clock"))
         .cloned()
 }
 
@@ -153,16 +153,16 @@ tilo_test_env::scenario! {
     phase a_record_a_write_made_answers_a_field_the_write_did_not_write;
     {
         let (host, mut doc) = host();
-        let desk = host.root_of("so.tilo.test.shell").unwrap();
+        let layout = host.root_of("so.tilo.test.shell").unwrap();
         commit(&host, &mut doc);
-        // The session's sync makes a workspace in the desk's collection, naming its key alone.
+        // The session's sync makes a workspace in the layout's collection, naming its key alone.
         let made = host
             .runtime()
             .apply_origin(
                 "session",
                 vec![OriginWrite::Insert {
-                    owner: desk,
-                    field: desk_field(&host, "workspaces"),
+                    owner: layout,
+                    field: layout_field(&host, "workspaces"),
                     ty: type_of(&host, "Workspace"),
                     fields: vec![("key".to_owned(), Value::Text("one".to_owned()))],
                 }],
@@ -191,15 +191,15 @@ tilo_test_env::scenario! {
     phase a_record_a_write_made_has_its_type_before_the_index_names_it;
     {
         let (host, mut doc) = host();
-        let desk = host.root_of("so.tilo.test.shell").unwrap();
+        let layout = host.root_of("so.tilo.test.shell").unwrap();
         commit(&host, &mut doc);
         let made = host
             .runtime()
             .apply_origin(
                 "session",
                 vec![OriginWrite::Insert {
-                    owner: desk.clone(),
-                    field: desk_field(&host, "workspaces"),
+                    owner: layout.clone(),
+                    field: layout_field(&host, "workspaces"),
                     ty: type_of(&host, "Workspace"),
                     fields: vec![("key".to_owned(), Value::Text("one".to_owned()))],
                 }],
@@ -223,8 +223,8 @@ tilo_test_env::scenario! {
             .apply_origin(
                 "session",
                 vec![OriginWrite::Remove {
-                    owner: desk,
-                    field: desk_field(&host, "workspaces"),
+                    owner: layout,
+                    field: layout_field(&host, "workspaces"),
                     item: workspace.clone(),
                 }],
                 None,
@@ -239,13 +239,13 @@ tilo_test_env::scenario! {
     phase a_root_a_write_just_made_has_its_type_before_the_index_names_it;
     {
         let (host, _doc) = host();
-        // The session derives the shell's desk: a root made in the unsaved layer, before the index
+        // The session derives the shell's layout: a root made in the unsaved layer, before the index
         // names it, and the window over it opens at once.
-        let desk = host.root_of("so.tilo.test.shell").unwrap();
-        let at = ResourceRef::root(desk.doc, String::new());
+        let layout = host.root_of("so.tilo.test.shell").unwrap();
+        let at = ResourceRef::root(layout.doc, String::new());
         assert_eq!(
             host.store().type_of(&at).unwrap(),
-            type_of(&host, "Desk"),
+            type_of(&host, "Layout"),
             "a window opens over the root a write just made"
         );
     }
@@ -253,10 +253,10 @@ tilo_test_env::scenario! {
     phase a_session_origin_update_writes_nothing_to_the_record;
     {
         let (host, mut doc) = host();
-        // The desk is a root of a derived kind: made in the unsaved layer, so making it writes
+        // The layout is a root of a derived kind: made in the unsaved layer, so making it writes
         // nothing to the record either.
         let before_root = heads(&mut doc);
-        let desk = host.root_of("so.tilo.test.shell").unwrap();
+        let layout = host.root_of("so.tilo.test.shell").unwrap();
         commit(&host, &mut doc);
         assert_eq!(
             heads(&mut doc),
@@ -266,7 +266,7 @@ tilo_test_env::scenario! {
 
         // A minute turns: the origin writes the clock.
         let before = heads(&mut doc);
-        write_clock(&host, &desk, "12:01");
+        write_clock(&host, &layout, "12:01");
         commit(&host, &mut doc);
         assert_eq!(
             heads(&mut doc),
@@ -275,7 +275,7 @@ tilo_test_env::scenario! {
         );
         // ... and the shell reads what the origin wrote, at once.
         assert_eq!(
-            clock_of(&host, &desk),
+            clock_of(&host, &layout),
             Some(DynValue::Register(serde_json::json!("12:01"))),
             "the view reads the update from the unsaved layer"
         );
@@ -284,12 +284,12 @@ tilo_test_env::scenario! {
     phase a_derived_update_survives_the_record_moving_on;
     {
         let (host, mut doc) = host();
-        let desk = host.root_of("so.tilo.test.shell").unwrap();
+        let layout = host.root_of("so.tilo.test.shell").unwrap();
         commit(&host, &mut doc);
-        write_clock(&host, &desk, "12:01");
+        write_clock(&host, &layout, "12:01");
         commit(&host, &mut doc);
         assert_eq!(
-            clock_of(&host, &desk),
+            clock_of(&host, &layout),
             Some(DynValue::Register(serde_json::json!("12:01")))
         );
         // The record moves on (a pass, another device): the derived write stays in the unsaved
@@ -300,7 +300,7 @@ tilo_test_env::scenario! {
         record.commit();
         host.sync_from(&record);
         assert_eq!(
-            clock_of(&host, &desk),
+            clock_of(&host, &layout),
             Some(DynValue::Register(serde_json::json!("12:01"))),
             "the record moving on leaves the derived write where it was"
         );

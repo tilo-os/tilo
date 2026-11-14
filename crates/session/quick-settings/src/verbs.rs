@@ -208,8 +208,8 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
             put(&mut arguments, "playing", &offer.playing);
             (MEDIA, "resume")
         }
-        // The notification centre: the panel's row opens the one list, on
-        // the desk, rather than a page of its own.
+        // The notification centre: the panel's row opens the one list, over
+        // the windows, rather than a page of its own.
         QsEffect::ShowCentre => {
             put(&mut arguments, "surface", "centre");
             (OVERLAYS, "show-surface")
@@ -389,10 +389,10 @@ mod tests {
             assert_eq!(
                 said(&QsEffect::HandOffBluetooth {
                     address: "00:1B:66:A1:B2:C3".into(),
-                    device: "desk".into(),
+                    device: "desktop".into(),
                 })
                 .as_deref(),
-                Some("session:devices hand-off address=00:1B:66:A1:B2:C3 device=desk"),
+                Some("session:devices hand-off address=00:1B:66:A1:B2:C3 device=desktop"),
                 "the session moves the accessory between the person's devices"
             );
         }
@@ -439,12 +439,12 @@ mod tests {
             );
         }
 
-        phase the_notifications_row_opens_the_desks_own_centre;
+        phase the_notifications_row_opens_the_shells_own_centre;
         {
             assert_eq!(
                 said(&QsEffect::ShowCentre).as_deref(),
                 Some("desktop:overlays show-surface surface=centre"),
-                "one list, on the desk every app of the session reaches"
+                "one list, over the windows every app of the session reaches"
             );
         }
 
@@ -460,7 +460,7 @@ mod tests {
             );
         }
 
-        phase the_card_that_plays_opens_its_app_on_the_desk;
+        phase the_card_that_plays_opens_its_app_on_the_screen;
         {
             assert_eq!(
                 said(&QsEffect::OpenPlaying {

@@ -36,7 +36,7 @@ fn wanted(app: &mut HeadlessApp<QuickSettingsApp>) -> (f64, f64) {
         .expect("the panel says how big its window is")
 }
 
-/// The panel's own surface: the card fills the window the desk gives a
+/// The panel's own surface: the card fills the window the shell gives a
 /// popover, so the app's root area is the card's rect.
 fn card(app: &mut HeadlessApp<QuickSettingsApp>) -> Rect {
     target(app, "BoundComponent[0]/ResourceApp[0]")
@@ -267,7 +267,7 @@ fn a_rows_press_opens_its_section_under_it() {
 
 /// While a section unrolls, the panel's window takes the height it ends at in one step, at the
 /// press, and the card grows inside it. Resized frame by frame instead, the window trails the page
-/// it fits (a size is a round trip to the desk) and cuts off what follows the opening section.
+/// it fits (a size is a round trip to the shell) and cuts off what follows the opening section.
 #[test]
 fn the_panel_grows_with_a_section_as_it_unrolls() {
     let (mut app, _host) = hosted("controls");
@@ -770,21 +770,21 @@ fn an_accessory_moves_to_a_device_in_reach_and_disconnects_from_here() {
     let (mut app, host) = hosted("accessory");
     // This laptop has the accessory and the tablet is out of reach: both are
     // there to be read, and neither takes the press.
-    for device in ["tablet", "laptop", "desk"] {
+    for device in ["tablet", "laptop", "desktop"] {
         assert!(has(&mut app, &format!("qs-accessory-to-{device}")));
     }
     for device in ["tablet", "laptop"] {
         click(&mut app, &format!("qs-accessory-to-{device}"));
     }
     assert!(host.ran().is_empty(), "only a device in reach takes it");
-    click(&mut app, "qs-accessory-to-desk");
+    click(&mut app, "qs-accessory-to-desktop");
     assert_eq!(
         host.ran(),
         [QsEffect::HandOffBluetooth {
             address: "00:1B:66:A1:B2:C3".into(),
-            device: "desk".into(),
+            device: "desktop".into(),
         }],
-        "the desk is online and paired: the accessory moves there"
+        "the desktop is online and paired: the accessory moves there"
     );
     click(&mut app, "qs-accessory-here");
     assert_eq!(
@@ -792,7 +792,7 @@ fn an_accessory_moves_to_a_device_in_reach_and_disconnects_from_here() {
         [
             QsEffect::HandOffBluetooth {
                 address: "00:1B:66:A1:B2:C3".into(),
-                device: "desk".into(),
+                device: "desktop".into(),
             },
             QsEffect::DisconnectBluetooth {
                 address: "00:1B:66:A1:B2:C3".into(),
@@ -1323,7 +1323,7 @@ fn tab_walks_the_controls_from_the_tiles() {
 }
 
 /// Every page stands in the panel's footprint: the card is the window the
-/// desk gives a popover, whatever the page shows, so the footer stands on
+/// shell gives a popover, whatever the page shows, so the footer stands on
 /// the window's bottom edge and nothing it draws leaves the window.
 #[test]
 fn every_page_stands_in_the_panels_footprint_or_scrolls_inside_it() {
@@ -1395,7 +1395,7 @@ fn a_page_change_keeps_the_panels_edges() {
     );
 }
 
-/// The panel is as tall as the page it shows, inside the room the desk gives a popover: in a
+/// The panel is as tall as the page it shows, inside the room the shell gives a popover: in a
 /// window of that height its page fits without scrolling, the footer on the card's bottom edge,
 /// and it asks for no other.
 #[test]

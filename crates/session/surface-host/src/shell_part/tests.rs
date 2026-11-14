@@ -21,7 +21,7 @@ fn reading() -> ArrangementReading {
         workspaces: vec![
             ArrangementWorkspaceReading {
                 key: "1".to_owned(),
-                name: "Desk".to_owned(),
+                name: "Home".to_owned(),
                 current: true,
             },
             ArrangementWorkspaceReading {
@@ -409,10 +409,10 @@ fn each_change_is_one_turn() {
         ("workspace switch", |r, _| {
             // The reading lists the strip the bar shows first, so the switch moves the
             // mark on to the workspace after it.
-            let [desk, studio, ..] = r.workspaces.as_mut_slice() else {
+            let [home, studio, ..] = r.workspaces.as_mut_slice() else {
                 panic!("the reading lists both of the bar's workspaces");
             };
-            desk.current = false;
+            home.current = false;
             studio.current = true;
         }),
     ];
@@ -454,7 +454,7 @@ fn the_part_covers_the_screen_at_rest_and_while_its_menu_is_up() {
         part.accepts_pointer(900.0, 400.0),
         "the shell is the screen under the windows"
     );
-    click(&mut part, "Desk");
+    click(&mut part, "Home");
     assert_eq!(
         part.widgets.placement().size,
         (1280, 800),
@@ -476,7 +476,7 @@ fn the_part_covers_the_screen_at_rest_and_while_its_menu_is_up() {
 #[test]
 fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
     let (mut part, link) = part();
-    click(&mut part, "Desk");
+    click(&mut part, "Home");
     for _ in 0..6 {
         part.prepare_frame();
         part.draw();
@@ -499,8 +499,8 @@ fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
 }
 
 /// A press on an app the person pinned to the dock asks the session to open that app
-/// (`session.open_app(app)`), named by its app id: the session's door gets it on the desk's
-/// chrome, and the app's place on the desk comes to the front.
+/// (`session.open_app(app)`), named by its app id: the session's door gets it on the shell's
+/// chrome, and the app's place on the shell comes to the front.
 #[test]
 fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
     let _settled = ui::motion::testing::settled();
@@ -570,11 +570,11 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
 /// A window fullscreen on the display a part stands on owns that display: the part steps aside,
 /// with not a row of it over the window and no pointer taken there, and it is back over the
 /// whole screen when the window leaves fullscreen. A window fullscreen on another display
-/// leaves the part standing, and so does a surface of the desk's that is up: it is the person's
+/// leaves the part standing, and so does a surface of the shell's that is up: it is the person's
 /// to look at over any window, a fullscreen one too.
 #[test]
 fn a_part_steps_aside_only_for_a_window_fullscreen_on_its_own_display() {
-    // The surface that is up (`""`: the desk at rest), the displays fullscreen windows take,
+    // The surface that is up (`""`: the shell at rest), the displays fullscreen windows take,
     // and whether the part, which stands on `HEADLESS-1`, steps aside.
     let rows: [(&str, &[&str], bool); 4] = [
         ("", &["HEADLESS-1"], true),
@@ -717,7 +717,7 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     );
 }
 
-/// The person's arrangement: one strip on the desk, its one place a foreign window's (no
+/// The person's arrangement: one strip on the shell, its one place a foreign window's (no
 /// record), keyed `p1`.
 fn one_window_arrangement() -> ArrangementReading {
     ArrangementReading {
@@ -726,7 +726,7 @@ fn one_window_arrangement() -> ArrangementReading {
         queries: Vec::new(),
         workspaces: vec![ArrangementWorkspaceReading {
             key: "w1".to_owned(),
-            name: "Desk".to_owned(),
+            name: "Home".to_owned(),
             current: true,
         }],
         rows: vec![ArrangementRowReading {
@@ -881,11 +881,11 @@ fn the_screen_shows_the_arrangement_and_a_canvas_pan_carries_each_windows_well()
     );
 }
 
-/// A surface of the desk's stands over the windows it is over: the whole screen lies under
+/// A surface of the shell's stands over the windows it is over: the whole screen lies under
 /// them at rest, so its wells hold them, and the overview — with the pictures it names — comes
 /// up over every window rather than underneath the window it is showing.
 #[test]
-fn a_surface_of_the_desks_stands_over_the_windows() {
+fn a_surface_of_the_shells_stands_over_the_windows() {
     let _settled = ui::motion::testing::settled();
     let (mut part, link) = super::tests_support::part_as(reading(), None);
     for _ in 0..4 {
@@ -893,7 +893,7 @@ fn a_surface_of_the_desks_stands_over_the_windows() {
     }
     assert!(
         part.below_windows(),
-        "the desk at rest stands under the windows"
+        "the shell at rest stands under the windows"
     );
     super::tests_support::publish_overlays(&link, "overview", false);
     for _ in 0..4 {
@@ -916,7 +916,7 @@ fn a_surface_of_the_desks_stands_over_the_windows() {
 /// The overview over a window on each of `strips`, the first window's on the first strip.
 fn overview_with(strips: &[&str]) -> super::tests_support::Staged {
     super::tests_support::Staged {
-        desk: reading(),
+        shell: reading(),
         here: "overview".to_owned(),
         revealed: false,
         windows: strips
@@ -931,7 +931,7 @@ fn overview_with(strips: &[&str]) -> super::tests_support::Staged {
                     "icon": "app_window",
                     "strip": strip,
                     "strip_key": at.to_string(),
-                    "workspace": "Desk",
+                    "workspace": "Home",
                     "workspace_key": "1",
                     "recency": at,
                     "focused": at == 0,
@@ -1115,7 +1115,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
 
 /// A part told its display only after it settled (the session's first frames can run before
 /// its output is known) lays its bar out at the display's width: the strip, which a narrow bar
-/// gives way, stands on a wide one though nothing of the desk changed since.
+/// gives way, stands on a wide one though nothing of the shell changed since.
 #[test]
 fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
     let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
@@ -1156,7 +1156,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
     );
 }
 
-/// With a surface up the part covers its output, and the desk fills it: the dock rides the
+/// With a surface up the part covers its output, and the shell fills it: the dock rides the
 /// output's bottom edge however short the surface is (the notifications with none), on a
 /// phone and on a desktop, never right under what the surface holds.
 #[test]
@@ -1188,7 +1188,7 @@ fn with_a_short_surface_up_the_dock_rides_the_outputs_bottom_edge() {
 }
 
 /// A display wide enough for every part: the bar names the strip and shows the person the
-/// session publishes with nothing touching the desk. The part hands the app the space the
+/// session publishes with nothing touching the shell. The part hands the app the space the
 /// frame gave its view the moment it is laid out, so the bar is full rather than waiting for
 /// the person's first press to hear how much space it has.
 #[test]
@@ -1227,7 +1227,7 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
             },
         ),
     );
-    // Holding Alt+Tab opens the switcher: every window the desk holds, in the walk's order.
+    // Holding Alt+Tab opens the switcher: every window the shell holds, in the walk's order.
     let mut reading = super::tests_support::reading_with_windows();
     for (at, window) in reading
         .windows
@@ -1241,7 +1241,7 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
     }
     super::tests_support::publish_windows(&link, &reading.windows);
     super::tests_support::publish_overlays(&link, "switcher", true);
-    link.publish_arrangement(reading.desk);
+    link.publish_arrangement(reading.shell);
     for _ in 0..6 {
         part.prepare_frame();
         part.draw();
@@ -1282,7 +1282,7 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
 /// The people who come and go in [`the_bars_people_stay_who_is_here_across_a_commit`].
 const HERE: [&str; 4] = ["Mia Clayton", "Sam Okafor", "Jo Park", "Ada Byron"];
 
-/// Who is here is exactly who the desk says is here, and stays so across a commit of the
+/// Who is here is exactly who the shell says is here, and stays so across a commit of the
 /// shell's own record (a setting changes the bar's body, not the list it drew): with nobody,
 /// one, four and one again, the bar names those people and no others.
 #[test]
@@ -1337,7 +1337,7 @@ fn the_bars_people_stay_who_is_here_across_a_commit() {
     }
 }
 
-/// The overview gives every window the share of its strip it keeps on the desk,
+/// The overview gives every window the share of its strip it keeps on the shell,
 /// and each picture room to show the window: a picture a fraction of a pixel
 /// high shows no window at all.
 #[test]
@@ -1355,7 +1355,7 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
                 "icon": "app_window",
                 "strip": "Main",
                 "strip_key": "1",
-                "workspace": "Desk",
+                "workspace": "Home",
                 "workspace_key": "1",
                 "group_key": key.to_string(),
                 "share": share,
@@ -1399,7 +1399,7 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
         );
     }
     // The window keeping half the strip is given at least the room of the one keeping a
-    // quarter, as two windows stand on the desk; a place past the width a page shows it at
+    // quarter, as two windows stand on the shell; a place past the width a page shows it at
     // keeps a window's shape instead of growing taller than the page.
     let width = |window: u64| {
         pictures
@@ -1454,21 +1454,21 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
     );
 }
 
-/// The desk's preset reaches the screen: a change of the shell's own record made from outside
+/// The shell's preset reaches the screen: a change of the shell's own record made from outside
 /// the shell's views — `apply(windows_desktop)`, as the settings page's card and the REPL run it —
-/// runs the boundaries that read it and patches the window, so the desk the person sees is the
+/// runs the boundaries that read it and patches the window, so the shell the person sees is the
 /// one the record names.
 ///
-/// The shape that failed it: a shell part over a desk with one local window, its arrangement
+/// The shape that failed it: a shell part over a shell with one local window, its arrangement
 /// published, then the settings' apply. The record changed and the view's own `is_stale` said so,
 /// but nothing it ran changed a tree, and the screen stayed on the strips (`stale=true`,
 /// `patches=0`) — the record change never marked the boundary that read it.
 ///
 /// The shell's part on another display draws the change in its next frame, not a frame later.
 #[test]
-fn the_desks_preset_reaches_the_screen() {
-    let desk = || super::tests_support::Staged {
-        desk: reading(),
+fn the_shells_preset_reaches_the_screen() {
+    let shell = || super::tests_support::Staged {
+        shell: reading(),
         windows: serde_json::json!([{
             "key": "11",
             "title": "Release planning",
@@ -1476,7 +1476,7 @@ fn the_desks_preset_reaches_the_screen() {
             "app_key": "so.tilo.notes",
             "icon": "notebook",
             "strip": "Main",
-            "workspace": "Desk",
+            "workspace": "Home",
             "recency": 1,
             "focused": true,
             "local": true,
@@ -1484,8 +1484,8 @@ fn the_desks_preset_reaches_the_screen() {
         here: "none".to_owned(),
         revealed: false,
     };
-    let (mut part, link) = super::tests_support::part_as(desk(), None);
-    let (mut beside, beside_link) = super::tests_support::part_beside(&part, desk());
+    let (mut part, link) = super::tests_support::part_as(shell(), None);
+    let (mut beside, beside_link) = super::tests_support::part_beside(&part, shell());
     for (part, link) in [(&mut part, link), (&mut beside, beside_link)] {
         link.publish_arrangement(one_window_arrangement());
         for _ in 0..6 {
@@ -1494,7 +1494,7 @@ fn the_desks_preset_reaches_the_screen() {
         let labels = crate::Published::accessible_labels(part);
         assert!(
             labels.iter().any(|l| l == "Showing Strips"),
-            "the desk shows the strips: {labels:?}"
+            "the shell shows the strips: {labels:?}"
         );
     }
 
@@ -1529,7 +1529,7 @@ fn the_desks_preset_reaches_the_screen() {
     );
 }
 
-/// The desk styles arrive on a reading the shell draws after its first frame, as the session
+/// The shell styles arrive on a reading the shell draws after its first frame, as the session
 /// publishes them once its store is read: the switch re-runs when the styles' collection moves,
 /// and offers them without a restart (shell.md §6).
 #[test]
@@ -1563,7 +1563,7 @@ fn the_style_switch_lists_the_styles_a_later_reading_carries() {
 }
 
 /// The shell's views run in the session, which holds the person's formats: a day's
-/// `start_of_week()` goes back to the day their region starts a week on, as their desk's calendar
+/// `start_of_week()` goes back to the day their region starts a week on, as their shell's calendar
 /// and their app windows read it, not to the Monday a view with no formats falls back on.
 #[test]
 fn a_shells_week_starts_on_the_persons_first_day() {

@@ -168,7 +168,7 @@ impl QuickSettings {
 /// The app.
 pub struct QuickSettingsApp;
 
-/// The most room the panel has, as the desk sizes a popover (its
+/// The most room the panel has, as the shell sizes a popover (its
 /// `POPOVER_WIDTH` and `POPOVER_HEIGHT`): the window starts there and is
 /// as tall as the page it shows.
 pub const PANEL_WIDTH: u32 = 380;
@@ -203,7 +203,7 @@ impl ResourceApp for QuickSettingsApp {
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        // The panel's footprint, which the desk gives its window: the shot is
+        // The panel's footprint, which the shell gives its window: the shot is
         // the surface, so it is the size the surface stands at whatever it
         // shows.
         (PANEL_WIDTH, PANEL_HEIGHT)

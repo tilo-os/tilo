@@ -223,7 +223,7 @@ fn a_drag_that_reaches_the_tree_without_its_input_shows_where_it_lands() {
     );
 }
 
-/// A drop target on each of two displays side by side, as a desk shows one per display: a drag
+/// A drop target on each of two displays side by side, as a desktop shows one per display: a drag
 /// carried here over the second display, in the desktop's own pixels, draws the line over the
 /// second display's target alone and lands there, not on the first display's.
 #[test]

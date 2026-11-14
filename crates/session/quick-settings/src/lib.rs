@@ -40,7 +40,7 @@ mod view;
 
 pub use effect::QsEffect;
 pub use faces::{available as control_available, control_id, control_named, subline};
-// The one reading of what plays, which the desk's widget, the lock
+// The one reading of what plays, which the shell's widget, the lock
 // screen's card and the bar's pill show as this panel does.
 pub use resource::{Page, QuickSettings, QuickSettingsApp};
 pub use tilo_desktop_surface::now_playing::{

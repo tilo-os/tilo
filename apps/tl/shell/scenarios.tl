@@ -2,17 +2,17 @@ use so.tilo.lang.chat as chat
 use so.tilo.lang.notes as notes
 use so.tilo.lang.tasks as tasks
 
-/// Scenarios: the desk as people meet it, in the states the shell's views are for. Each fills
-/// the desk's own fields (the ones the session writes, which a scenario may set) and the
+/// Scenarios: the shell as people meet it, in the states its views are for. Each fills
+/// the layout's own fields (the ones the session writes, which a scenario may set) and the
 /// resources the session's origin carries, so every surface is staged as a screenshot and laid
 /// out by `tilolang layout-check` with nothing running.
 ///
 /// They are seed data for shots, tests and benchmarks, never a person's: a real first launch
 /// starts empty. They stage the places over notes and chat records, which is why only they use
 /// those apps: the shell itself draws any app's records through that app's own views.
-/// An afternoon at a desk: three workspaces, four strips of the one in front with windows in
-/// each, two people working alongside and a task running. The desk at rest.
-scenario "an afternoon at the desk" {
+/// An afternoon of work: three workspaces, four strips of the one in front with windows in
+/// each, two people working alongside and a task running. The shell at rest.
+scenario "an afternoon of work" {
     let d = root Arrangement
     d.person = "Ada Lovelace"
     d.rows.insert(
@@ -254,7 +254,7 @@ scenario "an afternoon at the desk" {
     )
 }
 
-/// The overview of that desk: the strips of the workspace in front, their windows as places.
+/// The overview of that layout: the strips of the workspace in front, their windows as places.
 scenario "the overview" {
     let d = root Arrangement
     d.person = "Ada Lovelace"
@@ -955,7 +955,7 @@ scenario "the switcher, this app's windows" {
 }
 
 /// The launcher an empty query shows: the applications installed here, recent windows and the
-/// desk's doors.
+/// shell's surfaces.
 scenario "the launcher, before typing" {
     let d = root Arrangement
     d.person = "Ada Lovelace"
@@ -1236,7 +1236,7 @@ scenario "the notification centre, all read" {
     )
 }
 
-/// The quick settings over the desk, on a computer that publishes no sound, display or
+/// The quick settings over the shell, on a computer that publishes no sound, display or
 /// battery: the tiles stand, and the sliders and the battery line wait for what is there.
 scenario "the quick settings" {
     let d = root Arrangement
@@ -1265,7 +1265,7 @@ scenario "the workspaces" {
     d.people.insert(ArrangementPerson(key: "sam", name: "Sam Okafor"))
 }
 
-/// A banner over the desk: a build failure with its actions, above a desk at work.
+/// A banner over the shell: a build failure with its actions, above a shell at work.
 scenario "a banner" {
     let d = root Arrangement
     d.person = "Ada Lovelace"
@@ -1391,7 +1391,7 @@ action a_strip(a: Arrangement, row: Text, name: Text, width: Int) -> Text {
     let s = a.strips.insert(
         ArrangementStrip(
             key: "s-{row}-{name}",
-            workspace: "w-Desk",
+            workspace: "w-Main",
             row: row,
             width: width,
             shell: "so.tilo.shell.strips",
@@ -1472,7 +1472,7 @@ action a_query_place(a: Arrangement, strip: Text, text: Text) -> Text {
     p.key
 }
 
-/// The applications installed on this device, as the launcher lists them: the ones the desk's
+/// The applications installed on this device, as the launcher lists them: the ones the shell's
 /// shots and its layouts show.
 fn installed_apps() -> List<device.App> {
     return [
@@ -1507,13 +1507,13 @@ fn installed_apps() -> List<device.App> {
     ]
 }
 
-/// A desk of one note in the style named, with that place in front, and the style's own settings
+/// A shell of one note in the style named, with that place in front, and the style's own settings
 /// open over it: what a person sees who opens them from the bar's style menu.
 action a_style_settings(style: Text) -> Arrangement {
     let v = viewing
     v.style = style
     let a = root Arrangement
-    let row = a_workspace(a, "Desk")
+    let row = a_workspace(a, "Main")
     let one = a_strip(a, row, "Note", 667)
     a_note_place(a, one, 0)
     v.focused = one
@@ -1522,14 +1522,14 @@ action a_style_settings(style: Text) -> Arrangement {
     a
 }
 
-/// A working desk's places at the counts people keep: one place on its own, three across a
+/// A working layout's places at the counts people keep: one place on its own, three across a
 /// narrow list, a wide board and a usual note, then a busy day as three strips of four. The
 /// strips stand side by side in one row, and the narrow list holds focus.
-scenario "a desk of places" -> Arrangement {
+scenario "a layout of places" -> Arrangement {
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Arrangement
-    let row = a_workspace(a, "Desk")
+    let row = a_workspace(a, "Main")
     let one = a_strip(a, row, "One", 667)
     a_note_place(a, one, 0)
     let narrow = a_strip(a, row, "List", 333)
@@ -1578,7 +1578,7 @@ scenario "a window of several places" -> Arrangement {
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Arrangement
-    let row = a_workspace(a, "Desk")
+    let row = a_workspace(a, "Main")
     let group = a_strip(a, row, "Notes", 667)
     a_note_place(a, group, 0)
     a_note_place(a, group, 1)
@@ -1589,13 +1589,13 @@ scenario "a window of several places" -> Arrangement {
     a
 }
 
-/// One window alone on the desk: a strip with a note in it, filling the room between the bar and
+/// One window alone in the shell: a strip with a note in it, filling the room between the bar and
 /// the dock as the chrome's lone window fills its strip.
-scenario "a window alone on the desk" -> Arrangement {
+scenario "a window alone in the shell" -> Arrangement {
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Arrangement
-    let row = a_workspace(a, "Desk")
+    let row = a_workspace(a, "Main")
     let one = a_strip(a, row, "Note", 1000)
     a_note_place(a, one, 0)
     v.focused = one
@@ -1608,7 +1608,7 @@ scenario "an empty strip" -> Arrangement {
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Arrangement
-    let row = a_workspace(a, "Desk")
+    let row = a_workspace(a, "Main")
     a_strip(a, row, "Empty", 667)
     let used = a_strip(a, row, "In use", 667)
     a_note_place(a, used, 0)
@@ -1621,7 +1621,7 @@ scenario "a place finding what to show" -> Arrangement {
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Arrangement
-    let row = a_workspace(a, "Desk")
+    let row = a_workspace(a, "Main")
     let found = a_strip(a, row, "Found", 667)
     a_query_place(a, found, "release")
     let beside = a_strip(a, row, "Note", 667)
@@ -1630,7 +1630,7 @@ scenario "a place finding what to show" -> Arrangement {
     a
 }
 
-/// The strips style's own settings, over the desk they change: the panel the bar's style menu
+/// The strips style's own settings, over the shell they change: the panel the bar's style menu
 /// opens (`style_panel`).
 scenario "the strips style's settings" -> Arrangement {
     a_style_settings("so.tilo.shell:strips")
@@ -1646,7 +1646,7 @@ scenario "the spaces style's settings" -> Arrangement {
     a_style_settings("so.tilo.shell:spaces")
 }
 
-/// The desktop style's own settings, over the desk they change.
+/// The desktop style's own settings, over the shell they change.
 scenario "the desktop style's settings" -> Arrangement {
     a_style_settings("so.tilo.shell:desktop")
 }
@@ -1657,7 +1657,7 @@ scenario "a reference lands beside its place" -> Arrangement {
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Arrangement
-    let row = a_workspace(a, "Desk")
+    let row = a_workspace(a, "Main")
     let talks = a_strip(a, row, "Chat", 667)
     let design = channel_named("design")
     a.places.insert(
@@ -1688,7 +1688,7 @@ scenario "a canvas of spaces" -> Arrangement {
     let v = viewing
     v.style = "so.tilo.shell:frames"
     let a = root Arrangement
-    let row = a_workspace(a, "Desk")
+    let row = a_workspace(a, "Main")
     let s = a_strip(a, row, "Canvas", 667)
     let strip = a.strips.find(st -> st.key == s)
     if let held = strip {
@@ -1734,7 +1734,7 @@ scenario "resources standing as content" -> Arrangement {
     let v = viewing
     v.style = "so.tilo.shell:spaces"
     let a = root Arrangement
-    let row = a_workspace(a, "Desk")
+    let row = a_workspace(a, "Main")
     let s = a_strip(a, row, "Spaces", 667)
     let strip = a.strips.find(st -> st.key == s)
     if let held = strip {
@@ -1774,11 +1774,11 @@ scenario "resources standing as content" -> Arrangement {
 }
 
 /// The traditional desktop: the preset furthest from the strips and the canvas, staged with
-/// real records. Three windows stand where the person left them on a floating desk — a note, the
+/// real records. Three windows stand where the person left them over the shell — a note, the
 /// note beside it and a chat channel — the note in front over the corners of the other two as a
 /// person working leaves them, each still named by its own bar; the in-front place's own resource publishes the commands the top bar's
-/// action strip draws (the notes app's `group:` runs), and the dock rides the foot. The desk
-/// preset is the desktop and the chrome preset the traditional one, so this is exactly what a
+/// action strip draws (the notes app's `group:` runs), and the dock rides the foot. The style
+/// is the desktop and the chrome preset the traditional one, so this is exactly what a
 /// person sees when they pick it.
 scenario "the traditional desktop" {
     let d = root Arrangement
@@ -1798,7 +1798,7 @@ scenario "the traditional desktop" {
                     origin_app: "Notes",
                     app_key: "so.tilo.notes",
                     icon: "notebook",
-                    strip: "Desk",
+                    strip: "Main",
                     workspace: "Studio",
                     recency: 1,
                     focused: true,
@@ -1810,7 +1810,7 @@ scenario "the traditional desktop" {
                     origin_app: "Notes",
                     app_key: "so.tilo.notes",
                     icon: "notebook",
-                    strip: "Desk",
+                    strip: "Main",
                     workspace: "Studio",
                     recency: 2,
                     focused: false,
@@ -1822,7 +1822,7 @@ scenario "the traditional desktop" {
                     origin_app: "Chat",
                     app_key: "so.tilo.chat",
                     icon: "message-square",
-                    strip: "Desk",
+                    strip: "Main",
                     workspace: "Studio",
                     recency: 3,
                     focused: false,
@@ -1846,9 +1846,9 @@ scenario "the traditional desktop" {
     let v = viewing
     v.style = "so.tilo.shell:desktop"
     let a = root Arrangement
-    let row = a_front_workspace(a, "Desk")
-    let desk = a_strip(a, row, "Desk", 667)
-    if let held = a.strips.find(st -> st.key == desk) {
+    let row = a_front_workspace(a, "Main")
+    let main = a_strip(a, row, "Main", 667)
+    if let held = a.strips.find(st -> st.key == main) {
         held.canvas_x = 380
         held.canvas_y = 230
         held.canvas_width = 600
@@ -1875,7 +1875,7 @@ scenario "the traditional desktop" {
         a.places.insert(
             ArrangementPlace(
                 key: "p1",
-                strip: desk,
+                strip: main,
                 shows: "so.tilo.lang.notes",
                 record: n.id(),
                 title: n.title,
@@ -1910,10 +1910,10 @@ scenario "the traditional desktop" {
             ),
         )
     }
-    if let strip = a.strips.find(st -> st.key == desk) {
+    if let strip = a.strips.find(st -> st.key == main) {
         strip.active = "p1"
     }
-    v.focused = desk
+    v.focused = main
 }
 
 /// The traditional desktop with a terminal in front: a window the shell has no record for, so
@@ -1934,7 +1934,7 @@ scenario "the traditional desktop, a terminal in front" {
                     origin_app: "Terminal",
                     app_key: "so.tilo.terminal",
                     icon: "terminal",
-                    strip: "Desk",
+                    strip: "Main",
                     workspace: "Studio",
                     recency: 1,
                     focused: true,
@@ -1951,18 +1951,18 @@ scenario "the traditional desktop, a terminal in front" {
     let v = viewing
     v.style = "so.tilo.shell:desktop"
     let a = root Arrangement
-    let row = a_front_workspace(a, "Desk")
+    let row = a_front_workspace(a, "Main")
     a_workspace(a, "Errands")
-    let desk = a_strip(a, row, "Desk", 667)
-    if let held = a.strips.find(st -> st.key == desk) {
+    let main = a_strip(a, row, "Main", 667)
+    if let held = a.strips.find(st -> st.key == main) {
         held.canvas_x = 120
         held.canvas_y = 80
         held.canvas_width = 640
         held.canvas_height = 420
         held.placed = true
     }
-    a_foreign_place(a, desk, 1, "A terminal")
-    v.focused = desk
+    a_foreign_place(a, main, 1, "A terminal")
+    v.focused = main
 }
 
 /// The default shell with the agents on the bar: the person showed the Agents part, and the

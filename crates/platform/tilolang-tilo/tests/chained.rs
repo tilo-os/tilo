@@ -96,7 +96,7 @@ fn seeded() -> (Replica, tilolang_runtime::ResourceRef) {
 #[test]
 fn a_chain_reads_what_its_steps_read() {
     let (mut ada, bag) = seeded();
-    // As the desk's own writes leave it: the items written, not yet indexed.
+    // As the layout's own writes leave it: the items written, not yet indexed.
     let just_written = texts(ada.host.open_resource(&bag, None).unwrap().tree());
     ada.commit();
     let indexed = texts(ada.host.open_resource(&bag, None).unwrap().tree());

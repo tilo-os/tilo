@@ -1,4 +1,4 @@
-/// The desk style's own settings, and the two ways of changing a desk (`docs/designs/app-language/
+/// The style's own settings, and the two ways of changing a style (`docs/designs/app-language/
 /// shell.md` §6): without an agent, in the one place a person's settings live, and with an agent,
 /// by the same actions the person's controls run.
 ///
@@ -8,13 +8,13 @@
 ///
 /// Each setting is one action, so an agent — the canvas conversation or the REPL — changes it
 /// with the same call a press does, attributed and undoable: `shell.set_dock_edge(shell.shell,
-/// edge: shell.Edge.left)`. The style's settings stand over the desk (`style_panel`), opened by
-/// the bar's style menu (`style_menu`, `strips.tl`): a person changes the desk they look at
-/// without leaving it, the way `shell.md` §6's "Two ways to change a desk" asks.
+/// edge: shell.Edge.left)`. The style's settings stand over the shell (`style_panel`), opened by
+/// the bar's style menu (`style_menu`, `strips.tl`): a person changes the shell they look at
+/// without leaving it, as `shell.md` §6 asks.
 ///
-/// Opens the chosen style's settings over the desk: what the bar's style menu's entry runs, and
+/// Opens the chosen style's settings over the shell: what the bar's style menu's entry runs, and
 /// what the REPL or the canvas agent calls too.
-action open_style_settings(s: Shell) (icon: .settings, label: "Desk style settings") {
+action open_style_settings(s: Shell) (icon: .settings, label: "Style settings") {
     s.settings_open = true
 }
 
@@ -27,7 +27,7 @@ action close_style_settings(s: Shell) (icon: .x, label: "Close") {
 /// press it.
 action show_style_settings(s: Shell, on: Bool = not s.settings_open) (
     icon: .settings,
-    label: "Desk style settings",
+    label: "Style settings",
     on: s.settings_open,
 ) {
     s.settings_open = on
@@ -46,13 +46,13 @@ action set_frames_snap(s: Shell, on: Bool) (label: "Snap places to a grid", grou
     s.tuned = true
 }
 
-/// The chosen style's settings, in a panel over the desk: the settings the style the person
+/// The chosen style's settings, in a panel over the shell: the settings the style the person
 /// shows declares, and nothing else, so a style's own settings are its own view and the system
 /// keeps no per-style list (`shell.md` §6: "Nothing in Settings is per style").
 view style_panel() {
     let s = shell
-    // A panel over the desk, standing in from its edges as a surface does: what it sets down never
-    // sits on the window's own text under it, and a phone's desk keeps a section's gutter.
+    // A panel over the shell, standing in from its edges as a surface does: what it sets down
+    // never sits on the window's own text under it, and a phone's shell keeps a section's gutter.
     row(
         fill,
         align: .center,
@@ -71,7 +71,7 @@ view style_panel() {
             }
             body: {
                 // The settings are as tall as what the style sets, and scroll only where a screen
-                // is shorter than that: a panel over the desk never stands past it, and never
+                // is shorter than that: a panel over the shell never stands past it, and never
                 // takes room it has nothing to put in.
                 scroll {
                     style_settings_body()
@@ -81,8 +81,8 @@ view style_panel() {
     }
 }
 
-/// The chosen style's settings, taking a phone's desk: a phone's desk has no room beside a panel, so
-/// the settings take the desk and close back to it.
+/// The chosen style's settings, taking a phone's shell: a phone's shell has no room beside a panel, so
+/// the settings take the screen and close back to it.
 view style_sheet() {
     let s = shell
     stack(fill, padding: .section) {

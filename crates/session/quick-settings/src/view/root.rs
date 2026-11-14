@@ -319,7 +319,7 @@ fn details_name(section: QsSection) -> String {
 }
 
 /// A row under the tiles: it opens its section's page, or, for the
-/// notifications, the desk's centre — the one list.
+/// notifications, the shell's centre — the one list.
 fn root_row(cx: &ViewCx<QuickSettings>, face: &RowFace) -> Element {
     let mut row = ListRow::new(face.id(), &face.title).icon(face.icon);
     if let Some(detail) = &face.detail {
@@ -336,7 +336,7 @@ fn root_row(cx: &ViewCx<QuickSettings>, face: &RowFace) -> Element {
         )
     } else {
         debug_assert_eq!(face.row, RootRow::Notifications);
-        // The one list is the shell's centre, opened over the desk.
+        // The one list is the shell's centre, opened over the windows.
         actions.bind_effect_invocation(row.disclosure(), &QsEffect::ShowCentre)
     })
 }

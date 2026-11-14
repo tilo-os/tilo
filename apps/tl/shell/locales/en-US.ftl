@@ -4,7 +4,7 @@
 d-so-tilo-shell = Shell
 
 d-qhf2pyze = Arrangement
-    .doc = The person's arrangement: what is open where.
+    .doc = The person's layout: what is open where.
     .noun = { $count ->
         [one] arrangement
        *[other] arrangements
@@ -75,7 +75,7 @@ d-e6vecsii = Title
 d-xhyuztvt = Kind
 
 d-wydxt4zu = Arrangement workspace
-    .doc = A workspace the person's desk shows.
+    .doc = A workspace the person's layout shows.
     .noun = { $count ->
         [one] arrangement workspace
        *[other] arrangement workspaces
@@ -86,7 +86,7 @@ d-6m3fzjng = Key
 d-tljqo2yo = Name
 
 d-3uxxhan3 = Current
-    .doc = Whether it is the workspace in front, which the desk shows.
+    .doc = Whether it is the workspace in front, which the shell shows.
 
 d-wydxt4zu-filter-current = Current
 
@@ -102,7 +102,7 @@ d-ai2x4wtg = Key
 d-doi4uxmt = Name
 
 d-k6bv5cxt = Arrangement row
-    .doc = A row of the desk: a strip across a workspace's width, holding columns.
+    .doc = A row of the layout: a strip across a workspace's width, holding columns.
     .noun = { $count ->
         [one] arrangement row
        *[other] arrangement rows
@@ -213,7 +213,7 @@ d-nkjtmr33 = Viewing
     }
 
 d-kna5sco4 = Style
-    .doc = The desk style the person shows, as a view reference: a package and a view (`so.tilo.shell:strips`, `me.styles:timeline`).
+    .doc = The style the person shows, as a view reference: a package and a view (`so.tilo.shell:strips`, `me.styles:timeline`).
 
 d-nl27ikjq = Showing
     .doc = The preset the person showed before styles were views.
@@ -279,7 +279,7 @@ d-5n4s55tz = Dock zoom
     .doc = A click on the dock's icons magnifies the item under the pointer, as macOS's Dock does.
 
 d-4zknrelh = Settings open
-    .doc = Whether the chosen style's own settings stand over the desk (`style_settings`), opened from the bar's style menu: the one place a person changes the style they show without an agent, as `shell.md` §6's "Two ways to change a desk" says.
+    .doc = Whether the chosen style's own settings stand over the shell (`style_settings`), opened from the bar's style menu: the one place a person changes the style they show without an agent, as `shell.md` §6 says.
 
 d-dwct4abs = Strips tabs
     .doc = Strips: whether a strip of several places shows its tab bar.
@@ -398,7 +398,7 @@ d-nfufnx7j = The row's whole usable width
     .doc = The row's whole usable width.
 
 d-vvznzcd4 = Preset
-    .doc = A way of laying out the same resources and actions a person picked before the desk had styles: `Viewing.showing` kept one.
+    .doc = A way of laying out the same resources and actions a person picked before the shell had styles: `Viewing.showing` kept one.
 
 d-25lm42aq = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically
     .doc = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically.
@@ -409,8 +409,8 @@ d-3ha7yyn2 = Places at points on a pannable, zoomable surface, each drawn in a f
 d-whadpf2h = Places at points, each drawn as its own view: resources standing as content on one surface, grouped by where they are rather than by a frame around them
     .doc = Places at points, each drawn as its own view: resources standing as content on one surface, grouped by where they are rather than by a frame around them.
 
-d-6uzzl3rd = The traditional desktop: frames on a floating desk, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know
-    .doc = The traditional desktop: frames on a floating desk, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
+d-6uzzl3rd = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know
+    .doc = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
 
 d-nxjnwtsd = Edge
     .doc = The person's shell: which parts the top bar and the dock have, in what order, on which edge, how they look and when they show.
@@ -511,8 +511,8 @@ d-cqbe6g3k = The top bar alone; the overview on demand
 d-hyr6xrfo = No chrome at rest; the edges reveal what the person needs
     .doc = No chrome at rest; the edges reveal what the person needs.
 
-d-poagvor7 = The traditional desktop: frames on a floating desk, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know
-    .doc = The traditional desktop: frames on a floating desk, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
+d-poagvor7 = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know
+    .doc = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
 
 d-q7rxwd72 = Bar room
     .doc = How much room the top bar has: for the focused window's menu, and for its parts.
@@ -527,10 +527,10 @@ d-7caakb5b = The least: the menu stands as the window's icon, and only what a ph
     .doc = The least: the menu stands as the window's icon, and only what a phone keeps stays.
 
 d-p4bqyuzt = Name the style
-    .doc = A desk style picked before styles were views: the preset's name turned into this package's view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept.
+    .doc = A style picked before styles were views: the preset's name turned into this package's view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept.
 
 d-7j7tzynq = Show as
-    .doc = Shows the desk through the style `style`: a package and a view (`so.tilo.shell:strips`).
+    .doc = Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`).
     .w-it-is-shown-that-way-already = It is shown that way already
 
 d-7j7tzynq-style = Style
@@ -596,7 +596,7 @@ d-fdnwo2gt-size = Size
 d-fcxzqnum = Show the top bar
     .doc = Shows or hides the top bar: the one control that turns it on and off, so a person sees whether it is on where they press it.
 
-d-fcxzqnum-on = On the desk
+d-fcxzqnum-on = Shown
 
 d-5l5rmk47 = Dock on
     .doc = Moves the dock to `edge`, keeping how it is built.
@@ -622,7 +622,7 @@ d-quwdhi4n-size = Size
 d-23faedwo = Show the dock
     .doc = Shows or hides the dock: the one control that turns it on and off, so a person sees whether it is on where they press it.
 
-d-23faedwo-on = On the desk
+d-23faedwo-on = Shown
 
 d-exyxrzml = Running apps
     .doc = Whether the dock shows the apps running that nobody pinned.
@@ -694,12 +694,12 @@ d-5yz5iwzs = Remove from the dock
 d-5yz5iwzs-item = Item
 
 d-aitkuflo = Open item
-    .doc = What a press on a dock item does, by the app the item stands for: a window of that app on this desk comes to the front, so the desk says which window the person is in and the top bar's commands are its own; the window is the one the item was drawn for, so a press never opens a second copy.
+    .doc = What a press on a dock item does, by the app the item stands for: a window of that app on this screen comes to the front, so the shell says which window the person is in and the top bar's commands are its own; the window is the one the item was drawn for, so a press never opens a second copy.
 
 d-aitkuflo-key = App
 
 d-5giytccr = Open first
-    .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the desk's own rows do not hold.
+    .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the shell's own rows do not hold.
 
 d-5giytccr-query = Query
 
@@ -746,7 +746,7 @@ d-bmd7xmln-strip = Strip
 d-bmd7xmln-text = Text
 
 d-5o2gn6hf = A style settings
-    .doc = A desk of one note in the style named, with that place in front, and the style's own settings open over it: what a person sees who opens them from the bar's style menu.
+    .doc = A shell of one note in the style named, with that place in front, and the style's own settings open over it: what a person sees who opens them from the bar's style menu.
 
 d-5o2gn6hf-style = Style
 
@@ -772,7 +772,7 @@ d-mtt6d3af-s = S
 d-mtt6d3af-target = Target
 
 d-n2ez6yop = Rearrange
-    .doc = Rank the place `place` at `at` among its strip's tabs: what dragging a pill within the window's bar does, as the desk's own `move` with the place it goes before.
+    .doc = Rank the place `place` at `at` among its strip's tabs: what dragging a pill within the window's bar does, as the shell's own `move` with the place it goes before.
 
 d-n2ez6yop-s = S
 
@@ -781,7 +781,7 @@ d-n2ez6yop-place = Place
 d-n2ez6yop-at = At
 
 d-d64rg4sw = Its own window
-    .doc = Give the place `place` a window of its own: what dragging a tab out of its window's bar does, as the desk's own `split-right` for the window in front.
+    .doc = Give the place `place` a window of its own: what dragging a tab out of its window's bar does, as the shell's own `split-right` for the window in front.
 
 d-d64rg4sw-s = S
 
@@ -794,13 +794,13 @@ d-b3rfswle-strip = Strip
 
 d-b3rfswle-place = Place
 
-d-jipcl6u3 = Desk style settings
-    .doc = The desk style's own settings, and the two ways of changing a desk (`docs/designs/app-language/ shell.md` §6): without an agent, in the one place a person's settings live, and with an agent, by the same actions the person's controls run.
+d-jipcl6u3 = Style settings
+    .doc = The style's own settings, and the two ways of changing a style (`docs/designs/app-language/ shell.md` §6): without an agent, in the one place a person's settings live, and with an agent, by the same actions the person's controls run.
 
 d-wxxxvca4 = Close
     .doc = Closes them.
 
-d-33wxlq7h = Desk style settings
+d-33wxlq7h = Style settings
     .doc = Shows or hides their being open: one control for both, so a person sees the state where they press it.
 
 d-33wxlq7h-on = On
@@ -815,7 +815,7 @@ d-lfa3rl6s = Snap places to a grid
 
 d-lfa3rl6s-on = On
 
-d-i6ll2n4j = Desk view
+d-fcxy4mu5 = Shell view
 
 d-72tgr4px = Clock
     .w-paused = Paused
@@ -854,7 +854,7 @@ d-moh3hzne = Bell
     .w-unread = { $name }, { $waiting } unread
 
 d-fniigjed = Viewing settings
-    .w-desk = Desk
+    .w-shell = Shell
     .w-switching-a-style-keeps-every-window = Switching a style keeps every window where it is.
 
 d-gapwwnqc = Show style~present
@@ -880,28 +880,6 @@ d-gkca5uj2 = Move item~present
 
 d-i4odzov3 = Pin~present
 
-d-zzd3yipu = Strips
-
-d-tj4z2obq = Frames
-    .w-canvas = Canvas
-
-d-tqbdxbtn = Spaces
-    .w-spaces = Spaces
-
-d-pbhumuny = Desktop
-
-d-gb3g4lte = Dock ground
-    .w-dock = Dock
-
-d-afjfzjl6 = Bar on edge
-    .w-top-bar = Top bar
-
-d-su7ogm3c = Top bar
-
-d-37bjhdfb = At rest
-
-d-6a3axsap = Surface
-
 d-ojscef66 = Dock
 
 d-lwre5gd7 = Dock run
@@ -926,8 +904,8 @@ d-7womqcp3 = App row
 
 d-tst43bqy = Window row
 
-d-hlv2uw7o = Desk doors
-    .w-the-desk = The desk
+d-iavyg4wt = Shell surfaces
+    .w-the-shell = The shell
     .w-overview = Overview
     .w-workspaces = Workspaces
     .w-notifications = Notifications
@@ -1081,6 +1059,28 @@ d-ycck5awo = Power row
     .w-restart = Restart
     .w-shut-down = Shut down
 
+d-zzd3yipu = Strips
+
+d-tj4z2obq = Frames
+    .w-canvas = Canvas
+
+d-tqbdxbtn = Spaces
+    .w-spaces = Spaces
+
+d-pbhumuny = Desktop
+
+d-gb3g4lte = Dock ground
+    .w-dock = Dock
+
+d-afjfzjl6 = Bar on edge
+    .w-top-bar = Top bar
+
+d-su7ogm3c = Top bar
+
+d-37bjhdfb = At rest
+
+d-6a3axsap = Surface
+
 d-xzb2gybw = Style switch
 
 d-kssxjs7v = Style menu
@@ -1092,7 +1092,7 @@ d-qrahog47 = Strips view
 
 d-4qeo26jr = Workspace rows
 
-d-7qrrtifg = Rows of the desk
+d-54b5rqo4 = Rows of the shell
     .w-no-window-here-yet = No window here yet
 
 d-7sxqbtn2 = Row window

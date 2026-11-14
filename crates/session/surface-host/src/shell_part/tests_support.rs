@@ -31,7 +31,7 @@ pub(super) fn publish_notices(link: &SessionLink, notices: &serde_json::Value) {
     );
 }
 
-/// The four desk styles `so.tilo.shell` ships, as the session lists them: a view of the
+/// The four shell styles `so.tilo.shell` ships, as the session lists them: a view of the
 /// arrangement each, named by its doc line (shell.md §6).
 pub(super) fn shipped_styles() -> serde_json::Value {
     [
@@ -54,7 +54,7 @@ pub(super) fn shipped_styles() -> serde_json::Value {
     .collect()
 }
 
-/// The desk styles the session publishes.
+/// The shell styles the session publishes.
 pub(super) fn publish_styles(link: &SessionLink, styles: &serde_json::Value) {
     link.publish_reading(
         "session:styles",
@@ -91,9 +91,9 @@ pub(super) fn publish_windows(link: &SessionLink, windows: &serde_json::Value) {
     );
 }
 
-/// What the session publishes for a part to draw: the desk, and the windows on it.
+/// What the session publishes for a part to draw: the shell, and the windows on it.
 pub(super) struct Staged {
-    pub(super) desk: ArrangementReading,
+    pub(super) shell: ArrangementReading,
     pub(super) windows: serde_json::Value,
     /// The surface up over the windows (`none` at rest), and whether the switcher's panel shows.
     pub(super) here: String,
@@ -101,9 +101,9 @@ pub(super) struct Staged {
 }
 
 impl From<ArrangementReading> for Staged {
-    fn from(desk: ArrangementReading) -> Self {
+    fn from(shell: ArrangementReading) -> Self {
         Self {
-            desk,
+            shell,
             windows: serde_json::json!([]),
             here: "none".to_owned(),
             revealed: false,
@@ -112,7 +112,7 @@ impl From<ArrangementReading> for Staged {
 }
 
 impl Staged {
-    /// The same desk with the surface `here` up.
+    /// The same shell with the surface `here` up.
     pub(super) fn showing(mut self, here: &str) -> Self {
         here.clone_into(&mut self.here);
         self
@@ -133,24 +133,24 @@ pub(super) fn publish_overlays(link: &SessionLink, here: &str, revealed: bool) {
     );
 }
 
-/// A window of the desk, as the session publishes it, standing in the workspace `1`.
+/// A window of the shell, as the session publishes it, standing in the workspace `1`.
 pub(super) fn window(key: &str, title: &str, app: &str, strip: &str) -> serde_json::Value {
     serde_json::json!({
         "key": key,
         "title": title,
         "origin_app": app,
         "strip": strip,
-        "workspace": "Desk",
+        "workspace": "Home",
         "workspace_key": "1",
     })
 }
 
-/// A desk at rest with two windows and two workspaces.
+/// A shell at rest with two windows and two workspaces.
 pub(super) fn reading_with_windows() -> Staged {
     let mut release = window("11", "Release planning", "Notes", "Main");
     release["focused"] = serde_json::json!(true);
     Staged {
-        desk: ArrangementReading {
+        shell: ArrangementReading {
             person: "Pat".to_owned(),
             rows: vec![ArrangementRowReading {
                 key: "r1".to_owned(),
@@ -161,7 +161,7 @@ pub(super) fn reading_with_windows() -> Staged {
             }],
             workspaces: vec![ArrangementWorkspaceReading {
                 key: "1".to_owned(),
-                name: "Desk".to_owned(),
+                name: "Home".to_owned(),
                 current: true,
             }],
             ..ArrangementReading::default()
@@ -242,7 +242,7 @@ fn part_at(
     let staged: Staged = reading.into();
     publish_windows(&link, &staged.windows);
     publish_overlays(&link, &staged.here, staged.revealed);
-    link.publish_arrangement(staged.desk);
+    link.publish_arrangement(staged.shell);
     let mut part = ShellPart::new(
         ShellIdentity {
             app: &app,

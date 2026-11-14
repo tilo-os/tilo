@@ -13,7 +13,7 @@
 //! through the same action door every other caller uses: the host queues each invocation
 //! ([`Asked`]), its arguments in the shapes the verb declares, and the session runs it.
 //!
-//! The pointer and the keys reach the view while its surface is the one over the desk, which
+//! The pointer and the keys reach the view while its surface is the one over the desktop, which
 //! the session answers ([`SlotView::new`]'s `focused`); a press away from what the view drew
 //! closes the slot, as a press outside a menu does. A package that does not load, or whose view
 //! does not come up, is no view for the slot: [`SlotView::open`] says why, and the session
@@ -238,7 +238,7 @@ impl Platform for SlotPlatform {
 
     /// The day the person's region starts its week on, as they chose it in Settings: a slot's
     /// view runs in the session, which holds their formats, so a day's `start_of_week()` goes
-    /// back to the day their desk's calendar starts a week on.
+    /// back to the day their calendar starts a week on.
     fn week_start(&self) -> i64 {
         i64::from(ui::format::first_weekday().num_days_from_monday())
     }
@@ -397,22 +397,22 @@ pub struct SlotView {
     outputs: Option<(i32, i32, u32, u32)>,
     /// Physical pixels per logical pixel the desktop draws at.
     scale: f64,
-    /// Whether this slot's surface is the one over the desk, and so takes the pointer and the
+    /// Whether this slot's surface is the one over the desktop, and so takes the pointer and the
     /// keys: the overlay stack's answer, which the session holds.
     focused: Rc<dyn Fn() -> bool>,
-    /// Where the view hangs: the place the reading gives it, in the desk's coordinates.
+    /// Where the view hangs: the place the reading gives it, in the desktop's coordinates.
     anchor: Option<(f64, f64)>,
     /// The view, while one is open.
     open: Option<Open>,
     /// A press landed away from what the view drew while it held the pointer: the slot closes.
     pressed_outside: bool,
-    /// Where the pointer was last, in the desk's coordinates.
+    /// Where the pointer was last, in the desktop's coordinates.
     at: Option<(f64, f64)>,
 }
 
 impl SlotView {
     /// The host of `slot`'s tilolang views at `scale`, taking the pointer and the keys while
-    /// `focused` says the slot's surface is the one over the desk.
+    /// `focused` says the slot's surface is the one over the desktop.
     #[must_use]
     pub fn new(slot: &'static str, scale: f64, focused: Rc<dyn Fn() -> bool>) -> Self {
         Self {
@@ -614,7 +614,7 @@ impl SlotView {
         })
     }
 
-    /// Where the control assistive technology names `name` stands, in the desk's logical
+    /// Where the control assistive technology names `name` stands, in the desktop's logical
     /// layout `(x, y, width, height)`: what a test or a tool presses it by.
     pub fn control_bounds(&mut self, name: &str) -> Option<(f64, f64, f64, f64)> {
         let open = self.open.as_mut()?;
@@ -644,7 +644,7 @@ impl SlotView {
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
-            reason = "a place on the desk, and the space from it in pixels"
+            reason = "a place on the desktop, and the space from it in pixels"
         )]
         let space = |at: f64, start: i32, span: u32| -> (i32, u32) {
             let end = start.saturating_add(i32::try_from(span).unwrap_or(i32::MAX));
@@ -666,7 +666,7 @@ impl SlotView {
         }
     }
 
-    /// Whether the view holds the pointer and the keys: its surface is the one over the desk.
+    /// Whether the view holds the pointer and the keys: its surface is the one over the desktop.
     fn focused(&self) -> bool {
         self.open.is_some() && (self.focused)()
     }
@@ -681,7 +681,7 @@ impl SurfaceHost for SlotView {
     }
 
     fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
-        // Window-modal: while the slot is over the desk it takes every press, and one away
+        // Window-modal: while the slot is over the desktop it takes every press, and one away
         // from what it drew closes it rather than reaching what lies under it.
         self.focused()
     }
@@ -791,7 +791,7 @@ impl SurfaceHost for SlotView {
     }
 }
 
-/// Where the reading puts the view, in the desk's coordinates, when it puts it anywhere.
+/// Where the reading puts the view, in the desktop's coordinates, when it puts it anywhere.
 fn anchor_of(reading: &str) -> Option<(f64, f64)> {
     let reading: Json = serde_json::from_str(reading).ok()?;
     let anchor = reading.get("anchor")?;
@@ -803,8 +803,8 @@ mod tests {
     use super::*;
 
     /// A slot's view runs in the session, which holds the person's formats: a day's
-    /// `start_of_week()` goes back to the day their region starts a week on, as their desk's
-    /// calendar and their app windows read it, not to the Monday a view with no formats falls back
+    /// `start_of_week()` goes back to the day their region starts a week on, as their calendar
+    /// and their app windows read it, not to the Monday a view with no formats falls back
     /// on.
     #[test]
     fn a_slots_week_starts_on_the_persons_first_day() {

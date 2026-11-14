@@ -61,8 +61,8 @@ pub(crate) const OVERLAYS: &str = "desktop:overlays";
 pub(crate) const CHROME: &str = "desktop:chrome";
 
 /// Every resource the panel shows or acts on, watched for its whole life.
-/// The desk is not here: the panel presses its actions and shows none of its
-/// reading, so nothing of it crosses the wire. A resource is opened before
+/// A resource the panel only presses is not here: nothing of its reading
+/// crosses the wire. A resource is opened before
 /// its actions are asked of it, so the screen and the night light are here
 /// even where the panel only presses them or only shows the switch.
 pub(crate) const WATCHED: [&str; 15] = [
@@ -178,7 +178,7 @@ impl Watch {
         arguments: &Map<String, Value>,
     ) -> Result<(), Refusal> {
         // The resource is pressed without being followed: the panel shows
-        // nothing of the desk, so none of its reading is carried here.
+        // nothing of the shell, so none of its reading is carried here.
         match SessionResource::invoke_without_watching(resource, action, arguments) {
             Ok(()) => Ok(()),
             Err(error) if absent(&error) => Err(Refusal::Nothing),

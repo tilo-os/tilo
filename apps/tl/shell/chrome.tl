@@ -88,7 +88,7 @@ enum Slot {
 }
 
 /// A named set of the settings, which the person applies in one action: a chrome preset.
-/// `Viewing.preset` (arrangement.tl) is the *desk* preset — how the same places are shown — and is
+/// `Viewing.preset` (arrangement.tl) is the *view* preset — how the same places are shown — and is
 /// a different setting; this one names the bar and the dock.
 enum Layout {
     /// The dock on the bottom with the bar on the top: Tilo's own.
@@ -101,7 +101,7 @@ enum Layout {
     gnome (icon: .menu)
     /// No chrome at rest; the edges reveal what the person needs.
     minimal (icon: .minus)
-    /// The traditional desktop: frames on a floating desk, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
+    /// The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
     windows_desktop (icon: .app_window)
 }
 
@@ -138,9 +138,9 @@ type Shell {
     /// A click on the dock's icons magnifies the item under the pointer, as macOS's Dock
     /// does.
     dock_zoom: Bool = false
-    /// Whether the chosen style's own settings stand over the desk (`style_settings`), opened
+    /// Whether the chosen style's own settings stand over the shell (`style_settings`), opened
     /// from the bar's style menu: the one place a person changes the style they show without an
-    /// agent, as `shell.md` §6's "Two ways to change a desk" says. It is the person's record, so
+    /// agent, as `shell.md` §6 says. It is the person's record, so
     /// it survives a switch and an agent opens and closes it as they do.
     settings_open: Bool = false
     /// Strips: whether a strip of several places shows its tab bar. Off, the strip shows the
@@ -370,7 +370,7 @@ action set_bar_size(s: Shell, size: Size) (label: "Bar size: {size}", group: "To
 
 /// Shows or hides the top bar: the one control that turns it on and off, so a person sees
 /// whether it is on where they press it.
-action show_bar(s: Shell, on: Bool (label: "On the desk") = not s.bar_shown) (
+action show_bar(s: Shell, on: Bool (label: "Shown") = not s.bar_shown) (
     icon: .eye,
     label: "Show the top bar",
     on: s.bar_shown,
@@ -411,7 +411,7 @@ action set_dock_size(s: Shell, size: Size) (label: "Dock size: {size}", group: "
 
 /// Shows or hides the dock: the one control that turns it on and off, so a person sees
 /// whether it is on where they press it.
-action show_dock(s: Shell, on: Bool (label: "On the desk") = not s.dock_shown) (
+action show_dock(s: Shell, on: Bool (label: "Shown") = not s.dock_shown) (
     icon: .eye,
     label: "Show the dock",
     on: s.dock_shown,
@@ -486,7 +486,7 @@ action move_item(s: Shell, item: DockItem, before: DockItem) (icon: .arrow_up_do
 
 /// Puts a dock item at `position`, counted from the leading edge: what a drag that names a
 /// place gives. An item the person's record does not hold yet — an app running on the dock
-/// that they never pinned, which the dock drew from the desk — is pinned where it lands, so
+/// that they never pinned, which the dock drew from the shell — is pinned where it lands, so
 /// moving an app they already run keeps it on the dock after it closes.
 action place_item(s: Shell, item: DockItem, position: Int) (icon: .arrow_up_down, label: "Move") {
     if s.dock_items.any(i -> i.key == item.key) {
@@ -545,19 +545,19 @@ fn shows(when: Showing, reached: Bool, covered: Bool) -> Bool {
 }
 
 /// Whether the top bar shows now: the person's settings, and what the screen says of its edge
-/// (the desk's reading, which the session writes).
+/// (the display's reading, which the session writes).
 fn bar_shows(s: Shell) -> Bool {
     s.bar_shown and shows(s.bar_showing, device.displays.bar_reached, device.displays.bar_covered)
 }
 
-/// Whether the desk's bar lists the window in front's actions now: the traditional desktop's
+/// Whether the shell's bar lists the window in front's actions now: the traditional desktop's
 /// bar always does (its window menu, at every width), and another bar does while it shows the
 /// app's menus part with the room to keep it (`roomy`: the output is expanded or wide, where
 /// the part does not give way). Each window's frame is told this fact
 /// (`ui.WindowFrame(lists_actions:)`), so the window's own bar keeps its title and the shell's
 /// controls alone: each action stands once, in the menu the bar lists it in, never twice.
 ///
-/// The desktop desk style's chrome (`traditional`), and a desk whose chrome is the traditional
+/// The desktop style's chrome (`traditional`), and a shell whose chrome is the traditional
 /// desktop's (`bar_is_traditional`), count as one: that bar lists them, so its frames let their
 /// bar's actions give way to it.
 fn bar_lists_actions(s: Shell, roomy: Bool) -> Bool {
@@ -565,7 +565,7 @@ fn bar_lists_actions(s: Shell, roomy: Bool) -> Bool {
 }
 
 /// [`bar_lists_actions`] with `traditional`: the desktop style passes it, so its frames give way
-/// to the desk's bar whatever the chrome's own preset.
+/// to the shell's bar whatever the chrome's own preset.
 fn bar_lists_actions_for(s: Shell, roomy: Bool, traditional: Bool) -> Bool {
     if not bar_shows(s) {
         return false

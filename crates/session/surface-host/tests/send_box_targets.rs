@@ -1,6 +1,6 @@
 //! The send-to box a window opens with no menu around it publishes its controls as the surface's
 //! own: what a session names to an agent, presses for an assistive technology, and reads off the
-//! desk is the box the person sees, whatever opened it.
+//! desktop is the box the person sees, whatever opened it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -13,7 +13,7 @@ use tilo_session_core::door::Published as _;
 use tilo_session_core::surface::SurfaceHost as _;
 use tilo_surface_host::{AppHost, Placement};
 
-/// A session-hosted app window whose own menu carries the send-to box, drawn on the desk.
+/// A session-hosted app window whose own menu carries the send-to box, drawn on the desktop.
 fn window() -> AppHost {
     let content = ui::widget::Column::new().push(Box::new(ui::widget::Spacer::fixed(200.0)));
     let area = ui::widget::ContextMenuArea::new(Box::new(content), |_| Vec::new());

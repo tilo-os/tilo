@@ -25,7 +25,7 @@
 //! for a write or a field no index holds), catching each index up from its heads.
 //!
 //! **The unsaved layer.** What an origin derives from nothing at every start (the clock, the
-//! desk, the device's state: a type whose origin kind says [`crate::schema::TypeSchema::derived`])
+//! layout, the device's state: a type whose origin kind says [`crate::schema::TypeSchema::derived`])
 //! is never put in the record. Its writes go into the same mirror open transaction as any
 //! write, and so are read at once, but committing them queues nothing: they stay in the
 //! mirror's open transaction and its overlay, which is what reads answer from. The record

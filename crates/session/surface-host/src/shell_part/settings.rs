@@ -1,4 +1,4 @@
-//! The shell's own actions, run from the session: the desk style it shows, the bar's material,
+//! The shell's own actions, run from the session: the shell style it shows, the bar's material,
 //! its finish and the rest of its records' choices, as pressing their controls in its views does.
 
 use std::collections::BTreeMap;

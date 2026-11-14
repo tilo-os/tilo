@@ -1,6 +1,6 @@
 /// The traditional desktop (`docs/designs/app-language/shell.md` §4, §8.2 step 5): the preset
 /// furthest from the strips and the canvas. Nothing is scrolled or zoomed; every window is a
-/// frame standing where the person dropped it on a floating desk, with its own bar; a top bar
+/// frame floating where the person dropped it over the shell, with its own bar; a top bar
 /// across the screen names the focused window and holds its commands the way macOS's action bar
 /// does; and the dock rides the bottom edge (`docks.tl`, reused as it is).
 ///
@@ -20,11 +20,11 @@
 ///   they are in Settings and the system menu.
 ///
 /// Views name theme roles only: no colour, radius, font or size of their own.
-/// The desktop's surface: each placed strip's places as frames on the floating desk, over the
+/// The desktop's surface: each placed strip's places as frames over the shell, on the
 /// desktop's ground, the frame in front drawn last so it stands on top, exactly where the
 /// window policy put it. Each place keeps its canvas point in the arrangement, so a drag that
 /// ends in one arranging action moves the frame and its window together. `lists` says whether
-/// the desk's bar lists the window in front's actions (`bar_lists_actions`), as each frame is
+/// the shell's bar lists the window in front's actions (`bar_lists_actions`), as each frame is
 /// told: the window's bar then keeps its title and the shell's controls alone.
 view traditional_desktop(a: Arrangement, lists: Bool) {
     let front = front_place(a)
@@ -51,7 +51,7 @@ view traditional_desktop(a: Arrangement, lists: Bool) {
 }
 
 /// The window in front alone, filling the room it is given: what a compact output shows of the
-/// desktop (`desk`), where windows standing where they were left would show their corners cut
+/// desktop (`desktop`), where windows standing where they were left would show their corners cut
 /// off and the window the person is in could stand behind another.
 view front_window(a: Arrangement, lists: Bool) {
     if let s = focused_strip(a) {
@@ -88,8 +88,8 @@ view desktop_frame(
 /// the frame's own bar naming the place. The controls stay the shell's, so a press there never
 /// reaches the app. The frame tells the window's bar to keep its title and the shell's controls
 /// alone (`lists_actions`), the window's own actions standing in the shell's one menu: the frame's
-/// `Window actions` where the desk's bar lists none, else the desk's bar
-/// (`bar_lists_actions`). `lists`: the desk's bar already lists them, so the frame's menu gives
+/// `Window actions` where the shell's bar lists none, else the shell's bar
+/// (`bar_lists_actions`). `lists`: the shell's bar already lists them, so the frame's menu gives
 /// way, and every action stands once.
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bool) {
     ui.WindowFrame(
@@ -121,7 +121,7 @@ fn place_title(p: ArrangementPlace) -> Text {
 /// A frame's controls: its window's one menu, which lists the actions the place's resource
 /// publishes and then the way to carry the place to another row, and close. Each is one action of
 /// the app's or one arranging action of the session's (`shell:arrangement`), so a press, a
-/// shortcut and an agent change it the same way. Where the desk's bar already names the window in
+/// shortcut and an agent change it the same way. Where the shell's bar already names the window in
 /// front's resource (`lists`), the frame's menu keeps the shell's controls alone, so every action
 /// stands once.
 view frame_buttons(a: Arrangement, p: ArrangementPlace, lists: Bool) {

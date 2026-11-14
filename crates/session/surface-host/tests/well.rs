@@ -1,5 +1,5 @@
 //! A tilolang shell's frames put a well where a place's window goes (shell.md §8): a window maps
-//! into the desk's tab model, taking the tab id as its well's key, and stands exactly at the
+//! into the desktop's tab model, taking the tab id as its well's key, and stands exactly at the
 //! well's rectangle. A well that moves without changing size (a canvas pan) moves its window in
 //! the same frame, and with nothing changing no view runs and no client is configured.
 
@@ -20,10 +20,10 @@ use ui::headless::FrameHarness;
 use ui::widget::Column;
 use ui::widget::{Element, Map, PinPlace, Wells, WindowWell, window_well};
 
-/// The desk a shell's windows are placed on: a window of 640×480 across a 1280×800 output.
+/// The desktop a shell's windows are placed on: a window of 640×480 across a 1280×800 output.
 const VIEWPORT: (u32, u32) = (640, 480);
 
-/// A logical length as the policy rounds it onto the desk.
+/// A logical length as the policy rounds it onto the desktop.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "a well's logical pixels, far inside i32"
@@ -80,14 +80,14 @@ fn mapped(policy: &mut WellPolicy, id: u64, app: &str) -> (WindowInfo, String) {
     let _ = policy.initial_size(&window, &output());
     let key = policy
         .well_key(id)
-        .expect("the desk gave the window its tab");
+        .expect("the desktop gave the window its tab");
     (window, key)
 }
 
 #[test]
 fn a_window_opens_at_exactly_its_wells_rectangle() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _desk) = well_policy(7, 1.0);
+    let (mut policy, _host) = well_policy(7, 1.0);
     let outputs = output();
     let (window, key) = mapped(&mut policy, 41, "org.example.App");
     // The shell lays a frame out: its bar of 48 logical pixels over the well of that place.
@@ -100,7 +100,7 @@ fn a_window_opens_at_exactly_its_wells_rectangle() {
         well.y0 >= 48.0 && well.y1 > well.y0 && well.width() > 0.0,
         "the well stands under the frame's bar and takes the room left it: {well:?}"
     );
-    // The policy gives the window the desk's tab, and places it exactly there.
+    // The policy gives the window the desktop's tab, and places it exactly there.
     let size = policy
         .initial_size(&window, &outputs)
         .expect("the well's size");
@@ -134,7 +134,7 @@ fn a_window_opens_at_exactly_its_wells_rectangle() {
 #[test]
 fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _desk) = well_policy(7, 1.0);
+    let (mut policy, _host) = well_policy(7, 1.0);
     let outputs = output();
     let (window, key) = mapped(&mut policy, 42, "org.example.App");
     // A canvas: the place's well at a point on a pannable surface.
@@ -196,7 +196,7 @@ fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view
 #[test]
 fn a_place_with_no_well_on_screen_waits_off_the_output() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _desk) = well_policy(7, 1.0);
+    let (mut policy, _host) = well_policy(7, 1.0);
     let outputs = output();
     let (window, key) = mapped(&mut policy, 43, "org.example.App");
     // The shell lays out a frame for another place: this one's well is not on screen.
@@ -218,7 +218,7 @@ fn a_place_with_no_well_on_screen_waits_off_the_output() {
 #[test]
 fn a_well_that_leaves_the_screen_leaves_its_window_off_the_output() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _desk) = well_policy(7, 1.0);
+    let (mut policy, _host) = well_policy(7, 1.0);
     let outputs = output();
     let (window, key) = mapped(&mut policy, 44, "org.example.App");
     let wells = policy.wells();
@@ -236,7 +236,7 @@ fn a_well_that_leaves_the_screen_leaves_its_window_off_the_output() {
 #[test]
 fn with_nothing_changing_no_client_is_configured_and_no_well_reported_twice() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _desk) = well_policy(7, 1.0);
+    let (mut policy, _host) = well_policy(7, 1.0);
     let outputs = output();
     let (window, key) = mapped(&mut policy, 45, "org.example.App");
     let wells = policy.wells();
@@ -294,12 +294,12 @@ impl Cells {
     }
 }
 
-/// A policy that hands its windows wherever the desk's own towers stand, and records every
+/// A policy that hands its windows wherever the desktop's own towers stand, and records every
 /// size it configured a client to: what a click on a window must never add to.
 #[test]
 fn a_client_that_rounds_its_commit_to_a_cell_grid_is_never_configured_again_by_a_click() {
     let _settled = ui::motion::testing::settled();
-    let (mut policy, _desk) = well_policy(7, 1.0);
+    let (mut policy, _host) = well_policy(7, 1.0);
     let outputs = output();
     let (window, key) = mapped(&mut policy, 46, "org.example.Terminal");
     let wells = policy.wells();

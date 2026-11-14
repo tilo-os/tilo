@@ -469,7 +469,7 @@ pub enum QsEffect {
     /// Clear the clipboard history, keeping pinned copies.
     #[effect(label = "qs-clipboard-clear-history", own_device)]
     ClearClipboard,
-    /// Show the notification centre over the desk: the panel's notifications
+    /// Show the notification centre over the shell: the panel's notifications
     /// row opens the one list, where they are read and answered.
     #[effect(
         label = "qs-notifications",

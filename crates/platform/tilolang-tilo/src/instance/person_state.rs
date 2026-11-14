@@ -11,7 +11,7 @@ use crate::runtime::view_state::StateKey;
 
 impl Instance {
     /// Give the views what `held`, the workspace's record of each person's own state, keeps of
-    /// the person at the window `tab` (the desk's tab it takes): how this window shows their
+    /// the person at the window `tab` (the shell's tab it takes): how this window shows their
     /// resources, where they are in it, and what they have seen. Another window's place is its
     /// own. A slot already holding its value is left alone, so a host may run this every frame.
     /// Whether the instance had views to give it to.

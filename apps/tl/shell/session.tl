@@ -1,6 +1,6 @@
 /// What the shell's surfaces ask of the session are the session's own actions, published on its
 /// door and read as packages: the desktop's windows, workspaces and arrangement as
-/// `so.tilo.session` (`apps/tl/session/surface.toml`), the device's resources and the desk as
+/// `so.tilo.session` (`apps/tl/session/surface.toml`), and the device's resources as
 /// `so.tilo.device`. A view presses one directly (`session.focus(window(w))`,
 /// `device.show_surface(device.overlays, surface: "launcher")`), as the agent and the REPL call it,
 /// attributed, permission checked and undoable as any action is. The shell declares no action
@@ -42,7 +42,7 @@ action query_retry(place: Text) {
 }
 
 /// The id of the workspace in front: the one whose windows the switcher walks and the overview
-/// shows as the desk's.
+/// shows as the layout's.
 fn front_workspace() -> Text {
     if let w = arrangement.workspaces.find(w -> w.current) {
         return w.key

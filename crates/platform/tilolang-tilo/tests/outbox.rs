@@ -14,19 +14,19 @@ const LETTERS_IDS: &str = include_str!("../../../lang/tilolang/tests/fixtures/le
 fn suggested_workspace() -> (Replica, tilolang_runtime::ResourceRef) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
     let meta = packages[0].meta.clone();
-    let desk = ada.host.root_of("test.letters").unwrap();
+    let letters = ada.host.root_of("test.letters").unwrap();
     ada.commit();
     let new_draft = meta.actions.iter().find(|a| a.name == "new_draft").unwrap();
     ada.host
         .runtime()
         .invoke_action(
             &Principal::new("ada"),
-            (new_draft.id.as_str(), vec![Value::resource(&desk)]),
+            (new_draft.id.as_str(), vec![Value::resource(&letters)]),
         )
         .unwrap();
     ada.commit();
-    let Value::List(drafts) = ada.host.runtime().read(&desk, "drafts").unwrap() else {
-        panic!("the desk lists its drafts");
+    let Value::List(drafts) = ada.host.runtime().read(&letters, "drafts").unwrap() else {
+        panic!("the letters app lists its drafts");
     };
     let Value::Ref(draft) = &drafts[0] else {
         panic!("a draft is a reference");
@@ -266,16 +266,16 @@ type Draft {
     sealed: Bool = false
 }
 
-type Desk {
+type Letters {
     drafts: Collection<Draft>
 }
 
-root Desk
+root Letters
 
-default view desk for Desk
+default view letters for Letters
 
-view desk(desk: Desk) {
-    std.list(desk.drafts) { (d, at) ->
+view letters(letters: Letters) {
+    std.list(letters.drafts) { (d, at) ->
         ui.ListItem(item: d, presence: at) {
             text(d.to)
         }
@@ -283,8 +283,8 @@ view desk(desk: Desk) {
 }
 
 /// Starts a letter.
-action new_draft(desk: Desk) -> Draft (icon: .plus) {
-    desk.drafts.insert(Draft(to: "bo@example.org"))
+action new_draft(letters: Letters) -> Draft (icon: .plus) {
+    letters.drafts.insert(Draft(to: "bo@example.org"))
 }
 
 /// Posts the letter, then asks who records it: what went out is out while a person decides.
@@ -347,7 +347,7 @@ fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
         &packages,
         Some(relay_standing(&meta, "ada")),
     );
-    let desk = ada.host.root_of(RELAY_APP).unwrap();
+    let letters = ada.host.root_of(RELAY_APP).unwrap();
     ada.commit();
     let new_draft = meta
         .actions
@@ -358,12 +358,12 @@ fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
         .runtime()
         .invoke_action(
             &Principal::new("ada"),
-            (new_draft.id.as_str(), vec![Value::resource(&desk)]),
+            (new_draft.id.as_str(), vec![Value::resource(&letters)]),
         )
         .unwrap();
     ada.commit();
-    let Value::List(drafts) = ada.host.runtime().read(&desk, "drafts").unwrap() else {
-        panic!("the desk lists its drafts");
+    let Value::List(drafts) = ada.host.runtime().read(&letters, "drafts").unwrap() else {
+        panic!("the letters app lists its drafts");
     };
     let Value::Ref(draft) = &drafts[0] else {
         panic!("a draft is a reference");
