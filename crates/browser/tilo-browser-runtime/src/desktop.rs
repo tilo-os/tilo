@@ -358,7 +358,7 @@ pub(crate) struct Shared {
     /// another window handed over (a capture, a recording).
     opened_content: Rc<RefCell<HashMap<TabId, String>>>,
     /// The names of files the page asked windows to open, by their content's hash: a file
-    /// dropped on the desk opens under the name it had, not as its hash.
+    /// dropped on the shell opens under the name it had, not as its hash.
     pub content_names: Rc<RefCell<HashMap<String, String>>>,
     /// Who made each strip and opened each window, by strip or tab id.
     pub authors: Authors,

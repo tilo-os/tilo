@@ -1,6 +1,6 @@
 /**
  * What the page shows while files from the computer are dragged over the
- * desk and once they are dropped: the place a drop would go, outlined (the
+ * shell and once they are dropped: the place a drop would go, outlined (the
  * window under the pointer, or a bar between the strip's windows where one
  * opens) with what dropping there does, or why nothing there takes files;
  * then, at the place they fell, how far the copy into the workspace is and
@@ -38,7 +38,7 @@ export function progressText({phase, done, total, text}) {
 const STYLE = `
 .tilo-drop-target{position:fixed;pointer-events:none;z-index:2147483000;box-sizing:border-box;border:2px solid #5b8def;border-radius:10px;background:rgba(91,141,239,.12);transition:left 60ms,top 60ms,width 60ms,height 60ms}
 .tilo-drop-target[data-kind=strip]{border-radius:3px;background:#5b8def;border:none}
-.tilo-drop-target[data-kind=desk]{border-style:dashed}
+.tilo-drop-target[data-kind=shell]{border-style:dashed}
 .tilo-drop-target[data-kind=refused]{border:none;background:none}
 .tilo-drop-note,.tilo-drop-progress{position:fixed;pointer-events:none;z-index:2147483001;box-sizing:border-box;max-width:min(360px,calc(100vw - 32px));padding:7px 12px;border-radius:9px;font:500 13px/1.35 system-ui,sans-serif;color:#fff;background:rgba(24,26,32,.94);box-shadow:0 4px 16px rgba(0,0,0,.28);white-space:normal;overflow-wrap:anywhere}
 .tilo-drop-note[data-refused]{background:rgba(120,32,32,.95)}
@@ -78,14 +78,14 @@ export function createDropFeedback({canvas, document = globalThis.document, view
     element.style.top = `${top}px`;
   };
   return {
-    /** Files are dragged over `(clientX, clientY)`, where the desk says
+    /** Files are dragged over `(clientX, clientY)`, where the shell says
      * `target` is. */
     over(target, clientX, clientY) {
       ensure();
       const label = dropLabel(target);
       const placed = target && target.kind !== 'refused' && Number.isFinite(target.x);
-      // A strip with no window to open between is the whole desk, outlined as a window is.
-      const kind = target?.kind === 'strip' && target.width > 24 ? 'desk' : target?.kind;
+      // A strip with no window to open between is the whole shell, outlined as a window is.
+      const kind = target?.kind === 'strip' && target.width > 24 ? 'shell' : target?.kind;
       outline.dataset.kind = kind === 'window' && !target.takes ? 'refused' : kind ?? 'refused';
       outline.hidden = !placed || outline.dataset.kind === 'refused';
       if (!outline.hidden) {
@@ -97,7 +97,7 @@ export function createDropFeedback({canvas, document = globalThis.document, view
       note.toggleAttribute('data-refused', target?.kind === 'refused' || (target?.kind === 'window' && !target.takes));
       if (label) hang(note, clientX, clientY);
     },
-    /** The drag left the desk, or ended. */
+    /** The drag left the shell, or ended. */
     leave() {
       if (!style) return;
       outline.hidden = note.hidden = true;

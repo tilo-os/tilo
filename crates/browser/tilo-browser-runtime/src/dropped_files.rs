@@ -3,7 +3,7 @@
 //!
 //! A drop is copied in as it was: every file at its path in what was dropped (`docs/2026/plan.md`
 //! for a folder `docs`), each folder made once, into the folder the drop fell on (the tree's root
-//! for a drop on the desk). A name the folder already has is kept beside it, `plan (2).md`, as a
+//! for a drop on the shell). A name the folder already has is kept beside it, `plan (2).md`, as a
 //! file manager keeps both. The bytes are the file's content manifest and its chunks, kept where
 //! the page keeps the workspace's content, so the workspace's host fetches them from the page by
 //! their hashes as it fetches a mounted computer's ([`fs_content`]).
@@ -104,9 +104,9 @@ pub(crate) fn place(
     Ok(placed)
 }
 
-/// The tree's root: where a drop on the desk goes. The workspace's folder as a computer that
+/// The tree's root: where a drop on the shell goes. The workspace's folder as a computer that
 /// logged in mounts it, so `ls` there shows what was just dropped, beside what the person keeps.
-pub(crate) const DESK_FOLDER: &str = ROOT_ID;
+pub(crate) const SHELL_FOLDER: &str = ROOT_ID;
 
 /// The app (its package) that opens a file named `name` whose first bytes are `head`: the app
 /// its kind lands in ([`tilo_content_types::landing`]). `None` when no app opens it.
@@ -175,14 +175,14 @@ mod tests {
         let mut doc = Doc::new();
         let mut tree = Tree::default();
         let first = [kept("plan.pdf")];
-        place(&mut doc, &mut tree, DESK_FOLDER, &first, (1, "page")).unwrap();
+        place(&mut doc, &mut tree, SHELL_FOLDER, &first, (1, "page")).unwrap();
         let drop = [
             kept("docs/2026/plan.md"),
             kept("docs/2026/budget.xlsx"),
             kept("docs/readme.txt"),
             kept("plan.pdf"),
         ];
-        let placed = place(&mut doc, &mut tree, DESK_FOLDER, &drop, (2, "page")).unwrap();
+        let placed = place(&mut doc, &mut tree, SHELL_FOLDER, &drop, (2, "page")).unwrap();
         assert_eq!(placed.top, ["docs", "plan (2).pdf"]);
         let paths: Vec<String> = placed
             .files
@@ -213,7 +213,7 @@ mod tests {
             Some(blake("docs/2026/plan.md").as_str())
         );
         // The same folder dropped again sits beside the first.
-        let again = place(&mut doc, &mut tree, DESK_FOLDER, &drop[..1], (3, "page")).unwrap();
+        let again = place(&mut doc, &mut tree, SHELL_FOLDER, &drop[..1], (3, "page")).unwrap();
         assert_eq!(again.top, ["docs (2)"]);
     }
 
@@ -224,7 +224,7 @@ mod tests {
         let made = place(
             &mut doc,
             &mut tree,
-            DESK_FOLDER,
+            SHELL_FOLDER,
             &[kept("inbox/a.txt")],
             (1, "p"),
         )
@@ -237,7 +237,7 @@ mod tests {
             place(
                 &mut doc,
                 &mut tree,
-                DESK_FOLDER,
+                SHELL_FOLDER,
                 &[kept("a/../b")],
                 (3, "p")
             )
