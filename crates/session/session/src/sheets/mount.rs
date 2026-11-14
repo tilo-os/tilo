@@ -44,6 +44,34 @@ pub(crate) struct Sheets {
     pub(crate) lock_view: Option<LockSeat>,
 }
 
+impl Sheets {
+    /// Every sheet that asks the person something over the desk: while one is drawn it holds the
+    /// keys, so the desktop's chords wait until it is answered. Not the guide, whose own state
+    /// holds its keys, nor the lock's view, which locking holds.
+    pub(crate) fn modal(&self) -> Vec<tilo_sheets::Presentation> {
+        fn of<S: tilo_sheets::Seat>(seat: Option<&S>) -> Option<tilo_sheets::Presentation> {
+            seat.map(|seat| seat.presentation().clone())
+        }
+        [
+            of(self.power.as_ref()),
+            of(self.workspace_settings.as_ref()),
+            of(self.directory.as_ref()),
+            of(self.invite.as_ref()),
+            of(self.pair_device.as_ref()),
+            of(self.delete_workspace.as_ref()),
+            of(self.portal.as_ref()),
+            of(self.file_picker.as_ref()),
+            of(self.display_confirm.as_ref()),
+            of(self.displays.as_ref()),
+            of(self.add_app.as_ref()),
+            of(self.uninstall.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
 /// What this session offers of locking and the computer's power, for the power menu and for the
 /// rows search lists: the host's power is the host's, so a session in a window of
 /// another desktop offers no switching user, suspending or restarting, and a session that could not

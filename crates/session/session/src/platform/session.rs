@@ -1011,6 +1011,8 @@ impl Session {
         );
 
         // The sheets, over the desktop and its panels.
+        let sheets = crate::sheets::mount::mount_sheets(&mut compositor, &mut doors, &options);
+        let modal_sheets = sheets.modal();
         let crate::sheets::mount::Sheets {
             power,
             workspace_settings,
@@ -1026,7 +1028,7 @@ impl Session {
             add_app,
             uninstall,
             lock_view,
-        } = crate::sheets::mount::mount_sheets(&mut compositor, &mut doors, &options);
+        } = sheets;
         // Where a report about Tilo itself goes, as this computer is told:
         // the box a report is written in opens to it.
         let feedback = crate::feedback::Destination::configured();
@@ -1090,9 +1092,12 @@ impl Session {
             KeyContext {
                 controller: Rc::clone(&controller),
                 controller_keys: Rc::clone(&controller_keys),
-                displays: display_seat
-                    .as_ref()
-                    .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
+                sheets: crate::keys::SheetKeys {
+                    displays: display_seat
+                        .as_ref()
+                        .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
+                    modal: modal_sheets,
+                },
                 fold,
                 overlays: overlays.clone(),
                 reveals: Rc::clone(&reveals),

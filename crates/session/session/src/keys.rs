@@ -365,14 +365,23 @@ impl WalkKeys {
     }
 }
 
+/// The session's sheets as its keys read them.
+#[derive(Clone, Default)]
+pub(crate) struct SheetKeys {
+    /// The display sheet's presentation: Super+P puts it up while it is not there, and once it is,
+    /// the chord moves inside it instead.
+    pub(crate) displays: Option<tilo_sheets::Presentation>,
+    /// The sheets that ask the person something over the desk ([`crate::sheets::mount::Sheets::modal`]).
+    pub(crate) modal: Vec<tilo_sheets::Presentation>,
+}
+
 /// The surface that takes the session's keys; it shows nothing.
 pub(crate) struct SessionKeys {
     /// The desktop's shortcut table, shared with the shortcut guide so the guide explains the
     /// chords the keys resolve against.
     shortcuts: Rc<RefCell<ShortcutConfig>>,
-    /// The display sheet's presentation: Super+P puts it up while it is not there, and once it is,
-    /// the chord moves inside it instead.
-    displays: Option<tilo_sheets::Presentation>,
+    /// The sheets over the desk: a question up holds the keys, and Super+P opens the display sheet.
+    sheets: SheetKeys,
     pub(crate) invocations: Invocations,
     /// The chords pressed that run a saved shortcut's keyboard trigger: the automation host starts
     /// them, on the pass that follows.
@@ -409,7 +418,7 @@ impl SessionKeys {
         presses: Presses,
         guide: Rc<GuideState>,
         desk: DeskKeys,
-        displays: Option<tilo_sheets::Presentation>,
+        sheets: SheetKeys,
         controller: ControllerKeys,
         reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
     ) -> Self {
@@ -423,7 +432,7 @@ impl SessionKeys {
         } = controller;
         Self {
             shortcuts,
-            displays,
+            sheets,
             invocations,
             triggered,
             guide,
@@ -468,10 +477,7 @@ impl SessionKeys {
     /// desktop's fixed table names it. A sheet that is up is not opened again: what is drawn takes
     /// the chord and moves the highlight inside it.
     fn opens_the_display_sheet(&self, press: &Press) -> bool {
-        let Some(displays) = &self.displays else {
-            return false;
-        };
-        if displays.is_drawn() {
+        if self.sheets.displays.is_none() {
             return false;
         }
         let Key::Character(letter) = &press.key else {
@@ -622,8 +628,31 @@ impl SessionKeys {
         }
     }
 
+    /// Whether `press` waits for a question drawn over the desk: a sheet asking the person
+    /// something holds the keys.
+    fn holds_for_a_question(&self, press: &Press) -> bool {
+        self.sheets
+            .modal
+            .iter()
+            .any(tilo_sheets::Presentation::is_drawn)
+            && Self::device_key(press).is_none()
+            && (press.pressed || !self.held.borrow().contains_key(&press.code))
+    }
+
     /// How the session claims `press`, offered before the focused window or panel gets it.
     pub(crate) fn claim(&self, press: &Press, locked: bool, inhibited: bool) -> KeyClaim {
+        // A question over the desk is modal: what is pressed is its answer, and no chord of the
+        // desktop's acts beneath it (the overview, a strip, search would open under the question
+        // and could not be used). A chord under Super is held back rather than answering the
+        // question as its bare key would. A device key answers as it does anywhere, and an app's
+        // shortcut held before the question came still hears its release.
+        if self.holds_for_a_question(press) {
+            return if press.pressed && press.modifiers.logo {
+                KeyClaim::Take
+            } else {
+                KeyClaim::Pass
+            };
+        }
         // Super going down asks for the bar over the window that covers the display, as reaching
         // for the top edge does. The app under it has nothing of a modifier that asked for the
         // desktop's own bar.
@@ -669,6 +698,9 @@ impl SessionKeys {
 
     /// Answer a press the session claimed, or the release of one.
     pub(crate) fn answer(&self, press: &Press) {
+        if self.holds_for_a_question(press) {
+            return;
+        }
         if !press.pressed {
             // The app hears its shortcut released wherever the modifiers are by then: the chord is
             // remembered by the key that held it.
@@ -768,7 +800,7 @@ mod tests {
             presses,
             guide,
             desk,
-            None,
+            SheetKeys::default(),
             ControllerKeys::default(),
             Rc::default(),
         );
@@ -953,6 +985,47 @@ mod tests {
             KeyClaim::Pass,
             "a client that holds the shortcuts opens no walk"
         );
+    }
+
+    /// A question over the desk holds the keys: no chord of the desktop's opens anything beneath
+    /// it, and once it is answered the chords act again.
+    #[test]
+    fn a_question_over_the_desk_holds_the_desktop_chords() {
+        let question = tilo_sheets::Presentation::default();
+        let mut keys = NativeKeys::new(
+            SessionKeys::new(
+                Rc::default(),
+                Presses::default(),
+                Rc::default(),
+                DeskKeys::new(DeskFold::default(), Overlays::new()),
+                SheetKeys {
+                    displays: None,
+                    modal: vec![question.clone()],
+                },
+                ControllerKeys::default(),
+                Rc::default(),
+            ),
+            None,
+            Rc::default(),
+        );
+        let tab = key(keysyms::Tab, None, held("a"));
+        let overview = key(keysyms::Tab, None, held("l"));
+        question.open(false);
+        assert_eq!(
+            keys.claim_key(&tab, false, false),
+            KeyClaim::Pass,
+            "the question takes the chord, and nothing opens beneath it"
+        );
+        assert_eq!(
+            keys.claim_key(&overview, false, false),
+            KeyClaim::Take,
+            "a chord under Super is held back, not typed into the question"
+        );
+        keys.key(&overview);
+        assert!(asked(&keys).is_empty());
+        question.close();
+        question.gone();
+        assert_eq!(keys.claim_key(&tab, false, false), KeyClaim::TakeRepeating);
     }
 
     #[test]

@@ -42,7 +42,7 @@ pub(crate) fn mount_setup(
 pub(crate) struct KeyContext {
     pub(crate) controller: Rc<Cell<Option<ui::ControllerFamily>>>,
     pub(crate) controller_keys: Rc<Cell<bool>>,
-    pub(crate) displays: Option<tilo_sheets::Presentation>,
+    pub(crate) sheets: crate::keys::SheetKeys,
     /// Whether a desk widget has its card open, which Escape folds.
     pub(crate) fold: tilo_desktop::desk_widgets::DeskFold,
     /// What stands over the desk, which Escape closes from the top.
@@ -79,7 +79,7 @@ pub(crate) fn mount_controls(
     KeyContext {
         controller,
         controller_keys,
-        displays,
+        sheets,
         fold,
         overlays,
         reveals,
@@ -111,7 +111,7 @@ pub(crate) fn mount_controls(
             },
             guide,
             DeskKeys::new(fold, overlays).with_panel(panel),
-            displays,
+            sheets,
             ControllerKeys {
                 last: controller,
                 own: controller_keys,
