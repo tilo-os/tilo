@@ -779,16 +779,22 @@ fn start(
         }
     };
     watch_the_loop(backend, &mut session);
+    // The bus the session serves its desktop services on is the one its apps reach: a launch
+    // starts with a cleared environment, and a sandboxed app without it has no accessibility tree
+    // and no portals.
     let session_bus = match &buses.session {
-        Bus::Address(address) => Some(address.as_str()),
-        _ => None,
+        Bus::Address(address) => Some(address.clone()),
+        Bus::Default => std::env::var("DBUS_SESSION_BUS_ADDRESS")
+            .ok()
+            .filter(|address| !address.is_empty()),
+        Bus::None => None,
     };
     run(
         session,
         ours,
         command,
         Some(&launch),
-        session_bus,
+        session_bus.as_deref(),
         reach.export_displays,
         host_desktop,
         &Doors {
@@ -1119,8 +1125,8 @@ fn lock_screen() -> Vec<tilo_session::surfaces::Surface> {
     vec![tilo_session::surfaces::Surface::new("lock", program).lock()]
 }
 
-/// `program` started with `rest` on `environment` 's displays and, when a flag named the session
-/// bus, on that bus rather than the one it inherits.
+/// `program` started with `rest` on `environment` 's displays and on the session's bus, when it
+/// has one.
 #[cfg(target_os = "linux")]
 fn start_command(
     program: &str,
