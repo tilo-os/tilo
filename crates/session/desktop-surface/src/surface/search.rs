@@ -40,6 +40,8 @@ pub(super) enum SearchRequest {
     /// Close search wherever it stands: a host dismissing the one that holds the keyboard, which
     /// asks nothing of what is under it and does nothing when none is open.
     Close,
+    /// Open the open search again where it stands, with the person's query: the host changed.
+    Again,
 }
 
 /// The search the windows of strip `strip` asked for: a new-tab control asks which application to
@@ -502,9 +504,15 @@ impl DesktopHandle {
     }
 
     /// Search from now on also over what `host` adds, and hand it what is chosen that it carries
-    /// out ([`SearchHost::performs`]).
+    /// out ([`SearchHost::performs`]). A search open now opens again over what it adds.
     pub fn set_search_host(&self, host: std::rc::Rc<dyn SearchHost>) {
-        self.shared.borrow_mut().search_host = Some(host);
+        let mut shared = self.shared.borrow_mut();
+        shared.search_host = Some(host);
+        if shared.search_request.is_none() {
+            shared.search_request = Some(SearchRequest::Again);
+        }
+        drop(shared);
+        self.wake();
     }
 
     /// The rows chosen in search since the last call that the host carries out, in order.
@@ -1131,10 +1139,17 @@ impl DesktopSurface {
         let opened = self.search.borrow().is_open();
         let request = self.shared.borrow_mut().search_request.take();
         match (request, opened) {
+            (Some(SearchRequest::Again), true) => {
+                let (scope, query) = {
+                    let search = self.search.borrow();
+                    (search.scope(), search.query().to_owned())
+                };
+                self.open_search(doc, scope, Some(query));
+            }
             (Some(SearchRequest::Open { scope, query }), _) => self.open_search(doc, scope, query),
             (Some(SearchRequest::Toggle), false) => self.open_search(doc, Scope::Workspace, None),
             (Some(SearchRequest::Toggle | SearchRequest::Close), true) => self.close_search(),
-            (Some(SearchRequest::Close) | None, _) => {}
+            (Some(SearchRequest::Close | SearchRequest::Again) | None, _) => {}
         }
         let choices = std::mem::take(&mut self.shared.borrow_mut().search_asks);
         for (index, argument) in choices {

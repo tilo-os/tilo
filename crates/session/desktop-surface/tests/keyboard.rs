@@ -1269,7 +1269,31 @@ fn an_action_that_cannot_run_now_takes_no_row_and_the_runnable_one_is_first() {
     );
 }
 
-/// The chord that opens search is the shell's, never the window's under it: an app that takes every
+/// A host set while search is open, as the page's own search arrives after its first frame, feeds
+/// the open search: what the person already typed finds what the host adds.
+#[test]
+fn a_host_set_while_search_is_open_feeds_it() {
+    let mut shell = Shell::new(1, 450);
+    shell.handle.open_search(Scope::Workspace, None);
+    shell.settle();
+    shell.type_search("quarterly");
+    let (_, rows) = shell.handle.search_rows();
+    assert!(
+        rows.iter().all(|row| row.title != "Quarterly plan"),
+        "nothing finds the plan before the host is here: {rows:?}"
+    );
+    let host = shell.with_host();
+    shell.settle();
+    let (query, rows) = shell.handle.search_rows();
+    assert_eq!(query, "quarterly", "the person's query stays");
+    assert!(
+        rows.iter().any(|row| row.title == "Quarterly plan"),
+        "the host's source answers it: {rows:?}"
+    );
+    assert_eq!(host.scopes.borrow().as_slice(), [Scope::Workspace]);
+}
+
+/// The chord that opens search is the desk's, never the window's under it: an app that takes every
 /// key it is handed is not handed the chord, so no app's own Control+K runs on the press that opened
 /// the search.
 #[test]

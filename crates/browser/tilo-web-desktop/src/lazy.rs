@@ -9,7 +9,8 @@
 //! who is here asks for, the emoji catalogue, which the first picker,
 //! reaction name or `:name:` completion asks for, History, which the
 //! first window that registers it asks for, desktop search, which the
-//! desktop asks for as it first lays out, the jobs band, which the first
+//! desktop asks for as it first lays out, the page's layout actions and
+//! search, which the page asks for as it first draws, the jobs band, which the first
 //! job that runs asks for, the file drops, which the first drag onto the
 //! desk asks for and the page fetches once its first frame is up, the
 //! document codecs, which a workspace's first document asks for, the
@@ -225,6 +226,20 @@ split_code! {
 }
 
 split_code! {
+    /// The page's layout actions: the page asks for them as it first draws, and an action asked
+    /// before they are in waits for them.
+    mod page_layout: tilo_browser_runtime::MakePageLayout = tilo_browser_runtime::builtin_page_layout()
+        => tilo_browser_runtime::PAGE_LAYOUT, module = "page_layout", hash = "d06a9e3b5c17f482";
+}
+
+split_code! {
+    /// The page's search beyond the shell's own windows and commands: the page asks for it as it
+    /// first draws, and a search open when it arrives opens again over what it adds.
+    mod page_search: tilo_browser_runtime::MakePageSearch = tilo_browser_runtime::builtin_page_search()
+        => tilo_browser_runtime::PAGE_SEARCH, module = "page_search", hash = "4b8e2f71a9c3d056";
+}
+
+split_code! {
     /// The jobs band the desk's card shows: the first job that runs asks for it.
     mod jobs_band: ui::jobs::MakeBand = ui::jobs::builtin_band() => ui::jobs::BAND,
         module = "jobs_band", hash = "c1b8e04f7a2d9635";
@@ -355,6 +370,8 @@ pub(crate) fn register() {
     people::register();
     jobs_band::register();
     page_drops::register();
+    page_layout::register();
+    page_search::register();
     document_files::register();
     sheets::register();
     questions::register();

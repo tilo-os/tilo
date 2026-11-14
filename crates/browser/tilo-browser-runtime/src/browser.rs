@@ -581,7 +581,7 @@ pub(crate) struct Desktop {
     persistence: Rc<crate::desktop::Persistence>,
     /// The person's arrangement of this layout: what the palette, a script and an
     /// agent arrange the windows with, as a session's arrangement does.
-    arrangement: crate::arranging::Arranging,
+    arrangement: crate::arranging::PageLayout,
     /// Navigation commands name the mount generation they were issued for.
     generation: String,
     /// What the desktop asked of the page since its last status.
@@ -609,9 +609,7 @@ pub(crate) struct Desktop {
     asks: session_asks::Asks,
     /// The session's search, which the shell's palette asks beyond the shell's own windows and
     /// commands: the bundle's apps and what the arrangement publishes.
-    search: Rc<tilo_session::search::SessionSearch>,
-    /// The layout's revision, as search last read it.
-    search_seen: Cell<Option<u64>>,
+    search: crate::page_search::PageSearch,
     /// Mentions of this person in the workspace's records, and what was told.
     mentions: RefCell<tilo_session::mentions::Mentions>,
     /// What this person may do here, which decides what the session opens
@@ -742,10 +740,13 @@ impl Desktop {
     /// Serve the shell's search from the session's: what stands over the shell as published actions,
     /// the workspaces it shows, and the rows the person chose, carried out here.
     fn follow_search(&self) {
+        let Some(search) = self.search.get() else {
+            return;
+        };
         // What search reads of the shell is what the shell publishes, so it is read when the shell
         // changed and not on a frame that only drew.
-        let revision = self.handle.revision();
-        if self.search_seen.replace(Some(revision)) != Some(revision) {
+        let seen = (self.handle.revision(), self.arrangement.is_in());
+        if self.search.seen.replace(Some(seen)) != Some(seen) {
             let resources = self.arrangement.resources();
             let (tabs, workspaces) = self.handle.read(|tree| {
                 let workspaces = tree
@@ -758,12 +759,10 @@ impl Desktop {
                     workspaces,
                 )
             });
-            self.search.set_workspaces(workspaces);
-            // A page bundles no programs and serves no notification centre of its own: the palette
-            // lists neither.
-            self.search.observe(&resources, tabs, None, Vec::new());
+            search.set_workspaces(workspaces);
+            search.observe(&resources, tabs);
         }
-        let refused = self.search.perform_choices(&self.handle, &mut |own| {
+        let refused = search.perform_choices(&self.handle, &mut |own| {
             self.arrangement
                 .invoke(&own.address, &own.arguments)
                 .map(drop)
@@ -1347,7 +1346,7 @@ fn mount_search(
     files: Option<&Rc<crate::page_files::WorkspaceFiles>>,
     reveals: crate::browser::Reveals,
     woken: &Arc<std::sync::atomic::AtomicBool>,
-) -> Result<Rc<tilo_session::search::SessionSearch>, JsValue> {
+) -> Result<crate::page_search::PageSearch, JsValue> {
     let wake = proxy()?;
     // The workspace's host, over the session this page holds with it: what it finds in the
     // records this page never opened. Its answer arrives between the shell's passes, so it asks
@@ -1369,16 +1368,19 @@ fn mount_search(
             wake,
         })
     });
-    Ok(crate::page_search::mount(
-        handle,
-        &config.author(),
-        (records_store, content_store),
-        files.map(|files| crate::page_files::WorkspaceFiles::source(files)),
-        host,
-        Arc::new(move || {
-            let _ = wake.send_event(id);
-        }),
-        reveals,
+    Ok(crate::page_search::PageSearch::new(
+        crate::page_search::SearchParts {
+            handle: handle.clone(),
+            person: config.author(),
+            store: records_store,
+            content: content_store,
+            files: files.cloned(),
+            host,
+            wake: Arc::new(move || {
+                let _ = wake.send_event(id);
+            }),
+            reveals,
+        },
     ))
 }
 
@@ -1483,7 +1485,8 @@ fn present_desktop(
         images: Rc::clone(&shared.images),
         image_owners: Rc::clone(&shared.image_owners),
         desktop: Some(Desktop {
-            arrangement: crate::arranging::Arranging::new(
+            arrangement: crate::arranging::PageLayout::new(
+                &crate::arranging::PAGE_LAYOUT,
                 &config.author(),
                 handle.clone(),
                 persistence.layout(),
@@ -1502,7 +1505,6 @@ fn present_desktop(
             revoked,
             asks,
             search,
-            search_seen: Cell::default(),
             mentions: RefCell::new(mentions),
 
             permissions: opening_permissions,

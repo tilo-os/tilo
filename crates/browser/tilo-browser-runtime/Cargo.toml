@@ -185,6 +185,15 @@ deferred-drops = []
 # the browser desktop fetches as its own module the first time the tree names
 # one. Without it the document codecs are linked in.
 deferred-document-files = []
+# The bundling crate supplies the page's layout actions (`PAGE_LAYOUT`), which
+# the browser desktop fetches as its own module as the page first draws; an
+# action asked before they are in waits for them. Without it they are linked
+# in.
+deferred-page-layout = []
+# The bundling crate supplies the page's search (`PAGE_SEARCH`), which the
+# browser desktop fetches as its own module as the page first draws. Without it
+# the search is linked in.
+deferred-page-search = []
 
 [dependencies]
 # The host's endpoint address, as the page receives and dials it.

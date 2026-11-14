@@ -14,9 +14,7 @@ use std::sync::Arc;
 use tilo_actions::DoorError;
 use tilo_actions::remote::{RemoteActionTarget, application_provider};
 use tilo_desktop_search::SearchPreferences;
-use tilo_desktop_search::providers::PublishedActions;
-use tilo_desktop_search::providers::jobs::JobEntry;
-use tilo_desktop_search::{LaunchPlace, Target};
+use tilo_desktop_search::Target;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::session::Reveal;
@@ -43,16 +41,6 @@ impl AppActions for PageActions {
     /// only it holds the bytes that say which app opens the file.
     fn performs(&self, target: &Target) -> bool {
         matches!(target, Target::Invoke(_) | Target::Content { .. })
-    }
-
-    /// What apps publish through an action host: on the page each app publishes into the shell it
-    /// draws, and the shell's own door runs those rows.
-    fn published(&self, _: &str) -> Vec<PublishedActions> {
-        Vec::new()
-    }
-
-    fn jobs(&self) -> Vec<JobEntry> {
-        Vec::new()
     }
 
     fn invoke(
@@ -103,13 +91,12 @@ impl AppActions for PageActions {
         let head = bytes
             .get(..bytes.len().min(tilo_content_types::HEAD_BYTES))
             .unwrap_or(&bytes);
-        let Some(landing) = tilo_content_types::landing(head, name) else {
+        let Some(app) = crate::dropped_files::opens_in(head, name) else {
             return Err(DoorError::Unavailable {
                 code: "no_app".into(),
                 reason: format!("No app here opens {name}"),
             });
         };
-        let app = format!("so.tilo.{}", landing.app);
         self.handle
             .dispatch(ChromeEffect::OpenApp {
                 app: tilo_desktop_surface::session::content_launch(&app, hash),
@@ -122,39 +109,6 @@ impl AppActions for PageActions {
                 reason,
             })?;
         Ok(())
-    }
-
-    /// Runs are the session's, and this page runs none.
-    fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), DoorError> {
-        Err(DoorError::Unavailable {
-            code: "unknown_invocation".into(),
-            reason: "This page runs no invocations".into(),
-        })
-    }
-
-    /// A row this page alone reaches is answered by the shell, which opens addresses
-    /// ([`Target::Open`]).
-    fn open_uri(&self, _: &str, _: &str) -> Result<(), DoorError> {
-        Err(DoorError::Unavailable {
-            code: "no_uri_opener".into(),
-            reason: "The shell opens addresses here".into(),
-        })
-    }
-
-    /// The page runs none of the machine's programs.
-    fn start_host_app(&self, _: &str) -> Result<(), DoorError> {
-        Err(DoorError::Unavailable {
-            code: "no_host_apps".into(),
-            reason: "This page runs no programs of the machine's".into(),
-        })
-    }
-
-    /// A launch is the shell's to arrange ([`Self::performs`]).
-    fn open_application(&self, _: &str, _: &str, _: LaunchPlace) -> Result<(), DoorError> {
-        Err(DoorError::Unavailable {
-            code: "shell_arranges_launches".into(),
-            reason: "The shell opens applications here".into(),
-        })
     }
 }
 
@@ -175,26 +129,30 @@ pub(crate) struct WorkspaceHost {
     pub wake: Arc<dyn Fn() + Send + Sync>,
 }
 
-/// The session's search over this page's layout, mounted as a native desktop mounts it: the bundle's
-/// apps as the apps installed here, the records the workspace's indexes name as `store` holds them
-/// (what the page's replication took in, noted in its one stream of record changes), the page's
-/// own model service as the gateway its questions run on, and the page as the host of the rows that
-/// reach an app's window.
-pub(crate) fn mount(
-    handle: &DesktopHandle,
-    person: &str,
-    (store, content): (tilo_session::platform::Store, tilo_content::ContentStore),
-    files: Option<tilo_desktop_search::Held>,
-    host: Option<WorkspaceHost>,
-    wake: Arc<dyn Fn() + Send + Sync>,
-    reveals: crate::browser::Reveals,
-) -> Rc<SessionSearch> {
+/// What the page's search is mounted over: the bundle's apps as the apps installed here, the
+/// records the workspace's indexes name as `store` holds them (what the page's replication took
+/// in, noted in its one stream of record changes), the workspace's files, the page's own model
+/// service as the gateway its questions run on, and the page as the host of the rows that reach an
+/// app's window.
+pub(crate) struct SearchParts {
+    pub handle: DesktopHandle,
+    pub person: String,
+    pub store: tilo_session::platform::Store,
+    pub content: tilo_content::ContentStore,
+    pub files: Option<Rc<crate::page_files::WorkspaceFiles>>,
+    pub host: Option<WorkspaceHost>,
+    pub wake: Arc<dyn Fn() + Send + Sync>,
+    pub reveals: crate::browser::Reveals,
+}
+
+/// The session's search over this page's layout, mounted as a native desktop mounts it.
+fn mount(parts: SearchParts) -> Rc<SessionSearch> {
     // The page holds the records of the apps it opened; the workspace's host holds the rest and
     // ranks them, over the session the page already holds with it.
-    let host_search = host.map(|host| {
+    let host_search = parts.host.map(|host| {
         tilo_desktop_search::Held::new(tilo_desktop_search::providers::hosted::HostSearch::new(
             host.search,
-            tilo_actions::remote::Caller::local_person(person),
+            tilo_actions::remote::Caller::local_person(&parts.person),
             host.workspace,
             host.wake,
         ))
@@ -203,25 +161,103 @@ pub(crate) fn mount(
         SearchOptions {
             preferences: SearchPreferences::default(),
             records: Some(tilo_session::records::Records::over(
-                store,
+                parts.store,
                 crate::replicated::changes(),
             )),
-            workspace_files: files,
+            workspace_files: parts.files.map(|files| files.source()),
             host_search,
             ..SearchOptions::default()
         },
         Some(Arc::new(crate::page_apps::PageApps) as Arc<dyn Apps>),
-        person,
+        &parts.person,
         Some(Rc::new(PageActions {
-            handle: handle.clone(),
-            reveals,
-            content,
+            handle: parts.handle.clone(),
+            reveals: parts.reveals,
+            content: parts.content,
         }) as Rc<dyn AppActions>),
-        Some(wake),
+        Some(parts.wake),
         Some(Arc::new(PageGateway) as Arc<dyn tilo_session::platform::Models>),
     ));
-    handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
+    parts
+        .handle
+        .set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
     search
+}
+
+/// What the page asks of its search, as the trait object [`PAGE_SEARCH`] makes.
+pub(crate) trait PageSearchApi {
+    fn set_workspaces(&self, workspaces: Vec<(String, String)>);
+    fn observe(&self, resources: &[tilo_actions::ResourceSpec], tabs: Vec<u64>);
+    fn perform_choices(
+        &self,
+        handle: &DesktopHandle,
+        own: &mut dyn FnMut(&tilo_desktop_search::InvokeTarget) -> Result<(), DoorError>,
+    ) -> Vec<(Target, DoorError)>;
+}
+
+impl PageSearchApi for SessionSearch {
+    fn set_workspaces(&self, workspaces: Vec<(String, String)>) {
+        Self::set_workspaces(self, workspaces);
+    }
+
+    fn observe(&self, resources: &[tilo_actions::ResourceSpec], tabs: Vec<u64>) {
+        // A page bundles no programs and serves no notification centre of its own: the palette
+        // lists neither.
+        Self::observe(self, resources, tabs, None, Vec::new());
+    }
+
+    fn perform_choices(
+        &self,
+        handle: &DesktopHandle,
+        own: &mut dyn FnMut(&tilo_desktop_search::InvokeTarget) -> Result<(), DoorError>,
+    ) -> Vec<(Target, DoorError)> {
+        Self::perform_choices(self, handle, own)
+    }
+}
+
+/// The page's search code, as a program that fetches it on first use hands it over.
+#[derive(Clone, Copy)]
+pub struct MakePageSearch(fn(SearchParts) -> Rc<dyn PageSearchApi>);
+
+/// The page's search this build links.
+#[must_use]
+pub fn builtin_page_search() -> MakePageSearch {
+    MakePageSearch(|parts| mount(parts) as Rc<dyn PageSearchApi>)
+}
+
+ui::lazy_code! {
+    /// The page's search: linked, or with `deferred-page-search` fetched as the page first draws.
+    pub static PAGE_SEARCH: MakePageSearch = builtin_page_search, feature = "deferred-page-search";
+}
+
+/// The page's search, whose code may still be on its way: until it is in, the shell searches its
+/// own windows and commands, and a search open when it arrives opens again over what it adds.
+pub(crate) struct PageSearch {
+    parts: std::cell::RefCell<Option<SearchParts>>,
+    made: std::cell::OnceCell<Rc<dyn PageSearchApi>>,
+    /// The layout's revision the search last read what it publishes at, and whether the layout's
+    /// code was in then.
+    pub seen: std::cell::Cell<Option<(u64, bool)>>,
+}
+
+impl PageSearch {
+    pub(crate) fn new(parts: SearchParts) -> Self {
+        Self {
+            parts: std::cell::RefCell::new(Some(parts)),
+            made: std::cell::OnceCell::new(),
+            seen: std::cell::Cell::default(),
+        }
+    }
+
+    /// The search, mounted once its code is in.
+    pub(crate) fn get(&self) -> Option<&dyn PageSearchApi> {
+        if self.made.get().is_none() {
+            let code = PAGE_SEARCH.get()?;
+            let parts = self.parts.borrow_mut().take()?;
+            let _ = self.made.set((code.0)(parts));
+        }
+        self.made.get().map(|search| &**search)
+    }
 }
 
 /// The model service this page runs, as the session's ask reaches it: its models hold the page's

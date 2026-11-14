@@ -270,7 +270,7 @@ pub(super) fn invoke_as(
         // The shell's own actions name no window: the mount's arrangement
         // carries them, as a native session's door does.
         if let Some(desktop) = &m.desktop
-            && desktop.arrangement.holds(resource)
+            && crate::arranging::PageLayout::holds(resource)
         {
             // What the page publishes now: what a place made from a resource
             // reads its app and views from.
