@@ -16957,102 +16957,6 @@
       "notes.notebook.append-to-note.Result": {
         "type": "object"
       },
-      "notes.notebook.import-pages.Arguments": {
-        "type": "object",
-        "properties": {
-          "pages": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "images": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "bytes": {
-                        "oneOf": [
-                          {
-                            "items": {
-                              "maximum": 255,
-                              "minimum": 0,
-                              "type": "integer"
-                            },
-                            "type": "array"
-                          },
-                          {
-                            "content": true,
-                            "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
-                            "type": "string"
-                          },
-                          {
-                            "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
-                            "type": "string"
-                          },
-                          {
-                            "properties": {
-                              "inline": {
-                                "type": "array"
-                              }
-                            },
-                            "type": "object"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "url": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "url",
-                      "bytes"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "key": {
-                  "type": "string"
-                },
-                "markdown": {
-                  "type": "string"
-                },
-                "parent": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "source": {
-                  "type": "string"
-                },
-                "tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "title": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "source",
-                "key",
-                "title",
-                "markdown"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "pages"
-        ],
-        "description": ""
-      },
       "notes.notebook.export-markdown-content.Arguments": {
         "type": "object",
         "properties": {
@@ -22696,6 +22600,12 @@
               "string",
               "null"
             ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -23198,128 +23108,6 @@
         },
         "required": [
           "tasks"
-        ],
-        "description": ""
-      },
-      "tasks.tracker.import-issues.Arguments": {
-        "type": "object",
-        "properties": {
-          "issues": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "assignee": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "author": {
-                  "type": "string"
-                },
-                "body": {
-                  "type": "string"
-                },
-                "comments": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "at_ms": {
-                        "type": "integer"
-                      },
-                      "author": {
-                        "type": "string"
-                      },
-                      "by_agent": {
-                        "type": "boolean"
-                      },
-                      "text": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "author",
-                      "text"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "created_ms": {
-                  "type": "integer"
-                },
-                "key": {
-                  "type": "string"
-                },
-                "labels": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "links": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "parent": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "source": {
-                  "type": "string"
-                },
-                "status": {
-                  "oneOf": [
-                    {
-                      "const": "backlog",
-                      "type": "string"
-                    },
-                    {
-                      "const": "todo",
-                      "type": "string"
-                    },
-                    {
-                      "const": "in-progress",
-                      "type": "string"
-                    },
-                    {
-                      "const": "in-review",
-                      "type": "string"
-                    },
-                    {
-                      "const": "done",
-                      "type": "string"
-                    },
-                    {
-                      "const": "cancelled",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "title": {
-                  "type": "string"
-                },
-                "url": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "source",
-                "key",
-                "title",
-                "status"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "issues"
         ],
         "description": ""
       },
@@ -28780,12 +28568,6 @@
     {
       "app": "so.tilo.notes",
       "resource": "notes.notebook",
-      "action": "import-pages",
-      "arguments": "#/components/schemas/notes.notebook.import-pages.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
       "action": "export-markdown-content",
       "arguments": "#/components/schemas/notes.notebook.export-markdown-content.Arguments"
     },
@@ -30228,12 +30010,6 @@
       "resource": "tasks.tracker",
       "action": "import",
       "arguments": "#/components/schemas/tasks.tracker.import.Arguments"
-    },
-    {
-      "app": "so.tilo.tasks",
-      "resource": "tasks.tracker",
-      "action": "import-issues",
-      "arguments": "#/components/schemas/tasks.tracker.import-issues.Arguments"
     },
     {
       "app": "so.tilo.tasks",

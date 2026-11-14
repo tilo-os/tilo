@@ -40,7 +40,7 @@ fields = [
   { path = "issues.*.comments.*.incorporated", type = "bool", readonly = true },
   { path = "issues.*.author", type = "text", readonly = true },
   { path = "issues.*.created_ms", type = "int", readonly = true },
-  { path = "issues.*.url", type = { option = "text" }, readonly = true },
+  { path = "issues.*.url", type = { option = "text" } },
   { path = "areas", type = { collection = { named = "TrackerArea" } }, stored = "collection", unit = true },
   { path = "areas.*.id", type = "text", readonly = true },
   { path = "areas.*.name", type = "text", label = true },
@@ -62,6 +62,7 @@ params = [
   { name = "body", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "status", type = { option = { named = "Status" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }] } },
   { name = "assignee", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "url", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -219,14 +220,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "import-issues"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issues", type = { list = { named = "ImportedIssue" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { assignee = { type = ["string", "null"] }, author = { type = "string" }, body = { type = "string" }, comments = { type = "array", items = { type = "object", additionalProperties = false, properties = { at_ms = { type = "integer" }, author = { type = "string" }, by_agent = { type = "boolean" }, text = { type = "string" } }, required = ["author", "text"] } }, created_ms = { type = "integer" }, key = { type = "string" }, labels = { type = "array", items = { type = "string" } }, links = { type = "array", items = { type = "string" } }, parent = { type = ["string", "null"] }, source = { type = "string" }, status = { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }, title = { type = "string" }, url = { type = "string" } }, required = ["source", "key", "title", "status"] } } },
-]
-
-[[resources.verbs]]
 id = "new-project"
 kind = "read"
 
@@ -250,24 +243,6 @@ fields = [
   { name = "author", type = "text" },
   { name = "created_ms", type = "int" },
   { name = "messages", type = { list = { named = "ImportedMessage" } } },
-]
-
-[[resources.types]]
-name = "ImportedIssue"
-fields = [
-  { name = "source", type = "text" },
-  { name = "key", type = "text" },
-  { name = "title", type = "text" },
-  { name = "body", type = "text" },
-  { name = "status", type = { named = "Status" } },
-  { name = "assignee", type = { option = "text" } },
-  { name = "author", type = "text" },
-  { name = "labels", type = { list = "text" } },
-  { name = "created_ms", type = "int" },
-  { name = "url", type = "text" },
-  { name = "comments", type = { list = { named = "ImportedMessage" } } },
-  { name = "links", type = { list = "text" } },
-  { name = "parent", type = { option = "text" } },
 ]
 
 [[resources.types]]

@@ -25,6 +25,7 @@ fn create(title: &str, parent: Option<Id>, assignee: Option<&str>) -> tracker::C
         body: None,
         status: None,
         assignee: assignee.map(str::to_owned),
+        url: None,
     }
 }
 
@@ -774,98 +775,19 @@ fn the_project_is_published_with_its_verbs_and_a_resource_of_its_own() {
     );
 }
 
-fn imported(key: &str, title: &str) -> crate::model::ImportedIssue {
-    crate::model::ImportedIssue {
-        source: "linear".to_owned(),
-        key: key.to_owned(),
-        title: title.to_owned(),
-        body: "The report is due.".to_owned(),
-        status: Status::InProgress,
-        assignee: Some("person:Ada".to_owned()),
-        author: "Ada".to_owned(),
-        labels: vec!["finance".to_owned()],
-        created_ms: 500,
-        url: format!("https://issues.example/{key}"),
-        comments: vec![ImportedMessage {
-            author: "Grace".to_owned(),
-            at_ms: 600,
-            text: "On it.".to_owned(),
-            ..ImportedMessage::default()
-        }],
-        ..crate::model::ImportedIssue::default()
-    }
-}
-
 #[test]
-fn imported_issues_keep_their_source_and_updating_reimports_nothing() {
+fn an_issue_keeps_the_page_it_was_written_from() {
     let mut replica = ada();
-    let parent = imported("ENG-1", "Close the books");
-    let child = crate::model::ImportedIssue {
-        parent: Some("ENG-1".to_owned()),
-        links: vec!["ENG-1".to_owned()],
-        status: Status::Done,
-        ..imported("ENG-2", "Send the ledgers")
-    };
     replica
-        .apply(Tracker::IMPORT_ISSUES.with(tracker::ImportIssues {
-            issues: vec![parent, child],
+        .apply(Tracker::CREATE.with(tracker::Create {
+            url: Some("  https://issues.example/ENG-1 ".to_owned()),
+            ..create("Close the books", None, None)
         }))
         .unwrap();
-
-    let parent_id = crate::model::issue::imported_issue_id("linear", "ENG-1");
-    let child_id = crate::model::issue::imported_issue_id("linear", "ENG-2");
-    {
-        let state = replica.state().unwrap();
-        let issue = state.issues.get(&parent_id).expect("the parent");
-        assert_eq!(issue.number, 1);
-        assert_eq!(issue.status, Status::InProgress);
-        assert_eq!(issue.url.as_deref(), Some("https://issues.example/ENG-1"));
-        assert_eq!(issue.author, "Ada");
-        assert_eq!(issue.created_ms, 500);
-        assert!(issue.labels.contains(&"finance".to_owned()));
-        assert!(issue.body.text().contains("Open the original"));
-        assert_eq!(issue.comments.len(), 1);
-
-        let child = state.issues.get(&child_id).expect("the child");
-        assert_eq!(child.number, 2);
-        assert_eq!(child.parent.as_ref(), Some(&parent_id));
-        assert_eq!(child.links.len(), 1);
-        assert_eq!(
-            child.links.values().next().unwrap().resource,
-            crate::model::issue_resource(&parent_id)
-        );
-    }
-
-    // The same import again updates the issues it made: no second copy, no
-    // second thread, and what the tracker changed follows.
-    let mut changed = imported("ENG-1", "Close the books, 2026");
-    changed.status = Status::Done;
-    changed.comments.push(ImportedMessage {
-        author: "Ada".to_owned(),
-        at_ms: 700,
-        text: "Done.".to_owned(),
-        ..ImportedMessage::default()
-    });
-    replica
-        .apply(Tracker::IMPORT_ISSUES.with(tracker::ImportIssues {
-            issues: vec![changed],
-        }))
-        .unwrap();
-
+    let id = id_of(&replica, "Close the books");
     let state = replica.state().unwrap();
-    assert_eq!(state.issues.len(), 2, "no issue was written twice");
-    let issue = state.issues.get(&parent_id).unwrap();
-    assert_eq!(issue.title, "Close the books, 2026");
-    assert_eq!(issue.status, Status::Done);
-    assert_eq!(issue.number, 1, "an imported issue keeps its number");
     assert_eq!(
-        issue.comments.len(),
-        2,
-        "a new comment is added, the first kept"
-    );
-    assert_eq!(
-        issue.comments.at(0).unwrap().1.text,
-        "On it.",
-        "a comment keeps its place"
+        state.issues.get(&id).unwrap().url.as_deref(),
+        Some("https://issues.example/ENG-1")
     );
 }

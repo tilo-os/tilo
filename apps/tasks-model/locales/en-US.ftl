@@ -31,4 +31,3 @@ tasks-tracker-link-note = Link a note
 tasks-tracker-delete = Delete issue
 tasks-tracker-plan = Plan issue
 tasks-tracker-import = Import old tasks
-tasks-tracker-import-issues = Import issues from another tracker

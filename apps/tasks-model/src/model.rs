@@ -27,8 +27,8 @@ mod tracker_area;
 pub use effect::{NOTE_KIND, NOTES, TasksEffect};
 pub use goal::Area;
 pub use issue::{
-    Imported, ImportedIssue, ImportedMessage, Issue, Link, Message, MessageKind, Status,
-    agent_assignee, person_assignee,
+    Imported, ImportedMessage, Issue, Link, Message, MessageKind, Status, agent_assignee,
+    person_assignee,
 };
 pub use record::{Tracker, tracker};
 pub use tracker_area::{Kind, Person, TrackerArea};

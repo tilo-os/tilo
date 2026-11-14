@@ -306,6 +306,7 @@ pub(crate) fn new_issue(
             body: None,
             status,
             assignee: None,
+            url: None,
         })
     });
     let title = cx.actions().submit_draft(
