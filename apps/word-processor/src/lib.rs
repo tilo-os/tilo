@@ -318,108 +318,113 @@ mod tests {
         bytes
     }
 
-    #[test]
-    fn export_formats_write_valid_files_and_refuse_unsupported_imports() {
-        let doc = imported(b"# Title\n\nHello world\n", WpFormat::Markdown);
+    tilo_test_env::scenario! {
+        /// The file formats a document is saved to and opened from.
+        fn documents_import_and_export_in_every_format;
 
-        let pdf = exported(&doc, WpFormat::Pdf, "pdf");
-        assert!(pdf.starts_with(b"%PDF"), "{:?}", &pdf[..pdf.len().min(8)]);
+        phase export_formats_write_valid_files_and_refuse_unsupported_imports;
+        {
+            let doc = imported(b"# Title\n\nHello world\n", WpFormat::Markdown);
 
-        let html = String::from_utf8(exported(&doc, WpFormat::Html, "html")).unwrap();
-        let lower = html.to_ascii_lowercase();
-        assert!(
-            lower.contains("<!doctype html") || lower.contains("<html"),
-            "output is an HTML document: {:?}",
-            html.get(..html.len().min(64))
-        );
+            let pdf = exported(&doc, WpFormat::Pdf, "pdf");
+            assert!(pdf.starts_with(b"%PDF"), "{:?}", &pdf[..pdf.len().min(8)]);
 
-        let rtf = exported(&doc, WpFormat::Rtf, "rtf");
-        assert!(rtf.starts_with(b"{\\rtf"), "{:?}", &rtf[..rtf.len().min(8)]);
-
-        let epub = exported(&doc, WpFormat::Epub, "epub");
-        assert!(epub.starts_with(b"PK"));
-        assert!(epub.len() >= 38);
-        assert_eq!(&epub[30..38], b"mimetype");
-
-        for (bytes, format) in [
-            (b"%PDF-1.7".as_slice(), WpFormat::Pdf),
-            (b"PK\x03\x04".as_slice(), WpFormat::Epub),
-        ] {
+            let html = String::from_utf8(exported(&doc, WpFormat::Html, "html")).unwrap();
+            let lower = html.to_ascii_lowercase();
             assert!(
-                import_action(bytes, format, &tilo_content::ContentStore::memory()).is_err(),
-                "{format:?} is export-only"
+                lower.contains("<!doctype html") || lower.contains("<html"),
+                "output is an HTML document: {:?}",
+                html.get(..html.len().min(64))
+            );
+
+            let rtf = exported(&doc, WpFormat::Rtf, "rtf");
+            assert!(rtf.starts_with(b"{\\rtf"), "{:?}", &rtf[..rtf.len().min(8)]);
+
+            let epub = exported(&doc, WpFormat::Epub, "epub");
+            assert!(epub.starts_with(b"PK"));
+            assert!(epub.len() >= 38);
+            assert_eq!(&epub[30..38], b"mimetype");
+
+            for (bytes, format) in [
+                (b"%PDF-1.7".as_slice(), WpFormat::Pdf),
+                (b"PK\x03\x04".as_slice(), WpFormat::Epub),
+            ] {
+                assert!(
+                    import_action(bytes, format, &tilo_content::ContentStore::memory()).is_err(),
+                    "{format:?} is export-only"
+                );
+            }
+        }
+
+        phase plain_text_opens_one_paragraph_per_line_and_saves_back;
+        {
+            let lines = [
+                "Standup 2026-09-24",
+                "# Maya: finished; next: review. Blocked: no",
+                "- Jonas: *sync* bug",
+                "",
+                "Priya: done",
+            ];
+            assert_eq!(
+                WpFormat::from_path(Path::new("standup.txt")),
+                WpFormat::Text
+            );
+            let doc = imported(
+                format!("{}\r\n", lines.join("\r\n")).as_bytes(),
+                WpFormat::Text,
+            );
+            let blocks = blocks(&doc);
+            let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
+            assert_eq!(texts, lines);
+            assert!(
+                blocks.iter().all(|b| b.kind == "paragraph"),
+                "nothing is read as markup"
+            );
+            assert_eq!(
+                String::from_utf8(exported(&doc, WpFormat::Text, "txt")).unwrap(),
+                format!("{}\n", lines.join("\n"))
             );
         }
-    }
 
-    #[test]
-    fn plain_text_opens_one_paragraph_per_line_and_saves_back() {
-        let lines = [
-            "Standup 2026-09-24",
-            "# Maya: finished; next: review. Blocked: no",
-            "- Jonas: *sync* bug",
-            "",
-            "Priya: done",
-        ];
-        assert_eq!(
-            WpFormat::from_path(Path::new("standup.txt")),
-            WpFormat::Text
-        );
-        let doc = imported(
-            format!("{}\r\n", lines.join("\r\n")).as_bytes(),
-            WpFormat::Text,
-        );
-        let blocks = blocks(&doc);
-        let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
-        assert_eq!(texts, lines);
-        assert!(
-            blocks.iter().all(|b| b.kind == "paragraph"),
-            "nothing is read as markup"
-        );
-        assert_eq!(
-            String::from_utf8(exported(&doc, WpFormat::Text, "txt")).unwrap(),
-            format!("{}\n", lines.join("\n"))
-        );
-    }
+        phase imports_map_extensions_and_round_trip_text_and_bold;
+        {
+            for (name, format) in [
+                ("doc.html", WpFormat::Html),
+                ("doc.htm", WpFormat::Html),
+                ("doc.HTML", WpFormat::Html),
+                ("doc.rtf", WpFormat::Rtf),
+                ("doc.RTF", WpFormat::Rtf),
+                ("doc.epub", WpFormat::Epub),
+                ("doc.EPUB", WpFormat::Epub),
+            ] {
+                assert_eq!(WpFormat::from_path(Path::new(name)), format, "{name}");
+            }
 
-    #[test]
-    fn imports_map_extensions_and_round_trip_text_and_bold() {
-        for (name, format) in [
-            ("doc.html", WpFormat::Html),
-            ("doc.htm", WpFormat::Html),
-            ("doc.HTML", WpFormat::Html),
-            ("doc.rtf", WpFormat::Rtf),
-            ("doc.RTF", WpFormat::Rtf),
-            ("doc.epub", WpFormat::Epub),
-            ("doc.EPUB", WpFormat::Epub),
-        ] {
-            assert_eq!(WpFormat::from_path(Path::new(name)), format, "{name}");
+            let html = imported(b"<h1>Opened from HTML</h1><p>body</p>", WpFormat::Html);
+            let first = blocks(&html).into_iter().next().unwrap();
+            assert_eq!(first.kind, "heading");
+            assert_eq!(first.text, "Opened from HTML");
+
+            let rtf = imported(
+                b"{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Opened from RTF\\par}}",
+                WpFormat::Rtf,
+            );
+            assert_eq!(blocks(&rtf)[0].text, "Opened from RTF");
+
+            let source = imported(b"Hello **world** today\n", WpFormat::Markdown);
+            let reopened = imported(&exported(&source, WpFormat::Rtf, "rtf"), WpFormat::Rtf);
+            let p = blocks(&reopened)
+                .into_iter()
+                .find(|b| b.kind == "paragraph")
+                .expect("a paragraph survives");
+            assert_eq!(p.text, "Hello world today");
+            let strong = p
+                .marks
+                .iter()
+                .find(|m| m.name == "strong")
+                .expect("bold run survives");
+            assert_eq!(p.text.get(strong.start..strong.end), Some("world"));
         }
-
-        let html = imported(b"<h1>Opened from HTML</h1><p>body</p>", WpFormat::Html);
-        let first = blocks(&html).into_iter().next().unwrap();
-        assert_eq!(first.kind, "heading");
-        assert_eq!(first.text, "Opened from HTML");
-
-        let rtf = imported(
-            b"{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Opened from RTF\\par}}",
-            WpFormat::Rtf,
-        );
-        assert_eq!(blocks(&rtf)[0].text, "Opened from RTF");
-
-        let source = imported(b"Hello **world** today\n", WpFormat::Markdown);
-        let reopened = imported(&exported(&source, WpFormat::Rtf, "rtf"), WpFormat::Rtf);
-        let p = blocks(&reopened)
-            .into_iter()
-            .find(|b| b.kind == "paragraph")
-            .expect("a paragraph survives");
-        assert_eq!(p.text, "Hello world today");
-        let strong = p
-            .marks
-            .iter()
-            .find(|m| m.name == "strong")
-            .expect("bold run survives");
-        assert_eq!(p.text.get(strong.start..strong.end), Some("world"));
     }
 
     #[test]

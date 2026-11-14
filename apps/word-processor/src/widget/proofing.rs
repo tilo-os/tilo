@@ -77,51 +77,56 @@ pub(super) fn misspelled_spans(
 mod tests {
     use super::*;
 
-    #[test]
-    fn personal_words_join_the_built_in_dictionary_once() {
-        let built_in = spellcheck::Dictionary::from_words(["hello"]);
-        let mut personal = PersonalDictionary::default();
-        assert!(personal.add("qwordz"));
-        assert!(!personal.add("qwordz"), "a word is added once");
-        let dictionary = personal.over(&built_in);
-        assert!(dictionary.contains("qwordz"));
-        assert!(dictionary.contains("hello"));
-        assert!(
-            !built_in.contains("qwordz"),
-            "the built-in list is untouched"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The personal dictionary and the spans `misspelled_spans` marks.
+        fn spelling_reads_the_personal_words_over_the_dictionary;
 
-    #[test]
-    fn a_cover_letter_is_spelled_right_with_the_personal_words_on_top() {
-        let mut personal = PersonalDictionary::default();
-        personal.add("Northwindly");
-        let dictionary = personal.over(&spellcheck::Dictionary::default());
-        let letter = "I am writing to apply for the position at Northwind Studio, which I \
+        phase personal_words_join_the_built_in_dictionary_once;
+        {
+            let built_in = spellcheck::Dictionary::from_words(["hello"]);
+            let mut personal = PersonalDictionary::default();
+            assert!(personal.add("qwordz"));
+            assert!(!personal.add("qwordz"), "a word is added once");
+            let dictionary = personal.over(&built_in);
+            assert!(dictionary.contains("qwordz"));
+            assert!(dictionary.contains("hello"));
+            assert!(
+                !built_in.contains("qwordz"),
+                "the built-in list is untouched"
+            );
+        }
+
+        phase a_cover_letter_is_spelled_right_with_the_personal_words_on_top;
+        {
+            let mut personal = PersonalDictionary::default();
+            personal.add("Northwindly");
+            let dictionary = personal.over(&spellcheck::Dictionary::default());
+            let letter = "I am writing to apply for the position at Northwind Studio, which I \
             saw advertised on your website last week. Your studio\u{2019}s work is \
             the reason; the office is a ten-minute walk away. northwindly yours,";
-        assert!(
-            misspelled_spans(&dictionary, "en-US", letter).is_empty(),
-            "{:?}",
-            misspelled_spans(&dictionary, "en-US", letter)
-                .iter()
-                .map(|&(start, end)| &letter[start..end])
-                .collect::<Vec<_>>()
-        );
-        assert!(misspelled_spans(&dictionary, "en-US", "Lena Hoffmann").is_empty());
-        assert_eq!(
-            misspelled_spans(&dictionary, "en-US", "a ten-minutte walk"),
-            vec![(6, 13)],
-            "a compound's misspelled part is marked by itself"
-        );
-    }
+            assert!(
+                misspelled_spans(&dictionary, "en-US", letter).is_empty(),
+                "{:?}",
+                misspelled_spans(&dictionary, "en-US", letter)
+                    .iter()
+                    .map(|&(start, end)| &letter[start..end])
+                    .collect::<Vec<_>>()
+            );
+            assert!(misspelled_spans(&dictionary, "en-US", "Lena Hoffmann").is_empty());
+            assert_eq!(
+                misspelled_spans(&dictionary, "en-US", "a ten-minutte walk"),
+                vec![(6, 13)],
+                "a compound's misspelled part is marked by itself"
+            );
+        }
 
-    #[test]
-    fn user_dictionary_words_are_removed_without_losing_byte_offsets() {
-        let dictionary = spellcheck::Dictionary::from_words(["qwordz"]);
-        assert_eq!(
-            misspelled_spans(&dictionary, "en-US", "qwordz wrold"),
-            vec![(7, 12)]
-        );
+        phase user_dictionary_words_are_removed_without_losing_byte_offsets;
+        {
+            let dictionary = spellcheck::Dictionary::from_words(["qwordz"]);
+            assert_eq!(
+                misspelled_spans(&dictionary, "en-US", "qwordz wrold"),
+                vec![(7, 12)]
+            );
+        }
     }
 }

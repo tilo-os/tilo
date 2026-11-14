@@ -183,46 +183,51 @@ mod tests {
         named(paragraphs, after).map(|paragraph| paragraph.id.as_str())
     }
 
-    #[test]
-    fn the_heading_an_anchor_names_wins_over_contents_lines_and_mentions() {
-        let body = [
-            paragraph("toc", "Contents: Results, Methods", false),
-            paragraph("intro", "See the results below.", false),
-            paragraph("results", "Results", true),
-            paragraph("methods", "Methods", true),
-        ];
-        assert_eq!(found(&body, "Results"), Some("results"));
-        assert_eq!(
-            found(&body, "results:"),
-            Some("results"),
-            "case and punctuation aside"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Where a picture goes: the heading or paragraph its anchor text names.
+        fn an_anchor_names_its_heading_or_is_refused_with_the_headings;
 
-    #[test]
-    fn a_loose_anchor_still_finds_its_heading() {
-        let body = [
-            paragraph("q3", "Q3 revenue by region", true),
-            paragraph("outlook", "Outlook for 2027", true),
-        ];
-        assert_eq!(found(&body, "Q3 revenue by regoin"), Some("q3"), "a typo");
-        assert_eq!(
-            found(&body, "Outlook for 2027 and beyond"),
-            Some("outlook"),
-            "an anchor running on past the heading"
-        );
-        assert_eq!(found(&body, "Appendix B"), None);
-    }
+        phase the_heading_an_anchor_names_wins_over_contents_lines_and_mentions;
+        {
+            let body = [
+                paragraph("toc", "Contents: Results, Methods", false),
+                paragraph("intro", "See the results below.", false),
+                paragraph("results", "Results", true),
+                paragraph("methods", "Methods", true),
+            ];
+            assert_eq!(found(&body, "Results"), Some("results"));
+            assert_eq!(
+                found(&body, "results:"),
+                Some("results"),
+                "case and punctuation aside"
+            );
+        }
 
-    #[test]
-    fn an_unmatched_anchor_is_refused_with_the_headings() {
-        let body = [
-            paragraph("a", "Summary", true),
-            paragraph("b", "Budget", true),
-        ];
-        assert_eq!(
-            unmatched(&body, "Appendix B"),
-            "no heading or paragraph matches `Appendix B`; the headings are `Summary`, `Budget`"
-        );
+        phase a_loose_anchor_still_finds_its_heading;
+        {
+            let body = [
+                paragraph("q3", "Q3 revenue by region", true),
+                paragraph("outlook", "Outlook for 2027", true),
+            ];
+            assert_eq!(found(&body, "Q3 revenue by regoin"), Some("q3"), "a typo");
+            assert_eq!(
+                found(&body, "Outlook for 2027 and beyond"),
+                Some("outlook"),
+                "an anchor running on past the heading"
+            );
+            assert_eq!(found(&body, "Appendix B"), None);
+        }
+
+        phase an_unmatched_anchor_is_refused_with_the_headings;
+        {
+            let body = [
+                paragraph("a", "Summary", true),
+                paragraph("b", "Budget", true),
+            ];
+            assert_eq!(
+                unmatched(&body, "Appendix B"),
+                "no heading or paragraph matches `Appendix B`; the headings are `Summary`, `Budget`"
+            );
+        }
     }
 }

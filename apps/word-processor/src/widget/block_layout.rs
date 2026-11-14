@@ -128,10 +128,11 @@ mod tests {
         }
     }
 
-    /// Imported values resolve into UI layout types, and malformed numeric attributes use safe defaults.
-    #[test]
-    fn block_layout_attributes_resolve_or_fall_back_safely() {
-        // Phase: imported_values_resolve_into_ui_layout_types.
+    tilo_test_env::scenario! {
+        /// Imported values resolve into UI layout types, and malformed numeric attributes use safe defaults.
+        fn block_layout_attributes_resolve_or_fall_back_safely;
+
+        phase imported_values_resolve_into_ui_layout_types;
         {
             let block = block([
                 ("page_break_before", AttrVal::Bool(true)),
@@ -151,7 +152,7 @@ mod tests {
             assert_eq!(cell_rc(&block), (2, 3));
         }
 
-        // Phase: malformed_numeric_attributes_use_safe_layout_defaults.
+        phase malformed_numeric_attributes_use_safe_layout_defaults;
         {
             let block = block([
                 ("line_spacing", AttrVal::Float(f64::NAN)),

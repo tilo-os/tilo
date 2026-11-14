@@ -246,187 +246,197 @@ pub fn convert_file(path: &Path, to: &str) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_document_converts_beside_itself_and_reads_back_as_markdown() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("Letter.md");
-        std::fs::write(&source, "# Dear reader\n\nThank you for writing.").unwrap();
+    tilo_test_env::scenario! {
+        /// `convert_file`, `read_file` and `read_content`.
+        fn files_and_content_convert_and_read_by_what_they_hold;
 
-        let docx = convert_file(&source, ".DOCX").unwrap();
-        assert!(docx.ends_with("Letter.docx"));
-        let read = read_file(&docx, None).unwrap();
-        assert_eq!(read["format"], "markdown");
-        assert!(
-            read["text"].as_str().unwrap().contains("# Dear reader"),
-            "{read}"
-        );
-        assert_eq!(read["next"], serde_json::Value::Null);
+        phase a_document_converts_beside_itself_and_reads_back_as_markdown;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("Letter.md");
+            std::fs::write(&source, "# Dear reader\n\nThank you for writing.").unwrap();
 
-        let again = convert_file(&source, "docx").unwrap();
-        assert!(again.ends_with("Letter (2).docx"), "never over a file");
-        let pdf = convert_file(&source, "pdf").unwrap();
-        assert!(std::fs::read(pdf).unwrap().starts_with(b"%PDF"));
-
-        assert!(
-            convert_file(&source, "exe")
-                .unwrap_err()
-                .contains("not .exe")
-        );
-        assert!(read_file(&root.path().join("x.pdf"), None).is_err());
-    }
-
-    #[test]
-    fn a_document_kept_as_content_reads_as_markdown() {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("Letter.md");
-        std::fs::write(&source, "# Dear reader\n\nThank you for writing.").unwrap();
-        let docx = std::fs::read(convert_file(&source, "docx").unwrap()).unwrap();
-        let store = tilo_content::ContentStore::memory();
-        let address = format!("tilo.content:{}", store.put(&docx).unwrap());
-        let read = read_content(&store, (&address, "Letter.docx"), None).unwrap();
-        assert_eq!(
-            (read["file"].as_str(), read["format"].as_str()),
-            (Some("Letter.docx"), Some("markdown"))
-        );
-        assert!(
-            read["text"].as_str().unwrap().contains("# Dear reader"),
-            "{read}"
-        );
-        for name in ["Sofia details", "Letter.pdf", "Letter.md"] {
-            let read = read_content(&store, (&address, name), None).unwrap();
-            assert_eq!(read["format"], "markdown", "{name}: {read}");
+            let docx = convert_file(&source, ".DOCX").unwrap();
+            assert!(docx.ends_with("Letter.docx"));
+            let read = read_file(&docx, None).unwrap();
+            assert_eq!(read["format"], "markdown");
             assert!(
                 read["text"].as_str().unwrap().contains("# Dear reader"),
-                "{name}: {read}"
+                "{read}"
             );
+            assert_eq!(read["next"], serde_json::Value::Null);
+
+            let again = convert_file(&source, "docx").unwrap();
+            assert!(again.ends_with("Letter (2).docx"), "never over a file");
+            let pdf = convert_file(&source, "pdf").unwrap();
+            assert!(std::fs::read(pdf).unwrap().starts_with(b"%PDF"));
+
+            assert!(
+                convert_file(&source, "exe")
+                    .unwrap_err()
+                    .contains("not .exe")
+            );
+            assert!(read_file(&root.path().join("x.pdf"), None).is_err());
         }
-        assert!(read_content(&store, ("Letter.docx", "Letter.docx"), None).is_err());
-        let gone = format!("tilo.content:{}", "0".repeat(64));
-        assert_eq!(
-            read_content(&store, (&gone, "Letter.docx"), None).unwrap_err(),
-            "Letter.docx is not on this device"
-        );
-    }
 
-    #[test]
-    fn content_writer_does_not_read_names_what_does() {
-        let store = tilo_content::ContentStore::memory();
-        let pdf = format!(
-            "tilo.content:{}",
-            store.put(b"%PDF-1.7\n%\xe2\xe3").unwrap()
-        );
-        let refused = read_content(&store, (&pdf, "Sofia details.docx"), None).unwrap_err();
-        assert!(
-            refused.contains("is a PDF: pdf-viewer import-pdf-content opens it"),
-            "{refused}"
-        );
-        let text = format!("tilo.content:{}", store.put(b"Plain notes").unwrap());
-        let read = read_content(&store, (&text, "notes.docx"), None).unwrap();
-        assert_eq!(
-            (read["format"].as_str(), read["text"].as_str()),
-            (Some("text"), Some("Plain notes"))
-        );
-    }
-
-    /// A scan kept as content answers as a picture, whatever the name it is
-    /// read under says; a picture file is refused as not text.
-    #[test]
-    fn a_picture_kept_as_content_answers_as_a_picture() {
-        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
-        png.extend(640_u32.to_be_bytes());
-        png.extend(480_u32.to_be_bytes());
-        png.extend([8, 2, 0, 0, 0]);
-        let store = tilo_content::ContentStore::memory();
-        let hash = store.put(&png).unwrap();
-        let address = format!("tilo.content:{hash}");
-        for name in ["passport.png", "passport.pdf", "scan of the passport"] {
-            let read = read_content(&store, (&address, name), None).unwrap();
-            assert_eq!(read["format"], "picture", "{read}");
-            assert_eq!(read["picture"], address.as_str());
-            assert_eq!(read["file"], name);
-            assert_eq!(read["media_type"], "image/png");
+        phase a_document_kept_as_content_reads_as_markdown;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("Letter.md");
+            std::fs::write(&source, "# Dear reader\n\nThank you for writing.").unwrap();
+            let docx = std::fs::read(convert_file(&source, "docx").unwrap()).unwrap();
+            let store = tilo_content::ContentStore::memory();
+            let address = format!("tilo.content:{}", store.put(&docx).unwrap());
+            let read = read_content(&store, (&address, "Letter.docx"), None).unwrap();
             assert_eq!(
-                (read["width"].as_u64(), read["height"].as_u64()),
-                (Some(640), Some(480))
+                (read["file"].as_str(), read["format"].as_str()),
+                (Some("Letter.docx"), Some("markdown"))
             );
-            assert_eq!(read["bytes"].as_u64(), Some(png.len() as u64));
-        }
-
-        let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("passport.png");
-        std::fs::write(&file, &png).unwrap();
-        let refused = read_file(&file, None).unwrap_err();
-        assert!(
-            refused.ends_with("is a picture (image/png), not text"),
-            "{refused}"
-        );
-    }
-
-    #[test]
-    fn a_part_starts_where_asked_and_never_past_the_end() {
-        let path = Path::new("/tmp/book.txt");
-        let full = "\u{e9}".repeat(MAX_READ_CHARS);
-        let over = format!("{full}\u{e9}");
-        for (row, text, from, part, starts, more) in [
-            ("an empty text", "", 0, "", 0, None),
-            ("from the middle", "ab\u{e9}d", 2, "\u{e9}d", 2, None),
-            ("from its end", "ab\u{e9}d", 4, "", 4, None),
-            ("from past its end", "ab\u{e9}d", 9, "", 4, None),
-            (
-                "as much as one part holds",
-                full.as_str(),
-                0,
-                full.as_str(),
-                0,
-                None,
-            ),
-            (
-                "one character more than a part holds",
-                over.as_str(),
-                0,
-                full.as_str(),
-                0,
-                Some(MAX_READ_CHARS),
-            ),
-            (
-                "the character the first part left",
-                over.as_str(),
-                MAX_READ_CHARS,
-                "\u{e9}",
-                MAX_READ_CHARS,
-                None,
-            ),
-        ] {
-            let read = page(path, "text", text, from);
-            assert_eq!(read.text.as_deref(), Some(part), "{row}");
+            assert!(
+                read["text"].as_str().unwrap().contains("# Dear reader"),
+                "{read}"
+            );
+            for name in ["Sofia details", "Letter.pdf", "Letter.md"] {
+                let read = read_content(&store, (&address, name), None).unwrap();
+                assert_eq!(read["format"], "markdown", "{name}: {read}");
+                assert!(
+                    read["text"].as_str().unwrap().contains("# Dear reader"),
+                    "{name}: {read}"
+                );
+            }
+            assert!(read_content(&store, ("Letter.docx", "Letter.docx"), None).is_err());
+            let gone = format!("tilo.content:{}", "0".repeat(64));
             assert_eq!(
-                (read.from, read.next, read.total),
-                (Some(starts), more, Some(text.chars().count())),
-                "{row}"
+                read_content(&store, (&gone, "Letter.docx"), None).unwrap_err(),
+                "Letter.docx is not on this device"
+            );
+        }
+
+        phase content_writer_does_not_read_names_what_does;
+        {
+            let store = tilo_content::ContentStore::memory();
+            let pdf = format!(
+                "tilo.content:{}",
+                store.put(b"%PDF-1.7\n%\xe2\xe3").unwrap()
+            );
+            let refused = read_content(&store, (&pdf, "Sofia details.docx"), None).unwrap_err();
+            assert!(
+                refused.contains("is a PDF: pdf-viewer import-pdf-content opens it"),
+                "{refused}"
+            );
+            let text = format!("tilo.content:{}", store.put(b"Plain notes").unwrap());
+            let read = read_content(&store, (&text, "notes.docx"), None).unwrap();
+            assert_eq!(
+                (read["format"].as_str(), read["text"].as_str()),
+                (Some("text"), Some("Plain notes"))
+            );
+        }
+
+        phase a_picture_kept_as_content_answers_as_a_picture;
+        // A scan kept as content answers as a picture, whatever the name it is
+        // read under says; a picture file is refused as not text.
+        {
+            let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+            png.extend(640_u32.to_be_bytes());
+            png.extend(480_u32.to_be_bytes());
+            png.extend([8, 2, 0, 0, 0]);
+            let store = tilo_content::ContentStore::memory();
+            let hash = store.put(&png).unwrap();
+            let address = format!("tilo.content:{hash}");
+            for name in ["passport.png", "passport.pdf", "scan of the passport"] {
+                let read = read_content(&store, (&address, name), None).unwrap();
+                assert_eq!(read["format"], "picture", "{read}");
+                assert_eq!(read["picture"], address.as_str());
+                assert_eq!(read["file"], name);
+                assert_eq!(read["media_type"], "image/png");
+                assert_eq!(
+                    (read["width"].as_u64(), read["height"].as_u64()),
+                    (Some(640), Some(480))
+                );
+                assert_eq!(read["bytes"].as_u64(), Some(png.len() as u64));
+            }
+
+            let root = tempfile::tempdir().unwrap();
+            let file = root.path().join("passport.png");
+            std::fs::write(&file, &png).unwrap();
+            let refused = read_file(&file, None).unwrap_err();
+            assert!(
+                refused.ends_with("is a picture (image/png), not text"),
+                "{refused}"
+            );
+        }
+
+        phase a_pdf_is_refused_before_it_is_read_and_the_refusal_names_what_reads_it;
+        {
+            let refused = convert_file(Path::new("/nowhere/Scan.PDF"), "docx").unwrap_err();
+            assert!(
+                refused.contains("Scan.PDF is a PDF: Files' `read-text` reads its text"),
+                "{refused}"
             );
         }
     }
 
-    #[test]
-    fn a_pdf_is_refused_before_it_is_read_and_the_refusal_names_what_reads_it() {
-        let refused = convert_file(Path::new("/nowhere/Scan.PDF"), "docx").unwrap_err();
-        assert!(
-            refused.contains("Scan.PDF is a PDF: Files' `read-text` reads its text"),
-            "{refused}"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// `page`, the part of a text one read answers with.
+        fn a_text_reads_in_parts;
 
-    #[test]
-    fn a_long_text_reads_in_parts_that_join_up() {
-        let text: String = "ab\u{e9}".repeat(MAX_READ_CHARS);
-        let path = Path::new("/tmp/book.txt");
-        let mut joined = String::new();
-        let mut from = Some(0);
-        while let Some(at) = from {
-            let part = page(path, "text", &text, at);
-            joined.push_str(part.text.as_deref().unwrap());
-            from = part.next;
+        phase a_part_starts_where_asked_and_never_past_the_end;
+        {
+            let path = Path::new("/tmp/book.txt");
+            let full = "\u{e9}".repeat(MAX_READ_CHARS);
+            let over = format!("{full}\u{e9}");
+            for (row, text, from, part, starts, more) in [
+                ("an empty text", "", 0, "", 0, None),
+                ("from the middle", "ab\u{e9}d", 2, "\u{e9}d", 2, None),
+                ("from its end", "ab\u{e9}d", 4, "", 4, None),
+                ("from past its end", "ab\u{e9}d", 9, "", 4, None),
+                (
+                    "as much as one part holds",
+                    full.as_str(),
+                    0,
+                    full.as_str(),
+                    0,
+                    None,
+                ),
+                (
+                    "one character more than a part holds",
+                    over.as_str(),
+                    0,
+                    full.as_str(),
+                    0,
+                    Some(MAX_READ_CHARS),
+                ),
+                (
+                    "the character the first part left",
+                    over.as_str(),
+                    MAX_READ_CHARS,
+                    "\u{e9}",
+                    MAX_READ_CHARS,
+                    None,
+                ),
+            ] {
+                let read = page(path, "text", text, from);
+                assert_eq!(read.text.as_deref(), Some(part), "{row}");
+                assert_eq!(
+                    (read.from, read.next, read.total),
+                    (Some(starts), more, Some(text.chars().count())),
+                    "{row}"
+                );
+            }
         }
-        assert_eq!(joined, text);
+
+        phase a_long_text_reads_in_parts_that_join_up;
+        {
+            let text: String = "ab\u{e9}".repeat(MAX_READ_CHARS);
+            let path = Path::new("/tmp/book.txt");
+            let mut joined = String::new();
+            let mut from = Some(0);
+            while let Some(at) = from {
+                let part = page(path, "text", &text, at);
+                joined.push_str(part.text.as_deref().unwrap());
+                from = part.next;
+            }
+            assert_eq!(joined, text);
+        }
     }
 }
