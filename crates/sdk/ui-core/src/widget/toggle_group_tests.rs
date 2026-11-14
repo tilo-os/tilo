@@ -916,8 +916,9 @@ tilo_test_env::scenario! {
                 .bounds
                 .map(crate::a11y::AccessBounds::to_rect)
                 .expect("the picker is placed");
+            let side = f64::from(g.interaction.minimum_target());
             assert!(
-                bounds.width() >= 48.0 && bounds.height() >= 48.0,
+                bounds.width() >= side && bounds.height() >= side,
                 "the picker is a target: {bounds:?}"
             );
             let [menu] = node.children.as_slice() else {
@@ -951,6 +952,55 @@ tilo_test_env::scenario! {
             );
         }
 
+        fn a_folded_strips_bindings_name_the_picker_until_its_menu_opens() {
+            use crate::widget::controls::ActionControls;
+            let mut g = ToggleGroup::new(
+                vec![
+                    Segment::new("Always"),
+                    Segment::new("While no window covers it"),
+                    Segment::new("At the screen's edge"),
+                ],
+                NONE_CHOSEN,
+            )
+            .with_id("dock")
+            .on_action(crate::widget::test_value_action_binding(
+                tilo_actions::ParamType::Integer,
+            ));
+            g.adopt_theme(&Theme::dark());
+            g.measure_naturals(&mut TextRenderer::new());
+            g.apply_layout_external(Rect::new(0.0, 0.0, 140.0, 48.0));
+            assert!(g.is_folded(), "the labels do not fit 140 px");
+            let ids = |bindings: Vec<crate::widget::ControlBindingMetadata>| {
+                bindings
+                    .into_iter()
+                    .map(|binding| binding.control_id)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                ids(g.control_action_bindings()),
+                ["dock~fold"],
+                "closed, the picker is the control in sight and its hidden choices are not"
+            );
+            let target = g.fold_target();
+            assert!(Widget::perform_semantic_action(
+                &mut g,
+                &target,
+                &crate::a11y::Action::Activate,
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &automerge::ROOT,
+            ));
+            assert_eq!(
+                ids(g.control_action_bindings()),
+                [
+                    "dock~fold",
+                    "dock:segment:0",
+                    "dock:segment:1",
+                    "dock:segment:2"
+                ],
+                "open, its choices are controls of their own"
+            );
+        }
+
         let _settled = crate::motion::testing::settled();
         nothing_chosen_until_the_person_picks();
         a_bound_selection_follows_its_state_both_ways();
@@ -960,6 +1010,7 @@ tilo_test_env::scenario! {
         tabs_start_on_the_leading_edge_and_scroll_when_long();
         a_caption_names_the_strip_and_sits_above_it();
         a_folded_strip_meets_a_reader_as_one_picker();
+        a_folded_strips_bindings_name_the_picker_until_its_menu_opens();
     }
 }
 

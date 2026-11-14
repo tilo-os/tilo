@@ -2590,6 +2590,23 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
         }
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let segments = self.segment_bindings();
+        if !self.folded {
+            return segments;
+        }
+        // A folded strip is one picker: the picker is the control in sight, and the choices are
+        // its menu's — effect-capable controls themselves only while that menu is open.
+        let mut bindings = vec![ControlBindingMetadata::semantic(self.fold_target())];
+        if self.menu.is_open() {
+            bindings.extend(segments);
+        }
+        bindings
+    }
+}
+
+impl ToggleGroup {
+    /// The binding of each segment's own action, where the strip has one.
+    fn segment_bindings(&self) -> Vec<ControlBindingMetadata> {
         let per_segment: Vec<ControlBindingMetadata> = self
             .presses
             .iter()
