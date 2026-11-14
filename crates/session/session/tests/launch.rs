@@ -81,15 +81,24 @@ fn host_app(home: &tilo_test_env::TestHome, desktop_id: &str, body: &str) -> Pat
     host_app_claiming(home, desktop_id, body, None)
 }
 
-/// This device's lists as these tests find apps in it: the fixture's own host app, resolved through
-/// the entry the session's scan reads.
-fn host_lists() -> Lists {
+/// This device's lists as these tests find apps in it: the kinds the fixture home's desktop
+/// entries claim, and the fixture's own host app listed for search by its name.
+fn host_lists(home: &tilo_test_env::TestHome) -> Lists {
+    let entries = desktop_entry::scan::scan_dirs(&[home.data().join("applications")], &[], &[]);
     Lists::fixed(AppLists {
         host_apps: vec![HostAppEntry {
             desktop_id: "org.example.Probe".into(),
             name: "Probe".into(),
             ..HostAppEntry::default()
         }],
+        candidates: entries
+            .entries
+            .iter()
+            .filter(|entry| !entry.no_display && !entry.hidden)
+            .filter_map(|entry| {
+                desktop_policy::AppCandidate::host(&entry.id, entry.name.clone(), &entry.mime_types)
+            })
+            .collect(),
         ..AppLists::default()
     })
 }
@@ -542,7 +551,7 @@ fn session_through(
         .as_ref()
         .map_or_else(Vec::new, |desktop| desktop.services());
     let session = crate::common::headless(Options {
-        lists: host_lists(),
+        lists: host_lists(home),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
         launch: Some(Rc::clone(&apps)),
         launches: Arc::clone(&started),
