@@ -124,12 +124,33 @@ impl super::Session {
         (self.kind(ty), declared.id.clone())
     }
 
-    /// The identity of the app's action `action` on records of `ty`, as the door takes it: the
-    /// kind of record and the id the app declares the action by, which is what a window's control
-    /// publishes and no language renames.
+    /// The address the window's instance publishes for the app's action `action` on records of
+    /// `ty`, as the broker was handed it: what an agent reading the workspace's actions finds.
     pub(super) fn identity_doing(&self, ty: &str, action: &str) -> String {
-        let (kind, action) = self.doing(ty, action);
-        ui::tilo_actions::ActionAddress::new(kind, action).encode()
+        self.published_doing(&self.kind(ty), action)
+    }
+
+    /// The address the window's instance publishes for the action `action` on a resource of the
+    /// kind `kind`.
+    pub(super) fn published_doing(&self, kind: &str, action: &str) -> String {
+        let published = self.instance().published();
+        published
+            .iter()
+            .find(|descriptor| {
+                descriptor.resource_kind == kind && descriptor.address.action == action
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} publishes no {action} on a {kind}: {:?}",
+                    self.app,
+                    published
+                        .iter()
+                        .map(|descriptor| (&descriptor.resource_kind, descriptor.address.encode()))
+                        .collect::<Vec<_>>()
+                )
+            })
+            .address
+            .encode()
     }
 
     /// The id the app gives the field `field`, as it is declared (`title`): what the control that

@@ -2886,11 +2886,7 @@ fn chat_at_a_phones_width(messages: usize) -> Session {
         other => panic!("the channel was made: {other:?}"),
     };
     // Sending is the app's own: an action of no one record, given the conversation it writes in.
-    let send = ui::tilo_actions::ActionAddress::new(
-        format!("tl.{CHAT}"),
-        session.doing("TextChannel", "send").1,
-    )
-    .encode();
+    let send = session.published_doing(&format!("tl.{CHAT}"), "send");
     let to = serde_json::json!({
         "app": CHAT,
         "kind": session.kind("TextChannel"),
