@@ -175,13 +175,12 @@ async fn connect_entering(
     dial: &mut Dial,
 ) -> Result<RelayClient, LinkError> {
     let host = &config.host;
-    let dialer = match &dial.dialer {
-        Some(dialer) => Arc::clone(dialer),
-        None => {
-            let dialer = Arc::new(dial.dialer_to(host, signer));
-            dial.dialer = Some(Arc::clone(&dialer));
-            dialer
-        }
+    let dialer = if let Some(dialer) = &dial.dialer {
+        Arc::clone(dialer)
+    } else {
+        let dialer = Arc::new(dial.dialer_to(host, signer));
+        dial.dialer = Some(Arc::clone(&dialer));
+        dialer
     };
     // Over iroh a custody-held device's endpoint speaks for it by its signed
     // statement, which every plane grant carries; over WebTransport the

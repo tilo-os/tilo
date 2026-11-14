@@ -244,6 +244,12 @@ fn acting_fabric(
         .or_else(|| sync.and_then(crate::sync::Client::fabric))
 }
 
+/// The person's own records `sync` keeps, open to their other devices: what the broker keeps them
+/// in as well as the desktop, and what a sibling's writes reach this session's apps through.
+fn personal_sync(sync: &crate::sync::Client) -> Option<tilo_peer_state::PersonalSync> {
+    sync.personal().map(|personal| personal.sync().clone())
+}
+
 /// The plane the apps read and invoke this session's services on, when it serves one: the socket
 /// the launcher hands its apps, and the link the loop answers their calls through.
 /// The broker it serves on is `collaboration` 's, which the session's channel service gates a
@@ -315,12 +321,7 @@ pub(crate) fn start_action_plane(
     let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
         options.wake.handle(),
     ));
-    // The person's own records this session keeps, open to their other devices: what the broker
-    // keeps them in as well as the desktop, and what a sibling's writes reach this session's apps
-    // through.
-    let personal = sync
-        .and_then(crate::sync::Client::personal)
-        .map(|personal| personal.sync().clone());
+    let personal = sync.and_then(personal_sync);
     let channels = std::sync::Arc::clone(&sealed.broker);
     let broker = plane::serve(
         path.clone(),

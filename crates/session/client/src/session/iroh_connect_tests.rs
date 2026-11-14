@@ -190,9 +190,8 @@ async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
         dialled.is_err(),
         "a host that speaks another protocol is no session"
     );
-    let from = match from {
-        iroh::endpoint::IncomingAddr::Ip(from) => from,
-        _ => panic!("a dial on loopback arrives from an address of its own"),
+    let iroh::endpoint::IncomingAddr::Ip(from) = from else {
+        panic!("a dial on loopback arrives from an address of its own");
     };
     assert!(
         sockets.iter().any(|socket| socket.port() == from.port()),

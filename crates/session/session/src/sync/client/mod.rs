@@ -1655,8 +1655,8 @@ impl Client {
 
     /// This device came to hold another workspace: its live plane opens that workspace's plane
     /// now ([`crate::live::Live::workspace_arrived`]). Nothing to tell on a session with no plane.
+    #[cfg(target_os = "linux")]
     pub(crate) fn workspace_arrived(&self) {
-        #[cfg(target_os = "linux")]
         if let Some(live) = self.hosting.seat.live() {
             live.workspace_arrived();
         }
