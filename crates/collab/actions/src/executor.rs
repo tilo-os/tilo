@@ -432,6 +432,26 @@ pub fn entry_message(doc: &Doc, actor: &ActorId, context: &ActionContext) -> Opt
 /// first entry.
 const MAX_CONTINUATIONS: usize = 4096;
 
+/// How many continuations [`entry_of`] remembers the first entry of.
+const CONTINUATIONS_KEPT: usize = 8;
+
+thread_local! {
+    /// The continuations [`entry_of`] read last, each with its gesture's
+    /// first entry and how many changes back that entry is. A keystroke's
+    /// change continues the one before it, so its entry is found one step
+    /// back instead of by walking the whole gesture again. A change's hash
+    /// names its content and history, so what is kept for it holds on any
+    /// document.
+    static CONTINUATIONS: std::cell::RefCell<std::collections::VecDeque<(automerge::ChangeHash, ActionContext, usize)>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Changes [`entry_of`] stepped back over, for the test that pins it.
+    static STEPS_BACK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The entry of the change `hash`: its message's, or for a continuation its
 /// gesture's first entry with the continuation's action (found by following
 /// its writer's earlier changes).
@@ -443,26 +463,59 @@ pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Opti
         return Some(entry);
     }
     let gesture = ActionContext::continued_gesture(message)?;
+    let (first, depth) = first_entry(doc, &meta, gesture)?;
+    CONTINUATIONS.with_borrow_mut(|kept| {
+        if !kept.iter().any(|(kept, ..)| *kept == hash) {
+            if kept.len() >= CONTINUATIONS_KEPT {
+                kept.pop_front();
+            }
+            kept.push_back((hash, first.clone(), depth));
+        }
+    });
+    ActionContext::continued(message, &first)
+}
+
+/// The first entry of the gesture `gesture` the continuation `meta` is in,
+/// and how many of its writer's changes back it is: none when it is more
+/// than [`MAX_CONTINUATIONS`] back.
+fn first_entry(
+    doc: &automerge::Automerge,
+    meta: &automerge::ChangeMetadata<'_>,
+    gesture: ActionId,
+) -> Option<(ActionContext, usize)> {
     let actor = meta.actor.clone();
     let mut at = meta.deps.clone();
-    for _ in 0..MAX_CONTINUATIONS {
+    for depth in 1..=MAX_CONTINUATIONS {
+        #[cfg(test)]
+        STEPS_BACK.with(|steps| steps.set(steps.get().saturating_add(1)));
         let earlier = at.iter().find_map(|dep| {
             let meta = doc.get_change_meta_by_hash(dep)?;
             (meta.actor == actor).then_some(meta)
         })?;
         let text = earlier.message.as_deref()?;
         if let Some(first) = ActionContext::from_change_message(text) {
-            return (first.gesture == Some(gesture))
-                .then(|| ActionContext::continued(message, &first))
-                .flatten();
+            return (first.gesture == Some(gesture)).then_some((first, depth));
         }
         if ActionContext::continued_gesture(text) != Some(gesture) {
             return None;
+        }
+        let kept = CONTINUATIONS.with_borrow(|kept| {
+            kept.iter()
+                .find(|(hash, ..)| *hash == earlier.hash)
+                .map(|(_, first, back)| (first.clone(), *back))
+        });
+        if let Some((first, back)) = kept {
+            let depth = depth.checked_add(back)?;
+            return (depth <= MAX_CONTINUATIONS).then_some((first, depth));
         }
         at = earlier.deps.clone();
     }
     None
 }
+
+#[cfg(test)]
+#[path = "executor_entry_tests.rs"]
+mod entry_tests;
 
 /// The entries of a document's changes read in causal order, each
 /// continuation folded into its gesture's first entry as it is read.
