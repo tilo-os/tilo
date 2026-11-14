@@ -228,7 +228,9 @@ pub struct AccountsModel {
     removing: Option<(String, ui::InvocationCall)>,
     form_address: LocalState<String>,
     form_incoming: LocalState<String>,
+    form_incoming_port: LocalState<String>,
     form_outgoing: LocalState<String>,
+    form_outgoing_port: LocalState<String>,
     form_password: LocalState<String>,
 }
 
@@ -250,7 +252,9 @@ impl AccountsModel {
             removing: None,
             form_address: LocalState::new(String::new()),
             form_incoming: LocalState::new(String::new()),
+            form_incoming_port: LocalState::new("993".into()),
             form_outgoing: LocalState::new(String::new()),
+            form_outgoing_port: LocalState::new("465".into()),
             form_password: LocalState::new(String::new()),
         }
     }
@@ -266,9 +270,9 @@ impl AccountsModel {
                     display_name: String::new(),
                     username: None,
                     incoming_host: self.form_incoming.get(),
-                    incoming_port: 993,
+                    incoming_port: port(&self.form_incoming_port.get(), 993),
                     outgoing_host: self.form_outgoing.get(),
-                    outgoing_port: 465,
+                    outgoing_port: port(&self.form_outgoing_port.get(), 465),
                     password: self.form_password.get(),
                 };
                 self.adding = Some(self.remote.invoke(
@@ -328,7 +332,9 @@ impl AccountsModel {
                         ));
                         self.form_address.set(String::new());
                         self.form_incoming.set(String::new());
+                        self.form_incoming_port.set("993".into());
                         self.form_outgoing.set(String::new());
+                        self.form_outgoing_port.set("465".into());
                         self.form_password.set(String::new());
                         self.reread();
                     }
@@ -435,11 +441,27 @@ impl AccountsModel {
                 ),
             ),
             field_row(
+                &t("settings-web-accounts-incoming-port"),
+                Box::new(
+                    TextInput::from_state(&self.form_incoming_port)
+                        .with_kind(TextInputKind::Number)
+                        .with_id("settings.web.accounts.incoming-port"),
+                ),
+            ),
+            field_row(
                 &t("settings-web-accounts-outgoing"),
                 Box::new(
                     TextInput::from_state(&self.form_outgoing)
                         .with_kind(TextInputKind::Url)
                         .with_id("settings.web.accounts.outgoing"),
+                ),
+            ),
+            field_row(
+                &t("settings-web-accounts-outgoing-port"),
+                Box::new(
+                    TextInput::from_state(&self.form_outgoing_port)
+                        .with_kind(TextInputKind::Number)
+                        .with_id("settings.web.accounts.outgoing-port"),
                 ),
             ),
             field_row(
@@ -856,6 +878,16 @@ fn settled(call: &ui::InvocationCall) -> Option<Result<serde_json::Value, String
     }
 }
 
+/// The port typed in a field, or `default` when it names none.
+fn port(value: &str, default: u16) -> u16 {
+    value
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .unwrap_or(default)
+}
+
 /// `value` as an action's argument map.
 fn json_argument(value: &impl serde::Serialize) -> Result<InvokeArgument, String> {
     let value = serde_json::to_value(value).map_err(|error| error.to_string())?;
@@ -930,6 +962,7 @@ mod tests {
             let value = match (providers, request.target.address.action.as_str()) {
                 (false, person_accounts::LIST) => serde_json::to_value(MailAccounts {
                     accounts: vec![account()],
+                    ..MailAccounts::default()
                 }),
                 (false, person_accounts::ADD_MAIL) => serde_json::to_value(account()),
                 (false, person_accounts::REMOVE) => serde_json::to_value(MailAccounts::default()),
