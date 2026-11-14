@@ -58,6 +58,8 @@ mod crowded_entry;
 mod door_entry;
 #[path = "fetch_proxy.rs"]
 mod fetch_proxy;
+#[path = "first_landing.rs"]
+mod first_landing;
 #[path = "forgotten_device.rs"]
 mod forgotten_device;
 #[path = "fresh_person.rs"]

@@ -1,0 +1,304 @@
+//! A page that holds none of a record is never told the record landed before its replica holds
+//! it, and reads a record whole when all of its content arrives in one landing.
+//!
+//! A page opening a record asks the workspace for it and for its channel's keys in the same
+//! breath. The keys can be ready before the record's first write is: a page told the record
+//! landed then reads a record its replica does not hold, and the read is refused. Nothing read
+//! the record at that landing, so a record whose only landing is that one — its content came in
+//! one piece and nothing followed — stays empty in every window that opened it.
+//!
+//! Here a page enters a public workspace holding nothing of it, opens a record the workspace has
+//! none of and a record whose whole content is one snapshot, and reads at every landing. Every
+//! read must be answered.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::significant_drop_tightening,
+    clippy::future_not_send,
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+use automerge::transaction::Transactable as _;
+use collab_types::DocumentMutation;
+use ed25519_dalek::SigningKey;
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_client::Host;
+use tilo_relay_protocol::WorkspaceId;
+use tilo_session_client::device::{Entering, door_entry};
+use tilo_session_client::{Cmd, Event, Events, Link, MemoryPeerStore, Outbox as _};
+use tilo_user_identity::UserIdentity;
+
+use crate::support::{enrol, enter_page, start_workspace_host_relaying, wait_keyed, written};
+
+fn new_key() -> SigningKey {
+    SigningKey::generate(&mut UnwrapErr(SysRng))
+}
+
+/// A page of a fresh person entering `workspace` through its door.
+async fn arrive(
+    host: Host,
+    host_cert: &tilo_user_identity::DeviceCert,
+    workspace: &str,
+    name: &str,
+) -> Link {
+    let (root, key) = (new_key(), new_key());
+    let (cert, entry) = door_entry(
+        host_cert,
+        workspace,
+        &key,
+        Entering {
+            held: None,
+            root: Some(&root),
+            label: "Browser",
+            name,
+            token: None,
+        },
+    )
+    .await
+    .unwrap();
+    enter_page(
+        host,
+        cert,
+        host_cert.clone(),
+        key,
+        std::sync::Arc::new(MemoryPeerStore::default()),
+        entry,
+    )
+}
+
+/// A record of the workspace's notes, named by `record`.
+fn notes(lounge: &str, record: &str) -> DocumentRoute {
+    DocumentRoute {
+        app_id: "so.tilo.notes".into(),
+        cluster_id: lounge.to_owned(),
+        record: record.to_owned(),
+    }
+}
+
+/// A change to `doc` setting `key`, as the write a page publishes: the first write of a record is
+/// the whole document, every one after it the change since.
+fn say(doc: &mut automerge::AutoCommit, key: &str, text: &str) -> DocumentMutation {
+    let before = doc.get_heads();
+    doc.put(automerge::ROOT, key, text).unwrap();
+    doc.commit();
+    if before.is_empty() {
+        DocumentMutation::Snapshot(doc.save())
+    } else {
+        DocumentMutation::Incremental(doc.save_after(&before))
+    }
+}
+
+/// A page's reads at the landings it is told of: every one of `watched`'s landings is read, as
+/// the page's replication reads it, and a refused read is kept.
+struct Reader {
+    events: Events,
+    watched: Vec<DocumentRoute>,
+    refusals: Vec<String>,
+    reads: BTreeMap<String, usize>,
+    /// What the workspace answered for each record the page opened: the frames it sent.
+    opened: BTreeMap<String, u32>,
+}
+
+impl Reader {
+    fn of(page: &Link, watched: Vec<DocumentRoute>) -> Self {
+        Self {
+            events: page.events(),
+            watched,
+            refusals: Vec::new(),
+            reads: BTreeMap::new(),
+            opened: BTreeMap::new(),
+        }
+    }
+
+    /// Where `page` stands with `record`: its keys when it reads, and what it holds.
+    fn holds(page: &Link, record: &DocumentRoute) -> Vec<String> {
+        let Ok(Some(bytes)) =
+            page.engine()
+                .record(&record.cluster_id, &record.app_id, &record.record)
+        else {
+            return Vec::new();
+        };
+        automerge::AutoCommit::load(&bytes).map_or_else(
+            |_| Vec::new(),
+            |doc| {
+                use automerge::ReadDoc as _;
+                let mut keys: Vec<String> = doc.keys(automerge::ROOT).collect();
+                keys.sort_unstable();
+                keys
+            },
+        )
+    }
+
+    /// Read every landing the page was told of since the last call.
+    fn take(&mut self, page: &Link) {
+        for event in self.events.drain() {
+            if let Event::RecordOpened {
+                route: Some(route),
+                frames,
+                ..
+            } = event
+            {
+                if self.watched.contains(&route) {
+                    self.opened.insert(route.record, frames);
+                }
+                continue;
+            }
+            let Event::Landed { route, .. } = event else {
+                continue;
+            };
+            if !self.watched.contains(&route) {
+                continue;
+            }
+            match page
+                .engine()
+                .record_update(&route.cluster_id, &route.app_id, &route.record, None)
+            {
+                Ok(_) => *self.reads.entry(route.record.clone()).or_default() += 1,
+                Err(error) => self
+                    .refusals
+                    .push(format!("{}/{}: {error}", route.app_id, route.record)),
+            }
+        }
+    }
+}
+
+/// Drain the page's landings, reading each, until `done` says so.
+async fn until(
+    what: &str,
+    reader: &mut Reader,
+    page: &Link,
+    done: impl Fn(&Reader, &Link) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        reader.take(page);
+        if done(reader, page) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the page never {what}");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
+    let (owner, _) = UserIdentity::generate("Owner", 1);
+    let host_device = enrol(
+        &owner,
+        "lounge-host",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    let state = crate::support::scratch_dir();
+    // A workspace anyone may walk into: it sends a device its records when it opens them, so a
+    // page that just came in holds none of them.
+    let host = start_workspace_host_relaying(&owner, &host_device, state.path(), false, true).await;
+    let workspaces = host.relay.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .publish(
+            &lounge.workspace,
+            &host_device.cert,
+            tilo_relay_protocol::directory::Listing {
+                description: "Everyone".into(),
+                default_role: tilo_relay_protocol::workspaces::Role::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    let address = host.relay.node_addr();
+    let relay_url = address.relay_urls().next().cloned();
+    let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
+    let workspace_id = WorkspaceId::parse(&lounge.workspace).unwrap();
+    let written_record = notes(&lounge.workspace, "");
+    let fresh_record = notes(
+        &lounge.workspace,
+        &neighbour_wire::on_demand_record("uuid:fresh"),
+    );
+
+    // A member wrote one record whole before anyone else came: one snapshot, and nothing after.
+    let author = arrive(page_host(), &host_device.cert, &lounge.workspace, "Member").await;
+    author.send(Cmd::Join(workspace_id)).unwrap();
+    let mut doc = automerge::AutoCommit::new();
+    let whole = say(&mut doc, "supplier", "A contract");
+    written(&author, &written_record, &whole).await;
+
+    // A page comes in holding nothing and opens both records, one of which the workspace has
+    // none of yet.
+    let page = arrive(page_host(), &host_device.cert, &lounge.workspace, "Guest").await;
+    let mut reader = Reader::of(&page, vec![written_record.clone(), fresh_record.clone()]);
+    page.send(Cmd::Join(workspace_id)).unwrap();
+    page.send(Cmd::OpenRecordAt(workspace_id, written_record.clone()))
+        .unwrap();
+    page.send(Cmd::OpenRecordAt(workspace_id, fresh_record.clone()))
+        .unwrap();
+    // What a window on the first record shows: the member's note, arrived whole in the landing
+    // the page read it at.
+    until(
+        "read the record written whole",
+        &mut reader,
+        &page,
+        |_, page| Reader::holds(page, &written_record) == ["supplier"],
+    )
+    .await;
+    // The workspace answered the page's second record with nothing: it is one nobody wrote.
+    until(
+        "opened the record nobody wrote",
+        &mut reader,
+        &page,
+        |reader, _| reader.opened.get(&fresh_record.record) == Some(&0),
+    )
+    .await;
+    assert!(
+        !reader.reads.contains_key(&fresh_record.record),
+        "a record nobody wrote never landed"
+    );
+    assert!(
+        Reader::holds(&page, &fresh_record).is_empty(),
+        "the page holds none of a record nobody wrote"
+    );
+
+    // Now the record nobody wrote is written whole. However many landings the page was told of
+    // for it, every one of them was a record the page held.
+    let mut fresh = automerge::AutoCommit::new();
+    let founding = say(&mut fresh, "first", "one note");
+    written(&author, &fresh_record, &founding).await;
+    until(
+        "read the record as it was written",
+        &mut reader,
+        &page,
+        |_, page| Reader::holds(page, &fresh_record) == ["first"],
+    )
+    .await;
+
+    // Two changes written back to back reach the page together: one landing, and one read of it
+    // holds both.
+    let second = say(&mut fresh, "second", "another");
+    let third = say(&mut fresh, "third", "and more");
+    author.send(Cmd::OpenRoute(fresh_record.clone())).unwrap();
+    wait_keyed(&author, &fresh_record).await;
+    author.write(fresh_record.clone(), &second).unwrap();
+    author.write(fresh_record.clone(), &third).unwrap();
+    crate::support::durable(&author).await;
+    until(
+        "read both changes that landed together",
+        &mut reader,
+        &page,
+        |_, page| Reader::holds(page, &fresh_record) == ["first", "second", "third"],
+    )
+    .await;
+
+    assert!(
+        reader.refusals.is_empty(),
+        "every landing the page was told of was a record it holds; these reads were refused: {:?}",
+        reader.refusals
+    );
+    page.close();
+    author.close();
+}

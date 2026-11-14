@@ -40,6 +40,16 @@ impl Task {
             self.unadmitted.insert(route.clone(), author);
             return;
         }
+        // A record this replica does not hold has nothing that changed: a
+        // route whose keys arrived while its first write is still on its way
+        // is not a landing, and a reader told of it would have its read
+        // refused. It lands when its first write does.
+        if !self
+            .engine
+            .holds_record(&route.cluster_id, &route.app_id, &route.record)
+        {
+            return;
+        }
         self.engine.arrivals().landed();
         self.reports.emit(&crate::Event::Landed {
             author,
