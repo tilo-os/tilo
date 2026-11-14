@@ -1145,7 +1145,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     pump(&mut session, |_| questions.pending().len() == 1);
     let shown = dialog(&session);
     assert_eq!(
-        shown.title, "Work in “Desk” as the agent claude-code@host#1",
+        shown.title, "Work in “Workspace” as the agent claude-code@host#1",
         "where it would work, and as what"
     );
     assert!(

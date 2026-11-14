@@ -1019,7 +1019,12 @@ fn workspace_for(handle: &DesktopHandle, asked: Option<&str>) -> Option<(String,
                     .find(|held| !held.id().is_nil() && held.id().to_string() == asked)
             })
             .or_else(|| tree.active_workspace())
-            .map(|held| (held.id().to_string(), held.name.clone()))
+            .map(|held| {
+                (
+                    held.id().to_string(),
+                    tilo_desktop_surface::names::workspace(&held.name),
+                )
+            })
     })
 }
 
@@ -2651,7 +2656,7 @@ pub(crate) fn awaited_reason(
             tree.workspaces
                 .iter()
                 .find(|held| held.id() == id)
-                .map(|held| held.name.clone())
+                .map(|held| tilo_desktop_surface::names::workspace(&held.name))
         })
         .unwrap_or_else(|| workspace.to_owned());
     Some(awaited_sentence(&name, &host))

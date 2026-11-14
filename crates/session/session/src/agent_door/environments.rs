@@ -144,8 +144,12 @@ pub(super) fn workspace(
     let Some(asked) = asked else {
         return handle
             .read(|tree| {
-                tree.active_workspace()
-                    .map(|held| (held.id().to_string(), held.name.clone()))
+                tree.active_workspace().map(|held| {
+                    (
+                        held.id().to_string(),
+                        tilo_desktop_surface::names::workspace(&held.name),
+                    )
+                })
             })
             .ok_or_else(|| word("agent-door-no-workspace"));
     };
@@ -155,7 +159,12 @@ pub(super) fn workspace(
                 .iter()
                 .find(|held| held.id().to_string() == asked)
                 .filter(|held| held.role_of(person).is_some() && !held.is_blocked(person))
-                .map(|held| (held.id().to_string(), held.name.clone()))
+                .map(|held| {
+                    (
+                        held.id().to_string(),
+                        tilo_desktop_surface::names::workspace(&held.name),
+                    )
+                })
         })
         .ok_or_else(|| word("agent-door-workspace-refused"))
 }

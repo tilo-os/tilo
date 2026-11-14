@@ -358,7 +358,8 @@ fn an_agent_from_another_device_waits_for_the_person_and_leaving_withdraws_it() 
     assert_eq!(who, "Claude Code, from your device Studio laptop");
     // Each connection the person admits is an agent of its own: the device's agent, first of it.
     let named = format!("{}#1", agent_id("claude-code", &person.laptop.1));
-    assert_eq!(what, format!("Work in “Desk” as the agent {named}"));
+    // The desk keeps no name for a workspace nobody named: the question says the word for one.
+    assert_eq!(what, format!("Work in “Workspace” as the agent {named}"));
 
     // Nobody is at this box: nothing is answered, and nothing is admitted.
     b.idle(200);
