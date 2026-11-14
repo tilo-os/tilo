@@ -1400,10 +1400,30 @@ fn files_of_the_workspace(
         config.author(),
         true,
     );
+    // The files' bytes are the tree record's content: read through that record's
+    // lane, so a file whose bytes are not here yet is asked of the workspace and
+    // its words are read when it arrives. A plain store would answer what the
+    // page happens to keep and never ask, so search would know each file's name
+    // and nothing it says.
+    let content = match crate::peer::workspace_id(&config.workspace) {
+        Ok(workspace) => {
+            let route = ui::collaboration::RouteSpec::record(
+                fs_protocol::tree::FILES_APP,
+                workspace.as_uuid(),
+                collab_types::person_record_id(fs_protocol::tree::TREE_KIND),
+            );
+            // Bytes that arrive ask for the pass that reads their words, so
+            // the palette finds what a file says without a keystroke to wake it.
+            ui::collaboration::record_content::ContentLane::of(&route)
+                .attach(ui::WakeHandle::new());
+            ui::collaboration::record_content::ContentLane::record_store(&route)
+        }
+        Err(_) => content.clone(),
+    };
     Some(Rc::new(crate::page_files::WorkspaceFiles::new(
         &config.workspace,
         records,
-        content.clone(),
+        content,
     )))
 }
 

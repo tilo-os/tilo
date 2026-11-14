@@ -99,7 +99,7 @@ pub(super) fn serve_history(
         store: Some(store),
         state: None,
         apps: Some(Arc::new(crate::page_apps::PageApps)),
-        writers: crate::page_activity::writers(people.clone(), &config.author()),
+        writers: crate::page_activity::writers(people.clone(), &config.author(), Rc::clone(here)),
         people,
         pane: Rc::new(crate::page_activity::PagePane {
             desktop: shared.clone(),

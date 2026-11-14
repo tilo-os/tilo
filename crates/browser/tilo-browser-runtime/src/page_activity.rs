@@ -160,8 +160,10 @@ pub(super) fn person_of(
     })
 }
 
-/// Who the records this page's mounts wrote belong to.
-pub(super) fn writers(people: People, author: &str) -> Writers {
+/// Who the records this page's mounts wrote belong to, and who is here: the
+/// people and devices presence shows, through which a folder file's version
+/// names the person whose device signed it and the agent that wrote for them.
+pub(super) fn writers(people: People, author: &str, here: tilo_desktop::here::Here) -> Writers {
     let mine = author.to_owned();
     Writers {
         noted: tilo_session::platform::authors::new_noted(move |actor| {
@@ -169,6 +171,7 @@ pub(super) fn writers(people: People, author: &str) -> Writers {
         }),
         register: tilo_session::platform::authors::new_register(move |authors| {
             crate::page_authors::register(authors, &[], &*people);
+            crate::page_authors::register_presence(authors, &here.borrow());
         }),
     }
 }

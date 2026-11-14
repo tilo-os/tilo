@@ -204,3 +204,29 @@ mod tests {
         assert_eq!(agent_task.identity_short, scout.identity_short);
     }
 }
+
+/// Name every person here and every device of theirs, as presence shows them:
+/// what a folder file's version resolves through on the page — the person whose
+/// device signed it, and the computer whose session vouched for the writer.
+pub(crate) fn register_presence(
+    authors: &mut ui::history_source::AuthorDirectory,
+    here: &tilo_desktop::here::HereState,
+) {
+    let mut named = here.faces();
+    if let Some(own) = here.own_id().map(str::to_owned) {
+        let label = here.own_label().unwrap_or_default().to_owned();
+        named.entry(own).or_insert((label, (0, 0, 0)));
+    }
+    for (publisher, (label, _)) in named {
+        if !label.trim().is_empty() {
+            authors.register_device(&publisher, label);
+        }
+        let Some(user) = here.user_of(&publisher).map(str::to_owned) else {
+            continue;
+        };
+        let Some((name, _)) = here.person(&user) else {
+            continue;
+        };
+        authors.register_person(&user, ui::history_source::author_for_identity(name, &user));
+    }
+}
