@@ -744,6 +744,16 @@ impl ImapOrigin {
                 self.settled(&changes.account);
                 if wrote { Taken::Wrote } else { Taken::Nothing }
             }
+            // Mail of an account the origin has not made or read yet waits for its account: the
+            // workspace refused nothing, so the account has nothing to say of it.
+            Err(_)
+                if self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| !state.accounts.contains_key(&changes.account)) =>
+            {
+                Taken::Refused
+            }
             Err(error) => {
                 tracing::warn!(account = %changes.account, %error, "what a mail server said could not be written");
                 self.unsaved.insert(
@@ -1484,6 +1494,12 @@ impl Origin for ImapOrigin {
         let events = self.take_events(cx.host, &cx.now);
         polled.wrote |= events.wrote;
         polled.settle |= events.settle;
+        // The accounts as the connector says them now (one in another process says them with
+        // its first answers, often with mail of them). They are made even after a step the
+        // workspace could not take: what such a step leaves unknown is the accounts' mail,
+        // never which accounts the workspace holds, and a server's mail of an account not made
+        // yet waits for it, so it would otherwise wait for good.
+        polled.wrote |= self.add_accounts(cx.host, &cx.now);
         if self.reload {
             // A step the workspace could not take leaves the state unknown: each account still
             // says what it says of itself, and the next poll reads the workspace before
@@ -1491,9 +1507,6 @@ impl Origin for ImapOrigin {
             polled.wrote |= self.write_account_state(cx.host, &cx.now);
             return polled;
         }
-        // The accounts as the connector says them now (one in another process says them
-        // with its first answers), then what to ask of each.
-        polled.wrote |= self.add_accounts(cx.host, &cx.now);
         polled.settle |= self.reconnect(cx.host);
         for (account, mailbox) in std::mem::take(&mut self.due) {
             if self.connector.changes(&account, &mailbox).is_none() {
