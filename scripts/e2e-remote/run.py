@@ -119,6 +119,9 @@ SITE = """<!doctype html><title>Apply</title><h1>Apply for a visitor visa</h1>
 <script>document.getElementById('nat').addEventListener('change', e =>
 document.getElementById('other').hidden = e.target.value !== 'Other');</script>
 """
+# What the form shows whoever looks at it, on the machine that runs it and on one that watches
+# its window: its heading and three of its labels.
+SITE_TEXT = ("Apply for a visitor visa", "Given names", "Family name", "Passport number")
 # What each of the two agents answers: the one from A the person, the one on B the journey.
 ANSWERS_A = {"Given names": "Maria Elena", "Family name": "Okonkwo-Reyes",
              "Nationality": "Other", "Which country?": "Portugal"}
@@ -1138,8 +1141,12 @@ ip -o addr show dev "$dev"
         lists B's under the window's own tab as a window that runs on B, before anything is
         shared, and opens no Browser of its own for it; what B shares is what runs on B, which
         is what a person reviewing the tab from another machine has to see, and to go on seeing:
-        the step judges by what the two sessions publish of the share, when the first picture
-        came and again some seconds later. When the share ends the window is still B's on both
+        the step judges by what the two sessions publish of the share and by what A's screen
+        holds, when the window first came and again some seconds later. The Browser's window
+        travels as its page, which A draws itself: A's desk names the page's text where it draws
+        it, as it names every control (`tilo-control list-targets`), so the step reads the form's
+        heading and labels off A's desk, and fails on a tab that shows the card of a window still
+        arriving, whatever the sessions say. When the share ends the window is still B's on both
         desks."""
         # How long after the first picture the share is read again: longer than a plane that
         # lost its relay takes to say so, and than the wait before it asks the relay again.
@@ -1280,15 +1287,17 @@ ip -o addr show dev "$dev"
 
             def received_on_a(state: dict) -> dict | None:
                 """What A's session says it received of the window: its `received` row for the
-                tab, there from the track's first keyframe on, which says `pictured` once the
-                tab's tile decoded a picture."""
+                tab, there from the first keyframe of its pictures or the announcement of its
+                page on. It says `pictured` once the tab's tile holds a decoded picture or the
+                page's whole frame, and until then what it waits for (`waiting_for`)."""
                 return next((row for row in shares(state, "received")
                              if str(row.get("tab")) == str(tab)), None)
 
             def sharing_on_b(state: dict) -> dict | None:
                 """What B's session says of the window it shares: its `sharing` row for the tab,
-                with `streaming` while it sends the window and `waiting_for` in words while
-                something its pictures travel is missing."""
+                with `streaming` while the window goes out to a desk that asks for it (for a
+                window whose app draws its page: once that app handed a page over) and
+                `waiting_for` in words while something is missing."""
                 return next((row for row in shares(state, "sharing")
                              if str(row.get("tab")) == str(tab)), None)
 
@@ -1309,19 +1318,75 @@ ip -o addr show dev "$dev"
                     return {"tab": shown_in, "tile": tile}
                 return None
 
-            # The window's pictures travel the workspace's live plane, on a track of its own that
-            # A's plane asks B's for while A's desk holds the window's tab: a tab of its own, made
-            # when the share reached A's desk. What A's session publishes says how far they came:
-            # the window's `received` row is there once the track's first keyframe reached A, and
-            # says `pictured` once its tile decoded it. The rows A lists for the tile
-            # (`desktop.peer-surface`) are its actions, "Move the pointer" and the like: they say
-            # nothing of the picture, and are kept as a fact only.
+            host_label = str(((res.facts["listed_on_a_before"] or {}).get("HostedWindow") or {})
+                             .get("host_label") or "")
+
+            def screen_on_a() -> dict:
+                """What A's screen holds of the window, read as `tilo-control list-targets` lists
+                A's desk and with no pointer: every element the desk names, with where it stands.
+                A tile that draws the window's page is a document named "<window> on <device>",
+                and the page's text stands inside it, run by run, where it is drawn. A tile with
+                nothing to draw is the card of something still arriving, which names the device
+                it waits for and no text of the page. `page` is the form's text found there,
+                `placeholder` that card's caption, `scope` whether the text was read inside the
+                tile or, where no tile names itself, anywhere on the desk."""
+                def named(target: dict) -> str:
+                    return " ".join(str(target.get("name") or "").split())
+
+                def inside(target: dict, tile: dict) -> bool:
+                    x, y, w, h = target["rect"]
+                    left, top, width, height = tile["rect"]
+                    return (left <= x + w / 2 <= left + width
+                            and top <= y + h / 2 <= top + height)
+
+                placed = [target for target in self.targets(a)
+                          if isinstance(target.get("rect"), list) and len(target["rect"]) == 4]
+                tiles = [target for target in placed
+                         if host_label and named(target).endswith(f" on {host_label}")]
+                runs = [named(target) for target in placed
+                        if target not in tiles
+                        and (not tiles or any(inside(target, tile) for tile in tiles))]
+                text = " ".join(runs)
+                waiting = {"From the device running it"} | ({f"From {host_label}"} if host_label
+                                                            else set())
+                return {
+                    "tile": [named(tile) for tile in tiles],
+                    "scope": "tile" if tiles else "desk",
+                    "page": [known for known in SITE_TEXT if known in text],
+                    "placeholder": sorted({named(target) for target in placed} & waiting),
+                    "text": text[:400],
+                }
+
+            def page_on_a() -> dict | None:
+                """A's screen once it shows the form: every known text of it inside the tile
+                that draws the window. Where no tile names itself the text is looked for on the
+                whole desk, and a card of something still arriving from B counts against it."""
+                seen = screen_on_a()
+                shown = (len(seen["page"]) == len(SITE_TEXT)
+                         and (seen["scope"] == "tile" or not seen["placeholder"]))
+                return seen if shown else None
+
+            # The window's content travels the workspace's live plane, on a track of its own that
+            # A's plane asks B's for while A's desk holds the window's tab: its pictures, or for a
+            # window whose app draws its page, as the Browser's does, that page. What A's session
+            # publishes says how far it came: the window's `received` row is there once the first
+            # keyframe or the page's announcement reached A, and says `pictured` once its tile
+            # holds a picture or the page. The rows A lists for the tile (`desktop.peer-surface`)
+            # are its actions, "Move the pointer" and the like: they say nothing of the picture,
+            # and are kept as a fact only.
             pictured = wait_until(pictured_on_a, 120, 2.0)
             # A's person looks at the window: the tab that holds it comes to the front of A's
             # desk, so A's picture below shows the window and not the strip beside it.
             shown_in = (hosted_on_a(desk(a)) or {}).get("tab") or tab
             res.facts["shown_on_a"] = show_tab(a, shown_in)
             res.facts["peer_surface_rows"] = json.dumps(held_on_a(), ensure_ascii=False)[:1500]
+            # What that person sees there is the judge: the form's own text on A's desk. A
+            # session that says a window is pictured over a tab that shows a placeholder is wrong,
+            # and this is where it is found out. The pictures below are taken after it, so they
+            # show what was judged.
+            screen = wait_until(page_on_a, 60, 2.0) if pictured else None
+            held = screen or screen_on_a()
+            res.facts["screen_on_a"] = json.dumps(held, ensure_ascii=False)[:900]
             # How far the share came, on each end: the governance that names it, and what each
             # session says it shares, watches and received. `received` holds a window from its
             # first keyframe on; `viewers` are the devices that told B they view it, which is
@@ -1354,10 +1419,13 @@ ip -o addr show dev "$dev"
                 closed = next(((letter, stands) for letter, stands
                                in (("B", seen["live_on_b"]), ("A", seen["live_on_a"]))
                                if stands is not None and stands.get("state") != "open"), None)
-                # Whether B's plane was asked for the window's track: a build that says so, says
-                # `streaming` on the window's row.
+                # Whether B sends the window: its row says `streaming` once the window goes out
+                # to a desk that asks for it. Whether a desk asks is what B's plane says it is
+                # asked for (`asked_for`), the window's tab among them.
                 unasked = [shared for shared in seen["sharing_on_b"]
                            if str(shared.get("tab")) == str(tab) and shared.get("streaming") is False]
+                asked = str(tab) in [str(wanted) for wanted
+                                     in (seen["live_on_b"] or {}).get("asked_for") or []]
                 # The first thing that did not happen, in the order a share travels.
                 if seen["starting_on_b"] and not seen["sharing_on_b"]:
                     why = f"B's share waits to start: {res.facts['starting_on_b'][:300]}"
@@ -1373,7 +1441,7 @@ ip -o addr show dev "$dev"
                     relay = stands.get("relay_name") or stands.get("relay") or "no device"
                     why = (f"the workspace's live plane is not open on {letter} "
                            f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
-                elif unasked and not seen["received_on_a"]:
+                elif unasked and not asked and not seen["received_on_a"]:
                     why = ("the live plane is open on both and B's was never asked for the window's "
                            f"track, so B captures nothing: A's plane runs through "
                            f"{(seen['live_on_a'] or {}).get('relay')}, B's through "
@@ -1389,14 +1457,36 @@ ip -o addr show dev "$dev"
                            f"that runs on B: A received {res.facts['received_on_a'][:300]}; under "
                            f"the window's own id A lists {res.facts['listed_on_a'][:200]}")
                 else:
-                    why = ("the window's pictures reached A and the tab that holds the window "
-                           f"pictures none of them: {res.facts['hosted_tab_on_a'][:300]}; A received "
-                           f"{res.facts['received_on_a'][:300]}")
+                    # The window's start reached A and its tile holds nothing of the window: the
+                    # first thing after the start that did not happen.
+                    row = received_on_a(on_a) or {}
+                    sent = sharing_on_b(on_b) or {}
+                    if not asked:
+                        link = ("B's plane is not asked for the window's track: "
+                                f"{res.facts['live_on_b'][:300]}")
+                    elif sent.get("streaming") is not True:
+                        link = ("B's plane is asked for the window and B sent nothing of it: "
+                                f"{sent.get('waiting_for') or res.facts['sharing_on_b'][:300]}")
+                    else:
+                        link = ("B says it sends the window and nothing A's tile can draw "
+                                f"arrived: {res.facts['live_on_a'][:300]}")
+                    why = ("the window's start reached A and the tab that holds the window holds "
+                           f"nothing of it ({row.get('waiting_for') or 'it says no more'}): {link}; "
+                           f"A received {res.facts['received_on_a'][:300]}; on A's screen: "
+                           f"{res.facts['screen_on_a'][:300]}")
                 raise Failed(f"A's desk never pictured the window B shares: {why}")
             if str(seen["hosted_tab_on_a"]["tab"]) != str(tab):
                 raise Failed("A pictures the window B shares in a tab of its own, "
                              f"{seen['hosted_tab_on_a']['tab']}, and not in the tab its desk lists "
                              f"the window in: there it lists {res.facts['listed_on_a'][:200]}")
+            if not screen:
+                what = ("the card of a window still arriving" if held["placeholder"]
+                        else "none of the page" if not held["page"]
+                        else f"only {held['page']} of the page")
+                raise Failed("A's session says the window B shares is pictured, and A's screen "
+                             f"shows {what}: of {list(SITE_TEXT)} A's desk names "
+                             f"{res.facts['screen_on_a'][:500]}; A received "
+                             f"{res.facts['received_on_a'][:300]}")
             # A share is not a moment. Some seconds on, the window is still received and pictured
             # on A, the workspace's live plane reads open on both, and B still sends the window
             # and waits for nothing: a stream that started and died fails here, by what the two
@@ -1433,7 +1523,15 @@ ip -o addr show dev "$dev"
             elif kept is None:
                 why = "A no longer holds the window it received"
             elif kept.get("pictured") is not True:
-                why = "A holds the window it received and no longer pictures it"
+                why = ("A holds the window it received and no longer pictures it: "
+                       f"{kept.get('waiting_for') or 'it says no more'}")
+            else:
+                still = page_on_a()
+                res.facts["screen_on_a_later"] = json.dumps(still or screen_on_a(),
+                                                            ensure_ascii=False)[:900]
+                if not still:
+                    why = ("A's session says the window is pictured and A's screen no longer "
+                           f"shows the page: {res.facts['screen_on_a_later'][:400]}")
             if why:
                 raise Failed(f"the window B shares was pictured on A and did not stay live for "
                              f"{stays_live_s} s: {why}; B shares: "
