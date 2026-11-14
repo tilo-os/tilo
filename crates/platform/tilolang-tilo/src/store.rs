@@ -318,6 +318,9 @@ pub struct StoreStats {
     pub incremental_syncs: u64,
     /// Syncs that had to copy the whole record: the mirror held a change of its own.
     pub full_syncs: u64,
+    /// Copies of the record their holder writes, handed to the store to take in
+    /// ([`TiloStore::sync_from`]).
+    pub merges: u64,
     /// Actions whose writes the store made became their change as written, with nothing
     /// applied a second time ([`TiloStore::commit_open`]).
     pub written_once: u64,

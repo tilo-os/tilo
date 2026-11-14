@@ -50,6 +50,10 @@ impl TiloStore {
     /// Merge what `doc`, a copy of chunk `chunk` its caller writes, holds that the store's
     /// document of it lacks. Whether anything moved.
     fn merge(&self, chunk: ChunkNo, doc: &Doc) -> bool {
+        {
+            let mut inner = self.mutate();
+            inner.stats.merges = inner.stats.merges.saturating_add(1);
+        }
         let theirs = doc.committed_document();
         let arrived = {
             let inner = self.held();

@@ -32,6 +32,7 @@ use super::*;
 use ui::widget::DrawChild;
 
 mod clocks;
+mod frames;
 mod mail;
 mod names;
 mod opening;
@@ -144,16 +145,6 @@ impl Workspace {
             .unwrap();
         self.window.commit_planned();
         self.settle();
-    }
-
-    fn frame(&mut self) {
-        let root = ui::automerge::ROOT;
-        self.window.sync(&self.doc, &root);
-        self.window.update(&self.doc, &root);
-        // Every batch a real app sends passes the UI host's check.
-        if let Some(why) = self.window.view().failed() {
-            panic!("the window refused what its app sent: {why}");
-        }
     }
 
     /// Lay the window out at 1200x800, as a host does after a frame: what changed in place is
