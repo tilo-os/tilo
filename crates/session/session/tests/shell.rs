@@ -1009,15 +1009,22 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     let walked = crate::common::windows(&session);
     let mut titles = Vec::new();
     for window in &walked {
-        let named = labels.iter().filter(|l| l.as_str() == window.title).count();
-        assert!(
-            named > 0,
-            "the switcher names {:?}: {labels:?}",
-            window.title
+        // The window's name as a person reads it: its own title, or its app's name where the
+        // title is only a spelling of it (the id a launch announces). The switcher names each
+        // card by that one name, and its title stands under it.
+        let name = tilo_desktop_search::names::window_name_of(
+            &window.app_key,
+            &window.origin_app,
+            &window.title,
         );
+        let named = labels
+            .iter()
+            .filter(|l| l.as_str() == name.as_str())
+            .count();
+        assert!(named > 0, "the switcher names {name:?}: {labels:?}");
         let bounds = session
-            .shell_control(&window.title)
-            .unwrap_or_else(|| panic!("{:?} stands in the switcher", window.title));
+            .shell_control(&name)
+            .unwrap_or_else(|| panic!("{name:?} stands in the switcher"));
         titles.push(bounds);
     }
     let keys = labels
