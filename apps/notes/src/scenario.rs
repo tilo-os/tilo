@@ -61,6 +61,7 @@ pub const SCENARIOS: &[&str] = &[
     "find",
     "scrolled",
     "sidebar_scroll",
+    "page_tree",
     "mention",
     "reactions",
 ];
@@ -77,6 +78,8 @@ pub const CONTINUATION: &str = "This continues the same paragraph after Shift+En
 pub const WRITING: &str = "Writing";
 /// The note most scenarios show.
 pub const LAUNCH: &str = "Launch checklist";
+/// The note the page-tree scenario shows: the handbook the other notes stand under.
+pub const HANDBOOK: &str = "Company handbook";
 
 fn page(n: u128) -> PageId {
     uuid::Uuid::from_u128(0x6e6f_7465_0000_4000_8000_0000_0000_0000 | n)
@@ -116,6 +119,7 @@ pub fn shown_note(scenario: Option<&str>) -> Option<&'static str> {
         Some("recipes") => Some("Recipes"),
         Some("formula") => Some("Formula notebook"),
         Some("import_success") => Some("Project brief"),
+        Some("page_tree") => Some(HANDBOOK),
         _ if types_into_new_note(scenario) => Some(WRITING),
         _ => Some(LAUNCH),
     }
@@ -306,6 +310,9 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
     if scenario == Some("first_note") {
         return Vec::new();
     }
+    if scenario == Some("page_tree") {
+        return page_tree_actions();
+    }
     let (inbox, projects, launch, reading, recipes, formulas) =
         (page(1), page(2), page(3), page(4), page(5), page(6));
     let mut notes = vec![
@@ -365,6 +372,37 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
         out.push(actions::new_tag_action(id, name));
         out.push(actions::set_tag_assignment_action(launch, id, true));
     }
+    out
+}
+
+/// The notebook the page-tree scenario shows: a handbook holding notes inside notes, three
+/// levels deep, as a workspace imported from another wiki keeps them.
+fn page_tree_actions() -> Vec<Action> {
+    let handbook = page(1);
+    let engineering = page(4);
+    let files = page(6);
+    let contracts = page(7);
+    let nodes = [
+        (handbook, None, HANDBOOK),
+        (page(2), Some(handbook), "Welcome"),
+        (page(3), Some(handbook), "Expenses"),
+        (engineering, Some(handbook), "Engineering"),
+        (page(5), Some(engineering), "On call"),
+        (files, Some(handbook), "Files"),
+        (contracts, Some(files), "Contracts"),
+        (page(8), Some(contracts), "Lease"),
+        (page(9), Some(files), "Reading list"),
+        (page(10), Some(handbook), "Readme"),
+    ];
+    let mut out = nodes
+        .iter()
+        .map(|(id, parent, title)| actions::create_page_action(*id, *parent, title))
+        .collect::<Vec<_>>();
+    let body = "How we work.\n\n## Where things live\n\n- Expenses go to finance\n- Engineering keeps the runbooks\n- Contracts stay under files\n";
+    out.push(actions::write_body_action(
+        handbook,
+        &MainPanel::seed_blocks(body, |_| None),
+    ));
     out
 }
 

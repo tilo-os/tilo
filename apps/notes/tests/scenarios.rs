@@ -13,7 +13,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use notes::NotesShell;
-use notes::scenario::{CONTINUATION, FIRST, SECOND};
+use notes::scenario::{CONTINUATION, FIRST, HANDBOOK, SECOND};
 use ui::framework::ResourceApp;
 use ui::framework::testing::TestApp;
 use ui::headless::{FrameHarness, InspectionNode, SemanticExpectation};
@@ -483,6 +483,18 @@ fn reached(
         Some("sidebar_scroll") => observed(driver, |node| {
             node.name.as_deref() == Some("Reference 28") && node.bounds.is_some()
         }),
+        // The page tree shows the handbook's notes under it, and the notes inside those under
+        // them: a row three levels in is laid out rather than read as another top-level note.
+        Some("page_tree") => {
+            driver
+                .expect(&SemanticExpectation::named("note_title").value(HANDBOOK))
+                .is_ok()
+                && observed(driver, |node| {
+                    node.role == ui::a11y::Role::TreeItem
+                        && node.level.is_some_and(|level| level >= 3)
+                        && node.bounds.is_some_and(|bounds| bounds.to_rect().width() > 0.0)
+                })
+        }
         Some("import_success") => {
             !blocks.iter().any(|block| {
                 matches!(block.kind, BlockKind::Heading(1)) && block.text() == "Project brief"
