@@ -383,6 +383,27 @@ tilo_test_env::scenario! {
         assert_eq!(ti.value(), "ten");
     }
 
+    phase a_correction_stands_by_its_word_on_a_paragraphs_last_row;
+    // A note's paragraph is as tall as its rows: no room under the last one.
+    {
+        let text = "alpha beta gamma delta epsilon zeta eta theta beautifull";
+        let mut ti = suggesting_field(text).multiline(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 400.0));
+        draw_to_populate(&mut ti);
+        let caret = Widget::ime_cursor_rect(&ti).expect("a focused field has a caret");
+        assert!(caret.y0 > 40.0, "the paragraph wraps onto rows: {caret:?}");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, caret.y1 + 2.0));
+        let start = crate::time::now() + crate::time::Duration::from_secs(3600);
+        ti.refresh_suggestion_at(start);
+        let _frame = crate::motion::pin_frame_at(start + SUGGESTION_SETTLE);
+        draw_to_populate(&mut ti);
+        let chip = ti.overhang().expect("the settled misspelling is offered a correction");
+        assert!(
+            chip.y1 <= caret.y0 && chip.y1 >= caret.y0 - 8.0,
+            "the correction stands just over its word's row: {chip:?}, caret {caret:?}"
+        );
+    }
+
     phase a_lowercase_pronoun_is_corrected_at_the_next_word_boundary;
     {
         let _settled = crate::motion::testing::settled();

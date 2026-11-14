@@ -2343,14 +2343,6 @@ impl NotesApp {
         &self.status
     }
 
-    /// Test hook: set the record's save state as the store would report it,
-    /// so a test can read what the bar says about work at risk.
-    #[doc(hidden)]
-    pub fn set_record_save_status_for_test(&mut self, status: ui::record::RecordSaveStatus) {
-        self.record_save_status = status;
-        self.refresh_status();
-    }
-
     /// Test hook: re-run the real `refresh_status` merge WITHOUT
     /// draining editor edits (so polling for an async saver result
     /// doesn't re-queue the save and starve its debounce).
@@ -2378,13 +2370,6 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn duplicate_page_for_test(&mut self, id: PageId) {
         self.sidebar.duplicate(id);
-    }
-
-    /// Test hook: delete a note through its published action, as Delete
-    /// does.
-    #[doc(hidden)]
-    pub fn delete_page_for_test(&mut self, id: PageId) {
-        self.sidebar.delete(id);
     }
 
     /// Test hook: whether the page tree is a drawer over the note rather

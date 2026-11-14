@@ -1139,8 +1139,6 @@ impl ContextMenu {
     /// menu was (a sheet under its scrim): a menu fading out there shows
     /// through it. Safe to call when already closed.
     pub fn close_at_once(&mut self) {
-        self.send_to.close();
-        self.alone = None;
         self.close();
         self.appear.snap(false);
     }
@@ -1773,6 +1771,13 @@ impl Widget for ContextMenu {
             if self.send_to_alone_open() {
                 self.handle_alone(event, ctx);
             }
+            return;
+        }
+        // The window lost the keyboard to another (a press there, a menu
+        // there): a menu belongs to what the person does now, so it closes,
+        // nested menus and the send box with it.
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.close();
             return;
         }
         if self.route_to_send_to(event, ctx) || self.route_to_submenu(event, ctx) {

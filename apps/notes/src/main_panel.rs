@@ -316,7 +316,7 @@ fn notes_editor(
 
 /// Where a frame shows the note's body: its scroll offset, the clip it
 /// paints into, the thumb's track with its reach, the pinned title's rule
-/// with its reach when it is shown, the transform, and what the blocks
+/// and fade with its reach when shown, the transform, and what the blocks
 /// paint for where the pointer is.
 #[derive(Clone, Debug, PartialEq)]
 struct BodyShown {
@@ -334,13 +334,14 @@ struct BodyShown {
 
 /// A scroll of the note's body that a host keeping its last frame may copy
 /// (`ui::scroll_copy`): where the body paints and how far it moved, what
-/// paints over it without moving (the thumb's track), and the damage beside
-/// the copy (the track, and the pinned title's rule where it came or went).
+/// paints over it without moving (the thumb's track, the title's rule and the
+/// fade under it), and the damage beside the copy (the track, and the pinned
+/// title's rule where it came or went).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ScrollCopy {
     clip: Rect,
     delta: Vec2,
-    track: Rect,
+    overlays: Vec<Rect>,
     transform: Affine,
     pub(crate) damage: Vec<Rect>,
 }
@@ -353,7 +354,7 @@ impl ScrollCopy {
             panel,
             self.clip,
             self.delta,
-            vec![self.track],
+            self.overlays.clone(),
             self.transform,
         )
     }
@@ -1149,19 +1150,14 @@ impl MainPanel {
             .then(|| ScrollCopy {
                 clip: drawing.clip,
                 delta: Vec2::new(0.0, presented.scroll_y - drawing.scroll_y),
-                track: drawing.track,
+                overlays: std::iter::once(drawing.track).chain(drawing.rule).collect(),
                 transform: drawing.transform,
                 // The thumb moved within its track, the pinned title's rule
-                // came or went, and what the blocks paint for the pointer is
+                // went or moved, and what the blocks paint for the pointer is
                 // where it is and no longer where it was (the host carries
                 // that).
                 damage: std::iter::once(drawing.track)
-                    .chain(
-                        (drawing.rule != presented.rule)
-                            .then(|| drawing.rule.into_iter().chain(presented.rule))
-                            .into_iter()
-                            .flatten(),
-                    )
+                    .chain(presented.rule.filter(|_| drawing.rule != presented.rule))
                     .chain(drawing.pointer_chrome.iter().copied())
                     .chain(presented.pointer_chrome.iter().copied())
                     .collect(),
@@ -1616,40 +1612,6 @@ impl MainPanel {
         self.follow_caret = true;
         self.dirty = true;
         true
-    }
-
-    /// Test hook: why a wheel over the body might not scroll it: the
-    /// offset and how far it can go, where the panel last saw the pointer
-    /// against the body's viewport, and what holds the input instead.
-    #[doc(hidden)]
-    pub fn scroll_state_for_test(&self) -> String {
-        let blocks = self.editor.editor().blocks();
-        format!(
-            "blocks={} measured={} content_bottom={} editor={:?} content_h={} \
-             scroll_y={} max={} pointer={:?} viewport={:?} popup={} title_editing={} rect={:?}",
-            blocks.len(),
-            blocks
-                .iter()
-                .filter(|block| block.line.get_rect().height() > 0.0)
-                .count(),
-            self.editor.editor().content_bottom(),
-            self.editor.get_rect(),
-            self.scroll_content_height,
-            self.scroll_y,
-            self.scroll_metrics().max_scroll(),
-            self.last_pointer,
-            self.scroll_viewport(),
-            self.has_editor_popup(),
-            self.title_label.is_editing(),
-            self.rect,
-        )
-    }
-
-    /// Test hook: how far the body can scroll, as the last layout measured
-    /// it.
-    #[doc(hidden)]
-    pub fn max_scroll_for_test(&self) -> f64 {
-        self.scroll_metrics().max_scroll()
     }
 
     /// Test hook: the panel's current vertical scroll offset in px.
@@ -2231,12 +2193,17 @@ impl Widget for MainPanel {
             // The thumb and its focus ring stay within a spacing step of the
             // track.
             let track_reach = f64::from(theme.tokens.spacing.s2);
+            // The document fades out as it reaches the title, rather than
+            // cutting its lines across their glyphs at the rule.
+            let fade = (self.scroll_y > f64::EPSILON).then(|| {
+                ui::surface::content_edge_fade_band(body_clip, ui::surface::ContentEdge::Top)
+            });
             self.body_drawing = Some(BodyShown {
                 scroll_y: self.scroll_y,
                 clip: body_clip,
                 track: self.scroll_track.inflate(track_reach, track_reach),
-                rule: (self.scroll_y > f64::EPSILON)
-                    .then(|| Rect::new(pinned.x0, pinned.y1 - track_reach, pinned.x1, pinned.y1)),
+                rule: fade
+                    .map(|band| Rect::new(pinned.x0, pinned.y1 - track_reach, pinned.x1, band.y1)),
                 transform: ui::scroll_copy::on_screen(transform),
                 pointer_chrome: Vec::new(),
             });
@@ -2275,6 +2242,18 @@ impl Widget for MainPanel {
                 body.pointer_chrome = pointer_chrome;
             }
             scene.append(&editor_scene, None);
+            if fade.is_some() {
+                let mut fade_scene = Scene::new();
+                ui::surface::content_edge_fade(
+                    &mut fade_scene,
+                    transform,
+                    body_clip,
+                    ui::surface::ContentEdge::Top,
+                    theme.tokens.colors.surfaces.content,
+                );
+                scene.append(&fade_scene, None);
+                outside.append(&fade_scene, None);
+            }
             scene.pop_layer();
             outside.pop_layer();
             let mut complete = std::mem::take(scene);

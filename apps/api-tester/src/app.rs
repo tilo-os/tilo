@@ -959,11 +959,6 @@ impl ApiTesterApp {
     }
 
     fn route_menu_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if matches!(event, WindowEvent::Focused(false)) {
-            self.menu = None;
-            self.dirty = true;
-            return;
-        }
         let Some(open) = self.menu.as_mut() else {
             return;
         };

@@ -34,9 +34,9 @@ impl NotesApp {
         WindowToolbar {
             sidebar: Some(sidebar_open),
             navigation: None,
+            // One name everywhere: an unnamed note's window reads as its heading.
             location: note.map(|(title, anchor)| ToolbarLocation {
-                label: title.to_owned(),
-                placeholder: CATALOG.t("notes-title-placeholder"),
+                label: crate::metadata::note_title(title),
                 anchor: Some(anchor),
                 // Unsaved work is marked by the window's framework, from the
                 // record's save.
@@ -250,6 +250,17 @@ mod tests {
             "an open note's commands are the rows of the window's More menu, and nothing \
              stands in the row beside the strip's own \"+\""
         );
+    }
+
+    /// A note nobody named names its window and tab by the word that heads it.
+    #[test]
+    fn a_note_nobody_named_names_its_window_as_its_heading_does() {
+        ui::i18n::I18nManager::init("en-US");
+        let bar = NotesApp::window_toolbar(Some((" ", "note".to_owned())), false);
+        let location = bar.location.expect("an open note is where the window is");
+        assert_eq!(location.label, CATALOG.t("notes-title-placeholder"));
+        let named = NotesApp::window_toolbar(Some(("Friday plan", "note".to_owned())), false);
+        assert_eq!(named.location.expect("an open note").label, "Friday plan");
     }
 
     /// New note stands in the page tree's header whether or not the desktop's bar hosts the

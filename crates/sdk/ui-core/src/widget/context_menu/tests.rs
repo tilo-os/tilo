@@ -625,6 +625,14 @@ tilo_test_env::scenario! {
             assert!(!m.is_open(), "Esc closes the menu");
         }
 
+        fn leaving_the_window_dismisses() {
+            // A press in another window takes the keyboard: one menu is open.
+            let (mut m, fired) = open_menu();
+            dispatch(&mut m, &WindowEvent::Focused(false));
+            assert!(!m.is_open(), "the window losing the keyboard closes its menu");
+            assert_eq!(fired.load(Ordering::SeqCst), 0, "no action fires");
+        }
+
         fn hover_tracks_cursor_row() {
             let (mut m, _f) = open_menu();
             let r = m.get_rect();
@@ -666,6 +674,7 @@ tilo_test_env::scenario! {
         click_on_row_fires_action_and_records_selection();
         click_outside_dismisses_and_is_swallowed();
         esc_dismisses();
+        leaving_the_window_dismisses();
         hover_tracks_cursor_row();
         touch_release_activates_once_and_keeps_the_capture();
         modal_capture_when_open();
