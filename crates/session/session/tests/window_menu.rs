@@ -365,14 +365,13 @@ fn the_menu_names_the_window_it_is_on_and_forgets_it_when_closed() {
 
     let reading = menu(&session);
     assert_eq!(
-        reading["subject"]["title"].as_str(),
+        reading["subject"]["name"].as_str(),
         Some("Notes"),
-        "the window as the person knows it: {reading}"
+        "the window named by the one rule every surface names a window by: {reading}"
     );
-    assert_eq!(
-        reading["subject"]["app"].as_str(),
-        Some("Notes"),
-        "and the app that paints it, named as the person knows it"
+    assert!(
+        reading["subject"].get("app").is_none(),
+        "the name already says the app, never twice: {reading}"
     );
 
     tap(&mut session, KEY_ESCAPE);

@@ -119,10 +119,23 @@ pub struct WorkspaceShare {
     pub writable: bool,
 }
 
+/// What the overview calls the window `tab`: named by the one rule every surface names a window by,
+/// so a window that calls itself its app under another spelling (`chat`) reads as the app's name,
+/// never as a slug, and a window with nothing to say for itself is untitled.
+fn window_title(tab: &tilo_desktop_model::Tab) -> String {
+    let name = tilo_desktop_surface::window_name(tab);
+    if name.trim().is_empty() {
+        t("overview-untitled")
+    } else {
+        name
+    }
+}
+
 /// One tab nested inside its window group in the overview.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OverviewTab {
     pub id: TabId,
+    /// The window's name, as every surface names it.
     pub title: String,
     pub is_active: bool,
     /// The application the tab shows, drawn by its mark.
@@ -386,11 +399,7 @@ fn overview_strips(
                             .iter()
                             .map(|tab| OverviewTab {
                                 id: tab.id,
-                                title: if tab.title.trim().is_empty() {
-                                    t("overview-untitled")
-                                } else {
-                                    tab.title.clone()
-                                },
+                                title: window_title(tab),
                                 is_active: tab.id == group.active_tab,
                                 app: WindowApp::of(&tab.tile, host),
                                 people: people
@@ -880,7 +889,11 @@ mod workspace_tests {
             let group = &card.strips[0].groups[0];
             assert!(group.is_current);
             assert_eq!(group.tabs.len(), 2);
-            assert_eq!(group.active_title(), "References");
+            assert_eq!(
+                group.active_title(),
+                "References — Browser",
+                "a window named by a place still says the app it is a place in"
+            );
             assert_eq!(group.width_permille, WindowWidth::Wide.permille());
             let apps: Vec<_> = card.apps().iter().map(|app| app.kind).collect();
             assert_eq!(
@@ -936,9 +949,69 @@ mod workspace_tests {
             assert!(tab.people.iter().all(|person| !person.is_you));
         }
 
+        /// A window titled with its app's own name under another spelling — the slug an app's
+        /// default place goes by — reads as the app's display name in the overview, never as a
+        /// slug, and a window with no title of its own is its app rather than a placeholder.
+        fn a_window_titled_with_its_apps_slug_reads_as_the_app() {
+            let mut w = ws("Chats");
+            let strip_id = StripId(fresh_id());
+            let group_id = 61;
+            w.strips = vec![Strip {
+                id: strip_id,
+                name: String::new(),
+                window_groups: vec![WindowGroup {
+                    id: group_id,
+                    tabs: vec![
+                        Tab {
+                            id: 62,
+                            title: "chat".to_string(),
+                            tile: TileContent::LocalApp {
+                                app_id: "so.tilo.chat".to_string(),
+                                label: "Chat".to_string(),
+                                note: String::new(),
+                            },
+                            app_title: None,
+                            view: String::new(),
+                            pinned: false,
+                        },
+                        Tab {
+                            id: 63,
+                            title: String::new(),
+                            tile: TileContent::LocalApp {
+                                app_id: "so.tilo.chat".to_string(),
+                                label: "Chat".to_string(),
+                                note: String::new(),
+                            },
+                            app_title: None,
+                            view: String::new(),
+                            pinned: false,
+                        },
+                    ],
+                    active_tab: 62,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                }],
+            }];
+            let tree = tree_with(vec![w]);
+
+            let group = &workspace_cards(&tree)[0].strips[0].groups[0];
+            assert_eq!(
+                group.tabs[0].title, "Chat",
+                "a window whose title is its app's slug is the app alone: {}",
+                group.tabs[0].title
+            );
+            assert_eq!(
+                group.tabs[1].title, "Chat",
+                "a window with no title of its own is its app: {}",
+                group.tabs[1].title
+            );
+        }
+
         presence_is_who_is_here_now_not_who_is_a_member();
         a_workspace_you_are_not_in_does_not_report_you_as_here();
         spatial_projection_preserves_strip_group_and_tab_nesting();
         a_members_focus_is_attached_to_the_tab_not_the_workspace_header();
+        a_window_titled_with_its_apps_slug_reads_as_the_app();
     }
 }

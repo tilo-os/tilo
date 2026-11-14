@@ -39,6 +39,17 @@ pub(super) fn descriptor(tab: &Tab) -> TabDescriptor {
     }
 }
 
+/// What the window `tab` shows is called by the one rule every surface names a window by: the
+/// window's title and the app it shows ("Groceries — Notes"), the app's name alone where the title
+/// only names the app under another spelling (`chat` is `Chat`), and the title itself for a window
+/// that runs no app. A surface never shows an app id.
+pub fn window_name(tab: &Tab) -> String {
+    tile_app_id(&tab.tile).map_or_else(
+        || tab.title.clone(),
+        |app| tilo_desktop_search::names::window_name(app, &tab.title),
+    )
+}
+
 /// The app showing `tab`, named as a person knows it — the name the app is listed under, never the
 /// id it installs under ("Notes", not "so.tilo.notes"). `None` for a tile that runs no app: a
 /// stand-in, or a window whose app has not arrived.

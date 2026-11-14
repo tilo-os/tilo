@@ -727,18 +727,23 @@ tilo_test_env::scenario! {
             agent.activity, None,
             "software's work line already names the window it works in"
         );
-        assert_eq!(agent.working_in, Some((7, "Launch notes".to_owned())));
+        assert_eq!(
+            agent.working_in,
+            Some((7, "Launch notes — Notes".to_owned())),
+            "the window named once, by the one rule every surface names a window by"
+        );
         assert_eq!(
             working_in_line(agent),
             (
                 "Working in Notes".to_owned(),
-                Some("Launch notes".to_owned())
+                Some("Launch notes — Notes".to_owned())
             ),
             "what it is doing, and the record it does it in: said once"
         );
 
         let ada = rows.iter().find(|row| row.id == "ada").expect("Ada");
-        let viewing = t_args("people-panel-viewing", &[("title", "Launch notes".into())]);
+        let viewing =
+            t_args("people-panel-viewing", &[("title", "Launch notes — Notes".into())]);
         assert_eq!(
             ada.activity.as_deref(),
             Some(viewing.as_str()),

@@ -511,7 +511,7 @@ impl DesktopSurface {
                         }
                         Some(Hung {
                             tab: tab.id,
-                            title: tab.title.clone(),
+                            title: super::window_name(tab),
                             over: shared.shown_tabs.window_rect(tab.id)?,
                         })
                     })

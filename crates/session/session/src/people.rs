@@ -1103,12 +1103,12 @@ impl Panel {
             .active_workspace()
             .map(|workspace| workspace.id().to_string());
         // What each window here shows, by the digest presence names it with: what a person's window
-        // on the same record is called here.
+        // on the same record is called here, by the one rule every surface names a window by.
         let titled: BTreeMap<String, String> = crate::sync::layout::bindings_of(&tree, &windows)
             .into_iter()
-            .filter_map(|(tab, _app, digest)| {
+            .filter_map(|(tab, app, digest)| {
                 let title = tree.tab(tab)?.title.trim().to_owned();
-                (!title.is_empty()).then_some((digest, title))
+                (!title.is_empty()).then(|| (digest, crate::app_names::window_name(&app, &title)))
             })
             .collect();
         // Each person's screen, its windows named with what they show where this desk holds that

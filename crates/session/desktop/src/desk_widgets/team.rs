@@ -156,9 +156,8 @@ pub fn place_of(desktop: &Layout, participant_id: &str) -> Option<Place> {
             .find(|tab| tab.id == tab_id)?;
         let place = Place {
             strip: Some(tilo_desktop_surface::names::strip_named(&strip.name, at)),
-            window: Some(tab.title.trim())
-                .filter(|title| !title.is_empty())
-                .map(str::to_owned),
+            window: Some(tilo_desktop_surface::window_name(tab))
+                .filter(|title| !title.trim().is_empty()),
         };
         place.window.is_some().then_some(place)
     })

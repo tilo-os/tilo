@@ -371,10 +371,7 @@ impl ui::resources::PublishesResources for DeskLayer {
         let windows: Vec<desk_verbs::Shown> = self.handle.read(|tree| {
             tree.tabs()
                 .map(|tab| {
-                    let title = tilo_desktop_model::apps::canonical_app_id(&tab.tile).map_or_else(
-                        || tab.title.clone(),
-                        |app| tilo_desktop_search::names::window_name(&app, &tab.title),
-                    );
+                    let title = tilo_desktop_surface::window_name(tab);
                     // A window the session does not run is read of through the desk, unless its app
                     // keeps what it shows to itself: the address is not offered, so no row names a
                     // picture nobody may make.

@@ -291,9 +291,7 @@ struct Reading {
 /// The window a menu is on, as a person names it.
 #[derive(Debug, Serialize)]
 struct Subject {
-    title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    app: Option<String>,
+    name: String,
 }
 
 /// Where a menu stands, in the desk's coordinates.
@@ -770,10 +768,10 @@ impl ShellService {
         Reading {
             tab: Some(tab.to_string()),
             anchor: self.anchor(tab, open.anchor),
-            subject: self.handle.window_subject(tab).map(|subject| Subject {
-                title: subject.title,
-                app: subject.app,
-            }),
+            subject: self
+                .handle
+                .window_subject(tab)
+                .map(|subject| Subject { name: subject.name }),
             rows: self.rows(tab),
         }
     }

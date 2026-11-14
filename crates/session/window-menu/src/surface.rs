@@ -49,8 +49,7 @@ struct Reading {
 /// The window a menu is on, named as the person knows it.
 #[derive(Clone, Debug, PartialEq)]
 struct Subject {
-    title: String,
-    app: Option<String>,
+    name: String,
 }
 
 /// One row a window offers.
@@ -117,11 +116,7 @@ impl Reading {
             .collect::<Option<Vec<Row>>>()?;
         let subject = value.get("subject").and_then(|subject| {
             Some(Subject {
-                title: subject.get("title")?.as_str()?.to_owned(),
-                app: subject
-                    .get("app")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
+                name: subject.get("name")?.as_str()?.to_owned(),
             })
         });
         Some(Self {
@@ -308,14 +303,12 @@ impl WindowMenuSurface {
         // What the box sends leaves through the session's own send action (`deliver`), so the menu
         // ends in the shared row every other menu has.
         self.menu.set_owner_sends(true);
-        self.menu
-            .set_about(self.reading.subject.as_ref().map(|subject| {
-                let named = match &subject.app {
-                    Some(app) => ui::window_name::named(app, &subject.title),
-                    None => subject.title.clone(),
-                };
-                ui::shared_selection::SharedSelection::of_text(&named)
-            }));
+        self.menu.set_about(
+            self.reading
+                .subject
+                .as_ref()
+                .map(|subject| ui::shared_selection::SharedSelection::of_text(&subject.name)),
+        );
         let anchor = self
             .reading
             .anchor
@@ -753,11 +746,11 @@ mod tests {
 
     /// A menu the length the desk publishes, naming its window.
     fn menu_of(rows: usize) -> String {
-        menu_of_named(rows, "Notes", "Notes")
+        menu_of_named(rows, "Notes")
     }
 
-    /// A menu whose window calls itself `title` and shows the app named `app`.
-    fn menu_of_named(rows: usize, title: &str, app: &str) -> String {
+    /// A menu whose window the desk names `name`.
+    fn menu_of_named(rows: usize, name: &str) -> String {
         let rows: Vec<Value> = (0..rows)
             .map(|i| {
                 serde_json::json!({
@@ -770,7 +763,7 @@ mod tests {
         serde_json::json!({
             "tab": "20",
             "anchor": { "x": 40, "y": 50 },
-            "subject": { "title": title, "app": app },
+            "subject": { "name": name },
             "rows": rows,
         })
         .to_string()
@@ -790,17 +783,17 @@ mod tests {
             .and_then(|about| about.anchor.excerpt.clone())
     }
 
-    /// The box is about the window as a person names it: its title and the app's own name, never
-    /// the id the app installs under.
+    /// The box is about the window by the name the desk named it: the one rule every surface names
+    /// a window by, never an id or a spelling of the app.
     #[test]
     fn the_box_is_about_the_window_the_way_a_person_names_it() {
         assert_eq!(
-            box_chip(&menu_of_named(2, "Notes", "Notes")).as_deref(),
+            box_chip(&menu_of_named(2, "Notes")).as_deref(),
             Some("Notes"),
             "a window named for its app is the app alone"
         );
         assert_eq!(
-            box_chip(&menu_of_named(2, "Meeting notes", "Notes")).as_deref(),
+            box_chip(&menu_of_named(2, "Meeting notes — Notes")).as_deref(),
             Some("Meeting notes — Notes"),
             "otherwise its title, and the app it shows"
         );
@@ -826,8 +819,7 @@ mod tests {
         assert_eq!(
             surface.reading.subject,
             Some(Subject {
-                title: "Notes".into(),
-                app: Some("Notes".into()),
+                name: "Notes".into(),
             })
         );
     }

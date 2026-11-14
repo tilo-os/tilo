@@ -114,18 +114,17 @@ fn ids(rows: &[Row]) -> Vec<&str> {
     found
 }
 
-/// The window a menu is on is named as a person knows it: its own title, and the app it shows by
-/// the name the app is listed under — never the id the app installs under.
+/// The window a menu is on is named as a person knows it, by the one rule every surface names a
+/// window by: its title and the app it shows, never the id the app installs under.
 #[test]
 fn the_subject_names_the_window_the_way_a_person_does() {
     let (_surface, handle) = one_window_shell(1);
     let tab = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].tabs[0].id);
     let subject = handle.window_subject(tab).expect("the window's subject");
-    assert_eq!(subject.title, "App0", "the window's own title");
     assert_eq!(
-        subject.app.as_deref(),
-        Some("App0"),
-        "the app's name, not its package id"
+        subject.name, "App0",
+        "the window's title is its app's name, so it is said once: {}",
+        subject.name
     );
 }
 

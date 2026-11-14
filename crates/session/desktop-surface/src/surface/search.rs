@@ -667,17 +667,14 @@ fn windows(
                         .into_iter()
                         .chain([crate::names::workspace(&workspace.name), strip_name.clone()])
                         .collect();
-                    // A window bar that only says what the app is called names no place: the row is
-                    // the app, so the bar's words for it are dropped rather than repeated as a
-                    // title.
-                    let named = app.as_deref().is_some_and(|app| {
-                        tilo_desktop_search::names::is_apps_own_name(app, &tab.title)
-                    });
-                    let title = if named {
-                        app_title.clone()
-                    } else {
-                        ui::window_name::named(&app_title, &tab.title)
-                    };
+                    // A window's name by the one rule every surface names a window by: its title
+                    // and the app it shows, or the app alone where the title only names the app.
+                    let title = app.as_ref().map_or_else(
+                        || tab.title.clone(),
+                        |app| {
+                            tilo_desktop_search::names::window_name_of(app, &app_title, &tab.title)
+                        },
+                    );
                     out.push(WindowEntry {
                         tab: tab.id,
                         title,

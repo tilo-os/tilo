@@ -95,16 +95,19 @@ pub struct ApplicationCatalogTileResolver<H> {
 }
 impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<H> {
     fn resolve(&mut self, request: TileRequest<'_>) -> TileResolution {
+        // The window's name, as every surface names it, stands on the card that says the app could
+        // not open.
+        let name = tilo_desktop_surface::window_name(request.tab);
         let Some(id) = tilo_desktop_model::apps::canonical_app_id(&request.tab.tile) else {
             return TileResolution::Unavailable {
-                title: request.tab.title.clone(),
+                title: name,
                 detail: crate::i18n::t("desktop-app-identity-unavailable"),
             };
         };
         let Ok(definition) = self.catalog.resolve(&id) else {
             return if tilo_desktop_model::first_party::is_first_party_app_id(&id) {
                 TileResolution::Unavailable {
-                    title: request.tab.title.clone(),
+                    title: name,
                     detail: crate::i18n::t_args(
                         "desktop-app-integration-unavailable",
                         &[("app", id.as_str().into())],

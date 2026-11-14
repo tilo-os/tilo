@@ -219,13 +219,12 @@ fn app_id_in(workspace: &Workspace, tab_id: u64) -> Option<String> {
     (!app_id.is_empty()).then(|| app_id.to_owned())
 }
 
+/// What the window `tab_id` is called here, by the one rule every surface names a window by: its
+/// title and the app it shows, or the app's name alone where the title only names the app.
 fn tab_title_in(workspace: &Workspace, tab_id: u64) -> Option<String> {
-    workspace
-        .tabs()
-        .find(|tab| tab.id == tab_id)
-        .map(|tab| tab.title.trim())
-        .filter(|title| !title.is_empty())
-        .map(ToString::to_string)
+    let tab = workspace.tabs().find(|tab| tab.id == tab_id)?;
+    let name = tilo_desktop_surface::window_name(tab);
+    (!name.trim().is_empty()).then_some(name)
 }
 
 /// What a screen reader says about a present row beyond its name: an agent, what they are on now,

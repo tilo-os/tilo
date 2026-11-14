@@ -104,8 +104,8 @@ pub use search::{
     search_chord_keys,
 };
 pub use seed::{seed_tree, seed_tree_in};
-pub use tile_content::tile_app_kind;
 use tile_content::{app_name_of, build_tile, descriptor, placeholder};
+pub use tile_content::{tile_app_kind, window_name};
 pub use window_menu::Row as WindowMenuRow;
 pub use workspace_share::{WorkspaceShare, WorkspaceShares};
 

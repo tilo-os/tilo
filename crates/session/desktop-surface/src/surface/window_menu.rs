@@ -44,7 +44,7 @@ use ui::icons::Icon;
 use crate::i18n::{t, t_args};
 use crate::navigation::{ChromeEffect, Destination, LayoutEffect, RouteIds, Verb, WidthPreset};
 
-use super::{DesktopHandle, Shared, WorkspaceShare, app_name_of};
+use super::{DesktopHandle, Shared, WorkspaceShare};
 
 impl DesktopHandle {
     /// The windows whose bar was asked for its menu since the last call — a secondary click — in
@@ -66,20 +66,20 @@ pub(super) fn take_asked_menus(row: &mut ui::widget::GroupRow) -> Vec<(TabId, ui
 /// The window a menu is on, named as the person knows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowSubject {
-    pub title: String,
-    pub app: Option<String>,
+    /// The window's name by the one rule every surface names a window by: its title and the app it
+    /// shows, or the app alone where the title only names the app.
+    pub name: String,
 }
 
 impl DesktopHandle {
     /// The window `tab` shows, named as the person knows it: its title and the app that paints it,
-    /// by the name a person knows the app by rather than the id it installs under.
+    /// the app's name alone where the title is the app under another spelling, and never an id.
     #[must_use]
     pub fn window_subject(&self, tab: TabId) -> Option<WindowSubject> {
         let shared = self.shared.borrow();
         let tab = shared.tree.tab(tab)?;
         Some(WindowSubject {
-            title: tab.title.clone(),
-            app: app_name_of(tab),
+            name: super::window_name(tab),
         })
     }
 }

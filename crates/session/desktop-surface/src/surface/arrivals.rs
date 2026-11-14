@@ -440,7 +440,7 @@ impl DesktopSurface {
     }
 }
 
-/// The title of the window showing `tab` .
+/// The name of the window showing `tab`, by the one rule every surface names a window by.
 fn title_of(tree: &Layout, tab: TabId) -> Option<String> {
     tree.workspaces
         .iter()
@@ -448,5 +448,5 @@ fn title_of(tree: &Layout, tab: TabId) -> Option<String> {
         .flat_map(|s| &s.window_groups)
         .flat_map(|g| &g.tabs)
         .find(|t| t.id == tab)
-        .map(|t| t.title.clone())
+        .map(super::window_name)
 }

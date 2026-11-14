@@ -977,13 +977,18 @@ pub struct Picture {
     pub rect: Rect,
 }
 
-/// The words a card shows for its window: an unnamed window is an untitled one, as the desk's own
-/// list calls it.
+/// The words a card shows for its window, named as every surface names it: its title and the app
+/// it shows, the app's name alone where the title only names the app (`chat` is `Chat`), and an
+/// untitled one where it has neither.
 fn title_of(card: &SwitcherCard) -> String {
-    if card.title.trim().is_empty() {
-        t("window-switcher-untitled")
+    if card.app_key.trim().is_empty() {
+        if card.title.trim().is_empty() {
+            t("window-switcher-untitled")
+        } else {
+            card.title.clone()
+        }
     } else {
-        card.title.clone()
+        tilo_desktop_search::names::window_name(&card.app_key, &card.title)
     }
 }
 
@@ -1441,6 +1446,21 @@ mod tests {
             assert!(chosen.state.selected, "the one the walk reached");
             assert!(chosen.state.focused);
             assert!(!list.children[0].state.selected);
+        }
+
+        phase a_card_names_its_window_by_the_one_rule_every_surface_uses;
+        // A card says the window's name: its title and the app it shows, the app's name alone
+        // where the title only names the app under another spelling, never a slug.
+        {
+            let mut slug = card("chat", Some(1));
+            slug.app_key = "so.tilo.chat".to_owned();
+            assert_eq!(title_of(&slug), "Chat", "the app is said once, never its slug");
+            assert_eq!(title_of(&card("Groceries", Some(1))), "Groceries — Notes");
+            assert_eq!(
+                title_of(&card("", None)),
+                "Notes",
+                "a window with no title of its own is its app"
+            );
         }
     }
 
