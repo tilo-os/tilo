@@ -16,17 +16,13 @@ use tilo_runtime::RuntimeServices as _;
 use tilo_runtime::standalone::Standalone;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-// The broker these services answer through decodes peer bytes in worker
-// processes started from this executable, which is the test binary here.
-tilo_automerge_isolate::test_worker!();
-
 /// Names the profile a child process was started to admit.
 const CHILD_PROFILE: &str = "TILO_NATIVE_ADMISSION_STARTUP_TEST_PROFILE";
 /// Where the child records that it ran the admission to its end.
 const CHILD_PROOF: &str = "TILO_NATIVE_ADMISSION_STARTUP_TEST_PROOF";
-/// The test, as libtest names it within this integration test crate.
-const TEST: &str =
-    "readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampered_identity";
+/// The test, as libtest names it within the integration test binary: these
+/// tests are a module of `tests/it.rs`, so its name carries the module.
+const TEST: &str = "admission::readonly_admission_starts_existing_owner_and_refuses_missing_foreign_or_tampered_identity";
 /// The identities the fixture admits or refuses.
 const CASES: &[&str] = &["owner", "missing", "foreign", "tampered"];
 

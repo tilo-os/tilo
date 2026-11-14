@@ -13,10 +13,6 @@ use std::{
 };
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-// These services decode peer bytes in worker processes started from this
-// executable, which is the test binary here.
-tilo_automerge_isolate::test_worker!();
-
 /// The runtime host every test launches.
 fn runtime_binary() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-runtime-mcp")
@@ -315,7 +311,9 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() -> Result<()> {
             }
         }
     }
-    const TEST: &str = "independent_sdk_apps_late_join_and_survive_another_app_exit";
+    // As libtest names it: a module of `tests/it.rs`.
+    const TEST: &str =
+        "runtime_daemon_process::independent_sdk_apps_late_join_and_survive_another_app_exit";
     if let Ok(app_id) = std::env::var("TILO_NATIVE_SDK_HELPER") {
         runtime_portal::native::ensure_attached(&app_id)?;
         let mut manager = connected_manager()?;
@@ -441,7 +439,9 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() -> Result
             let _ = self.0.wait();
         }
     }
-    const TEST: &str = "ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime";
+    // As libtest names it: a module of `tests/it.rs`.
+    const TEST: &str =
+        "runtime_daemon_process::ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime";
     const APP: &str = "dev.tilo.parent-child";
     if let Ok(stage) = std::env::var("TILO_SDK_FAMILY_STAGE") {
         runtime_portal::native::ensure_attached(APP)?;

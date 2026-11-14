@@ -1,4 +1,6 @@
 [package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
 name = "tilo-runtime"
 version = "0.1.0"
 edition = "2024"
@@ -35,6 +37,12 @@ path = "src/bin/tilo-runtime.rs"
 [[bin]]
 name = "tilo-runtime-mcp"
 path = "src/bin/tilo-runtime-mcp.rs"
+
+# The integration tests: one binary, its files included as modules by
+# `tests/it.rs` (a file per binary linked the whole crate once each).
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }

@@ -13,7 +13,6 @@
     clippy::significant_drop_tightening,
     reason = "in a test these are the assertion, not a hazard; the host lives until it ends"
 )]
-tilo_automerge_isolate::test_worker!();
 
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -239,6 +238,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
     let (key, cert) = certified(root, 2, "Build box", DeviceCapabilities::primary());
     let endpoint = endpoint(&key).await;
     let state = tempfile::tempdir().unwrap();
+    let key_runs = KeyRuns::new();
     // A host opens only after its endpoint had its whole wait to reach a relay
     // (`tilo_room_host::workspaces::Workspaces::open`), and this endpoint has
     // none to reach. A test on a runtime whose clock it can hold holds it over
@@ -251,7 +251,6 @@ async fn device_host(root: &SigningKey) -> Box_ {
     if held {
         tokio::time::pause();
     }
-    let key_runs = KeyRuns::new();
     let host = Arc::new(
         WorkspaceHost::open(
             HostConfig {
@@ -274,10 +273,10 @@ async fn device_host(root: &SigningKey) -> Box_ {
         )
         .await
         .unwrap(),
+    );
     if held {
         tokio::time::resume();
     }
-    );
     let made = host.workspaces().create("Desk").await.unwrap();
     let store = PersonalStore::open(
         root.verifying_key().to_bytes(),
