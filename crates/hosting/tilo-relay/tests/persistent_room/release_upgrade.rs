@@ -64,13 +64,58 @@ impl Person {
     }
 }
 
+/// What the upgraded relay logged, line by line, as it logged it: passed on
+/// to this test's own output, and kept to read.
+#[derive(Clone, Default)]
+struct RelayLog(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl RelayLog {
+    /// Pass `stderr` on, keeping each line.
+    fn tee(&self, stderr: std::process::ChildStderr) {
+        let kept = self.0.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                eprintln!("{line}");
+                kept.lock().unwrap().push(strip_ansi(&line));
+            }
+        });
+    }
+
+    fn lines(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// `line` without its terminal colours.
+fn strip_ansi(line: &str) -> String {
+    let mut plain = String::with_capacity(line.len());
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
+}
+
 /// The Lounge as this checkout's image starts it (its entrypoint's flags,
 /// with the door taking people by invitation and keeping a wait list), on
-/// the state in `dir`.
-fn start_upgraded(dir: &std::path::Path) -> Workspace {
+/// the state in `dir`, its log in `log`: at least what an operator's relay
+/// logs of a governance brought up from an earlier release's.
+fn start_upgraded(dir: &std::path::Path, log: &RelayLog) -> Workspace {
     let state = dir.join("lounge");
     let avatars = state.join("avatars");
-    start_with(
+    let filter = format!(
+        "{},tilo_peer_state::state::rebase=info",
+        std::env::var("TILO_UPGRADE_RELAY_LOG").unwrap_or_else(|_| "warn".to_owned())
+    );
+    let mut room = spawn_room(
         &state,
         &dir.join("root"),
         &state.join("secrets"),
@@ -97,8 +142,12 @@ fn start_upgraded(dir: &std::path::Path) -> Workspace {
             "--web-plain",
             "127.0.0.1:0",
         ],
+        &filter,
+        std::process::Stdio::piped(),
     )
-    .unwrap()
+    .unwrap();
+    log.tee(room.child.stderr.take().unwrap());
+    room
 }
 
 /// The room's first answer, or why there was none: a start the state refused
@@ -200,8 +249,10 @@ fn the_lounge_a_release_kept_starts_with_everything_in_it() {
     );
     let seed: Seed =
         serde_json::from_slice(&std::fs::read(dir.join("seed.json")).unwrap()).unwrap();
-    let mut room = start_upgraded(&dir);
+    let log = RelayLog::default();
+    let mut room = start_upgraded(&dir, &log);
     let started = started_or_why(&mut room);
+    every_grant_is_kept_or_needs_none(&log);
     assert_eq!(
         started.workspace, seed.workspace,
         "the Lounge {} kept is the one that opens",
@@ -228,8 +279,218 @@ fn the_lounge_a_release_kept_starts_with_everything_in_it() {
         the_owner_governs_it(plain, &seed).await;
         the_member_keeps_their_own(plain, &seed).await;
         the_member_reads_what_they_wrote(plain, &seed).await;
+        the_apps_the_release_granted_still_act(plain, &seed).await;
     });
     room.stop();
+}
+
+/// The grants the release's apps held (`app-author:<app>`, `session-app`,
+/// `files-app`, `device-panel`) are held as no grant here, where an app
+/// acts as the person whose session runs it. The relay names each as it
+/// brings the governance up, with why its use needs none; any other grant
+/// the release kept that it holds none for, or a row it could not read,
+/// fails the upgrade.
+fn every_grant_is_kept_or_needs_none(log: &RelayLog) {
+    let lines = log.lines();
+    let named = |grant: &str| {
+        lines.iter().any(|line| {
+            line.contains("an earlier release's grant needs no grant here")
+                && line
+                    .split_whitespace()
+                    .any(|field| field == format!("grant={grant}"))
+        })
+    };
+    for grant in [
+        "session-app",
+        "files-app",
+        "device-panel",
+        "app-author:so.tilo.chat",
+        "app-author:so.tilo.notes",
+        "app-author:so.tilo.file-explorer",
+    ] {
+        assert!(
+            named(grant),
+            "the relay did not say what became of the release's grant {grant}"
+        );
+    }
+    let lost: Vec<&String> = lines
+        .iter()
+        .filter(|line| {
+            line.contains("an earlier release's grant is not kept")
+                || line.contains("a membership row an earlier release kept does not read")
+        })
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "grants the release kept are lost: {lost:#?}"
+    );
+    let carried = lines
+        .iter()
+        .filter(|line| line.contains("an earlier release's grant needs no grant here"))
+        .count();
+    eprintln!("release upgrade: {carried} grants the release gave its apps need none now");
+}
+
+/// What a member writes into an app's record after the upgrade.
+const WRITTEN_THROUGH: &str = "written through the app after the upgrade";
+
+/// What the release's app grants let apps do, done after the upgrade:
+/// - `app-author:so.tilo.notes`: a member's Notes writes its record, and
+///   another member reads it;
+/// - `files-app`: a member's Files writes the workspace's files record, read
+///   as a tree by another member;
+/// - `session-app` and `device-panel`: on a member's device, under the
+///   governance it holds from the host, the desktop session's own app may
+///   change what the member may (their settings, windows), and quick settings
+///   may read what the session publishes for them. Those happen in the
+///   member's own session, which this relay does not run, so the device's own
+///   decision on them is asked here.
+async fn the_apps_the_release_granted_still_act(plain: std::net::SocketAddr, seed: &Seed) {
+    use tilo_action_policy::roles::{DEVICE_PANEL, SESSION_APP, SESSION_KIND};
+    use tilo_action_policy::{Acting, ActionKind, Answer, Authority, Context, TreePath};
+    let (_, _, chat) = chat_route(plain, &seed.workspace).await;
+    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    let notes = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: "so.tilo.notes".into(),
+        cluster_id: chat.cluster_id.clone(),
+        record: tilo_relay::room_bots::workspace_record(&catalogue, "so.tilo.notes"),
+    };
+    let files = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: fs_protocol::tree::FILES_APP.into(),
+        cluster_id: chat.cluster_id.clone(),
+        record: collab_types::person_record_id(fs_protocol::tree::TREE_KIND),
+    };
+    let writer = &seed.members[0];
+    let reader = &seed.members[1];
+    for route in [&notes, &files] {
+        writes_through(plain, seed, writer, route).await;
+        let link = reads_through(plain, seed, reader, route).await;
+        link.close();
+    }
+
+    let link = back_in(plain, seed, writer).await;
+    let policy = link
+        .engine()
+        .policy(&seed.workspace)
+        .expect("the member's device holds the Lounge's governance");
+    link.close();
+    let person = hex::encode(writer.root());
+    let decide = |app: &str, node: &TreePath, kind: ActionKind| {
+        let acting = Acting::person(person.clone()).in_app(app);
+        Authority::of_acting(&acting, &policy, &[])
+            .decide(
+                node,
+                kind,
+                &Context::at(tilo_clock::unix_now_ns() / 1_000_000),
+            )
+            .answer
+    };
+    let session = TreePath::workspace(policy.workspace.clone())
+        .app(SESSION_APP)
+        .kind(SESSION_KIND);
+    assert_eq!(
+        decide(SESSION_APP, &session, ActionKind::Undoable),
+        Answer::Allow,
+        "the desktop session's own app no longer acts for {}",
+        writer.name
+    );
+    assert_eq!(
+        decide(DEVICE_PANEL, &session, ActionKind::Read),
+        Answer::Allow,
+        "quick settings no longer reads {}'s session",
+        writer.name
+    );
+}
+
+/// `writer`'s page writes [`WRITTEN_THROUGH`] into the record `route`, as the
+/// app the record is of does, and the host commits it.
+async fn writes_through(
+    plain: std::net::SocketAddr,
+    seed: &Seed,
+    writer: &Person,
+    route: &tilo_peer_state::document_frame::DocumentRoute,
+) {
+    let link = back_in(plain, seed, writer).await;
+    link.send(Cmd::OpenRoute(route.clone())).unwrap();
+    // A record the Lounge holds no copy of yet, the member's app starts.
+    let mut doc = link
+        .engine()
+        .record(&route.cluster_id, &route.app_id, &route.record)
+        .ok()
+        .flatten()
+        .map_or_else(automerge::AutoCommit::new, |held| {
+            automerge::AutoCommit::load(&held).unwrap()
+        });
+    let before = doc.get_heads();
+    automerge::transaction::Transactable::put(
+        &mut doc,
+        automerge::ROOT,
+        "written_through",
+        WRITTEN_THROUGH,
+    )
+    .unwrap();
+    doc.commit();
+    let mutation = if before.is_empty() {
+        collab_types::DocumentMutation::Snapshot(doc.save())
+    } else {
+        collab_types::DocumentMutation::Incremental(doc.save_after(&before))
+    };
+    link.write(route.clone(), &mutation).unwrap();
+    let saved = std::sync::Mutex::new(link.barrier().unwrap());
+    let refused = wait_for(
+        &format!(
+            "{}'s write to {} to be committed",
+            writer.name, route.app_id
+        ),
+        || {
+            let committed = matches!(saved.lock().unwrap().try_recv(), Ok(Ok(())));
+            committed.then(|| link.status().failures)
+        },
+        || format!("{:?}", link.status()),
+    )
+    .await;
+    assert!(
+        refused.is_empty(),
+        "{}'s write to {} was refused: {refused:?}",
+        writer.name,
+        route.app_id
+    );
+    link.close();
+}
+
+/// `reader`'s page once it read [`WRITTEN_THROUGH`] in the record `route`; a
+/// files record read as the tree it is.
+async fn reads_through(
+    plain: std::net::SocketAddr,
+    seed: &Seed,
+    reader: &Person,
+    route: &tilo_peer_state::document_frame::DocumentRoute,
+) -> tilo_session_client::Link {
+    let (host, host_cert, _) = chat_route(plain, &seed.workspace).await;
+    let (key, cert) = reader.device();
+    let link = page(host, key, cert, &host_cert);
+    let workspace_id = workspace_id(seed);
+    let events = link.events();
+    link.send(Cmd::Join(workspace_id)).unwrap();
+    link.send(Cmd::OpenRoute(route.clone())).unwrap();
+    let mut doc = reads_the_chat(&link, &events, workspace_id, route, |doc| {
+        automerge::ReadDoc::get(doc, automerge::ROOT, "written_through")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| value.into_string().ok())
+            .as_deref()
+            == Some(WRITTEN_THROUGH)
+    })
+    .await;
+    if route.app_id == fs_protocol::tree::FILES_APP {
+        fs_protocol::tree::Tree::of_record(&doc.save()).unwrap_or_else(|error| {
+            panic!(
+                "the files record {} read is no tree: {error:?}",
+                reader.name
+            )
+        });
+    }
+    link
 }
 
 /// The directory lists the Lounge as it was, with everyone in it, and the

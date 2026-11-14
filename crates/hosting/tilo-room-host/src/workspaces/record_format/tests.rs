@@ -113,6 +113,59 @@ fn the_record_the_release_kept_comes_up_as_version_four() {
     });
 }
 
+/// Every grant the Lounge the release kept held is carried: as a grant, or,
+/// for the grants that release gave the apps themselves, named with what
+/// gives their use now (an app acts as the person who runs it). Read from
+/// the real record, so a grant the release kept that this build neither
+/// holds nor explains fails here.
+#[test]
+fn every_grant_the_release_kept_is_held_or_needs_none() {
+    use tilo_peer_state::members::earlier::Why;
+    let migrated = FORMAT.migrate(RELEASED_V3.clone(), 3).unwrap();
+    let record: StoredRecord = postcard::from_bytes(&migrated).unwrap();
+    let bytes: Vec<u8> = record
+        .peer
+        .iter()
+        .flat_map(|part| match part {
+            super::super::peer_parts::PeerPart::Inline(bytes) => bytes.clone(),
+            stored @ super::super::peer_parts::PeerPart::Stored { .. } => {
+                panic!("the kept record holds its peer state inline, not {stored:?}")
+            }
+        })
+        .collect();
+    let peer = tilo_peer_state::StatePeer::restore(
+        &bytes,
+        &record.workspace,
+        record.authority.clone(),
+        vec![record.authority.clone()],
+        tilo_user_identity::RevocationList::new(),
+        tilo_clock::wall(),
+    )
+    .unwrap();
+    let earlier = peer
+        .earlier_membership()
+        .expect("the release kept its membership in the earlier layout");
+    for left in &earlier.left_out {
+        assert!(
+            left.why.carried(),
+            "the release's grant {} is lost: {}",
+            left.grant,
+            left.why
+        );
+    }
+    let named = |wanted: &Why| earlier.left_out.iter().any(|left| &left.why == wanted);
+    for wanted in [Why::SessionApp, Why::FilesApp, Why::DevicePanel] {
+        assert!(named(&wanted), "{wanted:?} among {:?}", earlier.left_out);
+    }
+    for app in ["so.tilo.chat", "so.tilo.notes", "so.tilo.file-explorer"] {
+        assert!(
+            named(&Why::AppAuthor { app: app.into() }),
+            "{app}'s authorship among {:?}",
+            earlier.left_out
+        );
+    }
+}
+
 /// A device certificate as the kept record holds it: its fields fixed, its
 /// signature none, which nothing here checks.
 fn kept_cert(seed: u8) -> DeviceCert {

@@ -38,14 +38,26 @@ fn start_with(
     secrets: &std::path::Path,
     extra: &[&str],
 ) -> std::io::Result<Workspace> {
+    // `warn` unless the run asks for more, as `tools/relay-upgrade/run.sh`
+    // does to say why an upgraded room did what it did.
+    let log = std::env::var("TILO_UPGRADE_RELAY_LOG").unwrap_or_else(|_| "warn".to_owned());
+    spawn_room(state, root_file, secrets, extra, &log, Stdio::inherit())
+}
+
+/// The room on `state`, as [`start_with`] starts it, logging `log`
+/// (`TILO_RELAY_LOG`) to `stderr`.
+fn spawn_room(
+    state: &std::path::Path,
+    root_file: &std::path::Path,
+    secrets: &std::path::Path,
+    extra: &[&str],
+    log: &str,
+    stderr: Stdio,
+) -> std::io::Result<Workspace> {
     let mut child = Command::new(tilo_test_env::package_binary!("tilo-relay"))
         .env("TILO_SECRETS_DIR", secrets)
-        // `warn` unless the run asks for more, as `tools/relay-upgrade/run.sh`
-        // does to say why an upgraded room did what it did.
-        .env(
-            "TILO_RELAY_LOG",
-            std::env::var("TILO_UPGRADE_RELAY_LOG").unwrap_or_else(|_| "warn".to_owned()),
-        )
+        .env("TILO_RELAY_LOG", log)
+        .env("NO_COLOR", "1")
         // What a published image sets from the commit it was built from.
         .env("TILO_SOURCE_REVISION", SOURCE_REVISION)
         .args(["room", "--state"])
@@ -68,6 +80,7 @@ fn start_with(
         .args(extra)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(stderr)
         .spawn_locked()?;
     let stdin = Some(child.stdin.take().unwrap());
     let stdout = child.stdout.take().unwrap();

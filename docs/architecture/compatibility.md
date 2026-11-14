@@ -198,6 +198,18 @@ who may have written it.
   open only what was sealed then, and never seal. The governing host founds
   the new group, since those releases named no founder, and writes each
   record again as a whole checkpoint under it.
+- **Grants a 0.1 release gave apps need none now.** Those releases made each
+  app a party a workspace granted to: every workspace granted the desktop
+  session's own app (`session-app`), Files (`files-app`) and quick settings
+  (`device-panel`), and an app a member who could change the workspace opened
+  was granted authorship of its own records (`app-author:<app>`). In this
+  build an app acts as the person whose session runs it, in its own node, so
+  what those grants allowed the person's role allows; bringing the
+  membership up writes no grant for them and logs each one with why. A grant
+  a 0.1 release kept that this build keeps nothing of (one to an app beyond
+  those, to an issue's work or a Shortcut) is logged as a warning with why;
+  `relay-upgrade` fails on any, and has members write through Notes and Files
+  after the upgrade.
 - **Directories named by an old id move once.** The 0.1 releases named a
   workspace's relay store and link store by a number derived from its id;
   this build names them by the id. Opening such a store moves it to the id

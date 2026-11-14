@@ -11,6 +11,15 @@ impl StatePeer {
         self.brought_up
     }
 
+    /// The membership a 0.1 release kept in this workspace's document, read
+    /// into this layout ([`crate::members::earlier::membership`]); `None` when
+    /// the document holds none, or this layout's log already took it over.
+    #[must_use]
+    pub fn earlier_membership(&self) -> Option<crate::members::earlier::Earlier> {
+        let held = self.core.workspace_doc.as_deref()?;
+        crate::members::earlier::membership(held, &self.core.workspace)
+    }
+
     /// Bring the membership log a 0.1 release kept up into this layout's, as
     /// the device that governs the workspace, the owner's, with `key`
     /// ([`crate::members::earlier`]). Whether it did: a document with no
@@ -29,7 +38,7 @@ impl StatePeer {
         key: &dyn collab_types::signer::DeviceSigner,
         now: super::SystemTime,
     ) -> Result<bool, String> {
-        use crate::members::earlier;
+        use crate::members::earlier::{self, LeftOut};
         use automerge::transaction::Transactable as _;
         let Some(held) = self.core.workspace_doc.as_deref() else {
             return Ok(false);
@@ -38,7 +47,11 @@ impl StatePeer {
             return Ok(false);
         }
         let workspace = self.core.workspace.clone();
-        let Some(membership) = earlier::membership(held, &workspace) else {
+        let Some(earlier::Earlier {
+            policy: membership,
+            left_out,
+        }) = earlier::membership(held, &workspace)
+        else {
             return Ok(false);
         };
         let device = self
@@ -82,10 +95,30 @@ impl StatePeer {
             .map_err(|error| error.to_string())?;
         }
         doc.commit();
+        // Every grant the earlier rows held and this layout holds none for is
+        // named with why: one whose use this layout gives without a grant, or
+        // one it keeps nothing of.
+        for LeftOut { grant, why } in &left_out {
+            if why.carried() {
+                tracing::info!(
+                    workspace = %workspace,
+                    %grant,
+                    "an earlier release's grant needs no grant here: {why}"
+                );
+            } else {
+                tracing::warn!(
+                    workspace = %workspace,
+                    %grant,
+                    "an earlier release's grant is not kept: {why}"
+                );
+            }
+        }
         tracing::info!(
             workspace = %workspace,
             people = founded.members.len(),
             operations = written,
+            grants_needing_none = left_out.iter().filter(|left| left.why.carried()).count(),
+            grants_not_kept = left_out.iter().filter(|left| !left.why.carried()).count(),
             "the membership log an earlier release kept is brought up"
         );
         self.core.workspace_doc = Some(super::CachedDocument::from(doc));

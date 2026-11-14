@@ -346,7 +346,11 @@ fn a_membership_an_earlier_release_kept_reads_the_same_once_brought_up() {
     assert!(replay(&kept, WORKSPACE).members.is_empty());
     assert!(earlier::holds_earlier_log(&kept));
 
-    let membership = earlier::membership(&kept, WORKSPACE).unwrap();
+    let earlier::Earlier {
+        policy: membership,
+        left_out,
+    } = earlier::membership(&kept, WORKSPACE).unwrap();
+    assert_eq!(left_out, Vec::new());
     assert_eq!(
         earlier::roles(&membership),
         [
@@ -378,4 +382,109 @@ fn a_membership_an_earlier_release_kept_reads_the_same_once_brought_up() {
     );
     assert!(!earlier::holds_earlier_log(&brought_up));
     assert_eq!(earlier::earlier_keys(&brought_up).len(), 4);
+}
+
+/// The grants a 0.1 release gave the apps themselves, as it wrote them
+/// (`{"subject": {"app": ..}}`): none is held as a grant here, where an app
+/// acts as the person who runs it, and each is named with why, the ones
+/// whose use needs no grant now apart from the rest. The members are
+/// carried whatever the grants are.
+#[test]
+fn the_grants_an_earlier_release_gave_apps_are_each_named() {
+    use earlier::Why;
+    use tilo_action_policy::roles::{DEVICE_PANEL, FILES_APP, SESSION_APP};
+    let owner = device(1);
+    let ana = device(3);
+    // A grant as that release wrote it, to `subject`, given by the owner.
+    let written_then = |id: &str, subject: serde_json::Value| {
+        let mut grant = serde_json::to_value(tilo_action_policy::Grant::new(
+            id,
+            tilo_action_policy::Grantee::person(person(&owner.1)),
+            tilo_action_policy::TreePath::workspace(WORKSPACE),
+            tilo_action_policy::KindSet::READ_UNDOABLE,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(person(&owner.1)),
+        ))
+        .unwrap();
+        let named = grant.as_object_mut().unwrap();
+        named.remove("grantee");
+        named.insert("subject".into(), subject);
+        named.insert(
+            "granted_by".into(),
+            serde_json::json!({"person": person(&owner.1)}),
+        );
+        serde_json::to_vec(&grant).unwrap()
+    };
+    let app = |app: &str| serde_json::json!({ "app": app });
+    let rows = [
+        ("session-app", app(SESSION_APP)),
+        ("files-app", app(FILES_APP)),
+        ("device-panel", app(DEVICE_PANEL)),
+        ("app-author:so.tilo.notes", app("so.tilo.notes")),
+        ("an-app-given-more", app("so.tilo.notes")),
+        ("an-issue-run", serde_json::json!({"task": "issue-1"})),
+        ("nonsense", serde_json::json!({"planet": "mars"})),
+    ];
+    let mut kept_rows = vec![(
+        "members",
+        person(&ana.1),
+        serde_json::to_vec(&Role::Editor).unwrap(),
+    )];
+    for (id, subject) in &rows {
+        kept_rows.push((
+            "grants",
+            (*id).to_owned(),
+            written_then(id, subject.clone()),
+        ));
+    }
+    let kept_rows: Vec<(&str, &str, Vec<u8>)> = kept_rows
+        .iter()
+        .map(|(row, name, value)| (*row, name.as_str(), value.clone()))
+        .collect();
+    let kept = kept_by_an_earlier_release(&workspace(&owner.1), &kept_rows);
+    let earlier::Earlier { policy, left_out } = earlier::membership(&kept, WORKSPACE).unwrap();
+    assert_eq!(
+        earlier::roles(&policy),
+        [(person(&ana.1), Some(Role::Editor))].into()
+    );
+    assert!(
+        policy
+            .grants
+            .iter()
+            .all(|grant| rows.iter().all(|(id, _)| grant.id.as_str() != *id)),
+        "no app grant is held as a grant"
+    );
+    let why = |id: &str| {
+        left_out
+            .iter()
+            .find(|left| left.grant == id)
+            .unwrap_or_else(|| panic!("{id} is not named: {left_out:?}"))
+            .why
+            .clone()
+    };
+    assert_eq!(why("session-app"), Why::SessionApp);
+    assert_eq!(why("files-app"), Why::FilesApp);
+    assert_eq!(why("device-panel"), Why::DevicePanel);
+    assert_eq!(
+        why("app-author:so.tilo.notes"),
+        Why::AppAuthor {
+            app: "so.tilo.notes".into()
+        }
+    );
+    assert_eq!(
+        why("an-app-given-more"),
+        Why::OtherApp {
+            app: "so.tilo.notes".into()
+        }
+    );
+    assert_eq!(
+        why("an-issue-run"),
+        Why::NoGrantee {
+            subject: "task issue-1".into()
+        }
+    );
+    assert!(matches!(why("nonsense"), Why::Unreadable { .. }));
+    assert_eq!(left_out.len(), rows.len());
+    let carried = left_out.iter().filter(|left| left.why.carried()).count();
+    assert_eq!(carried, 4, "the app grants whose use needs none now");
 }
