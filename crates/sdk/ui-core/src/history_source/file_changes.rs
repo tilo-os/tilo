@@ -206,7 +206,7 @@ impl FileChangeFacts {
 
     /// What the change did, in this thread's words: "Added a line to
     /// some-doc.md: the line", "Changed 2 lines in some-doc.md", "Replaced
-    /// photo.jpg, 2.1 MB → 2.4 MB". `None` when the facts cannot say.
+    /// photo.jpg, 2.1 MB before and 2.4 MB now". `None` when the facts cannot say.
     #[must_use]
     pub fn sentence(&self, file: &str) -> Option<String> {
         let file_arg = || crate::i18n::ArgValue::from(file);
@@ -608,7 +608,7 @@ mod tests {
         );
         assert_eq!(
             binary.sentence("photo.jpg").as_deref(),
-            Some("Replaced photo.jpg, 4 B → 8 B")
+            Some("Replaced photo.jpg, 4 B before and 8 B now")
         );
         assert_eq!(
             FileChangeFacts::from_contents(None, Some(&[0u8; 150_000]))

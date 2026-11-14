@@ -584,7 +584,7 @@ history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Shortcut
 participant-app = { $name } · App
-participant-program = { $name } · Program
+participant-program = { $name } (program)
 participant-bot = { $name } · Bot
 # Two or more people in a workspace go by the same name: each is numbered, the
 # same numbers for everyone in it.
@@ -1334,5 +1334,5 @@ history-file-removed-line = Removed a line from { $file }
 history-file-removed-lines = Removed { $lines } lines from { $file }
 history-file-added-binary = Added { $file }, { $size }
 history-file-removed-binary = Removed { $file }, { $size }
-history-file-replaced-binary = Replaced { $file }, { $before } → { $after }
+history-file-replaced-binary = Replaced { $file }, { $before } before and { $after } now
 history-file-changed = Changed { $file }

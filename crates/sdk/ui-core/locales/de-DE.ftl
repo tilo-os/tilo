@@ -583,7 +583,7 @@ history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Kurzbefehl
 participant-app = { $name } · App
-participant-program = { $name } · Programm
+participant-program = { $name } (Programm)
 participant-bot = { $name } · Bot
 # Zwei oder mehr Personen in einem Arbeitsbereich tragen denselben Namen: jede
 # wird nummeriert, für alle im Arbeitsbereich gleich.
@@ -1297,5 +1297,5 @@ history-file-removed-line = Eine Zeile aus { $file } entfernt
 history-file-removed-lines = { $lines } Zeilen aus { $file } entfernt
 history-file-added-binary = { $file } hinzugefügt, { $size }
 history-file-removed-binary = { $file } entfernt, { $size }
-history-file-replaced-binary = { $file } ersetzt, { $before } → { $after }
+history-file-replaced-binary = { $file } ersetzt, vorher { $before } und jetzt { $after }
 history-file-changed = { $file } geändert
