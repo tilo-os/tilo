@@ -892,6 +892,65 @@ tilo_test_env::scenario! {
             );
         }
 
+        fn a_folded_strip_meets_a_reader_as_one_picker() {
+            use crate::a11y::{Action, Role};
+            let mut g = ToggleGroup::new(
+                vec![
+                    Segment::new("Always"),
+                    Segment::new("While no window covers it"),
+                    Segment::new("At the screen's edge"),
+                    Segment::new("After a moment"),
+                ],
+                NONE_CHOSEN,
+            )
+            .caption("When the dock shows");
+            g.adopt_theme(&Theme::dark());
+            g.measure_naturals(&mut TextRenderer::new());
+            g.apply_layout_external(Rect::new(0.0, 0.0, 140.0, 48.0));
+            assert!(g.is_folded(), "the labels do not fit 140 px");
+
+            let node = g.accessibility().expect("semantics");
+            assert_eq!(node.role, Role::ComboBox, "one picker, not four buttons");
+            assert_eq!(node.name.as_deref(), Some("When the dock shows"));
+            let bounds = node
+                .bounds
+                .map(crate::a11y::AccessBounds::to_rect)
+                .expect("the picker is placed");
+            assert!(
+                bounds.width() >= 48.0 && bounds.height() >= 48.0,
+                "the picker is a target: {bounds:?}"
+            );
+            let [menu] = node.children.as_slice() else {
+                panic!("one menu under the picker: {:?}", node.children);
+            };
+            assert_eq!(menu.role, Role::Menu);
+            assert!(menu.state.hidden, "the menu is closed until asked");
+            assert_eq!(menu.children.len(), 4);
+            assert!(
+                menu.children.iter().all(|item| item.state.hidden),
+                "a closed menu offers no choices"
+            );
+
+            let target = g.fold_target();
+            assert!(Widget::perform_semantic_action(
+                &mut g,
+                &target,
+                &Action::Expand,
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &automerge::ROOT,
+            ));
+            let node = g.accessibility().expect("semantics");
+            assert_eq!(node.state.expanded, Some(true));
+            let menu = &node.children[0];
+            assert!(!menu.state.hidden, "the menu a reader opened is offered");
+            assert!(
+                menu.children
+                    .iter()
+                    .all(|item| !item.state.hidden && item.bounds.is_some()),
+                "every choice stands in the open menu where it is drawn"
+            );
+        }
+
         let _settled = crate::motion::testing::settled();
         nothing_chosen_until_the_person_picks();
         a_bound_selection_follows_its_state_both_ways();
@@ -900,6 +959,7 @@ tilo_test_env::scenario! {
         a_disabled_strip_takes_no_input();
         tabs_start_on_the_leading_edge_and_scroll_when_long();
         a_caption_names_the_strip_and_sits_above_it();
+        a_folded_strip_meets_a_reader_as_one_picker();
     }
 }
 

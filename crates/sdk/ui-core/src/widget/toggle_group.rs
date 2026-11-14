@@ -2416,6 +2416,17 @@ impl Widget for ToggleGroup {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        let name = self
+            .accessible_name
+            .as_deref()
+            .and_then(|name| crate::i18n::spoken_name(name, self.name_resolved))
+            .or_else(|| self.caption.clone());
+        // A folded strip paints one picker, so a reader meets one picker too: the choices are
+        // its menu's, and only while that menu is open. The segment shares a folded strip keeps
+        // are not hit targets anything can press.
+        if self.folded {
+            return Some(self.folded_accessibility(name));
+        }
         // Segment labels are runtime strings the host gives, not FTL keys, so no lookup.
         let value = if self.chosen.is_some() {
             None
@@ -2423,8 +2434,7 @@ impl Widget for ToggleGroup {
             self.segments.get(self.selected).map(|s| s.label.clone())
         };
         // Segments are drawn, not child widgets: each is a synthetic child so assistive
-        // technology enumerates the choices, not just the active one. A strip folded into a
-        // picker is still the same set of choices to a reader; folding is how it paints.
+        // technology enumerates the choices, not just the active one.
         let count = self.segments.len();
         let seg_children: Vec<AccessNode> = self
             .segments
@@ -2450,11 +2460,6 @@ impl Widget for ToggleGroup {
                 }
             })
             .collect();
-        let name = self
-            .accessible_name
-            .as_deref()
-            .and_then(|name| crate::i18n::spoken_name(name, self.name_resolved))
-            .or_else(|| self.caption.clone());
         let mut state = AccessState::new()
             .focusable(self.is_focusable())
             .focused(self.is_focused())
@@ -2479,6 +2484,9 @@ impl Widget for ToggleGroup {
         if !self.is_enabled() {
             return false;
         }
+        if self.folded && target == self.fold_target() {
+            return self.fold_semantic_action(action);
+        }
         let prefix = self.segment_prefix();
         let Some(index) = target
             .strip_prefix(&prefix)
@@ -2494,6 +2502,10 @@ impl Widget for ToggleGroup {
             return false;
         }
         self.request_selection(index);
+        if self.folded {
+            self.menu.close();
+            self.cache_dirty = true;
+        }
         true
     }
 }

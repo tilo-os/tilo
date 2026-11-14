@@ -112,6 +112,95 @@ impl SegmentedFace<'_> {
 }
 
 impl ToggleGroup {
+    /// The folded strip as a reader meets it: one picker, whose menu holds the choices while it
+    /// is open. Its bounds are the picker's face, never the shares the folded segments no longer
+    /// paint.
+    pub(super) fn folded_accessibility(&self, name: Option<String>) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let open = self.menu.is_open();
+        let count = self.segments.len();
+        let items: Vec<AccessNode> = self
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(i, segment)| {
+                let rect = open
+                    .then(|| self.menu.item_rect(i))
+                    .flatten()
+                    .unwrap_or(self.rect);
+                AccessNode::new(Role::MenuItem)
+                    .with_name(segment.label.clone())
+                    .with_action_target(self.segment_id(i))
+                    .with_bounds(rect)
+                    .with_position(i.saturating_add(1), count)
+                    .with_state(AccessState {
+                        focusable: self.is_enabled() && !segment.disabled && open,
+                        disabled: !self.is_enabled() || segment.disabled,
+                        checked: Some(i == self.selected),
+                        hidden: !open,
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        let menu = AccessNode::new(Role::Menu)
+            .with_optional_name(name.clone())
+            .with_children(items)
+            .with_state(AccessState {
+                hidden: !open,
+                ..Default::default()
+            });
+        AccessNode::new(Role::ComboBox)
+            .with_optional_name(name)
+            .with_optional_value(Some(self.folded_label().into_owned()))
+            .with_action_target(self.fold_target())
+            .with_bounds(self.target_rect(self.rect))
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled())
+                    .expanded(open),
+            )
+            .with_children(vec![menu])
+    }
+
+    /// What the folded strip says: the chosen segment's label, or that one is to be chosen.
+    fn folded_label(&self) -> std::borrow::Cow<'_, str> {
+        match self.segments.get(self.selected) {
+            Some(segment) if self.selected != NONE_CHOSEN => {
+                std::borrow::Cow::Borrowed(segment.label.as_str())
+            }
+            _ => {
+                std::borrow::Cow::Owned(crate::i18n::I18nManager::lookup_plain("segmented-choose"))
+            }
+        }
+    }
+
+    pub(super) fn fold_target(&self) -> String {
+        self.id
+            .as_ref()
+            .map_or_else(|| "fold:".to_owned(), |id| format!("{id}~fold"))
+    }
+
+    pub(super) fn fold_semantic_action(&mut self, action: &crate::a11y::Action) -> bool {
+        match action {
+            crate::a11y::Action::Activate | crate::a11y::Action::Expand => {
+                if !self.menu.is_open() {
+                    self.open_fold_menu();
+                }
+                true
+            }
+            crate::a11y::Action::Collapse => {
+                if self.menu.is_open() {
+                    self.menu.close();
+                    self.cache_dirty = true;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn can_fold(&self) -> bool {
         self.orientation == Orientation::Horizontal
             && self.chosen.is_none()
