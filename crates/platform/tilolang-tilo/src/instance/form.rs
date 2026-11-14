@@ -498,7 +498,7 @@ impl Pending {
                     .runtime()
                     .members()
                     .into_iter()
-                    .map(|member| member.who)
+                    .map(|member| member.who())
                     .collect();
                 if !members.contains(&viewer) {
                     members.insert(0, viewer);

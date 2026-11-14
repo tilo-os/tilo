@@ -1973,8 +1973,8 @@ mod cases {
         w.rt.set_name_host(Names);
         w.rt.set_members(
             vec![
-                tilolang_runtime::members::Member::person("me", "owner"),
-                tilolang_runtime::members::Member::person("bo", "editor"),
+                tilolang_runtime::members::Member::person("me", tilo_actions::policy::Role::Owner),
+                tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
             ],
             None,
         );
@@ -2086,8 +2086,8 @@ mod cases {
         w.rt.set_name_host(Names);
         w.rt.set_members(
             vec![
-                tilolang_runtime::members::Member::person("me", "owner"),
-                tilolang_runtime::members::Member::person("bo", "editor"),
+                tilolang_runtime::members::Member::person("me", tilo_actions::policy::Role::Owner),
+                tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
             ],
             None,
         );

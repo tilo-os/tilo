@@ -11,10 +11,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
+use tilo_action_policy::MemberId;
 use tilo_action_policy::{
     ActionKind, Answer, Authority as Policy, Context, Grantee, Standing, TreePath,
 };
-use tilolang_runtime::members::{Member, MemberKind, Reads};
+use tilolang_runtime::members::{Member, Reads};
 use tilolang_runtime::{Principal, ResourceRef};
 
 use crate::host::Host;
@@ -92,14 +93,13 @@ pub fn members_of(standing: &Standing, people: &People) -> Vec<Member> {
         let Some(role) = policy.role_of(person) else {
             continue;
         };
-        let who = people.principal(standing, person);
-        if out.iter().any(|member| member.who.0 == who) {
+        let id = MemberId::person(people.principal(standing, person));
+        if out.iter().any(|member| member.id == id) {
             continue;
         }
         out.push(Member {
-            who: Principal::new(who),
-            kind: MemberKind::Person,
-            role: Some(role.key().to_owned()),
+            id,
+            role: Some(role),
         });
     }
     let mut agents: Vec<&str> = policy
@@ -109,17 +109,13 @@ pub fn members_of(standing: &Standing, people: &People) -> Vec<Member> {
         // answers a person gave an agent working for them admit nobody.
         .filter(|grant| grant.id.0.starts_with("agent-member:"))
         .filter_map(|grant| match &grant.grantee {
-            Grantee::Member(tilo_action_policy::MemberId::Agent(agent)) => Some(agent.as_str()),
+            Grantee::Member(MemberId::Agent(agent)) => Some(agent.as_str()),
             _ => None,
         })
         .collect();
     agents.sort_unstable();
     agents.dedup();
-    out.extend(agents.into_iter().map(|agent| Member {
-        who: Principal::new(format!("agent:{agent}")),
-        kind: MemberKind::Agent,
-        role: None,
-    }));
+    out.extend(agents.into_iter().map(Member::agent));
     out
 }
 
@@ -225,17 +221,13 @@ mod tests {
         phase the_members_are_the_policys_people_as_the_runtime_names_them_then_its_agents;
         {
             let members = members_of(&standing(), &people());
-            let shown: Vec<(&str, MemberKind, Option<&str>)> = members
-                .iter()
-                .map(|member| (member.who.0.as_str(), member.kind, member.role.as_deref()))
-                .collect();
             assert_eq!(
-                shown,
+                members,
                 [
-                    ("me", MemberKind::Person, Some("owner")),
-                    ("bo", MemberKind::Person, Some("editor")),
-                    ("cy-laptop", MemberKind::Person, Some("viewer")),
-                    ("agent:planner", MemberKind::Agent, None),
+                    Member::person("me", Role::Owner),
+                    Member::person("bo", Role::Editor),
+                    Member::person("cy-laptop", Role::Viewer),
+                    Member::agent("planner"),
                 ]
             );
         }

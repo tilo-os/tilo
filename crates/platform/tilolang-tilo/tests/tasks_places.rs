@@ -370,7 +370,7 @@ tilo_test_env::scenario! {
         // The workspace narrows to the person looking alone: the place goes.
         ada.host
             .runtime()
-            .set_members(vec![Member::person("ada", "owner")], None);
+            .set_members(vec![Member::person("ada", tilo_actions::policy::Role::Owner)], None);
         view.poll_patches().unwrap();
         assert!(
             !places(&view)
@@ -417,7 +417,7 @@ fn the_assignee_offers_the_workspaces_people_and_agents() {
         node.props.get("people"),
         Some(&Value::List(vec![
             Value::Principal(Principal::new("scenario:Mia")),
-            Value::Principal(Principal::new("scenario:Scout")),
+            Value::Principal(Principal::new("agent:scenario:Scout")),
         ])),
         "the list offers the workspace's people and agents"
     );

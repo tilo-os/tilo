@@ -33,7 +33,10 @@ pub fn unnamed(id: &str) -> String {
 /// [`actor_name`].
 #[must_use]
 pub fn named(id: &str, names: &dyn ParticipantNames) -> String {
-    if let Some(name) = id.strip_prefix("scenario:") {
+    if let Some(name) = id
+        .strip_prefix("scenario:")
+        .or_else(|| id.strip_prefix("agent:scenario:"))
+    {
         return name.to_owned();
     }
     if let Some(app) = crate::authority::trigger_of(id) {

@@ -878,8 +878,8 @@ tilo_test_env::scenario! {
         // The workspace's membership reaches her window, and his mark of the channel with it.
         runtime.set_members(
             vec![
-                tilolang_runtime::members::Member::person("ada", "editor"),
-                tilolang_runtime::members::Member::person("ben", "editor"),
+                tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Editor),
+                tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
             ],
             None,
         );
@@ -1117,8 +1117,8 @@ tilo_test_env::scenario! {
         // The workspace's membership, as the host hands it to the runtime.
         ada.host.runtime().set_members(
             vec![
-                tilolang_runtime::members::Member::person("ada", "owner"),
-                tilolang_runtime::members::Member::person("ben", "editor"),
+                tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+                tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
             ],
             None,
         );
@@ -1268,8 +1268,8 @@ tilo_test_env::scenario! {
         ada.commit();
         ada.host.runtime().set_members(
             vec![
-                tilolang_runtime::members::Member::person("ada", "owner"),
-                tilolang_runtime::members::Member::person("ben", "editor"),
+                tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+                tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
             ],
             None,
         );

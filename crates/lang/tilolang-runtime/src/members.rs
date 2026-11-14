@@ -9,57 +9,48 @@
 
 use std::rc::Rc;
 
+use tilo_actions::policy::{MemberId, Role};
+
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
 use crate::ids::Principal;
 use crate::value::{ResourceRef, Value};
 use crate::view_state::StateKey;
 
-/// What a member is: a person, or software acting in the workspace.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum MemberKind {
-    #[default]
-    Person,
-    Agent,
-}
-
-impl MemberKind {
-    /// The case of the language's `PrincipalKind` it is, by its place.
-    const fn case(self) -> i64 {
-        match self {
-            Self::Person => 0,
-            Self::Agent => 1,
-        }
-    }
-}
-
-/// One member of the workspace, as its membership records them.
+/// One member of the workspace, as the session's member list has them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
-    pub who: Principal,
-    pub kind: MemberKind,
-    /// Their role, as the workspace's policy names it (`owner`, `editor`), when they hold one.
-    pub role: Option<String>,
+    pub id: MemberId,
+    pub role: Option<Role>,
 }
 
 impl Member {
     #[must_use]
-    pub fn person(who: impl Into<String>, role: impl Into<String>) -> Self {
+    pub fn person(id: impl Into<String>, role: Role) -> Self {
         Self {
-            who: Principal::new(who),
-            kind: MemberKind::Person,
-            role: Some(role.into()),
+            id: MemberId::person(id),
+            role: Some(role),
         }
     }
 
     #[must_use]
-    pub fn agent(who: impl Into<String>) -> Self {
+    pub fn agent(id: impl Into<String>) -> Self {
         Self {
-            who: Principal::new(who),
-            kind: MemberKind::Agent,
+            id: MemberId::agent(id),
             role: None,
         }
     }
+
+    /// The principal the language names them by.
+    #[must_use]
+    pub fn who(&self) -> Principal {
+        Principal::new(self.id.key())
+    }
+}
+
+/// The case of the language's `PrincipalKind` `id` is, by its place: a person, else software.
+fn kind_case(id: &MemberId) -> i64 {
+    i64::from(!id.is_person())
 }
 
 /// Whether a member can read a resource, as the workspace's grants decide.
@@ -101,7 +92,7 @@ impl Core {
     pub(crate) fn set_members(&self, list: Vec<Member>, reads: Option<Rc<Reads>>) {
         let value = Value::List(
             list.iter()
-                .map(|member| Value::Principal(member.who.clone()))
+                .map(|member| Value::Principal(member.who()))
                 .collect(),
         );
         *self.members.borrow_mut() = Members { list, reads };
@@ -111,37 +102,35 @@ impl Core {
 
     /// A scenario named a person (`person("Mia")`): they are in the workspace it stages, so a
     /// view that offers the members offers them too, under the name the scenario gave.
-    pub(crate) fn named_person(&self, who: crate::ids::Principal) {
-        self.named_member(who, MemberKind::Person);
+    pub(crate) fn named_person(&self, name: &str) -> Principal {
+        self.named_member(MemberId::person(format!("scenario:{name}")))
     }
 
     /// A scenario named software (`agent("Scout")`): it is a member of the workspace it stages,
     /// as an agent of it is, and views offer it beside the people and mark it as software.
-    pub(crate) fn named_agent(&self, who: crate::ids::Principal) {
-        self.named_member(who, MemberKind::Agent);
+    pub(crate) fn named_agent(&self, name: &str) -> Principal {
+        self.named_member(MemberId::agent(format!("scenario:{name}")))
     }
 
-    /// Adds the member `who` of `kind` to the workspace, unless it is one already.
-    fn named_member(&self, who: crate::ids::Principal, kind: MemberKind) {
+    /// Adds the member `id` to the workspace, unless it is one already, and names them.
+    fn named_member(&self, id: MemberId) -> Principal {
+        let who = Principal::new(id.key());
         if self
             .members
             .borrow()
             .list
             .iter()
-            .any(|member| member.who == who)
+            .any(|member| member.id == id)
         {
-            return;
+            return who;
         }
         let (mut list, reads) = {
             let members = self.members.borrow();
             (members.list.clone(), members.reads.clone())
         };
-        list.push(Member {
-            who,
-            kind,
-            role: None,
-        });
+        list.push(Member { id, role: None });
         self.set_members(list, reads);
+        who
     }
 
     /// The members, noted as read by the running view.
@@ -163,7 +152,7 @@ impl Core {
             .borrow()
             .list
             .iter()
-            .find(|member| member.who == *who)
+            .find(|member| member.id.key() == who.0)
             .cloned()
     }
 
@@ -230,7 +219,7 @@ impl Core {
                 let readers = list.iter().filter(|member| {
                     reads
                         .as_ref()
-                        .is_none_or(|reads| reads(&member.who, &target.target))
+                        .is_none_or(|reads| reads(&member.who(), &target.target))
                 });
                 self.ret_h(principals(readers))
             }
@@ -241,24 +230,20 @@ impl Core {
             Imp::PrincipalKind => {
                 let who = self.principal_arg(a.h(0)?)?;
                 let _ = self.read_members();
-                let kind = self.member(&who).map_or_else(
-                    // Someone no longer a member keeps what their id says they are.
-                    || {
-                        if who.0.starts_with("agent:") {
-                            MemberKind::Agent
-                        } else {
-                            MemberKind::Person
-                        }
-                    },
-                    |member| member.kind,
-                );
-                crate::core::ret_i64(kind.case())
+                // Someone no longer a member keeps what their id says they are.
+                let id = self
+                    .member(&who)
+                    .map(|member| member.id)
+                    .or_else(|| MemberId::parse(&who.0));
+                crate::core::ret_i64(id.as_ref().map_or(0, kind_case))
             }
             Imp::PrincipalRole => {
                 let who = self.principal_arg(a.h(0)?)?;
                 let _ = self.read_members();
                 let role = self.member(&who).and_then(|member| member.role);
-                self.ret_h(role.map_or_else(Value::none, |role| Value::some(Value::Text(role))))
+                self.ret_h(role.map_or_else(Value::none, |role| {
+                    Value::some(Value::Text(role.key().to_owned()))
+                }))
             }
             _ => trap("not a members import"),
         }
@@ -268,7 +253,7 @@ impl Core {
 pub(crate) fn principals<'a>(members: impl Iterator<Item = &'a Member>) -> Value {
     Value::List(
         members
-            .map(|member| Value::Principal(member.who.clone()))
+            .map(|member| Value::Principal(member.who()))
             .collect(),
     )
 }

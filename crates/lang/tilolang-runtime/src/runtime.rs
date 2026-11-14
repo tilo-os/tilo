@@ -1197,8 +1197,8 @@ impl Runtime {
         Ok(self
             .core
             .seen_by_of(person, coll, at)?
-            .into_iter()
-            .map(|member| member.who)
+            .iter()
+            .map(crate::members::Member::who)
             .collect())
     }
 

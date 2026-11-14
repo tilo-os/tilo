@@ -292,8 +292,8 @@ tilo_test_env::scenario! {
         let (mut ada, _) = workspace();
         ada.host.runtime().set_members(
             vec![
-                tilolang_runtime::members::Member::person("ada", "owner"),
-                tilolang_runtime::members::Member::person("bo", "editor"),
+                tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+                tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
             ],
             None,
         );
@@ -1739,8 +1739,8 @@ fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, Stri
     let (mut ada, root) = workspace();
     ada.host.runtime().set_members(
         vec![
-            tilolang_runtime::members::Member::person("ada", "owner"),
-            tilolang_runtime::members::Member::person("ben", "editor"),
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
         ],
         None,
     );

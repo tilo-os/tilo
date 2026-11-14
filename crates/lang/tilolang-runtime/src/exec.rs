@@ -2774,12 +2774,11 @@ impl Core {
             Imp::PrincipalNamed | Imp::AgentNamed => {
                 let name = self.text(a.h(0)?)?;
                 self.scenario_state(|_| ())?;
-                let who = Principal::new(format!("scenario:{name}"));
-                if imp == Imp::AgentNamed {
-                    self.named_agent(who.clone());
+                let who = if imp == Imp::AgentNamed {
+                    self.named_agent(&name)
                 } else {
-                    self.named_person(who.clone());
-                }
+                    self.named_person(&name)
+                };
                 self.ret_h(Value::Principal(who))
             }
             Imp::InvocationPush => {

@@ -1469,12 +1469,13 @@ impl Core {
         let resource = coll.id_string();
         let mut read = Vec::new();
         for member in self.read_members() {
-            if member.who.0.eq_ignore_ascii_case(looking) {
+            let who = member.who();
+            if who.0.eq_ignore_ascii_case(looking) {
                 continue;
             }
             // Every member's mark is read, so the view runs again when any of them reads on.
-            self.note_seen_read(&member.who.0, &resource);
-            let Some(mark) = self.seen_mark(&member.who.0, &resource) else {
+            self.note_seen_read(&who.0, &resource);
+            let Some(mark) = self.seen_mark(&who.0, &resource) else {
                 continue;
             };
             if versions.iter().any(|version| version.change == mark.change) {

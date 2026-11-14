@@ -267,8 +267,8 @@ view sidebar(b: Board) {
         let t = Tasks::new();
         t.rt.set_members(
             vec![
-                Member::person("me", "owner"),
-                Member::person("ben", "editor"),
+                Member::person("me", tilo_actions::policy::Role::Owner),
+                Member::person("ben", tilo_actions::policy::Role::Editor),
             ],
             None,
         );

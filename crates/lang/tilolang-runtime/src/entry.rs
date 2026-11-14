@@ -268,11 +268,11 @@ impl Look for Workspace<'_> {
             .read_members()
             .into_iter()
             .map(|member| {
-                let id = member.who.to_string();
+                let who = member.who();
                 let name = names
                     .as_ref()
-                    .map_or_else(|| id.clone(), |names| names.name(&member.who));
-                (name, id)
+                    .map_or_else(|| who.0.clone(), |names| names.name(&who));
+                (name, who.0)
             })
             .collect()
     }

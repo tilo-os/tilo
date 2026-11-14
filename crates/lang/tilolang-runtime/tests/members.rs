@@ -69,9 +69,9 @@ view two(r: Workspace) {
     /// Two people and an agent, as a workspace's membership records them.
     fn membership() -> Vec<Member> {
         vec![
-            Member::person("ada", "owner"),
-            Member::person("bo", "editor"),
-            Member::agent("agent:planner"),
+            Member::person("ada", tilo_actions::policy::Role::Owner),
+            Member::person("bo", tilo_actions::policy::Role::Editor),
+            Member::agent("planner"),
         ]
     }
 
@@ -170,7 +170,7 @@ view two(r: Workspace) {
             let mut changed = membership();
             changed.remove(1);
             if let Some(ada) = changed.first_mut() {
-                ada.role = Some("editor".to_owned());
+                ada.role = Some(tilo_actions::policy::Role::Editor);
             }
             rt.set_members(changed, None);
             v.poll_patches().unwrap();
