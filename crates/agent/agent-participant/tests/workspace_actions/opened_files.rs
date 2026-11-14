@@ -97,6 +97,31 @@ async fn every_file_of_a_folder_opens_in_an_item_of_its_own() {
         assert!(text.contains(title), "{record} reads its own PDF: {text}");
     }
 
+    // Listing the app shows every PDF it holds, each by the path that opens it.
+    let listed = tool(&server, "tilo_ls", json!({"path": "pdf-viewer"})).await;
+    for record in [&visa, &permit] {
+        let shown = listed.contains(&format!("{record}/")) || listed.contains(".pdf");
+        assert!(shown, "{record} is listed: {listed}");
+    }
+    assert!(
+        listed.contains(&format!("{visa}/")) || listed.contains(&format!("{permit}/")),
+        "the other record is named by its path: {listed}"
+    );
+
+    // Search finds each by its name, in its own record: found, it opens
+    // the PDF it is, never the record of the first one.
+    let found = tool(&server, "tilo_find", json!({"query": "permit.pdf"})).await;
+    let hit = found
+        .lines()
+        .find(|line| line.contains("permit.pdf"))
+        .unwrap_or_else(|| panic!("the permit is found: {found}"));
+    assert!(hit.starts_with(&format!("{permit}/")), "{found}");
+    let hit = found.lines().find(|line| line.contains("visa.pdf"));
+    assert!(
+        hit.is_none_or(|hit| hit.starts_with(&format!("{visa}/"))),
+        "{found}"
+    );
+
     // Two Word documents: two records of Writer, each holding its own words.
     let statement = open_file(
         &server,

@@ -87,8 +87,17 @@ const until = async (expression, what, timeout = 180_000) => {
   }
 };
 
-// Arrive, and be in a workspace.
-await tab.navigate(site);
+// Arrive, and be in a workspace: by the invitation where one is given (a
+// workspace that takes people by invitation shows a newcomer only its door
+// until they follow one), else as a visitor of the site's Lounge.
+const pressJoin = `(() => {
+  const join = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Join');
+  if (!join || join.disabled) return false;
+  join.click();
+  return true;
+})()`;
+await tab.navigate(follow ?? site);
+if (follow) await until(pressJoin, 'the invitation offering to join');
 await until(`['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'the page arriving');
 if (await tab.evaluate('document.documentElement.dataset.arrival') !== 'done') {
   await finish(1, `the page stopped arriving: ${await text()}`);
@@ -97,16 +106,7 @@ const memberships = `JSON.parse(globalThis.localStorage.getItem('tilo-host-membe
 report.room = JSON.parse(await until(`(() => {
   const kept = ${memberships}[${JSON.stringify(new URL(relay).origin)}];
   return kept?.room ? JSON.stringify(kept) : '';
-})()`, 'joining the Lounge')).room;
-if (follow) {
-  await tab.navigate(follow);
-  await until(`(() => {
-    const join = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Join');
-    if (!join || join.disabled) return false;
-    join.click();
-    return true;
-  })()`, 'the invitation offering to join');
-}
+})()`, 'joining the workspace')).room;
 await until('Boolean(globalThis.tiloMount?.canvas)', 'the desk mounting');
 // The desk offers its upload rows once the workspace says this person may
 // change its records.
@@ -207,7 +207,19 @@ console.error(`ok: the drop's upload ended in ${report.drop.ms} ms: ${report.dro
 // 2. The desk's menu: "Upload a folder…", found in the desk's search, and the
 // folder given to the chooser it opens.
 const pickedBefore = (await rowsOf(title)).length;
-await tab.send('Page.setInterceptFileChooserDialog', {enabled: true}).catch(() => {});
+// The browser's chooser is answered here, as a person picking the folder:
+// headless Chromium opens no dialog, and says one was asked for instead.
+await tab.send('Page.enable', {});
+await tab.send('Page.setInterceptFileChooserDialog', {enabled: true});
+let chooserOpened = null;
+const opened = new Promise(resolve => {
+  const off = browser.on(message => {
+    if (message.method !== 'Page.fileChooserOpened') return;
+    off();
+    resolve(message.params);
+  });
+});
+opened.then(params => { chooserOpened = params; });
 const key = async (key, code, modifiers = 0, text = '') => {
   await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key, code, modifiers, text});
   await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key, code, modifiers});
@@ -215,12 +227,15 @@ const key = async (key, code, modifiers = 0, text = '') => {
 await key('k', 'KeyK', 2);
 await sleep(800);
 for (const char of 'Upload a folder') await tab.send('Input.insertText', {text: char});
-await sleep(800);
+// Enter takes the row the search offers first, once it offers this one.
+await until(`(() => { globalThis.tiloMount?.requestSemantics?.(); return ${names}.includes('Upload a folder…'); })()`,
+  'the desk\'s search offering "Upload a folder…"', 30_000);
 await key('Enter', 'Enter', 0, '\r');
-await until(`Boolean(document.querySelector('input[data-upload="folder"]'))`, 'the desk menu opening the folder chooser', 30_000);
-const fresh = await tab.send('DOM.getDocument', {depth: 0});
-const chooser = await tab.send('DOM.querySelector', {nodeId: fresh.result.root.nodeId, selector: 'input[data-upload="folder"]'});
-const chose = await tab.send('DOM.setFileInputFiles', {files: [folder], nodeId: chooser.result.nodeId});
+const deadline = Date.now() + 30_000;
+while (!chooserOpened && Date.now() < deadline) await sleep(250);
+if (!chooserOpened) await finish(1, `the desk menu opening the folder chooser never happened: ${await text()}`);
+if (chooserOpened.mode !== 'selectMultiple') await finish(1, `the chooser takes one file, not a folder: ${JSON.stringify(chooserOpened)}`);
+const chose = await tab.send('DOM.setFileInputFiles', {files: [folder], backendNodeId: chooserOpened.backendNodeId});
 if (chose.error) await finish(1, `the chooser took no folder: ${chose.error.message}`);
 report.picker = await jobEnded(title, 'picker', pickedBefore);
 console.error(`ok: the chosen folder's upload ended in ${report.picker.ms} ms: ${report.picker.outcome}`);

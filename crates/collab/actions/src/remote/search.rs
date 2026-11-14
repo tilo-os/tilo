@@ -37,6 +37,11 @@ pub struct Found {
     /// The app publishing it, when one does: what a caller names it as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
+    /// The provider of the record it is in, where the app keeps many records
+    /// (`record:<app>:<record>`): two PDFs publish their documents under the
+    /// same id, and only this says which record a result is of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// A host's search of what its workspace holds, as it offers it to a caller

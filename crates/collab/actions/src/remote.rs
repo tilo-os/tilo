@@ -2573,6 +2573,7 @@ mod tests {
                     open: None,
                     arguments: serde_json::Map::new(),
                     app: Some("so.tilo.notes".into()),
+                    provider: None,
                 }]))
             }
         }
