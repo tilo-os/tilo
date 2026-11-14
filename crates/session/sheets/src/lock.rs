@@ -233,6 +233,19 @@ pub struct Shown {
     pub keyboard: bool,
     /// The password was accepted: the screen is dissolving.
     pub unlocking: bool,
+    /// The displays the screen stands on, in its own coordinates: the first is the one the person
+    /// works on, which takes the prompt; every other one shows the artwork alone. None: the screen
+    /// is one display.
+    pub screens: Vec<Screen>,
+}
+
+/// One display the lock screen stands on, in the screen's own logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Screen {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 impl Shown {
@@ -308,10 +321,6 @@ pub struct LockSeat {
     /// Where the app reaching the session is opened, handed the local its
     /// view draws.
     reaching: Rc<RefCell<Option<Reach>>>,
-    /// The displays the screen stands on, in its own coordinates, the first
-    /// the one the person looks at: told by a session that draws the lock
-    /// over all of them at once.
-    displays: Rc<RefCell<Vec<Rect>>>,
     /// The app was handed its local: reaching the session is done once.
     reached: Rc<Cell<bool>>,
     /// The screen was told it may go: it says so once.
@@ -334,38 +343,29 @@ impl crate::Seat for LockSeat {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
-
-    fn covers(&self, displays: Vec<Rect>) {
-        if *self.displays.borrow() != displays {
-            *self.displays.borrow_mut() = displays;
-            self.presentation.wake();
-        }
-    }
 }
 
 impl LockSeat {
-    /// The screens the lock is drawn on within `bounds`: each display it was
-    /// told it covers, else `bounds` itself. The first takes the prompt.
+    /// The screens the lock is drawn on within `bounds`: each display the session says it stands
+    /// on, else `bounds` itself. The first, the display the person works on, takes the prompt.
     fn screens(&self, bounds: Rect) -> Vec<Rect> {
-        let displays = self.displays.borrow();
-        if displays.is_empty() {
+        let screens = self.shown().screens;
+        if screens.is_empty() {
             return vec![bounds];
         }
-        // The prompt goes where the person's eye starts: the display first in
-        // reading order, left to right and top to bottom.
-        let mut screens: Vec<Rect> = displays
+        screens
             .iter()
-            .map(|display| {
+            .map(|screen| {
+                let x0 = bounds.x0 + f64::from(screen.x);
+                let y0 = bounds.y0 + f64::from(screen.y);
                 Rect::new(
-                    display.x0 + bounds.x0,
-                    display.y0 + bounds.y0,
-                    display.x1 + bounds.x0,
-                    display.y1 + bounds.y0,
+                    x0,
+                    y0,
+                    x0 + f64::from(screen.width),
+                    y0 + f64::from(screen.height),
                 )
             })
-            .collect();
-        screens.sort_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)));
-        screens
+            .collect()
     }
 
     /// Show `shown`, when it is not what shows already.
@@ -608,7 +608,15 @@ impl ResourceApp for LockApp {
 
     fn scenarios() -> &'static [&'static str] {
         &[
-            "plain", "typing", "refused", "checking", "caps", "playing", "minimal", "failing",
+            "plain",
+            "typing",
+            "refused",
+            "checking",
+            "caps",
+            "playing",
+            "minimal",
+            "failing",
+            "two-displays",
         ]
     }
 
@@ -655,6 +663,7 @@ fn staged_shown(name: &str) -> Shown {
         media: None,
         keyboard: false,
         unlocking: false,
+        screens: Vec::new(),
     };
     match name {
         "refused" => Shown {

@@ -78,13 +78,8 @@ fn display_of(session: &mut Session, app: &str) -> Option<i32> {
 }
 
 /// The rectangle of the right display, `HEADLESS-2` .
-fn right() -> (i32, i32, u32, u32) {
-    (
-        WIDTH,
-        0,
-        u32::try_from(WIDTH).unwrap(),
-        u32::try_from(HEIGHT).unwrap(),
-    )
+fn right() -> (i32, i32, i32, i32) {
+    (WIDTH, 0, WIDTH, HEIGHT)
 }
 
 /// The displays attached now, as Settings sees them, and the set they make.
@@ -144,7 +139,7 @@ fn primary_reached(session: &Session) -> bool {
 }
 
 /// The display the sheet would open on right now.
-fn sheet_place(session: &Session) -> Option<(i32, i32, u32, u32)> {
+fn sheet_place(session: &Session) -> Option<(i32, i32, i32, i32)> {
     session
         .power_menu()
         .expect("power sheet")

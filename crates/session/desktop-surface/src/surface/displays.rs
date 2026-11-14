@@ -180,6 +180,32 @@ pub(crate) fn display_strips(tree: &Layout) -> Vec<StripPlan> {
 
 /// The display among `displays` (in the surface's coordinates, the surface at `surface` ) holding
 /// point `p` .
+/// A display's rectangle, in the desk's coordinates.
+#[must_use]
+pub fn display_rect(display: &Display) -> Rect {
+    Rect::new(
+        display.x,
+        display.y,
+        display.x + display.width,
+        display.y + display.height,
+    )
+}
+
+/// The display the person works on, in the desk's coordinates, while the desk spans several: the
+/// one every shell surface without a place of its own stands on. `None` on one display.
+#[must_use]
+pub fn working_display(tree: &Layout) -> Option<Rect> {
+    if !tree.is_partitioned() {
+        return None;
+    }
+    let focused = tree.outputs.focused_display()?;
+    tree.outputs
+        .displays
+        .iter()
+        .find(|display| display.id == focused)
+        .map(display_rect)
+}
+
 pub(crate) fn display_at(displays: &[Display], surface: Rect, p: Point) -> Option<u32> {
     displays
         .iter()
@@ -715,6 +741,23 @@ mod tests {
 
     fn strip(tree: &Layout) -> &Strip {
         &tree.workspaces[0].strips[0]
+    }
+
+    #[test]
+    fn shell_surfaces_stand_on_the_display_the_person_works_on() {
+        let mut tree = docked(&[1, 2], 1);
+        tree.outputs.set_focused(1);
+        assert_eq!(
+            working_display(&tree),
+            Some(Rect::new(800.0, 0.0, 1600.0, 600.0)),
+            "the right display, not the desk across both"
+        );
+        tree.outputs.set_focused(0);
+        assert_eq!(
+            working_display(&tree),
+            Some(Rect::new(0.0, 0.0, 800.0, 600.0))
+        );
+        assert_eq!(working_display(&Layout::default()), None, "one display");
     }
 
     #[test]

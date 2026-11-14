@@ -1928,12 +1928,13 @@ impl Session {
         // The panel follows the light in the room while the person asked for
         // it, and the displays are warmed to what the night light shows now;
         // a new output takes both with the displays' arrangement.
+        let working = self.working_output().map(|output| output.name);
         let night_light = self.follow_light()?;
         let turned = self.rotation.follow(&self.compositor.outputs());
         // What the displays service publishes follows what the compositor
         // shows: which ones there are, and which one the person works on.
         self.displays_service
-            .land(&self.shared.handle, &self.compositor.outputs());
+            .land(working, &self.compositor.outputs());
         // A display with neither a backlight nor DDC/CI keeps its brightness
         // control: the compositor darkens what it shows to it.
         self.displays_service.dim(&mut self.compositor)?;
@@ -1994,30 +1995,47 @@ impl Session {
         self.shared.open_clipboard_beside_caret();
     }
 
+    /// The display the person works on, as the compositor places it: the desk's focused display,
+    /// which a press on a display, a step of focus past a display's last window or a window opened
+    /// there moves. Every surface of the session that stands on one display stands on this one: the
+    /// full bar, the overview, the sheets, quick settings and the other overlays, and the lock's
+    /// prompt. `None` while the desk knows no such display (it spans one).
+    pub(crate) fn working_output(&self) -> Option<tilo_compositor::OutputInfo> {
+        let display = self.shared.handle.focused_display()?;
+        let monitor = self
+            .shared
+            .handle
+            .read(|tree| tree.outputs.monitor_of(display).map(str::to_owned))?;
+        self.compositor
+            .outputs()
+            .into_iter()
+            .filter(|output| output.enabled)
+            .find(|output| output.monitor == monitor)
+    }
+
     /// Place the surfaces over the desk on the displays as they are now: the
-    /// outputs' rectangles, and the one holding the pointer, which is the
-    /// display the person works on.
+    /// outputs' rectangles, and the one the person works on.
     pub(crate) fn follow_overlays(&self) {
+        let rect = |(x, y, w, h): (i32, i32, i32, i32)| {
+            ui::kurbo::Rect::new(
+                f64::from(x),
+                f64::from(y),
+                f64::from(x) + f64::from(w),
+                f64::from(y) + f64::from(h),
+            )
+        };
         let outputs: Vec<ui::kurbo::Rect> = self
             .compositor
             .outputs()
             .iter()
             .filter(|output| output.enabled)
             .filter_map(|output| output.rect)
-            .map(|(x, y, w, h)| {
-                ui::kurbo::Rect::new(
-                    f64::from(x),
-                    f64::from(y),
-                    f64::from(x) + f64::from(w),
-                    f64::from(y) + f64::from(h),
-                )
-            })
+            .map(rect)
             .collect();
-        let (x, y) = self.compositor.pointer_location();
-        let focused = outputs
-            .iter()
-            .copied()
-            .find(|output| output.contains(ui::kurbo::Point::new(x, y)));
+        let focused = self
+            .working_output()
+            .and_then(|output| output.rect)
+            .map(rect);
         self.shared.overlays.set_displays(&outputs, focused);
         // Where the person types, for the surfaces a key opens at the caret.
         self.shared

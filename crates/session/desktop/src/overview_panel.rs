@@ -218,6 +218,14 @@ impl Default for OverviewPanel {
 }
 
 impl OverviewPanel {
+    /// Stand in `rect` : the display the overview covers, under its bar.
+    pub fn stand_in(&mut self, rect: Rect) {
+        if rect != self.rect {
+            self.rect = rect;
+            self.bump();
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             open: false,
@@ -609,11 +617,7 @@ impl Widget for OverviewPanel {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = ui::widget::layout_rect(taffy, node, origin);
-        if rect != self.rect {
-            self.rect = rect;
-            self.bump();
-        }
+        self.stand_in(ui::widget::layout_rect(taffy, node, origin));
     }
 
     /// The overview fills its node and lays out its rows itself: there is never a size for the

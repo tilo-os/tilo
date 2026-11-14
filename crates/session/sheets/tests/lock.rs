@@ -191,6 +191,29 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase the_prompt_stands_on_the_display_the_person_works_on;
+    {
+        // Two displays side by side, the person working on the right one: the session names it
+        // first, and the clock, the face and the field stand there; the left shows the artwork.
+        let half = |x| tilo_sheets::lock::Screen {
+            x,
+            y: 0,
+            width: 640,
+            height: 800,
+        };
+        let (mut app, _seat, _asked) = locked(Shown {
+            screens: vec![half(640), half(0)],
+            ..screen()
+        });
+        for spoken in ["10:42", "Ada Lovelace", "Unlock"] {
+            let at = place(&mut app, spoken);
+            assert!(
+                at.x0 >= 640.0 && at.x1 <= 1280.0,
+                "{spoken} at {at:?} stands on the right display"
+            );
+        }
+    }
+
     phase nothing_tells_a_person_what_the_keyboard_already_does;
     {
         let (mut app, _seat, _asked) = locked(screen());

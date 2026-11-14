@@ -21,7 +21,7 @@ use ui::vello::kurbo::Rect;
 use crate::Session;
 
 /// A display's rectangle, in logical pixels: the display a sheet covers.
-pub(crate) type Place = (i32, i32, u32, u32);
+pub(crate) type Place = (i32, i32, i32, i32);
 
 /// What a sheet is to the session besides a card that is up or down: a sheet is one of these, never
 /// two.
@@ -230,10 +230,6 @@ fn covering(
             bottom.saturating_sub(top),
         ));
     }
-    let named = named.and_then(|(x, y, w, h)| {
-        let (w, h) = (i32::try_from(w).ok()?, i32::try_from(h).ok()?);
-        Some((x, y, w, h))
-    });
     named
         .filter(|place| outputs.iter().any(|output| output.rect == *place))
         .or_else(|| shown().min_by_key(|(x, y, _, _)| (*x, *y)))
@@ -448,35 +444,11 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 }
 
 impl Session {
-    /// Where every sheet goes: the display the person is working on, so a question appears in front
-    /// of what it is about and the power menu where they are looking. `None` while the desk knows
-    /// no such display (one display needs no telling apart), which leaves a sheet on the first
-    /// display there is.
-    fn sheet_place(&self) -> Option<Place> {
-        let display = self.shared.handle.focused_display()?;
-        let monitor = self
-            .shared
-            .handle
-            .read(|tree| tree.outputs.monitor_of(display).map(str::to_owned))?;
-        let (x, y, w, h) = self
-            .compositor
-            .outputs()
-            .into_iter()
-            .filter(|output| output.enabled)
-            .find(|output| output.monitor == monitor)
-            .and_then(|output| output.rect)?;
-        Some((
-            x,
-            y,
-            u32::try_from(w.max(1)).unwrap_or(1),
-            u32::try_from(h.max(1)).unwrap_or(1),
-        ))
-    }
-
-    /// Tell every sheet which display it covers: the one the person is working on, whenever the
-    /// desk names another.
+    /// Tell every sheet which display it covers: the one the person is working on, so a question
+    /// appears in front of what it is about and the power menu where they are looking. `None`
+    /// while the desk knows no such display (it spans one) leaves a sheet on the first display.
     pub(crate) fn place_sheets(&self) {
-        let place = self.sheet_place();
+        let place = self.working_output().and_then(|output| output.rect);
         for presentation in self.sheet_presentations() {
             presentation.place_at(place);
         }

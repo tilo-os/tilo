@@ -655,8 +655,8 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
 }
 
 /// A session on two displays, the second smaller than the first: the lock screen covers every one
-/// of them while the session is locked — the same screen on both, of whatever size they are — and a
-/// press on either of them reaches it. A password unlocks both.
+/// of them while the session is locked, its prompt on the display the person works on and its
+/// artwork alone on the other, and a press on either of them reaches it. A password unlocks both.
 #[test]
 fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
     const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
@@ -679,16 +679,16 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
         session.compositor().locked()
     });
     let locked = until_drawn(&mut session, &DISPLAYS, &desk);
-    // Every display shows the same screen, each scaled to the display it is on: the picture is the
-    // same on both, of whatever size they are.
+    // The prompt stands once, on the display in use (the first, as nothing moved focus off it);
+    // the other display shows the artwork without it.
     let shown = apart(&locked[0], &locked[1]);
     assert!(
-        shown < CLOSE,
-        "every display shows the lock screen, but their pictures differ by {shown:.0} of 255"
+        shown > CLOSE,
+        "the prompt stands on one display only, but both pictures are within {shown:.0} of 255"
     );
 
-    // A press on the display the lock screen has no surface of its own on brings up the screen's
-    // own keyboard: the screen is what the person touches, on whichever display they touch.
+    // A press on the display without the prompt brings up the screen's own keyboard by the
+    // prompt: the screen is what the person touches, on whichever display they touch.
     session
         .compositor()
         .input(InputEvent::PointerMotion {
@@ -710,11 +710,8 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
             pressed: false,
         })
         .expect("release");
-    let touched = until_drawn(&mut session, &DISPLAYS, &locked);
-    assert!(
-        apart(&touched[0], &touched[1]) < CLOSE,
-        "both displays show the screen the press raised"
-    );
+    // The keyboard comes up by the prompt, on the display in use.
+    until_drawn(&mut session, &DISPLAYS[..1], &locked[..1]);
 
     type_and_enter(&mut session, "sesame");
     pump(&mut session, &mut [], |session, _| {

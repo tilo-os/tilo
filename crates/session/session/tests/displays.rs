@@ -586,12 +586,7 @@ fn a_question_opens_on_the_display_of_the_window_in_focus() {
             "text": null,
         }),
     });
-    let right = (
-        WIDTH,
-        0,
-        u32::try_from(WIDTH).unwrap(),
-        u32::try_from(HEIGHT).unwrap(),
-    );
+    let right = (WIDTH, 0, WIDTH, HEIGHT);
     client.pump(&mut session, |session, _| {
         let presentation = session.portal().expect("portal sheet").presentation();
         presentation.place().is_some() && presentation.is_open()

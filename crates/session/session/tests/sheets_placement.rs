@@ -150,13 +150,8 @@ fn panel_centre(session: &mut Session) -> (i32, i32) {
 }
 
 /// The rectangle of the display `HEADLESS-2` , the right one of two.
-fn right() -> (i32, i32, u32, u32) {
-    (
-        WIDTH,
-        0,
-        u32::try_from(WIDTH).unwrap(),
-        u32::try_from(HEIGHT).unwrap(),
-    )
+fn right() -> (i32, i32, i32, i32) {
+    (WIDTH, 0, WIDTH, HEIGHT)
 }
 
 /// Where every sheet puts itself: on the display the person is working on.

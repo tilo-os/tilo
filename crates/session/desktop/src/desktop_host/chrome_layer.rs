@@ -638,20 +638,16 @@ impl DesktopChrome {
     /// The display the person is working on, while the desk spans several: where a card without a
     /// caret is centred.
     fn working_display(&self) -> Option<Rect> {
-        let tree = self.rules.tree();
-        let focused = tree.outputs.focused_display()?;
-        tree.outputs
-            .displays
-            .iter()
-            .find(|display| display.id == focused)
-            .map(|display| {
-                Rect::new(
-                    display.x,
-                    display.y,
-                    display.x + display.width,
-                    display.y + display.height,
-                )
-            })
+        tilo_desktop_surface::working_display(&self.rules.tree())
+    }
+
+    /// Where the overview stands while the desk spans several displays: on the one the person works
+    /// on, under its bar, never across the seam.
+    fn overview_area(&self) -> Option<Rect> {
+        self.working_display().map(|display| Rect {
+            y0: display.y0 + f64::from(TOPBAR_HEIGHT_PX),
+            ..display
+        })
     }
 
     /// Whether `event` is the pointer's, over the shown bar: it moves there, or presses there.
@@ -1108,6 +1104,9 @@ impl DesktopChrome {
         self.overview
             .set_new_workspace(self.rules.may_create_workspace().is_ok());
         if open {
+            if let Some(area) = self.overview_area() {
+                self.overview.stand_in(area);
+            }
             let desk = self.overview_desk();
             self.overview.open_on(true, desk);
         } else {
@@ -1938,12 +1937,7 @@ impl DesktopChrome {
                 .map(|display| {
                     (
                         display.monitor.clone(),
-                        Rect::new(
-                            display.x,
-                            display.y,
-                            display.x + display.width,
-                            display.y + display.height,
-                        ),
+                        tilo_desktop_surface::display_rect(display),
                     )
                 })
                 .collect();
@@ -2351,7 +2345,9 @@ impl Widget for DesktopChrome {
         };
         self.bar.apply_layout(taffy, *bar, inner);
         self.content = ui::widget::layout_rect(taffy, *content, inner);
-        self.overview.apply_layout(taffy, *overview, inner);
+        let under_bar = ui::widget::layout_rect(taffy, *overview, inner);
+        let area = self.overview_area().unwrap_or(under_bar);
+        self.overview.stand_in(area);
         self.about.apply_layout(taffy, *about, inner);
         self.workspace_menu
             .apply_layout(taffy, *workspace_menu, inner);

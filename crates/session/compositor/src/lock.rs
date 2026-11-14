@@ -5,7 +5,6 @@
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
-use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::backend::renderer::element::{Kind, RenderElementStates};
 use smithay::desktop::utils::{
@@ -19,21 +18,13 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
-use smithay::utils::{Logical, Point, SERIAL_COUNTER, Scale, Size};
+use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Scale, Size};
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
 
 use crate::render::OutputRenderElement;
 use crate::state::{ClientState, State};
-
-/// Where a logical point is on the lock screen: the surface it lands on, where the screen's own
-/// place starts, and where on the screen the point is.
-pub(crate) struct LockInput {
-    pub(crate) surface: WlSurface,
-    pub(crate) origin: Point<f64, Logical>,
-    pub(crate) at: Point<f64, Logical>,
-}
 
 pub(crate) struct Lock {
     manager: SessionLockManagerState,
@@ -211,9 +202,9 @@ impl State {
         }
     }
 
-    /// Make every lock screen the size of the display it is on: a display that changes size while
-    /// the lock is up (a session in a window, resized in the desktop it draws in) shows a screen
-    /// made for its new size, not the old one stretched onto it.
+    /// Make every lock screen the size of the rectangle all displays make: a display that changes
+    /// size while the lock is up (a session in a window, resized in the desktop it draws in) shows
+    /// a screen made for its new size, not the old one stretched onto it.
     pub(crate) fn fit_lock_surfaces(&self) {
         for (output, surface) in &self.lock.surfaces {
             let Some(size) = self.lock_screen_size(output) else {
@@ -228,12 +219,22 @@ impl State {
         }
     }
 
-    /// The size of `output` as the person sees it, in logical pixels: its place in the layout, else
-    /// its own mode before it is placed.
+    /// The rectangle every placed display makes together, in logical pixels: what the lock screen
+    /// covers. It is one screen across all of them, so each display shows its own part of it — the
+    /// prompt on the one the person works on, the artwork alone on the rest.
+    fn lock_bounds(&self) -> Option<Rectangle<i32, Logical>> {
+        self.space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output))
+            .reduce(|all, one| all.merge(one))
+    }
+
+    /// The size of the lock screen as the person sees it, in logical pixels: the rectangle every
+    /// display makes, else `output` 's own mode before any display is placed.
     #[allow(clippy::cast_sign_loss, reason = "output sizes are positive")]
     fn lock_screen_size(&self, output: &Output) -> Option<Size<u32, Logical>> {
-        let size = match self.space.output_geometry(output) {
-            Some(placed) => placed.size,
+        let size = match self.lock_bounds() {
+            Some(bounds) => bounds.size,
             None => output
                 .current_mode()?
                 .size
@@ -244,63 +245,35 @@ impl State {
         (size.w > 0 && size.h > 0).then(|| Size::from((size.w as u32, size.h as u32)))
     }
 
-    /// The lock screen an output shows, and how much of the screen fills it: the surface made for
-    /// that output, else the first one, stretched to the output's size. The lock is one screen —
-    /// the session drew it once and showed it on every display — so an output a lock surface was
-    /// not made for shows the whole screen, of whatever size it is, rather than the corner of one
-    /// made for a larger display.
-    fn lock_shown_on(&self, output: &Output) -> Option<(&LockSurface, Scale<f64>)> {
-        let size = self.space.output_geometry(output)?.size;
+    /// The lock screen an output shows, and where the screen's corner stands from the output's:
+    /// the surface made for that output, else the first one. The screen covers every display, so
+    /// each shows the part of it over that display.
+    fn lock_shown_on(&self, output: &Output) -> Option<(&LockSurface, Point<i32, Logical>)> {
+        let here = self.space.output_geometry(output)?.loc;
+        let bounds = self.lock_bounds()?.loc;
         let surface = self.lock_surfaces_on(output).into_iter().next()?;
-        let drawn = surface
-            .current_state()
-            .size
-            .filter(|drawn| drawn.w > 0 && drawn.h > 0);
-        let stretch = drawn.map_or_else(
-            || Scale::from(1.0),
-            |drawn| {
-                Scale::from((
-                    f64::from(size.w) / f64::from(drawn.w),
-                    f64::from(size.h) / f64::from(drawn.h),
-                ))
-            },
-        );
-        Some((surface, stretch))
+        Some((surface, bounds - here))
     }
 
-    /// The lock screen under a logical point, and where on it: the surface the point lands on,
-    /// where the screen's own place starts, and the point moved with the screen stretched onto the
-    /// display it is on, so a person pointing at the lock screen on any display points at the place
-    /// they see on it.
-    pub(crate) fn lock_surface_under(&self, point: Point<f64, Logical>) -> Option<LockInput> {
-        let (origin, here) = self.space.outputs().find_map(|output| {
-            let geometry = self.space.output_geometry(output)?;
-            geometry
-                .to_f64()
-                .contains(point)
-                .then(|| (geometry.loc.to_f64(), output))
+    /// The lock screen under a logical point, and where the screen's corner stands: a person
+    /// pointing at the lock screen on any display points at the place they see on it.
+    pub(crate) fn lock_surface_under(
+        &self,
+        point: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let here = self.space.outputs().find(|output| {
+            self.space
+                .output_geometry(output)
+                .is_some_and(|geometry| geometry.to_f64().contains(point))
         })?;
-        let (surface, stretch) = self.lock_shown_on(here)?;
-        let at = Point::from((
-            origin.x + (point.x - origin.x) * stretch.x,
-            origin.y + (point.y - origin.y) * stretch.y,
-        ));
-        Some(LockInput {
-            surface: surface.wl_surface().clone(),
-            origin,
-            at,
-        })
+        let surface = self.lock_surfaces_on(here).into_iter().next()?;
+        Some((
+            surface.wl_surface().clone(),
+            self.lock_bounds()?.loc.to_f64(),
+        ))
     }
 
-    /// Where on the lock screen a point on a display is, or the point itself when no lock screen is
-    /// up there.
-    pub(crate) fn lock_point(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
-        self.lock_surface_under(point)
-            .map_or(point, |under| under.at)
-    }
-
-    /// The elements an output shows while locked: its lock screen only, the whole of it, stretched
-    /// to fill the output when it was made for another.
+    /// The elements an output shows while locked: its part of the lock screen, and nothing else.
     pub(crate) fn lock_elements<R>(
         &self,
         renderer: &mut R,
@@ -311,33 +284,20 @@ impl State {
         R::TextureId: Clone + Send + 'static,
     {
         let scale = Scale::from(output.current_scale().fractional_scale());
-        let Some((surface, stretch)) = self.lock_shown_on(output) else {
+        let Some((surface, corner)) = self.lock_shown_on(output) else {
             return Vec::new();
         };
-        let elements: Vec<WaylandSurfaceRenderElement<R>> = render_elements_from_surface_tree(
+        render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<R>>(
             renderer,
             surface.wl_surface(),
-            (0, 0),
+            corner.to_physical_precise_round(scale),
             scale,
             1.0,
             Kind::Unspecified,
-        );
-        if stretch == Scale::from(1.0) {
-            return elements
-                .into_iter()
-                .map(OutputRenderElement::Surface)
-                .collect();
-        }
-        elements
-            .into_iter()
-            .map(|element| {
-                OutputRenderElement::ScaledSurface(RescaleRenderElement::from_element(
-                    element,
-                    Point::from((0, 0)),
-                    stretch,
-                ))
-            })
-            .collect()
+        )
+        .into_iter()
+        .map(OutputRenderElement::Surface)
+        .collect()
     }
 }
 

@@ -98,9 +98,7 @@ impl State {
             return;
         }
         let (focus, at) = if self.locked() {
-            self.lock_surface_under(at).map_or((None, at), |under| {
-                (Some((under.surface, under.origin)), under.at)
-            })
+            (self.lock_surface_under(at), at)
         } else {
             self.focus_on_press(at, serial);
             (
@@ -188,13 +186,6 @@ impl State {
                 (finger.focus.clone(), finger.pointer)
             })
             .unwrap_or_default();
-        // The lock screen covers the display, stretched to it: it reads the point where it drew
-        // what the finger is over.
-        let at = if self.locked() {
-            self.lock_point(at)
-        } else {
-            at
-        };
         if pointer {
             self.touch_pointer(focus, at, None, SERIAL_COUNTER.next_serial(), time);
             return;
@@ -249,11 +240,7 @@ impl State {
             .map(|index| self.touch.clients.remove(index));
         let at = lifted.as_ref().map_or(self.pointer, |finger| finger.at);
         if let Some(finger) = lifted.filter(|finger| finger.pointer) {
-            let at = if self.locked() {
-                self.lock_point(finger.at)
-            } else {
-                finger.at
-            };
+            let at = finger.at;
             self.touch_pointer(finger.focus, at, Some(ButtonState::Released), serial, time);
             self.x11_drag_motion(at);
             return;
@@ -297,11 +284,7 @@ impl State {
             .map_or(self.pointer, |finger| finger.at);
         for finger in std::mem::take(&mut self.touch.clients) {
             if finger.pointer {
-                let at = if self.locked() {
-                    self.lock_point(finger.at)
-                } else {
-                    finger.at
-                };
+                let at = finger.at;
                 self.touch_pointer(
                     finger.focus,
                     at,

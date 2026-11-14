@@ -814,12 +814,7 @@ impl Placement {
                 .iter()
                 .map(|display| BarPlace {
                     display: display.id,
-                    rect: Rect::new(
-                        display.x,
-                        display.y,
-                        display.x + display.width,
-                        display.y + display.height,
-                    ),
+                    rect: crate::display_rect(display),
                     full: Some(display.id) == in_use,
                 })
                 .collect(),

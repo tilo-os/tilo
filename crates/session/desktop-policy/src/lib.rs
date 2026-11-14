@@ -1451,14 +1451,9 @@ impl DesktopPolicy {
             .into_iter()
             .filter(|window| !shown.iter().any(|(id, _)| id == window))
             .collect();
-        let display = self.working_display().map_or(Rect::ZERO, |display| {
-            Rect::new(
-                display.x,
-                display.y,
-                display.x + display.width,
-                display.y + display.height,
-            )
-        });
+        let display = self
+            .working_display()
+            .map_or(Rect::ZERO, tilo_desktop_surface::display_rect);
         let mut floating = Vec::new();
         for &dialog in self.floating.keys() {
             // Up to the window the dialog (or the dialog it is a dialog of)

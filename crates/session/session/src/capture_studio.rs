@@ -1456,7 +1456,7 @@ fn windows(compositor: &Compositor, place: Option<Place>) -> Vec<CaptureTarget> 
 }
 
 /// A display's rectangle, as the sheet it carries is placed: its corner in the layout.
-type Place = (i32, i32, u32, u32);
+type Place = (i32, i32, i32, i32);
 
 /// `take`'s picture, for the worker that writes it: what an app is handed,
 /// in a file that stays out of the person's own folders.
@@ -1526,10 +1526,6 @@ fn regions(
     // what is captured is that display, never another one that happens to be listed first.
     let outputs = compositor.outputs();
     let covered = place
-        .and_then(|(x, y, w, h)| {
-            let (w, h) = (i32::try_from(w).ok()?, i32::try_from(h).ok()?);
-            Some((x, y, w, h))
-        })
         .and_then(|covered| outputs.iter().find(|output| output.rect == Some(covered)))
         .or_else(|| outputs.first())
         .ok_or("no display is on")?;

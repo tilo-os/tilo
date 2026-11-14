@@ -1253,7 +1253,7 @@ impl State {
             return;
         };
         self.pointer = Point::from((x, y));
-        let mut location = self.pointer;
+        let location = self.pointer;
         self.policy.pointer_moved(location.x, location.y);
         if self.drag_motion(location, serial, time) {
             return;
@@ -1285,14 +1285,7 @@ impl State {
                 // Clients lose the pointer while a hosted surface has it.
                 None
             }
-            PointerTarget::Clients if self.locked() => {
-                self.lock_surface_under(location).map(|under| {
-                    // The screen covers the display, stretched to it: it reads the point where it
-                    // drew what the person pointed at.
-                    location = under.at;
-                    (under.surface, under.origin)
-                })
-            }
+            PointerTarget::Clients if self.locked() => self.lock_surface_under(location),
             PointerTarget::Clients => self.pointer_surface_under(location),
         };
         let Some(pointer) = self.seat.get_pointer() else {

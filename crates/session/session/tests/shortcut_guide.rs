@@ -165,12 +165,7 @@ fn focus(session: &mut Session, index: usize) {
         .invoke(display.as_str(), "focus-display", &serde_json::Map::new())
         .unwrap_or_else(|error| panic!("{display:?} focus: {error:?}"));
     let left = i32::try_from(index).expect("a display") * WIDTH;
-    let place = (
-        left,
-        0,
-        u32::try_from(WIDTH).expect("a width"),
-        u32::try_from(HEIGHT).expect("a height"),
-    );
+    let place = (left, 0, WIDTH, HEIGHT);
     until(session, |session| {
         session
             .shortcut_guide()

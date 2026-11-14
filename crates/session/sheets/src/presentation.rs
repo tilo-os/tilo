@@ -47,7 +47,7 @@ struct Inner {
     by_keyboard: Cell<bool>,
     /// The rectangle the shell wants the sheet on, when it named one: the
     /// output the person is working on, say.
-    place: Cell<Option<(i32, i32, u32, u32)>>,
+    place: Cell<Option<(i32, i32, i32, i32)>>,
     /// The sheet stands on every display at once rather than on one: what
     /// it draws has to reach each of them.
     every_display: Cell<bool>,
@@ -160,7 +160,7 @@ impl Presentation {
 
     /// The shell puts the sheet at `place` (`None`: wherever it puts sheets
     /// of its own), in logical pixels.
-    pub fn place_at(&self, place: Option<(i32, i32, u32, u32)>) {
+    pub fn place_at(&self, place: Option<(i32, i32, i32, i32)>) {
         if self.0.place.get() == place {
             return;
         }
@@ -170,7 +170,7 @@ impl Presentation {
 
     /// Where the shell wants the sheet now: a rectangle of the display, or
     /// `None` for the sheet's own place.
-    pub fn place(&self) -> Option<(i32, i32, u32, u32)> {
+    pub fn place(&self) -> Option<(i32, i32, i32, i32)> {
         self.0.place.get()
     }
 

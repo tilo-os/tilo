@@ -52,6 +52,7 @@ mod close_button_tests;
 mod close_motion_tests;
 mod commands;
 mod displays;
+pub use displays::{display_rect, working_display};
 mod floating;
 mod floats;
 pub use floats::{AskedFloat, DockedCard};
@@ -2560,6 +2561,10 @@ impl DesktopSurface {
             .draw_child(scene, transform, text, theme, presence);
         self.hung_apps
             .draw_child(scene, transform, text, theme, presence);
+        // A confirmation is said on the display the person works on, not across the seam.
+        let working = displays::working_display(&self.shared.borrow().tree)
+            .map(|display| display + self.rect.origin().to_vec2());
+        self.acknowledgement.set_area(working);
         self.acknowledgement
             .draw_child(scene, transform, text, theme, presence);
     }

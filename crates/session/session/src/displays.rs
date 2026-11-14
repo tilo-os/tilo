@@ -29,7 +29,6 @@ use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_compositor::{Compositor, OutputChange, OutputInfo};
 
-use tilo_desktop_surface::DesktopHandle;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 
@@ -563,10 +562,10 @@ impl Displays {
         displays
     }
 
-    /// The compositor shows `outputs` now, and the person works on the display `handle` names: take
-    /// them in, and tell the brightness controls which displays are shown, so a monitor nothing is
-    /// shown on has no control.
-    pub fn land(&self, handle: &DesktopHandle, outputs: &[OutputInfo]) {
+    /// The compositor shows `outputs` now, and the person works on the one named `focused` (its
+    /// connector): take them in, and tell the brightness controls which displays are shown, so a
+    /// monitor nothing is shown on has no control.
+    pub fn land(&self, focused: Option<String>, outputs: &[OutputInfo]) {
         let shown: Vec<Shown> = outputs
             .iter()
             .filter(|output| output.enabled)
@@ -577,17 +576,6 @@ impl Displays {
                 colour: output.colour,
             })
             .collect();
-        let focused = handle
-            .focused_display()
-            .and_then(|display| {
-                handle.read(|tree| tree.outputs.monitor_of(display).map(str::to_owned))
-            })
-            .and_then(|monitor| {
-                shown
-                    .iter()
-                    .find(|shown| shown.monitor == monitor)
-                    .map(|shown| shown.connector.clone())
-            });
         let connectors: Vec<String> = shown.iter().map(|shown| shown.connector.clone()).collect();
         let mut inner = self.inner.borrow_mut();
         if inner.told != connectors {

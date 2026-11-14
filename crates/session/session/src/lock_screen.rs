@@ -192,6 +192,7 @@ impl crate::Session {
             (shown.person, shown.hue)
         };
         lock.show(tilo_sheets::lock::Shown {
+            screens: self.lock_screens(),
             clock: ui::clock::time_of_day(&ui::clock::local_now()),
             date: ui::format::day_heading(ui::clock::today(), false),
             person,
@@ -333,6 +334,20 @@ impl crate::Session {
         }
     }
 
+    /// The displays the lock stands on, in the lock screen's own coordinates (the corner of the
+    /// rectangle they all make): the one the person works on first, as it takes the prompt, then
+    /// the others in reading order, which show the artwork alone.
+    fn lock_screens(&self) -> Vec<tilo_sheets::lock::Screen> {
+        lock_screens(
+            self.compositor
+                .outputs()
+                .iter()
+                .filter(|output| output.enabled)
+                .filter_map(|output| output.rect),
+            self.working_output().and_then(|output| output.rect),
+        )
+    }
+
     /// What the device says about itself, as the lock screen shows it.
     pub(crate) fn lock_status(&self) -> tilo_sheets::lock::Status {
         let readings = self.shared.readings.borrow();
@@ -422,4 +437,30 @@ impl crate::Session {
             | LockEffect::Dissolved => {}
         }
     }
+}
+
+/// The displays at `outputs` as the lock screen stands on them, the corner of the rectangle they
+/// all make its origin: `working` first, then the rest in reading order. One display is the whole
+/// screen, said by no screen at all.
+fn lock_screens(
+    outputs: impl Iterator<Item = (i32, i32, i32, i32)>,
+    working: Option<(i32, i32, i32, i32)>,
+) -> Vec<tilo_sheets::lock::Screen> {
+    let mut outputs: Vec<(i32, i32, i32, i32)> =
+        outputs.filter(|(_, _, w, h)| *w > 0 && *h > 0).collect();
+    if outputs.len() < 2 {
+        return Vec::new();
+    }
+    let left = outputs.iter().map(|(x, ..)| *x).min().unwrap_or(0);
+    let top = outputs.iter().map(|(_, y, ..)| *y).min().unwrap_or(0);
+    outputs.sort_by_key(|output| (Some(*output) != working, output.1, output.0));
+    outputs
+        .into_iter()
+        .map(|(x, y, width, height)| tilo_sheets::lock::Screen {
+            x: x.saturating_sub(left),
+            y: y.saturating_sub(top),
+            width,
+            height,
+        })
+        .collect()
 }
