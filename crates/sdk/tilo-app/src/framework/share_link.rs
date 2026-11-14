@@ -541,95 +541,99 @@ mod tests {
         )
     }
 
-    #[test]
-    fn links_render_the_grammar_under_the_announced_entry() {
-        assert_eq!(
-            url(&serde_json::json!({})).unwrap(),
-            format!(
-                "https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-/chat.message:01JA"
-            )
-        );
-        assert_eq!(
-            url(&serde_json::json!({"start": 6, "end": 9, "mode": "desktop"})).unwrap(),
-            format!(
-                "https://tilo.so/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-/chat.message:01JA?chars=6-9"
-            )
-        );
-        assert!(
-            url(&serde_json::json!({"view": "thread"}))
-                .unwrap()
-                .ends_with("chat.message:01JA?view=thread")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_share_link_renders_the_address_or_is_refused_with_its_reason;
 
-    #[test]
-    fn a_view_read_from_the_desktop_is_linked_on_the_desktop() {
-        let mut desktop = request(&serde_json::json!({}));
-        desktop.views[0].desktop = true;
-        let link = |request: &ShareRequest| {
-            render(
-                &minting(request, &CHAT).unwrap(),
-                &page(Some("https://tilo.so/")),
-            )
-            .unwrap()
-        };
-        assert_eq!(
-            link(&desktop),
-            format!(
-                "https://tilo.so/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-/chat.message:01JA"
-            )
-        );
-        desktop.args = serde_json::json!({"mode": "app"})
-            .as_object()
-            .cloned()
-            .unwrap();
-        assert!(link(&desktop).starts_with("https://tilo.so/app/#/"));
-    }
-
-    #[test]
-    fn what_cannot_be_linked_is_refused_with_its_reason() {
-        assert!(url(&serde_json::json!({"view": "thread", "start": 1, "end": 2})).is_err());
-        assert!(url(&serde_json::json!({"start": 1})).is_err());
-        assert!(url(&serde_json::json!({"view": "nope"})).is_err());
-        let minting = minting(&request(&serde_json::json!({})), &CHAT).unwrap();
-        assert_eq!(render(&minting, &page(None)).unwrap_err(), NO_WEB_ENTRY);
-        let mut other = page(Some("https://tilo.so/"));
-        if let Some(locator) = other.locator.as_mut() {
-            locator.provider = "record:so.tilo.notes:".into();
+        phase links_render_the_grammar_under_the_announced_entry;
+        {
+            assert_eq!(
+                url(&serde_json::json!({})).unwrap(),
+                format!(
+                    "https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-/chat.message:01JA"
+                )
+            );
+            assert_eq!(
+                url(&serde_json::json!({"start": 6, "end": 9, "mode": "desktop"})).unwrap(),
+                format!(
+                    "https://tilo.so/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-/chat.message:01JA?chars=6-9"
+                )
+            );
+            assert!(
+                url(&serde_json::json!({"view": "thread"}))
+                    .unwrap()
+                    .ends_with("chat.message:01JA?view=thread")
+            );
         }
-        assert!(render(&minting, &other).is_err());
-    }
 
-    #[test]
-    fn a_link_to_the_root_names_the_record() {
-        let mut root = request(&serde_json::json!({}));
-        root.resource = "chat".into();
-        let minting = minting(&root, &CHAT).unwrap();
-        assert_eq!(
-            render(&minting, &page(Some("https://tilo.so/"))).unwrap(),
-            format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
-        );
-    }
+        phase a_view_read_from_the_desktop_is_linked_on_the_desktop;
+        {
+            let mut desktop = request(&serde_json::json!({}));
+            desktop.views[0].desktop = true;
+            let link = |request: &ShareRequest| {
+                render(
+                    &minting(request, &CHAT).unwrap(),
+                    &page(Some("https://tilo.so/")),
+                )
+                .unwrap()
+            };
+            assert_eq!(
+                link(&desktop),
+                format!(
+                    "https://tilo.so/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-/chat.message:01JA"
+                )
+            );
+            desktop.args = serde_json::json!({"mode": "app"})
+                .as_object()
+                .cloned()
+                .unwrap();
+            assert!(link(&desktop).starts_with("https://tilo.so/app/#/"));
+        }
 
-    /// A record's root that declares no view still links: to the record, which opens in its app.
-    #[test]
-    fn a_root_without_views_links_its_record() {
-        let mut root = request(&serde_json::json!({}));
-        root.resource = "chat".into();
-        root.views.clear();
-        let record =
-            |root: &ShareRequest| render(&minting(root, &CHAT)?, &page(Some("https://tilo.so/")));
-        assert_eq!(
-            record(&root).unwrap(),
-            format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
-        );
-        root.args.insert("mode".into(), "desktop".into());
-        assert_eq!(
-            record(&root).unwrap(),
-            format!("https://tilo.so/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
-        );
-        root.args.insert("view".into(), "message".into());
-        assert!(record(&root).is_err(), "a view it does not have is refused");
+        phase what_cannot_be_linked_is_refused_with_its_reason;
+        {
+            assert!(url(&serde_json::json!({"view": "thread", "start": 1, "end": 2})).is_err());
+            assert!(url(&serde_json::json!({"start": 1})).is_err());
+            assert!(url(&serde_json::json!({"view": "nope"})).is_err());
+            let minting = minting(&request(&serde_json::json!({})), &CHAT).unwrap();
+            assert_eq!(render(&minting, &page(None)).unwrap_err(), NO_WEB_ENTRY);
+            let mut other = page(Some("https://tilo.so/"));
+            if let Some(locator) = other.locator.as_mut() {
+                locator.provider = "record:so.tilo.notes:".into();
+            }
+            assert!(render(&minting, &other).is_err());
+        }
+
+        phase a_link_to_the_root_names_the_record;
+        {
+            let mut root = request(&serde_json::json!({}));
+            root.resource = "chat".into();
+            let minting = minting(&root, &CHAT).unwrap();
+            assert_eq!(
+                render(&minting, &page(Some("https://tilo.so/"))).unwrap(),
+                format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
+            );
+        }
+
+        phase a_root_without_views_links_its_record;
+        // A record's root that declares no view still links: to the record, which opens in its app.
+        {
+            let mut root = request(&serde_json::json!({}));
+            root.resource = "chat".into();
+            root.views.clear();
+            let record =
+                |root: &ShareRequest| render(&minting(root, &CHAT)?, &page(Some("https://tilo.so/")));
+            assert_eq!(
+                record(&root).unwrap(),
+                format!("https://tilo.so/app/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
+            );
+            root.args.insert("mode".into(), "desktop".into());
+            assert_eq!(
+                record(&root).unwrap(),
+                format!("https://tilo.so/#/@ada.tilo.cloud/w/{WORKSPACE}/so.tilo.chat/-")
+            );
+            root.args.insert("view".into(), "message".into());
+            assert!(record(&root).is_err(), "a view it does not have is refused");
+        }
     }
 
     /// A host answering with what the desk's `issue-invitation` answers.
@@ -648,82 +652,86 @@ mod tests {
         serde_json::to_vec(&request).unwrap()
     }
 
-    /// An app's invitation is the desk's: the same action the invite sheet drives, asked through
-    /// the broker with the part and the person it is for, and answered with the link it made.
-    #[test]
-    fn an_invitation_is_the_desks_and_answers_with_its_link() {
-        let host = desk(serde_json::json!({
-            "invite": "ab".repeat(32),
-            "link": "https://tilo.so/join#ab",
-            "role": "editor",
-            "expires_at_ns": 1,
-        }));
-        let _served = RemoteActions::enter(
-            host.clone(),
-            tilo_actions::remote::Caller::local_person("ada"),
-        );
-        let mut links = ShareLinks::default();
-        let minted = links
-            .start(
-                tilo_actions::InvocationId::new(),
-                &share_invite(&serde_json::json!({
-                    "role": "editor",
-                    "invitee_name": "Ada",
-                    "view": "message",
-                })),
-                &CHAT,
-                true,
-            )
-            .expect("the desk answers at once")
-            .expect("the invitation is made");
-        assert!(!minted.copied);
-        assert_eq!(
-            minted.output.value,
-            Some(serde_json::json!({"url": "https://tilo.so/join#ab"}))
-        );
-        let asked = host.asked();
-        assert_eq!(asked.len(), 1);
-        assert_eq!(asked[0].target.provider, session_actions::PROVIDER);
-        assert_eq!(
-            asked[0].target.address,
-            tilo_actions::ActionAddress::new(
-                session_actions::DESK_RESOURCE,
-                session_actions::ISSUE_INVITATION
-            )
-        );
-        assert_eq!(
-            asked[0].argument,
-            InvokeArgument::Json(
-                serde_json::json!({"role": "editor", "invitee_name": "Ada"})
-                    .as_object()
-                    .cloned()
-                    .expect("an object")
-            ),
-            "a view the resource links to is not the desk's to read"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_invitation_is_asked_of_the_desk_only_by_who_may_invite;
 
-    /// Someone the workspace's governance lets hand out no invitation hears a reason, and the
-    /// desk is never asked.
-    #[test]
-    fn a_person_who_may_not_invite_asks_the_desk_nothing() {
-        let host = desk(serde_json::json!({"link": "https://tilo.so/join#ab"}));
-        let _served = RemoteActions::enter(
-            host.clone(),
-            tilo_actions::remote::Caller::local_person("ada"),
-        );
-        let mut links = ShareLinks::default();
-        assert_eq!(
-            links
+        phase an_invitation_is_the_desks_and_answers_with_its_link;
+        // An app's invitation is the desk's: the same action the invite sheet drives, asked through
+        // the broker with the part and the person it is for, and answered with the link it made.
+        {
+            let host = desk(serde_json::json!({
+                "invite": "ab".repeat(32),
+                "link": "https://tilo.so/join#ab",
+                "role": "editor",
+                "expires_at_ns": 1,
+            }));
+            let _served = RemoteActions::enter(
+                host.clone(),
+                tilo_actions::remote::Caller::local_person("ada"),
+            );
+            let mut links = ShareLinks::default();
+            let minted = links
                 .start(
                     tilo_actions::InvocationId::new(),
-                    &share_invite(&serde_json::json!({"role": "editor"})),
+                    &share_invite(&serde_json::json!({
+                        "role": "editor",
+                        "invitee_name": "Ada",
+                        "view": "message",
+                    })),
                     &CHAT,
-                    false,
+                    true,
                 )
-                .err(),
-            Some("You may not invite people to this workspace".to_owned())
-        );
-        assert!(host.asked().is_empty());
+                .expect("the desk answers at once")
+                .expect("the invitation is made");
+            assert!(!minted.copied);
+            assert_eq!(
+                minted.output.value,
+                Some(serde_json::json!({"url": "https://tilo.so/join#ab"}))
+            );
+            let asked = host.asked();
+            assert_eq!(asked.len(), 1);
+            assert_eq!(asked[0].target.provider, session_actions::PROVIDER);
+            assert_eq!(
+                asked[0].target.address,
+                tilo_actions::ActionAddress::new(
+                    session_actions::DESK_RESOURCE,
+                    session_actions::ISSUE_INVITATION
+                )
+            );
+            assert_eq!(
+                asked[0].argument,
+                InvokeArgument::Json(
+                    serde_json::json!({"role": "editor", "invitee_name": "Ada"})
+                        .as_object()
+                        .cloned()
+                        .expect("an object")
+                ),
+                "a view the resource links to is not the desk's to read"
+            );
+        }
+
+        phase a_person_who_may_not_invite_asks_the_desk_nothing;
+        // Someone the workspace's governance lets hand out no invitation hears a reason, and the
+        // desk is never asked.
+        {
+            let host = desk(serde_json::json!({"link": "https://tilo.so/join#ab"}));
+            let _served = RemoteActions::enter(
+                host.clone(),
+                tilo_actions::remote::Caller::local_person("ada"),
+            );
+            let mut links = ShareLinks::default();
+            assert_eq!(
+                links
+                    .start(
+                        tilo_actions::InvocationId::new(),
+                        &share_invite(&serde_json::json!({"role": "editor"})),
+                        &CHAT,
+                        false,
+                    )
+                    .err(),
+                Some("You may not invite people to this workspace".to_owned())
+            );
+            assert!(host.asked().is_empty());
+        }
     }
 }

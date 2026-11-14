@@ -1158,24 +1158,59 @@ mod tests {
         assert_eq!(again.children().len(), 1, "the board has one item again");
     }
 
-    #[test]
-    fn an_edit_no_item_depends_on_shares_every_item() {
-        let mut app = TestApp::<BoardApp>::new().expect("the board opens");
-        for task in 0..50 {
-            call(
-                &mut app,
-                "add",
-                json!({ "title": format!("Task {task}"), "index": task }),
+    tilo_test_env::scenario! {
+        fn an_edit_publishes_again_only_what_it_changed;
+
+        phase an_edit_no_item_depends_on_shares_every_item;
+        {
+            let mut app = TestApp::<BoardApp>::new().expect("the board opens");
+            for task in 0..50 {
+                call(
+                    &mut app,
+                    "add",
+                    json!({ "title": format!("Task {task}"), "index": task }),
+                );
+            }
+            let before = kept_tree(&mut app);
+            call(&mut app, "draft", json!({ "title": "typed" }));
+            let after = kept_tree(&mut app);
+            assert_eq!(app.state().draft, "typed");
+            assert!(
+                before.ptr_eq(&after),
+                "a keystroke in the draft publishes nothing again"
             );
         }
-        let before = kept_tree(&mut app);
-        call(&mut app, "draft", json!({ "title": "typed" }));
-        let after = kept_tree(&mut app);
-        assert_eq!(app.state().draft, "typed");
-        assert!(
-            before.ptr_eq(&after),
-            "a keystroke in the draft publishes nothing again"
-        );
+
+        phase an_edit_no_derived_child_shows_publishes_nothing_again;
+        {
+            let mut app = tagged(&["red", "blue"]);
+            let (tree, head, revision) = tagged_tree(&mut app);
+            app.call("write", json!({ "text": "typed" }))
+                .expect("the draft is written");
+            let (now, head_now, moved) = tagged_tree(&mut app);
+            assert_ne!(moved, revision);
+            assert_eq!(app.state().draft, "typed");
+            assert!(std::rc::Rc::ptr_eq(&head_now, &head));
+            assert!(now.ptr_eq(&tree));
+        }
+
+        phase a_derived_child_that_changed_is_published_beside_those_that_did_not;
+        {
+            let mut app = tagged(&["red", "blue"]);
+            let (before, _, _) = tagged_tree(&mut app);
+            app.call("tag", json!({ "tag": "green" }))
+                .expect("the draft is tagged");
+            let (after, _, _) = tagged_tree(&mut app);
+            let labels: Vec<&str> = after
+                .children()
+                .iter()
+                .map(|child| child.head().label.as_str())
+                .collect();
+            assert_eq!(labels, ["red", "blue", "green"]);
+            for (was, now) in before.children().iter().zip(after.children().iter()) {
+                assert!(was.ptr_eq(now), "{} is published again", was.id());
+            }
+        }
     }
 
     /// The board with each task shown as a row offering its own view, as
@@ -1383,36 +1418,5 @@ mod tests {
                 .expect("the draft is tagged");
         }
         app
-    }
-
-    #[test]
-    fn an_edit_no_derived_child_shows_publishes_nothing_again() {
-        let mut app = tagged(&["red", "blue"]);
-        let (tree, head, revision) = tagged_tree(&mut app);
-        app.call("write", json!({ "text": "typed" }))
-            .expect("the draft is written");
-        let (now, head_now, moved) = tagged_tree(&mut app);
-        assert_ne!(moved, revision);
-        assert_eq!(app.state().draft, "typed");
-        assert!(std::rc::Rc::ptr_eq(&head_now, &head));
-        assert!(now.ptr_eq(&tree));
-    }
-
-    #[test]
-    fn a_derived_child_that_changed_is_published_beside_those_that_did_not() {
-        let mut app = tagged(&["red", "blue"]);
-        let (before, _, _) = tagged_tree(&mut app);
-        app.call("tag", json!({ "tag": "green" }))
-            .expect("the draft is tagged");
-        let (after, _, _) = tagged_tree(&mut app);
-        let labels: Vec<&str> = after
-            .children()
-            .iter()
-            .map(|child| child.head().label.as_str())
-            .collect();
-        assert_eq!(labels, ["red", "blue", "green"]);
-        for (was, now) in before.children().iter().zip(after.children().iter()) {
-            assert!(was.ptr_eq(now), "{} is published again", was.id());
-        }
     }
 }

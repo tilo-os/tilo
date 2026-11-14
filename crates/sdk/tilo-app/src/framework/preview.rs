@@ -527,9 +527,10 @@ mod tests {
         *replica = Replica::from_doc(doc);
     }
 
-    #[test]
-    fn past_versions_restore_by_record_shape_and_render_read_only() {
-        // phase: a_record_restores_a_past_version_field_by_field_and_item_by_item
+    tilo_test_env::scenario! {
+        fn past_versions_restore_by_record_shape_and_render_read_only;
+
+        phase a_record_restores_a_past_version_field_by_field_and_item_by_item;
         {
             let mut shelf = Replica::<Shelf>::new();
             shelf.apply(Shelf::RENAME.with("Reading")).unwrap();
@@ -562,7 +563,8 @@ mod tests {
                 ids
             );
         }
-        // phase: a_resource_without_a_record_shape_has_no_restore_schema
+
+        phase a_resource_without_a_record_shape_has_no_restore_schema;
         {
             struct Opaque;
             impl Resource for Opaque {
@@ -577,7 +579,8 @@ mod tests {
             assert!(restore_schema::<Opaque>().is_none());
             assert!(restore_schema::<Shelf>().is_some());
         }
-        // phase: a_past_version_renders_through_the_apps_own_view_read_only
+
+        phase a_past_version_renders_through_the_apps_own_view_read_only;
         {
             let mut page = Replica::<Page>::new();
             page.apply(Page::SET_HEADING.with("First draft")).unwrap();

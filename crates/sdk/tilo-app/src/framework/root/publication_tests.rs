@@ -279,145 +279,204 @@ fn the_published_tree_is_the_one_recorded_before_rows_were_indexed() {
     );
 }
 
-#[test]
-fn rows_bind_the_edits_views_offer_in_view_order() {
-    let mut app = shelf(3).expect("the shelf opens");
-    let resources = app.harness().resources();
-    let root = resources
-        .iter()
-        .find(|resource| resource.kind == Shelf::KIND)
-        .expect("the shelf is published");
-    let rows: Vec<(&str, Vec<(&str, &str)>)> = root
-        .children
-        .iter()
-        .map(|child| {
-            (
-                child.id.as_str(),
-                child
+tilo_test_env::scenario! {
+    fn the_publication_binds_rows_and_controls_in_one_walk;
+
+    phase rows_bind_the_edits_views_offer_in_view_order;
+    {
+        let mut app = shelf(3).expect("the shelf opens");
+        let resources = app.harness().resources();
+        let root = resources
+            .iter()
+            .find(|resource| resource.kind == Shelf::KIND)
+            .expect("the shelf is published");
+        let rows: Vec<(&str, Vec<(&str, &str)>)> = root
+            .children
+            .iter()
+            .map(|child| {
+                (
+                    child.id.as_str(),
+                    child
+                        .actions
+                        .iter()
+                        .map(|action| (action.id.as_str(), action.label.as_str()))
+                        .collect(),
+                )
+            })
+            .collect();
+        let even = vec![
+            ("take", "Take the item"),
+            ("label", "Label from the left"),
+            ("mark-left", "Mark left"),
+            ("mark-right", "Mark right"),
+        ];
+        let odd = vec![
+            ("take", "Take the item"),
+            ("mark-left", "Mark left"),
+            ("mark-right", "Mark right"),
+            ("label", "Label from the right"),
+        ];
+        let visitor = vec![
+            ("mark-left", "Mark left"),
+            ("mark-right", "Mark right"),
+            ("label", "Label from the right"),
+        ];
+        let guest = root
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == "shelf/visitor")
+            .and_then(|visitor| visitor.children.first())
+            .map(|guest| {
+                guest
                     .actions
                     .iter()
                     .map(|action| (action.id.as_str(), action.label.as_str()))
-                    .collect(),
-            )
-        })
-        .collect();
-    let even = vec![
-        ("take", "Take the item"),
-        ("label", "Label from the left"),
-        ("mark-left", "Mark left"),
-        ("mark-right", "Mark right"),
-    ];
-    let odd = vec![
-        ("take", "Take the item"),
-        ("mark-left", "Mark left"),
-        ("mark-right", "Mark right"),
-        ("label", "Label from the right"),
-    ];
-    let visitor = vec![
-        ("mark-left", "Mark left"),
-        ("mark-right", "Mark right"),
-        ("label", "Label from the right"),
-    ];
-    let guest = root
-        .children
-        .iter()
-        .find(|child| child.id.as_str() == "shelf/visitor")
-        .and_then(|visitor| visitor.children.first())
-        .map(|guest| {
-            guest
-                .actions
-                .iter()
-                .map(|action| (action.id.as_str(), action.label.as_str()))
-                .collect::<Vec<_>>()
-        });
-    assert_eq!(
-        guest,
-        Some(visitor.clone()),
-        "a nested row is bound as its parent is"
-    );
-    assert_eq!(
-        rows,
-        vec![
-            ("shelf/item:0", even.clone()),
-            ("shelf/item:1", odd.clone()),
-            ("shelf/item:2", even),
-            ("shelf/visitor", visitor),
-        ]
-    );
-}
-
-#[test]
-fn one_publication_walks_the_view_twice_whatever_the_rows() {
-    for items in [2, 40] {
-        let mut app = shelf(items).expect("the shelf opens");
-        let walks = app
-            .harness()
-            .with_widget_mut(|root: &mut ResourceRoot| {
-                WALKS.set(0);
-                let published = root.publication();
-                assert!(published.children.len() > usize::try_from(items).unwrap_or(0));
-                WALKS.get()
-            })
-            .expect("the root is the shelf's");
+                    .collect::<Vec<_>>()
+            });
         assert_eq!(
-            walks, 2,
-            "{items} rows: one walk for what views add, one for the edits they bind to rows"
+            guest,
+            Some(visitor.clone()),
+            "a nested row is bound as its parent is"
+        );
+        assert_eq!(
+            rows,
+            vec![
+                ("shelf/item:0", even.clone()),
+                ("shelf/item:1", odd.clone()),
+                ("shelf/item:2", even),
+                ("shelf/visitor", visitor),
+            ]
         );
     }
-}
 
-#[test]
-fn controls_bind_to_the_published_actions_without_its_children() {
-    let mut app = shelf(5).expect("the shelf opens");
-    app.harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            let published = root.publication();
-            let bound = root.binding_publication(&root.binding_head());
-            assert!(bound.children.is_empty(), "no child is built for bindings");
-            let head = without_children(&published);
-            // Bound controls look actions up by id: the same actions, in
-            // whatever order.
-            let surveyed = |resource| {
-                let mut actions = tilo_actions::door::survey(&[resource]);
-                actions.sort_by(|a, b| a.address.action.cmp(&b.address.action));
-                actions
-            };
+    phase one_publication_walks_the_view_twice_whatever_the_rows;
+    {
+        for items in [2, 40] {
+            let mut app = shelf(items).expect("the shelf opens");
+            let walks = app
+                .harness()
+                .with_widget_mut(|root: &mut ResourceRoot| {
+                    WALKS.set(0);
+                    let published = root.publication();
+                    assert!(published.children.len() > usize::try_from(items).unwrap_or(0));
+                    WALKS.get()
+                })
+                .expect("the root is the shelf's");
             assert_eq!(
-                surveyed(bound),
-                surveyed(head),
-                "bindings see exactly the published resource's actions"
+                walks, 2,
+                "{items} rows: one walk for what views add, one for the edits they bind to rows"
             );
-            WALKS.set(0);
-            let head = root.binding_head();
-            root.binding_publication(&head);
-            assert_eq!(WALKS.get(), 1, "bindings walk the view once");
-        })
-        .expect("the root is the shelf's");
+        }
+    }
+
+    phase controls_bind_to_the_published_actions_without_its_children;
+    {
+        let mut app = shelf(5).expect("the shelf opens");
+        app.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let published = root.publication();
+                let bound = root.binding_publication(&root.binding_head());
+                assert!(bound.children.is_empty(), "no child is built for bindings");
+                let head = without_children(&published);
+                // Bound controls look actions up by id: the same actions, in
+                // whatever order.
+                let surveyed = |resource| {
+                    let mut actions = tilo_actions::door::survey(&[resource]);
+                    actions.sort_by(|a, b| a.address.action.cmp(&b.address.action));
+                    actions
+                };
+                assert_eq!(
+                    surveyed(bound),
+                    surveyed(head),
+                    "bindings see exactly the published resource's actions"
+                );
+                WALKS.set(0);
+                let head = root.binding_head();
+                root.binding_publication(&head);
+                assert_eq!(WALKS.get(), 1, "bindings walk the view once");
+            })
+            .expect("the root is the shelf's");
+    }
+
+    phase the_shared_publication_with_live_rows_is_the_whole_one;
+    {
+        let mut app = shelf(3).expect("the shelf opens");
+        let doc = document(&app);
+        let root = app
+            .harness()
+            .widget_mut::<ResourceRoot>()
+            .expect("the root is the shelf's");
+        let whole = outline(&root.publication());
+        let shared = root
+            .shared_resources(None, &doc)
+            .expect("views with live rows and row edits publish a shared forest");
+        let published = shared.first().expect("the shelf").to_resource();
+        assert_eq!(
+            outline(&published),
+            whole,
+            "the shared forest carries every row, merged and bound, as the whole tree does"
+        );
+    }
+
+    phase rows_handed_out_again_publish_the_nodes_they_published;
+    {
+        let mut app = TestApp::<KeptShelfApp>::new().expect("the shelf opens");
+        app.call("grow", json!({ "by": 2 }))
+            .expect("the shelf grows");
+        let doc = document(&app);
+        let root = app
+            .harness()
+            .widget_mut::<ResourceRoot>()
+            .expect("the root is the shelf's");
+        let first = root.shared_resources(None, &doc).expect("a shared forest");
+        let second = root.shared_resources(None, &doc).expect("a shared forest");
+        let children = |forest: &[ui_core::published::SharedResource]| {
+            forest
+                .first()
+                .expect("the shelf")
+                .children()
+                .iter()
+                .map(|child| (child.id().to_owned(), child.clone()))
+                .collect::<Vec<_>>()
+        };
+        let (was, now) = (children(&first), children(&second));
+        assert_eq!(
+            was.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            ["shelf/item:0", "shelf/item:1", "shelf/visitor"],
+            "the row naming an item joins it; the other is appended"
+        );
+        // This shelf builds its document children afresh for each publication
+        // (it keeps no publication epoch), so a row joining one is joined
+        // again; a row of its own is the node it published last time.
+        let visitor = |children: &[(String, ui_core::published::SharedResource)]| {
+            children
+                .iter()
+                .find(|(id, _)| id == "shelf/visitor")
+                .map(|(_, child)| child.clone())
+                .expect("the visitor row")
+        };
+        assert!(
+            visitor(&was).ptr_eq(&visitor(&now)),
+            "nothing the row was made from moved, so it is the node published last time"
+        );
+        let joined = was
+            .first()
+            .map(|(_, child)| child.to_resource())
+            .expect("the first item");
+        assert!(
+            joined.presentation.is_none(),
+            "a row without a presentation lends none"
+        );
+        assert!(
+            joined.actions.iter().any(|action| action.id == "take"),
+            "the joined item keeps its own actions"
+        );
+    }
 }
 
 /// The shelf's document, as its record holds it now.
 fn document(app: &TestApp<impl ResourceApp>) -> AutoCommit {
     app.read_document(Clone::clone)
-}
-
-#[test]
-fn the_shared_publication_with_live_rows_is_the_whole_one() {
-    let mut app = shelf(3).expect("the shelf opens");
-    let doc = document(&app);
-    let root = app
-        .harness()
-        .widget_mut::<ResourceRoot>()
-        .expect("the root is the shelf's");
-    let whole = outline(&root.publication());
-    let shared = root
-        .shared_resources(None, &doc)
-        .expect("views with live rows and row edits publish a shared forest");
-    let published = shared.first().expect("the shelf").to_resource();
-    assert_eq!(
-        outline(&published),
-        whole,
-        "the shared forest carries every row, merged and bound, as the whole tree does"
-    );
 }
 
 /// A surface that keeps the rows it made, as one does while what they show
@@ -477,59 +536,4 @@ impl ResourceApp for KeptShelfApp {
             rect: Rect::ZERO,
         })
     }
-}
-
-#[test]
-fn rows_handed_out_again_publish_the_nodes_they_published() {
-    let mut app = TestApp::<KeptShelfApp>::new().expect("the shelf opens");
-    app.call("grow", json!({ "by": 2 }))
-        .expect("the shelf grows");
-    let doc = document(&app);
-    let root = app
-        .harness()
-        .widget_mut::<ResourceRoot>()
-        .expect("the root is the shelf's");
-    let first = root.shared_resources(None, &doc).expect("a shared forest");
-    let second = root.shared_resources(None, &doc).expect("a shared forest");
-    let children = |forest: &[ui_core::published::SharedResource]| {
-        forest
-            .first()
-            .expect("the shelf")
-            .children()
-            .iter()
-            .map(|child| (child.id().to_owned(), child.clone()))
-            .collect::<Vec<_>>()
-    };
-    let (was, now) = (children(&first), children(&second));
-    assert_eq!(
-        was.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
-        ["shelf/item:0", "shelf/item:1", "shelf/visitor"],
-        "the row naming an item joins it; the other is appended"
-    );
-    // This shelf builds its document children afresh for each publication
-    // (it keeps no publication epoch), so a row joining one is joined
-    // again; a row of its own is the node it published last time.
-    let visitor = |children: &[(String, ui_core::published::SharedResource)]| {
-        children
-            .iter()
-            .find(|(id, _)| id == "shelf/visitor")
-            .map(|(_, child)| child.clone())
-            .expect("the visitor row")
-    };
-    assert!(
-        visitor(&was).ptr_eq(&visitor(&now)),
-        "nothing the row was made from moved, so it is the node published last time"
-    );
-    let joined = was
-        .first()
-        .map(|(_, child)| child.to_resource())
-        .expect("the first item");
-    assert!(
-        joined.presentation.is_none(),
-        "a row without a presentation lends none"
-    );
-    assert!(
-        joined.actions.iter().any(|action| action.id == "take"),
-        "the joined item keeps its own actions"
-    );
 }

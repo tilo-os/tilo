@@ -37,98 +37,434 @@ fn attached(app: &TestApp<TallyApp>, permissions: PermissionContext) -> Attached
     .unwrap()
 }
 
-#[test]
-fn an_agent_acts_through_the_view_and_the_window_sees_it() {
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    app.invoke(Tally::RENAME.with("visitors")).unwrap();
-    let mut view = attached(&app, writer());
-    assert!(
-        view.take_changes().unwrap().is_none(),
-        "mounting writes nothing"
-    );
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn an_agent_acts_through_the_view_and_is_recorded_as_itself;
 
-    let bump = tilo_actions::ActionAddress::new("test.tally", "bump");
-    assert!(
-        view.operations()
-            .iter()
-            .any(|operation| operation.address == bump),
-        "the view offers what a person's window offers"
-    );
-    view.invoke(&bump, &serde_json::Map::new(), false).unwrap();
-    assert!(view.landed().is_some(), "the action ran in the view");
-    let changes = view
-        .take_changes()
-        .unwrap()
-        .expect("the agent's own change");
-    assert!(
-        view.take_changes().unwrap().is_none(),
-        "nothing is taken twice"
-    );
+    phase an_agent_acts_through_the_view_and_the_window_sees_it;
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        app.invoke(Tally::RENAME.with("visitors")).unwrap();
+        let mut view = attached(&app, writer());
+        assert!(
+            view.take_changes().unwrap().is_none(),
+            "mounting writes nothing"
+        );
 
-    assert!(
-        matches!(changes, DocumentMutation::Incremental(_)),
-        "an existing record answers with increments"
-    );
-    let (DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) = changes;
-    let mut peer = app.peer_document();
-    tilo_automerge::ApplyIncoming::load_incoming(&mut peer, &bytes).unwrap();
-    app.merge_peer(&mut peer).unwrap();
-    assert_eq!(app.state().count, 1);
-    let version = app.versions().into_iter().last().unwrap();
-    assert_eq!(version.context.unwrap().invoker.unwrap().actor, AGENT);
-}
+        let bump = tilo_actions::ActionAddress::new("test.tally", "bump");
+        assert!(
+            view.operations()
+                .iter()
+                .any(|operation| operation.address == bump),
+            "the view offers what a person's window offers"
+        );
+        view.invoke(&bump, &serde_json::Map::new(), false).unwrap();
+        assert!(view.landed().is_some(), "the action ran in the view");
+        let changes = view
+            .take_changes()
+            .unwrap()
+            .expect("the agent's own change");
+        assert!(
+            view.take_changes().unwrap().is_none(),
+            "nothing is taken twice"
+        );
 
-#[test]
-fn the_view_refuses_what_the_participant_may_not_do() {
-    let app = TestApp::<TallyApp>::new().unwrap();
-    let reader =
-        PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
-    let mut view = attached(&app, reader);
-    let bump = tilo_actions::ActionAddress::new("test.tally", "bump");
-    assert!(view.invoke(&bump, &serde_json::Map::new(), false).is_err());
-    assert!(view.take_changes().unwrap().is_none());
-}
+        assert!(
+            matches!(changes, DocumentMutation::Incremental(_)),
+            "an existing record answers with increments"
+        );
+        let (DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) = changes;
+        let mut peer = app.peer_document();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut peer, &bytes).unwrap();
+        app.merge_peer(&mut peer).unwrap();
+        assert_eq!(app.state().count, 1);
+        let version = app.versions().into_iter().last().unwrap();
+        assert_eq!(version.context.unwrap().invoker.unwrap().actor, AGENT);
+    }
 
-/// A host answers a write by what it collects of it: a change that could not
-/// be collected is a failure, never "nothing changed", and it is not lost.
-#[test]
-fn a_change_that_cannot_be_collected_fails_and_goes_with_the_next_call() {
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    let mut view = attached(&app, writer());
-    view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+    phase history_names_the_agent_its_app_and_the_run_it_acts_in;
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        app.invoke(Tally::RENAME.with("visitors")).unwrap();
+        let mut view = attached(&app, writer());
+        view.set_context(Some(tilo_actions::ActionContext::default().with_group(
+            "run-1",
+            "Count",
+            "agent-run",
+        )));
+        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        view.set_context(None);
+        assert_eq!(count(&view), 1);
 
-    let taken = view.while_records_busy(AttachedView::take_changes).unwrap();
-    let error = taken.expect_err("a change that could not be collected is not 'nothing changed'");
-    assert!(error.contains("could not be collected"), "{error}");
+        merge(&mut app, &mut view);
+        assert_eq!(app.state().count, 1);
+        let version = app.versions().into_iter().last().unwrap();
+        let context = version.context.unwrap();
+        let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
+            panic!("the agent's edit records its verb: {context:?}");
+        };
+        assert_eq!(verb.action.action, "bump");
+        assert_eq!(context.invoker.unwrap().actor, AGENT);
+        assert_eq!(context.app.unwrap().id, TallyApp::ID);
+        assert_eq!(context.group.unwrap().id, "run-1");
+    }
 
-    merge(&mut app, &mut view);
-    assert_eq!(app.state().count, 1, "the change goes with the next call");
-}
-
-/// A peer's change that arrives while this participant's own cannot be set
-/// aside is refused, leaving the record as it was: its own change still goes
-/// out, the peer's merges once asked again.
-#[test]
-fn a_peers_change_is_refused_while_own_changes_cannot_be_set_aside() {
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    let mut view = attached(&app, writer());
-    view.invoke_typed(&Tally::RENAME.with("ours"), false)
+    phase an_agent_acting_for_a_person_is_recorded_as_such;
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        let definition = definition::<TallyApp>();
+        let agent = tilo_actions::ActionInvoker::actor(AGENT)
+            .with_kind(tilo_actions::ActorKind::Agent)
+            .acting_for("ada");
+        let mut view = AttachedView::open_for(
+            definition,
+            TEST_WORKSPACE,
+            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            app.read_document(|doc| doc.clone().save()),
+            &agent,
+            writer(),
+            false,
+        )
         .unwrap();
-    app.invoke(Tally::BUMP.invoke()).unwrap();
-    let theirs = DocumentMutation::Snapshot(app.read_document(|doc| doc.clone().save()));
+        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        merge(&mut app, &mut view);
+        let invoker = app
+            .versions()
+            .into_iter()
+            .last()
+            .and_then(|version| version.context)
+            .and_then(|context| context.invoker)
+            .unwrap();
+        assert_eq!(invoker, agent, "the agent, for the person who asked");
+    }
 
-    let merged = view.while_records_busy(|view| view.merge(&theirs)).unwrap();
-    assert!(merged.is_err(), "the peer's change waits");
-    assert_eq!(count(&view), 0, "nothing of the peer's was merged");
+    phase several_typed_edits_apply_as_one_step;
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        let mut view = attached(&app, writer());
+        let before = app.versions().len();
+        view.invoke_typed(
+            &Invoke::group([Tally::RENAME.with("guests"), Tally::RENAME.with("members")]),
+            false,
+        )
+        .unwrap();
+        merge(&mut app, &mut view);
+        assert_eq!(app.state().name, "members");
+        assert_eq!(app.versions().len(), before + 1, "a group is one version");
+    }
 
-    assert!(view.merge(&theirs).unwrap(), "merged once asked again");
-    assert_eq!(count(&view), 1);
-    merge(&mut app, &mut view);
-    assert_eq!(
-        app.state().name,
-        "ours",
-        "the participant's own change still goes"
-    );
+    phase a_run_is_recorded_in_the_coordinating_record_by_the_agent;
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        let mut view = attached(&app, writer());
+        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        let last = view
+            .read(|doc| tilo_resource::history::versions(&mut doc.clone()))
+            .unwrap()
+            .into_iter()
+            .last()
+            .unwrap();
+        let end = tilo_app::history_source::entry_id_from_hash(&last.hash.to_string());
+        let steps = [tilo_app::RunStep {
+            app: TallyApp::ID.into(),
+            record: String::new(),
+            run: tilo_app::ChangeRun::single(end),
+            what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(TallyApp::ID, "document", "bump"),
+                [],
+            ))],
+        }];
+        assert!(view.record_run("Count", None, None, &steps));
+        assert!(!view.record_run("Nothing", None, None, &[]));
+
+        merge(&mut app, &mut view);
+        let runs = app.read_document(tilo_app::read_runs);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs.first().unwrap().label, "Count");
+    }
+}
+
+tilo_test_env::scenario! {
+    fn the_attached_view_refuses_what_its_participant_may_not_do;
+
+    phase the_view_refuses_what_the_participant_may_not_do;
+    {
+        let app = TestApp::<TallyApp>::new().unwrap();
+        let reader =
+            PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
+        let mut view = attached(&app, reader);
+        let bump = tilo_actions::ActionAddress::new("test.tally", "bump");
+        assert!(view.invoke(&bump, &serde_json::Map::new(), false).is_err());
+        assert!(view.take_changes().unwrap().is_none());
+    }
+
+    phase a_reader_is_offered_no_edit;
+    {
+        let app = TestApp::<TallyApp>::new().unwrap();
+        let reader =
+            PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
+        let mut view = attached(&app, reader);
+        assert!(view.operations().is_empty());
+        assert!(matches!(
+            view.invoke_typed(&Tally::BUMP.invoke(), false),
+            Err(tilo_actions::door::DoorError::Unknown(_))
+        ));
+        assert_eq!(count(&view), 0);
+    }
+
+    phase a_grant_of_one_action_reaches_that_action_only;
+    {
+        use tilo_app::permissions::policy::Level;
+        let app = TestApp::<TallyApp>::new().unwrap();
+        let only_bump = PermissionContext::agent_granted(
+            AGENT,
+            &TreePath::root()
+                .app(TallyApp::ID)
+                .any(Level::Kind)
+                .resource("test.tally")
+                .action("bump"),
+            KindSet::READ_UNDOABLE,
+        );
+        let mut view = attached(&app, only_bump);
+        let actions: Vec<String> = view
+            .operations()
+            .into_iter()
+            .map(|operation| operation.address.action)
+            .collect();
+        assert_eq!(actions, ["bump"]);
+        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        assert_eq!(count(&view), 1);
+        assert!(
+            view.invoke_typed(&Tally::RENAME.with("guests"), false)
+                .is_err()
+        );
+        assert_eq!(count(&view), 1);
+    }
+
+    phase a_view_that_writes_as_it_opens_a_joined_record_is_refused;
+    // Only a record's creator writes its initial content: a view that writes
+    // as it opens a record its participant joined is refused, naming the app,
+    // instead of keeping a change no peer would ever be sent.
+    {
+        let app = TestApp::<BenchApp>::new().unwrap();
+        let definition = definition::<BenchApp>();
+        let open = |created| {
+            AttachedView::open(
+                definition,
+                TEST_WORKSPACE,
+                RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+                app.read_document(|doc| doc.clone().save()),
+                AGENT,
+                PermissionContext::permissive(),
+                created,
+            )
+        };
+        let Err(refusal) = open(false) else {
+            panic!("a joined bench opened although its view sat the agent down");
+        };
+        assert!(refusal.contains(BenchApp::ID), "{refusal}");
+        assert!(refusal.contains("`sit`"), "{refusal}");
+        assert!(refusal.contains("joined"), "{refusal}");
+
+        // The record's creator writes what it starts with.
+        assert!(open(true).is_ok());
+
+        // A view that writes nothing on open joins as before.
+        let tally = TestApp::<TallyApp>::new().unwrap();
+        assert!(attached(&tally, writer()).take_changes().unwrap().is_none());
+    }
+}
+
+tilo_test_env::scenario! {
+    fn an_attached_host_collects_only_its_own_landed_changes;
+
+    phase a_change_that_cannot_be_collected_fails_and_goes_with_the_next_call;
+    // A host answers a write by what it collects of it: a change that could not
+    // be collected is a failure, never "nothing changed", and it is not lost.
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        let mut view = attached(&app, writer());
+        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+
+        let taken = view.while_records_busy(AttachedView::take_changes).unwrap();
+        let error = taken.expect_err("a change that could not be collected is not 'nothing changed'");
+        assert!(error.contains("could not be collected"), "{error}");
+
+        merge(&mut app, &mut view);
+        assert_eq!(app.state().count, 1, "the change goes with the next call");
+    }
+
+    phase a_peers_change_is_refused_while_own_changes_cannot_be_set_aside;
+    // A peer's change that arrives while this participant's own cannot be set
+    // aside is refused, leaving the record as it was: its own change still goes
+    // out, the peer's merges once asked again.
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        let mut view = attached(&app, writer());
+        view.invoke_typed(&Tally::RENAME.with("ours"), false)
+            .unwrap();
+        app.invoke(Tally::BUMP.invoke()).unwrap();
+        let theirs = DocumentMutation::Snapshot(app.read_document(|doc| doc.clone().save()));
+
+        let merged = view.while_records_busy(|view| view.merge(&theirs)).unwrap();
+        assert!(merged.is_err(), "the peer's change waits");
+        assert_eq!(count(&view), 0, "nothing of the peer's was merged");
+
+        assert!(view.merge(&theirs).unwrap(), "merged once asked again");
+        assert_eq!(count(&view), 1);
+        merge(&mut app, &mut view);
+        assert_eq!(
+            app.state().name,
+            "ours",
+            "the participant's own change still goes"
+        );
+    }
+
+    phase changes_of_another_record_are_left_alone;
+    {
+        use tilo_app::automerge::transaction::Transactable as _;
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        let mut view = attached(&app, writer());
+        let mut other = tilo_resource::Doc::new();
+        other
+            .put(tilo_app::automerge::ROOT, "name", "elsewhere")
+            .unwrap();
+        other.commit();
+        let first = other.get_heads();
+        other
+            .put(tilo_app::automerge::ROOT, "count", 9_i64)
+            .unwrap();
+        other.commit();
+        let unrelated = other.save_after(&first);
+        assert!(
+            !view
+                .merge(&DocumentMutation::Incremental(unrelated))
+                .unwrap()
+        );
+        assert_eq!(count(&view), 0);
+
+        app.invoke(Tally::BUMP.invoke()).unwrap();
+        let ours = app.read_document(|doc| doc.clone().save());
+        assert!(view.merge(&DocumentMutation::Snapshot(ours)).unwrap());
+        assert_eq!(count(&view), 1);
+    }
+
+    phase an_action_answers_once_the_work_it_caused_has_landed;
+    // An action answers once the work it caused in the app has landed: the
+    // reply a worker owed the view is taken up and its change made before the
+    // action answers, so the change is the action's, never the next one's.
+    {
+        let app = TestApp::<LedgerApp>::new().unwrap();
+        let definition = definition::<LedgerApp>();
+        let mut view = AttachedView::open(
+            definition,
+            TEST_WORKSPACE,
+            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+            app.read_document(|doc| doc.clone().save()),
+            AGENT,
+            PermissionContext::permissive(),
+            false,
+        )
+        .unwrap();
+        let answer = |view: &AttachedView| {
+            view.read(|doc| {
+                <Ledger as tilo_resource::Resource>::read(doc)
+                    .unwrap()
+                    .answer
+            })
+            .unwrap()
+        };
+        for entry in ["lamps", "chairs"] {
+            view.invoke_typed(&Ledger::ASK.with(entry), false).unwrap();
+            assert_eq!(answer(&view), format!("{entry}: found"));
+            let changed = view.take_changes().unwrap();
+            assert!(changed.is_some(), "the ask and its answer leave together");
+            assert!(view.take_changes().unwrap().is_none());
+        }
+        let did: Vec<String> = view
+            .read(|doc| tilo_resource::history::versions(&mut doc.clone()))
+            .unwrap()
+            .into_iter()
+            .filter_map(|version| match version.context?.what? {
+                tilo_actions::Did::Verb(verb) => Some(verb.action.action),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(did, ["ask", "answer", "ask", "answer"]);
+    }
+
+    phase two_pages_of_one_profile_write_one_record_without_sharing_a_sequence;
+    // Two pages of one profile open one record: each is a writer of its own, so
+    // their changes never share a writer's sequence. Two changes under one
+    // writer and sequence cannot both be kept — the record holds the one that
+    // reached it first and builds on it alone — so a record two pages wrote has
+    // to merge from both, with every change its own.
+    {
+        let app = TestApp::<TallyApp>::new().unwrap();
+        let saved = app.read_document(|doc| doc.clone().save());
+        let definition = definition::<TallyApp>();
+        let open = || {
+            AttachedView::open(
+                definition,
+                TEST_WORKSPACE,
+                RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
+                saved.clone(),
+                AGENT,
+                writer(),
+                false,
+            )
+            .unwrap()
+        };
+        let mut first = open();
+        let mut second = open();
+        let mut written = Vec::new();
+        for (page, name) in [
+            (&mut first, "from the first page"),
+            (&mut second, "from the second page"),
+        ] {
+            page.invoke_typed(&Tally::RENAME.with(name), false).unwrap();
+            let Some(DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) =
+                page.take_changes().unwrap()
+            else {
+                panic!("a page that wrote takes its change");
+            };
+            written.push(bytes);
+        }
+        // What the workspace does with what both pages sent: one history.
+        let mut record = tilo_app::automerge::AutoCommit::load(&saved).unwrap();
+        for bytes in &written {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut record, bytes).unwrap();
+        }
+        let changes = record.get_changes(&[]);
+        let writers: std::collections::HashSet<_> = changes
+            .iter()
+            .map(|change| (change.actor_id().to_bytes(), change.seq()))
+            .collect();
+        assert_eq!(
+            writers.len(),
+            changes.len(),
+            "one change per writer and sequence, whichever page wrote it"
+        );
+        assert_eq!(
+            changes.len(),
+            3,
+            "the record's genesis and both pages' changes are in it"
+        );
+        // Both writes are in what the workspace keeps: neither page's change is
+        // the one a record holding two of a sequence leaves out.
+        let name = <Tally as tilo_resource::Resource>::read(&record)
+            .unwrap()
+            .name;
+        for written in ["from the first page", "from the second page"] {
+            assert!(
+                name.contains(written),
+                "both pages' writes are in the record: {name:?}"
+            );
+        }
+    }
 }
 
 /// What the view did and has not sent yet, merged into the person's window.
@@ -146,179 +482,6 @@ fn merge(app: &mut TestApp<TallyApp>, view: &mut AttachedView) {
 fn count(view: &AttachedView) -> i64 {
     view.read(|doc| <Tally as tilo_resource::Resource>::read(doc).unwrap().count)
         .unwrap()
-}
-
-#[test]
-fn history_names_the_agent_its_app_and_the_run_it_acts_in() {
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    app.invoke(Tally::RENAME.with("visitors")).unwrap();
-    let mut view = attached(&app, writer());
-    view.set_context(Some(tilo_actions::ActionContext::default().with_group(
-        "run-1",
-        "Count",
-        "agent-run",
-    )));
-    view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
-    view.set_context(None);
-    assert_eq!(count(&view), 1);
-
-    merge(&mut app, &mut view);
-    assert_eq!(app.state().count, 1);
-    let version = app.versions().into_iter().last().unwrap();
-    let context = version.context.unwrap();
-    let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
-        panic!("the agent's edit records its verb: {context:?}");
-    };
-    assert_eq!(verb.action.action, "bump");
-    assert_eq!(context.invoker.unwrap().actor, AGENT);
-    assert_eq!(context.app.unwrap().id, TallyApp::ID);
-    assert_eq!(context.group.unwrap().id, "run-1");
-}
-
-#[test]
-fn an_agent_acting_for_a_person_is_recorded_as_such() {
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    let definition = definition::<TallyApp>();
-    let agent = tilo_actions::ActionInvoker::actor(AGENT)
-        .with_kind(tilo_actions::ActorKind::Agent)
-        .acting_for("ada");
-    let mut view = AttachedView::open_for(
-        definition,
-        TEST_WORKSPACE,
-        RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
-        app.read_document(|doc| doc.clone().save()),
-        &agent,
-        writer(),
-        false,
-    )
-    .unwrap();
-    view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
-    merge(&mut app, &mut view);
-    let invoker = app
-        .versions()
-        .into_iter()
-        .last()
-        .and_then(|version| version.context)
-        .and_then(|context| context.invoker)
-        .unwrap();
-    assert_eq!(invoker, agent, "the agent, for the person who asked");
-}
-
-#[test]
-fn several_typed_edits_apply_as_one_step() {
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    let mut view = attached(&app, writer());
-    let before = app.versions().len();
-    view.invoke_typed(
-        &Invoke::group([Tally::RENAME.with("guests"), Tally::RENAME.with("members")]),
-        false,
-    )
-    .unwrap();
-    merge(&mut app, &mut view);
-    assert_eq!(app.state().name, "members");
-    assert_eq!(app.versions().len(), before + 1, "a group is one version");
-}
-
-#[test]
-fn a_reader_is_offered_no_edit() {
-    let app = TestApp::<TallyApp>::new().unwrap();
-    let reader =
-        PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
-    let mut view = attached(&app, reader);
-    assert!(view.operations().is_empty());
-    assert!(matches!(
-        view.invoke_typed(&Tally::BUMP.invoke(), false),
-        Err(tilo_actions::door::DoorError::Unknown(_))
-    ));
-    assert_eq!(count(&view), 0);
-}
-
-#[test]
-fn changes_of_another_record_are_left_alone() {
-    use tilo_app::automerge::transaction::Transactable as _;
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    let mut view = attached(&app, writer());
-    let mut other = tilo_resource::Doc::new();
-    other
-        .put(tilo_app::automerge::ROOT, "name", "elsewhere")
-        .unwrap();
-    other.commit();
-    let first = other.get_heads();
-    other
-        .put(tilo_app::automerge::ROOT, "count", 9_i64)
-        .unwrap();
-    other.commit();
-    let unrelated = other.save_after(&first);
-    assert!(
-        !view
-            .merge(&DocumentMutation::Incremental(unrelated))
-            .unwrap()
-    );
-    assert_eq!(count(&view), 0);
-
-    app.invoke(Tally::BUMP.invoke()).unwrap();
-    let ours = app.read_document(|doc| doc.clone().save());
-    assert!(view.merge(&DocumentMutation::Snapshot(ours)).unwrap());
-    assert_eq!(count(&view), 1);
-}
-
-#[test]
-fn a_run_is_recorded_in_the_coordinating_record_by_the_agent() {
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    let mut view = attached(&app, writer());
-    view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
-    let last = view
-        .read(|doc| tilo_resource::history::versions(&mut doc.clone()))
-        .unwrap()
-        .into_iter()
-        .last()
-        .unwrap();
-    let end = tilo_app::history_source::entry_id_from_hash(&last.hash.to_string());
-    let steps = [tilo_app::RunStep {
-        app: TallyApp::ID.into(),
-        record: String::new(),
-        run: tilo_app::ChangeRun::single(end),
-        what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
-            tilo_actions::ActionKey::new(TallyApp::ID, "document", "bump"),
-            [],
-        ))],
-    }];
-    assert!(view.record_run("Count", None, None, &steps));
-    assert!(!view.record_run("Nothing", None, None, &[]));
-
-    merge(&mut app, &mut view);
-    let runs = app.read_document(tilo_app::read_runs);
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs.first().unwrap().label, "Count");
-}
-
-#[test]
-fn a_grant_of_one_action_reaches_that_action_only() {
-    use tilo_app::permissions::policy::Level;
-    let app = TestApp::<TallyApp>::new().unwrap();
-    let only_bump = PermissionContext::agent_granted(
-        AGENT,
-        &TreePath::root()
-            .app(TallyApp::ID)
-            .any(Level::Kind)
-            .resource("test.tally")
-            .action("bump"),
-        KindSet::READ_UNDOABLE,
-    );
-    let mut view = attached(&app, only_bump);
-    let actions: Vec<String> = view
-        .operations()
-        .into_iter()
-        .map(|operation| operation.address.action)
-        .collect();
-    assert_eq!(actions, ["bump"]);
-    view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
-    assert_eq!(count(&view), 1);
-    assert!(
-        view.invoke_typed(&Tally::RENAME.with("guests"), false)
-            .is_err()
-    );
-    assert_eq!(count(&view), 1);
 }
 
 /// A bench whose view sits whoever opens it down: the mistake the attached
@@ -356,39 +519,6 @@ impl ResourceApp for BenchApp {
     fn label(_: &Bench) -> String {
         "Bench".into()
     }
-}
-
-/// Only a record's creator writes its initial content: a view that writes
-/// as it opens a record its participant joined is refused, naming the app,
-/// instead of keeping a change no peer would ever be sent.
-#[test]
-fn a_view_that_writes_as_it_opens_a_joined_record_is_refused() {
-    let app = TestApp::<BenchApp>::new().unwrap();
-    let definition = definition::<BenchApp>();
-    let open = |created| {
-        AttachedView::open(
-            definition,
-            TEST_WORKSPACE,
-            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
-            app.read_document(|doc| doc.clone().save()),
-            AGENT,
-            PermissionContext::permissive(),
-            created,
-        )
-    };
-    let Err(refusal) = open(false) else {
-        panic!("a joined bench opened although its view sat the agent down");
-    };
-    assert!(refusal.contains(BenchApp::ID), "{refusal}");
-    assert!(refusal.contains("`sit`"), "{refusal}");
-    assert!(refusal.contains("joined"), "{refusal}");
-
-    // The record's creator writes what it starts with.
-    assert!(open(true).is_ok());
-
-    // A view that writes nothing on open joins as before.
-    let tally = TestApp::<TallyApp>::new().unwrap();
-    assert!(attached(&tally, writer()).take_changes().unwrap().is_none());
 }
 
 /// A ledger whose view looks up what is asked for off the UI thread, as a
@@ -502,119 +632,5 @@ impl ResourceApp for LedgerApp {
 
     fn label(_: &Ledger) -> String {
         "Ledger".into()
-    }
-}
-
-/// An action answers once the work it caused in the app has landed: the
-/// reply a worker owed the view is taken up and its change made before the
-/// action answers, so the change is the action's, never the next one's.
-#[test]
-fn an_action_answers_once_the_work_it_caused_has_landed() {
-    let app = TestApp::<LedgerApp>::new().unwrap();
-    let definition = definition::<LedgerApp>();
-    let mut view = AttachedView::open(
-        definition,
-        TEST_WORKSPACE,
-        RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
-        app.read_document(|doc| doc.clone().save()),
-        AGENT,
-        PermissionContext::permissive(),
-        false,
-    )
-    .unwrap();
-    let answer = |view: &AttachedView| {
-        view.read(|doc| {
-            <Ledger as tilo_resource::Resource>::read(doc)
-                .unwrap()
-                .answer
-        })
-        .unwrap()
-    };
-    for entry in ["lamps", "chairs"] {
-        view.invoke_typed(&Ledger::ASK.with(entry), false).unwrap();
-        assert_eq!(answer(&view), format!("{entry}: found"));
-        let changed = view.take_changes().unwrap();
-        assert!(changed.is_some(), "the ask and its answer leave together");
-        assert!(view.take_changes().unwrap().is_none());
-    }
-    let did: Vec<String> = view
-        .read(|doc| tilo_resource::history::versions(&mut doc.clone()))
-        .unwrap()
-        .into_iter()
-        .filter_map(|version| match version.context?.what? {
-            tilo_actions::Did::Verb(verb) => Some(verb.action.action),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(did, ["ask", "answer", "ask", "answer"]);
-}
-
-/// Two pages of one profile open one record: each is a writer of its own, so
-/// their changes never share a writer's sequence. Two changes under one
-/// writer and sequence cannot both be kept — the record holds the one that
-/// reached it first and builds on it alone — so a record two pages wrote has
-/// to merge from both, with every change its own.
-#[test]
-fn two_pages_of_one_profile_write_one_record_without_sharing_a_sequence() {
-    let app = TestApp::<TallyApp>::new().unwrap();
-    let saved = app.read_document(|doc| doc.clone().save());
-    let definition = definition::<TallyApp>();
-    let open = || {
-        AttachedView::open(
-            definition,
-            TEST_WORKSPACE,
-            RecordCheckout::new(app.record().clone(), definition.record_kind.clone()),
-            saved.clone(),
-            AGENT,
-            writer(),
-            false,
-        )
-        .unwrap()
-    };
-    let mut first = open();
-    let mut second = open();
-    let mut written = Vec::new();
-    for (page, name) in [
-        (&mut first, "from the first page"),
-        (&mut second, "from the second page"),
-    ] {
-        page.invoke_typed(&Tally::RENAME.with(name), false).unwrap();
-        let Some(DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) =
-            page.take_changes().unwrap()
-        else {
-            panic!("a page that wrote takes its change");
-        };
-        written.push(bytes);
-    }
-    // What the workspace does with what both pages sent: one history.
-    let mut record = tilo_app::automerge::AutoCommit::load(&saved).unwrap();
-    for bytes in &written {
-        tilo_automerge::ApplyIncoming::load_incoming(&mut record, bytes).unwrap();
-    }
-    let changes = record.get_changes(&[]);
-    let writers: std::collections::HashSet<_> = changes
-        .iter()
-        .map(|change| (change.actor_id().to_bytes(), change.seq()))
-        .collect();
-    assert_eq!(
-        writers.len(),
-        changes.len(),
-        "one change per writer and sequence, whichever page wrote it"
-    );
-    assert_eq!(
-        changes.len(),
-        3,
-        "the record's genesis and both pages' changes are in it"
-    );
-    // Both writes are in what the workspace keeps: neither page's change is
-    // the one a record holding two of a sequence leaves out.
-    let name = <Tally as tilo_resource::Resource>::read(&record)
-        .unwrap()
-        .name;
-    for written in ["from the first page", "from the second page"] {
-        assert!(
-            name.contains(written),
-            "both pages' writes are in the record: {name:?}"
-        );
     }
 }

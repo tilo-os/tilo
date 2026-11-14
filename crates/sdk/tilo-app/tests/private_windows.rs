@@ -76,48 +76,52 @@ impl ResourceApp for Notes {
     }
 }
 
-#[test]
-fn a_private_window_attaches_to_no_runtime() {
-    let private = LaunchArgs::component().with_flag("--private");
-    let spec = tilo_app::framework::launch_spec::<Browsing>();
-    assert!(!spec.attaches_runtime(&private));
-    assert!(spec.attaches_runtime(&LaunchArgs::component()));
-    // An app that offers no private windows takes the flag for nothing.
-    assert!(tilo_app::framework::launch_spec::<Notes>().attaches_runtime(&private));
-}
+tilo_test_env::scenario! {
+    fn a_private_window_stands_apart_from_the_runtime_and_the_persons_records;
 
-#[test]
-fn a_private_window_runs_on_a_throwaway_profile_without_the_persons_records() {
-    let args = LaunchArgs::component().with_flag("--private");
-    let spec = tilo_app::framework::launch_spec::<Browsing>();
-    let prepared = spec.prepare_hosted(&args).unwrap();
-    assert!(prepared.context.is_private());
-    let tilo_app::storage::SettingsDocument::Profile(profile) =
-        prepared.context.storage().settings_document().clone()
-    else {
-        panic!("a private window's settings are its profile's");
-    };
-    assert!(
-        profile.starts_with(std::env::temp_dir()),
-        "the profile is not the person's: {}",
-        profile.display()
-    );
+    phase a_private_window_attaches_to_no_runtime;
+    {
+        let private = LaunchArgs::component().with_flag("--private");
+        let spec = tilo_app::framework::launch_spec::<Browsing>();
+        assert!(!spec.attaches_runtime(&private));
+        assert!(spec.attaches_runtime(&LaunchArgs::component()));
+        // An app that offers no private windows takes the flag for nothing.
+        assert!(tilo_app::framework::launch_spec::<Notes>().attaches_runtime(&private));
+    }
 
-    let component = spec
-        .prepare_component(&args, prepared.context, prepared.target, prepared.restore)
-        .unwrap();
-    let mut app = tilo_app::App::from_component(component, prepared.runner_inputs).unwrap();
-    assert_eq!(
-        SEEN.with(|seen| *seen.borrow()),
-        Some((true, false)),
-        "the view knows it is private and holds none of the person's records"
-    );
-    assert!(profile.exists(), "the profile lives while the window does");
-    app.close_components();
-    drop(app);
-    assert!(
-        !profile.exists(),
-        "the profile is thrown away with the window: {}",
-        profile.display()
-    );
+    phase a_private_window_runs_on_a_throwaway_profile_without_the_persons_records;
+    {
+        let args = LaunchArgs::component().with_flag("--private");
+        let spec = tilo_app::framework::launch_spec::<Browsing>();
+        let prepared = spec.prepare_hosted(&args).unwrap();
+        assert!(prepared.context.is_private());
+        let tilo_app::storage::SettingsDocument::Profile(profile) =
+            prepared.context.storage().settings_document().clone()
+        else {
+            panic!("a private window's settings are its profile's");
+        };
+        assert!(
+            profile.starts_with(std::env::temp_dir()),
+            "the profile is not the person's: {}",
+            profile.display()
+        );
+
+        let component = spec
+            .prepare_component(&args, prepared.context, prepared.target, prepared.restore)
+            .unwrap();
+        let mut app = tilo_app::App::from_component(component, prepared.runner_inputs).unwrap();
+        assert_eq!(
+            SEEN.with(|seen| *seen.borrow()),
+            Some((true, false)),
+            "the view knows it is private and holds none of the person's records"
+        );
+        assert!(profile.exists(), "the profile lives while the window does");
+        app.close_components();
+        drop(app);
+        assert!(
+            !profile.exists(),
+            "the profile is thrown away with the window: {}",
+            profile.display()
+        );
+    }
 }

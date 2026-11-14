@@ -155,35 +155,39 @@ fn open(app: &mut TestApp<ShelfApp>, title: &str) {
     app.harness().relayout();
 }
 
-#[test]
-fn a_reopened_window_shows_the_book_it_had_open() {
-    let mut app = TestApp::<ShelfApp>::new().unwrap();
-    app.invoke(Shelf::ADD.with("Dune")).unwrap();
-    app.invoke(Shelf::ADD.with("Emma")).unwrap();
-    // A fresh window opens the first book.
-    assert!(
-        app.harness()
-            .inspection_json()
-            .unwrap()
-            .contains("Open: Dune")
-    );
-    open(&mut app, "Emma");
-    assert!(
-        app.harness()
-            .inspection_json()
-            .unwrap()
-            .contains("Open: Emma")
-    );
+tilo_test_env::scenario! {
+    fn a_window_keeps_and_reaches_the_surface_its_view_hosts;
 
-    let mut app = app.reopen().unwrap();
-    let frame = app.harness().inspection_json().unwrap();
-    assert!(frame.contains("Open: Emma"), "{frame}");
-}
+    phase a_reopened_window_shows_the_book_it_had_open;
+    {
+        let mut app = TestApp::<ShelfApp>::new().unwrap();
+        app.invoke(Shelf::ADD.with("Dune")).unwrap();
+        app.invoke(Shelf::ADD.with("Emma")).unwrap();
+        // A fresh window opens the first book.
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Open: Dune")
+        );
+        open(&mut app, "Emma");
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Open: Emma")
+        );
 
-#[test]
-fn a_test_reaches_the_surface_its_view_hosts() {
-    let mut app = TestApp::<ShelfApp>::new().unwrap();
-    app.invoke(Shelf::ADD.with("Dune")).unwrap();
-    let open = app.surface(|book: &mut OpenBook| book.open.get()).unwrap();
-    assert_eq!(open, "Dune");
+        let mut app = app.reopen().unwrap();
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains("Open: Emma"), "{frame}");
+    }
+
+    phase a_test_reaches_the_surface_its_view_hosts;
+    {
+        let mut app = TestApp::<ShelfApp>::new().unwrap();
+        app.invoke(Shelf::ADD.with("Dune")).unwrap();
+        let open = app.surface(|book: &mut OpenBook| book.open.get()).unwrap();
+        assert_eq!(open, "Dune");
+    }
 }

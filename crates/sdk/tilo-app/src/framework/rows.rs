@@ -215,46 +215,50 @@ pub(crate) fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec>
 mod tests {
     use super::*;
 
-    #[test]
-    fn merging_retains_the_selector_identity_without_overwriting_the_first_publisher() {
-        let identity = ResourceSemanticIdentity::new("chat.agent", "chat.agent:scribe").unwrap();
-        let row = || {
-            LiveRow::new("agent:1", "chat.agent", "Scribe")
+    tilo_test_env::scenario! {
+        fn a_live_row_keeps_its_semantic_identity;
+
+        phase merging_retains_the_selector_identity_without_overwriting_the_first_publisher;
+        {
+            let identity = ResourceSemanticIdentity::new("chat.agent", "chat.agent:scribe").unwrap();
+            let row = || {
+                LiveRow::new("agent:1", "chat.agent", "Scribe")
+                    .semantic_identity(identity.clone())
+                    .into_resource()
+            };
+            let mut children = vec![ResourceSpec::new("agent:1", "chat.agent", "Document label")];
+            merge(&mut children, [row()]);
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0].semantic_identity, Some(identity.clone()));
+            assert_eq!(children[0].label, "Document label");
+
+            let first = ResourceSemanticIdentity::new("chat.agent", "chat.agent:reed").unwrap();
+            children[0].semantic_identity = Some(first.clone());
+            merge(&mut children, [row()]);
+            assert_eq!(children[0].semantic_identity, Some(first));
+        }
+
+        phase live_row_retains_only_a_valid_typed_semantic_identity;
+        {
+            let identity = ResourceSemanticIdentity::new("chat.agent", "chat.agent:scribe")
+                .expect("the bounded typed identity is valid");
+            let resource = LiveRow::new("opaque:1", "chat.agent", "Scribe")
                 .semantic_identity(identity.clone())
-                .into_resource()
-        };
-        let mut children = vec![ResourceSpec::new("agent:1", "chat.agent", "Document label")];
-        merge(&mut children, [row()]);
-        assert_eq!(children.len(), 1);
-        assert_eq!(children[0].semantic_identity, Some(identity.clone()));
-        assert_eq!(children[0].label, "Document label");
+                .into_resource();
+            assert_eq!(resource.semantic_identity, Some(identity));
 
-        let first = ResourceSemanticIdentity::new("chat.agent", "chat.agent:reed").unwrap();
-        children[0].semantic_identity = Some(first.clone());
-        merge(&mut children, [row()]);
-        assert_eq!(children[0].semantic_identity, Some(first));
-    }
-
-    #[test]
-    fn live_row_retains_only_a_valid_typed_semantic_identity() {
-        let identity = ResourceSemanticIdentity::new("chat.agent", "chat.agent:scribe")
-            .expect("the bounded typed identity is valid");
-        let resource = LiveRow::new("opaque:1", "chat.agent", "Scribe")
-            .semantic_identity(identity.clone())
-            .into_resource();
-        assert_eq!(resource.semantic_identity, Some(identity));
-
-        let invalid = ResourceSemanticIdentity {
-            kind: "chat agent".into(),
-            key: "chat.agent:scribe".into(),
-        };
-        assert!(
-            LiveRow::new("opaque:2", "chat.agent", "Scribe")
-                .semantic_identity(invalid)
-                .into_resource()
-                .semantic_identity
-                .is_none(),
-            "a live row never publishes malformed selector metadata"
-        );
+            let invalid = ResourceSemanticIdentity {
+                kind: "chat agent".into(),
+                key: "chat.agent:scribe".into(),
+            };
+            assert!(
+                LiveRow::new("opaque:2", "chat.agent", "Scribe")
+                    .semantic_identity(invalid)
+                    .into_resource()
+                    .semantic_identity
+                    .is_none(),
+                "a live row never publishes malformed selector metadata"
+            );
+        }
     }
 }

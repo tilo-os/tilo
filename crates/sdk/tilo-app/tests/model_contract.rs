@@ -185,105 +185,188 @@ fn push(
     Ok(())
 }
 
-#[test]
-fn undo_of_an_outside_consequence_applies_the_inverse_action() {
-    let mut app = TestApp::<JobApp>::new().unwrap();
-    app.invoke(create("evt")).unwrap();
-    assert_eq!(app.state(), ["evt"]);
-    assert_eq!(
-        app.read_document(|doc| list(doc, OUTBOX)),
-        ["evt".to_string()]
-    );
+tilo_test_env::scenario! {
+    fn the_resource_action_view_contract_holds_on_the_host_path;
 
-    assert!(app.undo());
-    assert!(app.state().is_empty());
-    // Patch undo would drop the outbox write and write nothing in its place.
-    // The inverse action deletes the item and queues the outside delete.
-    assert_eq!(
-        app.read_document(|doc| list(doc, OUTBOX)),
-        ["evt".to_string()]
-    );
-    assert_eq!(
-        app.read_document(|doc| list(doc, DEL_OUTBOX)),
-        ["evt".to_string()]
-    );
-    let summaries = version_summaries(&app);
-    assert!(
-        summaries.iter().any(|summary| summary.starts_with("Undid")),
-        "undo is a named history entry, not an anonymous patch: {summaries:?}"
-    );
+    phase undo_of_an_outside_consequence_applies_the_inverse_action;
+    {
+        let mut app = TestApp::<JobApp>::new().unwrap();
+        app.invoke(create("evt")).unwrap();
+        assert_eq!(app.state(), ["evt"]);
+        assert_eq!(
+            app.read_document(|doc| list(doc, OUTBOX)),
+            ["evt".to_string()]
+        );
 
-    assert!(app.redo());
-    assert_eq!(app.state(), ["evt"]);
-    assert_eq!(
-        app.read_document(|doc| list(doc, OUTBOX)),
-        ["evt".to_string(), "evt".to_string()]
-    );
-}
+        assert!(app.undo());
+        assert!(app.state().is_empty());
+        // Patch undo would drop the outbox write and write nothing in its place.
+        // The inverse action deletes the item and queues the outside delete.
+        assert_eq!(
+            app.read_document(|doc| list(doc, OUTBOX)),
+            ["evt".to_string()]
+        );
+        assert_eq!(
+            app.read_document(|doc| list(doc, DEL_OUTBOX)),
+            ["evt".to_string()]
+        );
+        let summaries = version_summaries(&app);
+        assert!(
+            summaries.iter().any(|summary| summary.starts_with("Undid")),
+            "undo is a named history entry, not an anonymous patch: {summaries:?}"
+        );
 
-#[test]
-fn undoing_a_redo_of_an_outside_consequence_applies_the_inverse_again() {
-    let mut app = TestApp::<JobApp>::new().unwrap();
-    app.invoke(create("evt")).unwrap();
-    assert!(app.undo());
-    assert!(app.redo());
-    assert_eq!(app.state(), ["evt"]);
+        assert!(app.redo());
+        assert_eq!(app.state(), ["evt"]);
+        assert_eq!(
+            app.read_document(|doc| list(doc, OUTBOX)),
+            ["evt".to_string(), "evt".to_string()]
+        );
+    }
 
-    assert!(app.undo(), "the redo is the step Ctrl+Z takes back");
-    assert!(app.state().is_empty());
-    assert_eq!(
-        app.read_document(|doc| list(doc, DEL_OUTBOX)),
-        ["evt".to_string(), "evt".to_string()],
-        "undoing the redo queues the outside delete again"
-    );
-    let summaries = version_summaries(&app);
-    assert!(
-        !summaries
+    phase undoing_a_redo_of_an_outside_consequence_applies_the_inverse_again;
+    {
+        let mut app = TestApp::<JobApp>::new().unwrap();
+        app.invoke(create("evt")).unwrap();
+        assert!(app.undo());
+        assert!(app.redo());
+        assert_eq!(app.state(), ["evt"]);
+
+        assert!(app.undo(), "the redo is the step Ctrl+Z takes back");
+        assert!(app.state().is_empty());
+        assert_eq!(
+            app.read_document(|doc| list(doc, DEL_OUTBOX)),
+            ["evt".to_string(), "evt".to_string()],
+            "undoing the redo queues the outside delete again"
+        );
+        let summaries = version_summaries(&app);
+        assert!(
+            !summaries
+                .iter()
+                .any(|summary| summary.contains("Redid") && summary.starts_with("Undid")),
+            "the undo names the step, not the redo: {summaries:?}"
+        );
+
+        assert!(app.redo());
+        assert_eq!(app.state(), ["evt"]);
+        assert_eq!(app.read_document(|doc| list(doc, OUTBOX)).len(), 3);
+    }
+
+    phase publish_is_the_only_door_for_views_and_document_actions;
+    {
+        let published = tilo_resource::publish::<Job>("job", "Job", &Vec::new());
+        let ids: Vec<_> = published
+            .actions
             .iter()
-            .any(|summary| summary.contains("Redid") && summary.starts_with("Undid")),
-        "the undo names the step, not the redo: {summaries:?}"
-    );
-
-    assert!(app.redo());
-    assert_eq!(app.state(), ["evt"]);
-    assert_eq!(app.read_document(|doc| list(doc, OUTBOX)).len(), 3);
-}
-
-#[test]
-fn publish_is_the_only_door_for_views_and_document_actions() {
-    let published = tilo_resource::publish::<Job>("job", "Job", &Vec::new());
-    let ids: Vec<_> = published
-        .actions
-        .iter()
-        .map(|spec| spec.id.as_str())
-        .collect();
-    for id in ["create", "apply", "show"] {
-        assert!(ids.contains(&id), "{id} in {ids:?}");
+            .map(|spec| spec.id.as_str())
+            .collect();
+        for id in ["create", "apply", "show"] {
+            assert!(ids.contains(&id), "{id} in {ids:?}");
+        }
+        assert!(!ids.contains(&"sneak"), "{ids:?}");
+        let show = published
+            .actions
+            .iter()
+            .find(|spec| spec.id == "show")
+            .unwrap();
+        assert_eq!(show.kind, OperationKind::View);
+        assert!(published.views.iter().any(|view| view.id == "editor"));
     }
-    assert!(!ids.contains(&"sneak"), "{ids:?}");
-    let show = published
-        .actions
-        .iter()
-        .find(|spec| spec.id == "show")
+
+    phase a_second_replica_applying_the_same_action_converges;
+    {
+        let mut app = TestApp::<JobApp>::new().unwrap();
+        app.invoke(create("local")).unwrap();
+        let mut peer = app.peer_document();
+        JobAction::Create {
+            id: "remote".into(),
+        }
+        .apply(&mut peer)
         .unwrap();
-    assert_eq!(show.kind, OperationKind::View);
-    assert!(published.views.iter().any(|view| view.id == "editor"));
-}
-
-#[test]
-fn a_second_replica_applying_the_same_action_converges() {
-    let mut app = TestApp::<JobApp>::new().unwrap();
-    app.invoke(create("local")).unwrap();
-    let mut peer = app.peer_document();
-    JobAction::Create {
-        id: "remote".into(),
+        app.merge_peer(&mut peer).unwrap();
+        let mut ids = app.state();
+        ids.sort();
+        assert_eq!(ids, ["local", "remote"]);
     }
-    .apply(&mut peer)
-    .unwrap();
-    app.merge_peer(&mut peer).unwrap();
-    let mut ids = app.state();
-    ids.sort();
-    assert_eq!(ids, ["local", "remote"]);
+
+    phase collaboration_and_history_survive_a_move_into_another_workspace;
+    {
+        let mut app = TestApp::<JobApp>::new().unwrap();
+        app.invoke(create("local")).unwrap();
+        let mut peer = app.peer_document();
+        let remote = JobAction::Create {
+            id: "remote".into(),
+        };
+        let encoded = EncodedAction::encode(ACTION_TYPE, &remote).unwrap();
+        tilo_actions::apply_local_with_context(
+            &mut peer,
+            &remote,
+            encoded,
+            Some(b"peer-author"),
+            tilo_actions::ActionContext::for_app(ACTION_TYPE, "Job"),
+        )
+        .unwrap();
+        app.merge_peer(&mut peer).unwrap();
+        let mut ids = app.state();
+        ids.sort();
+        assert_eq!(ids, ["local", "remote"]);
+        let summaries = version_summaries(&app);
+        assert!(
+            summaries.iter().any(|summary| summary.contains("Create")),
+            "a collaborator's action is history: {summaries:?}"
+        );
+
+        let source = app.read_document(Clone::clone);
+        let carried: Vec<_> = tilo_resource::history::versions(&mut source.clone())
+            .into_iter()
+            .map(|version| version.hash)
+            .collect();
+        assert!(!carried.is_empty());
+        let origin = tilo_app::record::identity(&source).expect("record identity");
+        let from = tilo_app::record::workspace_scope(&source).expect("workspace scope");
+        let target = RecordId::minted();
+        let mut arrived = tilo_app::record::transfer::rehome(
+            &source,
+            &Origin::Record(origin.clone()),
+            &from,
+            "governed-workspace",
+            &target,
+        )
+        .expect("a resource document moves with its history");
+
+        let mut arrived_ids = Job::read(&arrived).unwrap();
+        arrived_ids.sort();
+        assert_eq!(arrived_ids, ["local".to_string(), "remote".to_string()]);
+        assert_eq!(
+            tilo_app::record::former_identities(&arrived),
+            vec![origin.id]
+        );
+        assert!(tilo_app::record::references(&arrived).is_empty());
+        assert!(
+            arrived.get(ROOT, "tilo:records").unwrap().is_none(),
+            "a document listing other records cannot join a workspace"
+        );
+        let (_, meta) = arrived.get(ROOT, "tilo:record").unwrap().expect("meta");
+        let foreign: Vec<_> = arrived
+            .keys(&meta)
+            .filter(|key| !IMPORTABLE_META.contains(&key.as_str()))
+            .collect();
+        assert!(
+            foreign.is_empty(),
+            "meta keys a governed import would refuse: {foreign:?}"
+        );
+        let arrived_hashes: Vec<_> = tilo_resource::history::versions(&mut arrived)
+            .into_iter()
+            .map(|version| version.hash)
+            .collect();
+        for hash in &carried {
+            assert!(
+                arrived_hashes.contains(hash),
+                "the move dropped a change from the resource history"
+            );
+        }
+        assert!(arrived_hashes.len() > carried.len());
+    }
 }
 
 fn version_summaries(app: &TestApp<JobApp>) -> Vec<String> {
@@ -308,82 +391,3 @@ const IMPORTABLE_META: &[&str] = &[
     "refs",
     "blobs",
 ];
-
-#[test]
-fn collaboration_and_history_survive_a_move_into_another_workspace() {
-    let mut app = TestApp::<JobApp>::new().unwrap();
-    app.invoke(create("local")).unwrap();
-    let mut peer = app.peer_document();
-    let remote = JobAction::Create {
-        id: "remote".into(),
-    };
-    let encoded = EncodedAction::encode(ACTION_TYPE, &remote).unwrap();
-    tilo_actions::apply_local_with_context(
-        &mut peer,
-        &remote,
-        encoded,
-        Some(b"peer-author"),
-        tilo_actions::ActionContext::for_app(ACTION_TYPE, "Job"),
-    )
-    .unwrap();
-    app.merge_peer(&mut peer).unwrap();
-    let mut ids = app.state();
-    ids.sort();
-    assert_eq!(ids, ["local", "remote"]);
-    let summaries = version_summaries(&app);
-    assert!(
-        summaries.iter().any(|summary| summary.contains("Create")),
-        "a collaborator's action is history: {summaries:?}"
-    );
-
-    let source = app.read_document(Clone::clone);
-    let carried: Vec<_> = tilo_resource::history::versions(&mut source.clone())
-        .into_iter()
-        .map(|version| version.hash)
-        .collect();
-    assert!(!carried.is_empty());
-    let origin = tilo_app::record::identity(&source).expect("record identity");
-    let from = tilo_app::record::workspace_scope(&source).expect("workspace scope");
-    let target = RecordId::minted();
-    let mut arrived = tilo_app::record::transfer::rehome(
-        &source,
-        &Origin::Record(origin.clone()),
-        &from,
-        "governed-workspace",
-        &target,
-    )
-    .expect("a resource document moves with its history");
-
-    let mut arrived_ids = Job::read(&arrived).unwrap();
-    arrived_ids.sort();
-    assert_eq!(arrived_ids, ["local".to_string(), "remote".to_string()]);
-    assert_eq!(
-        tilo_app::record::former_identities(&arrived),
-        vec![origin.id]
-    );
-    assert!(tilo_app::record::references(&arrived).is_empty());
-    assert!(
-        arrived.get(ROOT, "tilo:records").unwrap().is_none(),
-        "a document listing other records cannot join a workspace"
-    );
-    let (_, meta) = arrived.get(ROOT, "tilo:record").unwrap().expect("meta");
-    let foreign: Vec<_> = arrived
-        .keys(&meta)
-        .filter(|key| !IMPORTABLE_META.contains(&key.as_str()))
-        .collect();
-    assert!(
-        foreign.is_empty(),
-        "meta keys a governed import would refuse: {foreign:?}"
-    );
-    let arrived_hashes: Vec<_> = tilo_resource::history::versions(&mut arrived)
-        .into_iter()
-        .map(|version| version.hash)
-        .collect();
-    for hash in &carried {
-        assert!(
-            arrived_hashes.contains(hash),
-            "the move dropped a change from the resource history"
-        );
-    }
-    assert!(arrived_hashes.len() > carried.len());
-}

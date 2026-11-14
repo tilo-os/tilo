@@ -102,64 +102,68 @@ fn recording_file(doc: &tilo_resource::Doc, steps: usize) -> (OpenFile, Vec<Shop
     (file, states)
 }
 
-#[test]
-fn a_recording_replays_read_only_and_opens_history_at_its_start() {
-    let (doc, made) = edited();
-    let (file, states) = recording_file(&doc, made);
-    let mut replay = HeadlessApp::<ShoppingApp>::replaying(file).unwrap();
-    replay.settle();
-    assert_eq!(
-        replay.state(),
-        *states.last().unwrap(),
-        "the window shows the recording's last state"
-    );
-    assert!(
-        replay.harness().targets().contains_key("activity_timeline"),
-        "History opens with the window"
-    );
-    assert!(
-        replay.invoke(Shopping::ADD.with("butter")).is_err(),
-        "a replay is read, never written"
-    );
-    assert_eq!(replay.state(), *states.last().unwrap());
-}
+tilo_test_env::scenario! {
+    fn a_recording_replays_read_only_in_a_private_window;
 
-#[test]
-fn every_step_of_a_replay_draws_the_state_the_recorded_window_had() {
-    let (doc, made) = edited();
-    let (file, states) = recording_file(&doc, made);
-    let replay = HeadlessApp::<ShoppingApp>::replaying(file).unwrap();
-    // The replay's own record holds the recording's changes after its
-    // identity: each step is one of them, in order.
-    let recorded: Vec<_> = replay
-        .versions()
-        .into_iter()
-        .filter(|version| version.time_ms > 0 || version.context.is_some())
-        .collect();
-    let steps: Vec<_> = recorded
-        .iter()
-        .skip_while(|version| {
-            version
-                .context
-                .as_ref()
-                .is_none_or(|context| context.change != tilo_actions::ChangeKind::External)
-        })
-        .collect();
-    assert_eq!(steps.len(), states.len(), "{recorded:?}");
-    for (step, (version, state)) in steps.iter().zip(&states).enumerate() {
-        let shown = replay.past_version(&[version.hash]).unwrap();
-        assert_eq!(*shown.state(), *state, "step {step}");
+    phase a_recording_replays_read_only_and_opens_history_at_its_start;
+    {
+        let (doc, made) = edited();
+        let (file, states) = recording_file(&doc, made);
+        let mut replay = HeadlessApp::<ShoppingApp>::replaying(file).unwrap();
+        replay.settle();
+        assert_eq!(
+            replay.state(),
+            *states.last().unwrap(),
+            "the window shows the recording's last state"
+        );
+        assert!(
+            replay.harness().targets().contains_key("activity_timeline"),
+            "History opens with the window"
+        );
+        assert!(
+            replay.invoke(Shopping::ADD.with("butter")).is_err(),
+            "a replay is read, never written"
+        );
+        assert_eq!(replay.state(), *states.last().unwrap());
     }
-}
 
-#[test]
-fn a_recording_opens_only_in_a_private_window() {
-    let (doc, made) = edited();
-    let (file, _) = recording_file(&doc, made);
-    assert!(
-        HeadlessApp::<ShoppingApp>::handed(file).is_err(),
-        "a window that reaches the person's records never takes a recording in"
-    );
+    phase every_step_of_a_replay_draws_the_state_the_recorded_window_had;
+    {
+        let (doc, made) = edited();
+        let (file, states) = recording_file(&doc, made);
+        let replay = HeadlessApp::<ShoppingApp>::replaying(file).unwrap();
+        // The replay's own record holds the recording's changes after its
+        // identity: each step is one of them, in order.
+        let recorded: Vec<_> = replay
+            .versions()
+            .into_iter()
+            .filter(|version| version.time_ms > 0 || version.context.is_some())
+            .collect();
+        let steps: Vec<_> = recorded
+            .iter()
+            .skip_while(|version| {
+                version
+                    .context
+                    .as_ref()
+                    .is_none_or(|context| context.change != tilo_actions::ChangeKind::External)
+            })
+            .collect();
+        assert_eq!(steps.len(), states.len(), "{recorded:?}");
+        for (step, (version, state)) in steps.iter().zip(&states).enumerate() {
+            let shown = replay.past_version(&[version.hash]).unwrap();
+            assert_eq!(*shown.state(), *state, "step {step}");
+        }
+    }
+
+    phase a_recording_opens_only_in_a_private_window;
+    {
+        let (doc, made) = edited();
+        let (file, _) = recording_file(&doc, made);
+        assert!(
+            HeadlessApp::<ShoppingApp>::handed(file).is_err(),
+            "a window that reaches the person's records never takes a recording in"
+        );
+    }
 }
 
 /// Stepping a replay looks at past states, a read: an agent steps the

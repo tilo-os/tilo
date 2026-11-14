@@ -77,53 +77,57 @@ impl ResourceApp for NotesApp {
     }
 }
 
-/// An undoable destructive verb applies at once and offers Undo, with no
-/// confirmation.
-#[test]
-fn an_undoable_destructive_verb_applies_at_once_and_undo_takes_it_back() {
-    let mut app = TestApp::<NotesApp>::new().unwrap();
-    app.invoke(Notes::ADD.with("Milk")).unwrap();
-    let mut app = app.reopen().unwrap();
-    app.harness().click_named("remove").unwrap();
-    app.settle();
-    assert_eq!(app.asking(), None, "nobody is asked");
-    assert!(
-        app.state().notes.is_empty(),
-        "the verb applied at once: {:?}",
-        app.harness().control_failures()
-    );
-    assert!(app.undo(), "Undo takes it back");
-    assert_eq!(app.state().notes.len(), 1);
-}
+tilo_test_env::scenario! {
+    fn a_destructive_verb_through_the_door_asks_only_for_what_undo_cannot_take_back;
 
-/// What Undo cannot take back is asked first through the door: the
-/// person's press of a control for an irreversible destructive verb.
-#[test]
-fn an_irreversible_destructive_verb_through_the_door_asks_first() {
-    let mut app = TestApp::<NotesApp>::new().unwrap();
-    app.invoke(Notes::ADD.with("Milk")).unwrap();
-    let mut app = app.reopen().unwrap();
-    app.harness().click_named("forget").unwrap();
-    app.settle();
-    assert!(app.asking().is_some(), "the person is asked first");
-    assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
-}
+    phase an_undoable_destructive_verb_applies_at_once_and_undo_takes_it_back;
+    // An undoable destructive verb applies at once and offers Undo, with no
+    // confirmation.
+    {
+        let mut app = TestApp::<NotesApp>::new().unwrap();
+        app.invoke(Notes::ADD.with("Milk")).unwrap();
+        let mut app = app.reopen().unwrap();
+        app.harness().click_named("remove").unwrap();
+        app.settle();
+        assert_eq!(app.asking(), None, "nobody is asked");
+        assert!(
+            app.state().notes.is_empty(),
+            "the verb applied at once: {:?}",
+            app.harness().control_failures()
+        );
+        assert!(app.undo(), "Undo takes it back");
+        assert_eq!(app.state().notes.len(), 1);
+    }
 
-#[test]
-fn an_undoable_destructive_verb_without_arguments_applies_at_once() {
-    let mut app = TestApp::<NotesApp>::new().unwrap();
-    app.invoke(Notes::ADD.with("Milk")).unwrap();
-    app.invoke(Notes::ADD.with("Eggs")).unwrap();
-    app.harness().click_named("clear").unwrap();
-    app.settle();
-    assert_eq!(app.asking(), None, "nobody is asked");
-    assert!(
-        app.state().notes.is_empty(),
-        "the verb applied at once: {:?}",
-        app.harness().control_failures()
-    );
-    assert!(app.undo(), "Undo takes it back");
-    assert_eq!(app.state().notes.len(), 2);
+    phase an_irreversible_destructive_verb_through_the_door_asks_first;
+    // What Undo cannot take back is asked first through the door: the
+    // person's press of a control for an irreversible destructive verb.
+    {
+        let mut app = TestApp::<NotesApp>::new().unwrap();
+        app.invoke(Notes::ADD.with("Milk")).unwrap();
+        let mut app = app.reopen().unwrap();
+        app.harness().click_named("forget").unwrap();
+        app.settle();
+        assert!(app.asking().is_some(), "the person is asked first");
+        assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
+    }
+
+    phase an_undoable_destructive_verb_without_arguments_applies_at_once;
+    {
+        let mut app = TestApp::<NotesApp>::new().unwrap();
+        app.invoke(Notes::ADD.with("Milk")).unwrap();
+        app.invoke(Notes::ADD.with("Eggs")).unwrap();
+        app.harness().click_named("clear").unwrap();
+        app.settle();
+        assert_eq!(app.asking(), None, "nobody is asked");
+        assert!(
+            app.state().notes.is_empty(),
+            "the verb applied at once: {:?}",
+            app.harness().control_failures()
+        );
+        assert!(app.undo(), "Undo takes it back");
+        assert_eq!(app.state().notes.len(), 2);
+    }
 }
 
 /// What a surface applies now on its next settle.
@@ -347,17 +351,21 @@ fn asks_before_forgetting(now: Now) {
     );
 }
 
-/// What Undo cannot take back is asked first from the person's own gesture
-/// too, as through the door: the gesture confirms only what has a way back.
-#[test]
-fn an_irreversible_destructive_verb_of_a_gesture_asks_first() {
-    asks_before_forgetting(Now::IrreversibleGesture);
-}
+tilo_test_env::scenario! {
+    fn an_irreversible_destructive_verb_of_a_surface_asks_first;
 
-/// A surface applying an irreversible destructive verb now asks first too.
-#[test]
-fn an_irreversible_destructive_verb_applied_now_asks_first() {
-    asks_before_forgetting(Now::IrreversibleVerb);
+    phase an_irreversible_destructive_verb_of_a_gesture_asks_first;
+    // What Undo cannot take back is asked first from the person's own gesture
+    // too, as through the door: the gesture confirms only what has a way back.
+    {
+        asks_before_forgetting(Now::IrreversibleGesture);
+    }
+
+    phase an_irreversible_destructive_verb_applied_now_asks_first;
+    // A surface applying an irreversible destructive verb now asks first too.
+    {
+        asks_before_forgetting(Now::IrreversibleVerb);
+    }
 }
 
 /// Hold Shift, or let go of it, as the window's modifier change says.
@@ -385,45 +393,49 @@ fn choose(now: Now, held: bool) -> TestApp<RemoverApp> {
     app
 }
 
-/// A choice the app asks the person to confirm (Delete in a context menu)
-/// is asked about though Undo would take it back, in the action's own
-/// words; once they agree it applies, and Undo takes it back.
-#[test]
-fn a_confirming_choice_without_shift_asks_and_undo_takes_it_back() {
-    let mut app = choose(Now::Confirming, false);
-    assert!(app.asking().is_some(), "the person is asked first");
-    assert_eq!(
-        app.harness().asking_why(),
-        None,
-        "the action asks, not the workspace's grants"
-    );
-    assert_eq!(app.state().notes.len(), 1, "nothing is removed yet");
-    assert!(app.confirm_asked().is_some(), "the person agrees");
-    assert!(app.state().notes.is_empty(), "then it applies");
-    assert!(app.undo(), "Undo takes it back");
-    assert_eq!(app.state().notes.len(), 1);
-}
+tilo_test_env::scenario! {
+    fn a_confirming_choice_asks_unless_shift_is_held_and_undo_takes_it_back;
 
-/// Holding Shift, the same choice applies at once, nobody is asked, and
-/// Undo takes it back.
-#[test]
-fn a_confirming_choice_with_shift_applies_at_once_and_undo_takes_it_back() {
-    let mut app = choose(Now::Confirming, true);
-    assert_eq!(app.asking(), None, "Shift skips the question");
-    assert!(app.state().notes.is_empty(), "removed at once");
-    assert!(app.undo(), "Undo takes it back");
-    assert_eq!(app.state().notes.len(), 1);
-    hold_shift(&mut app, false);
-}
+    phase a_confirming_choice_without_shift_asks_and_undo_takes_it_back;
+    // A choice the app asks the person to confirm (Delete in a context menu)
+    // is asked about though Undo would take it back, in the action's own
+    // words; once they agree it applies, and Undo takes it back.
+    {
+        let mut app = choose(Now::Confirming, false);
+        assert!(app.asking().is_some(), "the person is asked first");
+        assert_eq!(
+            app.harness().asking_why(),
+            None,
+            "the action asks, not the workspace's grants"
+        );
+        assert_eq!(app.state().notes.len(), 1, "nothing is removed yet");
+        assert!(app.confirm_asked().is_some(), "the person agrees");
+        assert!(app.state().notes.is_empty(), "then it applies");
+        assert!(app.undo(), "Undo takes it back");
+        assert_eq!(app.state().notes.len(), 1);
+    }
 
-/// What Undo cannot take back is asked, Shift or not.
-#[test]
-fn an_irreversible_confirming_choice_asks_shift_or_not() {
-    for held in [false, true] {
-        let mut app = choose(Now::IrreversibleConfirming, held);
-        assert!(app.asking().is_some(), "Shift {held}: the person is asked");
-        assert_eq!(app.state().notes.len(), 1, "Shift {held}: nothing is lost");
+    phase a_confirming_choice_with_shift_applies_at_once_and_undo_takes_it_back;
+    // Holding Shift, the same choice applies at once, nobody is asked, and
+    // Undo takes it back.
+    {
+        let mut app = choose(Now::Confirming, true);
+        assert_eq!(app.asking(), None, "Shift skips the question");
+        assert!(app.state().notes.is_empty(), "removed at once");
+        assert!(app.undo(), "Undo takes it back");
+        assert_eq!(app.state().notes.len(), 1);
         hold_shift(&mut app, false);
+    }
+
+    phase an_irreversible_confirming_choice_asks_shift_or_not;
+    // What Undo cannot take back is asked, Shift or not.
+    {
+        for held in [false, true] {
+            let mut app = choose(Now::IrreversibleConfirming, held);
+            assert!(app.asking().is_some(), "Shift {held}: the person is asked");
+            assert_eq!(app.state().notes.len(), 1, "Shift {held}: nothing is lost");
+            hold_shift(&mut app, false);
+        }
     }
 }
 
@@ -439,93 +451,101 @@ fn keep_open(held: bool) -> TestApp<NotesApp> {
     app
 }
 
-/// The host's own question, for an action whose contract asks, is asked
-/// without Shift as before.
-#[test]
-fn the_hosts_question_asks_without_shift_as_before() {
-    let mut app = keep_open(false);
-    assert!(app.asking().is_some(), "without Shift it asks");
-    assert_eq!(app.state().open_minutes, 0, "nothing changed yet");
+tilo_test_env::scenario! {
+    fn shift_skips_the_hosts_question_only_for_what_undo_takes_back;
+
+    phase the_hosts_question_asks_without_shift_as_before;
+    // The host's own question, for an action whose contract asks, is asked
+    // without Shift as before.
+    {
+        let mut app = keep_open(false);
+        assert!(app.asking().is_some(), "without Shift it asks");
+        assert_eq!(app.state().open_minutes, 0, "nothing changed yet");
+    }
+
+    phase shift_skips_the_hosts_question_for_what_undo_takes_back;
+    // With Shift the host's question is skipped for what Undo takes back: it
+    // applies at once and Undo takes it back.
+    {
+        let mut app = keep_open(true);
+        assert_eq!(app.asking(), None, "with Shift nobody is asked");
+        assert_eq!(app.state().open_minutes, 60, "it applied at once");
+        assert!(app.undo(), "Undo takes it back");
+        assert_eq!(app.state().open_minutes, 0);
+        hold_shift(&mut app, false);
+    }
+
+    phase shift_never_skips_the_hosts_question_for_what_undo_cannot_take_back;
+    // What Undo cannot take back is asked by the host though Shift is held.
+    {
+        let mut app = TestApp::<NotesApp>::new().unwrap();
+        app.invoke(Notes::ADD.with("Milk")).unwrap();
+        let mut app = app.reopen().unwrap();
+        hold_shift(&mut app, true);
+        app.harness().click_named("forget").unwrap();
+        app.settle();
+        assert!(app.asking().is_some(), "the person is asked first");
+        assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
+        hold_shift(&mut app, false);
+    }
 }
 
-/// With Shift the host's question is skipped for what Undo takes back: it
-/// applies at once and Undo takes it back.
-#[test]
-fn shift_skips_the_hosts_question_for_what_undo_takes_back() {
-    let mut app = keep_open(true);
-    assert_eq!(app.asking(), None, "with Shift nobody is asked");
-    assert_eq!(app.state().open_minutes, 60, "it applied at once");
-    assert!(app.undo(), "Undo takes it back");
-    assert_eq!(app.state().open_minutes, 0);
-    hold_shift(&mut app, false);
-}
+tilo_test_env::scenario! {
+    fn what_a_press_has_to_say_stands_at_the_control_pressed;
 
-/// What Undo cannot take back is asked by the host though Shift is held.
-#[test]
-fn shift_never_skips_the_hosts_question_for_what_undo_cannot_take_back() {
-    let mut app = TestApp::<NotesApp>::new().unwrap();
-    app.invoke(Notes::ADD.with("Milk")).unwrap();
-    let mut app = app.reopen().unwrap();
-    hold_shift(&mut app, true);
-    app.harness().click_named("forget").unwrap();
-    app.settle();
-    assert!(app.asking().is_some(), "the person is asked first");
-    assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
-    hold_shift(&mut app, false);
-}
+    phase a_confirmation_stands_at_the_control_pressed;
+    // What has to be confirmed is asked at the control pressed, as a popover
+    // beside it: never as the window's search, which a click never opens.
+    {
+        let mut app = TestApp::<NotesApp>::new().unwrap();
+        app.invoke(Notes::ADD.with("Milk")).unwrap();
+        let mut app = app.reopen().unwrap();
+        let forget = app.harness().targets()["forget"];
+        app.harness().click_named("forget").unwrap();
+        app.settle();
+        assert!(app.asking().is_some(), "the person is asked first");
+        let anchor = app
+            .harness()
+            .asking_at()
+            .expect("the question has a control");
+        assert!(
+            anchor.contains(forget.center()),
+            "it stands at the pressed control: {anchor:?} for {forget:?}"
+        );
+        assert!(!app.harness().palette_shown(), "a click opens no search");
+        assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
+    }
 
-/// What has to be confirmed is asked at the control pressed, as a popover
-/// beside it: never as the window's search, which a click never opens.
-#[test]
-fn a_confirmation_stands_at_the_control_pressed() {
-    let mut app = TestApp::<NotesApp>::new().unwrap();
-    app.invoke(Notes::ADD.with("Milk")).unwrap();
-    let mut app = app.reopen().unwrap();
-    let forget = app.harness().targets()["forget"];
-    app.harness().click_named("forget").unwrap();
-    app.settle();
-    assert!(app.asking().is_some(), "the person is asked first");
-    let anchor = app
-        .harness()
-        .asking_at()
-        .expect("the question has a control");
-    assert!(
-        anchor.contains(forget.center()),
-        "it stands at the pressed control: {anchor:?} for {forget:?}"
-    );
-    assert!(!app.harness().palette_shown(), "a click opens no search");
-    assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
-}
-
-/// A press the action refuses when it runs says why at the control
-/// pressed, announced and gone with the next key, and opens no search over
-/// the window.
-#[test]
-fn a_refused_press_is_said_at_the_control_and_opens_no_search() {
-    let mut app = TestApp::<NotesApp>::new().unwrap();
-    let remove = app.harness().targets()["remove"];
-    // With no note there is nothing to remove: the action refuses.
-    app.harness().click_named("remove").unwrap();
-    app.settle();
-    let notice = app
-        .harness()
-        .control_notice()
-        .cloned()
-        .expect("the refusal stands at the control");
-    assert!(
-        notice.anchor.contains(remove.center()),
-        "beside the pressed control: {notice:?} for {remove:?}"
-    );
-    assert!(
-        notice.text.to_lowercase().contains("no such note"),
-        "{notice:?}"
-    );
-    assert!(!app.harness().palette_shown(), "a refusal opens no search");
-    assert_eq!(app.asking(), None);
-    app.harness().key("Escape");
-    assert_eq!(
-        app.harness().control_notice(),
-        None,
-        "the next key dismisses it"
-    );
+    phase a_refused_press_is_said_at_the_control_and_opens_no_search;
+    // A press the action refuses when it runs says why at the control
+    // pressed, announced and gone with the next key, and opens no search over
+    // the window.
+    {
+        let mut app = TestApp::<NotesApp>::new().unwrap();
+        let remove = app.harness().targets()["remove"];
+        // With no note there is nothing to remove: the action refuses.
+        app.harness().click_named("remove").unwrap();
+        app.settle();
+        let notice = app
+            .harness()
+            .control_notice()
+            .cloned()
+            .expect("the refusal stands at the control");
+        assert!(
+            notice.anchor.contains(remove.center()),
+            "beside the pressed control: {notice:?} for {remove:?}"
+        );
+        assert!(
+            notice.text.to_lowercase().contains("no such note"),
+            "{notice:?}"
+        );
+        assert!(!app.harness().palette_shown(), "a refusal opens no search");
+        assert_eq!(app.asking(), None);
+        app.harness().key("Escape");
+        assert_eq!(
+            app.harness().control_notice(),
+            None,
+            "the next key dismisses it"
+        );
+    }
 }

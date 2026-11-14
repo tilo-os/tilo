@@ -1026,265 +1026,277 @@ mod tests {
         })
     }
 
-    #[test]
-    fn only_connectors_are_asked_for_a_reading() {
-        let workspace = ["so.tilo.chat", "so.tilo.contacts", "so.tilo.discord"].map(String::from);
-        let runs_here = |app: &str| matches!(app, "so.tilo.chat" | "so.tilo.contacts");
-        assert_eq!(connector_apps(workspace, runs_here), ["so.tilo.discord"]);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+        )]
+        fn a_linked_account_is_read_offered_and_linked_once;
 
-    #[test]
-    fn connecting_goes_to_the_consent_page() {
-        let host = host(Err("gone".into()));
-        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
-        assert!(
-            accounts.accounts().is_empty(),
-            "nothing is known before asking"
-        );
-        accounts.refresh();
-        assert_eq!(
-            accounts.accounts()[0].state,
-            LinkState::Unlinked {
-                connect: true,
-                elsewhere: Some("In the Discord server, type /link.".into())
-            }
-        );
-        accounts.link("so.tilo.discord");
-        assert_eq!(*host.opened.borrow(), ["https://discord.example/authorize"]);
-        assert_eq!(accounts.accounts()[0].state, LinkState::Connecting);
-    }
-
-    #[test]
-    fn a_linked_account_is_named_with_its_picture_for_the_profile() {
-        let host = host(Ok(kim()));
-        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
-        assert_eq!(accounts.profile_links(), None, "nothing answered yet");
-        accounts.refresh();
-        assert_eq!(accounts.profile_links(), Some(Vec::new()), "not linked");
+        phase only_connectors_are_asked_for_a_reading;
         {
-            let mut reading = host.reading.borrow_mut();
-            reading.account = Some(kim().account);
-            reading.picture = Some("data:image/png;base64,AAAA".into());
-            reading.unlink = Some("unlink-mine".into());
+            let workspace = ["so.tilo.chat", "so.tilo.contacts", "so.tilo.discord"].map(String::from);
+            let runs_here = |app: &str| matches!(app, "so.tilo.chat" | "so.tilo.contacts");
+            assert_eq!(connector_apps(workspace, runs_here), ["so.tilo.discord"]);
         }
-        accounts.refresh();
-        assert_eq!(
-            accounts.profile_links(),
-            Some(vec![ProfileLink {
-                service: "Discord".into(),
-                handle: "kim".into(),
-                picture: Some("data:image/png;base64,AAAA".into()),
-            }])
-        );
-        accounts.unlink("so.tilo.discord");
-        accounts.refresh();
-        assert_eq!(accounts.profile_links(), Some(Vec::new()));
-    }
 
-    #[test]
-    fn a_token_shows_its_offer_and_a_yes_links_it() {
-        let host = host(Ok(kim()));
-        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
-        accounts.offer("T0KEN");
-        assert_eq!(accounts.accounts()[0].state, LinkState::Offered(kim()));
-        accounts.accept("so.tilo.discord");
-        assert_eq!(
-            accounts.accounts()[0].state,
-            LinkState::Linked(kim().account)
-        );
-    }
+        phase connecting_goes_to_the_consent_page;
+        {
+            let host = host(Err("gone".into()));
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            assert!(
+                accounts.accounts().is_empty(),
+                "nothing is known before asking"
+            );
+            accounts.refresh();
+            assert_eq!(
+                accounts.accounts()[0].state,
+                LinkState::Unlinked {
+                    connect: true,
+                    elsewhere: Some("In the Discord server, type /link.".into())
+                }
+            );
+            accounts.link("so.tilo.discord");
+            assert_eq!(*host.opened.borrow(), ["https://discord.example/authorize"]);
+            assert_eq!(accounts.accounts()[0].state, LinkState::Connecting);
+        }
 
-    #[test]
-    fn an_offer_started_here_links_without_a_second_yes() {
-        let host = host(Ok(OfferReading {
-            started_here: true,
-            ..kim()
-        }));
-        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
-        accounts.refresh();
-        accounts.offer("T0KEN");
-        assert_eq!(
-            accounts.accounts()[0].state,
-            LinkState::Linked(kim().account)
-        );
-    }
-
-    #[test]
-    fn readings_that_cross_spend_the_token_once() {
-        let host = host(Ok(OfferReading {
-            started_here: true,
-            ..kim()
-        }));
-        host.holding.set(true);
-        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
-        // The page came back with a token, and the card opening asked again.
-        accounts.offer("T0KEN");
-        accounts.refresh();
-        loop {
-            let waiting = std::mem::take(&mut *host.waiting.borrow_mut());
-            if waiting.is_empty() {
-                break;
+        phase a_linked_account_is_named_with_its_picture_for_the_profile;
+        {
+            let host = host(Ok(kim()));
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            assert_eq!(accounts.profile_links(), None, "nothing answered yet");
+            accounts.refresh();
+            assert_eq!(accounts.profile_links(), Some(Vec::new()), "not linked");
+            {
+                let mut reading = host.reading.borrow_mut();
+                reading.account = Some(kim().account);
+                reading.picture = Some("data:image/png;base64,AAAA".into());
+                reading.unlink = Some("unlink-mine".into());
             }
-            for answer in waiting {
-                answer();
+            accounts.refresh();
+            assert_eq!(
+                accounts.profile_links(),
+                Some(vec![ProfileLink {
+                    service: "Discord".into(),
+                    handle: "kim".into(),
+                    picture: Some("data:image/png;base64,AAAA".into()),
+                }])
+            );
+            accounts.unlink("so.tilo.discord");
+            accounts.refresh();
+            assert_eq!(accounts.profile_links(), Some(Vec::new()));
+        }
+
+        phase a_token_shows_its_offer_and_a_yes_links_it;
+        {
+            let host = host(Ok(kim()));
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            accounts.offer("T0KEN");
+            assert_eq!(accounts.accounts()[0].state, LinkState::Offered(kim()));
+            accounts.accept("so.tilo.discord");
+            assert_eq!(
+                accounts.accounts()[0].state,
+                LinkState::Linked(kim().account)
+            );
+        }
+
+        phase an_offer_started_here_links_without_a_second_yes;
+        {
+            let host = host(Ok(OfferReading {
+                started_here: true,
+                ..kim()
+            }));
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            accounts.refresh();
+            accounts.offer("T0KEN");
+            assert_eq!(
+                accounts.accounts()[0].state,
+                LinkState::Linked(kim().account)
+            );
+        }
+
+        phase readings_that_cross_spend_the_token_once;
+        {
+            let host = host(Ok(OfferReading {
+                started_here: true,
+                ..kim()
+            }));
+            host.holding.set(true);
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            // The page came back with a token, and the card opening asked again.
+            accounts.offer("T0KEN");
+            accounts.refresh();
+            loop {
+                let waiting = std::mem::take(&mut *host.waiting.borrow_mut());
+                if waiting.is_empty() {
+                    break;
+                }
+                for answer in waiting {
+                    answer();
+                }
             }
+            let asked = host.actions.borrow();
+            let count = |action: &str| asked.iter().filter(|a| *a == action).count();
+            assert_eq!(
+                (count("link-offer"), count("accept-link")),
+                (1, 1),
+                "{asked:?}"
+            );
+            let account = &accounts.accounts()[0];
+            assert_eq!(account.state, LinkState::Linked(kim().account));
+            assert_eq!(account.problem, None);
         }
-        let asked = host.actions.borrow();
-        let count = |action: &str| asked.iter().filter(|a| *a == action).count();
-        assert_eq!(
-            (count("link-offer"), count("accept-link")),
-            (1, 1),
-            "{asked:?}"
-        );
-        let account = &accounts.accounts()[0];
-        assert_eq!(account.state, LinkState::Linked(kim().account));
-        assert_eq!(account.problem, None);
-    }
 
-    #[test]
-    fn a_declined_offer_is_dropped() {
-        let host = host(Ok(kim()));
-        let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
-        accounts.offer("T0KEN");
-        accounts.decline("so.tilo.discord");
-        assert!(matches!(
-            accounts.accounts()[0].state,
-            LinkState::Unlinked { .. }
-        ));
-    }
-
-    #[test]
-    fn a_token_with_no_offer_is_asked_after_then_says_why() {
-        let host = host(Err("This link ran out.".into()));
-        let accounts = LinkedAccounts::new(Rc::new(WorkspaceAccounts::new(
-            Rc::new(Rc::clone(&host)),
-            Rc::new(|| {}),
-        )));
-        accounts.offer("T0KEN");
-        assert_eq!(accounts.accounts()[0].state, LinkState::Looking);
-        let mut recheck = LinkingRecheck::default();
-        let mut now = ui_core::time::Instant::now();
-        let mut rounds = 0;
-        while let Some(due) = recheck.follow(&accounts, true, now) {
-            now = due;
-            rounds += 1;
-            assert!(rounds <= 2 * OFFER_TRIES, "the asks end");
+        phase a_declined_offer_is_dropped;
+        {
+            let host = host(Ok(kim()));
+            let accounts = WorkspaceAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+            accounts.offer("T0KEN");
+            accounts.decline("so.tilo.discord");
+            assert!(matches!(
+                accounts.accounts()[0].state,
+                LinkState::Unlinked { .. }
+            ));
         }
-        let account = &accounts.accounts()[0];
-        assert!(matches!(account.state, LinkState::Unlinked { .. }));
-        assert_eq!(account.problem.as_deref(), Some("This link ran out."));
-    }
 
-    #[test]
-    fn a_workspace_with_no_connector_is_asked_again_a_few_times_then_left() {
-        let host = host(Err("gone".into()));
-        host.reading.borrow_mut().connected = false;
-        let accounts = LinkedAccounts::new(Rc::new(WorkspaceAccounts::new(
-            Rc::new(Rc::clone(&host)),
-            Rc::new(|| {}),
-        )));
-        let mut recheck = LinkingRecheck::default();
-        let mut now = ui_core::time::Instant::now();
-        let mut waits = Vec::new();
-        while let Some(due) = recheck.follow(&accounts, true, now) {
-            waits.push(due.duration_since(now));
-            now = due;
-            assert!(waits.len() <= 10, "the asks again end");
+        phase a_token_with_no_offer_is_asked_after_then_says_why;
+        {
+            let host = host(Err("This link ran out.".into()));
+            let accounts = LinkedAccounts::new(Rc::new(WorkspaceAccounts::new(
+                Rc::new(Rc::clone(&host)),
+                Rc::new(|| {}),
+            )));
+            accounts.offer("T0KEN");
+            assert_eq!(accounts.accounts()[0].state, LinkState::Looking);
+            let mut recheck = LinkingRecheck::default();
+            let mut now = ui_core::time::Instant::now();
+            let mut rounds = 0;
+            while let Some(due) = recheck.follow(&accounts, true, now) {
+                now = due;
+                rounds += 1;
+                assert!(rounds <= 2 * OFFER_TRIES, "the asks end");
+            }
+            let account = &accounts.accounts()[0];
+            assert!(matches!(account.state, LinkState::Unlinked { .. }));
+            assert_eq!(account.problem.as_deref(), Some("This link ran out."));
         }
-        assert_eq!(host.asked.borrow().len() / 2, UNANSWERED_RETRIES as usize);
+
+        phase a_workspace_with_no_connector_is_asked_again_a_few_times_then_left;
+        {
+            let host = host(Err("gone".into()));
+            host.reading.borrow_mut().connected = false;
+            let accounts = LinkedAccounts::new(Rc::new(WorkspaceAccounts::new(
+                Rc::new(Rc::clone(&host)),
+                Rc::new(|| {}),
+            )));
+            let mut recheck = LinkingRecheck::default();
+            let mut now = ui_core::time::Instant::now();
+            let mut waits = Vec::new();
+            while let Some(due) = recheck.follow(&accounts, true, now) {
+                waits.push(due.duration_since(now));
+                now = due;
+                assert!(waits.len() <= 10, "the asks again end");
+            }
+            assert_eq!(host.asked.borrow().len() / 2, UNANSWERED_RETRIES as usize);
+        }
     }
 
-    /// A record action is the record's own invocation, as the app's door
-    /// offers it: the app's record, its own resource, and the arguments the
-    /// action takes, held until it settles.
-    #[test]
-    fn a_record_action_asks_the_host_at_the_records_own_door() {
-        let invocation = tilo_actions::InvocationId::new();
-        let read = record_invocation(
-            invocation,
-            "so.tilo.discord",
-            READ_ACTION,
-            serde_json::Map::new(),
-        );
-        assert_eq!(read.target.provider, "record:so.tilo.discord:");
-        assert_eq!(read.target.address.resource, "");
-        assert_eq!(read.target.address.action, READ_ACTION);
-        assert_eq!(read.argument, tilo_actions::remote::InvokeArgument::None);
-        assert_eq!(read.invocation, invocation, "the answer names it");
-        assert!(
-            read.wait_ms.is_some(),
-            "a reading that goes elsewhere answers once it is back"
-        );
-        let asked = record_invocation(
-            invocation,
-            "so.tilo.discord",
-            "link-offer",
-            serde_json::Map::from_iter([("token".to_owned(), serde_json::json!("T0KEN"))]),
-        );
-        assert_eq!(
-            asked.argument,
-            tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
-                "token".to_owned(),
-                serde_json::json!("T0KEN")
-            )]))
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_record_action_asks_the_host_and_reads_its_answer;
 
-    /// What the host answered is what the accounts read: the action's value,
-    /// or why it did not run.
-    #[test]
-    fn the_hosts_answer_reads_as_the_action_s_value_or_its_reason() {
-        use tilo_actions::remote::{ActionHostError, InvocationReceipt, ReceiptStatus};
-        use tilo_actions::{ActionFailure, ActionOutput};
-        let receipt = |status| {
-            Some(Ok(InvocationReceipt {
-                invocation: tilo_actions::InvocationId::new(),
-                status,
-            }))
-        };
-        let value = serde_json::json!({"code": "ABCDEFGHJKLM"});
-        assert_eq!(
-            record_answer(receipt(ReceiptStatus::Completed {
-                output: ActionOutput {
-                    value: Some(value.clone()),
-                    ..ActionOutput::default()
-                },
-            })),
-            Ok(value)
-        );
-        assert_eq!(
-            record_answer(receipt(ReceiptStatus::Completed {
-                output: ActionOutput::default(),
-            })),
-            Ok(serde_json::Value::Null),
-            "an action that says nothing answers nothing"
-        );
-        assert_eq!(
-            record_answer(receipt(ReceiptStatus::Failed {
-                error: ActionFailure {
-                    code: "unknown_action".into(),
-                    message: "no such action".into(),
-                    details: None,
-                    retryable: false,
-                },
-            })),
-            Err("no such action".to_owned())
-        );
-        assert_eq!(
-            record_answer(receipt(ReceiptStatus::Rejected {
-                error: ActionHostError::UnknownAction,
-            })),
-            Err("no such action is offered".to_owned())
-        );
-        assert_eq!(
-            record_answer(Some(Err(ActionHostError::Unavailable {
-                reason: "the session is closed".into(),
-            }))),
-            Err("remote actions are unavailable: the session is closed".to_owned())
-        );
-        assert_eq!(
-            record_answer(None),
-            Err("the workspace's host did not answer".to_owned())
-        );
+        phase a_record_action_asks_the_host_at_the_records_own_door;
+        // A record action is the record's own invocation, as the app's door
+        // offers it: the app's record, its own resource, and the arguments the
+        // action takes, held until it settles.
+        {
+            let invocation = tilo_actions::InvocationId::new();
+            let read = record_invocation(
+                invocation,
+                "so.tilo.discord",
+                READ_ACTION,
+                serde_json::Map::new(),
+            );
+            assert_eq!(read.target.provider, "record:so.tilo.discord:");
+            assert_eq!(read.target.address.resource, "");
+            assert_eq!(read.target.address.action, READ_ACTION);
+            assert_eq!(read.argument, tilo_actions::remote::InvokeArgument::None);
+            assert_eq!(read.invocation, invocation, "the answer names it");
+            assert!(
+                read.wait_ms.is_some(),
+                "a reading that goes elsewhere answers once it is back"
+            );
+            let asked = record_invocation(
+                invocation,
+                "so.tilo.discord",
+                "link-offer",
+                serde_json::Map::from_iter([("token".to_owned(), serde_json::json!("T0KEN"))]),
+            );
+            assert_eq!(
+                asked.argument,
+                tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
+                    "token".to_owned(),
+                    serde_json::json!("T0KEN")
+                )]))
+            );
+        }
+
+        phase the_hosts_answer_reads_as_the_action_s_value_or_its_reason;
+        // What the host answered is what the accounts read: the action's value,
+        // or why it did not run.
+        {
+            use tilo_actions::remote::{ActionHostError, InvocationReceipt, ReceiptStatus};
+            use tilo_actions::{ActionFailure, ActionOutput};
+            let receipt = |status| {
+                Some(Ok(InvocationReceipt {
+                    invocation: tilo_actions::InvocationId::new(),
+                    status,
+                }))
+            };
+            let value = serde_json::json!({"code": "ABCDEFGHJKLM"});
+            assert_eq!(
+                record_answer(receipt(ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(value.clone()),
+                        ..ActionOutput::default()
+                    },
+                })),
+                Ok(value)
+            );
+            assert_eq!(
+                record_answer(receipt(ReceiptStatus::Completed {
+                    output: ActionOutput::default(),
+                })),
+                Ok(serde_json::Value::Null),
+                "an action that says nothing answers nothing"
+            );
+            assert_eq!(
+                record_answer(receipt(ReceiptStatus::Failed {
+                    error: ActionFailure {
+                        code: "unknown_action".into(),
+                        message: "no such action".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                })),
+                Err("no such action".to_owned())
+            );
+            assert_eq!(
+                record_answer(receipt(ReceiptStatus::Rejected {
+                    error: ActionHostError::UnknownAction,
+                })),
+                Err("no such action is offered".to_owned())
+            );
+            assert_eq!(
+                record_answer(Some(Err(ActionHostError::Unavailable {
+                    reason: "the session is closed".into(),
+                }))),
+                Err("remote actions are unavailable: the session is closed".to_owned())
+            );
+            assert_eq!(
+                record_answer(None),
+                Err("the workspace's host did not answer".to_owned())
+            );
+        }
     }
 }

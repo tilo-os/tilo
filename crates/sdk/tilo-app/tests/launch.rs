@@ -26,31 +26,112 @@ impl ResourceApp for PrivateSketch {
     }
 }
 
-#[test]
-fn private_headless_launch_uses_a_disposable_profile_and_consumes_its_flag() {
-    let directory = tempfile::tempdir().unwrap();
-    let mut shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
-    shared
-        .invoke(Sketch::TRACE.with("Personal sketch"))
-        .unwrap();
-    let mut private = shared.relaunch(&["--private", "private.png"]).unwrap();
-    assert_eq!(private.state(), Sketch::default());
-    private
-        .harness()
-        .expect(
-            &tilo_app::headless::SemanticExpectation::named("private-launch")
-                .name_contains("Private true, arguments private.png"),
+tilo_test_env::scenario! {
+    fn a_launch_reaches_the_view_with_its_flags_options_media_and_effects;
+
+    phase private_headless_launch_uses_a_disposable_profile_and_consumes_its_flag;
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let mut shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
+        shared
+            .invoke(Sketch::TRACE.with("Personal sketch"))
+            .unwrap();
+        let mut private = shared.relaunch(&["--private", "private.png"]).unwrap();
+        assert_eq!(private.state(), Sketch::default());
+        private
+            .harness()
+            .expect(
+                &tilo_app::headless::SemanticExpectation::named("private-launch")
+                    .name_contains("Private true, arguments private.png"),
+            )
+            .unwrap();
+        private
+            .invoke(Sketch::TRACE.with("Disposable sketch"))
+            .unwrap();
+        let shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
+        assert_eq!(shared.state().source, "Personal sketch");
+        drop(private);
+        drop(shared);
+        let shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
+        assert_eq!(shared.state().source, "Personal sketch");
+    }
+
+    phase the_apps_own_options_reach_its_launch_and_its_view_apart_from_its_arguments;
+    {
+        let mut app = TestApp::<TunedApp>::launched(&["--pen=ink", "--grid", "harbour"]).unwrap();
+        app.harness().relayout();
+        assert_eq!(app.state().source, "ink true");
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Pen ink, grid true, on harbour"),
+            "the view reads the options and the one argument"
+        );
+
+        let mut plain = TestApp::<TunedApp>::launched(&["--pen", "chalk"]).unwrap();
+        plain.harness().relayout();
+        assert_eq!(plain.state().source, "chalk false");
+        assert!(
+            plain
+                .harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Pen chalk, grid false, on ")
+        );
+    }
+
+    phase the_view_reads_the_media_a_launch_names_and_the_playback_it_continues;
+    {
+        let shown = |app: &mut TestApp<PlayerApp>| app.harness().inspection_json().unwrap();
+
+        let mut handed = TestApp::<PlayerApp>::handed_off(
+            &["https://media.example/evening.mp4"],
+            PlaybackHandoff {
+                position_ms: 42_000,
+                resume_playing: true,
+                title: Some("Evening news".into()),
+            },
         )
         .unwrap();
-    private
-        .invoke(Sketch::TRACE.with("Disposable sketch"))
-        .unwrap();
-    let shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
-    assert_eq!(shared.state().source, "Personal sketch");
-    drop(private);
-    drop(shared);
-    let shared = TestApp::<PrivateSketch>::open_data_dir(directory.path()).unwrap();
-    assert_eq!(shared.state().source, "Personal sketch");
+        assert!(
+            shown(&mut handed)
+                .contains("https://media.example/evening.mp4 (Evening news) from 42000 ms, playing")
+        );
+        assert_eq!(handed.state(), Sketch::default(), "the record is untouched");
+
+        let mut launched =
+            TestApp::<PlayerApp>::launched(&["https://media.example/evening.mp4"]).unwrap();
+        assert!(shown(&mut launched).contains("https://media.example/evening.mp4 from the start"));
+
+        let mut plain = TestApp::<PlayerApp>::new().unwrap();
+        assert!(shown(&mut plain).contains("nothing to play"));
+    }
+
+    phase a_launch_invokes_an_effect_which_changes_no_document_and_a_viewer_reaches;
+    {
+        let mut app = TestApp::<GalleryApp>::launched(&["harbour.png"]).unwrap();
+        app.harness().relayout();
+        assert_eq!(SHOWN.with(|shown| shown.borrow().clone()), ["harbour.png"]);
+        assert_eq!(app.state().source, "", "the launch edited nothing");
+        assert!(!app.undo(), "nothing to take back");
+
+        // A viewer may not edit, but an effect declared for readers reaches its
+        // handler through the same door.
+        let mut viewer = TestApp::<GalleryApp>::with_role(tilo_app::Role::Viewer).unwrap();
+        let dispatcher = GALLERY
+            .with(|gallery| gallery.borrow_mut().take())
+            .expect("the viewer's view was built");
+        dispatcher.submit(Invoke::effect(&GalleryEffect::Show {
+            picture: "meadow.png".into(),
+        }));
+        viewer.settle();
+        assert_eq!(
+            SHOWN.with(|shown| shown.borrow().clone()),
+            ["harbour.png", "meadow.png"]
+        );
+        assert!(dispatcher.refused().get().is_none(), "nothing was refused");
+    }
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -125,123 +206,277 @@ impl ResourceApp for SketchApp {
     }
 }
 
-#[test]
-fn a_path_argument_opens_the_record_of_that_path() {
-    let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
-    app.harness().relayout();
-    assert_eq!(
-        app.record(),
-        &RecordId::derived("sketch", &RecordId::for_file("/pictures/harbour.png"))
-    );
-    assert_eq!(app.state().source, "/pictures/harbour.png");
-    let frame = app.harness().inspection_json().unwrap();
-    assert!(
-        frame.contains("Launched on /pictures/harbour.png"),
-        "{frame}"
-    );
+tilo_test_env::scenario! {
+    fn a_launch_on_a_path_opens_that_paths_record;
 
-    // A launch naming nothing opens the workspace's one record.
-    let mut plain = TestApp::<SketchApp>::new().unwrap();
-    assert_eq!(plain.record(), &RecordId::package_primary());
-    assert_eq!(plain.state().source, "");
-    let frame = plain.harness().inspection_json().unwrap();
-    assert!(
-        frame.contains("Launched on") && !frame.contains("Launched on /"),
-        "{frame}"
-    );
+    phase a_path_argument_opens_the_record_of_that_path;
+    {
+        let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
+        app.harness().relayout();
+        assert_eq!(
+            app.record(),
+            &RecordId::derived("sketch", &RecordId::for_file("/pictures/harbour.png"))
+        );
+        assert_eq!(app.state().source, "/pictures/harbour.png");
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(
+            frame.contains("Launched on /pictures/harbour.png"),
+            "{frame}"
+        );
+
+        // A launch naming nothing opens the workspace's one record.
+        let mut plain = TestApp::<SketchApp>::new().unwrap();
+        assert_eq!(plain.record(), &RecordId::package_primary());
+        assert_eq!(plain.state().source, "");
+        let frame = plain.harness().inspection_json().unwrap();
+        assert!(
+            frame.contains("Launched on") && !frame.contains("Launched on /"),
+            "{frame}"
+        );
+    }
+
+    phase launch_actions_are_the_participants_own_undoable_edits;
+    {
+        let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
+        app.harness().relayout();
+        assert_eq!(app.state().source, "/pictures/harbour.png");
+        let versions = app.versions();
+        let traced = versions
+            .last()
+            .and_then(|version| version.context.as_ref())
+            .and_then(|context| match &context.what {
+                Some(tilo_actions::Did::Verb(verb)) => Some(verb.action.action.as_str()),
+                _ => None,
+            });
+        assert_eq!(traced, Some("trace"), "{versions:?}");
+        assert!(app.undo());
+        assert_eq!(app.state().source, "");
+    }
+
+    phase launching_on_a_record_again_keeps_its_edits_and_does_not_refill_it;
+    {
+        let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
+        app.harness().relayout();
+        app.invoke(Sketch::NOTE.with("the lighthouse")).unwrap();
+        let first = app.record().clone();
+        let versions = app.versions().len();
+
+        let mut again = app.relaunch(&["/pictures/harbour.png"]).unwrap();
+        again.harness().relayout();
+        assert_eq!(again.record(), &first);
+        assert_eq!(again.state().source, "/pictures/harbour.png");
+        assert_eq!(again.state().notes.len(), 1);
+        assert_eq!(again.versions().len(), versions, "nothing re-applied");
+
+        let mut other = again.relaunch(&["/pictures/meadow.png"]).unwrap();
+        other.harness().relayout();
+        assert_ne!(other.record(), &first);
+        assert_eq!(other.state().source, "/pictures/meadow.png");
+        assert!(other.state().notes.is_empty());
+    }
+
+    phase a_window_opens_another_record_in_its_own_place;
+    {
+        let mut app = TestApp::<SketchApp>::new().unwrap();
+        assert_eq!(app.record(), &RecordId::package_primary());
+        app.invoke(Sketch::NOTE.with("on the default")).unwrap();
+
+        app.open_here(&["/pictures/harbour.png"]).unwrap();
+        let harbour = RecordId::derived("sketch", &RecordId::for_file("/pictures/harbour.png"));
+        assert_eq!(
+            app.record(),
+            &harbour,
+            "the window shows the path's own record"
+        );
+        assert_eq!(
+            app.state().source,
+            "/pictures/harbour.png",
+            "with the actions a launch on it takes"
+        );
+        assert!(
+            app.state().notes.is_empty(),
+            "and none of the other record's"
+        );
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(
+            frame.contains("Launched on /pictures/harbour.png"),
+            "the view is built for the launch: {frame}"
+        );
+
+        // A record that cannot be opened is refused with the reason, and the
+        // window keeps the one it shows.
+        let refused = app.open_here(&["/no/such/folder/notes.txt"]).unwrap_err();
+        assert!(refused.contains("cannot be read"), "{refused}");
+        assert_eq!(app.record(), &harbour);
+
+        // Edits go to the record shown now, through the same door.
+        app.invoke(Sketch::NOTE.with("on the harbour")).unwrap();
+        assert_eq!(app.state().notes.len(), 1);
+
+        // Each record kept its own edits, durably.
+        let harbour_again = app.relaunch(&["/pictures/harbour.png"]).unwrap();
+        assert_eq!(harbour_again.record(), &harbour);
+        assert_eq!(harbour_again.state().notes.len(), 1);
+        // A bare launch opens the workspace's one record, which every window
+        // of the app opens, with what was noted on it.
+        let bare = harbour_again.relaunch(&[]).unwrap();
+        assert_eq!(bare.record(), &RecordId::package_primary());
+        let notes: Vec<String> = bare
+            .state()
+            .notes
+            .values()
+            .map(|note| note.text.clone())
+            .collect();
+        assert_eq!(notes, ["on the default"]);
+    }
+
+    phase a_launch_genesis_is_the_same_on_every_device_and_nobodys_edit;
+    {
+        let mut here = TestApp::<GenesisApp>::launched(&["/pictures/harbour.png"]).unwrap();
+        let there = TestApp::<GenesisApp>::launched(&["/pictures/harbour.png"]).unwrap();
+        assert_eq!(here.state().source, "/pictures/harbour.png");
+        assert!(!here.undo(), "the genesis is no undo step");
+        assert_eq!(
+            here.read_document(|doc| doc.clone().get_heads()),
+            there.read_document(|doc| doc.clone().get_heads()),
+            "both devices wrote the same genesis"
+        );
+        let mut theirs = there.peer_document();
+        here.merge_peer(&mut theirs).unwrap();
+        assert_eq!(here.state().source, "/pictures/harbour.png");
+    }
+
+    phase a_launch_reads_the_record_it_opens;
+    {
+        let mut app = TestApp::<GenesisApp>::launched(&["/pictures/harbour.png"]).unwrap();
+        assert!(
+            app.state().notes.is_empty(),
+            "a created record is not reopened"
+        );
+        app.invoke(Sketch::NOTE.with("the lighthouse")).unwrap();
+        let app = app.relaunch(&["/pictures/harbour.png"]).unwrap();
+        let mut texts: Vec<String> = app
+            .state()
+            .notes
+            .values()
+            .map(|note| note.text.clone())
+            .collect();
+        texts.sort();
+        assert_eq!(texts, ["reopened over 1", "the lighthouse"]);
+    }
 }
 
-#[test]
-fn launch_actions_are_the_participants_own_undoable_edits() {
-    let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
-    app.harness().relayout();
-    assert_eq!(app.state().source, "/pictures/harbour.png");
-    let versions = app.versions();
-    let traced = versions
-        .last()
-        .and_then(|version| version.context.as_ref())
-        .and_then(|context| match &context.what {
-            Some(tilo_actions::Did::Verb(verb)) => Some(verb.action.action.as_str()),
-            _ => None,
-        });
-    assert_eq!(traced, Some("trace"), "{versions:?}");
-    assert!(app.undo());
-    assert_eq!(app.state().source, "");
-}
+tilo_test_env::scenario! {
+    fn a_handed_file_reaches_only_an_app_that_opens_its_type;
 
-#[test]
-fn launching_on_a_record_again_keeps_its_edits_and_does_not_refill_it() {
-    let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
-    app.harness().relayout();
-    app.invoke(Sketch::NOTE.with("the lighthouse")).unwrap();
-    let first = app.record().clone();
-    let versions = app.versions().len();
+    phase a_handed_file_reaches_the_app_and_learns_the_resource_that_holds_it;
+    {
+        let (file, receipt) =
+            OpenFile::new("lighthouse.txt", "text/plain", b"keeper".to_vec()).unwrap();
+        let mut app = TestApp::<SketchApp>::handed(file).unwrap();
+        app.harness().relayout();
+        let notes: Vec<String> = app
+            .state()
+            .notes
+            .values()
+            .map(|note| note.text.clone())
+            .collect();
+        assert_eq!(notes, ["keeper"]);
+        assert_eq!(receipt.opened_resource().as_deref(), Some("test.sketch"));
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains("Launched on lighthouse.txt"), "{frame}");
+    }
 
-    let mut again = app.relaunch(&["/pictures/harbour.png"]).unwrap();
-    again.harness().relayout();
-    assert_eq!(again.record(), &first);
-    assert_eq!(again.state().source, "/pictures/harbour.png");
-    assert_eq!(again.state().notes.len(), 1);
-    assert_eq!(again.versions().len(), versions, "nothing re-applied");
+    phase a_file_of_a_type_the_app_does_not_open_is_refused;
+    {
+        let (file, receipt) = OpenFile::new("chart.pdf", "application/pdf", b"%PDF".to_vec()).unwrap();
+        assert!(TestApp::<SketchApp>::handed(file).is_err());
+        assert_eq!(receipt.opened_resource(), None);
+    }
 
-    let mut other = again.relaunch(&["/pictures/meadow.png"]).unwrap();
-    other.harness().relayout();
-    assert_ne!(other.record(), &first);
-    assert_eq!(other.state().source, "/pictures/meadow.png");
-    assert!(other.state().notes.is_empty());
-}
+    phase the_definition_names_what_the_app_opens;
+    {
+        let definition = tilo_app::framework::definition::<SketchApp>();
+        assert!(definition.opens_media_type("text/plain; charset=utf-8"));
+        assert!(!definition.opens_media_type("application/pdf"));
+    }
 
-#[test]
-fn a_handed_file_reaches_the_app_and_learns_the_resource_that_holds_it() {
-    let (file, receipt) =
-        OpenFile::new("lighthouse.txt", "text/plain", b"keeper".to_vec()).unwrap();
-    let mut app = TestApp::<SketchApp>::handed(file).unwrap();
-    app.harness().relayout();
-    let notes: Vec<String> = app
-        .state()
-        .notes
-        .values()
-        .map(|note| note.text.clone())
-        .collect();
-    assert_eq!(notes, ["keeper"]);
-    assert_eq!(receipt.opened_resource().as_deref(), Some("test.sketch"));
-    let frame = app.harness().inspection_json().unwrap();
-    assert!(frame.contains("Launched on lighthouse.txt"), "{frame}");
-}
+    phase a_launch_naming_a_file_the_app_opens_hands_it_that_file;
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lighthouse.txt");
+        std::fs::write(&path, "keeper").unwrap();
+        let path = path.to_str().unwrap();
+        let mut app = TestApp::<SketchApp>::launched(&[path]).unwrap();
+        app.harness().relayout();
+        assert_eq!(
+            app.record(),
+            &RecordId::derived("sketch", &RecordId::for_file(path))
+        );
+        let notes: Vec<String> = app
+            .state()
+            .notes
+            .values()
+            .map(|note| note.text.clone())
+            .collect();
+        assert_eq!(notes, ["keeper"]);
+    }
 
-#[test]
-fn a_file_of_a_type_the_app_does_not_open_is_refused() {
-    let (file, receipt) = OpenFile::new("chart.pdf", "application/pdf", b"%PDF".to_vec()).unwrap();
-    assert!(TestApp::<SketchApp>::handed(file).is_err());
-    assert_eq!(receipt.opened_resource(), None);
-}
+    phase an_app_that_opens_every_file_is_handed_one_of_no_known_type_and_its_view_sees_the_path;
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("firmware");
+        std::fs::write(&path, [0xde, 0xad]).unwrap();
+        let path = path.to_str().unwrap();
+        let definition = tilo_app::framework::definition::<InspectorApp>();
+        assert!(definition.opens_media_type("application/pdf"));
+        assert!(definition.opens_media_type("application/octet-stream"));
 
-#[test]
-fn the_definition_names_what_the_app_opens() {
-    let definition = tilo_app::framework::definition::<SketchApp>();
-    assert!(definition.opens_media_type("text/plain; charset=utf-8"));
-    assert!(!definition.opens_media_type("application/pdf"));
-}
+        let mut app = TestApp::<InspectorApp>::launched(&[path]).unwrap();
+        app.harness().relayout();
+        let notes: Vec<String> = app
+            .state()
+            .notes
+            .values()
+            .map(|note| note.text.clone())
+            .collect();
+        assert_eq!(notes, ["firmware application/octet-stream"]);
+        let expected = format!("Launched on {path}");
+        assert!(
+            app.harness().inspection_json().unwrap().contains(&expected),
+            "the view reads the launch's arguments"
+        );
 
-#[test]
-fn a_launch_naming_a_file_the_app_opens_hands_it_that_file() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lighthouse.txt");
-    std::fs::write(&path, "keeper").unwrap();
-    let path = path.to_str().unwrap();
-    let mut app = TestApp::<SketchApp>::launched(&[path]).unwrap();
-    app.harness().relayout();
-    assert_eq!(
-        app.record(),
-        &RecordId::derived("sketch", &RecordId::for_file(path))
-    );
-    let notes: Vec<String> = app
-        .state()
-        .notes
-        .values()
-        .map(|note| note.text.clone())
-        .collect();
-    assert_eq!(notes, ["keeper"]);
+        // A folder is no file to hand over.
+        let mut plain =
+            TestApp::<InspectorApp>::launched(&[directory.path().to_str().unwrap()]).unwrap();
+        plain.harness().relayout();
+        assert!(plain.state().notes.is_empty());
+    }
+
+    phase a_handed_file_is_kept_in_the_content_store_the_view_reads;
+    {
+        let bytes = b"\x89PNG harbour".to_vec();
+        let (file, _receipt) = OpenFile::new("harbour.png", "image/png", bytes.clone()).unwrap();
+        let mut app = TestApp::<KeepApp>::handed(file).unwrap();
+        app.harness().relayout();
+        let reference = app.state().source;
+        // The record names the reference the launch's store answered: it opens
+        // the file, and the file's own address holds nothing in the clear.
+        assert!(tilo_content::is_sealed(&reference), "{reference}");
+        assert!(
+            tilo_content::names(&reference, &bytes),
+            "the reference names the file the launch kept"
+        );
+        assert!(
+            !app.content().has(&tilo_content::hash_bytes(&bytes)),
+            "nothing kept in the clear"
+        );
+        let content = VIEW_CONTENT
+            .with(|content| content.borrow_mut().take())
+            .expect("the view reads the content store the launch kept the bytes in");
+        assert_eq!(content.read(&reference), Some(bytes));
+    }
 }
 
 /// An app that opens every file, and shows where it was launched.
@@ -266,38 +501,6 @@ impl ResourceApp for InspectorApp {
             .into_iter()
             .collect()
     }
-}
-
-#[test]
-fn an_app_that_opens_every_file_is_handed_one_of_no_known_type_and_its_view_sees_the_path() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("firmware");
-    std::fs::write(&path, [0xde, 0xad]).unwrap();
-    let path = path.to_str().unwrap();
-    let definition = tilo_app::framework::definition::<InspectorApp>();
-    assert!(definition.opens_media_type("application/pdf"));
-    assert!(definition.opens_media_type("application/octet-stream"));
-
-    let mut app = TestApp::<InspectorApp>::launched(&[path]).unwrap();
-    app.harness().relayout();
-    let notes: Vec<String> = app
-        .state()
-        .notes
-        .values()
-        .map(|note| note.text.clone())
-        .collect();
-    assert_eq!(notes, ["firmware application/octet-stream"]);
-    let expected = format!("Launched on {path}");
-    assert!(
-        app.harness().inspection_json().unwrap().contains(&expected),
-        "the view reads the launch's arguments"
-    );
-
-    // A folder is no file to hand over.
-    let mut plain =
-        TestApp::<InspectorApp>::launched(&[directory.path().to_str().unwrap()]).unwrap();
-    plain.harness().relayout();
-    assert!(plain.state().notes.is_empty());
 }
 
 thread_local! {
@@ -360,55 +563,6 @@ impl ResourceApp for TunedApp {
     }
 }
 
-#[test]
-fn a_handed_file_is_kept_in_the_content_store_the_view_reads() {
-    let bytes = b"\x89PNG harbour".to_vec();
-    let (file, _receipt) = OpenFile::new("harbour.png", "image/png", bytes.clone()).unwrap();
-    let mut app = TestApp::<KeepApp>::handed(file).unwrap();
-    app.harness().relayout();
-    let reference = app.state().source;
-    // The record names the reference the launch's store answered: it opens
-    // the file, and the file's own address holds nothing in the clear.
-    assert!(tilo_content::is_sealed(&reference), "{reference}");
-    assert!(
-        tilo_content::names(&reference, &bytes),
-        "the reference names the file the launch kept"
-    );
-    assert!(
-        !app.content().has(&tilo_content::hash_bytes(&bytes)),
-        "nothing kept in the clear"
-    );
-    let content = VIEW_CONTENT
-        .with(|content| content.borrow_mut().take())
-        .expect("the view reads the content store the launch kept the bytes in");
-    assert_eq!(content.read(&reference), Some(bytes));
-}
-
-#[test]
-fn the_apps_own_options_reach_its_launch_and_its_view_apart_from_its_arguments() {
-    let mut app = TestApp::<TunedApp>::launched(&["--pen=ink", "--grid", "harbour"]).unwrap();
-    app.harness().relayout();
-    assert_eq!(app.state().source, "ink true");
-    assert!(
-        app.harness()
-            .inspection_json()
-            .unwrap()
-            .contains("Pen ink, grid true, on harbour"),
-        "the view reads the options and the one argument"
-    );
-
-    let mut plain = TestApp::<TunedApp>::launched(&["--pen", "chalk"]).unwrap();
-    plain.harness().relayout();
-    assert_eq!(plain.state().source, "chalk false");
-    assert!(
-        plain
-            .harness()
-            .inspection_json()
-            .unwrap()
-            .contains("Pen chalk, grid false, on ")
-    );
-}
-
 /// A player that shows what its launch asked it to play, without keeping any
 /// of it in its record.
 struct PlayerApp;
@@ -437,33 +591,6 @@ impl ResourceApp for PlayerApp {
         };
         Box::new(Text::new(&shown))
     }
-}
-
-#[test]
-fn the_view_reads_the_media_a_launch_names_and_the_playback_it_continues() {
-    let shown = |app: &mut TestApp<PlayerApp>| app.harness().inspection_json().unwrap();
-
-    let mut handed = TestApp::<PlayerApp>::handed_off(
-        &["https://media.example/evening.mp4"],
-        PlaybackHandoff {
-            position_ms: 42_000,
-            resume_playing: true,
-            title: Some("Evening news".into()),
-        },
-    )
-    .unwrap();
-    assert!(
-        shown(&mut handed)
-            .contains("https://media.example/evening.mp4 (Evening news) from 42000 ms, playing")
-    );
-    assert_eq!(handed.state(), Sketch::default(), "the record is untouched");
-
-    let mut launched =
-        TestApp::<PlayerApp>::launched(&["https://media.example/evening.mp4"]).unwrap();
-    assert!(shown(&mut launched).contains("https://media.example/evening.mp4 from the start"));
-
-    let mut plain = TestApp::<PlayerApp>::new().unwrap();
-    assert!(shown(&mut plain).contains("nothing to play"));
 }
 
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
@@ -514,86 +641,6 @@ impl ResourceApp for GalleryApp {
     }
 }
 
-#[test]
-fn a_launch_invokes_an_effect_which_changes_no_document_and_a_viewer_reaches() {
-    let mut app = TestApp::<GalleryApp>::launched(&["harbour.png"]).unwrap();
-    app.harness().relayout();
-    assert_eq!(SHOWN.with(|shown| shown.borrow().clone()), ["harbour.png"]);
-    assert_eq!(app.state().source, "", "the launch edited nothing");
-    assert!(!app.undo(), "nothing to take back");
-
-    // A viewer may not edit, but an effect declared for readers reaches its
-    // handler through the same door.
-    let mut viewer = TestApp::<GalleryApp>::with_role(tilo_app::Role::Viewer).unwrap();
-    let dispatcher = GALLERY
-        .with(|gallery| gallery.borrow_mut().take())
-        .expect("the viewer's view was built");
-    dispatcher.submit(Invoke::effect(&GalleryEffect::Show {
-        picture: "meadow.png".into(),
-    }));
-    viewer.settle();
-    assert_eq!(
-        SHOWN.with(|shown| shown.borrow().clone()),
-        ["harbour.png", "meadow.png"]
-    );
-    assert!(dispatcher.refused().get().is_none(), "nothing was refused");
-}
-
-#[test]
-fn a_window_opens_another_record_in_its_own_place() {
-    let mut app = TestApp::<SketchApp>::new().unwrap();
-    assert_eq!(app.record(), &RecordId::package_primary());
-    app.invoke(Sketch::NOTE.with("on the default")).unwrap();
-
-    app.open_here(&["/pictures/harbour.png"]).unwrap();
-    let harbour = RecordId::derived("sketch", &RecordId::for_file("/pictures/harbour.png"));
-    assert_eq!(
-        app.record(),
-        &harbour,
-        "the window shows the path's own record"
-    );
-    assert_eq!(
-        app.state().source,
-        "/pictures/harbour.png",
-        "with the actions a launch on it takes"
-    );
-    assert!(
-        app.state().notes.is_empty(),
-        "and none of the other record's"
-    );
-    let frame = app.harness().inspection_json().unwrap();
-    assert!(
-        frame.contains("Launched on /pictures/harbour.png"),
-        "the view is built for the launch: {frame}"
-    );
-
-    // A record that cannot be opened is refused with the reason, and the
-    // window keeps the one it shows.
-    let refused = app.open_here(&["/no/such/folder/notes.txt"]).unwrap_err();
-    assert!(refused.contains("cannot be read"), "{refused}");
-    assert_eq!(app.record(), &harbour);
-
-    // Edits go to the record shown now, through the same door.
-    app.invoke(Sketch::NOTE.with("on the harbour")).unwrap();
-    assert_eq!(app.state().notes.len(), 1);
-
-    // Each record kept its own edits, durably.
-    let harbour_again = app.relaunch(&["/pictures/harbour.png"]).unwrap();
-    assert_eq!(harbour_again.record(), &harbour);
-    assert_eq!(harbour_again.state().notes.len(), 1);
-    // A bare launch opens the workspace's one record, which every window
-    // of the app opens, with what was noted on it.
-    let bare = harbour_again.relaunch(&[]).unwrap();
-    assert_eq!(bare.record(), &RecordId::package_primary());
-    let notes: Vec<String> = bare
-        .state()
-        .notes
-        .values()
-        .map(|note| note.text.clone())
-        .collect();
-    assert_eq!(notes, ["on the default"]);
-}
-
 /// A sketch whose record of a path starts traced over that path in its
 /// genesis, and whose launch reads the record it opens.
 struct GenesisApp;
@@ -628,39 +675,4 @@ impl ResourceApp for GenesisApp {
             _ => Vec::new(),
         }
     }
-}
-
-#[test]
-fn a_launch_genesis_is_the_same_on_every_device_and_nobodys_edit() {
-    let mut here = TestApp::<GenesisApp>::launched(&["/pictures/harbour.png"]).unwrap();
-    let there = TestApp::<GenesisApp>::launched(&["/pictures/harbour.png"]).unwrap();
-    assert_eq!(here.state().source, "/pictures/harbour.png");
-    assert!(!here.undo(), "the genesis is no undo step");
-    assert_eq!(
-        here.read_document(|doc| doc.clone().get_heads()),
-        there.read_document(|doc| doc.clone().get_heads()),
-        "both devices wrote the same genesis"
-    );
-    let mut theirs = there.peer_document();
-    here.merge_peer(&mut theirs).unwrap();
-    assert_eq!(here.state().source, "/pictures/harbour.png");
-}
-
-#[test]
-fn a_launch_reads_the_record_it_opens() {
-    let mut app = TestApp::<GenesisApp>::launched(&["/pictures/harbour.png"]).unwrap();
-    assert!(
-        app.state().notes.is_empty(),
-        "a created record is not reopened"
-    );
-    app.invoke(Sketch::NOTE.with("the lighthouse")).unwrap();
-    let app = app.relaunch(&["/pictures/harbour.png"]).unwrap();
-    let mut texts: Vec<String> = app
-        .state()
-        .notes
-        .values()
-        .map(|note| note.text.clone())
-        .collect();
-    texts.sort();
-    assert_eq!(texts, ["reopened over 1", "the lighthouse"]);
 }

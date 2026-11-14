@@ -310,96 +310,183 @@ fn action_ids(resource: &tilo_actions::ResourceSpec) -> Vec<&str> {
         .collect()
 }
 
-#[test]
-fn live_rows_and_bound_edits_join_the_resource_tree() {
-    RAW.set(Raw::Nothing);
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    let effects = EFFECTS.with(|effects| effects.borrow().clone()).unwrap();
-    let resources = published(&mut app);
+tilo_test_env::scenario! {
+    fn views_and_surfaces_publish_into_the_one_resource_tree;
 
-    // Live rows are children of the resource, carrying only their
-    // operations; one naming a document child joins it, so no id is
-    // published twice.
-    let root = find(&resources, Tally::KIND).unwrap();
-    let children: Vec<&str> = root
-        .children
-        .iter()
-        .map(|child| child.id.as_str())
-        .collect();
-    assert_eq!(children, [TOTAL, "job:1", "job:2"]);
-    let total = find(&resources, TOTAL).unwrap();
-    assert_eq!(total.label, "Total 0", "the document child keeps its label");
-    assert_eq!(action_ids(total), ["reveal", "inspect"]);
-    assert!(
-        total
-            .actions
+    phase live_rows_and_bound_edits_join_the_resource_tree;
+    {
+        RAW.set(Raw::Nothing);
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        let effects = EFFECTS.with(|effects| effects.borrow().clone()).unwrap();
+        let resources = published(&mut app);
+
+        // Live rows are children of the resource, carrying only their
+        // operations; one naming a document child joins it, so no id is
+        // published twice.
+        let root = find(&resources, Tally::KIND).unwrap();
+        let children: Vec<&str> = root
+            .children
             .iter()
-            .all(|action| action.kind == OperationKind::View),
-        "presentation is offered as a view"
-    );
-    assert_eq!(
-        total
-            .presentation
-            .as_ref()
-            .and_then(|presentation| presentation.detail.as_deref()),
-        Some("2 jobs running"),
-        "what only the surface knows presents the child"
-    );
-    assert_eq!(
-        find(&resources, "job:2").unwrap().actions[0].kind,
-        OperationKind::Effect
-    );
-    for row_only in ["stop", "inspect", "reveal"] {
+            .map(|child| child.id.as_str())
+            .collect();
+        assert_eq!(children, [TOTAL, "job:1", "job:2"]);
+        let total = find(&resources, TOTAL).unwrap();
+        assert_eq!(total.label, "Total 0", "the document child keeps its label");
+        assert_eq!(action_ids(total), ["reveal", "inspect"]);
         assert!(
-            !action_ids(root).contains(&row_only),
-            "`{row_only}` is offered only on what it acts on"
+            total
+                .actions
+                .iter()
+                .all(|action| action.kind == OperationKind::View),
+            "presentation is offered as a view"
+        );
+        assert_eq!(
+            total
+                .presentation
+                .as_ref()
+                .and_then(|presentation| presentation.detail.as_deref()),
+            Some("2 jobs running"),
+            "what only the surface knows presents the child"
+        );
+        assert_eq!(
+            find(&resources, "job:2").unwrap().actions[0].kind,
+            OperationKind::Effect
+        );
+        for row_only in ["stop", "inspect", "reveal"] {
+            assert!(
+                !action_ids(root).contains(&row_only),
+                "`{row_only}` is offered only on what it acts on"
+            );
+        }
+
+        // A live row's effect reaches the surface's handler through the door as
+        // the value the row was bound to, and answers its caller; it changes
+        // nothing in the document. So does one a document child carries.
+        let output = app.call_on("job:2", "stop", json!({})).unwrap();
+        assert_eq!(output, Some(json!({ "stopped": 2 })));
+        app.call_on(TOTAL, "reveal", json!({})).unwrap();
+        app.call_on(TOTAL, "inspect", json!({})).unwrap();
+        assert_eq!(
+            *effects.borrow(),
+            [
+                JobEffect::Stop { job: 2 },
+                JobEffect::Reveal { at: 0 },
+                JobEffect::Inspect { job: 0 },
+            ]
+        );
+        assert_eq!(app.state(), 0);
+
+        // A row the tree leaves out resolves by id, at the surface; a child the
+        // resource leaves out resolves at the resource.
+        assert!(find(&published(&mut app), "job:7").is_none());
+        let output = app.call_on("job:7", "stop", json!({})).unwrap();
+        assert_eq!(output, Some(json!({ "stopped": 7 })));
+        assert!(find(&published(&mut app), "tally/slot:4").is_none());
+        app.call_on("tally/slot:4", "fill", json!({})).unwrap();
+        assert_eq!(app.state(), 4);
+
+        // Edits bound to where the user is are typed actions of the resource:
+        // the selection, the view's step; the resource's own wins.
+        let root = find(&resources, Tally::KIND).unwrap().clone();
+        for id in ["add-selected", "add-step", "double"] {
+            let spec = root.actions.iter().find(|action| action.id == id).unwrap();
+            assert_eq!(spec.kind, OperationKind::Document, "{id}");
+        }
+        app.call("add-selected", json!({ "times": 2 })).unwrap();
+        assert_eq!(app.state(), 12, "the selection was 4: twice that");
+        app.call("double", json!({})).unwrap();
+        assert_eq!(app.state(), 24, "the resource's own `double` wins");
+        app.harness().click_named("step-up").unwrap();
+        app.call("add-step", json!({})).unwrap();
+        assert_eq!(app.state(), 30, "the step as the view holds it now");
+
+        // Each is an undoable step, like any declared action.
+        assert!(app.undo());
+        assert_eq!(app.state(), 24);
+    }
+
+    phase retained_actions_follow_canonical_publication_through_edits_and_undo;
+    {
+        let mut app = TestApp::<DynamicBindingsApp>::new().unwrap();
+        let actions = RETAINED_ACTIONS
+            .with(|actions| actions.borrow().clone())
+            .unwrap();
+        let conditional = declared("conditional");
+        let root = actions
+            .binding::<()>(declared("seed"))
+            .unwrap()
+            .address()
+            .resource
+            .clone();
+        assert!(actions.binding::<()>(conditional).is_none());
+        app.invoke(declared("seed").invoke()).unwrap();
+        let binding = actions
+            .binding::<()>(conditional)
+            .expect("new declaration is bindable");
+        assert_eq!(binding.address().resource, root);
+        assert!(app.undo());
+        assert!(
+            actions.binding::<()>(conditional).is_none(),
+            "removed declaration cannot bind"
+        );
+        assert!(app.redo());
+        assert_eq!(
+            actions
+                .binding::<()>(conditional)
+                .unwrap()
+                .address()
+                .resource,
+            root
         );
     }
 
-    // A live row's effect reaches the surface's handler through the door as
-    // the value the row was bound to, and answers its caller; it changes
-    // nothing in the document. So does one a document child carries.
-    let output = app.call_on("job:2", "stop", json!({})).unwrap();
-    assert_eq!(output, Some(json!({ "stopped": 2 })));
-    app.call_on(TOTAL, "reveal", json!({})).unwrap();
-    app.call_on(TOTAL, "inspect", json!({})).unwrap();
-    assert_eq!(
-        *effects.borrow(),
-        [
-            JobEffect::Stop { job: 2 },
-            JobEffect::Reveal { at: 0 },
-            JobEffect::Inspect { job: 0 },
-        ]
-    );
-    assert_eq!(app.state(), 0);
+    phase a_view_publishes_the_rows_it_shows_without_a_surface;
+    {
+        RAW.set(Raw::Nothing);
+        let mut app = TestApp::<ViewJobsApp>::new().unwrap();
+        let effects = VIEW_EFFECTS.with(|kept| kept.borrow().clone()).unwrap();
+        let children = |app: &mut TestApp<ViewJobsApp>| -> Vec<String> {
+            let resources = app.harness().resources();
+            find(&resources, Tally::KIND)
+                .unwrap()
+                .children
+                .iter()
+                .map(|child| child.id.as_str().to_owned())
+                .collect()
+        };
+        assert_eq!(children(&mut app), [TOTAL, "job:1", "job:2"]);
 
-    // A row the tree leaves out resolves by id, at the surface; a child the
-    // resource leaves out resolves at the resource.
-    assert!(find(&published(&mut app), "job:7").is_none());
-    let output = app.call_on("job:7", "stop", json!({})).unwrap();
-    assert_eq!(output, Some(json!({ "stopped": 7 })));
-    assert!(find(&published(&mut app), "tally/slot:4").is_none());
-    app.call_on("tally/slot:4", "fill", json!({})).unwrap();
-    assert_eq!(app.state(), 4);
+        // The rows follow the view's state as it is when published.
+        app.harness().click_named("start-job").unwrap();
+        assert_eq!(children(&mut app), [TOTAL, "job:1", "job:2", "job:3"]);
 
-    // Edits bound to where the user is are typed actions of the resource:
-    // the selection, the view's step; the resource's own wins.
-    let root = find(&resources, Tally::KIND).unwrap().clone();
-    for id in ["add-selected", "add-step", "double"] {
-        let spec = root.actions.iter().find(|action| action.id == id).unwrap();
-        assert_eq!(spec.kind, OperationKind::Document, "{id}");
+        // A row's effect reaches the view's handler; a row left out of the tree
+        // resolves by id.
+        let output = app.call_on("job:3", "stop", json!({})).unwrap();
+        assert_eq!(output, Some(json!({ "stopped": 3 })));
+        let output = app.call_on("job:9", "stop", json!({})).unwrap();
+        assert_eq!(output, Some(json!({ "stopped": 9 })));
+        assert_eq!(
+            *effects.borrow(),
+            [JobEffect::Stop { job: 3 }, JobEffect::Stop { job: 9 }]
+        );
+        assert_eq!(app.state(), 0, "rows change nothing in the document");
     }
-    app.call("add-selected", json!({ "times": 2 })).unwrap();
-    assert_eq!(app.state(), 12, "the selection was 4: twice that");
-    app.call("double", json!({})).unwrap();
-    assert_eq!(app.state(), 24, "the resource's own `double` wins");
-    app.harness().click_named("step-up").unwrap();
-    app.call("add-step", json!({})).unwrap();
-    assert_eq!(app.state(), 30, "the step as the view holds it now");
 
-    // Each is an undoable step, like any declared action.
-    assert!(app.undo());
-    assert_eq!(app.state(), 24);
+    phase no_widget_below_the_root_changes_the_document_through_the_door;
+    // Only the root speaks for the resource: a document action any other
+    // widget offers, in a plain view or a hosted surface, never reaches the
+    // document through the door, even resolved by id.
+    {
+        RAW.set(Raw::LookedUpDocumentAction);
+        let mut app = TestApp::<ViewJobsApp>::new().unwrap();
+        assert!(app.call_on("rogue", "bump", json!({})).is_err());
+        assert_eq!(app.state(), 0, "a plain view's widget");
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        assert!(app.call_on("rogue", "bump", json!({})).is_err());
+        assert_eq!(app.state(), 0, "a surface's widget");
+        RAW.set(Raw::Nothing);
+    }
 }
 
 #[test]
@@ -454,41 +541,6 @@ fn declared(id: &'static str) -> tilo_resource::ActionRef<Tally, ()> {
     tilo_resource::ActionRef::<Tally, ()>::new(id, &[], tilo_resource::ResourceKind::of::<Tally>())
 }
 
-#[test]
-fn retained_actions_follow_canonical_publication_through_edits_and_undo() {
-    let mut app = TestApp::<DynamicBindingsApp>::new().unwrap();
-    let actions = RETAINED_ACTIONS
-        .with(|actions| actions.borrow().clone())
-        .unwrap();
-    let conditional = declared("conditional");
-    let root = actions
-        .binding::<()>(declared("seed"))
-        .unwrap()
-        .address()
-        .resource
-        .clone();
-    assert!(actions.binding::<()>(conditional).is_none());
-    app.invoke(declared("seed").invoke()).unwrap();
-    let binding = actions
-        .binding::<()>(conditional)
-        .expect("new declaration is bindable");
-    assert_eq!(binding.address().resource, root);
-    assert!(app.undo());
-    assert!(
-        actions.binding::<()>(conditional).is_none(),
-        "removed declaration cannot bind"
-    );
-    assert!(app.redo());
-    assert_eq!(
-        actions
-            .binding::<()>(conditional)
-            .unwrap()
-            .address()
-            .resource,
-        root
-    );
-}
-
 /// A view showing the same jobs without a surface of its own: its effects
 /// answered by the view, its rows published beside its widgets.
 struct ViewJobsApp;
@@ -531,39 +583,6 @@ impl ResourceApp for ViewJobsApp {
 }
 
 #[test]
-fn a_view_publishes_the_rows_it_shows_without_a_surface() {
-    RAW.set(Raw::Nothing);
-    let mut app = TestApp::<ViewJobsApp>::new().unwrap();
-    let effects = VIEW_EFFECTS.with(|kept| kept.borrow().clone()).unwrap();
-    let children = |app: &mut TestApp<ViewJobsApp>| -> Vec<String> {
-        let resources = app.harness().resources();
-        find(&resources, Tally::KIND)
-            .unwrap()
-            .children
-            .iter()
-            .map(|child| child.id.as_str().to_owned())
-            .collect()
-    };
-    assert_eq!(children(&mut app), [TOTAL, "job:1", "job:2"]);
-
-    // The rows follow the view's state as it is when published.
-    app.harness().click_named("start-job").unwrap();
-    assert_eq!(children(&mut app), [TOTAL, "job:1", "job:2", "job:3"]);
-
-    // A row's effect reaches the view's handler; a row left out of the tree
-    // resolves by id.
-    let output = app.call_on("job:3", "stop", json!({})).unwrap();
-    assert_eq!(output, Some(json!({ "stopped": 3 })));
-    let output = app.call_on("job:9", "stop", json!({})).unwrap();
-    assert_eq!(output, Some(json!({ "stopped": 9 })));
-    assert_eq!(
-        *effects.borrow(),
-        [JobEffect::Stop { job: 3 }, JobEffect::Stop { job: 9 }]
-    );
-    assert_eq!(app.state(), 0, "rows change nothing in the document");
-}
-
-#[test]
 #[cfg_attr(
     debug_assertions,
     should_panic(expected = "offers document action `bump` outside the resource's actions")
@@ -576,19 +595,4 @@ fn a_view_widget_cannot_publish_a_document_action_of_its_own() {
     assert!(rogue.actions.is_empty(), "its document action is dropped");
     assert!(app.call_on("rogue", "bump", json!({})).is_err());
     assert_eq!(app.state(), 0);
-}
-
-/// Only the root speaks for the resource: a document action any other
-/// widget offers, in a plain view or a hosted surface, never reaches the
-/// document through the door, even resolved by id.
-#[test]
-fn no_widget_below_the_root_changes_the_document_through_the_door() {
-    RAW.set(Raw::LookedUpDocumentAction);
-    let mut app = TestApp::<ViewJobsApp>::new().unwrap();
-    assert!(app.call_on("rogue", "bump", json!({})).is_err());
-    assert_eq!(app.state(), 0, "a plain view's widget");
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    assert!(app.call_on("rogue", "bump", json!({})).is_err());
-    assert_eq!(app.state(), 0, "a surface's widget");
-    RAW.set(Raw::Nothing);
 }

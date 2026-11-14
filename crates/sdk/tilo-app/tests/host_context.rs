@@ -53,32 +53,71 @@ impl ResourceApp for RunsApp {
     }
 }
 
-#[test]
-fn a_window_knows_its_device_and_an_action_carries_it() {
-    let mut app = TestApp::<RunsApp>::new().unwrap();
-    assert_eq!(app.state().devices, ["seeded on test-device"]);
-    app.harness().click_named("run-on").unwrap();
-    assert_eq!(
-        app.state().devices,
-        ["seeded on test-device", "test-device"]
-    );
+tilo_test_env::scenario! {
+    fn the_host_gives_a_window_its_device_files_and_helpers;
 
-    // A past version is shown on no device in particular.
-    let first = app.versions().first().unwrap().hash;
-    let past = app.past_version(&[first]).unwrap();
-    assert!(past.texts().iter().any(|text| text == "on nowhere"));
-}
+    phase a_window_knows_its_device_and_an_action_carries_it;
+    {
+        let mut app = TestApp::<RunsApp>::new().unwrap();
+        assert_eq!(app.state().devices, ["seeded on test-device"]);
+        app.harness().click_named("run-on").unwrap();
+        assert_eq!(
+            app.state().devices,
+            ["seeded on test-device", "test-device"]
+        );
 
-#[test]
-fn a_test_profile_keeps_the_apps_files_out_of_the_persons() {
-    let app = TestApp::<RunsApp>::new().unwrap();
-    let given = FILES.take().unwrap();
-    assert_eq!(given, app.files(), "the view writes the profile's files");
-    assert_ne!(
-        given,
-        tilo_app::storage::AppFiles::for_app(RunsApp::ID),
-        "never the person's"
-    );
+        // A past version is shown on no device in particular.
+        let first = app.versions().first().unwrap().hash;
+        let past = app.past_version(&[first]).unwrap();
+        assert!(past.texts().iter().any(|text| text == "on nowhere"));
+    }
+
+    phase a_test_profile_keeps_the_apps_files_out_of_the_persons;
+    {
+        let app = TestApp::<RunsApp>::new().unwrap();
+        let given = FILES.take().unwrap();
+        assert_eq!(given, app.files(), "the view writes the profile's files");
+        assert_ne!(
+            given,
+            tilo_app::storage::AppFiles::for_app(RunsApp::ID),
+            "never the person's"
+        );
+    }
+
+    phase a_helper_the_binary_is_answers_its_own_command_line_before_the_app;
+    {
+        let args = |rest: &[&str]| {
+            std::iter::once("imager")
+                .chain(rest.iter().copied())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            tilo_app::framework::run_helper::<HelperApp>(&args(&["--write-helper", "req"])),
+            Some(7),
+            "the helper's own exit code"
+        );
+        assert_eq!(
+            tilo_app::framework::run_helper::<HelperApp>(&args(&["--write-helper"])),
+            Some(1),
+            "a refused command line ends the process with 1"
+        );
+        assert_eq!(
+            tilo_app::framework::run_helper::<HelperApp>(&args(&["--setup", "--smoke"])),
+            Some(0),
+            "the next helper is asked"
+        );
+        assert_eq!(
+            tilo_app::framework::run_helper::<HelperApp>(&args(&["--setup"])),
+            None,
+            "the app's own command line starts the app"
+        );
+        assert!(
+            !tilo_app::framework::launch_spec::<HelperApp>()
+                .attaches_runtime(&tilo_app::launch::LaunchArgs::component()),
+            "an app that takes no part in the runtime never attaches"
+        );
+    }
 }
 
 struct HelperApp;
@@ -107,39 +146,4 @@ impl ResourceApp for HelperApp {
             },
         ]
     }
-}
-
-#[test]
-fn a_helper_the_binary_is_answers_its_own_command_line_before_the_app() {
-    let args = |rest: &[&str]| {
-        std::iter::once("imager")
-            .chain(rest.iter().copied())
-            .map(str::to_owned)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        tilo_app::framework::run_helper::<HelperApp>(&args(&["--write-helper", "req"])),
-        Some(7),
-        "the helper's own exit code"
-    );
-    assert_eq!(
-        tilo_app::framework::run_helper::<HelperApp>(&args(&["--write-helper"])),
-        Some(1),
-        "a refused command line ends the process with 1"
-    );
-    assert_eq!(
-        tilo_app::framework::run_helper::<HelperApp>(&args(&["--setup", "--smoke"])),
-        Some(0),
-        "the next helper is asked"
-    );
-    assert_eq!(
-        tilo_app::framework::run_helper::<HelperApp>(&args(&["--setup"])),
-        None,
-        "the app's own command line starts the app"
-    );
-    assert!(
-        !tilo_app::framework::launch_spec::<HelperApp>()
-            .attaches_runtime(&tilo_app::launch::LaunchArgs::component()),
-        "an app that takes no part in the runtime never attaches"
-    );
 }

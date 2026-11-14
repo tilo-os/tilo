@@ -194,27 +194,31 @@ fn an_input_surface_picture_is_clear_where_its_view_paints_nothing() {
     assert!(painted > 0, "the view itself is drawn");
 }
 
-#[test]
-fn an_input_surface_window_announces_its_own_app_id() {
-    use tilo_app::framework::testing::inspect_live_window;
-    assert_eq!(
-        inspect_live_window::<InputSurfaceApp, _>(|app| app.window_app_id().map(str::to_owned))
-            .unwrap()
-            .as_deref(),
-        Some("so.tilo.test-input-surface")
-    );
-    assert_eq!(
-        inspect_live_window::<ChecklistApp, _>(|app| app.window_app_id().map(str::to_owned))
-            .unwrap(),
-        None
-    );
-}
+tilo_test_env::scenario! {
+    fn an_input_surface_announces_itself_and_needs_no_workspace;
 
-#[test]
-fn an_input_surface_runs_without_a_workspace_runtime() {
-    let args = tilo_app::launch::LaunchArgs::component();
-    assert!(!tilo_app::framework::launch_spec::<InputSurfaceApp>().attaches_runtime(&args));
-    assert!(tilo_app::framework::launch_spec::<ChecklistApp>().attaches_runtime(&args));
+    phase an_input_surface_window_announces_its_own_app_id;
+    {
+        use tilo_app::framework::testing::inspect_live_window;
+        assert_eq!(
+            inspect_live_window::<InputSurfaceApp, _>(|app| app.window_app_id().map(str::to_owned))
+                .unwrap()
+                .as_deref(),
+            Some("so.tilo.test-input-surface")
+        );
+        assert_eq!(
+            inspect_live_window::<ChecklistApp, _>(|app| app.window_app_id().map(str::to_owned))
+                .unwrap(),
+            None
+        );
+    }
+
+    phase an_input_surface_runs_without_a_workspace_runtime;
+    {
+        let args = tilo_app::launch::LaunchArgs::component();
+        assert!(!tilo_app::framework::launch_spec::<InputSurfaceApp>().attaches_runtime(&args));
+        assert!(tilo_app::framework::launch_spec::<ChecklistApp>().attaches_runtime(&args));
+    }
 }
 
 fn texts(app: &TestApp<ChecklistApp>) -> Vec<(String, bool)> {
@@ -225,9 +229,10 @@ fn texts(app: &TestApp<ChecklistApp>) -> Vec<(String, bool)> {
         .collect()
 }
 
-#[test]
-fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
-    // phase: actions_through_the_door_update_the_record_and_the_view
+tilo_test_env::scenario! {
+    fn actions_update_the_record_and_view_as_undoable_attributed_versions;
+
+    phase actions_through_the_door_update_the_record_and_the_view;
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.invoke(Checklist::ADD.with("milk")).unwrap();
@@ -263,14 +268,16 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
         app.invoke(Checklist::CLEAR_DONE.invoke()).unwrap();
         assert_eq!(app.state().items.len(), 1);
     }
-    // phase: typing_in_a_bound_field_is_an_action
+
+    phase typing_in_a_bound_field_is_an_action;
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.harness().click_named("title").unwrap();
         app.harness().type_text("Groceries");
         assert_eq!(app.state().title, "Groceries");
     }
-    // phase: undo_and_redo_revert_actions
+
+    phase undo_and_redo_revert_actions;
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.invoke(Checklist::RENAME.with("First")).unwrap();
@@ -280,7 +287,8 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
         assert!(app.redo());
         assert_eq!(app.state().title, "Second");
     }
-    // phase: undo_reverts_a_text_splice_exactly
+
+    phase undo_reverts_a_text_splice_exactly;
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.invoke(Checklist::RENAME.with("first thought")).unwrap();
@@ -294,14 +302,16 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
         assert!(app.redo());
         assert_eq!(app.state().title, "second thought");
     }
-    // phase: state_survives_a_relaunch
+
+    phase state_survives_a_relaunch;
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.invoke(Checklist::ADD.with("persisted")).unwrap();
         let app = app.reopen().unwrap();
         assert_eq!(texts(&app), [("persisted".into(), false)]);
     }
-    // phase: every_action_is_an_attributed_version
+
+    phase every_action_is_an_attributed_version;
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.invoke(Checklist::RENAME.with("Weekly")).unwrap();
@@ -314,17 +324,61 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
         assert_eq!(verb.args["title"].as_str(), Some("Weekly"));
         assert!(entry.invoker.is_some(), "attributed: {entry:?}");
     }
+
+    phase history_restores_a_past_version_through_the_host;
+    {
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.invoke(Checklist::RENAME.with("Groceries")).unwrap();
+        app.invoke(Checklist::ADD.with("milk")).unwrap();
+        let past = app.state();
+        let version = app.versions().pop().unwrap().hash;
+        app.invoke(Checklist::RENAME.with("Hardware")).unwrap();
+        app.invoke(Checklist::ADD.with("nails")).unwrap();
+        assert_ne!(app.state(), past);
+
+        let harness = app.harness();
+        assert!(
+            harness.targets().contains_key("history-open"),
+            "a framework app has History"
+        );
+        harness.click_named("history-open").unwrap();
+        let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
+        let target = format!(
+            "timeline-entry:{}",
+            tilo_app::widget::history_group::hex16(&entry)
+        );
+        harness
+            .perform_semantic_named(
+                "activity_timeline",
+                Some(&target),
+                &tilo_app::a11y::Action::Activate,
+            )
+            .unwrap();
+        harness.click_named("history-restore").unwrap();
+        harness
+            .click_named("history-restore-review.primary")
+            .unwrap();
+        harness.relayout();
+        assert_eq!(app.state(), past);
+
+        // Back in the live app, the restore is one undoable step.
+        app.harness().click_named("history-back-live").unwrap();
+        assert!(app.undo());
+        assert_eq!(app.state().title, "Hardware");
+    }
 }
 
-#[test]
-fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
-    // phase: a_viewer_cannot_edit
+tilo_test_env::scenario! {
+    fn actions_are_gated_by_role_and_confirmed_for_every_surface;
+
+    phase a_viewer_cannot_edit;
     {
         let mut app = TestApp::<ChecklistApp>::with_role(tilo_app::Role::Viewer).unwrap();
         assert!(app.invoke(Checklist::ADD.with("sneaky")).is_err());
         assert!(app.state().items.is_empty());
     }
-    // phase: the_palette_and_agents_see_every_action
+
+    phase the_palette_and_agents_see_every_action;
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         let resources = app.harness().resources();
@@ -339,7 +393,8 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
             );
         }
     }
-    // phase: the_generic_apply_action_is_for_agents_and_scripts_only
+
+    phase the_generic_apply_action_is_for_agents_and_scripts_only;
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         let resources = app.harness().resources();
@@ -357,7 +412,8 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
             .unwrap();
         assert!(named.reaches_people(), "named actions stay in the palette");
     }
-    // phase: a_destructive_typed_value_is_treated_like_its_named_action
+
+    phase a_destructive_typed_value_is_treated_like_its_named_action;
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.invoke(typed(ChecklistAction::Rename(checklist::Rename {
@@ -380,6 +436,75 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
             .unwrap();
         assert!(app.state().items.is_empty());
     }
+
+    phase allowing_once_in_app_admits_one_call_and_the_next_asks_again;
+    // A grant given once is spent by the in-app call it admits: the host
+    // revokes it as part of admitting the call, and the next call asks again.
+    // Where nothing can revoke it, it is never relied on at all.
+    {
+        use std::sync::{Arc, Mutex};
+        use tilo_app::permissions::policy::{
+            Answer, Grant, GrantId, Grantee, KindSet, Lifetime, TreePath,
+        };
+        let mut app = TestApp::<ChecklistApp>::new().unwrap();
+        app.set_role(tilo_app::permissions::Role::Viewer);
+        let viewer = app.permissions();
+        let mut standing = viewer.standing().clone();
+        let workspace = TreePath::workspace(&standing.policy.workspace);
+        let person = Grantee::person(standing.person_id().unwrap_or_default());
+        std::sync::Arc::make_mut(&mut standing.policy)
+            .grants
+            .extend([
+                Grant::new(
+                    "asks",
+                    person.clone(),
+                    workspace.clone(),
+                    KindSet::UNDOABLE,
+                    Answer::Ask,
+                    Grantee::person("owner"),
+                ),
+                Grant::new(
+                    "once",
+                    person,
+                    workspace.app(ChecklistApp::ID),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                    Grantee::person("owner"),
+                )
+                .with_lifetime(Lifetime::Once),
+            ]);
+        let granted = viewer.with_standing(standing);
+
+        // Nothing here can revoke it: the grant given once is not relied on.
+        app.set_permissions(granted.clone());
+        let without_host = app.invoke(Checklist::RENAME.with("Without a host"));
+        assert!(
+            matches!(
+                without_host,
+                Err(tilo_actions::DoorError::ConfirmationRequired)
+            ),
+            "{without_host:?}"
+        );
+
+        let revoked: Arc<Mutex<Vec<GrantId>>> = Arc::default();
+        let host = Arc::clone(&revoked);
+        app.set_permissions(granted.with_once_spender(Arc::new(move |spent| {
+            host.lock().unwrap().extend_from_slice(spent);
+            Ok(())
+        })));
+        app.invoke(Checklist::RENAME.with("Once")).unwrap();
+        assert_eq!(app.state().title, "Once");
+        assert_eq!(
+            *revoked.lock().unwrap(),
+            vec![GrantId::new("once")],
+            "admitting the call handed the spent grant to the host"
+        );
+        assert!(matches!(
+            app.invoke(Checklist::RENAME.with("Twice")),
+            Err(tilo_actions::DoorError::ConfirmationRequired)
+        ));
+        assert_eq!(app.state().title, "Once", "the second call changed nothing");
+    }
 }
 
 fn typed(operation: ChecklistAction) -> Invoke<Checklist> {
@@ -388,48 +513,6 @@ fn typed(operation: ChecklistAction) -> Invoke<Checklist> {
         now_ms: 0,
     })
     .unwrap()
-}
-
-#[test]
-fn history_restores_a_past_version_through_the_host() {
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    app.invoke(Checklist::RENAME.with("Groceries")).unwrap();
-    app.invoke(Checklist::ADD.with("milk")).unwrap();
-    let past = app.state();
-    let version = app.versions().pop().unwrap().hash;
-    app.invoke(Checklist::RENAME.with("Hardware")).unwrap();
-    app.invoke(Checklist::ADD.with("nails")).unwrap();
-    assert_ne!(app.state(), past);
-
-    let harness = app.harness();
-    assert!(
-        harness.targets().contains_key("history-open"),
-        "a framework app has History"
-    );
-    harness.click_named("history-open").unwrap();
-    let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
-    let target = format!(
-        "timeline-entry:{}",
-        tilo_app::widget::history_group::hex16(&entry)
-    );
-    harness
-        .perform_semantic_named(
-            "activity_timeline",
-            Some(&target),
-            &tilo_app::a11y::Action::Activate,
-        )
-        .unwrap();
-    harness.click_named("history-restore").unwrap();
-    harness
-        .click_named("history-restore-review.primary")
-        .unwrap();
-    harness.relayout();
-    assert_eq!(app.state(), past);
-
-    // Back in the live app, the restore is one undoable step.
-    app.harness().click_named("history-back-live").unwrap();
-    assert!(app.undo());
-    assert_eq!(app.state().title, "Hardware");
 }
 
 #[test]
@@ -522,75 +605,6 @@ fn a_light_capture_repaints_framework_buttons_in_the_light_theme() {
             "channel {channel}: the button paints {probe:?}, the light neutral face is {expected:?}"
         );
     }
-}
-
-/// A grant given once is spent by the in-app call it admits: the host
-/// revokes it as part of admitting the call, and the next call asks again.
-/// Where nothing can revoke it, it is never relied on at all.
-#[test]
-fn allowing_once_in_app_admits_one_call_and_the_next_asks_again() {
-    use std::sync::{Arc, Mutex};
-    use tilo_app::permissions::policy::{
-        Answer, Grant, GrantId, Grantee, KindSet, Lifetime, TreePath,
-    };
-    let mut app = TestApp::<ChecklistApp>::new().unwrap();
-    app.set_role(tilo_app::permissions::Role::Viewer);
-    let viewer = app.permissions();
-    let mut standing = viewer.standing().clone();
-    let workspace = TreePath::workspace(&standing.policy.workspace);
-    let person = Grantee::person(standing.person_id().unwrap_or_default());
-    std::sync::Arc::make_mut(&mut standing.policy)
-        .grants
-        .extend([
-            Grant::new(
-                "asks",
-                person.clone(),
-                workspace.clone(),
-                KindSet::UNDOABLE,
-                Answer::Ask,
-                Grantee::person("owner"),
-            ),
-            Grant::new(
-                "once",
-                person,
-                workspace.app(ChecklistApp::ID),
-                KindSet::UNDOABLE,
-                Answer::Allow,
-                Grantee::person("owner"),
-            )
-            .with_lifetime(Lifetime::Once),
-        ]);
-    let granted = viewer.with_standing(standing);
-
-    // Nothing here can revoke it: the grant given once is not relied on.
-    app.set_permissions(granted.clone());
-    let without_host = app.invoke(Checklist::RENAME.with("Without a host"));
-    assert!(
-        matches!(
-            without_host,
-            Err(tilo_actions::DoorError::ConfirmationRequired)
-        ),
-        "{without_host:?}"
-    );
-
-    let revoked: Arc<Mutex<Vec<GrantId>>> = Arc::default();
-    let host = Arc::clone(&revoked);
-    app.set_permissions(granted.with_once_spender(Arc::new(move |spent| {
-        host.lock().unwrap().extend_from_slice(spent);
-        Ok(())
-    })));
-    app.invoke(Checklist::RENAME.with("Once")).unwrap();
-    assert_eq!(app.state().title, "Once");
-    assert_eq!(
-        *revoked.lock().unwrap(),
-        vec![GrantId::new("once")],
-        "admitting the call handed the spent grant to the host"
-    );
-    assert!(matches!(
-        app.invoke(Checklist::RENAME.with("Twice")),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    assert_eq!(app.state().title, "Once", "the second call changed nothing");
 }
 
 thread_local! {

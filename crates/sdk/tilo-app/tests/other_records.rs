@@ -166,212 +166,400 @@ fn published<A: ResourceApp>(app: &mut TestApp<A>, resource: &str) -> Vec<String
     actions
 }
 
-// A click on a control bound to a field of a settings section kept in the
-// person's records stores the change in the settings document, both ways.
-#[test]
-fn a_click_on_a_persons_settings_section_is_stored_both_ways() {
-    let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
-    let control = checkbox(&mut app, "high_contrast");
-    app.harness().click_named(&control).unwrap();
-    app.settle();
-    assert!(
-        app.settings::<Display>().get().high_contrast,
-        "first click stored"
-    );
-    app.harness().click_named(&control).unwrap();
-    app.settle();
-    assert!(
-        !app.settings::<Display>().get().high_contrast,
-        "second click stored"
-    );
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn a_settings_section_is_edited_by_its_person_and_kept_apart;
 
-#[test]
-fn a_settings_section_is_edited_by_path_and_checked_by_its_model() {
-    let mut app = TestApp::<BoardApp>::new().unwrap();
-    let control = checkbox(&mut app, "high_contrast");
-    app.harness().click_named(&control).unwrap();
-    assert!(app.settings::<Display>().get().high_contrast);
+    phase a_click_on_a_persons_settings_section_is_stored_both_ways;
+    // A click on a control bound to a field of a settings section kept in the
+    // person's records stores the change in the settings document, both ways.
+    {
+        let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
+        let control = checkbox(&mut app, "high_contrast");
+        app.harness().click_named(&control).unwrap();
+        app.settle();
+        assert!(
+            app.settings::<Display>().get().high_contrast,
+            "first click stored"
+        );
+        app.harness().click_named(&control).unwrap();
+        app.settle();
+        assert!(
+            !app.settings::<Display>().get().high_contrast,
+            "second click stored"
+        );
+    }
 
-    // Its field edits and verbs are published beside the app's resource.
-    let actions = published(&mut app, "settings:test.display");
-    assert!(
-        actions.iter().any(|action| action == "field-edit"),
-        "{actions:?}"
-    );
-    assert!(
-        actions.iter().any(|action| action == "reset-scale"),
-        "{actions:?}"
-    );
+    phase a_settings_section_is_edited_by_path_and_checked_by_its_model;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        let control = checkbox(&mut app, "high_contrast");
+        app.harness().click_named(&control).unwrap();
+        assert!(app.settings::<Display>().get().high_contrast);
 
-    // An agent edits it by path, through the door; the model's invariant
-    // holds on every way in.
-    app.call_on(
-        "settings:test.display",
-        "field-edit",
-        serde_json::json!({ "edit": { "path": [{ "field": "scale" }], "op": "set", "value": 2.0 } }),
-    )
-    .unwrap();
-    assert!((app.settings::<Display>().get().scale - 2.0).abs() < f64::EPSILON);
-    app.harness().relayout();
-    assert!(app.harness().inspection_json().unwrap().contains("scale 2"));
-    assert!(
+        // Its field edits and verbs are published beside the app's resource.
+        let actions = published(&mut app, "settings:test.display");
+        assert!(
+            actions.iter().any(|action| action == "field-edit"),
+            "{actions:?}"
+        );
+        assert!(
+            actions.iter().any(|action| action == "reset-scale"),
+            "{actions:?}"
+        );
+
+        // An agent edits it by path, through the door; the model's invariant
+        // holds on every way in.
         app.call_on(
             "settings:test.display",
             "field-edit",
-            serde_json::json!({ "edit": { "path": [{ "field": "scale" }], "op": "set", "value": 9.0 } }),
+            serde_json::json!({ "edit": { "path": [{ "field": "scale" }], "op": "set", "value": 2.0 } }),
         )
-        .is_err(),
-        "the check refuses a scale out of range"
-    );
-    app.call_on(
-        "settings:test.display",
-        "reset-scale",
-        serde_json::json!({}),
-    )
-    .unwrap();
-    assert!((app.settings::<Display>().get().scale - 1.0).abs() < f64::EPSILON);
-
-    // Each change is a step of the person's: undo sets the value before it
-    // again and redo the one after, as new changes of the settings.
-    let scale = |app: &TestApp<BoardApp>| app.settings::<Display>().get().scale;
-    let step = |app: &mut TestApp<BoardApp>, action: &str, steps: i64| {
+        .unwrap();
+        assert!((app.settings::<Display>().get().scale - 2.0).abs() < f64::EPSILON);
+        app.harness().relayout();
+        assert!(app.harness().inspection_json().unwrap().contains("scale 2"));
+        assert!(
+            app.call_on(
+                "settings:test.display",
+                "field-edit",
+                serde_json::json!({ "edit": { "path": [{ "field": "scale" }], "op": "set", "value": 9.0 } }),
+            )
+            .is_err(),
+            "the check refuses a scale out of range"
+        );
         app.call_on(
             "settings:test.display",
-            action,
-            serde_json::json!({ "steps": steps }),
+            "reset-scale",
+            serde_json::json!({}),
         )
         .unwrap();
-    };
-    step(&mut app, "undo", 1);
-    assert!((scale(&app) - 2.0).abs() < f64::EPSILON);
-    step(&mut app, "undo", 1);
-    assert!((scale(&app) - 1.0).abs() < f64::EPSILON);
-    assert!(app.settings::<Display>().get().high_contrast);
-    step(&mut app, "undo", 1);
-    assert!(!app.settings::<Display>().get().high_contrast);
-    step(&mut app, "redo", 2);
-    assert!(app.settings::<Display>().get().high_contrast);
-    assert!((scale(&app) - 2.0).abs() < f64::EPSILON);
-    app.harness().relayout();
-    assert!(app.harness().inspection_json().unwrap().contains("scale 2"));
+        assert!((app.settings::<Display>().get().scale - 1.0).abs() < f64::EPSILON);
 
-    // A write made elsewhere (the Settings app, another device) reaches the
-    // bound control.
-    app.settings::<Display>()
-        .update(|display| display.high_contrast = false)
+        // Each change is a step of the person's: undo sets the value before it
+        // again and redo the one after, as new changes of the settings.
+        let scale = |app: &TestApp<BoardApp>| app.settings::<Display>().get().scale;
+        let step = |app: &mut TestApp<BoardApp>, action: &str, steps: i64| {
+            app.call_on(
+                "settings:test.display",
+                action,
+                serde_json::json!({ "steps": steps }),
+            )
+            .unwrap();
+        };
+        step(&mut app, "undo", 1);
+        assert!((scale(&app) - 2.0).abs() < f64::EPSILON);
+        step(&mut app, "undo", 1);
+        assert!((scale(&app) - 1.0).abs() < f64::EPSILON);
+        assert!(app.settings::<Display>().get().high_contrast);
+        step(&mut app, "undo", 1);
+        assert!(!app.settings::<Display>().get().high_contrast);
+        step(&mut app, "redo", 2);
+        assert!(app.settings::<Display>().get().high_contrast);
+        assert!((scale(&app) - 2.0).abs() < f64::EPSILON);
+        app.harness().relayout();
+        assert!(app.harness().inspection_json().unwrap().contains("scale 2"));
+
+        // A write made elsewhere (the Settings app, another device) reaches the
+        // bound control.
+        app.settings::<Display>()
+            .update(|display| display.high_contrast = false)
+            .unwrap();
+        app.harness().relayout();
+        app.harness().click_named(&control).unwrap();
+        assert!(app.settings::<Display>().get().high_contrast);
+    }
+
+    phase a_control_built_by_hand_binds_a_sections_field_edit;
+    {
+        let mut app = TestApp::<BindingApp>::new().unwrap();
+        app.harness().click_named("contrast").unwrap();
+        assert!(app.settings::<Display>().get().high_contrast);
+    }
+
+    phase a_control_whose_input_is_not_the_fields_value_maps_it_to_the_edit;
+    {
+        let mut app = TestApp::<MappingApp>::new().unwrap();
+        app.harness().click_named("large").unwrap();
+        assert!((app.settings::<Display>().get().scale - 2.0).abs() < f64::EPSILON);
+    }
+
+    phase a_settings_section_is_kept_in_the_settings_document_alone;
+    {
+        let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
+        // The person record of playback is declared and kept open; the display
+        // section is the settings document's, with no record of its own.
+        assert_eq!(app.open_person_records(), 1);
+        assert!(published(&mut app, "settings:test.display").contains(&"field-edit".to_owned()));
+        app.call_on(
+            "settings:test.display",
+            "field-edit",
+            serde_json::json!({ "edit": { "path": [{ "field": "high_contrast" }], "op": "set", "value": true } }),
+        )
         .unwrap();
-    app.harness().relayout();
-    app.harness().click_named(&control).unwrap();
-    assert!(app.settings::<Display>().get().high_contrast);
-}
-
-#[test]
-fn the_persons_record_is_edited_by_path_as_the_person_whatever_their_role() {
-    let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
-    let control = checkbox(&mut app, "autoplay");
-    app.harness().click_named(&control).unwrap();
-    let playback = app.person::<Playback>().unwrap();
-    assert!(playback.with(|state| state.autoplay));
-
-    let actions = published(&mut app, "person:test.playback");
-    for expected in ["field-edit", "mute", "undo", "redo"] {
+        assert_eq!(app.open_person_records(), 1, "a write keeps no record");
+        assert!(app.settings::<Display>().get().high_contrast);
+        app.call_on(
+            "settings:test.display",
+            "undo",
+            serde_json::json!({ "steps": 1 }),
+        )
+        .unwrap();
         assert!(
-            actions.iter().any(|action| action == expected),
-            "{expected} in {actions:?}"
+            !app.settings::<Display>().get().high_contrast,
+            "and it is the person's step"
         );
     }
-    app.call_on(
-        "person:test.playback",
-        "mute",
-        serde_json::json!({ "channel": "news" }),
-    )
-    .unwrap();
-    assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
 
-    // Recorded in the record's history, one step of the person's each.
-    app.call_on("person:test.playback", "undo", serde_json::json!({}))
-        .unwrap();
-    assert!(playback.with(|state| state.muted.is_empty()));
-    app.call_on("person:test.playback", "undo", serde_json::json!({}))
-        .unwrap();
-    assert!(!playback.with(|state| state.autoplay));
+    phase a_section_is_published_and_changed_without_a_window;
+    {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let stored = || {
+            tilo_app::storage::Settings::<Lock>::for_app(LockApp::ID)
+                .get()
+                .minutes
+        };
+        let address = tilo_app::tilo_actions::ActionAddress::new("settings:test.lock", "field-edit");
+        let invoker = tilo_app::tilo_actions::ActionInvoker::actor("ada");
 
-    // Someone else in the workspace does not change it; software acting for
-    // the person does.
-    let bob = tilo_actions::ActionInvoker::actor("b0".repeat(32));
-    assert!(
-        app.call_by(
-            bob,
-            "person:test.playback",
-            "mute",
-            serde_json::json!({ "channel": "sports" }),
-        )
-        .is_err()
-    );
-    let agent = tilo_actions::ActionInvoker::actor("agent:helper")
-        .with_kind(tilo_actions::ActorKind::Agent)
-        .acting_for(ada());
-    app.call_by(
-        agent,
-        "person:test.playback",
-        "mute",
-        serde_json::json!({ "channel": "music" }),
-    )
-    .unwrap();
-    assert!(playback.with(|state| state.muted.contains(&"music".to_owned())));
-    assert!(!playback.with(|state| state.muted.contains(&"sports".to_owned())));
+        let records = tilo_app::framework::SettingsRecords::new(LockApp::ID, LockApp::records);
+        let resources = records.resources();
+        let spec = tilo_app::tilo_actions::door::resolve(&resources, &address)
+            .expect("the section's field edit is published");
+        assert_eq!(
+            spec.confirmation_for_json(&edit(1)),
+            tilo_app::tilo_actions::ConfirmationPolicy::None,
+            "locking sooner asks nothing"
+        );
+        assert_eq!(
+            spec.confirmation_for_json(&edit(0)),
+            tilo_app::tilo_actions::ConfirmationPolicy::Confirm,
+            "never locking asks first"
+        );
 
-    // A viewer of the workspace still changes their own record.
-    app.set_role(Role::Viewer);
-    app.harness().relayout();
-    let control = checkbox(&mut app, "autoplay");
-    app.harness().click_named(&control).unwrap();
-    assert!(playback.with(|state| state.autoplay));
-    assert!(app.invoke(Board::RETITLE.with("not theirs")).is_err());
+        records
+            .invoke(&address, &edit(1), false, &invoker, None)
+            .unwrap();
+        assert_eq!(stored(), 1);
+        assert_eq!(
+            records.invoke(&address, &edit(0), false, &invoker, None),
+            Err(tilo_app::tilo_actions::DoorError::ConfirmationRequired),
+            "never locking runs only once confirmed"
+        );
+        assert_eq!(stored(), 1);
+        assert!(
+            records
+                .invoke(&address, &edit(90), true, &invoker, None)
+                .is_err(),
+            "the model's check refuses"
+        );
+        assert_eq!(stored(), 1, "a refused change stores nothing");
+
+        // What the window changed reaches a holder made before it.
+        tilo_app::storage::Settings::<Lock>::for_app(LockApp::ID)
+            .set(&Lock { minutes: 10 })
+            .unwrap();
+        let resources = records.resources();
+        let spec = tilo_app::tilo_actions::door::resolve(&resources, &address).unwrap();
+        assert_eq!(
+            spec.confirmation_for_json(&edit(5)),
+            tilo_app::tilo_actions::ConfirmationPolicy::None,
+            "judged against the value stored now"
+        );
+    }
+
+    phase sections_the_host_keeps_are_its_actions_bound_here_and_published_only_there;
+    {
+        let mut app = TestApp::<KeptApp>::new().unwrap();
+        let control = app
+            .harness()
+            .targets()
+            .keys()
+            .find(|name| name.as_str() == "high_contrast")
+            .cloned()
+            .expect("the field's control");
+        app.harness().click_named(&control).unwrap();
+        app.settle();
+        assert!(
+            app.settings::<Display>().get().high_contrast,
+            "the click ran the host's field edit"
+        );
+        for kept in ["settings:test.display", "settings:test.lock"] {
+            assert_eq!(published(&mut app, kept), Vec::<String>::new(), "{kept}");
+        }
+
+        app.call_on("settings:test.lock", "field-edit", edit(1).into())
+            .unwrap();
+        assert_eq!(app.settings::<Lock>().get().minutes, 1);
+        assert_eq!(
+            app.call_on("settings:test.lock", "field-edit", edit(0).into()),
+            Err(tilo_app::tilo_actions::DoorError::ConfirmationRequired),
+            "never locking asks first, here as at the host"
+        );
+        app.call_confirmed_on("settings:test.lock", "field-edit", edit(0).into())
+            .unwrap();
+        assert_eq!(app.settings::<Lock>().get().minutes, 0);
+        assert!(
+            app.call_confirmed_on("settings:test.lock", "field-edit", edit(90).into())
+                .is_err(),
+            "the host's model refuses"
+        );
+    }
 }
 
-// A verb of the person's own record keeps what it does: a destructive one
-// Undo takes back is undoable, so it runs at once and asks nothing, while
-// what a grant must allow is reading, so the workspace's roles do not gate it.
-#[test]
-fn a_verb_of_the_persons_record_is_undoable_and_needs_only_reading() {
-    let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
-    let resources = app.harness().resources();
-    let descriptor = tilo_actions::door::survey(&resources)
-        .into_iter()
-        .find(|descriptor| {
-            descriptor.address.resource.as_str() == "person:test.playback"
-                && descriptor.address.action == "unmute-all"
-        })
-        .expect("the person's record publishes its verbs");
-    let contract = &descriptor.contract;
-    assert_eq!(contract.kind, tilo_actions::ActionKind::Undoable);
-    assert!(contract.can_be_undone());
-    assert_eq!(
-        contract.advertised_confirmation(),
-        tilo_actions::ConfirmationPolicy::None
-    );
-    assert_eq!(contract.validate_declaration(), Vec::<String>::new());
-    assert_eq!(contract.need().kind, tilo_actions::ActionKind::Read);
+tilo_test_env::scenario! {
+    fn another_record_is_published_and_edited_beside_the_apps_own;
 
-    let playback = app.person::<Playback>().unwrap();
-    app.call_on(
-        "person:test.playback",
-        "mute",
-        serde_json::json!({ "channel": "news" }),
-    )
-    .unwrap();
-    // A viewer of the workspace runs it on their own record, unasked, and Undo
-    // takes it back.
-    app.set_role(Role::Viewer);
-    app.call_on("person:test.playback", "unmute-all", serde_json::json!({}))
+    phase the_persons_record_is_edited_by_path_as_the_person_whatever_their_role;
+    {
+        let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
+        let control = checkbox(&mut app, "autoplay");
+        app.harness().click_named(&control).unwrap();
+        let playback = app.person::<Playback>().unwrap();
+        assert!(playback.with(|state| state.autoplay));
+
+        let actions = published(&mut app, "person:test.playback");
+        for expected in ["field-edit", "mute", "undo", "redo"] {
+            assert!(
+                actions.iter().any(|action| action == expected),
+                "{expected} in {actions:?}"
+            );
+        }
+        app.call_on(
+            "person:test.playback",
+            "mute",
+            serde_json::json!({ "channel": "news" }),
+        )
         .unwrap();
-    assert_eq!(app.asking(), None);
-    assert!(playback.with(|state| state.muted.is_empty()));
-    app.call_on("person:test.playback", "undo", serde_json::json!({}))
+        assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
+
+        // Recorded in the record's history, one step of the person's each.
+        app.call_on("person:test.playback", "undo", serde_json::json!({}))
+            .unwrap();
+        assert!(playback.with(|state| state.muted.is_empty()));
+        app.call_on("person:test.playback", "undo", serde_json::json!({}))
+            .unwrap();
+        assert!(!playback.with(|state| state.autoplay));
+
+        // Someone else in the workspace does not change it; software acting for
+        // the person does.
+        let bob = tilo_actions::ActionInvoker::actor("b0".repeat(32));
+        assert!(
+            app.call_by(
+                bob,
+                "person:test.playback",
+                "mute",
+                serde_json::json!({ "channel": "sports" }),
+            )
+            .is_err()
+        );
+        let agent = tilo_actions::ActionInvoker::actor("agent:helper")
+            .with_kind(tilo_actions::ActorKind::Agent)
+            .acting_for(ada());
+        app.call_by(
+            agent,
+            "person:test.playback",
+            "mute",
+            serde_json::json!({ "channel": "music" }),
+        )
         .unwrap();
-    assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
+        assert!(playback.with(|state| state.muted.contains(&"music".to_owned())));
+        assert!(!playback.with(|state| state.muted.contains(&"sports".to_owned())));
+
+        // A viewer of the workspace still changes their own record.
+        app.set_role(Role::Viewer);
+        app.harness().relayout();
+        let control = checkbox(&mut app, "autoplay");
+        app.harness().click_named(&control).unwrap();
+        assert!(playback.with(|state| state.autoplay));
+        assert!(app.invoke(Board::RETITLE.with("not theirs")).is_err());
+    }
+
+    phase a_verb_of_the_persons_record_is_undoable_and_needs_only_reading;
+    // A verb of the person's own record keeps what it does: a destructive one
+    // Undo takes back is undoable, so it runs at once and asks nothing, while
+    // what a grant must allow is reading, so the workspace's roles do not gate it.
+    {
+        let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
+        let resources = app.harness().resources();
+        let descriptor = tilo_actions::door::survey(&resources)
+            .into_iter()
+            .find(|descriptor| {
+                descriptor.address.resource.as_str() == "person:test.playback"
+                    && descriptor.address.action == "unmute-all"
+            })
+            .expect("the person's record publishes its verbs");
+        let contract = &descriptor.contract;
+        assert_eq!(contract.kind, tilo_actions::ActionKind::Undoable);
+        assert!(contract.can_be_undone());
+        assert_eq!(
+            contract.advertised_confirmation(),
+            tilo_actions::ConfirmationPolicy::None
+        );
+        assert_eq!(contract.validate_declaration(), Vec::<String>::new());
+        assert_eq!(contract.need().kind, tilo_actions::ActionKind::Read);
+
+        let playback = app.person::<Playback>().unwrap();
+        app.call_on(
+            "person:test.playback",
+            "mute",
+            serde_json::json!({ "channel": "news" }),
+        )
+        .unwrap();
+        // A viewer of the workspace runs it on their own record, unasked, and Undo
+        // takes it back.
+        app.set_role(Role::Viewer);
+        app.call_on("person:test.playback", "unmute-all", serde_json::json!({}))
+            .unwrap();
+        assert_eq!(app.asking(), None);
+        assert!(playback.with(|state| state.muted.is_empty()));
+        app.call_on("person:test.playback", "undo", serde_json::json!({}))
+            .unwrap();
+        assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
+    }
+
+    phase declared_records_are_published_and_committed_though_no_view_shows_them;
+    {
+        let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
+        app.call_on(
+            "settings:test.display",
+            "field-edit",
+            serde_json::json!({ "edit": { "path": [{ "field": "high_contrast" }], "op": "set", "value": true } }),
+        )
+        .unwrap();
+        assert!(app.settings::<Display>().get().high_contrast);
+        app.call_on(
+            "person:test.playback",
+            "mute",
+            serde_json::json!({ "channel": "news" }),
+        )
+        .unwrap();
+        let playback = app.person::<Playback>().unwrap();
+        assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
+
+        let report = tilo_app::framework::headless::surface_report::<DeclaringApp>();
+        let kinds: Vec<&str> = report["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|surface| surface["kind"].as_str())
+            .collect();
+        for kind in ["test.board", "test.display", "test.playback"] {
+            assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
+        }
+    }
+
+    phase a_live_row_offers_another_records_field_edit;
+    {
+        let mut app = TestApp::<RowsApp>::new().unwrap();
+        assert!(!app.settings::<Display>().get().high_contrast);
+        app.call_on("screen:main", "high-contrast", serde_json::json!({}))
+            .unwrap();
+        assert!(app.settings::<Display>().get().high_contrast);
+    }
 }
 
 /// Keeps both records, though its view shows neither.
@@ -388,37 +576,6 @@ impl ResourceApp for DeclaringApp {
 
     fn records(records: &mut Records<'_>) {
         records.settings::<Display>().person::<Playback>();
-    }
-}
-
-#[test]
-fn declared_records_are_published_and_committed_though_no_view_shows_them() {
-    let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
-    app.call_on(
-        "settings:test.display",
-        "field-edit",
-        serde_json::json!({ "edit": { "path": [{ "field": "high_contrast" }], "op": "set", "value": true } }),
-    )
-    .unwrap();
-    assert!(app.settings::<Display>().get().high_contrast);
-    app.call_on(
-        "person:test.playback",
-        "mute",
-        serde_json::json!({ "channel": "news" }),
-    )
-    .unwrap();
-    let playback = app.person::<Playback>().unwrap();
-    assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
-
-    let report = tilo_app::framework::headless::surface_report::<DeclaringApp>();
-    let kinds: Vec<&str> = report["resources"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|surface| surface["kind"].as_str())
-        .collect();
-    for kind in ["test.board", "test.display", "test.playback"] {
-        assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
     }
 }
 
@@ -453,13 +610,6 @@ impl ResourceApp for BindingApp {
     }
 }
 
-#[test]
-fn a_control_built_by_hand_binds_a_sections_field_edit() {
-    let mut app = TestApp::<BindingApp>::new().unwrap();
-    app.harness().click_named("contrast").unwrap();
-    assert!(app.settings::<Display>().get().high_contrast);
-}
-
 /// Binds a control whose input is not the field's value: a switch for a
 /// scale.
 struct MappingApp;
@@ -489,13 +639,6 @@ impl ResourceApp for MappingApp {
         })
         .unwrap()
     }
-}
-
-#[test]
-fn a_control_whose_input_is_not_the_fields_value_maps_it_to_the_edit() {
-    let mut app = TestApp::<MappingApp>::new().unwrap();
-    app.harness().click_named("large").unwrap();
-    assert!((app.settings::<Display>().get().scale - 2.0).abs() < f64::EPSILON);
 }
 
 /// Lists one entity as a live row offering a section's field edit for it.
@@ -570,42 +713,6 @@ impl ResourceApp for RowsApp {
     }
 }
 
-#[test]
-fn a_live_row_offers_another_records_field_edit() {
-    let mut app = TestApp::<RowsApp>::new().unwrap();
-    assert!(!app.settings::<Display>().get().high_contrast);
-    app.call_on("screen:main", "high-contrast", serde_json::json!({}))
-        .unwrap();
-    assert!(app.settings::<Display>().get().high_contrast);
-}
-
-#[test]
-fn a_settings_section_is_kept_in_the_settings_document_alone() {
-    let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
-    // The person record of playback is declared and kept open; the display
-    // section is the settings document's, with no record of its own.
-    assert_eq!(app.open_person_records(), 1);
-    assert!(published(&mut app, "settings:test.display").contains(&"field-edit".to_owned()));
-    app.call_on(
-        "settings:test.display",
-        "field-edit",
-        serde_json::json!({ "edit": { "path": [{ "field": "high_contrast" }], "op": "set", "value": true } }),
-    )
-    .unwrap();
-    assert_eq!(app.open_person_records(), 1, "a write keeps no record");
-    assert!(app.settings::<Display>().get().high_contrast);
-    app.call_on(
-        "settings:test.display",
-        "undo",
-        serde_json::json!({ "steps": 1 }),
-    )
-    .unwrap();
-    assert!(
-        !app.settings::<Display>().get().high_contrast,
-        "and it is the person's step"
-    );
-}
-
 /// How long before the screen locks: a settings section that is a model.
 #[derive(Model, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[model(check = Lock::valid)]
@@ -665,63 +772,6 @@ fn edit(minutes: u32) -> serde_json::Map<String, serde_json::Value> {
     .unwrap()
 }
 
-#[test]
-fn a_section_is_published_and_changed_without_a_window() {
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    let stored = || {
-        tilo_app::storage::Settings::<Lock>::for_app(LockApp::ID)
-            .get()
-            .minutes
-    };
-    let address = tilo_app::tilo_actions::ActionAddress::new("settings:test.lock", "field-edit");
-    let invoker = tilo_app::tilo_actions::ActionInvoker::actor("ada");
-
-    let records = tilo_app::framework::SettingsRecords::new(LockApp::ID, LockApp::records);
-    let resources = records.resources();
-    let spec = tilo_app::tilo_actions::door::resolve(&resources, &address)
-        .expect("the section's field edit is published");
-    assert_eq!(
-        spec.confirmation_for_json(&edit(1)),
-        tilo_app::tilo_actions::ConfirmationPolicy::None,
-        "locking sooner asks nothing"
-    );
-    assert_eq!(
-        spec.confirmation_for_json(&edit(0)),
-        tilo_app::tilo_actions::ConfirmationPolicy::Confirm,
-        "never locking asks first"
-    );
-
-    records
-        .invoke(&address, &edit(1), false, &invoker, None)
-        .unwrap();
-    assert_eq!(stored(), 1);
-    assert_eq!(
-        records.invoke(&address, &edit(0), false, &invoker, None),
-        Err(tilo_app::tilo_actions::DoorError::ConfirmationRequired),
-        "never locking runs only once confirmed"
-    );
-    assert_eq!(stored(), 1);
-    assert!(
-        records
-            .invoke(&address, &edit(90), true, &invoker, None)
-            .is_err(),
-        "the model's check refuses"
-    );
-    assert_eq!(stored(), 1, "a refused change stores nothing");
-
-    // What the window changed reaches a holder made before it.
-    tilo_app::storage::Settings::<Lock>::for_app(LockApp::ID)
-        .set(&Lock { minutes: 10 })
-        .unwrap();
-    let resources = records.resources();
-    let spec = tilo_app::tilo_actions::door::resolve(&resources, &address).unwrap();
-    assert_eq!(
-        spec.confirmation_for_json(&edit(5)),
-        tilo_app::tilo_actions::ConfirmationPolicy::None,
-        "judged against the value stored now"
-    );
-}
-
 /// Settings sections the host keeps: the window shows them and binds its
 /// controls to them, but each change is the host's action.
 struct KeptApp;
@@ -746,42 +796,4 @@ impl ResourceApp for KeptApp {
             records.settings::<Display>().settings::<Lock>();
         });
     }
-}
-
-#[test]
-fn sections_the_host_keeps_are_its_actions_bound_here_and_published_only_there() {
-    let mut app = TestApp::<KeptApp>::new().unwrap();
-    let control = app
-        .harness()
-        .targets()
-        .keys()
-        .find(|name| name.as_str() == "high_contrast")
-        .cloned()
-        .expect("the field's control");
-    app.harness().click_named(&control).unwrap();
-    app.settle();
-    assert!(
-        app.settings::<Display>().get().high_contrast,
-        "the click ran the host's field edit"
-    );
-    for kept in ["settings:test.display", "settings:test.lock"] {
-        assert_eq!(published(&mut app, kept), Vec::<String>::new(), "{kept}");
-    }
-
-    app.call_on("settings:test.lock", "field-edit", edit(1).into())
-        .unwrap();
-    assert_eq!(app.settings::<Lock>().get().minutes, 1);
-    assert_eq!(
-        app.call_on("settings:test.lock", "field-edit", edit(0).into()),
-        Err(tilo_app::tilo_actions::DoorError::ConfirmationRequired),
-        "never locking asks first, here as at the host"
-    );
-    app.call_confirmed_on("settings:test.lock", "field-edit", edit(0).into())
-        .unwrap();
-    assert_eq!(app.settings::<Lock>().get().minutes, 0);
-    assert!(
-        app.call_confirmed_on("settings:test.lock", "field-edit", edit(90).into())
-            .is_err(),
-        "the host's model refuses"
-    );
 }

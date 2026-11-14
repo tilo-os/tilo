@@ -90,160 +90,346 @@ fn videos(record: &PersonRecord<Watched>) -> Vec<String> {
     videos
 }
 
-#[test]
-fn a_record_of_a_kind_is_the_same_record_on_each_device_of_the_workspace() {
-    let mut laptop = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
-    let mut phone = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
-    let on_laptop = laptop.person::<Watched>().unwrap();
-    let on_phone = phone.person::<Watched>().unwrap();
-    assert!(on_laptop.syncs(), "the workspace has a workspace id");
-    let route = on_laptop.record().route().unwrap();
-    assert_eq!(route, on_phone.record().route().unwrap());
-    assert_eq!(route.app_id, QueueApp::ID);
-    assert_eq!(
-        route.cluster_id.to_string(),
-        WORKSPACE,
-        "the record lives in the workspace the app is open in"
-    );
-    assert_eq!(
-        route.record.as_deref(),
-        Some(watched_record_of(&ada()).as_str()),
-        "it is Ada's own record there: no other member reads or writes it"
-    );
+tilo_test_env::scenario! {
+    fn a_record_kept_beside_the_apps_own_is_one_record_in_each_workspace;
 
-    // Each device watches something before they meet; the record's genesis
-    // is the same on both, so they merge into one history.
-    on_laptop
-        .apply(&Watched::WATCH.with("on-the-laptop").build(0).unwrap())
-        .unwrap();
-    on_phone
-        .invoke(&Watched::WATCH.with("on-the-phone"))
-        .unwrap();
-    let laptops = on_laptop.record().document().unwrap();
-    on_phone.record().merge_peer_document(laptops).unwrap();
-    let phones = on_phone.record().document().unwrap();
-    on_laptop.record().merge_peer_document(phones).unwrap();
-    assert_eq!(videos(&on_laptop), ["on-the-laptop", "on-the-phone"]);
-    assert_eq!(videos(&on_laptop), videos(&on_phone));
+    phase a_record_of_a_kind_is_the_same_record_on_each_device_of_the_workspace;
+    {
+        let mut laptop = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
+        let mut phone = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
+        let on_laptop = laptop.person::<Watched>().unwrap();
+        let on_phone = phone.person::<Watched>().unwrap();
+        assert!(on_laptop.syncs(), "the workspace has a workspace id");
+        let route = on_laptop.record().route().unwrap();
+        assert_eq!(route, on_phone.record().route().unwrap());
+        assert_eq!(route.app_id, QueueApp::ID);
+        assert_eq!(
+            route.cluster_id.to_string(),
+            WORKSPACE,
+            "the record lives in the workspace the app is open in"
+        );
+        assert_eq!(
+            route.record.as_deref(),
+            Some(watched_record_of(&ada()).as_str()),
+            "it is Ada's own record there: no other member reads or writes it"
+        );
 
-    // The edit is an action of Ada's in the record's history, and her undo
-    // takes back her own step on this device.
-    let version = on_laptop
-        .record()
-        .read(|doc| {
-            tilo_app::tilo_resource::history::versions(&mut doc.clone())
-                .into_iter()
-                .filter_map(|version| version.context)
-                .find(|context| context.invoker.is_some())
-        })
-        .flatten()
-        .expect("the watch is a version of the record");
-    assert_eq!(version.invoker.unwrap().actor, ada());
-    assert!(on_laptop.undo());
-    assert_eq!(videos(&on_laptop), ["on-the-phone"]);
-    assert!(on_laptop.redo());
+        // Each device watches something before they meet; the record's genesis
+        // is the same on both, so they merge into one history.
+        on_laptop
+            .apply(&Watched::WATCH.with("on-the-laptop").build(0).unwrap())
+            .unwrap();
+        on_phone
+            .invoke(&Watched::WATCH.with("on-the-phone"))
+            .unwrap();
+        let laptops = on_laptop.record().document().unwrap();
+        on_phone.record().merge_peer_document(laptops).unwrap();
+        let phones = on_phone.record().document().unwrap();
+        on_laptop.record().merge_peer_document(phones).unwrap();
+        assert_eq!(videos(&on_laptop), ["on-the-laptop", "on-the-phone"]);
+        assert_eq!(videos(&on_laptop), videos(&on_phone));
 
-    // It is a record of its own: the queue the app shows holds nothing of
-    // it.
-    let queue = laptop.peer_document();
-    assert!(!format!("{queue:?}").contains("on-the-laptop"));
-}
-
-#[test]
-fn each_workspace_has_its_own_record_of_a_kind() {
-    let mut here = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
-    let mut elsewhere =
-        TestApp::<QueueApp>::for_person_in(&ada(), "00000000-0000-4000-8000-00000000000b").unwrap();
-    let watched_here = here.person::<Watched>().unwrap();
-    watched_here.invoke(&Watched::WATCH.with("here")).unwrap();
-
-    // The app opened in another workspace starts empty, on another route:
-    // nothing routes this workspace's record there.
-    let watched_elsewhere = elsewhere.person::<Watched>().unwrap();
-    assert!(watched_elsewhere.with(|state| state.videos.is_empty()));
-    let (route_here, route_elsewhere) = (
-        watched_here.record().route().unwrap(),
-        watched_elsewhere.record().route().unwrap(),
-    );
-    assert_eq!(
-        route_here.record, route_elsewhere.record,
-        "the same kind of record"
-    );
-    assert_ne!(
-        route_here.cluster_id, route_elsewhere.cluster_id,
-        "in each workspace"
-    );
-
-    // Even handed this workspace's bytes, the other refuses them: they
-    // belong to another workspace.
-    let bytes = watched_here.record().document().unwrap();
-    assert!(
-        watched_elsewhere
+        // The edit is an action of Ada's in the record's history, and her undo
+        // takes back her own step on this device.
+        let version = on_laptop
             .record()
-            .merge_peer_document(bytes)
-            .is_err()
-    );
-    assert!(watched_elsewhere.with(|state| state.videos.is_empty()));
-}
+            .read(|doc| {
+                tilo_app::tilo_resource::history::versions(&mut doc.clone())
+                    .into_iter()
+                    .filter_map(|version| version.context)
+                    .find(|context| context.invoker.is_some())
+            })
+            .flatten()
+            .expect("the watch is a version of the record");
+        assert_eq!(version.invoker.unwrap().actor, ada());
+        assert!(on_laptop.undo());
+        assert_eq!(videos(&on_laptop), ["on-the-phone"]);
+        assert!(on_laptop.redo());
 
-#[test]
-fn a_record_of_a_kind_survives_a_relaunch() {
-    let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
-    app.person::<Watched>()
-        .unwrap()
-        .invoke(&Watched::WATCH.with("kept"))
-        .unwrap();
-    let mut app = app.reopen().unwrap();
-    assert_eq!(videos(&app.person::<Watched>().unwrap()), ["kept"]);
-}
-
-#[test]
-fn the_palette_and_agents_take_back_the_persons_own_steps() {
-    let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
-    let watched = app.person::<Watched>().unwrap();
-    watched.invoke(&Watched::WATCH.with("first")).unwrap();
-    watched.invoke(&Watched::WATCH.with("second")).unwrap();
-    app.harness().relayout();
-
-    // The record is published beside the app's resource, with its verbs
-    // and field edits and the person's undo and redo.
-    let surface = app.agent_surface();
-    let actions: Vec<&str> = surface
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|row| row["resource"] == "person:test.watched")
-        .map(|row| row["action"].as_str().unwrap())
-        .collect();
-    for expected in ["redo", "undo", "watch", "field-edit"] {
-        assert!(actions.contains(&expected), "{expected} in {actions:?}");
+        // It is a record of its own: the queue the app shows holds nothing of
+        // it.
+        let queue = laptop.peer_document();
+        assert!(!format!("{queue:?}").contains("on-the-laptop"));
     }
 
-    let undone = app
-        .call_on(
-            "person:test.watched",
-            "undo",
-            serde_json::json!({ "steps": 2 }),
+    phase each_workspace_has_its_own_record_of_a_kind;
+    {
+        let mut here = TestApp::<QueueApp>::for_person_in(&ada(), WORKSPACE).unwrap();
+        let mut elsewhere =
+            TestApp::<QueueApp>::for_person_in(&ada(), "00000000-0000-4000-8000-00000000000b").unwrap();
+        let watched_here = here.person::<Watched>().unwrap();
+        watched_here.invoke(&Watched::WATCH.with("here")).unwrap();
+
+        // The app opened in another workspace starts empty, on another route:
+        // nothing routes this workspace's record there.
+        let watched_elsewhere = elsewhere.person::<Watched>().unwrap();
+        assert!(watched_elsewhere.with(|state| state.videos.is_empty()));
+        let (route_here, route_elsewhere) = (
+            watched_here.record().route().unwrap(),
+            watched_elsewhere.record().route().unwrap(),
+        );
+        assert_eq!(
+            route_here.record, route_elsewhere.record,
+            "the same kind of record"
+        );
+        assert_ne!(
+            route_here.cluster_id, route_elsewhere.cluster_id,
+            "in each workspace"
+        );
+
+        // Even handed this workspace's bytes, the other refuses them: they
+        // belong to another workspace.
+        let bytes = watched_here.record().document().unwrap();
+        assert!(
+            watched_elsewhere
+                .record()
+                .merge_peer_document(bytes)
+                .is_err()
+        );
+        assert!(watched_elsewhere.with(|state| state.videos.is_empty()));
+    }
+
+    phase a_record_of_a_kind_survives_a_relaunch;
+    {
+        let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
+        app.person::<Watched>()
+            .unwrap()
+            .invoke(&Watched::WATCH.with("kept"))
+            .unwrap();
+        let mut app = app.reopen().unwrap();
+        assert_eq!(videos(&app.person::<Watched>().unwrap()), ["kept"]);
+    }
+
+    phase the_palette_and_agents_take_back_the_persons_own_steps;
+    {
+        let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
+        let watched = app.person::<Watched>().unwrap();
+        watched.invoke(&Watched::WATCH.with("first")).unwrap();
+        watched.invoke(&Watched::WATCH.with("second")).unwrap();
+        app.harness().relayout();
+
+        // The record is published beside the app's resource, with its verbs
+        // and field edits and the person's undo and redo.
+        let surface = app.agent_surface();
+        let actions: Vec<&str> = surface
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["resource"] == "person:test.watched")
+            .map(|row| row["action"].as_str().unwrap())
+            .collect();
+        for expected in ["redo", "undo", "watch", "field-edit"] {
+            assert!(actions.contains(&expected), "{expected} in {actions:?}");
+        }
+
+        let undone = app
+            .call_on(
+                "person:test.watched",
+                "undo",
+                serde_json::json!({ "steps": 2 }),
+            )
+            .unwrap();
+        assert_eq!(undone, Some(serde_json::json!({ "steps": 2 })));
+        assert!(videos(&watched).is_empty());
+        app.call_on("person:test.watched", "redo", serde_json::json!({}))
+            .unwrap();
+        assert_eq!(videos(&watched), ["first"]);
+
+        // The queue's history is another record's: its undo has nothing of
+        // the watch history to take back, and that nothing of the queue's.
+        app.invoke(Queue::ADD.with("shared")).unwrap();
+        app.call_on("person:test.watched", "undo", serde_json::json!({}))
+            .unwrap();
+        assert!(videos(&watched).is_empty());
+        assert_eq!(app.state().items, ["shared"]);
+        assert!(
+            app.call_on("person:test.watched", "undo", serde_json::json!({}))
+                .is_err(),
+            "nothing more of the person's to undo"
+        );
+    }
+
+    phase an_owner_shown_by_a_host_keeping_the_persons_records_changes_the_hosts_copy;
+    {
+        use std::rc::Rc;
+        use tilo_app::record::{RecordKind, RecordOwners, person::PersonRecords};
+
+        let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
+        let held = PersonRecords::open(
+            &mut owners,
+            QueueApp::ID,
+            tilo_app::permissions::UserId(ada()),
         )
         .unwrap();
-    assert_eq!(undone, Some(serde_json::json!({ "steps": 2 })));
-    assert!(videos(&watched).is_empty());
-    app.call_on("person:test.watched", "redo", serde_json::json!({}))
-        .unwrap();
-    assert_eq!(videos(&watched), ["first"]);
+        let mut app = TestApp::<QueueApp>::for_person_shown_by(&ada(), &held).unwrap();
+        let owned = app.shared_person::<Saved>().unwrap();
+        owned.invoke(&Saved::SAVE.with("saved-in-the-app")).unwrap();
 
-    // The queue's history is another record's: its undo has nothing of
-    // the watch history to take back, and that nothing of the queue's.
-    app.invoke(Queue::ADD.with("shared")).unwrap();
-    app.call_on("person:test.watched", "undo", serde_json::json!({}))
-        .unwrap();
-    assert!(videos(&watched).is_empty());
-    assert_eq!(app.state().items, ["shared"]);
-    assert!(
-        app.call_on("person:test.watched", "undo", serde_json::json!({}))
-            .is_err(),
-        "nothing more of the person's to undo"
-    );
+        let kept = held
+            .open_existing_record(RecordKind::new(Saved::KIND))
+            .unwrap()
+            .expect("the host keeps the record the app changed");
+        assert_eq!(
+            kept.heads(),
+            owned.record().heads(),
+            "the app's edit is in the copy the host stores and syncs"
+        );
+    }
+
+    phase a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_editors;
+    {
+        let mut owner_app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
+        let mut editor_app = TestApp::<EditorApp>::for_person(&ada()).unwrap();
+        let mut reader_app = TestApp::<ReaderApp>::for_person(&ada()).unwrap();
+        let owned = owner_app.shared_person::<Saved>().unwrap();
+        let edited = editor_app.shared_person::<Saved>().unwrap();
+        let read = reader_app.shared_person::<Saved>().unwrap();
+        assert!(owned.editable() && edited.editable());
+        assert!(!read.editable());
+        for copy in [&edited, &read] {
+            assert_eq!(
+                copy.record().checkout().id,
+                owned.record().checkout().id,
+                "every app's copy is the owner's record"
+            );
+            assert!(
+                copy.record().syncs(),
+                "the person's own store carries it, so it reaches their other devices"
+            );
+            assert_eq!(
+                copy.record().route(),
+                owned.record().route(),
+                "every app of theirs opens the same record of the person's store"
+            );
+        }
+        let route = owned
+            .record()
+            .route()
+            .expect("the person's own store carries it");
+        assert_eq!(
+            route.app_id,
+            QueueApp::ID,
+            "the route names the app keeping the record"
+        );
+        assert_ne!(
+            route.record.as_deref(),
+            None,
+            "and the record, not the app's primary"
+        );
+
+        owned
+            .invoke(&Saved::SAVE.with("kept-by-the-owner"))
+            .unwrap();
+        edited
+            .invoke(&Saved::SAVE.with("added-by-the-editor"))
+            .unwrap();
+        owned
+            .record()
+            .merge_peer_document(edited.record().document().unwrap())
+            .unwrap();
+        read.record()
+            .merge_peer_document(owned.record().document().unwrap())
+            .unwrap();
+        assert_eq!(saved(&read), ["added-by-the-editor", "kept-by-the-owner"]);
+
+        assert!(
+            read.invoke(&Saved::SAVE.with("from-the-reader")).is_err(),
+            "a reader does not change it"
+        );
+        assert_eq!(saved(&read), ["added-by-the-editor", "kept-by-the-owner"]);
+
+        // The editor's copy is kept in its own store across launches.
+        drop(edited);
+        let mut editor_app = editor_app.reopen().unwrap();
+        let kept = editor_app.shared_person::<Saved>().unwrap();
+        assert_eq!(saved(&kept), ["added-by-the-editor"]);
+    }
+
+    phase the_person_records_an_app_declares_are_its_surface_before_a_view_opens_them;
+    {
+        let report = tilo_app::framework::headless::surface_report::<DeclaringApp>();
+        let resources = report["resources"].as_array().expect("resources");
+        let declared = resources
+            .iter()
+            .find(|resource| resource["kind"] == Saved::KIND)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} is part of the app's surface: {resources:?}",
+                    Saved::KIND
+                )
+            });
+        assert_eq!(declared["person"], true, "{declared:?}");
+
+        // The declared record is open with the window, published beside the
+        // app's own, whether or not a view shows it.
+        let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
+        assert_eq!(app.open_person_records(), 1);
+        assert!(app.shared_person::<Saved>().is_some());
+    }
+
+    phase a_record_a_view_opens_without_the_app_declaring_it_is_not_the_persons;
+    {
+        let report = tilo_app::framework::headless::surface_report::<UndeclaredApp>();
+        let resources = report["resources"].as_array().expect("resources");
+        let opened = resources
+            .iter()
+            .find(|resource| resource["kind"] == Saved::KIND)
+            .expect("the view opened it");
+        assert_eq!(
+            opened.get("person"),
+            None,
+            "the declaration decides what is the person's, not the open: {opened:?}"
+        );
+    }
+
+    phase an_agent_reads_the_persons_own_record_now_and_at_a_version;
+    {
+        let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
+        let watched = app.person::<Watched>().unwrap();
+        watched.invoke(&Watched::WATCH.with("first")).unwrap();
+        let after_first = watched
+            .record()
+            .read(|doc| {
+                let heads = doc.clone().get_heads();
+                heads
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("+")
+            })
+            .unwrap();
+        watched.invoke(&Watched::WATCH.with("second")).unwrap();
+        app.harness().relayout();
+
+        let read = app
+            .call_on("person:test.watched", "read", serde_json::json!({}))
+            .unwrap()
+            .expect("a read answers what the record holds");
+        let now = read.to_string();
+        assert!(
+            now.contains("first") && now.contains("second"),
+            "the read holds both: {now}"
+        );
+
+        let past = app
+            .call_on(
+                "person:test.watched",
+                "read",
+                serde_json::json!({ "version": after_first }),
+            )
+            .unwrap()
+            .expect("a read of a version answers what it held");
+        let then = past["content"].to_string();
+        assert!(
+            then.contains("first") && !then.contains("second"),
+            "the version holds the first only: {past}"
+        );
+        assert_eq!(
+            videos(&watched),
+            ["first", "second"],
+            "reads change nothing"
+        );
+    }
 }
 
 /// What the person saved for later, which the queue app keeps for all of
@@ -277,33 +463,6 @@ fn saved(record: &PersonRecord<Saved>) -> Vec<String> {
     videos
 }
 
-#[test]
-fn an_owner_shown_by_a_host_keeping_the_persons_records_changes_the_hosts_copy() {
-    use std::rc::Rc;
-    use tilo_app::record::{RecordKind, RecordOwners, person::PersonRecords};
-
-    let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
-    let held = PersonRecords::open(
-        &mut owners,
-        QueueApp::ID,
-        tilo_app::permissions::UserId(ada()),
-    )
-    .unwrap();
-    let mut app = TestApp::<QueueApp>::for_person_shown_by(&ada(), &held).unwrap();
-    let owned = app.shared_person::<Saved>().unwrap();
-    owned.invoke(&Saved::SAVE.with("saved-in-the-app")).unwrap();
-
-    let kept = held
-        .open_existing_record(RecordKind::new(Saved::KIND))
-        .unwrap()
-        .expect("the host keeps the record the app changed");
-    assert_eq!(
-        kept.heads(),
-        owned.record().heads(),
-        "the app's edit is in the copy the host stores and syncs"
-    );
-}
-
 /// Another app, adding to the history the queue app keeps.
 struct EditorApp;
 
@@ -328,75 +487,6 @@ impl ResourceApp for ReaderApp {
     fn view(_cx: &mut ViewCx<Queue>) -> Element {
         Box::new(Column::new())
     }
-}
-
-#[test]
-fn a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_editors() {
-    let mut owner_app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
-    let mut editor_app = TestApp::<EditorApp>::for_person(&ada()).unwrap();
-    let mut reader_app = TestApp::<ReaderApp>::for_person(&ada()).unwrap();
-    let owned = owner_app.shared_person::<Saved>().unwrap();
-    let edited = editor_app.shared_person::<Saved>().unwrap();
-    let read = reader_app.shared_person::<Saved>().unwrap();
-    assert!(owned.editable() && edited.editable());
-    assert!(!read.editable());
-    for copy in [&edited, &read] {
-        assert_eq!(
-            copy.record().checkout().id,
-            owned.record().checkout().id,
-            "every app's copy is the owner's record"
-        );
-        assert!(
-            copy.record().syncs(),
-            "the person's own store carries it, so it reaches their other devices"
-        );
-        assert_eq!(
-            copy.record().route(),
-            owned.record().route(),
-            "every app of theirs opens the same record of the person's store"
-        );
-    }
-    let route = owned
-        .record()
-        .route()
-        .expect("the person's own store carries it");
-    assert_eq!(
-        route.app_id,
-        QueueApp::ID,
-        "the route names the app keeping the record"
-    );
-    assert_ne!(
-        route.record.as_deref(),
-        None,
-        "and the record, not the app's primary"
-    );
-
-    owned
-        .invoke(&Saved::SAVE.with("kept-by-the-owner"))
-        .unwrap();
-    edited
-        .invoke(&Saved::SAVE.with("added-by-the-editor"))
-        .unwrap();
-    owned
-        .record()
-        .merge_peer_document(edited.record().document().unwrap())
-        .unwrap();
-    read.record()
-        .merge_peer_document(owned.record().document().unwrap())
-        .unwrap();
-    assert_eq!(saved(&read), ["added-by-the-editor", "kept-by-the-owner"]);
-
-    assert!(
-        read.invoke(&Saved::SAVE.with("from-the-reader")).is_err(),
-        "a reader does not change it"
-    );
-    assert_eq!(saved(&read), ["added-by-the-editor", "kept-by-the-owner"]);
-
-    // The editor's copy is kept in its own store across launches.
-    drop(edited);
-    let mut editor_app = editor_app.reopen().unwrap();
-    let kept = editor_app.shared_person::<Saved>().unwrap();
-    assert_eq!(saved(&kept), ["added-by-the-editor"]);
 }
 
 /// An app that declares the person's saved videos with itself and shows
@@ -429,90 +519,4 @@ impl ResourceApp for UndeclaredApp {
             saved.map_or(0, |saved| saved.with(|state| state.videos.len()))
         )))))
     }
-}
-
-#[test]
-fn the_person_records_an_app_declares_are_its_surface_before_a_view_opens_them() {
-    let report = tilo_app::framework::headless::surface_report::<DeclaringApp>();
-    let resources = report["resources"].as_array().expect("resources");
-    let declared = resources
-        .iter()
-        .find(|resource| resource["kind"] == Saved::KIND)
-        .unwrap_or_else(|| {
-            panic!(
-                "{} is part of the app's surface: {resources:?}",
-                Saved::KIND
-            )
-        });
-    assert_eq!(declared["person"], true, "{declared:?}");
-
-    // The declared record is open with the window, published beside the
-    // app's own, whether or not a view shows it.
-    let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
-    assert_eq!(app.open_person_records(), 1);
-    assert!(app.shared_person::<Saved>().is_some());
-}
-
-#[test]
-fn a_record_a_view_opens_without_the_app_declaring_it_is_not_the_persons() {
-    let report = tilo_app::framework::headless::surface_report::<UndeclaredApp>();
-    let resources = report["resources"].as_array().expect("resources");
-    let opened = resources
-        .iter()
-        .find(|resource| resource["kind"] == Saved::KIND)
-        .expect("the view opened it");
-    assert_eq!(
-        opened.get("person"),
-        None,
-        "the declaration decides what is the person's, not the open: {opened:?}"
-    );
-}
-
-#[test]
-fn an_agent_reads_the_persons_own_record_now_and_at_a_version() {
-    let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
-    let watched = app.person::<Watched>().unwrap();
-    watched.invoke(&Watched::WATCH.with("first")).unwrap();
-    let after_first = watched
-        .record()
-        .read(|doc| {
-            let heads = doc.clone().get_heads();
-            heads
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("+")
-        })
-        .unwrap();
-    watched.invoke(&Watched::WATCH.with("second")).unwrap();
-    app.harness().relayout();
-
-    let read = app
-        .call_on("person:test.watched", "read", serde_json::json!({}))
-        .unwrap()
-        .expect("a read answers what the record holds");
-    let now = read.to_string();
-    assert!(
-        now.contains("first") && now.contains("second"),
-        "the read holds both: {now}"
-    );
-
-    let past = app
-        .call_on(
-            "person:test.watched",
-            "read",
-            serde_json::json!({ "version": after_first }),
-        )
-        .unwrap()
-        .expect("a read of a version answers what it held");
-    let then = past["content"].to_string();
-    assert!(
-        then.contains("first") && !then.contains("second"),
-        "the version holds the first only: {past}"
-    );
-    assert_eq!(
-        videos(&watched),
-        ["first", "second"],
-        "reads change nothing"
-    );
 }

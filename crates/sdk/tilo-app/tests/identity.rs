@@ -269,152 +269,160 @@ fn shown(app: &mut TestApp<BoardApp>) -> String {
     app.harness().inspection_json().unwrap()
 }
 
-#[test]
-fn views_surfaces_and_actions_know_who_is_editing() {
-    let mut app = TestApp::<BoardApp>::new().unwrap();
-    assert!(shown(&mut app).contains("Signed in as test-author"));
-    assert_eq!(
-        SURFACE_ME.with(|me| me.borrow().clone()).as_deref(),
-        Some("test-author")
-    );
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn every_change_knows_its_participant_and_whose_undo_step_it_is;
 
-    // A control's action reads its author when it applies; the view compares
-    // the authors the resource records with its reader.
-    app.harness().click_named("post").unwrap();
-    let notes: Vec<Note> = app.state().notes.values().cloned().collect();
-    assert_eq!(
-        notes,
-        [Note {
-            text: "from the button".into(),
-            author: "test-author".into(),
-        }]
-    );
-    assert!(shown(&mut app).contains("1 of yours"));
+    phase views_surfaces_and_actions_know_who_is_editing;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        assert!(shown(&mut app).contains("Signed in as test-author"));
+        assert_eq!(
+            SURFACE_ME.with(|me| me.borrow().clone()).as_deref(),
+            Some("test-author")
+        );
 
-    // The same through the door an agent or a script uses.
-    app.invoke(Board::POST.with("through the door")).unwrap();
-    assert!(
-        app.state()
+        // A control's action reads its author when it applies; the view compares
+        // the authors the resource records with its reader.
+        app.harness().click_named("post").unwrap();
+        let notes: Vec<Note> = app.state().notes.values().cloned().collect();
+        assert_eq!(
+            notes,
+            [Note {
+                text: "from the button".into(),
+                author: "test-author".into(),
+            }]
+        );
+        assert!(shown(&mut app).contains("1 of yours"));
+
+        // The same through the door an agent or a script uses.
+        app.invoke(Board::POST.with("through the door")).unwrap();
+        assert!(
+            app.state()
+                .notes
+                .values()
+                .all(|note| note.author == "test-author")
+        );
+        assert!(shown(&mut app).contains("2 of yours"));
+
+        // A surface's immediate edit is attributed to its participant too.
+        drag(&mut app, 10.0, 40.0);
+        assert_eq!(app.state().level, 40.0);
+        let last = app.versions().pop().unwrap();
+        let context = last.context.unwrap();
+        let resource = context.resource.unwrap();
+        assert_eq!(resource.kind, "test.board");
+        assert_eq!(resource.label, "Studio mixer");
+        assert_ne!(resource.label, <Board as Resource>::LABEL);
+        let invoker = context.invoker.unwrap();
+        assert_eq!(invoker.actor, "test-author");
+
+        // A past version is read by nobody in particular.
+        let first = app.versions().first().unwrap().hash;
+        let past = app.past_version(&[first]).unwrap();
+        assert!(
+            past.texts()
+                .iter()
+                .any(|text| text == "Signed in as nobody")
+        );
+    }
+
+    phase a_new_record_is_seeded_by_its_creator_without_an_undo_step;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        assert_eq!(app.state().owner, "test-author");
+        let seed = app
+            .versions()
+            .into_iter()
+            .find_map(|version| version.context)
+            .unwrap();
+        assert_eq!(seed.change, tilo_actions::ChangeKind::External);
+        assert_eq!(seed.invoker.unwrap().actor, "test-author");
+
+        // Neither Ctrl+Z nor the `undo` action takes the seed back.
+        assert!(!app.undo());
+        assert!(app.call("undo", serde_json::json!({})).is_err());
+        assert_eq!(app.state().owner, "test-author");
+
+        // The seed is what a new record starts with, not what every open does.
+        let versions = app.versions().len();
+        let app = app.reopen().unwrap();
+        assert_eq!(app.versions().len(), versions);
+        assert_eq!(app.state().owner, "test-author");
+    }
+
+    phase content_from_outside_syncs_but_is_nobodys_undo_step;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.invoke(Board::POST.with("mine")).unwrap();
+        app.invoke(Board::SHOW_HEADLINE.with("Fetched")).unwrap();
+        let peer = app.peer_document();
+        assert_eq!(
+            <Board as Resource>::read(&peer).unwrap().headline,
+            "Fetched"
+        );
+
+        // Undo takes back the person's post, past the fetched headline, and
+        // leaves the headline: it was nobody's step.
+        assert!(app.undo());
+        assert!(app.state().notes.is_empty());
+        assert_eq!(app.state().headline, "Fetched");
+        assert!(!app.undo());
+
+        // The history verb skips it the same way.
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.invoke(Board::POST.with("mine")).unwrap();
+        app.invoke(Board::SHOW_HEADLINE.with("Fetched")).unwrap();
+        app.call("undo", serde_json::json!({})).unwrap();
+        assert!(app.state().notes.is_empty());
+        assert_eq!(app.state().headline, "Fetched");
+    }
+
+    phase two_devices_creating_the_same_record_converge_on_one;
+    {
+        // Two devices open the same record before they have synced: each
+        // creates it, and each posts into the collection its genesis made.
+        let mut here = TestApp::<BoardApp>::new().unwrap();
+        let mut there = TestApp::<BoardApp>::new().unwrap();
+        here.invoke(Board::POST.with("written here")).unwrap();
+        there.invoke(Board::POST.with("written there")).unwrap();
+        let mut theirs = there.peer_document();
+        here.merge_peer(&mut theirs).unwrap();
+        let mut texts: Vec<String> = here
+            .state()
             .notes
             .values()
-            .all(|note| note.author == "test-author")
-    );
-    assert!(shown(&mut app).contains("2 of yours"));
+            .map(|note| note.text.clone())
+            .collect();
+        texts.sort();
+        assert_eq!(texts, ["written here", "written there"]);
+    }
 
-    // A surface's immediate edit is attributed to its participant too.
-    drag(&mut app, 10.0, 40.0);
-    assert_eq!(app.state().level, 40.0);
-    let last = app.versions().pop().unwrap();
-    let context = last.context.unwrap();
-    let resource = context.resource.unwrap();
-    assert_eq!(resource.kind, "test.board");
-    assert_eq!(resource.label, "Studio mixer");
-    assert_ne!(resource.label, <Board as Resource>::LABEL);
-    let invoker = context.invoker.unwrap();
-    assert_eq!(invoker.actor, "test-author");
+    phase a_drag_is_one_undo_step_and_the_next_drag_another;
+    {
+        let mut app = TestApp::<MixerApp>::new().unwrap();
+        let before = app.versions().len();
+        drag(&mut app, 10.0, 55.0);
+        let first = app.state().level;
+        assert_eq!(first, 55.0);
+        // Every value the drag passed through reached the document as it moved.
+        assert!(app.versions().len() >= before + 4);
+        drag(&mut app, 55.0, 95.0);
+        assert_eq!(app.state().level, 95.0);
 
-    // A past version is read by nobody in particular.
-    let first = app.versions().first().unwrap().hash;
-    let past = app.past_version(&[first]).unwrap();
-    assert!(
-        past.texts()
-            .iter()
-            .any(|text| text == "Signed in as nobody")
-    );
-}
-
-#[test]
-fn a_new_record_is_seeded_by_its_creator_without_an_undo_step() {
-    let mut app = TestApp::<BoardApp>::new().unwrap();
-    assert_eq!(app.state().owner, "test-author");
-    let seed = app
-        .versions()
-        .into_iter()
-        .find_map(|version| version.context)
-        .unwrap();
-    assert_eq!(seed.change, tilo_actions::ChangeKind::External);
-    assert_eq!(seed.invoker.unwrap().actor, "test-author");
-
-    // Neither Ctrl+Z nor the `undo` action takes the seed back.
-    assert!(!app.undo());
-    assert!(app.call("undo", serde_json::json!({})).is_err());
-    assert_eq!(app.state().owner, "test-author");
-
-    // The seed is what a new record starts with, not what every open does.
-    let versions = app.versions().len();
-    let app = app.reopen().unwrap();
-    assert_eq!(app.versions().len(), versions);
-    assert_eq!(app.state().owner, "test-author");
-}
-
-#[test]
-fn content_from_outside_syncs_but_is_nobodys_undo_step() {
-    let mut app = TestApp::<BoardApp>::new().unwrap();
-    app.invoke(Board::POST.with("mine")).unwrap();
-    app.invoke(Board::SHOW_HEADLINE.with("Fetched")).unwrap();
-    let peer = app.peer_document();
-    assert_eq!(
-        <Board as Resource>::read(&peer).unwrap().headline,
-        "Fetched"
-    );
-
-    // Undo takes back the person's post, past the fetched headline, and
-    // leaves the headline: it was nobody's step.
-    assert!(app.undo());
-    assert!(app.state().notes.is_empty());
-    assert_eq!(app.state().headline, "Fetched");
-    assert!(!app.undo());
-
-    // The history verb skips it the same way.
-    let mut app = TestApp::<BoardApp>::new().unwrap();
-    app.invoke(Board::POST.with("mine")).unwrap();
-    app.invoke(Board::SHOW_HEADLINE.with("Fetched")).unwrap();
-    app.call("undo", serde_json::json!({})).unwrap();
-    assert!(app.state().notes.is_empty());
-    assert_eq!(app.state().headline, "Fetched");
-}
-
-#[test]
-fn two_devices_creating_the_same_record_converge_on_one() {
-    // Two devices open the same record before they have synced: each
-    // creates it, and each posts into the collection its genesis made.
-    let mut here = TestApp::<BoardApp>::new().unwrap();
-    let mut there = TestApp::<BoardApp>::new().unwrap();
-    here.invoke(Board::POST.with("written here")).unwrap();
-    there.invoke(Board::POST.with("written there")).unwrap();
-    let mut theirs = there.peer_document();
-    here.merge_peer(&mut theirs).unwrap();
-    let mut texts: Vec<String> = here
-        .state()
-        .notes
-        .values()
-        .map(|note| note.text.clone())
-        .collect();
-    texts.sort();
-    assert_eq!(texts, ["written here", "written there"]);
-}
-
-#[test]
-fn a_drag_is_one_undo_step_and_the_next_drag_another() {
-    let mut app = TestApp::<MixerApp>::new().unwrap();
-    let before = app.versions().len();
-    drag(&mut app, 10.0, 55.0);
-    let first = app.state().level;
-    assert_eq!(first, 55.0);
-    // Every value the drag passed through reached the document as it moved.
-    assert!(app.versions().len() >= before + 4);
-    drag(&mut app, 55.0, 95.0);
-    assert_eq!(app.state().level, 95.0);
-
-    assert!(app.undo());
-    assert_eq!(
-        app.state().level,
-        first,
-        "one undo takes back the last drag"
-    );
-    assert!(app.undo());
-    assert_eq!(app.state().level, 0.0, "and one more the first");
-    assert!(!app.undo());
-    assert!(app.redo());
-    assert_eq!(app.state().level, first);
+        assert!(app.undo());
+        assert_eq!(
+            app.state().level,
+            first,
+            "one undo takes back the last drag"
+        );
+        assert!(app.undo());
+        assert_eq!(app.state().level, 0.0, "and one more the first");
+        assert!(!app.undo());
+        assert!(app.redo());
+        assert_eq!(app.state().level, first);
+    }
 }

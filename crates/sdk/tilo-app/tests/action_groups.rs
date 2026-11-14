@@ -66,9 +66,14 @@ fn texts(app: &TestApp<ShoppingApp>) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_published() {
-    // phase: one_action_is_one_undo_step_and_a_group_is_one_too
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_published;
+
+    phase one_action_is_one_undo_step_and_a_group_is_one_too;
     {
         let mut app = TestApp::<ShoppingApp>::new().unwrap();
         app.invoke(Shopping::ADD.with("milk")).unwrap();
@@ -99,7 +104,8 @@ fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_publish
         assert!(app.redo());
         assert_eq!(app.state().items.len(), 3);
     }
-    // phase: a_group_undo_takes_back_asks_nothing
+
+    phase a_group_undo_takes_back_asks_nothing;
     {
         let mut app = TestApp::<ShoppingApp>::new().unwrap();
         app.invoke(Shopping::ADD.with("milk")).unwrap();
@@ -111,7 +117,8 @@ fn action_groups_are_one_undo_step_as_consequential_as_their_members_and_publish
         assert!(app.undo());
         assert_eq!(texts(&app), ["milk"]);
     }
-    // phase: the_group_action_is_published_for_agents_and_scripts
+
+    phase the_group_action_is_published_for_agents_and_scripts;
     {
         let mut app = TestApp::<ShoppingApp>::new().unwrap();
         let resources = app.harness().resources();

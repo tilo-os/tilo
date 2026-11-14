@@ -81,59 +81,63 @@ fn invoke(action: &str, args: Map<String, Value>, expected: Option<&str>) -> Act
     })
 }
 
-#[test]
-fn readable_parent_does_not_promote_private_custom_children() {
-    let mut app = TestApp::<DocumentApp>::new().unwrap();
-    app.settle();
-    let resources = app.harness().resources();
-    let root = resources
-        .iter()
-        .find(|r| r.id.as_str() == Document::KIND)
-        .unwrap();
-    let public = root
-        .children
-        .iter()
-        .find(|r| r.id.as_str() == "public-body")
-        .unwrap();
-    let private = root
-        .children
-        .iter()
-        .find(|r| r.id.as_str() == "private-account")
-        .unwrap();
-    assert!(public.actions.iter().any(|a| a.contract.reads_document()));
-    assert!(!private.actions.iter().any(|a| a.contract.reads_document()));
-    assert_eq!(private.label, "Secret account");
-    assert_eq!(private.actions[0].kind, tilo_actions::OperationKind::View);
-    assert!(
-        app.call("read", json!({"item": "private-account"}))
-            .is_err()
-    );
-}
+tilo_test_env::scenario! {
+    fn retained_results_keep_what_the_semantic_door_answered;
 
-#[test]
-fn activation_is_a_view_action_that_preserves_the_document_and_owner() {
-    let mut app = TestApp::<DocumentApp>::new().unwrap();
-    app.settle();
-    let record = app.record().clone();
-    let heads = app.read_document(Transactable::base_heads);
-    let shown = app
-        .call(tilo_actions::remote::APPLICATION_ACTIVATE_ACTION, json!({}))
-        .unwrap()
-        .unwrap();
-    assert_eq!(shown, json!({"activation_requested": true}));
-    assert!(
-        app.harness().root_widget().needs_redraw(),
-        "the platform can observe the pending activation while the view is otherwise idle"
-    );
-    assert!(ui_core::component_lifecycle::take_window_activation_intent(
-        app.harness().root_widget()
-    ));
-    assert!(
-        !ui_core::component_lifecycle::take_window_activation_intent(app.harness().root_widget())
-    );
-    assert_eq!(app.record(), &record);
-    assert_eq!(app.state(), "visible evidence");
-    assert_eq!(app.read_document(Transactable::base_heads), heads);
+    phase readable_parent_does_not_promote_private_custom_children;
+    {
+        let mut app = TestApp::<DocumentApp>::new().unwrap();
+        app.settle();
+        let resources = app.harness().resources();
+        let root = resources
+            .iter()
+            .find(|r| r.id.as_str() == Document::KIND)
+            .unwrap();
+        let public = root
+            .children
+            .iter()
+            .find(|r| r.id.as_str() == "public-body")
+            .unwrap();
+        let private = root
+            .children
+            .iter()
+            .find(|r| r.id.as_str() == "private-account")
+            .unwrap();
+        assert!(public.actions.iter().any(|a| a.contract.reads_document()));
+        assert!(!private.actions.iter().any(|a| a.contract.reads_document()));
+        assert_eq!(private.label, "Secret account");
+        assert_eq!(private.actions[0].kind, tilo_actions::OperationKind::View);
+        assert!(
+            app.call("read", json!({"item": "private-account"}))
+                .is_err()
+        );
+    }
+
+    phase activation_is_a_view_action_that_preserves_the_document_and_owner;
+    {
+        let mut app = TestApp::<DocumentApp>::new().unwrap();
+        app.settle();
+        let record = app.record().clone();
+        let heads = app.read_document(Transactable::base_heads);
+        let shown = app
+            .call(tilo_actions::remote::APPLICATION_ACTIVATE_ACTION, json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(shown, json!({"activation_requested": true}));
+        assert!(
+            app.harness().root_widget().needs_redraw(),
+            "the platform can observe the pending activation while the view is otherwise idle"
+        );
+        assert!(ui_core::component_lifecycle::take_window_activation_intent(
+            app.harness().root_widget()
+        ));
+        assert!(
+            !ui_core::component_lifecycle::take_window_activation_intent(app.harness().root_widget())
+        );
+        assert_eq!(app.record(), &record);
+        assert_eq!(app.state(), "visible evidence");
+        assert_eq!(app.read_document(Transactable::base_heads), heads);
+    }
 }
 #[test]
 fn semantic_read_render_and_refusal_are_retained_with_real_content() {

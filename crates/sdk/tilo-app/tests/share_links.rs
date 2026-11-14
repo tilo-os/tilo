@@ -191,128 +191,132 @@ fn expected(app: &TestApp<NotebookApp>, page: &str, mode: Mode, view: Option<&st
     .unwrap()
 }
 
-#[test]
-fn a_resource_with_a_view_publishes_share_link_with_range_params_only_for_a_range() {
-    let (_host, _guard) = serve(Some(ENTRY));
-    let mut app = TestApp::<NotebookApp>::new().unwrap();
-    let page = page_of(&mut app, "Intro");
-    app.invoke(Notebook::TAG.with("draft")).unwrap();
+tilo_test_env::scenario! {
+    fn share_links_are_asked_of_the_host_and_refused_with_a_reason;
 
-    let resources = app.harness().resources();
-    let published = find(&resources, &page).expect("the page is published");
-    assert_eq!(
-        param_names(published, "share-link"),
-        ["view", "start", "end", "unit", "mode"]
-    );
-    assert_eq!(
-        param_names(published, "share-invite-link"),
-        ["view", "start", "end", "unit", "mode", "role", "expires_in"]
-    );
-    let tag_id = app.state().tags.ids().next().cloned().unwrap();
-    let tag = tilo_resource::items::item_resource_id::<Notebook>("tags", &tag_id);
-    let tag = find(&resources, &tag).expect("the tag is published");
-    assert!(
-        !tag.actions.iter().any(|spec| spec.id.starts_with("share-")),
-        "a resource without a view has no link"
-    );
-}
+    phase a_resource_with_a_view_publishes_share_link_with_range_params_only_for_a_range;
+    {
+        let (_host, _guard) = serve(Some(ENTRY));
+        let mut app = TestApp::<NotebookApp>::new().unwrap();
+        let page = page_of(&mut app, "Intro");
+        app.invoke(Notebook::TAG.with("draft")).unwrap();
 
-#[test]
-fn share_link_asks_the_host_and_renders_the_link_under_its_entry() {
-    let (host, _guard) = serve(Some(ENTRY));
-    let mut app = TestApp::<NotebookApp>::new().unwrap();
-    let page = page_of(&mut app, "Intro");
+        let resources = app.harness().resources();
+        let published = find(&resources, &page).expect("the page is published");
+        assert_eq!(
+            param_names(published, "share-link"),
+            ["view", "start", "end", "unit", "mode"]
+        );
+        assert_eq!(
+            param_names(published, "share-invite-link"),
+            ["view", "start", "end", "unit", "mode", "role", "expires_in"]
+        );
+        let tag_id = app.state().tags.ids().next().cloned().unwrap();
+        let tag = tilo_resource::items::item_resource_id::<Notebook>("tags", &tag_id);
+        let tag = find(&resources, &tag).expect("the tag is published");
+        assert!(
+            !tag.actions.iter().any(|spec| spec.id.starts_with("share-")),
+            "a resource without a view has no link"
+        );
+    }
 
-    let answer = app
-        .call_on(&page, "share-link", serde_json::json!({}))
-        .unwrap()
-        .unwrap();
-    assert_eq!(answer["url"], expected(&app, &page, Mode::App, None));
-    let asked = host.asked.lock().unwrap().clone();
-    let query = asked.last().unwrap();
-    assert_eq!(
-        query.view_resource.as_ref().map(|view| view.id.as_str()),
-        Some(page.as_str())
-    );
-    assert_eq!(
-        query.provider.as_deref(),
-        Some(
-            format!(
-                "record:{}:{}",
-                NotebookApp::ID,
-                RecordSegment::new(app.record().as_str())
-                    .unwrap()
-                    .provider_part()
+    phase share_link_asks_the_host_and_renders_the_link_under_its_entry;
+    {
+        let (host, _guard) = serve(Some(ENTRY));
+        let mut app = TestApp::<NotebookApp>::new().unwrap();
+        let page = page_of(&mut app, "Intro");
+
+        let answer = app
+            .call_on(&page, "share-link", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer["url"], expected(&app, &page, Mode::App, None));
+        let asked = host.asked.lock().unwrap().clone();
+        let query = asked.last().unwrap();
+        assert_eq!(
+            query.view_resource.as_ref().map(|view| view.id.as_str()),
+            Some(page.as_str())
+        );
+        assert_eq!(
+            query.provider.as_deref(),
+            Some(
+                format!(
+                    "record:{}:{}",
+                    NotebookApp::ID,
+                    RecordSegment::new(app.record().as_str())
+                        .unwrap()
+                        .provider_part()
+                )
+                .as_str()
             )
-            .as_str()
-        )
-    );
+        );
 
-    let answer = app
-        .call_on(
-            &page,
-            "share-link",
-            serde_json::json!({"view": "outline", "mode": "desktop"}),
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        answer["url"],
-        expected(&app, &page, Mode::Desktop, Some("outline"))
-    );
+        let answer = app
+            .call_on(
+                &page,
+                "share-link",
+                serde_json::json!({"view": "outline", "mode": "desktop"}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            answer["url"],
+            expected(&app, &page, Mode::Desktop, Some("outline"))
+        );
 
-    let ranged = app
-        .call_on(
-            &page,
-            "share-link",
-            serde_json::json!({"start": 2, "end": 5}),
-        )
-        .unwrap()
-        .unwrap();
-    assert!(
-        ranged["url"].as_str().unwrap().ends_with("?chars=2-5"),
-        "{ranged}"
-    );
-    assert!(
-        app.call_on(
-            &page,
-            "share-link",
-            serde_json::json!({"view": "outline", "start": 2, "end": 5}),
-        )
-        .is_err(),
-        "the outline opens at no range"
-    );
-}
+        let ranged = app
+            .call_on(
+                &page,
+                "share-link",
+                serde_json::json!({"start": 2, "end": 5}),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            ranged["url"].as_str().unwrap().ends_with("?chars=2-5"),
+            "{ranged}"
+        );
+        assert!(
+            app.call_on(
+                &page,
+                "share-link",
+                serde_json::json!({"view": "outline", "start": 2, "end": 5}),
+            )
+            .is_err(),
+            "the outline opens at no range"
+        );
+    }
 
-#[test]
-fn a_host_without_a_web_entry_refuses_with_its_reason() {
-    let (_host, _guard) = serve(None);
-    let mut app = TestApp::<NotebookApp>::new().unwrap();
-    let page = page_of(&mut app, "Intro");
-    let refused = app
-        .call_on(&page, "share-link", serde_json::json!({}))
-        .unwrap_err();
-    assert!(
-        refused
-            .to_string()
-            .contains("This workspace's host serves no web page"),
-        "{refused}"
-    );
-}
+    phase a_host_without_a_web_entry_refuses_with_its_reason;
+    {
+        let (_host, _guard) = serve(None);
+        let mut app = TestApp::<NotebookApp>::new().unwrap();
+        let page = page_of(&mut app, "Intro");
+        let refused = app
+            .call_on(&page, "share-link", serde_json::json!({}))
+            .unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("This workspace's host serves no web page"),
+            "{refused}"
+        );
+    }
 
-#[test]
-fn share_invite_link_is_refused_without_the_invite_grant() {
-    let (_host, _guard) = serve(Some(ENTRY));
-    let mut app = TestApp::<NotebookApp>::with_role(Role::Editor).unwrap();
-    let page = page_of(&mut app, "Intro");
-    let refused = app
-        .call_confirmed_on(&page, "share-invite-link", serde_json::json!({}))
-        .unwrap_err();
-    assert!(refused.to_string().contains("may not invite"), "{refused}");
-    // A viewer may share a plain link, which grants nothing.
-    app.set_role(Role::Viewer);
-    assert!(
-        app.call_on(&page, "share-link", serde_json::json!({}))
-            .is_ok()
-    );
+    phase share_invite_link_is_refused_without_the_invite_grant;
+    {
+        let (_host, _guard) = serve(Some(ENTRY));
+        let mut app = TestApp::<NotebookApp>::with_role(Role::Editor).unwrap();
+        let page = page_of(&mut app, "Intro");
+        let refused = app
+            .call_confirmed_on(&page, "share-invite-link", serde_json::json!({}))
+            .unwrap_err();
+        assert!(refused.to_string().contains("may not invite"), "{refused}");
+        // A viewer may share a plain link, which grants nothing.
+        app.set_role(Role::Viewer);
+        assert!(
+            app.call_on(&page, "share-link", serde_json::json!({}))
+                .is_ok()
+        );
+    }
 }

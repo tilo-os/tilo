@@ -94,40 +94,161 @@ impl ResourceApp for ViewQueryApp {
     }
 }
 
-#[test]
-fn platform_search_delivers_only_the_latest_bounded_query_to_a_view() {
-    QUERIES.with_borrow_mut(Vec::clear);
-    let mut app = TestApp::<ViewQueryApp>::new().unwrap();
-    QUERIES.with_borrow_mut(Vec::clear);
-    app.harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            let providers = RootSearch::search_providers(root);
-            assert_eq!(providers.len(), 1, "one canonical resource source");
-            let search = &providers[0];
-            search.search("old");
-            let query = SearchQuery::new("invoice").within("folder:inbox");
-            search.search_page(&query, None, 10, 10);
-            search.search_page(&query, None, 10, 10);
-            search.search(&"x".repeat(ui_core::search::MAX_SEARCH_QUERY_SCALARS + 1));
-            assert!(
-                QUERIES.with_borrow(Vec::is_empty),
-                "delivery waits for UI sync"
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn a_views_own_search_gets_the_latest_query_and_waits_for_its_server;
+
+    phase platform_search_delivers_only_the_latest_bounded_query_to_a_view;
+    {
+        QUERIES.with_borrow_mut(Vec::clear);
+        let mut app = TestApp::<ViewQueryApp>::new().unwrap();
+        QUERIES.with_borrow_mut(Vec::clear);
+        app.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let providers = RootSearch::search_providers(root);
+                assert_eq!(providers.len(), 1, "one canonical resource source");
+                let search = &providers[0];
+                search.search("old");
+                let query = SearchQuery::new("invoice").within("folder:inbox");
+                search.search_page(&query, None, 10, 10);
+                search.search_page(&query, None, 10, 10);
+                search.search(&"x".repeat(ui_core::search::MAX_SEARCH_QUERY_SCALARS + 1));
+                assert!(
+                    QUERIES.with_borrow(Vec::is_empty),
+                    "delivery waits for UI sync"
+                );
+            })
+            .unwrap();
+        app.settle();
+        QUERIES.with_borrow(|queries| {
+            assert_eq!(
+                queries,
+                &[SearchQuery::new("invoice").within("folder:inbox")]
             );
-        })
-        .unwrap();
-    app.settle();
-    QUERIES.with_borrow(|queries| {
+        });
+        app.settle();
         assert_eq!(
-            queries,
-            &[SearchQuery::new("invoice").within("folder:inbox")]
+            QUERIES.with_borrow(Vec::len),
+            1,
+            "a settled query is not repeated"
         );
-    });
-    app.settle();
-    assert_eq!(
-        QUERIES.with_borrow(Vec::len),
-        1,
-        "a settled query is not repeated"
-    );
+    }
+
+    phase a_search_answer_syncs_a_window_at_rest_again;
+    {
+        use tilo_resource::profiling::observe;
+        let syncs = |phases: &[tilo_resource::profiling::Sample]| -> usize {
+            phases
+                .iter()
+                .filter(|phase| phase.phase == "ui.component.sync")
+                .map(|phase| phase.calls)
+                .sum()
+        };
+        let mut app = TestApp::<WakingServerApp>::new().unwrap();
+        let query = SearchQuery::new("archive");
+        let (search, token) = app
+            .harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let search = RootSearch::search_providers(root).remove(0);
+                let first = search.search_page(&query, None, 10, 10);
+                (search, first.pending.expect("the view has yet to answer"))
+            })
+            .unwrap();
+        // The query reached the view, whose server is looking: nothing else
+        // reaches the window, and the frames its host runs for something else
+        // (its own document, as another window's key would) do not sync it.
+        app.idle();
+        app.idle();
+        let ((), waiting) = observe(|| {
+            for _ in 0..3 {
+                let _ = app.harness().state_mut();
+                app.idle();
+            }
+        });
+        assert_eq!(
+            syncs(&waiting),
+            0,
+            "the window rests while its server looks"
+        );
+        assert!(matches!(search.poll_page(&token), PagePoll::Pending));
+
+        // The server answers from its thread: the window wakes, syncs, and the
+        // search showing gets what it found.
+        let writer = ANSWER
+            .with(|slot| slot.borrow().clone())
+            .expect("the view is built");
+        std::thread::spawn(move || {
+            writer.set(Some(vec![
+                SearchEntry::new("From the archive", "an old letter").anchored("msg:9"),
+            ]));
+        })
+        .join()
+        .unwrap();
+        let ((), answered) = observe(|| app.idle());
+        assert!(syncs(&answered) > 0, "the answer synced the window");
+        let PagePoll::Answered(answered) = search.poll_page(&token) else {
+            panic!("the server answered");
+        };
+        let titles: Vec<_> = answered
+            .results
+            .iter()
+            .map(|hit| hit.title.as_str())
+            .collect();
+        assert_eq!(titles, ["From the archive"], "what it found shows");
+    }
+
+    phase a_showing_search_waits_for_what_a_views_server_finds;
+    {
+        LOOKING.with(|looking| looking.set(false));
+        FOUND.with_borrow_mut(Vec::clear);
+        let mut app = TestApp::<ViewServerApp>::new().unwrap();
+        let query = SearchQuery::new("archive");
+        let (search, first) = app
+            .harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let mut providers = RootSearch::search_providers(root);
+                let search = providers.remove(0);
+                let first = search.search_page(&query, None, 10, 10);
+                (search, first)
+            })
+            .unwrap();
+        assert!(first.results.is_empty(), "nothing held matches yet");
+        let token = first.pending.expect("the view has yet to answer");
+        assert!(
+            matches!(search.poll_page(&token), PagePoll::Pending),
+            "not yet asked"
+        );
+        app.settle();
+        assert!(LOOKING.with(std::cell::Cell::get), "the server was asked");
+        assert!(
+            matches!(search.poll_page(&token), PagePoll::Pending),
+            "the server is still looking"
+        );
+
+        FOUND.with_borrow_mut(|found| {
+            found.push(SearchEntry::new("From the archive", "an old letter").anchored("msg:9"));
+        });
+        LOOKING.with(|looking| looking.set(false));
+        app.settle();
+        let PagePoll::Answered(answered) = search.poll_page(&token) else {
+            panic!("the server answered");
+        };
+        assert!(answered.pending.is_none(), "nothing more is coming");
+        let titles: Vec<_> = answered
+            .results
+            .iter()
+            .map(|hit| hit.title.as_str())
+            .collect();
+        assert_eq!(titles, ["From the archive"], "what it found shows");
+        assert_eq!(
+            search.search_page(&query, None, 10, 10).results.len(),
+            1,
+            "and stays found for the same search"
+        );
+    }
 }
 
 thread_local! {
@@ -177,119 +298,6 @@ impl ResourceApp for WakingServerApp {
             Box::new(ui_core::widget::Text::new("Results")),
         )
     }
-}
-
-#[test]
-fn a_search_answer_syncs_a_window_at_rest_again() {
-    use tilo_resource::profiling::observe;
-    let syncs = |phases: &[tilo_resource::profiling::Sample]| -> usize {
-        phases
-            .iter()
-            .filter(|phase| phase.phase == "ui.component.sync")
-            .map(|phase| phase.calls)
-            .sum()
-    };
-    let mut app = TestApp::<WakingServerApp>::new().unwrap();
-    let query = SearchQuery::new("archive");
-    let (search, token) = app
-        .harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            let search = RootSearch::search_providers(root).remove(0);
-            let first = search.search_page(&query, None, 10, 10);
-            (search, first.pending.expect("the view has yet to answer"))
-        })
-        .unwrap();
-    // The query reached the view, whose server is looking: nothing else
-    // reaches the window, and the frames its host runs for something else
-    // (its own document, as another window's key would) do not sync it.
-    app.idle();
-    app.idle();
-    let ((), waiting) = observe(|| {
-        for _ in 0..3 {
-            let _ = app.harness().state_mut();
-            app.idle();
-        }
-    });
-    assert_eq!(
-        syncs(&waiting),
-        0,
-        "the window rests while its server looks"
-    );
-    assert!(matches!(search.poll_page(&token), PagePoll::Pending));
-
-    // The server answers from its thread: the window wakes, syncs, and the
-    // search showing gets what it found.
-    let writer = ANSWER
-        .with(|slot| slot.borrow().clone())
-        .expect("the view is built");
-    std::thread::spawn(move || {
-        writer.set(Some(vec![
-            SearchEntry::new("From the archive", "an old letter").anchored("msg:9"),
-        ]));
-    })
-    .join()
-    .unwrap();
-    let ((), answered) = observe(|| app.idle());
-    assert!(syncs(&answered) > 0, "the answer synced the window");
-    let PagePoll::Answered(answered) = search.poll_page(&token) else {
-        panic!("the server answered");
-    };
-    let titles: Vec<_> = answered
-        .results
-        .iter()
-        .map(|hit| hit.title.as_str())
-        .collect();
-    assert_eq!(titles, ["From the archive"], "what it found shows");
-}
-
-#[test]
-fn a_showing_search_waits_for_what_a_views_server_finds() {
-    LOOKING.with(|looking| looking.set(false));
-    FOUND.with_borrow_mut(Vec::clear);
-    let mut app = TestApp::<ViewServerApp>::new().unwrap();
-    let query = SearchQuery::new("archive");
-    let (search, first) = app
-        .harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            let mut providers = RootSearch::search_providers(root);
-            let search = providers.remove(0);
-            let first = search.search_page(&query, None, 10, 10);
-            (search, first)
-        })
-        .unwrap();
-    assert!(first.results.is_empty(), "nothing held matches yet");
-    let token = first.pending.expect("the view has yet to answer");
-    assert!(
-        matches!(search.poll_page(&token), PagePoll::Pending),
-        "not yet asked"
-    );
-    app.settle();
-    assert!(LOOKING.with(std::cell::Cell::get), "the server was asked");
-    assert!(
-        matches!(search.poll_page(&token), PagePoll::Pending),
-        "the server is still looking"
-    );
-
-    FOUND.with_borrow_mut(|found| {
-        found.push(SearchEntry::new("From the archive", "an old letter").anchored("msg:9"));
-    });
-    LOOKING.with(|looking| looking.set(false));
-    app.settle();
-    let PagePoll::Answered(answered) = search.poll_page(&token) else {
-        panic!("the server answered");
-    };
-    assert!(answered.pending.is_none(), "nothing more is coming");
-    let titles: Vec<_> = answered
-        .results
-        .iter()
-        .map(|hit| hit.title.as_str())
-        .collect();
-    assert_eq!(titles, ["From the archive"], "what it found shows");
-    assert_eq!(
-        search.search_page(&query, None, 10, 10).results.len(),
-        1,
-        "and stays found for the same search"
-    );
 }
 
 #[test]
@@ -360,65 +368,173 @@ fn index_builds<A: ResourceApp>(app: &mut TestApp<A>) -> usize {
         .unwrap()
 }
 
-#[test]
-fn the_action_directory_names_the_search_source_without_indexing_it() {
-    let mut app = TestApp::<MailApp>::new().unwrap();
-    let mut named = Vec::new();
-    for edit in 0..4 {
-        app.invoke(Mailbox::SET_SUBJECT.with(format!("Draft {edit}")))
-            .unwrap();
-        let (first, again) = app
+tilo_test_env::scenario! {
+    fn the_search_index_names_its_source_and_builds_off_the_frame;
+
+    phase the_action_directory_names_the_search_source_without_indexing_it;
+    {
+        let mut app = TestApp::<MailApp>::new().unwrap();
+        let mut named = Vec::new();
+        for edit in 0..4 {
+            app.invoke(Mailbox::SET_SUBJECT.with(format!("Draft {edit}")))
+                .unwrap();
+            let (first, again) = app
+                .harness()
+                .with_widget_mut(|root: &mut ResourceRoot| {
+                    (
+                        RootSearch::search_provider_descriptors(root),
+                        RootSearch::search_provider_descriptors(root),
+                    )
+                })
+                .unwrap();
+            assert_eq!(first, again, "an unchanged resource names the same build");
+            named.push(first);
+        }
+        assert_eq!(
+            index_builds(&mut app),
+            0,
+            "nobody searched: nothing indexed"
+        );
+        assert!(
+            named.windows(2).all(|pair| pair[0] != pair[1]),
+            "every revision names a new build, so the directory moves with it"
+        );
+
+        let (hits, searched, after) = app
             .harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
+                let providers = RootSearch::search_providers(root);
+                let hits = providers[0].search("invoice").len();
                 (
-                    RootSearch::search_provider_descriptors(root),
+                    hits,
+                    ui_core::search::capability::SearchProviderDescriptor::of(providers[0].as_ref()),
                     RootSearch::search_provider_descriptors(root),
                 )
             })
             .unwrap();
-        assert_eq!(first, again, "an unchanged resource names the same build");
-        named.push(first);
+        assert_eq!(hits, 3);
+        assert_eq!(index_builds(&mut app), 1, "a search builds the index once");
+        assert_eq!(
+            named.last(),
+            Some(&vec![searched]),
+            "the directory named the build the search answers from"
+        );
+        assert_eq!(named.last(), Some(&after), "and searching did not move it");
+        app.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                RootSearch::search_providers(root)[0].search("invoice");
+            })
+            .unwrap();
+        assert_eq!(
+            index_builds(&mut app),
+            1,
+            "an unchanged resource is not reindexed"
+        );
     }
-    assert_eq!(
-        index_builds(&mut app),
-        0,
-        "nobody searched: nothing indexed"
-    );
-    assert!(
-        named.windows(2).all(|pair| pair[0] != pair[1]),
-        "every revision names a new build, so the directory moves with it"
-    );
 
-    let (hits, searched, after) = app
-        .harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            let providers = RootSearch::search_providers(root);
-            let hits = providers[0].search("invoice").len();
-            (
-                hits,
-                ui_core::search::capability::SearchProviderDescriptor::of(providers[0].as_ref()),
-                RootSearch::search_provider_descriptors(root),
-            )
-        })
-        .unwrap();
-    assert_eq!(hits, 3);
-    assert_eq!(index_builds(&mut app), 1, "a search builds the index once");
-    assert_eq!(
-        named.last(),
-        Some(&vec![searched]),
-        "the directory named the build the search answers from"
-    );
-    assert_eq!(named.last(), Some(&after), "and searching did not move it");
-    app.harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            RootSearch::search_providers(root)[0].search("invoice");
-        })
-        .unwrap();
-    assert_eq!(
-        index_builds(&mut app),
-        1,
-        "an unchanged resource is not reindexed"
-    );
+    phase a_fresh_windows_content_indexes_off_the_frame_so_the_ready_rows_show;
+    // A page's rule — every index build moves off the frame — the content of a
+    // window searched for the first time.
+    //
+    // The frame that opens search over a window nobody searched has to draw
+    // the rows it already has (the apps, the actions, the places) at once. On
+    // a page the index of that window's content is built on the same one
+    // thread, so a build in that frame held the palette's first paint until
+    // tantivy finished: the 14–57 s between typing and the first row measured
+    // on the page desk, per app. With the build moved off the frame the ready
+    // rows are there in the first search, the content's row joins when the
+    // build lands, and the search says it is still expecting that row until
+    // then — never that the ready rows are still searching.
+    {
+        use crate::framework::root::FORCE_OFF_FRAME;
+
+        let pumped = ui_core::background::Pumped::new();
+        let _background = pumped.background().enter();
+        FORCE_OFF_FRAME.with(|forced| forced.set(Some(true)));
+        let mut app = TestApp::<MailApp>::new().unwrap();
+
+        // The first search: the index of the mailbox is not built yet, so the
+        // frame that asks builds nothing and answers from the last index (none).
+        let (first, building) = app
+            .harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let mut providers = RootSearch::search_providers(root);
+                let search = providers.remove(0);
+                let first = search.search_page(&SearchQuery::new("invoice"), None, 10, 10);
+                (first.results.len(), root.search.borrow_mut().building())
+            })
+            .unwrap();
+        assert_eq!(
+            first, 0,
+            "nothing is indexed yet, and none was built on the frame"
+        );
+        assert!(
+            building,
+            "the index is being built off the frame, and the search waits on it"
+        );
+        FORCE_OFF_FRAME.with(|forced| forced.set(None));
+
+        // The build lands between frames; the search that showed the ready rows
+        // takes it in and answers with the content's rows.
+        pumped.run_pending();
+        let hits = app
+            .harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                RootSearch::search_providers(root)[0]
+                    .search("invoice")
+                    .len()
+            })
+            .unwrap();
+        assert_eq!(hits, 3, "the content's rows joined once its index landed");
+    }
+
+    phase edits_while_an_index_builds_cost_one_build_after_it;
+    {
+        let pumped = ui_core::background::Pumped::new();
+        let search = |app: &mut TestApp<ShelfApp>| {
+            let _background = pumped.background().enter();
+            app.harness()
+                .with_widget_mut(|root: &mut ResourceRoot| {
+                    RootSearch::search_providers(root)[0]
+                        .search("storm")
+                        .into_iter()
+                        .map(|hit| hit.title)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+        let mut app = TestApp::<ShelfApp>::new().unwrap();
+        app.invoke(Shelf::RETITLE.with("Storm Tales")).unwrap();
+        assert!(
+            search(&mut app).is_empty(),
+            "a book is indexed off the UI thread"
+        );
+        assert_eq!(index_builds(&mut app), 1);
+        for edit in 0..5 {
+            app.invoke(Shelf::RETITLE.with(format!("Storm Tales {edit}")))
+                .unwrap();
+            assert!(
+                search(&mut app).is_empty(),
+                "until it arrives, search answers from the index before it"
+            );
+        }
+        assert_eq!(
+            index_builds(&mut app),
+            1,
+            "edits while a build is in flight start no build beside it"
+        );
+
+        pumped.run_pending();
+        assert!(search(&mut app).contains(&"Storm Tales".to_owned()));
+        assert_eq!(
+            index_builds(&mut app),
+            2,
+            "once it arrives, the newest state alone is built"
+        );
+        pumped.run_pending();
+        assert!(search(&mut app).contains(&"Storm Tales 4".to_owned()));
+        assert_eq!(index_builds(&mut app), 2);
+    }
 }
 
 /// Prose a book's entry carries, which sends its index off the UI thread.
@@ -473,110 +589,6 @@ impl ResourceApp for ShelfApp {
     fn view(_: &mut ViewCx<Shelf>) -> Element {
         Box::new(Column::new())
     }
-}
-
-/// A page's rule — every index build moves off the frame — the content of a
-/// window searched for the first time.
-///
-/// The frame that opens search over a window nobody searched has to draw
-/// the rows it already has (the apps, the actions, the places) at once. On
-/// a page the index of that window's content is built on the same one
-/// thread, so a build in that frame held the palette's first paint until
-/// tantivy finished: the 14–57 s between typing and the first row measured
-/// on the page desk, per app. With the build moved off the frame the ready
-/// rows are there in the first search, the content's row joins when the
-/// build lands, and the search says it is still expecting that row until
-/// then — never that the ready rows are still searching.
-#[test]
-fn a_fresh_windows_content_indexes_off_the_frame_so_the_ready_rows_show() {
-    use crate::framework::root::FORCE_OFF_FRAME;
-
-    let pumped = ui_core::background::Pumped::new();
-    let _background = pumped.background().enter();
-    FORCE_OFF_FRAME.with(|forced| forced.set(Some(true)));
-    let mut app = TestApp::<MailApp>::new().unwrap();
-
-    // The first search: the index of the mailbox is not built yet, so the
-    // frame that asks builds nothing and answers from the last index (none).
-    let (first, building) = app
-        .harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            let mut providers = RootSearch::search_providers(root);
-            let search = providers.remove(0);
-            let first = search.search_page(&SearchQuery::new("invoice"), None, 10, 10);
-            (first.results.len(), root.search.borrow_mut().building())
-        })
-        .unwrap();
-    assert_eq!(
-        first, 0,
-        "nothing is indexed yet, and none was built on the frame"
-    );
-    assert!(
-        building,
-        "the index is being built off the frame, and the search waits on it"
-    );
-    FORCE_OFF_FRAME.with(|forced| forced.set(None));
-
-    // The build lands between frames; the search that showed the ready rows
-    // takes it in and answers with the content's rows.
-    pumped.run_pending();
-    let hits = app
-        .harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            RootSearch::search_providers(root)[0]
-                .search("invoice")
-                .len()
-        })
-        .unwrap();
-    assert_eq!(hits, 3, "the content's rows joined once its index landed");
-}
-
-#[test]
-fn edits_while_an_index_builds_cost_one_build_after_it() {
-    let pumped = ui_core::background::Pumped::new();
-    let search = |app: &mut TestApp<ShelfApp>| {
-        let _background = pumped.background().enter();
-        app.harness()
-            .with_widget_mut(|root: &mut ResourceRoot| {
-                RootSearch::search_providers(root)[0]
-                    .search("storm")
-                    .into_iter()
-                    .map(|hit| hit.title)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap()
-    };
-    let mut app = TestApp::<ShelfApp>::new().unwrap();
-    app.invoke(Shelf::RETITLE.with("Storm Tales")).unwrap();
-    assert!(
-        search(&mut app).is_empty(),
-        "a book is indexed off the UI thread"
-    );
-    assert_eq!(index_builds(&mut app), 1);
-    for edit in 0..5 {
-        app.invoke(Shelf::RETITLE.with(format!("Storm Tales {edit}")))
-            .unwrap();
-        assert!(
-            search(&mut app).is_empty(),
-            "until it arrives, search answers from the index before it"
-        );
-    }
-    assert_eq!(
-        index_builds(&mut app),
-        1,
-        "edits while a build is in flight start no build beside it"
-    );
-
-    pumped.run_pending();
-    assert!(search(&mut app).contains(&"Storm Tales".to_owned()));
-    assert_eq!(
-        index_builds(&mut app),
-        2,
-        "once it arrives, the newest state alone is built"
-    );
-    pumped.run_pending();
-    assert!(search(&mut app).contains(&"Storm Tales 4".to_owned()));
-    assert_eq!(index_builds(&mut app), 2);
 }
 
 thread_local! {
@@ -650,109 +662,113 @@ fn found(app: &mut TestApp<NotebookApp>, needle: &str) -> Vec<ui_core::search::S
         .unwrap()
 }
 
-#[test]
-fn a_labelled_item_is_found_as_the_reference_that_opens_it() {
-    ITEMS_OPENED.with_borrow_mut(Vec::clear);
-    let mut app = TestApp::<NotebookApp>::new().unwrap();
-    app.invoke(Notebook::ADD.with("Groceries")).unwrap();
-    let hit = found(&mut app, "groceries")
-        .into_iter()
-        .find(|hit| hit.title == "Groceries")
-        .expect("a labelled item is found without the app writing a search");
-    let Some(ui_core::search::SearchRow::Item {
-        app: keeper,
-        kind,
-        id,
-    }) = hit.row.clone()
-    else {
-        panic!(
-            "an item hit is the reference its app draws, not {:?}",
-            hit.row
-        );
-    };
-    assert_eq!(keeper, "so.tilo.test-notebook");
-    assert_eq!(kind, "test.notebook.notes");
-    assert_eq!(hit.action_id, format!("test.notebook/notes/{id}"));
+tilo_test_env::scenario! {
+    fn items_and_a_services_hits_are_found_by_who_may_read_them;
 
-    app.harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            let mut doc = ui_core::automerge::AutoCommit::new();
-            RootSearch::activate_search_result(
-                root,
-                &hit.action_id,
-                &mut ui_core::widget::Edits::lend(&mut doc),
-                &ui_core::automerge::ROOT,
+    phase a_labelled_item_is_found_as_the_reference_that_opens_it;
+    {
+        ITEMS_OPENED.with_borrow_mut(Vec::clear);
+        let mut app = TestApp::<NotebookApp>::new().unwrap();
+        app.invoke(Notebook::ADD.with("Groceries")).unwrap();
+        let hit = found(&mut app, "groceries")
+            .into_iter()
+            .find(|hit| hit.title == "Groceries")
+            .expect("a labelled item is found without the app writing a search");
+        let Some(ui_core::search::SearchRow::Item {
+            app: keeper,
+            kind,
+            id,
+        }) = hit.row.clone()
+        else {
+            panic!(
+                "an item hit is the reference its app draws, not {:?}",
+                hit.row
             );
-        })
-        .unwrap();
-    ITEMS_OPENED.with_borrow(|opened| {
-        assert_eq!(opened.as_slice(), [hit.action_id.as_str()]);
-    });
-}
+        };
+        assert_eq!(keeper, "so.tilo.test-notebook");
+        assert_eq!(kind, "test.notebook.notes");
+        assert_eq!(hit.action_id, format!("test.notebook/notes/{id}"));
 
-#[test]
-fn a_services_hits_are_listed_with_the_items_of_the_app() {
-    let mut app = TestApp::<NotebookApp>::new().unwrap();
-    app.invoke(Notebook::ADD.with("Nyan notes")).unwrap();
-    app.settle();
-    let hits = found(&mut app, "nyan");
-    let service = hits
-        .iter()
-        .find(|hit| hit.title == "Nyan cat")
-        .expect("the service's hit is in the same list as the app's items");
-    assert!(
-        matches!(service.row, Some(ui_core::search::SearchRow::Media { .. })),
-        "the service says how its hit reads: {:?}",
-        service.row
-    );
-    assert_eq!(
-        service.action_address(),
-        Some(tilo_actions::ActionAddress::new(
-            "test.tube:service",
-            "play"
-        )),
-        "choosing it runs the action the service publishes"
-    );
-    let item = hits
-        .iter()
-        .find(|hit| hit.title == "Nyan notes")
-        .expect("the app's own item is listed beside it");
-    assert!(matches!(
-        item.row,
-        Some(ui_core::search::SearchRow::Item { .. })
-    ));
-}
+        app.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let mut doc = ui_core::automerge::AutoCommit::new();
+                RootSearch::activate_search_result(
+                    root,
+                    &hit.action_id,
+                    &mut ui_core::widget::Edits::lend(&mut doc),
+                    &ui_core::automerge::ROOT,
+                );
+            })
+            .unwrap();
+        ITEMS_OPENED.with_borrow(|opened| {
+            assert_eq!(opened.as_slice(), [hit.action_id.as_str()]);
+        });
+    }
 
-#[test]
-fn a_record_the_person_may_not_read_is_found_nothing() {
-    let mut app = TestApp::<NotebookApp>::new().unwrap();
-    app.invoke(Notebook::ADD.with("Groceries")).unwrap();
-    app.settle();
-    assert_eq!(found(&mut app, "groceries").len(), 1);
-    let scopes = app
-        .harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            RootSearch::search_providers(root)[0].search_scopes()
-        })
-        .unwrap();
-    assert_eq!(
-        scopes.len(),
-        1,
-        "the app's own scopes are there to narrow it"
-    );
-    app.leave_workspace();
-    assert!(
-        found(&mut app, "groceries").is_empty(),
-        "nothing of a record they may not read is found"
-    );
-    let (scopes, facets) = app
-        .harness()
-        .with_widget_mut(|root: &mut ResourceRoot| {
-            let providers = RootSearch::search_providers(root);
-            let search = &providers[0];
-            (search.search_scopes(), search.facets())
-        })
-        .unwrap();
-    assert!(scopes.is_empty(), "nor the parts of it a search narrows to");
-    assert!(facets.is_empty(), "nor what its entries are filed under");
+    phase a_services_hits_are_listed_with_the_items_of_the_app;
+    {
+        let mut app = TestApp::<NotebookApp>::new().unwrap();
+        app.invoke(Notebook::ADD.with("Nyan notes")).unwrap();
+        app.settle();
+        let hits = found(&mut app, "nyan");
+        let service = hits
+            .iter()
+            .find(|hit| hit.title == "Nyan cat")
+            .expect("the service's hit is in the same list as the app's items");
+        assert!(
+            matches!(service.row, Some(ui_core::search::SearchRow::Media { .. })),
+            "the service says how its hit reads: {:?}",
+            service.row
+        );
+        assert_eq!(
+            service.action_address(),
+            Some(tilo_actions::ActionAddress::new(
+                "test.tube:service",
+                "play"
+            )),
+            "choosing it runs the action the service publishes"
+        );
+        let item = hits
+            .iter()
+            .find(|hit| hit.title == "Nyan notes")
+            .expect("the app's own item is listed beside it");
+        assert!(matches!(
+            item.row,
+            Some(ui_core::search::SearchRow::Item { .. })
+        ));
+    }
+
+    phase a_record_the_person_may_not_read_is_found_nothing;
+    {
+        let mut app = TestApp::<NotebookApp>::new().unwrap();
+        app.invoke(Notebook::ADD.with("Groceries")).unwrap();
+        app.settle();
+        assert_eq!(found(&mut app, "groceries").len(), 1);
+        let scopes = app
+            .harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                RootSearch::search_providers(root)[0].search_scopes()
+            })
+            .unwrap();
+        assert_eq!(
+            scopes.len(),
+            1,
+            "the app's own scopes are there to narrow it"
+        );
+        app.leave_workspace();
+        assert!(
+            found(&mut app, "groceries").is_empty(),
+            "nothing of a record they may not read is found"
+        );
+        let (scopes, facets) = app
+            .harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                let providers = RootSearch::search_providers(root);
+                let search = &providers[0];
+                (search.search_scopes(), search.facets())
+            })
+            .unwrap();
+        assert!(scopes.is_empty(), "nor the parts of it a search narrows to");
+        assert!(facets.is_empty(), "nor what its entries are filed under");
+    }
 }

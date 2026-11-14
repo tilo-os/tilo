@@ -66,44 +66,89 @@ impl ResourceApp for TypoApp {
     }
 }
 
-#[test]
-fn the_surface_report_names_verbs_fields_and_unpublished_bindings() {
-    let report = tilo_app::framework::headless::surface_report::<GoodApp>();
-    let surface = &report["resources"][0];
-    assert_eq!(surface["kind"], "test.counter");
-    assert!(
-        surface["verbs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|verb| verb["id"] == "bump")
-    );
-    assert!(
-        surface["fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|field| field["path"] == "count")
-    );
-    assert_eq!(report["unbound"], serde_json::json!([]));
-    assert_eq!(
-        report["resources"][1]["kind"], "test.counter-prefs",
-        "the records the view opens beside its own are part of the surface: {report}"
-    );
-    assert!(
-        report["resources"][1].get("person").is_none(),
-        "kept in the workspace the app is open in, like its own: {report}"
-    );
-    assert!(
-        report["resources"][0].get("person").is_none(),
-        "the app's own record is the workspace's: {report}"
-    );
-    assert!(report["view"].is_null(), "{report}");
+tilo_test_env::scenario! {
+    fn the_surface_report_lists_what_the_app_publishes_and_binds;
 
-    let report = tilo_app::framework::headless::surface_report::<TypoApp>();
-    let unbound = report["unbound"].as_array().unwrap();
-    assert_eq!(unbound.len(), 1, "{report}");
-    assert!(unbound[0].as_str().unwrap().contains("bunp"), "{report}");
+    phase the_surface_report_names_verbs_fields_and_unpublished_bindings;
+    {
+        let report = tilo_app::framework::headless::surface_report::<GoodApp>();
+        let surface = &report["resources"][0];
+        assert_eq!(surface["kind"], "test.counter");
+        assert!(
+            surface["verbs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|verb| verb["id"] == "bump")
+        );
+        assert!(
+            surface["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|field| field["path"] == "count")
+        );
+        assert_eq!(report["unbound"], serde_json::json!([]));
+        assert_eq!(
+            report["resources"][1]["kind"], "test.counter-prefs",
+            "the records the view opens beside its own are part of the surface: {report}"
+        );
+        assert!(
+            report["resources"][1].get("person").is_none(),
+            "kept in the workspace the app is open in, like its own: {report}"
+        );
+        assert!(
+            report["resources"][0].get("person").is_none(),
+            "the app's own record is the workspace's: {report}"
+        );
+        assert!(report["view"].is_null(), "{report}");
+
+        let report = tilo_app::framework::headless::surface_report::<TypoApp>();
+        let unbound = report["unbound"].as_array().unwrap();
+        assert_eq!(unbound.len(), 1, "{report}");
+        assert!(unbound[0].as_str().unwrap().contains("bunp"), "{report}");
+    }
+
+    phase a_read_effect_publishes_its_answer_as_an_action_of_the_resource;
+    // A read effect is an action of the app's own resource in its surface, with
+    // the value it answers with; what the window shows of itself is no action a
+    // caller of another language has.
+    {
+        let report = tilo_app::framework::headless::surface_report::<ReadingApp>();
+        let surface = &report["resources"][0];
+        let verbs = surface["verbs"].as_array().unwrap();
+        let count = verbs
+            .iter()
+            .find(|verb| verb["id"] == "count")
+            .unwrap_or_else(|| panic!("a read effect publishes a verb: {report}"));
+        assert_eq!(count["kind"], "read");
+        assert_eq!(
+            count["returns"]["type"],
+            serde_json::json!({"named": "Counted"}),
+            "{report}"
+        );
+        assert_eq!(
+            count["returns"]["schema"]["properties"]["what"]["type"],
+            "string"
+        );
+        let counted = surface["types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ty| ty["name"] == "Counted")
+            .unwrap_or_else(|| panic!("the answer's record is declared: {report}"));
+        let fields: Vec<&str> = counted["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        assert_eq!(fields, ["count", "what"]);
+        assert!(
+            !verbs.iter().any(|verb| verb["id"] == "zoom-in"),
+            "a view is no action of the catalogue: {report}"
+        );
+    }
 }
 
 /// What a read action answers, as the surface publishes it.
@@ -143,45 +188,4 @@ impl ResourceApp for ReadingApp {
         });
         Box::new(cx.button("bump", Counter::BUMP.invoke()))
     }
-}
-
-/// A read effect is an action of the app's own resource in its surface, with
-/// the value it answers with; what the window shows of itself is no action a
-/// caller of another language has.
-#[test]
-fn a_read_effect_publishes_its_answer_as_an_action_of_the_resource() {
-    let report = tilo_app::framework::headless::surface_report::<ReadingApp>();
-    let surface = &report["resources"][0];
-    let verbs = surface["verbs"].as_array().unwrap();
-    let count = verbs
-        .iter()
-        .find(|verb| verb["id"] == "count")
-        .unwrap_or_else(|| panic!("a read effect publishes a verb: {report}"));
-    assert_eq!(count["kind"], "read");
-    assert_eq!(
-        count["returns"]["type"],
-        serde_json::json!({"named": "Counted"}),
-        "{report}"
-    );
-    assert_eq!(
-        count["returns"]["schema"]["properties"]["what"]["type"],
-        "string"
-    );
-    let counted = surface["types"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|ty| ty["name"] == "Counted")
-        .unwrap_or_else(|| panic!("the answer's record is declared: {report}"));
-    let fields: Vec<&str> = counted["fields"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|field| field["name"].as_str())
-        .collect();
-    assert_eq!(fields, ["count", "what"]);
-    assert!(
-        !verbs.iter().any(|verb| verb["id"] == "zoom-in"),
-        "a view is no action of the catalogue: {report}"
-    );
 }

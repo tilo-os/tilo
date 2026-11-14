@@ -79,37 +79,41 @@ impl ResourceApp for DeckApp {
     }
 }
 
-#[test]
-fn an_edit_effect_answers_with_what_its_edit_made_after_it_landed() {
-    let mut app = TestApp::<DeckApp>::new().unwrap();
-    let output = app
-        .effect(&DeckEffect::AddCard {
-            text: "Hearts".into(),
-        })
-        .unwrap();
-    let state = app.state();
-    let (id, card) = state.cards.iter().next().expect("the card landed");
-    assert_eq!(card.text, "Hearts");
-    assert_eq!(
-        output.value,
-        Some(serde_json::json!([id.to_string()])),
-        "the answer names the card the edit made"
-    );
-}
+tilo_test_env::scenario! {
+    fn an_edit_effect_answers_from_what_the_door_answered;
 
-#[test]
-fn a_refused_edit_fails_the_effect_that_submitted_it() {
-    let mut app = TestApp::<DeckApp>::new().unwrap();
-    app.effect(&DeckEffect::AddCard { text: "a".into() })
-        .unwrap();
-    let refused = app.effect(&DeckEffect::AddTwo).unwrap_err();
-    assert!(
-        refused.to_string().contains("a deck holds two cards"),
-        "{refused}"
-    );
-    assert_eq!(
-        app.state().cards.len(),
-        1,
-        "the refused edit changed nothing"
-    );
+    phase an_edit_effect_answers_with_what_its_edit_made_after_it_landed;
+    {
+        let mut app = TestApp::<DeckApp>::new().unwrap();
+        let output = app
+            .effect(&DeckEffect::AddCard {
+                text: "Hearts".into(),
+            })
+            .unwrap();
+        let state = app.state();
+        let (id, card) = state.cards.iter().next().expect("the card landed");
+        assert_eq!(card.text, "Hearts");
+        assert_eq!(
+            output.value,
+            Some(serde_json::json!([id.to_string()])),
+            "the answer names the card the edit made"
+        );
+    }
+
+    phase a_refused_edit_fails_the_effect_that_submitted_it;
+    {
+        let mut app = TestApp::<DeckApp>::new().unwrap();
+        app.effect(&DeckEffect::AddCard { text: "a".into() })
+            .unwrap();
+        let refused = app.effect(&DeckEffect::AddTwo).unwrap_err();
+        assert!(
+            refused.to_string().contains("a deck holds two cards"),
+            "{refused}"
+        );
+        assert_eq!(
+            app.state().cards.len(),
+            1,
+            "the refused edit changed nothing"
+        );
+    }
 }

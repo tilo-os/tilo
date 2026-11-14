@@ -126,24 +126,64 @@ impl ResourceApp for OpeningApp {
     }
 }
 
-#[test]
-fn opening_an_item_shows_it_or_says_why_not() {
-    let mut app = TestApp::<OpeningApp>::new().unwrap();
-    app.invoke(Bookmarks::ADD.with(("https://tilo.so".to_owned(), "Tilo".to_owned())))
-        .unwrap();
-    let id = app.state().bookmarks.ids().next().cloned().unwrap();
-    let anchor = format!("test.bookmarks/bookmarks/{id}");
-    app.call("open", serde_json::json!({ "anchor": anchor }))
-        .unwrap();
-    assert_eq!(OPENED.with(|opened| opened.borrow().clone()), [id]);
-    let gone = app.call(
-        "open",
-        serde_json::json!({ "anchor": "test.bookmarks/bookmarks/nothing" }),
-    );
-    assert!(
-        matches!(&gone, Err(error) if error.to_string().contains("that bookmark is gone")),
-        "{gone:?}"
-    );
+tilo_test_env::scenario! {
+    fn opening_an_item_or_an_anchor_shows_it_or_says_why_not;
+
+    phase opening_an_item_shows_it_or_says_why_not;
+    {
+        let mut app = TestApp::<OpeningApp>::new().unwrap();
+        app.invoke(Bookmarks::ADD.with(("https://tilo.so".to_owned(), "Tilo".to_owned())))
+            .unwrap();
+        let id = app.state().bookmarks.ids().next().cloned().unwrap();
+        let anchor = format!("test.bookmarks/bookmarks/{id}");
+        app.call("open", serde_json::json!({ "anchor": anchor }))
+            .unwrap();
+        assert_eq!(OPENED.with(|opened| opened.borrow().clone()), [id]);
+        let gone = app.call(
+            "open",
+            serde_json::json!({ "anchor": "test.bookmarks/bookmarks/nothing" }),
+        );
+        assert!(
+            matches!(&gone, Err(error) if error.to_string().contains("that bookmark is gone")),
+            "{gone:?}"
+        );
+    }
+
+    phase opening_an_anchor_may_be_refused;
+    {
+        let mut app = TestApp::<AnchorApp>::new().unwrap();
+        app.call("open", serde_json::json!({ "anchor": "row:here" }))
+            .unwrap();
+        let gone = app.call("open", serde_json::json!({ "anchor": "row:gone" }));
+        assert!(
+            matches!(&gone, Err(error) if error.to_string().contains("that row is gone")),
+            "{gone:?}"
+        );
+    }
+
+    phase each_labelled_item_is_its_own_index_entry_opening_at_that_item;
+    {
+        let mut app = TestApp::<OpeningApp>::new().unwrap();
+        app.invoke(Bookmarks::ADD.with(("https://tilo.so".to_owned(), "Tilo".to_owned())))
+            .unwrap();
+        app.invoke(Bookmarks::ADD.with(("https://rust-lang.org".to_owned(), "Rust".to_owned())))
+            .unwrap();
+        let kept = app.search_index_entries();
+        let mut resources: Vec<&str> = kept.iter().map(|entry| entry.resource.as_str()).collect();
+        resources.sort_unstable();
+        let ids: Vec<String> = app
+            .state()
+            .bookmarks
+            .ids()
+            .map(ToString::to_string)
+            .collect();
+        let mut expected: Vec<String> = ids
+            .iter()
+            .map(|id| format!("test.bookmarks/bookmarks/{id}"))
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(resources, expected, "{kept:?}");
+    }
 }
 
 /// Rows that are not items of the resource (a process, a vault entry) are
@@ -165,40 +205,4 @@ impl ResourceApp for AnchorApp {
         });
         Box::new(Column::new())
     }
-}
-
-#[test]
-fn opening_an_anchor_may_be_refused() {
-    let mut app = TestApp::<AnchorApp>::new().unwrap();
-    app.call("open", serde_json::json!({ "anchor": "row:here" }))
-        .unwrap();
-    let gone = app.call("open", serde_json::json!({ "anchor": "row:gone" }));
-    assert!(
-        matches!(&gone, Err(error) if error.to_string().contains("that row is gone")),
-        "{gone:?}"
-    );
-}
-
-#[test]
-fn each_labelled_item_is_its_own_index_entry_opening_at_that_item() {
-    let mut app = TestApp::<OpeningApp>::new().unwrap();
-    app.invoke(Bookmarks::ADD.with(("https://tilo.so".to_owned(), "Tilo".to_owned())))
-        .unwrap();
-    app.invoke(Bookmarks::ADD.with(("https://rust-lang.org".to_owned(), "Rust".to_owned())))
-        .unwrap();
-    let kept = app.search_index_entries();
-    let mut resources: Vec<&str> = kept.iter().map(|entry| entry.resource.as_str()).collect();
-    resources.sort_unstable();
-    let ids: Vec<String> = app
-        .state()
-        .bookmarks
-        .ids()
-        .map(ToString::to_string)
-        .collect();
-    let mut expected: Vec<String> = ids
-        .iter()
-        .map(|id| format!("test.bookmarks/bookmarks/{id}"))
-        .collect();
-    expected.sort_unstable();
-    assert_eq!(resources, expected, "{kept:?}");
 }

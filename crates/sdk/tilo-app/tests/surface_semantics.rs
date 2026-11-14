@@ -204,14 +204,23 @@ fn operated_by_name<A: ResourceApp<Resource = Ballot>>() {
     assert_eq!(app.state().no, 0);
 }
 
-#[test]
-fn a_surface_that_is_the_whole_view_is_operated_by_name() {
-    operated_by_name::<WholeApp>();
-}
+tilo_test_env::scenario! {
+    fn a_custom_surface_is_operated_by_name_wherever_it_stands;
 
-#[test]
-fn a_surface_inside_a_view_is_operated_by_name() {
-    operated_by_name::<NestedApp>();
+    phase a_surface_that_is_the_whole_view_is_operated_by_name;
+    {
+        operated_by_name::<WholeApp>();
+    }
+
+    phase a_surface_inside_a_view_is_operated_by_name;
+    {
+        operated_by_name::<NestedApp>();
+    }
+
+    phase a_stacked_surface_is_operated_by_name;
+    {
+        operated_by_name::<StackedApp>();
+    }
 }
 
 /// The surface stacked in a view.
@@ -225,11 +234,6 @@ impl ResourceApp for StackedApp {
     fn view(cx: &mut ViewCx<Ballot>) -> Element {
         Box::new(tilo_app::widget::Stack::new().push(cx.surface(Booth::default())))
     }
-}
-
-#[test]
-fn a_stacked_surface_is_operated_by_name() {
-    operated_by_name::<StackedApp>();
 }
 
 /// A surface that writes what it paints: the frame has already read the

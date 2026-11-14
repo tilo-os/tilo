@@ -143,151 +143,155 @@ fn texts(parts: &[(u64, Rc<LogPart>)]) -> Vec<(String, String)> {
         .collect()
 }
 
-#[test]
-fn a_part_this_device_has_none_of_is_held_from_its_genesis_until_it_arrives() {
-    let joined = Joined::new();
-    assert_eq!(joined.held(), [2]);
-    assert_eq!(joined.chain.waiting(2), None, "the head arrived");
-    let seen = joined.chain.revision();
-    joined.chain.hold(1).unwrap();
-    assert_eq!(joined.held(), [1, 2]);
-    assert_eq!(joined.chain.waiting(1), Some(PartArrival::Arriving));
-    assert!(texts(&joined.chain.parts()[..1]).is_empty());
-    joined.deliver(1);
-    assert_eq!(joined.chain.waiting(1), None);
-    assert_ne!(joined.chain.revision(), seen);
-    let lines: Vec<String> = texts(&joined.chain.parts())
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect();
-    assert_eq!(lines, ["line 3", "line 4", "line 5", "line 6"]);
-}
+tilo_test_env::scenario! {
+    fn a_late_device_reads_back_through_the_chains_parts;
 
-#[test]
-fn reaching_the_top_opens_one_earlier_part_at_a_time() {
-    let joined = Joined::new();
-    let mut pager = ChainPager::new(joined.chain.clone());
-    assert!(pager.has_earlier());
-    assert!(!pager.wants_settle(), "nobody read back yet");
-    assert_eq!(pager.settle(), Paged::Nothing);
+    phase a_part_this_device_has_none_of_is_held_from_its_genesis_until_it_arrives;
+    {
+        let joined = Joined::new();
+        assert_eq!(joined.held(), [2]);
+        assert_eq!(joined.chain.waiting(2), None, "the head arrived");
+        let seen = joined.chain.revision();
+        joined.chain.hold(1).unwrap();
+        assert_eq!(joined.held(), [1, 2]);
+        assert_eq!(joined.chain.waiting(1), Some(PartArrival::Arriving));
+        assert!(texts(&joined.chain.parts()[..1]).is_empty());
+        joined.deliver(1);
+        assert_eq!(joined.chain.waiting(1), None);
+        assert_ne!(joined.chain.revision(), seen);
+        let lines: Vec<String> = texts(&joined.chain.parts())
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(lines, ["line 3", "line 4", "line 5", "line 6"]);
+    }
 
-    pager.reached_top();
-    assert!(pager.wants_settle());
-    assert_eq!(pager.settle(), Paged::Opened(1));
-    assert!(pager.arriving());
-    assert!(pager.asked().is_some(), "the view shows it on its way");
-    // Nothing more while part 1 is on its way.
-    pager.reached_top();
-    assert!(!pager.wants_settle());
-    assert_eq!(pager.settle(), Paged::Nothing);
-    assert_eq!(joined.held(), [1, 2]);
+    phase reaching_the_top_opens_one_earlier_part_at_a_time;
+    {
+        let joined = Joined::new();
+        let mut pager = ChainPager::new(joined.chain.clone());
+        assert!(pager.has_earlier());
+        assert!(!pager.wants_settle(), "nobody read back yet");
+        assert_eq!(pager.settle(), Paged::Nothing);
 
-    joined.deliver(1);
-    assert!(pager.asked().is_none());
-    pager.reached_top();
-    assert_eq!(pager.settle(), Paged::Opened(0));
-    joined.deliver(0);
-    assert!(!pager.loading(), "nothing is earlier than part 0");
-    pager.reached_top();
-    assert!(!pager.wants_settle());
-    assert_eq!(joined.held(), [0, 1, 2]);
-}
+        pager.reached_top();
+        assert!(pager.wants_settle());
+        assert_eq!(pager.settle(), Paged::Opened(1));
+        assert!(pager.arriving());
+        assert!(pager.asked().is_some(), "the view shows it on its way");
+        // Nothing more while part 1 is on its way.
+        pager.reached_top();
+        assert!(!pager.wants_settle());
+        assert_eq!(pager.settle(), Paged::Nothing);
+        assert_eq!(joined.held(), [1, 2]);
 
-#[test]
-fn an_item_looked_for_opens_earlier_parts_until_one_has_it() {
-    let joined = Joined::new();
-    let mut pager = ChainPager::new(joined.chain.clone());
-    pager.seek(|part: &LogPart| part.lines.values().any(|line| line.text == "line 1"));
-    assert_eq!(pager.settle(), Paged::Opened(1));
-    joined.deliver(1);
-    assert_eq!(pager.settle(), Paged::Opened(0));
-    assert_eq!(pager.settle(), Paged::Nothing, "part 0 is on its way");
-    joined.deliver(0);
-    assert_eq!(pager.settle(), Paged::Found);
-    assert!(!pager.seeking());
+        joined.deliver(1);
+        assert!(pager.asked().is_none());
+        pager.reached_top();
+        assert_eq!(pager.settle(), Paged::Opened(0));
+        joined.deliver(0);
+        assert!(!pager.loading(), "nothing is earlier than part 0");
+        pager.reached_top();
+        assert!(!pager.wants_settle());
+        assert_eq!(joined.held(), [0, 1, 2]);
+    }
 
-    pager.seek(|part: &LogPart| part.lines.values().any(|line| line.text == "never"));
-    assert_eq!(pager.settle(), Paged::NotFound);
-}
+    phase an_item_looked_for_opens_earlier_parts_until_one_has_it;
+    {
+        let joined = Joined::new();
+        let mut pager = ChainPager::new(joined.chain.clone());
+        pager.seek(|part: &LogPart| part.lines.values().any(|line| line.text == "line 1"));
+        assert_eq!(pager.settle(), Paged::Opened(1));
+        joined.deliver(1);
+        assert_eq!(pager.settle(), Paged::Opened(0));
+        assert_eq!(pager.settle(), Paged::Nothing, "part 0 is on its way");
+        joined.deliver(0);
+        assert_eq!(pager.settle(), Paged::Found);
+        assert!(!pager.seeking());
 
-#[test]
-fn a_chain_list_pages_back_when_its_first_row_shows() {
-    let joined = Joined::new();
-    let mut list = ChainList::new(joined.chain.clone(), texts);
-    assert_eq!(list.len(), 2, "the earlier parts' row and the head's line");
-    assert_eq!(list.key_at(0), Some(ChainRow::Earlier));
-    assert!(list.row_state(0).is_pending());
-    assert_eq!(list.item(1).map(String::as_str), Some("line 6"));
+        pager.seek(|part: &LogPart| part.lines.values().any(|line| line.text == "never"));
+        assert_eq!(pager.settle(), Paged::NotFound);
+    }
 
-    // Rows after the first: nothing opens.
-    list.request_range(1..2, None);
-    assert_eq!(joined.held(), [2]);
-    // The first row shows: the part before opens, and arrives.
-    list.request_range(0..2, None);
-    assert_eq!(joined.held(), [1, 2]);
-    joined.deliver(1);
-    assert!(list.poll_changed());
-    assert_eq!(list.len(), 5);
-    assert_eq!(list.item(1).map(String::as_str), Some("line 3"));
-    let newest = list.key_at(4).unwrap();
-    assert_eq!(list.index_of(&newest), Some(4));
-    assert!(!list.poll_changed(), "nothing moved since");
+    phase a_chain_list_pages_back_when_its_first_row_shows;
+    {
+        let joined = Joined::new();
+        let mut list = ChainList::new(joined.chain.clone(), texts);
+        assert_eq!(list.len(), 2, "the earlier parts' row and the head's line");
+        assert_eq!(list.key_at(0), Some(ChainRow::Earlier));
+        assert!(list.row_state(0).is_pending());
+        assert_eq!(list.item(1).map(String::as_str), Some("line 6"));
 
-    list.request_range(0..3, None);
-    joined.deliver(0);
-    assert!(list.poll_changed());
-    assert_eq!(list.len(), 7, "every line, and no earlier row");
-    assert_eq!(
-        list.key_at(0).map(|key| key == ChainRow::Earlier),
-        Some(false)
-    );
-    assert_eq!(list.item(0).map(String::as_str), Some("line 0"));
-}
+        // Rows after the first: nothing opens.
+        list.request_range(1..2, None);
+        assert_eq!(joined.held(), [2]);
+        // The first row shows: the part before opens, and arrives.
+        list.request_range(0..2, None);
+        assert_eq!(joined.held(), [1, 2]);
+        joined.deliver(1);
+        assert!(list.poll_changed());
+        assert_eq!(list.len(), 5);
+        assert_eq!(list.item(1).map(String::as_str), Some("line 3"));
+        let newest = list.key_at(4).unwrap();
+        assert_eq!(list.index_of(&newest), Some(4));
+        assert!(!list.poll_changed(), "nothing moved since");
 
-/// The workspace's hosts sent everything they hold of a part asked for, without
-/// it (or none is connected): the view says the earlier lines are not
-/// available, nothing spins and nothing before it is asked for, until it
-/// arrives after all.
-#[test]
-fn a_part_the_workspace_has_none_of_shows_unavailable_until_it_arrives() {
-    let joined = Joined::new();
-    let mut list = ChainList::new(joined.chain.clone(), texts);
-    list.request_range(0..2, None);
-    assert_eq!(joined.held(), [1, 2]);
-    assert!(list.row_state(0).is_pending());
+        list.request_range(0..3, None);
+        joined.deliver(0);
+        assert!(list.poll_changed());
+        assert_eq!(list.len(), 7, "every line, and no earlier row");
+        assert_eq!(
+            list.key_at(0).map(|key| key == ChainRow::Earlier),
+            Some(false)
+        );
+        assert_eq!(list.item(0).map(String::as_str), Some("line 0"));
+    }
 
-    joined
-        .reader
-        .note_workspace_answered(LogPart::chain().part(1));
-    assert_eq!(joined.chain.waiting(1), Some(PartArrival::Unavailable));
-    assert!(list.poll_changed());
-    assert!(list.row_state(0).failure().is_some(), "said, not loading");
-    assert!(list.pager().unavailable());
-    assert!(list.pager().asked().is_none(), "nothing spins");
-    list.pager().reached_top();
-    assert!(!list.pager().wants_settle(), "nothing earlier is asked for");
-    assert_eq!(list.pager().settle(), Paged::Nothing);
-    assert_eq!(joined.held(), [1, 2]);
+    phase a_part_the_workspace_has_none_of_shows_unavailable_until_it_arrives;
+    // The workspace's hosts sent everything they hold of a part asked for, without
+    // it (or none is connected): the view says the earlier lines are not
+    // available, nothing spins and nothing before it is asked for, until it
+    // arrives after all.
+    {
+        let joined = Joined::new();
+        let mut list = ChainList::new(joined.chain.clone(), texts);
+        list.request_range(0..2, None);
+        assert_eq!(joined.held(), [1, 2]);
+        assert!(list.row_state(0).is_pending());
 
-    // Someone who has it shares it after all.
-    joined.deliver(1);
-    assert_eq!(joined.chain.waiting(1), None);
-    assert!(list.poll_changed());
-    assert!(list.row_state(0).is_pending(), "part 0 is still earlier");
-    assert_eq!(list.item(1).map(String::as_str), Some("line 3"));
-}
+        joined
+            .reader
+            .note_workspace_answered(LogPart::chain().part(1));
+        assert_eq!(joined.chain.waiting(1), Some(PartArrival::Unavailable));
+        assert!(list.poll_changed());
+        assert!(list.row_state(0).failure().is_some(), "said, not loading");
+        assert!(list.pager().unavailable());
+        assert!(list.pager().asked().is_none(), "nothing spins");
+        list.pager().reached_top();
+        assert!(!list.pager().wants_settle(), "nothing earlier is asked for");
+        assert_eq!(list.pager().settle(), Paged::Nothing);
+        assert_eq!(joined.held(), [1, 2]);
 
-/// A part looked for that the workspace has none of ends the search.
-#[test]
-fn an_item_looked_for_past_an_unavailable_part_is_not_found() {
-    let joined = Joined::new();
-    let mut pager = ChainPager::new(joined.chain.clone());
-    pager.seek(|part: &LogPart| part.lines.values().any(|line| line.text == "line 1"));
-    assert_eq!(pager.settle(), Paged::Opened(1));
-    joined
-        .reader
-        .note_workspace_answered(LogPart::chain().part(1));
-    assert_eq!(pager.settle(), Paged::NotFound);
+        // Someone who has it shares it after all.
+        joined.deliver(1);
+        assert_eq!(joined.chain.waiting(1), None);
+        assert!(list.poll_changed());
+        assert!(list.row_state(0).is_pending(), "part 0 is still earlier");
+        assert_eq!(list.item(1).map(String::as_str), Some("line 3"));
+    }
+
+    phase an_item_looked_for_past_an_unavailable_part_is_not_found;
+    // A part looked for that the workspace has none of ends the search.
+    {
+        let joined = Joined::new();
+        let mut pager = ChainPager::new(joined.chain.clone());
+        pager.seek(|part: &LogPart| part.lines.values().any(|line| line.text == "line 1"));
+        assert_eq!(pager.settle(), Paged::Opened(1));
+        joined
+            .reader
+            .note_workspace_answered(LogPart::chain().part(1));
+        assert_eq!(pager.settle(), Paged::NotFound);
+    }
 }
 
 /// A device back from away, its workspace still sending the head it holds: a

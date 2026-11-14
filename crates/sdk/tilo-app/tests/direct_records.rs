@@ -98,108 +98,112 @@ fn devices() -> (TestApp<TalkApp>, TestApp<TalkApp>, TestApp<TalkApp>) {
     )
 }
 
-#[test]
-fn the_conversations_record_is_one_record_on_all_their_devices() {
-    let (mut laptop, mut phone, _) = devices();
-    let on_laptop = laptop
-        .shared_record::<Talk>(KEEPER, WITH_BOB)
-        .expect("Ada's laptop opens the conversation's record");
-    let on_phone = phone
-        .shared_record::<Talk>(KEEPER, WITH_BOB)
-        .expect("Ada's phone opens the conversation's record");
-    assert_eq!(
-        on_laptop.id(),
-        on_phone.id(),
-        "one record per conversation, wherever it is opened"
-    );
-    let route = on_laptop.record().route().expect("a route");
-    assert_eq!(route.app_id, TalkApp::ID);
-    assert_eq!(
-        route.cluster_id.to_string(),
-        WORKSPACE,
-        "the record lives in the workspace the conversation is in"
-    );
-    assert_eq!(
-        route.record.as_deref(),
-        Some(WITH_BOB),
-        "the conversation's record sits beside the workspace's own"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_conversations_record_is_one_record_between_its_two_people;
 
-#[test]
-fn either_person_writes_and_the_other_reads_it_after_they_meet() {
-    let (mut laptop, _, mut bobs) = devices();
-    let on_laptop = laptop
-        .shared_record::<Talk>(KEEPER, WITH_BOB)
-        .expect("Ada's laptop opens the conversation's record");
-    let on_bobs = bobs
-        .shared_record::<Talk>(KEEPER, WITH_BOB)
-        .expect("Bob's phone opens the conversation's record");
-    on_laptop.invoke(&Talk::SAY.with("hi from Ada")).unwrap();
-    on_bobs.invoke(&Talk::SAY.with("hi from Bob")).unwrap();
-    let her = on_laptop.record().document().expect("Ada's record");
-    on_bobs.record().merge_peer_document(her).unwrap();
-    let his = on_bobs.record().document().expect("Bob's record");
-    on_laptop.record().merge_peer_document(his).unwrap();
-    assert_eq!(
-        said(&on_laptop),
-        ["hi from Ada", "hi from Bob"],
-        "both people's words are in the one conversation"
-    );
-    assert_eq!(said(&on_laptop), said(&on_bobs));
-    assert_eq!(
-        on_laptop.record().document().unwrap(),
-        on_bobs.record().document().unwrap(),
-        "each device holds the same document"
-    );
-}
+    phase the_conversations_record_is_one_record_on_all_their_devices;
+    {
+        let (mut laptop, mut phone, _) = devices();
+        let on_laptop = laptop
+            .shared_record::<Talk>(KEEPER, WITH_BOB)
+            .expect("Ada's laptop opens the conversation's record");
+        let on_phone = phone
+            .shared_record::<Talk>(KEEPER, WITH_BOB)
+            .expect("Ada's phone opens the conversation's record");
+        assert_eq!(
+            on_laptop.id(),
+            on_phone.id(),
+            "one record per conversation, wherever it is opened"
+        );
+        let route = on_laptop.record().route().expect("a route");
+        assert_eq!(route.app_id, TalkApp::ID);
+        assert_eq!(
+            route.cluster_id.to_string(),
+            WORKSPACE,
+            "the record lives in the workspace the conversation is in"
+        );
+        assert_eq!(
+            route.record.as_deref(),
+            Some(WITH_BOB),
+            "the conversation's record sits beside the workspace's own"
+        );
+    }
 
-#[test]
-fn each_persons_read_mark_is_theirs_and_their_devices_agree() {
-    let (mut laptop, mut phone, mut bobs) = devices();
-    let on_laptop = laptop
-        .shared_record::<Talk>(KEEPER, WITH_BOB)
-        .expect("Ada's laptop opens the conversation's record");
-    let on_phone = phone
-        .shared_record::<Talk>(KEEPER, WITH_BOB)
-        .expect("Ada's phone opens the conversation's record");
-    let on_bobs = bobs
-        .shared_record::<Talk>(KEEPER, WITH_BOB)
-        .expect("Bob's phone opens the conversation's record");
-    on_bobs.invoke(&Talk::SAY.with("hello")).unwrap();
-    on_laptop.invoke(&Talk::MARK_READ.with(1_000_i64)).unwrap();
-    let hers = on_laptop.record().document().expect("Ada's record");
-    on_phone.record().merge_peer_document(hers.clone()).unwrap();
-    on_bobs.record().merge_peer_document(hers).unwrap();
-    assert_eq!(
-        on_phone.get().read.get(ada().as_str()).copied(),
-        Some(1_000),
-        "Ada's other device shows what she read"
-    );
-    assert_eq!(
-        on_bobs.get().read.get(ada().as_str()).copied(),
-        Some(1_000),
-        "the other person reads her mark, not a mark of their own"
-    );
-    assert!(
-        !on_bobs.get().read.contains_key(bob().as_str()),
-        "Bob has read nothing yet"
-    );
-}
+    phase either_person_writes_and_the_other_reads_it_after_they_meet;
+    {
+        let (mut laptop, _, mut bobs) = devices();
+        let on_laptop = laptop
+            .shared_record::<Talk>(KEEPER, WITH_BOB)
+            .expect("Ada's laptop opens the conversation's record");
+        let on_bobs = bobs
+            .shared_record::<Talk>(KEEPER, WITH_BOB)
+            .expect("Bob's phone opens the conversation's record");
+        on_laptop.invoke(&Talk::SAY.with("hi from Ada")).unwrap();
+        on_bobs.invoke(&Talk::SAY.with("hi from Bob")).unwrap();
+        let her = on_laptop.record().document().expect("Ada's record");
+        on_bobs.record().merge_peer_document(her).unwrap();
+        let his = on_bobs.record().document().expect("Bob's record");
+        on_laptop.record().merge_peer_document(his).unwrap();
+        assert_eq!(
+            said(&on_laptop),
+            ["hi from Ada", "hi from Bob"],
+            "both people's words are in the one conversation"
+        );
+        assert_eq!(said(&on_laptop), said(&on_bobs));
+        assert_eq!(
+            on_laptop.record().document().unwrap(),
+            on_bobs.record().document().unwrap(),
+            "each device holds the same document"
+        );
+    }
 
-#[test]
-fn another_conversation_is_another_record() {
-    let (mut laptop, _, _) = devices();
-    let with_bob = laptop
-        .shared_record::<Talk>(KEEPER, WITH_BOB)
-        .expect("Ada opens the conversation's record");
-    let with_bo = laptop
-        .shared_record::<Talk>(KEEPER, WITH_BO)
-        .expect("Ada opens another conversation's record");
-    assert_ne!(with_bob.id(), with_bo.id());
-    with_bob.invoke(&Talk::SAY.with("only Bob")).unwrap();
-    assert!(
-        with_bo.get().said.is_empty(),
-        "one conversation's words are not in another's record"
-    );
+    phase each_persons_read_mark_is_theirs_and_their_devices_agree;
+    {
+        let (mut laptop, mut phone, mut bobs) = devices();
+        let on_laptop = laptop
+            .shared_record::<Talk>(KEEPER, WITH_BOB)
+            .expect("Ada's laptop opens the conversation's record");
+        let on_phone = phone
+            .shared_record::<Talk>(KEEPER, WITH_BOB)
+            .expect("Ada's phone opens the conversation's record");
+        let on_bobs = bobs
+            .shared_record::<Talk>(KEEPER, WITH_BOB)
+            .expect("Bob's phone opens the conversation's record");
+        on_bobs.invoke(&Talk::SAY.with("hello")).unwrap();
+        on_laptop.invoke(&Talk::MARK_READ.with(1_000_i64)).unwrap();
+        let hers = on_laptop.record().document().expect("Ada's record");
+        on_phone.record().merge_peer_document(hers.clone()).unwrap();
+        on_bobs.record().merge_peer_document(hers).unwrap();
+        assert_eq!(
+            on_phone.get().read.get(ada().as_str()).copied(),
+            Some(1_000),
+            "Ada's other device shows what she read"
+        );
+        assert_eq!(
+            on_bobs.get().read.get(ada().as_str()).copied(),
+            Some(1_000),
+            "the other person reads her mark, not a mark of their own"
+        );
+        assert!(
+            !on_bobs.get().read.contains_key(bob().as_str()),
+            "Bob has read nothing yet"
+        );
+    }
+
+    phase another_conversation_is_another_record;
+    {
+        let (mut laptop, _, _) = devices();
+        let with_bob = laptop
+            .shared_record::<Talk>(KEEPER, WITH_BOB)
+            .expect("Ada opens the conversation's record");
+        let with_bo = laptop
+            .shared_record::<Talk>(KEEPER, WITH_BO)
+            .expect("Ada opens another conversation's record");
+        assert_ne!(with_bob.id(), with_bo.id());
+        with_bob.invoke(&Talk::SAY.with("only Bob")).unwrap();
+        assert!(
+            with_bo.get().said.is_empty(),
+            "one conversation's words are not in another's record"
+        );
+    }
 }

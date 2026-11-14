@@ -367,133 +367,207 @@ fn effect<'a>(surface: &'a serde_json::Value, id: &str) -> Option<&'a serde_json
         .find(|row| row["resource"] == "test.mailbox" && row["action"] == id)
 }
 
-#[test]
-fn effects_are_published_and_answer_every_caller_through_the_door() {
-    let mut app = TestApp::<MailApp>::new().unwrap();
+tilo_test_env::scenario! {
+    fn effects_are_published_and_answered_through_the_door;
 
-    // phase: the vocabulary is published on the resource, as callers see it now
-    let surface = app.agent_surface();
-    for id in ["count", "fetch", "connect"] {
-        assert_eq!(effect(&surface, id).unwrap()["operation"], "Effect", "{id}");
-    }
-    assert_eq!(
-        effect(&surface, "connect").unwrap()["label"],
-        "Connect (offline)"
-    );
-    let refused = app.effect(&MailEffect::Connect).unwrap_err();
-    assert!(
-        matches!(&refused, tilo_actions::DoorError::Unavailable { code, .. } if code == "offline"),
-        "{refused:?}"
-    );
+    phase effects_are_published_and_answer_every_caller_through_the_door;
+    {
+        let mut app = TestApp::<MailApp>::new().unwrap();
 
-    // phase: an immediate effect answers at once
-    let count = app.effect(&MailEffect::Count).unwrap();
-    assert_eq!(count.value, Some(serde_json::json!(0)));
-
-    // phase: a view is published as one and reaches its handler the same way
-    assert_eq!(effect(&surface, "show-sent").unwrap()["operation"], "View");
-    app.effect(&MailEffect::ShowSent).unwrap();
-    assert!(
-        app.harness()
-            .inspection_json()
-            .unwrap()
-            .contains("Showing sent"),
-        "the view's handler ran"
-    );
-
-    // phase: a job reports progress, then finishes on the UI thread with an
-    // action and its result
-    let fetched = app.effect(&MailEffect::Fetch {
-        from: "an agent".into(),
-    });
-    assert_eq!(
-        fetched.unwrap().value,
-        Some(serde_json::json!("hello from an agent"))
-    );
-    let progress = app.effect_progress();
-    assert!(
-        progress.iter().any(|update| matches!(
-            update,
-            tilo_actions::InvocationUpdate::Progress { phase, total: Some(1), .. } if phase == "connecting"
-        )),
-        "{progress:?}"
-    );
-    app.settle();
-    assert_eq!(app.state().fetched, "hello from an agent");
-
-    // phase: availability follows the view's state
-    let surface = app.agent_surface();
-    assert_eq!(
-        effect(&surface, "connect").unwrap()["label"],
-        "Connect to the server"
-    );
-    app.effect(&MailEffect::Connect).unwrap();
-
-    // phase: a job that started nothing fails instead of hanging its caller
-    let stalled = app.effect(&MailEffect::Stall).unwrap_err();
-    assert!(
-        format!("{stalled:?}").contains("started no job"),
-        "{stalled:?}"
-    );
-}
-
-#[test]
-fn a_button_bound_to_an_effect_runs_it() {
-    let mut app = TestApp::<MailApp>::new().unwrap();
-    app.harness().click_named("fetch").unwrap();
-    let fetched = app
-        .harness()
-        .wait_until(tilo_test_env::hang_bound(), |harness| {
-            harness
-                .inspection_json()
-                .is_ok_and(|tree| tree.contains("Fetched: hello from a button"))
-        });
-    assert!(fetched, "the button's job finished and its action applied");
-    assert_eq!(app.state().fetched, "hello from a button");
-}
-
-#[test]
-fn captures_publish_view_effects_and_availability_without_running_handlers() {
-    let mut live = TestApp::<MailApp>::new().unwrap();
-    let mut capture = TestApp::<MailApp>::capture(None).unwrap();
-    let live_surface = live.agent_surface();
-    let captured_surface = capture.agent_surface();
-    for id in ["count", "fetch", "connect", "stall", "note", "show-sent"] {
-        let live_spec = effect(&live_surface, id).unwrap();
-        let captured_spec = effect(&captured_surface, id).unwrap();
+        // phase: the vocabulary is published on the resource, as callers see it now
+        let surface = app.agent_surface();
+        for id in ["count", "fetch", "connect"] {
+            assert_eq!(effect(&surface, id).unwrap()["operation"], "Effect", "{id}");
+        }
         assert_eq!(
-            captured_spec, live_spec,
-            "capture lost effect metadata for {id}"
+            effect(&surface, "connect").unwrap()["label"],
+            "Connect (offline)"
+        );
+        let refused = app.effect(&MailEffect::Connect).unwrap_err();
+        assert!(
+            matches!(&refused, tilo_actions::DoorError::Unavailable { code, .. } if code == "offline"),
+            "{refused:?}"
+        );
+
+        // phase: an immediate effect answers at once
+        let count = app.effect(&MailEffect::Count).unwrap();
+        assert_eq!(count.value, Some(serde_json::json!(0)));
+
+        // phase: a view is published as one and reaches its handler the same way
+        assert_eq!(effect(&surface, "show-sent").unwrap()["operation"], "View");
+        app.effect(&MailEffect::ShowSent).unwrap();
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Showing sent"),
+            "the view's handler ran"
+        );
+
+        // phase: a job reports progress, then finishes on the UI thread with an
+        // action and its result
+        let fetched = app.effect(&MailEffect::Fetch {
+            from: "an agent".into(),
+        });
+        assert_eq!(
+            fetched.unwrap().value,
+            Some(serde_json::json!("hello from an agent"))
+        );
+        let progress = app.effect_progress();
+        assert!(
+            progress.iter().any(|update| matches!(
+                update,
+                tilo_actions::InvocationUpdate::Progress { phase, total: Some(1), .. } if phase == "connecting"
+            )),
+            "{progress:?}"
+        );
+        app.settle();
+        assert_eq!(app.state().fetched, "hello from an agent");
+
+        // phase: availability follows the view's state
+        let surface = app.agent_surface();
+        assert_eq!(
+            effect(&surface, "connect").unwrap()["label"],
+            "Connect to the server"
+        );
+        app.effect(&MailEffect::Connect).unwrap();
+
+        // phase: a job that started nothing fails instead of hanging its caller
+        let stalled = app.effect(&MailEffect::Stall).unwrap_err();
+        assert!(
+            format!("{stalled:?}").contains("started no job"),
+            "{stalled:?}"
         );
     }
-    assert_eq!(
-        effect(&captured_surface, "connect").unwrap()["label"],
-        "Connect (offline)"
-    );
-    let audit = capture.harness().native_app_audit();
-    assert!(audit.is_certified(), "{:?}", audit.issues);
 
-    // Both effect and view handlers stay inert, even through the real door.
-    assert!(capture.effect(&MailEffect::Count).is_err());
-    assert!(
-        capture
-            .effect(&MailEffect::Fetch {
-                from: "capture".into()
+    phase a_button_bound_to_an_effect_runs_it;
+    {
+        let mut app = TestApp::<MailApp>::new().unwrap();
+        app.harness().click_named("fetch").unwrap();
+        let fetched = app
+            .harness()
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
+                harness
+                    .inspection_json()
+                    .is_ok_and(|tree| tree.contains("Fetched: hello from a button"))
+            });
+        assert!(fetched, "the button's job finished and its action applied");
+        assert_eq!(app.state().fetched, "hello from a button");
+    }
+
+    phase captures_publish_view_effects_and_availability_without_running_handlers;
+    {
+        let mut live = TestApp::<MailApp>::new().unwrap();
+        let mut capture = TestApp::<MailApp>::capture(None).unwrap();
+        let live_surface = live.agent_surface();
+        let captured_surface = capture.agent_surface();
+        for id in ["count", "fetch", "connect", "stall", "note", "show-sent"] {
+            let live_spec = effect(&live_surface, id).unwrap();
+            let captured_spec = effect(&captured_surface, id).unwrap();
+            assert_eq!(
+                captured_spec, live_spec,
+                "capture lost effect metadata for {id}"
+            );
+        }
+        assert_eq!(
+            effect(&captured_surface, "connect").unwrap()["label"],
+            "Connect (offline)"
+        );
+        let audit = capture.harness().native_app_audit();
+        assert!(audit.is_certified(), "{:?}", audit.issues);
+
+        // Both effect and view handlers stay inert, even through the real door.
+        assert!(capture.effect(&MailEffect::Count).is_err());
+        assert!(
+            capture
+                .effect(&MailEffect::Fetch {
+                    from: "capture".into()
+                })
+                .is_err()
+        );
+        assert!(capture.effect(&MailEffect::ShowSent).is_err());
+        capture.settle();
+        assert_eq!(capture.state(), Mailbox::default());
+        assert!(capture.effect_progress().is_empty());
+        assert!(
+            capture
+                .harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Showing inbox"),
+            "the inert view handler must not change local presentation"
+        );
+    }
+
+    phase a_viewer_invokes_read_effects_only_and_sees_its_refused_edits;
+    {
+        let mut app = TestApp::<MailApp>::with_role(tilo_app::Role::Viewer).unwrap();
+        assert_eq!(
+            app.effect(&MailEffect::Count).unwrap().value,
+            Some(serde_json::json!(0))
+        );
+        assert!(
+            app.effect(&MailEffect::Fetch {
+                from: "a viewer".into()
             })
             .is_err()
-    );
-    assert!(capture.effect(&MailEffect::ShowSent).is_err());
-    capture.settle();
-    assert_eq!(capture.state(), Mailbox::default());
-    assert!(capture.effect_progress().is_empty());
-    assert!(
-        capture
-            .harness()
-            .inspection_json()
-            .unwrap()
-            .contains("Showing inbox"),
-        "the inert view handler must not change local presentation"
-    );
+        );
+
+        // The effect runs; the edit it submits is refused, and says so.
+        app.effect(&MailEffect::Note {
+            text: "seen".into(),
+        })
+        .unwrap();
+        app.settle();
+        assert_eq!(app.state().fetched, "");
+        let tree = app.harness().inspection_json().unwrap();
+        assert!(
+            tree.contains("Refused apply: this mailbox is open to view only")
+                || tree.contains("Refused fetched: this mailbox is open to view only"),
+            "{tree}"
+        );
+    }
+
+    phase an_effect_lends_its_invoker_no_more_than_they_were_admitted_for;
+    {
+        let mut app = TestApp::<MailApp>::new().unwrap();
+        // A viewer may take a read effect, but not the edit it submits.
+        let refused = app
+            .effect_by(
+                "agent:viewer",
+                &MailEffect::Note {
+                    text: "seen".into(),
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &refused,
+                tilo_actions::DoorError::Unavailable { code, .. } if code == "permission_denied"
+            ),
+            "{refused:?}"
+        );
+        app.settle();
+        assert_eq!(app.state().fetched, "", "nothing was written");
+
+        // Someone admitted to write gets the edit their effect submits, as
+        // theirs.
+        app.effect_by(
+            "agent:writer",
+            &MailEffect::Fetch {
+                from: "a writer".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.state().fetched, "hello from a writer");
+        let invoker = app
+            .versions()
+            .last()
+            .and_then(|version| version.context.clone())
+            .and_then(|context| context.invoker)
+            .map(|invoker| invoker.actor);
+        assert_eq!(invoker.as_deref(), Some("agent:writer"));
+    }
 }
 
 /// `--headless-drive` beside `--scenario`: the scene is the scenario's, as
@@ -533,140 +607,98 @@ fn a_drive_of_a_scenario_runs_the_effects_it_invokes_and_starts_nothing_itself()
     assert!(fetcher.state().outbox.is_empty());
 }
 
-#[test]
-fn history_renders_effect_controls_without_replaying_outside_consequences() {
-    DELIVERED.with(|delivered| delivered.borrow_mut().clear());
-    let mut app = TestApp::<MailApp>::new().unwrap();
-    app.invoke(Mailbox::FETCHED.with("historical")).unwrap();
-    let version = app.versions().last().unwrap().hash;
-    app.invoke(Mailbox::SEND.with("delivered once")).unwrap();
-    app.settle();
-    let past = app.past_version(&[version]).unwrap();
-    assert_eq!(past.state().fetched, "historical");
-    let texts = past.texts();
-    assert!(texts.iter().any(|text| text == "Fetch"), "{texts:?}");
-    assert!(
-        texts.iter().any(|text| text == "Showing inbox"),
-        "{texts:?}"
-    );
-    assert_eq!(
-        DELIVERED.with(|delivered| delivered.borrow().clone()),
-        ["delivered once"],
-        "History must not replay an external drain"
-    );
-    assert_eq!(app.state().outbox.pending().count(), 0);
-}
+tilo_test_env::scenario! {
+    fn an_outbox_carries_out_what_was_queued_once;
 
-#[test]
-fn an_outbox_carries_out_each_queued_entry_once() {
-    DELIVERED.with(|delivered| delivered.borrow_mut().clear());
-    let mut app = TestApp::<MailApp>::new().unwrap();
+    phase history_renders_effect_controls_without_replaying_outside_consequences;
+    {
+        DELIVERED.with(|delivered| delivered.borrow_mut().clear());
+        let mut app = TestApp::<MailApp>::new().unwrap();
+        app.invoke(Mailbox::FETCHED.with("historical")).unwrap();
+        let version = app.versions().last().unwrap().hash;
+        app.invoke(Mailbox::SEND.with("delivered once")).unwrap();
+        app.settle();
+        let past = app.past_version(&[version]).unwrap();
+        assert_eq!(past.state().fetched, "historical");
+        let texts = past.texts();
+        assert!(texts.iter().any(|text| text == "Fetch"), "{texts:?}");
+        assert!(
+            texts.iter().any(|text| text == "Showing inbox"),
+            "{texts:?}"
+        );
+        assert_eq!(
+            DELIVERED.with(|delivered| delivered.borrow().clone()),
+            ["delivered once"],
+            "History must not replay an external drain"
+        );
+        assert_eq!(app.state().outbox.pending().count(), 0);
+    }
 
-    app.invoke(Mailbox::SEND.with("first")).unwrap();
-    app.settle();
-    let delivered = || DELIVERED.with(|delivered| delivered.borrow().clone());
-    assert_eq!(delivered(), ["first"]);
-    let state = app.state();
-    assert_eq!(
-        state.outbox.pending().count(),
-        0,
-        "the drain settled its entry"
-    );
-    assert_eq!(state.sent.values().collect::<Vec<_>>(), ["first"]);
+    phase an_outbox_carries_out_each_queued_entry_once;
+    {
+        DELIVERED.with(|delivered| delivered.borrow_mut().clear());
+        let mut app = TestApp::<MailApp>::new().unwrap();
 
-    // A collaborator's queued message is drained here too.
-    app.merge_peer_edit(|doc| {
-        Mailbox::SEND
-            .with("from a peer")
-            .build(0)
-            .unwrap()
-            .apply(doc)
-            .unwrap();
-    });
-    app.settle();
-    assert_eq!(delivered(), ["first", "from a peer"]);
-    assert_eq!(app.state().outbox.pending().count(), 0);
+        app.invoke(Mailbox::SEND.with("first")).unwrap();
+        app.settle();
+        let delivered = || DELIVERED.with(|delivered| delivered.borrow().clone());
+        assert_eq!(delivered(), ["first"]);
+        let state = app.state();
+        assert_eq!(
+            state.outbox.pending().count(),
+            0,
+            "the drain settled its entry"
+        );
+        assert_eq!(state.sent.values().collect::<Vec<_>>(), ["first"]);
 
-    // Unrelated changes deliver nothing again.
-    app.invoke(Mailbox::FETCHED.with("x")).unwrap();
-    app.settle();
-    assert_eq!(delivered().len(), 2);
+        // A collaborator's queued message is drained here too.
+        app.merge_peer_edit(|doc| {
+            Mailbox::SEND
+                .with("from a peer")
+                .build(0)
+                .unwrap()
+                .apply(doc)
+                .unwrap();
+        });
+        app.settle();
+        assert_eq!(delivered(), ["first", "from a peer"]);
+        assert_eq!(app.state().outbox.pending().count(), 0);
 
-    // History renders a past version without running the drain again.
-    let versions = app.versions();
-    let first = versions.first().unwrap().hash;
-    app.past_version(&[first]).unwrap();
-    assert_eq!(delivered().len(), 2);
-}
+        // Unrelated changes deliver nothing again.
+        app.invoke(Mailbox::FETCHED.with("x")).unwrap();
+        app.settle();
+        assert_eq!(delivered().len(), 2);
 
-#[test]
-fn a_viewer_invokes_read_effects_only_and_sees_its_refused_edits() {
-    let mut app = TestApp::<MailApp>::with_role(tilo_app::Role::Viewer).unwrap();
-    assert_eq!(
-        app.effect(&MailEffect::Count).unwrap().value,
-        Some(serde_json::json!(0))
-    );
-    assert!(
-        app.effect(&MailEffect::Fetch {
-            from: "a viewer".into()
-        })
-        .is_err()
-    );
+        // History renders a past version without running the drain again.
+        let versions = app.versions();
+        let first = versions.first().unwrap().hash;
+        app.past_version(&[first]).unwrap();
+        assert_eq!(delivered().len(), 2);
+    }
 
-    // The effect runs; the edit it submits is refused, and says so.
-    app.effect(&MailEffect::Note {
-        text: "seen".into(),
-    })
-    .unwrap();
-    app.settle();
-    assert_eq!(app.state().fetched, "");
-    let tree = app.harness().inspection_json().unwrap();
-    assert!(
-        tree.contains("Refused apply: this mailbox is open to view only")
-            || tree.contains("Refused fetched: this mailbox is open to view only"),
-        "{tree}"
-    );
-}
+    phase an_outbox_looks_again_when_the_outside_it_could_not_reach_changed;
+    {
+        MIRRORED.with(|mirrored| mirrored.borrow_mut().clear());
+        MIRROR_DOWN.with(|down| down.set(true));
+        let mirrored = || MIRRORED.with(|mirrored| mirrored.borrow().clone());
+        let mut app = TestApp::<MirrorApp>::new().unwrap();
+        app.invoke(Mailbox::SEND.with("hello")).unwrap();
+        app.settle();
+        assert!(mirrored().is_empty());
 
-#[test]
-fn an_effect_lends_its_invoker_no_more_than_they_were_admitted_for() {
-    let mut app = TestApp::<MailApp>::new().unwrap();
-    // A viewer may take a read effect, but not the edit it submits.
-    let refused = app
-        .effect_by(
-            "agent:viewer",
-            &MailEffect::Note {
-                text: "seen".into(),
-            },
-        )
-        .unwrap_err();
-    assert!(
-        matches!(
-            &refused,
-            tilo_actions::DoorError::Unavailable { code, .. } if code == "permission_denied"
-        ),
-        "{refused:?}"
-    );
-    app.settle();
-    assert_eq!(app.state().fetched, "", "nothing was written");
+        // The service is back; the document did not move.
+        MIRROR_DOWN.with(|down| down.set(false));
+        app.settle();
+        assert!(
+            mirrored().is_empty(),
+            "nothing tells the drain to look again"
+        );
 
-    // Someone admitted to write gets the edit their effect submits, as
-    // theirs.
-    app.effect_by(
-        "agent:writer",
-        &MailEffect::Fetch {
-            from: "a writer".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(app.state().fetched, "hello from a writer");
-    let invoker = app
-        .versions()
-        .last()
-        .and_then(|version| version.context.clone())
-        .and_then(|context| context.invoker)
-        .map(|invoker| invoker.actor);
-    assert_eq!(invoker.as_deref(), Some("agent:writer"));
+        MIRROR.with(|mirror| mirror.borrow().as_ref().unwrap().outside_changed());
+        app.settle();
+        assert_eq!(mirrored(), ["hello"]);
+        assert_eq!(app.state().outbox.pending().count(), 0);
+    }
 }
 
 fn start_receipt(app: &mut TestApp<MailApp>) -> tilo_actions::InvocationId {
@@ -982,62 +1014,244 @@ impl ResourceApp for NestedSurfaceApp {
     }
 }
 
-#[test]
-fn nested_surface_dispatch_and_publication_retire_only_the_removed_child() {
-    let mut app = TestApp::<NestedSurfaceApp>::new().unwrap();
-    app.effect(&TallyEffect::Count { by: 4 }).unwrap();
-    assert_eq!(app.surface_mut::<NestedChild>().tally.counted, 4);
-    app.call_on("row:5", "count", serde_json::json!({}))
-        .unwrap();
-    app.effect(&TallyEffect::Count { by: 1 }).unwrap();
-    assert_eq!(app.surface_mut::<NestedChild>().tally.counted, 10);
-    let child = NESTED_CHILD_CONTEXT.with(|saved| saved.borrow().clone().unwrap());
-    let parent = app.surface_mut::<NestedParent>();
-    parent.body = Column::new();
-    app.settle();
-    assert!(effect(&app.agent_surface(), "tally").is_none());
-    assert!(child.surface(NestedChild::default()).is_err());
-    let parent = app.surface_mut::<NestedParent>();
-    parent.body = Column::new().push(
-        parent
-            .cx
-            .as_ref()
-            .unwrap()
-            .surface(NestedChild::default())
-            .unwrap(),
-    );
-    app.settle();
-    app.effect(&TallyEffect::Count { by: 2 }).unwrap();
-    assert_eq!(app.surface_mut::<NestedChild>().tally.counted, 2);
-}
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn views_surfaces_and_windows_answer_the_effects_they_host;
 
-#[test]
-fn retiring_parent_cancels_and_unpublishes_even_a_retained_child_host() {
-    let mut app = TestApp::<NestedSurfaceApp>::new().unwrap();
-    let instance_id = app.harness().component_instance_id().unwrap();
-    let address = tilo_app::bound_dispatch::BoundActionAddress {
-        instance_id,
-        address: tilo_actions::ActionAddress::new("test.mailbox", "tally"),
-    };
-    let (_, started) = app
-        .harness()
-        .start_bound_job_for(None, &address, &serde_json::Map::new(), true)
-        .unwrap();
-    assert!(started.completed().is_none());
-    let reply = NESTED_REPLY.with(|saved| saved.borrow_mut().take().unwrap());
-    let child = NESTED_CHILD_CONTEXT.with(|saved| saved.borrow().clone().unwrap());
-    let parent = app.surface_mut::<NestedParent>();
-    let held = std::mem::replace(&mut parent.body, Column::new());
-    NESTED_VISIBLE.with(|saved| saved.borrow().as_ref().unwrap().set(false));
-    app.settle();
-    assert!(reply.is_cancelled());
-    assert!(child.surface(NestedChild::default()).is_err());
-    assert!(effect(&app.agent_surface(), "tally").is_none());
-    assert!(app.effect(&TallyEffect::Count { by: 1 }).is_err());
-    reply.finish(Ok(tilo_actions::ActionOutput::default()));
-    app.settle();
-    assert!(app.state().fetched.is_empty());
-    drop(held);
+    phase nested_surface_dispatch_and_publication_retire_only_the_removed_child;
+    {
+        let mut app = TestApp::<NestedSurfaceApp>::new().unwrap();
+        app.effect(&TallyEffect::Count { by: 4 }).unwrap();
+        assert_eq!(app.surface_mut::<NestedChild>().tally.counted, 4);
+        app.call_on("row:5", "count", serde_json::json!({}))
+            .unwrap();
+        app.effect(&TallyEffect::Count { by: 1 }).unwrap();
+        assert_eq!(app.surface_mut::<NestedChild>().tally.counted, 10);
+        let child = NESTED_CHILD_CONTEXT.with(|saved| saved.borrow().clone().unwrap());
+        let parent = app.surface_mut::<NestedParent>();
+        parent.body = Column::new();
+        app.settle();
+        assert!(effect(&app.agent_surface(), "tally").is_none());
+        assert!(child.surface(NestedChild::default()).is_err());
+        let parent = app.surface_mut::<NestedParent>();
+        parent.body = Column::new().push(
+            parent
+                .cx
+                .as_ref()
+                .unwrap()
+                .surface(NestedChild::default())
+                .unwrap(),
+        );
+        app.settle();
+        app.effect(&TallyEffect::Count { by: 2 }).unwrap();
+        assert_eq!(app.surface_mut::<NestedChild>().tally.counted, 2);
+    }
+
+    phase retiring_parent_cancels_and_unpublishes_even_a_retained_child_host;
+    {
+        let mut app = TestApp::<NestedSurfaceApp>::new().unwrap();
+        let instance_id = app.harness().component_instance_id().unwrap();
+        let address = tilo_app::bound_dispatch::BoundActionAddress {
+            instance_id,
+            address: tilo_actions::ActionAddress::new("test.mailbox", "tally"),
+        };
+        let (_, started) = app
+            .harness()
+            .start_bound_job_for(None, &address, &serde_json::Map::new(), true)
+            .unwrap();
+        assert!(started.completed().is_none());
+        let reply = NESTED_REPLY.with(|saved| saved.borrow_mut().take().unwrap());
+        let child = NESTED_CHILD_CONTEXT.with(|saved| saved.borrow().clone().unwrap());
+        let parent = app.surface_mut::<NestedParent>();
+        let held = std::mem::replace(&mut parent.body, Column::new());
+        NESTED_VISIBLE.with(|saved| saved.borrow().as_ref().unwrap().set(false));
+        app.settle();
+        assert!(reply.is_cancelled());
+        assert!(child.surface(NestedChild::default()).is_err());
+        assert!(effect(&app.agent_surface(), "tally").is_none());
+        assert!(app.effect(&TallyEffect::Count { by: 1 }).is_err());
+        reply.finish(Ok(tilo_actions::ActionOutput::default()));
+        app.settle();
+        assert!(app.state().fetched.is_empty());
+        drop(held);
+    }
+
+    phase a_view_answers_effects_on_its_window_and_refuses_them_while_it_is_closed;
+    {
+        let mut app = TestApp::<CounterApp>::new().unwrap();
+        app.effect(&CounterEffect::Count { by: 3 }).unwrap();
+        app.effect(&CounterEffect::Count { by: 4 }).unwrap();
+        assert_eq!(app.surface_mut::<Counter>().counted, 7);
+        assert_eq!(
+            app.effect(&CounterEffect::Counted).unwrap().value,
+            Some(serde_json::json!({"counted": 7, "document": true})),
+            "the handler reads the window and the document at once"
+        );
+
+        COUNTER_OPEN.with(|saved| saved.borrow().as_ref().unwrap().set(false));
+        app.settle();
+        assert!(
+            effect(&app.agent_surface(), "counted").is_some(),
+            "the view still publishes the vocabulary"
+        );
+        let refused = app.effect(&CounterEffect::Counted).unwrap_err();
+        assert!(format!("{refused:?}").contains("not open"), "{refused:?}");
+    }
+
+    phase a_window_that_hosts_its_work_gets_the_completions_of_its_effects_and_jobs;
+    {
+        let mut app = TestApp::<HostedCounterApp>::new().unwrap();
+        tilo_test_env::wait_until("the window's job to finish on it", || {
+            app.settle();
+            app.surface_mut::<Counter>().counted == 10
+        });
+        assert_eq!(
+            app.effect(&HostedCounterEffect::CountLater { by: 5 })
+                .unwrap()
+                .value,
+            Some(serde_json::json!(15)),
+            "the effect's completion counts on the window"
+        );
+        assert_eq!(app.surface_mut::<Counter>().counted, 15);
+    }
+
+    phase a_window_at_rest_syncs_again_when_its_jobs_result_lands;
+    {
+        use tilo_app::tilo_resource::profiling::observe;
+        let (open, gate) = std::sync::mpsc::channel();
+        *GATE.lock().unwrap() = Some(gate);
+        GATED_COUNT.set(0);
+        let mut app = TestApp::<GatedCounterApp>::new().unwrap();
+        // While the job works nothing reaches the window: the frames its host
+        // runs for something else (its own document, as another window's key
+        // would) do not sync it.
+        app.idle();
+        let ((), waiting) = observe(|| {
+            for _ in 0..3 {
+                let _ = app.harness().state_mut();
+                app.idle();
+            }
+        });
+        assert_eq!(
+            window_syncs(&waiting),
+            0,
+            "the window rests while its job works"
+        );
+        assert_eq!(GATED_COUNT.get(), 0);
+        // The job finishes on its thread and wakes the window: the next frame
+        // syncs it, and the result is taken up there.
+        open.send(()).unwrap();
+        let mut landed = 0;
+        tilo_test_env::wait_until("the job's result to land on the window", || {
+            let ((), frame) = observe(|| {
+                app.idle();
+            });
+            landed += window_syncs(&frame);
+            GATED_COUNT.get() == 7
+        });
+        assert!(landed > 0, "the landing synced the window");
+    }
+
+    phase a_window_mounts_a_child_view_while_it_runs_and_its_effects_go_with_it;
+    {
+        let mut app = TestApp::<MountingApp>::new().unwrap();
+        assert!(effect(&app.agent_surface(), "count").is_none());
+        app.effect(&MountingEffect::OpenChild).unwrap();
+        app.settle();
+        assert!(
+            effect(&app.agent_surface(), "count").is_some(),
+            "the child publishes its effects"
+        );
+        app.effect(&CounterEffect::Count { by: 2 }).unwrap();
+        assert_eq!(app.surface_mut::<Counter>().counted, 2);
+
+        app.effect(&MountingEffect::CloseChild).unwrap();
+        app.settle();
+        assert!(
+            effect(&app.agent_surface(), "count").is_none(),
+            "a child let go publishes nothing"
+        );
+        assert!(app.effect(&CounterEffect::Count { by: 1 }).is_err());
+    }
+
+    phase captures_publish_surface_effects_and_availability_without_running_handlers;
+    {
+        TALLY_EFFECT_CALLS.with(|calls| calls.set(0));
+        let mut live = TestApp::<TallyApp>::new().unwrap();
+        let mut capture = TestApp::<TallyApp>::capture(None).unwrap();
+        let live_surface = live.agent_surface();
+        let capture_surface = capture.agent_surface();
+        for id in ["count", "tally"] {
+            assert_eq!(effect(&capture_surface, id), effect(&live_surface, id));
+            assert!(
+                effect(&capture_surface, id).is_some(),
+                "capture must publish {id}"
+            );
+        }
+        assert_eq!(
+            effect(&capture_surface, "tally").unwrap()["label"],
+            "Tally (0)"
+        );
+        assert!(capture.effect(&TallyEffect::Tally).is_err());
+        assert!(
+            capture
+                .effect_on("row:5", &TallyEffect::Count { by: 5 })
+                .is_err()
+        );
+        capture.settle();
+        assert_eq!(
+            capture.surface::<Tally, _>(|surface| surface.counted),
+            Some(0)
+        );
+        assert_eq!(capture.state(), Mailbox::default());
+        assert!(capture.effect_progress().is_empty());
+        assert_eq!(TALLY_EFFECT_CALLS.with(std::cell::Cell::get), 0);
+        assert_eq!(
+            live.effect(&TallyEffect::Tally).unwrap().value,
+            Some(serde_json::json!(1))
+        );
+        let head = live.versions().last().unwrap().hash;
+        let past = live.past_version(&[head]).unwrap();
+        assert_eq!(past.state().fetched, "tally 1");
+        assert_eq!(
+            TALLY_EFFECT_CALLS.with(std::cell::Cell::get),
+            1,
+            "History must not replay outside effects"
+        );
+        assert_eq!(live.surface::<Tally, _>(|surface| surface.counted), Some(1));
+    }
+
+    phase a_surface_answers_its_effects_and_completes_them_with_its_own_state;
+    {
+        let mut app = TestApp::<TallyApp>::new().unwrap();
+        assert_eq!(
+            app.effect(&TallyEffect::Tally).unwrap().value,
+            Some(serde_json::json!(1))
+        );
+        assert_eq!(
+            app.effect(&TallyEffect::Tally).unwrap().value,
+            Some(serde_json::json!(2))
+        );
+        app.settle();
+        assert_eq!(app.state().fetched, "tally 2");
+        let surface = app.agent_surface();
+        assert_eq!(effect(&surface, "tally").unwrap()["label"], "Tally (2)");
+
+        // A live row offers the effect bound to its own arguments.
+        app.call_on("row:5", "count", serde_json::json!({}))
+            .unwrap();
+        assert_eq!(
+            app.effect(&TallyEffect::Tally).unwrap().value,
+            Some(serde_json::json!(8))
+        );
+
+        // A past version shows the surface without running or publishing it.
+        let first = app.versions().first().unwrap().hash;
+        assert!(app.past_version(&[first]).is_ok());
+    }
 }
 
 /// A window that keeps what it counted in its own state, not in a store
@@ -1129,28 +1343,6 @@ impl ResourceApp for CounterApp {
     }
 }
 
-#[test]
-fn a_view_answers_effects_on_its_window_and_refuses_them_while_it_is_closed() {
-    let mut app = TestApp::<CounterApp>::new().unwrap();
-    app.effect(&CounterEffect::Count { by: 3 }).unwrap();
-    app.effect(&CounterEffect::Count { by: 4 }).unwrap();
-    assert_eq!(app.surface_mut::<Counter>().counted, 7);
-    assert_eq!(
-        app.effect(&CounterEffect::Counted).unwrap().value,
-        Some(serde_json::json!({"counted": 7, "document": true})),
-        "the handler reads the window and the document at once"
-    );
-
-    COUNTER_OPEN.with(|saved| saved.borrow().as_ref().unwrap().set(false));
-    app.settle();
-    assert!(
-        effect(&app.agent_surface(), "counted").is_some(),
-        "the view still publishes the vocabulary"
-    );
-    let refused = app.effect(&CounterEffect::Counted).unwrap_err();
-    assert!(format!("{refused:?}").contains("not open"), "{refused:?}");
-}
-
 /// Effects a view answers on its [`Counter`] window, which hosts their
 /// work: what finishes later counts on the window itself.
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -1199,23 +1391,6 @@ impl ResourceApp for HostedCounterApp {
     }
 }
 
-#[test]
-fn a_window_that_hosts_its_work_gets_the_completions_of_its_effects_and_jobs() {
-    let mut app = TestApp::<HostedCounterApp>::new().unwrap();
-    tilo_test_env::wait_until("the window's job to finish on it", || {
-        app.settle();
-        app.surface_mut::<Counter>().counted == 10
-    });
-    assert_eq!(
-        app.effect(&HostedCounterEffect::CountLater { by: 5 })
-            .unwrap()
-            .value,
-        Some(serde_json::json!(15)),
-        "the effect's completion counts on the window"
-    );
-    assert_eq!(app.surface_mut::<Counter>().counted, 15);
-}
-
 /// What the [`GatedCounterApp`]'s job waits for before it counts: the test
 /// opens it once the window has rested.
 static GATE: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>> = std::sync::Mutex::new(None);
@@ -1261,43 +1436,6 @@ fn window_syncs(phases: &[tilo_app::tilo_resource::profiling::Sample]) -> usize 
         .filter(|phase| phase.phase == "ui.component.sync")
         .map(|phase| phase.calls)
         .sum()
-}
-
-#[test]
-fn a_window_at_rest_syncs_again_when_its_jobs_result_lands() {
-    use tilo_app::tilo_resource::profiling::observe;
-    let (open, gate) = std::sync::mpsc::channel();
-    *GATE.lock().unwrap() = Some(gate);
-    GATED_COUNT.set(0);
-    let mut app = TestApp::<GatedCounterApp>::new().unwrap();
-    // While the job works nothing reaches the window: the frames its host
-    // runs for something else (its own document, as another window's key
-    // would) do not sync it.
-    app.idle();
-    let ((), waiting) = observe(|| {
-        for _ in 0..3 {
-            let _ = app.harness().state_mut();
-            app.idle();
-        }
-    });
-    assert_eq!(
-        window_syncs(&waiting),
-        0,
-        "the window rests while its job works"
-    );
-    assert_eq!(GATED_COUNT.get(), 0);
-    // The job finishes on its thread and wakes the window: the next frame
-    // syncs it, and the result is taken up there.
-    open.send(()).unwrap();
-    let mut landed = 0;
-    tilo_test_env::wait_until("the job's result to land on the window", || {
-        let ((), frame) = observe(|| {
-            app.idle();
-        });
-        landed += window_syncs(&frame);
-        GATED_COUNT.get() == 7
-    });
-    assert!(landed > 0, "the landing synced the window");
 }
 
 /// A window that mounts a child window while it runs, as some work it
@@ -1408,28 +1546,6 @@ impl ResourceApp for MountingApp {
     }
 }
 
-#[test]
-fn a_window_mounts_a_child_view_while_it_runs_and_its_effects_go_with_it() {
-    let mut app = TestApp::<MountingApp>::new().unwrap();
-    assert!(effect(&app.agent_surface(), "count").is_none());
-    app.effect(&MountingEffect::OpenChild).unwrap();
-    app.settle();
-    assert!(
-        effect(&app.agent_surface(), "count").is_some(),
-        "the child publishes its effects"
-    );
-    app.effect(&CounterEffect::Count { by: 2 }).unwrap();
-    assert_eq!(app.surface_mut::<Counter>().counted, 2);
-
-    app.effect(&MountingEffect::CloseChild).unwrap();
-    app.settle();
-    assert!(
-        effect(&app.agent_surface(), "count").is_none(),
-        "a child let go publishes nothing"
-    );
-    assert!(app.effect(&CounterEffect::Count { by: 1 }).is_err());
-}
-
 impl ResourceApp for TallyApp {
     type Resource = Mailbox;
     const ID: &'static str = "so.tilo.test-tally";
@@ -1438,82 +1554,6 @@ impl ResourceApp for TallyApp {
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
         cx.surface(Tally::default())
     }
-}
-
-#[test]
-fn captures_publish_surface_effects_and_availability_without_running_handlers() {
-    TALLY_EFFECT_CALLS.with(|calls| calls.set(0));
-    let mut live = TestApp::<TallyApp>::new().unwrap();
-    let mut capture = TestApp::<TallyApp>::capture(None).unwrap();
-    let live_surface = live.agent_surface();
-    let capture_surface = capture.agent_surface();
-    for id in ["count", "tally"] {
-        assert_eq!(effect(&capture_surface, id), effect(&live_surface, id));
-        assert!(
-            effect(&capture_surface, id).is_some(),
-            "capture must publish {id}"
-        );
-    }
-    assert_eq!(
-        effect(&capture_surface, "tally").unwrap()["label"],
-        "Tally (0)"
-    );
-    assert!(capture.effect(&TallyEffect::Tally).is_err());
-    assert!(
-        capture
-            .effect_on("row:5", &TallyEffect::Count { by: 5 })
-            .is_err()
-    );
-    capture.settle();
-    assert_eq!(
-        capture.surface::<Tally, _>(|surface| surface.counted),
-        Some(0)
-    );
-    assert_eq!(capture.state(), Mailbox::default());
-    assert!(capture.effect_progress().is_empty());
-    assert_eq!(TALLY_EFFECT_CALLS.with(std::cell::Cell::get), 0);
-    assert_eq!(
-        live.effect(&TallyEffect::Tally).unwrap().value,
-        Some(serde_json::json!(1))
-    );
-    let head = live.versions().last().unwrap().hash;
-    let past = live.past_version(&[head]).unwrap();
-    assert_eq!(past.state().fetched, "tally 1");
-    assert_eq!(
-        TALLY_EFFECT_CALLS.with(std::cell::Cell::get),
-        1,
-        "History must not replay outside effects"
-    );
-    assert_eq!(live.surface::<Tally, _>(|surface| surface.counted), Some(1));
-}
-
-#[test]
-fn a_surface_answers_its_effects_and_completes_them_with_its_own_state() {
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    assert_eq!(
-        app.effect(&TallyEffect::Tally).unwrap().value,
-        Some(serde_json::json!(1))
-    );
-    assert_eq!(
-        app.effect(&TallyEffect::Tally).unwrap().value,
-        Some(serde_json::json!(2))
-    );
-    app.settle();
-    assert_eq!(app.state().fetched, "tally 2");
-    let surface = app.agent_surface();
-    assert_eq!(effect(&surface, "tally").unwrap()["label"], "Tally (2)");
-
-    // A live row offers the effect bound to its own arguments.
-    app.call_on("row:5", "count", serde_json::json!({}))
-        .unwrap();
-    assert_eq!(
-        app.effect(&TallyEffect::Tally).unwrap().value,
-        Some(serde_json::json!(8))
-    );
-
-    // A past version shows the surface without running or publishing it.
-    let first = app.versions().first().unwrap().hash;
-    assert!(app.past_version(&[first]).is_ok());
 }
 
 thread_local! {
@@ -1547,30 +1587,6 @@ impl ResourceApp for MirrorApp {
         MIRROR.with(|mirror| *mirror.borrow_mut() = Some(projection));
         Box::new(Column::new())
     }
-}
-
-#[test]
-fn an_outbox_looks_again_when_the_outside_it_could_not_reach_changed() {
-    MIRRORED.with(|mirrored| mirrored.borrow_mut().clear());
-    MIRROR_DOWN.with(|down| down.set(true));
-    let mirrored = || MIRRORED.with(|mirrored| mirrored.borrow().clone());
-    let mut app = TestApp::<MirrorApp>::new().unwrap();
-    app.invoke(Mailbox::SEND.with("hello")).unwrap();
-    app.settle();
-    assert!(mirrored().is_empty());
-
-    // The service is back; the document did not move.
-    MIRROR_DOWN.with(|down| down.set(false));
-    app.settle();
-    assert!(
-        mirrored().is_empty(),
-        "nothing tells the drain to look again"
-    );
-
-    MIRROR.with(|mirror| mirror.borrow().as_ref().unwrap().outside_changed());
-    app.settle();
-    assert_eq!(mirrored(), ["hello"]);
-    assert_eq!(app.state().outbox.pending().count(), 0);
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -1638,44 +1654,201 @@ impl ResourceApp for FilesApp {
     }
 }
 
-#[test]
-fn an_effect_imports_and_exports_through_the_hosts_file_chooser() {
-    let directory = tempfile::tempdir().unwrap();
-    let incoming = directory.path().join("incoming.txt");
-    std::fs::write(&incoming, "from a file").unwrap();
-    let (services, recorder) = tilo_app::host::HostServices::recording();
-    let _host = tilo_app::host::enter(&services);
-    let mut app = TestApp::<FilesApp>::new().unwrap();
+tilo_test_env::scenario! {
+    fn how_an_effect_is_declared_decides_how_it_is_published_and_run;
 
-    recorder.respond_to_pick(PortalOutcome::Opened(incoming.clone()));
-    app.effect(&FileEffect::Import).unwrap();
-    app.settle();
-    assert_eq!(app.state().fetched, "from a file");
-    assert_eq!(
-        CHOSEN.with(|chosen| chosen.borrow_mut().take()),
-        Some(RecordId::identify_file(&incoming)),
-        "the chosen file is known by its durable identity"
-    );
-    assert_eq!(recorder.pick_requests()[0].title(), "Import a message");
+    phase an_effect_imports_and_exports_through_the_hosts_file_chooser;
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let incoming = directory.path().join("incoming.txt");
+        std::fs::write(&incoming, "from a file").unwrap();
+        let (services, recorder) = tilo_app::host::HostServices::recording();
+        let _host = tilo_app::host::enter(&services);
+        let mut app = TestApp::<FilesApp>::new().unwrap();
 
-    let outgoing = directory.path().join("outgoing.txt");
-    recorder.respond_to_pick(PortalOutcome::Opened(outgoing.clone()));
-    let saved = app.effect(&FileEffect::Export).unwrap();
-    assert_eq!(saved.value, Some(serde_json::json!(true)));
-    assert_eq!(std::fs::read_to_string(&outgoing).unwrap(), "from a file");
+        recorder.respond_to_pick(PortalOutcome::Opened(incoming.clone()));
+        app.effect(&FileEffect::Import).unwrap();
+        app.settle();
+        assert_eq!(app.state().fetched, "from a file");
+        assert_eq!(
+            CHOSEN.with(|chosen| chosen.borrow_mut().take()),
+            Some(RecordId::identify_file(&incoming)),
+            "the chosen file is known by its durable identity"
+        );
+        assert_eq!(recorder.pick_requests()[0].title(), "Import a message");
 
-    recorder.respond_to_pick(PortalOutcome::Cancelled);
-    let cancelled = app.effect(&FileEffect::Import).unwrap_err();
-    app.settle();
-    assert!(
-        cancelled.to_string().contains("no file was chosen"),
-        "{cancelled}"
-    );
-    assert_eq!(
-        app.state().fetched,
-        "from a file",
-        "a cancelled import changes nothing"
-    );
+        let outgoing = directory.path().join("outgoing.txt");
+        recorder.respond_to_pick(PortalOutcome::Opened(outgoing.clone()));
+        let saved = app.effect(&FileEffect::Export).unwrap();
+        assert_eq!(saved.value, Some(serde_json::json!(true)));
+        assert_eq!(std::fs::read_to_string(&outgoing).unwrap(), "from a file");
+
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        let cancelled = app.effect(&FileEffect::Import).unwrap_err();
+        app.settle();
+        assert!(
+            cancelled.to_string().contains("no file was chosen"),
+            "{cancelled}"
+        );
+        assert_eq!(
+            app.state().fetched,
+            "from a file",
+            "a cancelled import changes nothing"
+        );
+    }
+
+    phase a_view_and_a_surface_start_jobs_nobody_invoked_and_the_latest_wins;
+    {
+        let mut app = TestApp::<FetcherApp>::new().unwrap();
+        tilo_test_env::wait_until("the view's and the surface's jobs to land", || {
+            app.settle();
+            let state = app.state();
+            !state.fetched.is_empty() && !state.outbox.is_empty()
+        });
+        let state = app.state();
+        assert_eq!(
+            state.fetched, "fresh by the surface (1)",
+            "the stale fetch was stopped"
+        );
+        assert_eq!(
+            state
+                .outbox
+                .entries()
+                .map(|(_, entry)| entry.value.clone())
+                .collect::<Vec<_>>(),
+            ["queued by the view"]
+        );
+
+        // A capture starts no job: what it shows is its fixture.
+        let capture = TestApp::<FetcherApp>::capture(None).unwrap();
+        assert_eq!(capture.state().fetched, "");
+        assert!(capture.state().outbox.is_empty());
+    }
+
+    phase an_attended_effect_is_published_as_attended;
+    {
+        let attended = |id: &str| {
+            let decl = DeviceEffect::declarations()
+                .into_iter()
+                .find(|decl| decl.id == id)
+                .unwrap();
+            let spec = decl.spec::<DeviceEffect>("test.mailbox.device");
+            assert_eq!(decl.attended, spec.contract.is_attended(), "{id}");
+            assert_eq!(
+                spec.contract.kind,
+                tilo_app::tilo_actions::ActionKind::Outside
+            );
+            decl.attended
+        };
+        assert!(attended("choose-folder"));
+        assert!(
+            !attended("empty-local-folder"),
+            "an ordinary outside effect is decided by its kind alone"
+        );
+    }
+
+    phase a_launch_invokes_a_view_effect_even_for_a_viewer;
+    // A launch that shows something invokes a view effect through the same
+    // door as a control: a viewer, who may not edit, still gets the folder it
+    // opened, while an effect that needs write access is refused to them.
+    {
+        let shown = |app: &mut TestApp<FolderApp>| app.harness().inspection_json().unwrap();
+
+        let mut viewer = TestApp::<FolderApp>::with_role(tilo_app::Role::Viewer)
+            .unwrap()
+            .relaunch(&["sent"])
+            .unwrap();
+        viewer.settle();
+        let seen = shown(&mut viewer);
+        assert!(seen.contains("Showing sent"), "{seen}");
+        assert!(!seen.contains("Refused"), "{seen}");
+
+        let mut fetcher = TestApp::<FolderApp>::with_role(tilo_app::Role::Viewer)
+            .unwrap()
+            .relaunch(&["fetch"])
+            .unwrap();
+        fetcher.settle();
+        assert_eq!(
+            fetcher.state().fetched,
+            "",
+            "a viewer's launch fetches nothing"
+        );
+    }
+
+    phase confirmation_follows_the_arguments_and_a_view_withholds_an_action;
+    {
+        let mut app = TestApp::<DiskApp>::new().unwrap();
+        app.effect(&DiskEffect::Erase { disk: "usb".into() })
+            .expect("erasing a stick needs no confirmation");
+        let unconfirmed = app.effect(&DiskEffect::Erase {
+            disk: "system".into(),
+        });
+        assert!(unconfirmed.is_err(), "the system disk asks first");
+        app.effect_confirmed(&DiskEffect::Erase {
+            disk: "system".into(),
+        })
+        .expect("confirmed, it runs");
+        app.settle();
+        assert_eq!(app.state().fetched, "erased system");
+
+        let refused = app
+            .invoke(Mailbox::SEND.with("hello"))
+            .expect_err("sending is unavailable while recording");
+        assert!(format!("{refused:?}").contains("recording"), "{refused:?}");
+        assert!(app.state().outbox.is_empty());
+    }
+
+    phase background_effect_return_values_keep_their_declared_result_contract;
+    {
+        use tilo_resource::Effect as _;
+        let export = FileEffect::Export.bound().contract.clone();
+        assert!(matches!(
+            export.execution,
+            tilo_actions::ExecutionMode::Background { cancellable: false }
+        ));
+        assert!(export.validate_declaration().is_empty());
+        let output = tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({ "file": "exported.eml" })),
+            resources: Vec::new(),
+        };
+        export.result.validate(&output).unwrap();
+        let import = FileEffect::Import.bound().contract.clone();
+        assert!(import.validate_declaration().is_empty());
+        assert!(import.result.validate(&output).is_err());
+        import
+            .result
+            .validate(&tilo_actions::ActionOutput::default())
+            .unwrap();
+    }
+
+    phase only_verbs_that_queue_are_published_as_jobs;
+    // Only a verb that queues an outside consequence answers as a job; every
+    // other document action applies where it is invoked, at once, so a host
+    // that routes jobs elsewhere still applies it.
+    {
+        let mut app = TestApp::<CausalMailApp>::new().unwrap();
+        let resources = app.harness().resources();
+        let mailbox = resources
+            .iter()
+            .find(|resource| resource.kind == "test.mailbox")
+            .unwrap();
+        let execution = |id: &str| {
+            mailbox
+                .actions
+                .iter()
+                .find(|spec| spec.id == id)
+                .map(|spec| spec.contract.execution.clone())
+                .unwrap()
+        };
+        assert!(matches!(
+            execution("send"),
+            tilo_actions::ExecutionMode::Background { .. }
+        ));
+        assert_eq!(execution("fetched"), tilo_actions::ExecutionMode::Immediate);
+        app.call("fetched", serde_json::json!({"text": "now"}))
+            .unwrap();
+        assert_eq!(app.state().fetched, "now");
+    }
 }
 
 /// A surface that fetches on its own as soon as it is attached.
@@ -1751,34 +1924,6 @@ impl ResourceApp for FetcherApp {
     }
 }
 
-#[test]
-fn a_view_and_a_surface_start_jobs_nobody_invoked_and_the_latest_wins() {
-    let mut app = TestApp::<FetcherApp>::new().unwrap();
-    tilo_test_env::wait_until("the view's and the surface's jobs to land", || {
-        app.settle();
-        let state = app.state();
-        !state.fetched.is_empty() && !state.outbox.is_empty()
-    });
-    let state = app.state();
-    assert_eq!(
-        state.fetched, "fresh by the surface (1)",
-        "the stale fetch was stopped"
-    );
-    assert_eq!(
-        state
-            .outbox
-            .entries()
-            .map(|(_, entry)| entry.value.clone())
-            .collect::<Vec<_>>(),
-        ["queued by the view"]
-    );
-
-    // A capture starts no job: what it shows is its fixture.
-    let capture = TestApp::<FetcherApp>::capture(None).unwrap();
-    assert_eq!(capture.state().fetched, "");
-    assert!(capture.state().outbox.is_empty());
-}
-
 thread_local! {
     /// The jobs of the running [`ProgressApp`], for the test to read.
     static PROGRESS_JOBS: RefCell<Option<tilo_app::framework::Jobs<Mailbox>>> =
@@ -1849,28 +1994,6 @@ pub enum DeviceEffect {
     EmptyLocalFolder,
 }
 
-#[test]
-fn an_attended_effect_is_published_as_attended() {
-    let attended = |id: &str| {
-        let decl = DeviceEffect::declarations()
-            .into_iter()
-            .find(|decl| decl.id == id)
-            .unwrap();
-        let spec = decl.spec::<DeviceEffect>("test.mailbox.device");
-        assert_eq!(decl.attended, spec.contract.is_attended(), "{id}");
-        assert_eq!(
-            spec.contract.kind,
-            tilo_app::tilo_actions::ActionKind::Outside
-        );
-        decl.attended
-    };
-    assert!(attended("choose-folder"));
-    assert!(
-        !attended("empty-local-folder"),
-        "an ordinary outside effect is decided by its kind alone"
-    );
-}
-
 /// The mailbox, opened on a folder: `mailbox sent` shows the sent folder.
 struct FolderApp;
 
@@ -1893,34 +2016,6 @@ impl ResourceApp for FolderApp {
             _ => Vec::new(),
         }
     }
-}
-
-/// A launch that shows something invokes a view effect through the same
-/// door as a control: a viewer, who may not edit, still gets the folder it
-/// opened, while an effect that needs write access is refused to them.
-#[test]
-fn a_launch_invokes_a_view_effect_even_for_a_viewer() {
-    let shown = |app: &mut TestApp<FolderApp>| app.harness().inspection_json().unwrap();
-
-    let mut viewer = TestApp::<FolderApp>::with_role(tilo_app::Role::Viewer)
-        .unwrap()
-        .relaunch(&["sent"])
-        .unwrap();
-    viewer.settle();
-    let seen = shown(&mut viewer);
-    assert!(seen.contains("Showing sent"), "{seen}");
-    assert!(!seen.contains("Refused"), "{seen}");
-
-    let mut fetcher = TestApp::<FolderApp>::with_role(tilo_app::Role::Viewer)
-        .unwrap()
-        .relaunch(&["fetch"])
-        .unwrap();
-    fetcher.settle();
-    assert_eq!(
-        fetcher.state().fetched,
-        "",
-        "a viewer's launch fetches nothing"
-    );
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -1966,79 +2061,4 @@ impl ResourceApp for DiskApp {
             Box::new(Tally::default()),
         )
     }
-}
-
-#[test]
-fn confirmation_follows_the_arguments_and_a_view_withholds_an_action() {
-    let mut app = TestApp::<DiskApp>::new().unwrap();
-    app.effect(&DiskEffect::Erase { disk: "usb".into() })
-        .expect("erasing a stick needs no confirmation");
-    let unconfirmed = app.effect(&DiskEffect::Erase {
-        disk: "system".into(),
-    });
-    assert!(unconfirmed.is_err(), "the system disk asks first");
-    app.effect_confirmed(&DiskEffect::Erase {
-        disk: "system".into(),
-    })
-    .expect("confirmed, it runs");
-    app.settle();
-    assert_eq!(app.state().fetched, "erased system");
-
-    let refused = app
-        .invoke(Mailbox::SEND.with("hello"))
-        .expect_err("sending is unavailable while recording");
-    assert!(format!("{refused:?}").contains("recording"), "{refused:?}");
-    assert!(app.state().outbox.is_empty());
-}
-
-#[test]
-fn background_effect_return_values_keep_their_declared_result_contract() {
-    use tilo_resource::Effect as _;
-    let export = FileEffect::Export.bound().contract.clone();
-    assert!(matches!(
-        export.execution,
-        tilo_actions::ExecutionMode::Background { cancellable: false }
-    ));
-    assert!(export.validate_declaration().is_empty());
-    let output = tilo_actions::ActionOutput {
-        value: Some(serde_json::json!({ "file": "exported.eml" })),
-        resources: Vec::new(),
-    };
-    export.result.validate(&output).unwrap();
-    let import = FileEffect::Import.bound().contract.clone();
-    assert!(import.validate_declaration().is_empty());
-    assert!(import.result.validate(&output).is_err());
-    import
-        .result
-        .validate(&tilo_actions::ActionOutput::default())
-        .unwrap();
-}
-
-/// Only a verb that queues an outside consequence answers as a job; every
-/// other document action applies where it is invoked, at once, so a host
-/// that routes jobs elsewhere still applies it.
-#[test]
-fn only_verbs_that_queue_are_published_as_jobs() {
-    let mut app = TestApp::<CausalMailApp>::new().unwrap();
-    let resources = app.harness().resources();
-    let mailbox = resources
-        .iter()
-        .find(|resource| resource.kind == "test.mailbox")
-        .unwrap();
-    let execution = |id: &str| {
-        mailbox
-            .actions
-            .iter()
-            .find(|spec| spec.id == id)
-            .map(|spec| spec.contract.execution.clone())
-            .unwrap()
-    };
-    assert!(matches!(
-        execution("send"),
-        tilo_actions::ExecutionMode::Background { .. }
-    ));
-    assert_eq!(execution("fetched"), tilo_actions::ExecutionMode::Immediate);
-    app.call("fetched", serde_json::json!({"text": "now"}))
-        .unwrap();
-    assert_eq!(app.state().fetched, "now");
 }

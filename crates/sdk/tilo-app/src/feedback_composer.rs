@@ -828,201 +828,347 @@ mod tests {
             .map(|_| ())
     }
 
-    #[test]
-    fn private_storage_wake_sends_only_after_host_acknowledges_approval() {
-        let transport = Rc::new(RefCell::new(Transport::default()));
-        let storage = Rc::new(MemoryStore::queued());
-        let controller = Composer::new(
-            Destination {
-                room: "private-fixture".into(),
-                provider: "record:chat:feedback".into(),
-                channel: "feedback".into(),
-            },
-            Outbox::open(storage.clone(), StorageKey::app("feedback-outbox"))
-                .expect("private outbox"),
-            Box::new(Host(transport.clone())),
-        )
-        .expect("admitted destination");
-        let services = FeedbackServices::new(Rc::new(RefCell::new(controller)));
-        let component =
-            prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
-        let mut frame = FrameHarness::from_component(
-            component,
-            (720, 720),
-            ComponentRunnerInputs::from_native_process(),
-        )
-        .expect("production component");
-        call(
-            &mut frame,
-            tilo_resource::FIELD_EDIT,
-            &edit(
-                &FeedbackDraft::paths()
-                    .issue
-                    .replace("Opening the book failed"),
-            ),
-        )
-        .expect("describe");
-        call(&mut frame, "review", &json!({})).expect("review");
-        call(&mut frame, "submit", &json!({})).expect("queue approval");
-        frame.relayout();
-        assert!(
-            frame
-                .inspection_json()
-                .expect("inspection")
-                .contains("Saving on this device")
-        );
-        assert!(services.next_wake_deadline().is_some());
-        services.pump().expect("storage still pending");
-        assert!(transport.borrow().submissions.is_empty());
-        let pending = storage.drain();
-        assert_eq!(pending.len(), 1);
-        storage
-            .acknowledge(pending[0].revision, Ok(()))
-            .expect("host commit");
-        services.pump().expect("durable approval sends");
-        frame.relayout();
-        assert_eq!(transport.borrow().submissions.len(), 1);
-        // Waiting for the receipt, the composer looks again on its own.
-        let again = services.next_wake_deadline().expect("receipt wake");
-        let now = crate::time::now();
-        assert!(again >= now.checked_add(RECEIPT_CHECK_FIRST / 2).unwrap());
-        assert!(again <= now.checked_add(RECEIPT_CHECK_LAST).unwrap());
-        assert!(
-            frame
-                .inspection_json()
-                .expect("inspection")
-                .contains("Waiting for destination confirmation")
-        );
-        assert!(
-            !frame
-                .inspection_json()
-                .expect("inspection")
-                .contains("Feedback received")
-        );
-        // The receipt arrives later; the wake reads it with no click.
-        let submission = transport.borrow().submissions[0].clone();
-        transport.borrow_mut().receipt = Some(Receipt {
-            id: submission.id.clone(),
-            digest: submission.digest().expect("digest"),
-            destination: submission.destination,
-            report: "chat.message:m_feedback_later".into(),
-        });
-        services.pump().expect("receipt wake");
-        for write in storage.drain() {
-            storage
-                .acknowledge(write.revision, Ok(()))
-                .expect("host commit");
-        }
-        services.pump().expect("receipt kept");
-        frame.relayout();
-        assert!(
-            frame
-                .inspection_json()
-                .expect("inspection")
-                .contains("Feedback received")
-        );
-        assert!(services.next_wake_deadline().is_none());
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+        )]
+        fn the_feedback_composer_sends_only_what_its_person_reviewed;
 
-    #[test]
-    fn semantic_composer_reviews_queues_and_waits_for_destination_receipt() {
-        let transport = Rc::new(RefCell::new(Transport::default()));
-        let controller = Rc::new(RefCell::new(
-            Composer::new(
+        phase private_storage_wake_sends_only_after_host_acknowledges_approval;
+        {
+            let transport = Rc::new(RefCell::new(Transport::default()));
+            let storage = Rc::new(MemoryStore::queued());
+            let controller = Composer::new(
                 Destination {
-                    room: "demo".into(),
+                    room: "private-fixture".into(),
                     provider: "record:chat:feedback".into(),
                     channel: "feedback".into(),
                 },
-                Outbox::open(
-                    Rc::new(MemoryStore::new()),
-                    StorageKey::app("feedback-outbox"),
-                )
-                .expect("private outbox"),
+                Outbox::open(storage.clone(), StorageKey::app("feedback-outbox"))
+                    .expect("private outbox"),
                 Box::new(Host(transport.clone())),
             )
-            .expect("admitted destination"),
-        ));
-        let services = FeedbackServices::new(controller.clone());
-        let component =
-            prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
-        assert!(
-            prepare(Some(services.clone()), "device", "guest", 43).is_err(),
-            "one approved outbox must not have competing private editors"
-        );
-        let mut frame = FrameHarness::from_component(
-            component,
-            (720, 720),
-            ComponentRunnerInputs::from_native_process(),
-        )
-        .expect("production component");
-        assert!(transport.borrow().submissions.is_empty());
-        describe(&mut frame, "Opening the book failed; token=secret12345")
-            .expect("describe through public action");
-        frame.relayout();
-        assert!(
-            frame.capture_protected(),
-            "the actual private composer paint must protect its enclosing frame"
-        );
-        assert!(
-            call(&mut frame, "submit", &json!({})).is_err(),
-            "sending before review must fail"
-        );
-        call(&mut frame, "review", &json!({})).expect("review");
-        call(&mut frame, "submit", &json!({})).expect("approve exact preview");
-        let submission = transport
-            .borrow()
-            .submissions
-            .first()
-            .expect("existing transport request")
-            .clone();
-        assert!(!submission.feedback.text.contains("secret12345"));
-        assert!(submission.feedback.context.is_empty());
-        assert!(submission.feedback.screenshot.is_none());
-        assert_eq!(
-            controller.borrow().state().expect("state"),
-            Some(DeliveryState::AwaitingReceipt)
-        );
-        call(&mut frame, "retry", &json!({})).expect("stable retry");
-        assert!(
-            transport
+            .expect("admitted destination");
+            let services = FeedbackServices::new(Rc::new(RefCell::new(controller)));
+            let component =
+                prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
+            let mut frame = FrameHarness::from_component(
+                component,
+                (720, 720),
+                ComponentRunnerInputs::from_native_process(),
+            )
+            .expect("production component");
+            call(
+                &mut frame,
+                tilo_resource::FIELD_EDIT,
+                &edit(
+                    &FeedbackDraft::paths()
+                        .issue
+                        .replace("Opening the book failed"),
+                ),
+            )
+            .expect("describe");
+            call(&mut frame, "review", &json!({})).expect("review");
+            call(&mut frame, "submit", &json!({})).expect("queue approval");
+            frame.relayout();
+            assert!(
+                frame
+                    .inspection_json()
+                    .expect("inspection")
+                    .contains("Saving on this device")
+            );
+            assert!(services.next_wake_deadline().is_some());
+            services.pump().expect("storage still pending");
+            assert!(transport.borrow().submissions.is_empty());
+            let pending = storage.drain();
+            assert_eq!(pending.len(), 1);
+            storage
+                .acknowledge(pending[0].revision, Ok(()))
+                .expect("host commit");
+            services.pump().expect("durable approval sends");
+            frame.relayout();
+            assert_eq!(transport.borrow().submissions.len(), 1);
+            // Waiting for the receipt, the composer looks again on its own.
+            let again = services.next_wake_deadline().expect("receipt wake");
+            let now = crate::time::now();
+            assert!(again >= now.checked_add(RECEIPT_CHECK_FIRST / 2).unwrap());
+            assert!(again <= now.checked_add(RECEIPT_CHECK_LAST).unwrap());
+            assert!(
+                frame
+                    .inspection_json()
+                    .expect("inspection")
+                    .contains("Waiting for destination confirmation")
+            );
+            assert!(
+                !frame
+                    .inspection_json()
+                    .expect("inspection")
+                    .contains("Feedback received")
+            );
+            // The receipt arrives later; the wake reads it with no click.
+            let submission = transport.borrow().submissions[0].clone();
+            transport.borrow_mut().receipt = Some(Receipt {
+                id: submission.id.clone(),
+                digest: submission.digest().expect("digest"),
+                destination: submission.destination,
+                report: "chat.message:m_feedback_later".into(),
+            });
+            services.pump().expect("receipt wake");
+            for write in storage.drain() {
+                storage
+                    .acknowledge(write.revision, Ok(()))
+                    .expect("host commit");
+            }
+            services.pump().expect("receipt kept");
+            frame.relayout();
+            assert!(
+                frame
+                    .inspection_json()
+                    .expect("inspection")
+                    .contains("Feedback received")
+            );
+            assert!(services.next_wake_deadline().is_none());
+        }
+
+        phase semantic_composer_reviews_queues_and_waits_for_destination_receipt;
+        {
+            let transport = Rc::new(RefCell::new(Transport::default()));
+            let controller = Rc::new(RefCell::new(
+                Composer::new(
+                    Destination {
+                        room: "demo".into(),
+                        provider: "record:chat:feedback".into(),
+                        channel: "feedback".into(),
+                    },
+                    Outbox::open(
+                        Rc::new(MemoryStore::new()),
+                        StorageKey::app("feedback-outbox"),
+                    )
+                    .expect("private outbox"),
+                    Box::new(Host(transport.clone())),
+                )
+                .expect("admitted destination"),
+            ));
+            let services = FeedbackServices::new(controller.clone());
+            let component =
+                prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
+            assert!(
+                prepare(Some(services.clone()), "device", "guest", 43).is_err(),
+                "one approved outbox must not have competing private editors"
+            );
+            let mut frame = FrameHarness::from_component(
+                component,
+                (720, 720),
+                ComponentRunnerInputs::from_native_process(),
+            )
+            .expect("production component");
+            assert!(transport.borrow().submissions.is_empty());
+            describe(&mut frame, "Opening the book failed; token=secret12345")
+                .expect("describe through public action");
+            frame.relayout();
+            assert!(
+                frame.capture_protected(),
+                "the actual private composer paint must protect its enclosing frame"
+            );
+            assert!(
+                call(&mut frame, "submit", &json!({})).is_err(),
+                "sending before review must fail"
+            );
+            call(&mut frame, "review", &json!({})).expect("review");
+            call(&mut frame, "submit", &json!({})).expect("approve exact preview");
+            let submission = transport
                 .borrow()
                 .submissions
-                .iter()
-                .all(|retry| retry == &submission)
-        );
-        transport.borrow_mut().receipt = Some(Receipt {
-            id: submission.id.clone(),
-            digest: submission.digest().expect("digest"),
-            destination: submission.destination,
-            report: "chat.message:m_feedback_test".into(),
-        });
-        services.pump().expect("host receipt wake");
-        frame.relayout();
-        assert!(
-            serde_json::to_string(&frame.inspection())
-                .expect("real component inspection")
-                .contains("Feedback received"),
-            "the private UI must show receipt progress without another click"
-        );
-        assert_eq!(
-            controller.borrow().state().expect("state"),
-            Some(DeliveryState::Sent {
-                report: "chat.message:m_feedback_test".into()
-            })
-        );
-        services
-            .about(Some(Subject::of_app("so.tilo.books", "Books")))
-            .expect("the desktop names the window feedback is about");
-        assert_literal_second_review(&mut frame, &transport);
-        frame.close_components();
-        assert!(
-            controller.borrow().preview().is_none(),
-            "closing discards the unapproved review"
-        );
-        let reopened = prepare(Some(services), "device", "guest", 42)
-            .expect("closed editor releases its private lease");
-        drop(reopened);
+                .first()
+                .expect("existing transport request")
+                .clone();
+            assert!(!submission.feedback.text.contains("secret12345"));
+            assert!(submission.feedback.context.is_empty());
+            assert!(submission.feedback.screenshot.is_none());
+            assert_eq!(
+                controller.borrow().state().expect("state"),
+                Some(DeliveryState::AwaitingReceipt)
+            );
+            call(&mut frame, "retry", &json!({})).expect("stable retry");
+            assert!(
+                transport
+                    .borrow()
+                    .submissions
+                    .iter()
+                    .all(|retry| retry == &submission)
+            );
+            transport.borrow_mut().receipt = Some(Receipt {
+                id: submission.id.clone(),
+                digest: submission.digest().expect("digest"),
+                destination: submission.destination,
+                report: "chat.message:m_feedback_test".into(),
+            });
+            services.pump().expect("host receipt wake");
+            frame.relayout();
+            assert!(
+                serde_json::to_string(&frame.inspection())
+                    .expect("real component inspection")
+                    .contains("Feedback received"),
+                "the private UI must show receipt progress without another click"
+            );
+            assert_eq!(
+                controller.borrow().state().expect("state"),
+                Some(DeliveryState::Sent {
+                    report: "chat.message:m_feedback_test".into()
+                })
+            );
+            services
+                .about(Some(Subject::of_app("so.tilo.books", "Books")))
+                .expect("the desktop names the window feedback is about");
+            assert_literal_second_review(&mut frame, &transport);
+            frame.close_components();
+            assert!(
+                controller.borrow().preview().is_none(),
+                "closing discards the unapproved review"
+            );
+            let reopened = prepare(Some(services), "device", "guest", 42)
+                .expect("closed editor releases its private lease");
+            drop(reopened);
+        }
+
+        phase a_recording_is_offered_for_a_window_with_a_record_and_sent_only_when_included;
+        {
+            let transport = Rc::new(RefCell::new(Transport::default()));
+            let kept = Rc::new(RefCell::new(Vec::new()));
+            let recorded = three_changes();
+            let controller = Rc::new(RefCell::new(
+                Composer::new(
+                    Destination {
+                        room: "demo".into(),
+                        provider: "record:chat:feedback".into(),
+                        channel: "feedback".into(),
+                    },
+                    Outbox::open(
+                        Rc::new(MemoryStore::new()),
+                        StorageKey::app("feedback-outbox"),
+                    )
+                    .expect("private outbox"),
+                    Box::new(Recording {
+                        sent: Host(transport.clone()),
+                        recorded: recorded.clone(),
+                        kept: kept.clone(),
+                    }),
+                )
+                .expect("admitted destination"),
+            ));
+            let services = FeedbackServices::new(controller);
+            let component =
+                prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
+            let mut frame = FrameHarness::from_component(
+                component,
+                (720, 900),
+                ComponentRunnerInputs::from_native_process(),
+            )
+            .expect("production component");
+            services
+                .about(Some(Subject::of_app("so.tilo.notes", "Notes")))
+                .expect("a window that shows no record");
+            frame.relayout();
+            assert!(!shows_id(
+                &frame.inspection().root,
+                "feedback-recording-scope"
+            ));
+            services
+                .about(Some(Subject {
+                    record: Some(crate::feedback::ShownRecord {
+                        workspace: "demo".into(),
+                        record: "note-1".into(),
+                    }),
+                    ..Subject::of_app("so.tilo.notes", "Notes")
+                }))
+                .expect("a window that shows a note");
+            frame.relayout();
+            assert!(
+                shows_id(&frame.inspection().root, "feedback-recording-scope"),
+                "the offer says what a recording holds before it is chosen"
+            );
+            describe(&mut frame, "Undo lost a word").expect("describe");
+            call(&mut frame, "review", &json!({})).expect("review");
+            frame.relayout();
+            assert!(!shows_id(
+                &frame.inspection().root,
+                "feedback-recording-included"
+            ));
+            call(
+                &mut frame,
+                tilo_resource::FIELD_EDIT,
+                &edit(&FeedbackDraft::paths().include_recording.set(true)),
+            )
+            .expect("include the recording");
+            call(&mut frame, "review", &json!({})).expect("review with the recording");
+            frame.relayout();
+            assert!(
+                shows_id(&frame.inspection().root, "feedback-recording-included"),
+                "the review shows the recording that would be sent"
+            );
+            call(&mut frame, "submit", &json!({})).expect("send");
+            let sent = transport
+                .borrow()
+                .submissions
+                .last()
+                .cloned()
+                .expect("sent");
+            assert_eq!(sent.feedback.recording.as_ref(), Some(recorded.reference()));
+            assert_eq!(*kept.borrow(), vec![recorded.reference().hash.clone()]);
+        }
+
+        phase a_picked_report_shows_exactly_what_is_sent_and_toggles_hidden_spans;
+        {
+            let transport = Rc::new(RefCell::new(Transport::default()));
+            let services = picked_services(&transport);
+            let component = prepare(Some(services), "device", "guest", 42).expect("private composer");
+            let mut frame = FrameHarness::from_component(
+                component,
+                (720, 900),
+                ComponentRunnerInputs::from_native_process(),
+            )
+            .expect("production component");
+            frame.relayout();
+            let sheet = frame.inspection_json().expect("inspection");
+            assert!(sheet.contains("Report a problem"), "the report sheet shows");
+            assert!(sheet.contains("1. A message in Chat"), "{sheet}");
+            describe(&mut frame, "The row is cut off").expect("summary");
+            call(&mut frame, "review", &json!({})).expect("review");
+            frame.relayout();
+            let preview = frame.inspection();
+            let shown = find(&preview.root)
+                .and_then(|node| node.semantics.as_ref())
+                .and_then(|node| node.name.clone())
+                .expect("the outgoing report is shown");
+            assert!(shown.contains("The row is cut off"), "{shown}");
+            assert!(shown.contains("Reply"), "{shown}");
+            assert!(!shown.contains("Ada"), "content is hidden: {shown}");
+            call(&mut frame, "toggle", &json!({"index": 0})).expect("show the message");
+            frame.relayout();
+            let preview = frame.inspection();
+            let shown = find(&preview.root)
+                .and_then(|node| node.semantics.as_ref())
+                .and_then(|node| node.name.clone())
+                .expect("the outgoing report is shown");
+            assert!(shown.contains("Thanks \u{2039}name\u{203A}"), "{shown}");
+            assert!(
+                frame
+                    .inspection_json()
+                    .expect("inspection")
+                    .contains("Checked on this device by rules"),
+                "with no model, the review says the rules checked it"
+            );
+            call(&mut frame, "submit", &json!({})).expect("send");
+            let sent = transport.borrow();
+            let submission = sent.submissions.first().expect("sent");
+            assert_eq!(submission.feedback.selections.len(), 1);
+            assert!(
+                !serde_json::to_string(submission)
+                    .unwrap()
+                    .contains("Lovelace")
+            );
+        }
     }
 
     fn find(node: &crate::headless::InspectionNode) -> Option<&crate::headless::InspectionNode> {
@@ -1144,92 +1290,6 @@ mod tests {
         node.test_id.as_deref() == Some(id) || node.children.iter().any(|child| shows_id(child, id))
     }
 
-    #[test]
-    fn a_recording_is_offered_for_a_window_with_a_record_and_sent_only_when_included() {
-        let transport = Rc::new(RefCell::new(Transport::default()));
-        let kept = Rc::new(RefCell::new(Vec::new()));
-        let recorded = three_changes();
-        let controller = Rc::new(RefCell::new(
-            Composer::new(
-                Destination {
-                    room: "demo".into(),
-                    provider: "record:chat:feedback".into(),
-                    channel: "feedback".into(),
-                },
-                Outbox::open(
-                    Rc::new(MemoryStore::new()),
-                    StorageKey::app("feedback-outbox"),
-                )
-                .expect("private outbox"),
-                Box::new(Recording {
-                    sent: Host(transport.clone()),
-                    recorded: recorded.clone(),
-                    kept: kept.clone(),
-                }),
-            )
-            .expect("admitted destination"),
-        ));
-        let services = FeedbackServices::new(controller);
-        let component =
-            prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
-        let mut frame = FrameHarness::from_component(
-            component,
-            (720, 900),
-            ComponentRunnerInputs::from_native_process(),
-        )
-        .expect("production component");
-        services
-            .about(Some(Subject::of_app("so.tilo.notes", "Notes")))
-            .expect("a window that shows no record");
-        frame.relayout();
-        assert!(!shows_id(
-            &frame.inspection().root,
-            "feedback-recording-scope"
-        ));
-        services
-            .about(Some(Subject {
-                record: Some(crate::feedback::ShownRecord {
-                    workspace: "demo".into(),
-                    record: "note-1".into(),
-                }),
-                ..Subject::of_app("so.tilo.notes", "Notes")
-            }))
-            .expect("a window that shows a note");
-        frame.relayout();
-        assert!(
-            shows_id(&frame.inspection().root, "feedback-recording-scope"),
-            "the offer says what a recording holds before it is chosen"
-        );
-        describe(&mut frame, "Undo lost a word").expect("describe");
-        call(&mut frame, "review", &json!({})).expect("review");
-        frame.relayout();
-        assert!(!shows_id(
-            &frame.inspection().root,
-            "feedback-recording-included"
-        ));
-        call(
-            &mut frame,
-            tilo_resource::FIELD_EDIT,
-            &edit(&FeedbackDraft::paths().include_recording.set(true)),
-        )
-        .expect("include the recording");
-        call(&mut frame, "review", &json!({})).expect("review with the recording");
-        frame.relayout();
-        assert!(
-            shows_id(&frame.inspection().root, "feedback-recording-included"),
-            "the review shows the recording that would be sent"
-        );
-        call(&mut frame, "submit", &json!({})).expect("send");
-        let sent = transport
-            .borrow()
-            .submissions
-            .last()
-            .cloned()
-            .expect("sent");
-        assert_eq!(sent.feedback.recording.as_ref(), Some(recorded.reference()));
-        assert_eq!(*kept.borrow(), vec![recorded.reference().hash.clone()]);
-    }
-
     /// A composer reporting one picked chat row, its message by someone here.
     fn picked_services(transport: &Rc<RefCell<Transport>>) -> FeedbackServices {
         use crate::feedback::report::{Area, Pick, PickedText, ReportDraft, TextKind};
@@ -1290,58 +1350,6 @@ mod tests {
             })
             .expect("report begins");
         services
-    }
-
-    #[test]
-    fn a_picked_report_shows_exactly_what_is_sent_and_toggles_hidden_spans() {
-        let transport = Rc::new(RefCell::new(Transport::default()));
-        let services = picked_services(&transport);
-        let component = prepare(Some(services), "device", "guest", 42).expect("private composer");
-        let mut frame = FrameHarness::from_component(
-            component,
-            (720, 900),
-            ComponentRunnerInputs::from_native_process(),
-        )
-        .expect("production component");
-        frame.relayout();
-        let sheet = frame.inspection_json().expect("inspection");
-        assert!(sheet.contains("Report a problem"), "the report sheet shows");
-        assert!(sheet.contains("1. A message in Chat"), "{sheet}");
-        describe(&mut frame, "The row is cut off").expect("summary");
-        call(&mut frame, "review", &json!({})).expect("review");
-        frame.relayout();
-        let preview = frame.inspection();
-        let shown = find(&preview.root)
-            .and_then(|node| node.semantics.as_ref())
-            .and_then(|node| node.name.clone())
-            .expect("the outgoing report is shown");
-        assert!(shown.contains("The row is cut off"), "{shown}");
-        assert!(shown.contains("Reply"), "{shown}");
-        assert!(!shown.contains("Ada"), "content is hidden: {shown}");
-        call(&mut frame, "toggle", &json!({"index": 0})).expect("show the message");
-        frame.relayout();
-        let preview = frame.inspection();
-        let shown = find(&preview.root)
-            .and_then(|node| node.semantics.as_ref())
-            .and_then(|node| node.name.clone())
-            .expect("the outgoing report is shown");
-        assert!(shown.contains("Thanks \u{2039}name\u{203A}"), "{shown}");
-        assert!(
-            frame
-                .inspection_json()
-                .expect("inspection")
-                .contains("Checked on this device by rules"),
-            "with no model, the review says the rules checked it"
-        );
-        call(&mut frame, "submit", &json!({})).expect("send");
-        let sent = transport.borrow();
-        let submission = sent.submissions.first().expect("sent");
-        assert_eq!(submission.feedback.selections.len(), 1);
-        assert!(
-            !serde_json::to_string(submission)
-                .unwrap()
-                .contains("Lovelace")
-        );
     }
 
     /// A model the host lends looks over the review: it is asked the model

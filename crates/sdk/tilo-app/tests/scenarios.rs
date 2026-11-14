@@ -294,9 +294,10 @@ fn shown(app: &mut TestApp<PlaylistApp>) -> String {
     app.harness().inspection_json().unwrap()
 }
 
-#[test]
-fn scenarios_stage_the_resource_then_the_views_deterministically() {
-    // phase: a_scenario_stages_the_resource_and_then_the_views
+tilo_test_env::scenario! {
+    fn a_screenshot_scenario_stages_the_resource_and_the_views;
+
+    phase a_scenario_stages_the_resource_and_then_the_views;
     {
         // Each case starts from an empty staging record, as its own test thread did.
         STAGED.with(|staged| staged.borrow_mut().clear());
@@ -315,7 +316,8 @@ fn scenarios_stage_the_resource_then_the_views_deterministically() {
         assert_eq!(app.state().songs.len(), 4);
         assert!(frame.contains("Record Saved"), "{frame}");
     }
-    // phase: a_plain_capture_stages_with_no_scenario
+
+    phase a_plain_capture_stages_with_no_scenario;
     {
         // Each case starts from an empty staging record, as its own test thread did.
         STAGED.with(|staged| staged.borrow_mut().clear());
@@ -324,7 +326,8 @@ fn scenarios_stage_the_resource_then_the_views_deterministically() {
         assert!(shown(&mut app).contains("Details closed"));
         assert_eq!(STAGED.with(|staged| staged.borrow().clone()), [None]);
     }
-    // phase: a_scenario_composes_the_same_scene_every_time
+
+    phase a_scenario_composes_the_same_scene_every_time;
     {
         // Each case starts from an empty staging record, as its own test thread did.
         STAGED.with(|staged| staged.borrow_mut().clear());
@@ -335,114 +338,114 @@ fn scenarios_stage_the_resource_then_the_views_deterministically() {
         };
         assert_eq!(print(), print());
     }
-}
 
-#[test]
-fn a_scenarios_input_meets_the_staged_scene() {
-    let mut app = TestApp::<PlaylistApp>::capture(Some("clicked")).unwrap();
-    let frame = shown(&mut app);
-    // The click reached the surface through the window's event path, after
-    // the surface had staged.
-    assert!(
-        frame.contains("Surface staged with 0 songs in Some(Capture)"),
-        "{frame}"
-    );
-    assert!(frame.contains("· clicked"), "{frame}");
-    // A scenario without input is left as staged.
-    let mut plain = TestApp::<PlaylistApp>::capture(Some("narrow")).unwrap();
-    assert!(!shown(&mut plain).contains("clicked"));
-}
-
-#[test]
-fn views_know_what_they_are_built_for() {
-    // A window someone uses reads live sources: no fixture reaches it.
-    let mut live = TestApp::<PlaylistApp>::new().unwrap();
-    let frame = shown(&mut live);
-    assert!(frame.contains("Built for Live"), "{frame}");
-    assert!(frame.contains("Chart: no chart"), "{frame}");
-
-    // A capture reads the scenario's stand-ins, in views and surfaces.
-    let mut capture = TestApp::<PlaylistApp>::capture(Some("details")).unwrap();
-    let frame = shown(&mut capture);
-    assert!(frame.contains("Built for Capture"), "{frame}");
-    assert!(frame.contains("Chart: Kind of Blue"), "{frame}");
-    assert!(frame.contains("Notes: Recorded in two sessions"), "{frame}");
-    assert!(frame.contains("in Some(Capture)"), "{frame}");
-
-    // History rebuilds the view over a past version: it starts nothing and
-    // reads no fixture.
-    let first = capture.versions()[1].hash;
-    let past = capture.past_version(&[first]).unwrap();
-    let texts = past.texts();
-    assert!(
-        texts.iter().any(|text| text == "Built for Past"),
-        "{texts:?}"
-    );
-    assert!(
-        texts.iter().any(|text| text == "Chart: no chart"),
-        "{texts:?}"
-    );
-}
-
-#[test]
-fn a_capture_waits_for_its_surfaces_to_settle() {
-    let mut app = TestApp::<PlaylistApp>::capture(Some("details")).unwrap();
-    // The cover came from the fixture's content store and finished decoding
-    // before the capture returned.
-    let frame = shown(&mut app);
-    assert!(frame.contains("cover cover art"), "{frame}");
-}
-
-#[test]
-fn a_scenario_is_drawn_at_its_own_viewport_after_layout() {
-    for (scenario, viewport) in [(Some("narrow"), [360, 720]), (None, [1024, 720])] {
-        let mut app = TestApp::<PlaylistApp>::capture(scenario).unwrap();
-        assert_eq!(app.harness().inspection().viewport, viewport);
+    phase a_scenarios_input_meets_the_staged_scene;
+    {
+        let mut app = TestApp::<PlaylistApp>::capture(Some("clicked")).unwrap();
         let frame = shown(&mut app);
-        let staged_width = frame
-            .split(" px")
-            .next()
-            .and_then(|before| before.rsplit(' ').next())
-            .and_then(|px| px.parse::<f64>().ok())
-            .unwrap_or_else(|| panic!("no staged width in {frame}"));
-        assert!(staged_width > 0.0, "{frame}");
+        // The click reached the surface through the window's event path, after
+        // the surface had staged.
+        assert!(
+            frame.contains("Surface staged with 0 songs in Some(Capture)"),
+            "{frame}"
+        );
+        assert!(frame.contains("· clicked"), "{frame}");
+        // A scenario without input is left as staged.
+        let mut plain = TestApp::<PlaylistApp>::capture(Some("narrow")).unwrap();
+        assert!(!shown(&mut plain).contains("clicked"));
     }
-}
 
-#[test]
-fn a_scenario_shows_other_peoples_versions_and_presence() {
-    let mut app = TestApp::<PlaylistApp>::capture(Some("details")).unwrap();
-    let authored: Vec<(String, i64)> = app
-        .versions()
-        .iter()
-        .filter_map(|version| {
-            let invoker = version.context.as_ref()?.invoker.as_ref()?;
-            Some((invoker.actor.clone(), version.time_ms))
-        })
-        .collect();
-    assert!(
-        authored.contains(&("miles".to_owned(), MILES_AT_MS)),
-        "{authored:?}"
-    );
-    assert!(
-        authored.contains(&("bill".to_owned(), BILL_AT_MS)),
-        "{authored:?}"
-    );
-    // Other people's versions are not the capture's own undo steps: undo
-    // takes back the scenario's actions and stops at their work.
-    while app.undo() {}
-    let titles: Vec<String> = app
-        .state()
-        .songs
-        .values()
-        .map(|s| s.title.clone())
-        .collect();
-    assert_eq!(titles, ["Freddie Freeloader", "Flamenco Sketches"]);
+    phase views_know_what_they_are_built_for;
+    {
+        // A window someone uses reads live sources: no fixture reaches it.
+        let mut live = TestApp::<PlaylistApp>::new().unwrap();
+        let frame = shown(&mut live);
+        assert!(frame.contains("Built for Live"), "{frame}");
+        assert!(frame.contains("Chart: no chart"), "{frame}");
 
-    let (key, _) =
-        ResourceSelection::Item("second-take".into()).presence::<Playlist>(PlaylistApp::ID);
-    let miles = tilo_app::permissions::UserId("miles".into());
-    let presence = app.harness().presence();
-    assert!(presence.selection_for(&key, &miles).is_some());
-    assert_eq!(presence.display_name(&miles), "miles");
+        // A capture reads the scenario's stand-ins, in views and surfaces.
+        let mut capture = TestApp::<PlaylistApp>::capture(Some("details")).unwrap();
+        let frame = shown(&mut capture);
+        assert!(frame.contains("Built for Capture"), "{frame}");
+        assert!(frame.contains("Chart: Kind of Blue"), "{frame}");
+        assert!(frame.contains("Notes: Recorded in two sessions"), "{frame}");
+        assert!(frame.contains("in Some(Capture)"), "{frame}");
+
+        // History rebuilds the view over a past version: it starts nothing and
+        // reads no fixture.
+        let first = capture.versions()[1].hash;
+        let past = capture.past_version(&[first]).unwrap();
+        let texts = past.texts();
+        assert!(
+            texts.iter().any(|text| text == "Built for Past"),
+            "{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|text| text == "Chart: no chart"),
+            "{texts:?}"
+        );
+    }
+
+    phase a_capture_waits_for_its_surfaces_to_settle;
+    {
+        let mut app = TestApp::<PlaylistApp>::capture(Some("details")).unwrap();
+        // The cover came from the fixture's content store and finished decoding
+        // before the capture returned.
+        let frame = shown(&mut app);
+        assert!(frame.contains("cover cover art"), "{frame}");
+    }
+
+    phase a_scenario_is_drawn_at_its_own_viewport_after_layout;
+    {
+        for (scenario, viewport) in [(Some("narrow"), [360, 720]), (None, [1024, 720])] {
+            let mut app = TestApp::<PlaylistApp>::capture(scenario).unwrap();
+            assert_eq!(app.harness().inspection().viewport, viewport);
+            let frame = shown(&mut app);
+            let staged_width = frame
+                .split(" px")
+                .next()
+                .and_then(|before| before.rsplit(' ').next())
+                .and_then(|px| px.parse::<f64>().ok())
+                .unwrap_or_else(|| panic!("no staged width in {frame}"));
+            assert!(staged_width > 0.0, "{frame}");
+        }
+    }
+
+    phase a_scenario_shows_other_peoples_versions_and_presence;
+    {
+        let mut app = TestApp::<PlaylistApp>::capture(Some("details")).unwrap();
+        let authored: Vec<(String, i64)> = app
+            .versions()
+            .iter()
+            .filter_map(|version| {
+                let invoker = version.context.as_ref()?.invoker.as_ref()?;
+                Some((invoker.actor.clone(), version.time_ms))
+            })
+            .collect();
+        assert!(
+            authored.contains(&("miles".to_owned(), MILES_AT_MS)),
+            "{authored:?}"
+        );
+        assert!(
+            authored.contains(&("bill".to_owned(), BILL_AT_MS)),
+            "{authored:?}"
+        );
+        // Other people's versions are not the capture's own undo steps: undo
+        // takes back the scenario's actions and stops at their work.
+        while app.undo() {}
+        let titles: Vec<String> = app
+            .state()
+            .songs
+            .values()
+            .map(|s| s.title.clone())
+            .collect();
+        assert_eq!(titles, ["Freddie Freeloader", "Flamenco Sketches"]);
+
+        let (key, _) =
+            ResourceSelection::Item("second-take".into()).presence::<Playlist>(PlaylistApp::ID);
+        let miles = tilo_app::permissions::UserId("miles".into());
+        let presence = app.harness().presence();
+        assert!(presence.selection_for(&key, &miles).is_some());
+        assert_eq!(presence.display_name(&miles), "miles");
+    }
 }

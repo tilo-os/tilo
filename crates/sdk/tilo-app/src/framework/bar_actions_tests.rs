@@ -40,35 +40,65 @@ fn press(entry: &ToolbarAction) -> ToolbarEvent {
     }
 }
 
-#[test]
-fn an_entry_is_named_and_pictured_as_declared_and_its_press_submits_it() {
-    let dispatcher = testing::dispatcher::<Counter>("test.bar");
-    let bar = BarActions::new(dispatcher.clone());
-    let add = bar.action(Counter::ADD.invoke());
-    assert_eq!((add.name.as_str(), add.icon.as_str()), ("Add one", "plus"));
-    assert!(add.enabled && !add.destructive);
-    let clear = bar.action(Counter::CLEAR.invoke());
-    assert!(clear.destructive, "a destructive verb's entry is too");
-    assert_ne!(add.id, clear.id);
+tilo_test_env::scenario! {
+    fn a_bar_entry_carries_what_it_was_declared_for;
 
-    assert!(bar.press(&press(&add)));
-    assert!(bar.press(&press(&add)));
-    let mut doc = tilo_resource::Doc::new();
-    Counter::initialize(&mut doc).unwrap();
-    let applied = testing::resolve(&dispatcher, &mut doc).unwrap();
-    assert_eq!(applied.len(), 2, "each press is one step");
-    let read = tilo_resource::Reader::<Counter>::read(&doc).unwrap();
-    assert_eq!(read.state().count, 2);
-}
+    phase an_entry_is_named_and_pictured_as_declared_and_its_press_submits_it;
+    {
+        let dispatcher = testing::dispatcher::<Counter>("test.bar");
+        let bar = BarActions::new(dispatcher.clone());
+        let add = bar.action(Counter::ADD.invoke());
+        assert_eq!((add.name.as_str(), add.icon.as_str()), ("Add one", "plus"));
+        assert!(add.enabled && !add.destructive);
+        let clear = bar.action(Counter::CLEAR.invoke());
+        assert!(clear.destructive, "a destructive verb's entry is too");
+        assert_ne!(add.id, clear.id);
 
-#[test]
-fn the_apps_own_slots_and_other_events_pass_by() {
-    let bar = BarActions::new(testing::dispatcher::<Counter>("test.bar"));
-    let _ = bar.action(Counter::ADD.invoke());
-    assert!(!bar.press(&ToolbarEvent::Action {
-        id: "reload".into()
-    }));
-    assert!(!bar.press(&ToolbarEvent::Back));
+        assert!(bar.press(&press(&add)));
+        assert!(bar.press(&press(&add)));
+        let mut doc = tilo_resource::Doc::new();
+        Counter::initialize(&mut doc).unwrap();
+        let applied = testing::resolve(&dispatcher, &mut doc).unwrap();
+        assert_eq!(applied.len(), 2, "each press is one step");
+        let read = tilo_resource::Reader::<Counter>::read(&doc).unwrap();
+        assert_eq!(read.state().count, 2);
+    }
+
+    phase the_apps_own_slots_and_other_events_pass_by;
+    {
+        let bar = BarActions::new(testing::dispatcher::<Counter>("test.bar"));
+        let _ = bar.action(Counter::ADD.invoke());
+        assert!(!bar.press(&ToolbarEvent::Action {
+            id: "reload".into()
+        }));
+        assert!(!bar.press(&ToolbarEvent::Back));
+    }
+
+    phase a_commands_entry_hands_its_command_back_and_keeps_its_id;
+    {
+        let bar = BarCommands::new();
+        let panel = bar.entry("panel-left", "Panel", Command::Panel);
+        let open = bar.entry("folder-open", "Open", Command::Open(1));
+        assert_ne!(panel.id, open.id);
+        assert_eq!(
+            bar.entry("panel-left", "Panel", Command::Panel).id,
+            panel.id
+        );
+        assert_eq!(bar.pressed(&press(&open)), Some(Command::Open(1)));
+        assert_eq!(bar.pressed(&press(&panel)), Some(Command::Panel));
+        assert_eq!(
+            bar.pressed(&ToolbarEvent::Action {
+                id: "reload".into()
+            }),
+            None
+        );
+        let other = BarCommands::new();
+        assert_ne!(
+            other.entry("panel-left", "Panel", Command::Panel).id,
+            panel.id
+        );
+        assert_eq!(other.pressed(&press(&open)), None, "another bar's entry");
+    }
 }
 
 #[test]
@@ -90,30 +120,4 @@ fn an_effects_entry_reaches_the_effect() {
 enum Command {
     Panel,
     Open(u32),
-}
-
-#[test]
-fn a_commands_entry_hands_its_command_back_and_keeps_its_id() {
-    let bar = BarCommands::new();
-    let panel = bar.entry("panel-left", "Panel", Command::Panel);
-    let open = bar.entry("folder-open", "Open", Command::Open(1));
-    assert_ne!(panel.id, open.id);
-    assert_eq!(
-        bar.entry("panel-left", "Panel", Command::Panel).id,
-        panel.id
-    );
-    assert_eq!(bar.pressed(&press(&open)), Some(Command::Open(1)));
-    assert_eq!(bar.pressed(&press(&panel)), Some(Command::Panel));
-    assert_eq!(
-        bar.pressed(&ToolbarEvent::Action {
-            id: "reload".into()
-        }),
-        None
-    );
-    let other = BarCommands::new();
-    assert_ne!(
-        other.entry("panel-left", "Panel", Command::Panel).id,
-        panel.id
-    );
-    assert_eq!(other.pressed(&press(&open)), None, "another bar's entry");
 }

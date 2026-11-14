@@ -439,76 +439,80 @@ mod tests {
     use super::*;
     use ui_core::permissions::UserId;
 
-    #[test]
-    fn an_id_reads_as_the_rosters_name_or_itself() {
-        let people = People::new(Some("me-id"));
-        assert_eq!(
-            people.name("me-id"),
-            "me-id",
-            "nobody is called \"You\": an unnamed self reads as its id"
-        );
-        assert_eq!(
-            people.name("Alice"),
-            "Alice",
-            "an unknown id reads as itself"
-        );
+    tilo_test_env::scenario! {
+        fn a_participant_reads_as_the_name_the_workspace_gives;
 
-        let mut presence = PresenceCtx::default();
-        presence.set_display_name(UserId("peer-id".into()), "Bob");
-        presence.set_self_participant(UserId("me-id".into()), "Ada");
-        assert!(people.follow(&presence));
-        assert!(
-            !people.follow(&presence),
-            "an unchanged roster changes nothing"
-        );
-        assert_eq!(people.name("peer-id"), "Bob");
-        assert_eq!(people.name("me-id"), "Ada");
-        assert!(people.is_me("me-id"));
-        assert_eq!(people.revision().get(), 1);
+        phase an_id_reads_as_the_rosters_name_or_itself;
+        {
+            let people = People::new(Some("me-id"));
+            assert_eq!(
+                people.name("me-id"),
+                "me-id",
+                "nobody is called \"You\": an unnamed self reads as its id"
+            );
+            assert_eq!(
+                people.name("Alice"),
+                "Alice",
+                "an unknown id reads as itself"
+            );
 
-        presence.set_display_name(UserId("peer-id".into()), "ada");
-        assert!(people.follow(&presence));
-        assert_eq!(people.name("me-id"), "Ada (1)");
-        assert_eq!(people.name("peer-id"), "ada (2)");
-    }
+            let mut presence = PresenceCtx::default();
+            presence.set_display_name(UserId("peer-id".into()), "Bob");
+            presence.set_self_participant(UserId("me-id".into()), "Ada");
+            assert!(people.follow(&presence));
+            assert!(
+                !people.follow(&presence),
+                "an unchanged roster changes nothing"
+            );
+            assert_eq!(people.name("peer-id"), "Bob");
+            assert_eq!(people.name("me-id"), "Ada");
+            assert!(people.is_me("me-id"));
+            assert_eq!(people.revision().get(), 1);
 
-    #[test]
-    fn an_actors_record_spelling_reads_as_the_name_the_workspace_gives() {
-        let people = People::new(None);
-        let mut presence = PresenceCtx::default();
-        presence.set_display_name(UserId("bob".into()), "Bob");
-        presence.set_display_name(UserId("agent:scribe".into()), "Scribe");
-        presence.set_participant_kind(UserId("agent:scribe".into()), ParticipantKind::Agent);
-        assert!(people.follow(&presence));
+            presence.set_display_name(UserId("peer-id".into()), "ada");
+            assert!(people.follow(&presence));
+            assert_eq!(people.name("me-id"), "Ada (1)");
+            assert_eq!(people.name("peer-id"), "ada (2)");
+        }
 
-        assert_eq!(
-            people.actor("person:bob"),
-            Actor {
-                id: "bob".into(),
-                name: "Bob".into(),
-                agent: false,
-            },
-            "an assignee's spelling is not a name"
-        );
-        assert_eq!(
-            people.actor("agent:scribe"),
-            Actor {
-                id: "agent:scribe".into(),
-                name: "Scribe · Agent".into(),
-                agent: true,
-            },
-            "an agent keeps the id presence colours its face by"
-        );
-        assert_eq!(
-            people.actor("person:stranger"),
-            Actor {
-                id: "stranger".into(),
-                name: "stranger".into(),
-                agent: false,
-            },
-            "an id the workspace names not reads without its prefix"
-        );
-        assert_eq!(people.actor("bob").name, "Bob", "a bare id reads the same");
+        phase an_actors_record_spelling_reads_as_the_name_the_workspace_gives;
+        {
+            let people = People::new(None);
+            let mut presence = PresenceCtx::default();
+            presence.set_display_name(UserId("bob".into()), "Bob");
+            presence.set_display_name(UserId("agent:scribe".into()), "Scribe");
+            presence.set_participant_kind(UserId("agent:scribe".into()), ParticipantKind::Agent);
+            assert!(people.follow(&presence));
+
+            assert_eq!(
+                people.actor("person:bob"),
+                Actor {
+                    id: "bob".into(),
+                    name: "Bob".into(),
+                    agent: false,
+                },
+                "an assignee's spelling is not a name"
+            );
+            assert_eq!(
+                people.actor("agent:scribe"),
+                Actor {
+                    id: "agent:scribe".into(),
+                    name: "Scribe · Agent".into(),
+                    agent: true,
+                },
+                "an agent keeps the id presence colours its face by"
+            );
+            assert_eq!(
+                people.actor("person:stranger"),
+                Actor {
+                    id: "stranger".into(),
+                    name: "stranger".into(),
+                    agent: false,
+                },
+                "an id the workspace names not reads without its prefix"
+            );
+            assert_eq!(people.actor("bob").name, "Bob", "a bare id reads the same");
+        }
     }
 }
 

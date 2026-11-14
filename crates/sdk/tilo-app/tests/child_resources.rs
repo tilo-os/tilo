@@ -104,32 +104,89 @@ fn open(role: Role) -> TestApp<QueryApp> {
     app
 }
 
-#[test]
-fn typing_splices_the_child_through_the_parents_action() {
-    let mut app = open(Role::Owner);
-    app.harness().type_text("select 1");
-    assert_eq!(typed_sql(&app), "select 1");
-    assert_eq!(
-        app.state(),
-        "untitled",
-        "the rest of the query is untouched"
-    );
-    assert!(
-        app.history()
-            .into_iter()
-            .any(|context| context.resource.as_ref().is_some_and(|r| r.id == sql_id())),
-        "history names the SQL as the resource edited"
-    );
-}
+tilo_test_env::scenario! {
+    fn a_child_resource_is_edited_through_its_parents_actions;
 
-#[test]
-fn undo_takes_back_the_child_a_word_at_a_time() {
-    let mut app = open(Role::Owner);
-    app.harness().type_text("select name");
-    assert!(app.undo());
-    assert_eq!(typed_sql(&app), "select ");
-    assert!(app.undo());
-    assert_eq!(typed_sql(&app), "");
+    phase typing_splices_the_child_through_the_parents_action;
+    {
+        let mut app = open(Role::Owner);
+        app.harness().type_text("select 1");
+        assert_eq!(typed_sql(&app), "select 1");
+        assert_eq!(
+            app.state(),
+            "untitled",
+            "the rest of the query is untouched"
+        );
+        assert!(
+            app.history()
+                .into_iter()
+                .any(|context| context.resource.as_ref().is_some_and(|r| r.id == sql_id())),
+            "history names the SQL as the resource edited"
+        );
+    }
+
+    phase undo_takes_back_the_child_a_word_at_a_time;
+    {
+        let mut app = open(Role::Owner);
+        app.harness().type_text("select name");
+        assert!(app.undo());
+        assert_eq!(typed_sql(&app), "select ");
+        assert!(app.undo());
+        assert_eq!(typed_sql(&app), "");
+    }
+
+    phase a_viewers_keystrokes_change_nothing_and_the_field_shows_the_stored_text;
+    {
+        let mut app = open(Role::Viewer);
+        let before = app.versions().len();
+        app.harness().type_text("drop table");
+        assert_eq!(typed_sql(&app), "");
+        assert_eq!(app.versions().len(), before);
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(!inspection.contains("drop table"), "{inspection}");
+    }
+
+    phase an_agent_addresses_the_child_by_its_own_actions;
+    {
+        let mut app = open(Role::Owner);
+        let surface = app.agent_surface();
+        let rows = surface.as_array().unwrap();
+        assert!(
+            rows.iter().any(|row| row["resource"] == sql_id().as_str()
+                && row["action"] == "replace-text"
+                && row["resource_kind"] == PlainText::KIND),
+            "the SQL is published with the text's own actions: {surface}"
+        );
+        app.invoke_child::<PlainText>(
+            &sql_id(),
+            Invoke::<PlainText>::apply(&TextEdit::ReplaceText {
+                text: "select 2".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(typed_sql(&app), "select 2");
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(
+            inspection.contains("select 2"),
+            "the field shows it: {inspection}"
+        );
+        assert!(app.undo());
+        assert_eq!(typed_sql(&app), "");
+    }
+
+    phase a_collaborators_typing_merges_and_shows;
+    {
+        let mut app = open(Role::Owner);
+        app.harness().type_text("select 1");
+        app.merge_peer_edit(|doc| {
+            let obj = sql(doc).unwrap();
+            doc.splice_text(&obj, 8, 0, " from t").unwrap();
+        });
+        app.harness().key("End");
+        app.harness().type_text(";");
+        assert_eq!(typed_sql(&app), "select 1 from t;");
+    }
 }
 
 #[test]
@@ -148,57 +205,4 @@ fn a_parent_action_between_keystrokes_ends_the_word() {
         "sel",
         "the letters after the rename are a step of their own"
     );
-}
-
-#[test]
-fn a_viewers_keystrokes_change_nothing_and_the_field_shows_the_stored_text() {
-    let mut app = open(Role::Viewer);
-    let before = app.versions().len();
-    app.harness().type_text("drop table");
-    assert_eq!(typed_sql(&app), "");
-    assert_eq!(app.versions().len(), before);
-    let inspection = app.harness().inspection_json().unwrap();
-    assert!(!inspection.contains("drop table"), "{inspection}");
-}
-
-#[test]
-fn an_agent_addresses_the_child_by_its_own_actions() {
-    let mut app = open(Role::Owner);
-    let surface = app.agent_surface();
-    let rows = surface.as_array().unwrap();
-    assert!(
-        rows.iter().any(|row| row["resource"] == sql_id().as_str()
-            && row["action"] == "replace-text"
-            && row["resource_kind"] == PlainText::KIND),
-        "the SQL is published with the text's own actions: {surface}"
-    );
-    app.invoke_child::<PlainText>(
-        &sql_id(),
-        Invoke::<PlainText>::apply(&TextEdit::ReplaceText {
-            text: "select 2".into(),
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(typed_sql(&app), "select 2");
-    let inspection = app.harness().inspection_json().unwrap();
-    assert!(
-        inspection.contains("select 2"),
-        "the field shows it: {inspection}"
-    );
-    assert!(app.undo());
-    assert_eq!(typed_sql(&app), "");
-}
-
-#[test]
-fn a_collaborators_typing_merges_and_shows() {
-    let mut app = open(Role::Owner);
-    app.harness().type_text("select 1");
-    app.merge_peer_edit(|doc| {
-        let obj = sql(doc).unwrap();
-        doc.splice_text(&obj, 8, 0, " from t").unwrap();
-    });
-    app.harness().key("End");
-    app.harness().type_text(";");
-    assert_eq!(typed_sql(&app), "select 1 from t;");
 }
