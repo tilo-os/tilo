@@ -472,29 +472,11 @@ impl Inner {
         // handing over the record alone ([`TiloStore::sync_from`]) — stays in `local`; the
         // change above tells the versions it made, and the index holds them. Keep deriving that
         // write without them ([`Self::settle_versions`]).
-        let settled = self.settle_versions(&applied.ends);
-        // The overlay stands when nothing it was derived from moved: no index it read, no
-        // write it holds (the record took only writes it never derived, a run's manifest), no
-        // version it holds, no record it knows. Else it was the old transaction's, and what an
-        // origin derives was written onto the mirror again: derive it over the indexes as the
-        // record's changes left them, so a later write into one of its collections sees the
-        // items it holds, at their places.
-        self.overlay = Arc::clone(&before.overlay);
-        let changed = &applied.changed;
-        let read = self.answering();
-        let stands = !(settled || changed.structure || changed.unplaced || changed.layout)
-            && changed.nested.is_empty()
-            && read.len() == before.snapshots.len()
-            && read.iter().all(|(app, snapshot)| {
-                before
-                    .snapshots
-                    .get(app)
-                    .is_some_and(|held| Arc::ptr_eq(held, snapshot))
-            })
-            && !self.drop_reflected();
-        if !stands {
-            self.rebuild_overlay();
-        }
+        self.settle_versions(&applied.ends);
+        // The overlay was the old transaction's, and what an origin derives was written onto
+        // the mirror again: derive it over the indexes as the record's changes left them, so a
+        // later write into one of its collections sees the items it holds, at their places.
+        self.rebuild_overlay();
         for (key, ids) in moved {
             applied.items.entry(key).or_default().extend(ids);
         }

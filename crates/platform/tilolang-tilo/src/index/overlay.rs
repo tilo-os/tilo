@@ -43,29 +43,20 @@ pub struct Overlay {
     derived: usize,
     /// Whether it was derived again over writes it held, which keeps no order of theirs.
     rederived: bool,
-    /// The writes derived into it, by their seeds.
-    writes: BTreeSet<Vec<u8>>,
 }
 
 impl Overlay {
     /// The place of a derivation about to be written into it, among those since it was empty:
     /// `None` once it was derived again over the writes it held ([`Self::rederive`]).
-    pub fn place(&mut self, write: &[u8]) -> Option<usize> {
-        self.writes.insert(write.to_vec());
+    pub fn place(&mut self) -> Option<usize> {
         let at = self.derived;
         self.derived = at.saturating_add(1);
         (!self.rederived).then_some(at)
     }
 
-    /// It holds the write `write` derived again, in no order of the writes'.
-    pub fn rederive(&mut self, write: &[u8]) {
-        self.writes.insert(write.to_vec());
+    /// It holds writes derived again, in no order of theirs.
+    pub fn rederive(&mut self) {
         self.rederived = true;
-    }
-
-    /// Whether the write `write` (its seed) was derived into it.
-    pub fn holds(&self, write: &[u8]) -> bool {
-        self.writes.contains(write)
     }
 
     pub fn is_empty(&self) -> bool {

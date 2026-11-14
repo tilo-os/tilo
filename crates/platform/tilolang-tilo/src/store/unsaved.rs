@@ -205,7 +205,7 @@ impl Inner {
         };
         let snapshot = Arc::clone(&held.snapshot);
         let overlay = Arc::make_mut(&mut self.overlay);
-        let at = overlay.place(&write.seed);
+        let at = overlay.place();
         let mut sink = OverlaySink {
             overlay,
             snapshot: Some(&snapshot),
@@ -452,38 +452,29 @@ impl Inner {
 }
 
 impl Inner {
-    /// Let go of the writes the record accepted whose change the index their app reads from
-    /// reflects: the index holds what they wrote. Whether the overlay held any of them.
-    pub(super) fn drop_reflected(&mut self) -> bool {
-        // What each index has yet to take in of each chunk, read once per index and chunk
-        // however many writes wait on it.
-        let mut behind: BTreeMap<(AppId, ChunkNo), Behind> = BTreeMap::new();
-        let mut held_one = false;
-        let accepted = std::mem::take(&mut self.accepted);
-        self.accepted = accepted
-            .into_iter()
-            .filter(|accepted| {
-                let write = &accepted.write;
-                let kept = self.apps.get(&write.app).is_some_and(|held| {
-                    !behind
-                        .entry((write.app.clone(), write.chunk))
-                        .or_insert_with(|| Behind::of(&held.heads, &self.chunks, write.chunk))
-                        .reflects(&accepted.change)
-                });
-                held_one |= !kept && self.overlay.holds(&write.seed);
-                kept
-            })
-            .collect();
-        held_one
-    }
-
     /// Derive the store's writes anew into an empty overlay: after a rollback, once an index
     /// they were written over changed, or once the record took some. What an index reflects is
     /// the index's, not derived here again: a write whose versions the record told
     /// ([`Self::settle_versions`]), and one the record accepted whose change the index its app
     /// reads from has taken in ([`Self::drop_committed_local`]), which leaves the store then.
     pub(super) fn rebuild_overlay(&mut self) {
-        self.drop_reflected();
+        // What each index has yet to take in of each chunk, read once per index and chunk
+        // however many writes wait on it.
+        let mut behind: BTreeMap<(AppId, ChunkNo), Behind> = BTreeMap::new();
+        let accepted = std::mem::take(&mut self.accepted);
+        self.accepted = accepted
+            .into_iter()
+            .filter(|accepted| {
+                let write = &accepted.write;
+                let Some(held) = self.apps.get(&write.app) else {
+                    return false;
+                };
+                !behind
+                    .entry((write.app.clone(), write.chunk))
+                    .or_insert_with(|| Behind::of(&held.heads, &self.chunks, write.chunk))
+                    .reflects(&accepted.change)
+            })
+            .collect();
         let mut overlay = Overlay::default();
         if self.chunks.has_record() {
             let settled = &self.settled;
@@ -495,7 +486,7 @@ impl Inner {
                 let Some(held) = self.apps.get(&write.app).filter(|held| held.answers()) else {
                     continue;
                 };
-                overlay.rederive(&write.seed);
+                overlay.rederive();
                 let mut sink = OverlaySink {
                     overlay: &mut overlay,
                     snapshot: Some(&held.snapshot),
@@ -587,7 +578,7 @@ impl Inner {
             let overlay = Arc::make_mut(&mut self.overlay);
             // Writes derived after these versions read them: none is taken in as written
             // before the versions are the record's.
-            overlay.place(&write.seed);
+            overlay.place();
             let mut sink = OverlaySink {
                 overlay,
                 snapshot: Some(&snapshot),
@@ -610,21 +601,18 @@ impl Inner {
     /// its resources alone, so a rebuild of the overlay reads no version off the index again for
     /// a change those who read the mirror are told already. A transaction whose every version
     /// `told` holds is the record's, and stays only for the chunk record it goes to
-    /// ([`Self::rebuild_overlay`]). Whether any write's versions went.
-    pub(super) fn settle_versions(&mut self, told: &super::Ends) -> bool {
+    /// ([`Self::rebuild_overlay`]).
+    pub(super) fn settle_versions(&mut self, told: &super::Ends) {
         let mut settled = BTreeSet::new();
-        let mut went = false;
         for write in &mut self.local {
             let Some(versions) = write.versions.as_mut() else {
                 continue;
             };
-            let held = versions.len();
             versions.retain(|resource, end| {
                 !told
                     .get(resource)
                     .is_some_and(|held| held.same_invocation(end))
             });
-            went |= versions.len() != held;
             if versions.is_empty() {
                 write.versions = None;
                 settled.insert(write.seed.clone());
@@ -635,7 +623,6 @@ impl Inner {
         self.settled
             .retain(|seed| self.local.iter().any(|write| write.seed == *seed));
         self.settled.extend(settled);
-        went
     }
 }
 
