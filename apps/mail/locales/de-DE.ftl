@@ -57,6 +57,8 @@ mail-start-draft-body = Angefangen, eine Nachricht zu schreiben
 mail-discard-draft = Den Entwurf verworfen
 mail-send-message = Eine Nachricht von { $account } gesendet
 mail-cancel-send = Das Senden einer Nachricht abgebrochen
+mail-check-mail = Gebeten, { $account } auf neue Mail zu prüfen
+mail-mail-checks = Festgehalten, wie eine Prüfung auf neue Mail ausging
 mail-message-state-starred = { $new ->
     [true] Eine Nachricht mit einem Stern markiert
    *[false] Den Stern einer Nachricht entfernt
@@ -288,6 +290,7 @@ mail-mailbox-create-draft = Neuer Entwurf
 mail-mailbox-show-draft = Entwurf anzeigen
 mail-mailbox-attach = An Entwurf anhängen
 mail-mailbox-send-message = Nachricht senden
+mail-mailbox-check-mail = Auf neue Mail prüfen
 mail-mailbox-deliver-message = Nachricht zustellen
 mail-mailbox-draft-message = Nachricht entwerfen
 mail-trusted-senders = Vertrauenswürdige Absender
@@ -310,6 +313,8 @@ mail-sync-signed-out = Anmeldung bei { $account } nicht möglich
 mail-sync-signed-out-why = Prüfe das Passwort in den Einstellungen unter Externe Konten.
 mail-sync-offline = Du bist offline
 mail-sync-offline-why = Neue Mail kommt an, sobald du wieder online bist.
+mail-sync-no-device = Gerade kann kein Gerät { $account } abrufen
+mail-sync-no-device-why = Hier steht die Mail, die deine Geräte schon abgerufen haben. Um neue Mail abzurufen und zu senden, muss ein Computer an und angemeldet sein, auf dem dieses Konto eingerichtet ist.
 
 mail-notice-sign-in-unfinished = Die Anmeldung wurde nicht abgeschlossen: { $error }
 mail-notice-server-failed = Die Änderung am Mailserver ließ sich nicht übertragen: { $error }

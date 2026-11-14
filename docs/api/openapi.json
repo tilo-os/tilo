@@ -15392,6 +15392,38 @@
           "null"
         ]
       },
+      "mail.mailbox.check-mail.Arguments": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "folder": {
+            "enum": [
+              "inbox",
+              "starred",
+              "sent",
+              "drafts",
+              "archive",
+              "trash",
+              "junk"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "folder"
+        ],
+        "description": ""
+      },
+      "mail.mailbox.check-mail.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
       "mail.mailbox.deliver-message.Arguments": {
         "type": "object",
         "properties": {
@@ -28121,6 +28153,12 @@
       "resource": "mail.mailbox",
       "action": "send-message",
       "arguments": "#/components/schemas/mail.mailbox.send-message.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.mailbox",
+      "action": "check-mail",
+      "arguments": "#/components/schemas/mail.mailbox.check-mail.Arguments"
     },
     {
       "app": "so.tilo.mail",

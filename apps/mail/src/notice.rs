@@ -49,6 +49,18 @@ pub(crate) fn sync_failure(failure: &SyncFailure) -> SyncFailureText {
             message: Some(CATALOG.t("mail-sync-offline-why")),
             action: None,
         },
+        // Nothing is wrong with the account: what can reach its server is
+        // not on, so the words say what the window shows meanwhile and what
+        // brings new mail.
+        SyncCause::NoDevice => SyncFailureText {
+            kind: BannerKind::Warning,
+            title: CATALOG.t_args("mail-sync-no-device", &[("account", account)]),
+            message: Some(CATALOG.t("mail-sync-no-device-why")),
+            action: Some(SyncOffer {
+                label: CATALOG.t("mail-sync-check-again"),
+                intent: Intent::CheckMail,
+            }),
+        },
         SyncCause::Unreachable => SyncFailureText {
             kind: BannerKind::Error,
             title: CATALOG.t_args("mail-sync-unreachable", &[("account", account)]),

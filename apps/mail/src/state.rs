@@ -89,6 +89,9 @@ pub enum SyncCause {
     Offline,
     /// The server did not answer.
     Unreachable,
+    /// This window reaches no mail server itself (a browser page), and no
+    /// device that holds the account took its check.
+    NoDevice,
 }
 
 pub(crate) fn moved_to(folder: Folder) -> String {

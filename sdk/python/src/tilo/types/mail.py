@@ -180,7 +180,7 @@ class NewCopy(TypedDict):
 
 class Mailbox(Resource):
     """Mail — `mail.mailbox`."""
-    __surface__ = "so.tilo.mail@cc453f20b5a856e1"
+    __surface__ = "so.tilo.mail@68b3f4f16cfb7b8b"
     messages: list[MessageState]
     folders: list[LocalFolder]
     draft: DraftState
@@ -326,6 +326,14 @@ class Mailbox(Resource):
             args["draft"] = draft
         return self.action("send-message", **args)
 
+    def check_mail(self,
+        *,
+        account: str,
+        folder: Folder,
+    ) -> Any | Run:
+        """Runs the app's action."""
+        return self.action("check-mail", account=account, folder=folder)
+
     def deliver_message(self,
         *,
         from_: str,
@@ -430,7 +438,7 @@ class Mailbox(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.mail@cc453f20b5a856e1"
+    __surface__ = "so.tilo.mail@68b3f4f16cfb7b8b"
     accounts: list[PersonAccount]
     active: dict[str, str]
 
@@ -466,7 +474,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.mail@cc453f20b5a856e1"
+    __surface__ = "so.tilo.mail@68b3f4f16cfb7b8b"
     people: list[Person]
 
     def project_contact(self,
@@ -562,7 +570,7 @@ class Identities(Resource):
 
 class TrustedSenders(Resource):
     """Trusted senders — `mail.trusted-senders`."""
-    __surface__ = "so.tilo.mail@cc453f20b5a856e1"
+    __surface__ = "so.tilo.mail@68b3f4f16cfb7b8b"
     senders: list[str]
 
     def trust(self, *, sender: str) -> Run | None:
@@ -576,7 +584,7 @@ class TrustedSenders(Resource):
 
 class Copies(Resource):
     """Mail on your devices — `mail.copies`."""
-    __surface__ = "so.tilo.mail@cc453f20b5a856e1"
+    __surface__ = "so.tilo.mail@68b3f4f16cfb7b8b"
     @property
     def copies(self) -> list[KeptCopy]:
         """Read only."""

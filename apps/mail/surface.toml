@@ -33,7 +33,7 @@ fields = [
   { path = "draft.html_body", type = { option = "text" } },
   { path = "draft.calendar_ics", type = { option = "text" } },
   { path = "draft.attachments", type = { list = "any" } },
-  { path = "draft.rich_body", type = { option = "rich_text" }, ops = "sha256:aceedec5a9b08d74" },
+  { path = "draft.rich_body", type = { option = "rich_text" }, ops = "sha256:fb8a205aa13d03f2" },
   { path = "draft.shown_as", type = { option = "text" }, readonly = true },
   { path = "draft.drafted", type = { option = "text" }, readonly = true },
   { path = "draft.in_reply_to", type = { option = "text" } },
@@ -52,7 +52,7 @@ fields = [
   { path = "drafts.*.html_body", type = { option = "text" } },
   { path = "drafts.*.calendar_ics", type = { option = "text" } },
   { path = "drafts.*.attachments", type = { list = "any" } },
-  { path = "drafts.*.rich_body", type = { option = "rich_text" }, ops = "sha256:aceedec5a9b08d74" },
+  { path = "drafts.*.rich_body", type = { option = "rich_text" }, ops = "sha256:fb8a205aa13d03f2" },
   { path = "drafts.*.shown_as", type = { option = "text" }, readonly = true },
   { path = "drafts.*.drafted", type = { option = "text" }, readonly = true },
   { path = "drafts.*.in_reply_to", type = { option = "text" } },
@@ -63,6 +63,7 @@ fields = [
   { path = "drafts.*.server.written", type = "text" },
   { path = "outbox", type = { outbox = "any" }, unit = true },
   { path = "server", type = { outbox = "any" }, unit = true },
+  { path = "checks", type = { outbox = "any" }, unit = true },
   { path = "held", type = { collection = { named = "HeldMessage" } }, stored = "collection" },
   { path = "held.*.message_id", type = "text" },
   { path = "held.*.from", type = "text" },
@@ -192,6 +193,15 @@ params = [
   { name = "message", type = { named = "DraftData" }, required = true, schema = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { content_id = { type = "string" }, filename = { type = "string" }, mime = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["content_id", "filename", "mime", "size"] } }, bcc = { type = "string" }, body = { type = "string" }, calendar_ics = { type = ["string", "null"] }, cc = { type = "string" }, html_body = { type = ["string", "null"] }, sender = { type = ["object", "null"], additionalProperties = false, properties = { account = { type = "string" }, email = { type = "string" } }, required = ["account", "email"] }, subject = { type = "string" }, to = { type = "string" } }, required = ["to", "cc", "bcc", "subject", "body"] } },
   { name = "in_reply_to", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "draft", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "check-mail"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
+  { name = "folder", type = { named = "Folder" }, required = true, schema = { type = "string", enum = ["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"] } },
 ]
 
 [[resources.verbs]]

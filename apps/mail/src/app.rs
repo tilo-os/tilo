@@ -46,7 +46,7 @@ use ui::widget::{
 };
 
 use crate::account::AccountStore;
-use crate::actions::{DraftData, Outgoing, ServerUpdate};
+use crate::actions::{DraftData, Outgoing};
 use crate::i18n::CATALOG;
 #[path = "contact_recipients.rs"]
 mod contact_recipients;
@@ -120,23 +120,6 @@ struct HeldSend {
     outgoing: Outgoing,
     done: DeliveryDone,
     due: ui::time::Instant,
-}
-
-#[derive(Default)]
-pub(crate) struct ServerOutbox {
-    queued: Vec<(ServerUpdate, ServerUpdateDone)>,
-    sent: HashMap<EngineRequestId, (ServerUpdate, ServerUpdateDone)>,
-    deliveries: Vec<(Outgoing, DeliveryDone)>,
-}
-
-impl ServerOutbox {
-    pub(crate) fn push(&mut self, update: ServerUpdate, done: ServerUpdateDone) {
-        self.queued.push((update, done));
-    }
-
-    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: DeliveryDone) {
-        self.deliveries.push((outgoing, done));
-    }
 }
 
 #[derive(Clone)]
@@ -239,6 +222,9 @@ pub struct MailApp {
     server_outbox: Rc<RefCell<ServerOutbox>>,
     projection: Option<ui::framework::Projection>,
     delivery: Option<ui::framework::Projection>,
+    /// The checks for new mail other windows asked, as this device carries
+    /// them out.
+    checking: Option<ui::framework::Projection>,
     resending: Option<String>,
     held_sends: Vec<HeldSend>,
     /// Sends pressed whose outbox messages have yet to reach the drain:
@@ -304,6 +290,9 @@ pub(crate) struct Mailroom {
     last_auto_refresh_min: i64,
     pending_stage: Option<String>,
     pending_send: HashMap<EngineRequestId, PendingSend>,
+    /// What this window asks of the devices that reach the mail servers,
+    /// when it reaches none itself.
+    pub(crate) checks: checks::DeviceChecks,
     composing: bool,
     dirty: bool,
 }
@@ -572,6 +561,7 @@ impl MailApp {
             server_search: None,
             server_searched: String::new(),
             pending_stage: None,
+            checks: checks::DeviceChecks::default(),
             composing: false,
             dirty: true,
         };
@@ -602,6 +592,7 @@ impl MailApp {
             server_outbox: Rc::default(),
             projection: None,
             delivery: None,
+            checking: None,
             resending: None,
             held_sends: Vec::new(),
             sends_to_hold: 0,
@@ -892,6 +883,10 @@ impl Mailroom {
                 .or(passed);
         }
         let Some(engine) = &self.engine else {
+            // A window that reaches no server asks a device that does.
+            if self.checks.want(&request) {
+                self.dirty = true;
+            }
             return None;
         };
         let request_id = request.request_id();
@@ -2177,6 +2172,9 @@ impl Mailroom {
             self.dirty = true;
             return Some(request_id);
         }
+        if self.checks.asks {
+            self.post_engine(EngineRequest::fetch(account, folder));
+        }
         None
     }
 
@@ -2349,7 +2347,10 @@ impl MailApp {
         }
         st.ingest_fetched(doc, account_id, &reflagged);
         st.ingest_fetched(doc, account_id, &synced.messages);
-        for projection in [&self.projection, &self.delivery].into_iter().flatten() {
+        for projection in [&self.projection, &self.delivery, &self.checking]
+            .into_iter()
+            .flatten()
+        {
             projection.outside_changed();
         }
         // New mail in an inbox the device already held is news; a first
@@ -2533,6 +2534,10 @@ impl MailApp {
         if let Some((_, done)) = refused {
             done(Err(detail.clone()));
         }
+        let check = self.server_outbox.borrow_mut().checking.remove(&request_id);
+        if let Some(done) = check {
+            done(Err(detail.clone()));
+        }
         let account_id = self
             .state()
             .pending_engine_requests
@@ -2661,67 +2666,13 @@ impl MailApp {
                     );
                     done(Ok(()));
                 }
+                let check = self.server_outbox.borrow_mut().checking.remove(&request_id);
+                if let Some(done) = check {
+                    done(Ok(()));
+                }
             }
             ignored => {
                 tracing::warn!(request_id = %ignored.request_id(), "mail: ignoring unmatched or wrong-kind engine event");
-            }
-        }
-    }
-
-    fn flush_server_outbox(&mut self) {
-        let deliveries = std::mem::take(&mut self.server_outbox.borrow_mut().deliveries);
-        let due = ui::time::now() + std::time::Duration::from_secs(SEND_UNDO_SECS);
-        for (outgoing, done) in deliveries {
-            if self.sends_to_hold > 0 {
-                self.sends_to_hold -= 1;
-                self.held_sends.push(HeldSend {
-                    outgoing,
-                    done,
-                    due,
-                });
-                continue;
-            }
-            self.deliver(outgoing, done);
-        }
-        let queued = std::mem::take(&mut self.server_outbox.borrow_mut().queued);
-        for (update, done) in queued {
-            let account = self
-                .shared
-                .borrow()
-                .accounts
-                .accounts
-                .iter()
-                .find(|account| account.config.email == update.account())
-                .map(|account| account.config.clone());
-            let Some(account) = account else {
-                done(Err(format!(
-                    "{} is not set up on this device",
-                    update.account()
-                )));
-                continue;
-            };
-            let message = Box::new(update.locate());
-            let request = match &update {
-                ServerUpdate::Flags { .. } => EngineRequest::store_flag(account, message),
-                ServerUpdate::Move { to, .. } => EngineRequest::move_message(account, message, *to),
-                ServerUpdate::Remove { .. } => EngineRequest::purge(account, message),
-                ServerUpdate::SaveDraft { .. } => {
-                    let Some(draft) = update.saved_draft() else {
-                        done(Err("not a draft to keep".into()));
-                        continue;
-                    };
-                    EngineRequest::save_draft(account, Box::new(draft))
-                }
-            };
-            let posted = self.state().post_engine(request);
-            match posted {
-                Some(request_id) => {
-                    self.server_outbox
-                        .borrow_mut()
-                        .sent
-                        .insert(request_id, (update, done));
-                }
-                None => done(Err("the mail engine is not running".into())),
             }
         }
     }
@@ -2825,6 +2776,10 @@ impl MailApp {
 
     pub(crate) fn follow_delivery(&mut self, delivery: ui::framework::Projection) {
         self.delivery = Some(delivery);
+    }
+
+    pub(crate) fn follow_checks(&mut self, checking: ui::framework::Projection) {
+        self.checking = Some(checking);
     }
 
     fn drain_engine(&mut self, doc: &mut ui::widget::Edits<'_>) {
@@ -3833,6 +3788,12 @@ impl Widget for MailApp {
         if self.state().engine.is_some() {
             self.shared.borrow_mut().now_min = crate::state::now_minutes();
             self.state().maybe_auto_refresh();
+        } else if self.state().checks.asks {
+            // The devices that hold the accounts keep them current; this
+            // window asks each to check once as it opens, and reads the
+            // clock for the times it shows.
+            self.shared.borrow_mut().now_min = crate::state::now_minutes();
+            self.seed_checks();
         }
         let wants_older = self.shared.borrow().wants_older.take();
         if wants_older && self.state().engine.is_some() {
@@ -3863,6 +3824,7 @@ impl Widget for MailApp {
         self.state().deliver_effect_replies();
         self.take_back_sends(state);
         self.flush_server_outbox();
+        self.ask_devices(state);
         self.release_held_sends(state);
         self.compose.settle(state, path);
         self.keep_compose_headers(state);
@@ -4301,6 +4263,7 @@ impl Widget for MailApp {
             .chain(self.compose.headers_due_at())
             .chain(server_search)
             .chain(self.held_sends.iter().map(|held| held.due))
+            .chain(self.state().checks.deadline())
             .min()
     }
 
@@ -5471,7 +5434,10 @@ impl MailApp {
     }
 }
 
+mod checks;
 mod person_accounts;
+mod server_outbox;
+pub(crate) use server_outbox::ServerOutbox;
 #[path = "server_deltas.rs"]
 mod server_deltas;
 use server_deltas::{first_fetch, pass_over_draft_copies, server_changes, take_found};

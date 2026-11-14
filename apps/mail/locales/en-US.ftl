@@ -60,6 +60,8 @@ mail-start-draft-body = Started writing a message
 mail-discard-draft = Discarded the draft
 mail-send-message = Sent a message from { $account }
 mail-cancel-send = Cancelled sending a message
+mail-check-mail = Asked to check { $account } for new mail
+mail-mail-checks = Recorded how a check for new mail went
 mail-message-state-starred = { $new ->
     [true] Starred a message
    *[false] Unstarred a message
@@ -291,6 +293,7 @@ mail-mailbox-create-draft = New draft
 mail-mailbox-show-draft = Show the draft
 mail-mailbox-attach = Attach to draft
 mail-mailbox-send-message = Send message
+mail-mailbox-check-mail = Check for new mail
 mail-mailbox-deliver-message = Deliver message
 mail-mailbox-draft-message = Draft message
 mail-trusted-senders = Trusted senders
@@ -312,6 +315,8 @@ mail-sync-signed-out = Can’t sign in to { $account }
 mail-sync-signed-out-why = Check its password in Settings, under External accounts.
 mail-sync-offline = You’re offline
 mail-sync-offline-why = New mail arrives when you’re back online.
+mail-sync-no-device = No device can check { $account } right now
+mail-sync-no-device-why = This shows the mail your devices already fetched. To check for new mail and send, a computer with this account set up needs to be on and signed in.
 
 ## What Mail says once: what it did, what it could not do, and what is next
 mail-notice-sign-in-unfinished = Sign-in didn’t finish: { $error }

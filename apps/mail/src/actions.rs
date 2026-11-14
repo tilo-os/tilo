@@ -442,6 +442,25 @@ impl Outgoing {
 
 tilo_resource::json_model!(Outgoing);
 
+/// A check for new mail that a window reaching no mail server (a browser
+/// page) asks of a device that holds the account: the account by its
+/// address, and the folder to check.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MailCheck {
+    pub account: String,
+    pub folder: Folder,
+}
+
+impl MailCheck {
+    pub(crate) fn is_valid(&self) -> bool {
+        self.account.contains('@')
+            && self.account.chars().count() <= MAX_DRAFT_ADDRESS_CHARS
+            && self.folder != Folder::Starred
+    }
+}
+
+tilo_resource::json_model!(MailCheck);
+
 fn valid_outbox_id(id: &str) -> bool {
     !id.is_empty() && id.chars().count() <= MAX_MESSAGE_ID_CHARS
 }

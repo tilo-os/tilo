@@ -12,10 +12,41 @@ use ui::tilo_resource::SearchEntry;
 use ui::widget::Element;
 
 use super::{MailApp, Mailroom};
-use crate::actions::{MailEffect, Outgoing, ServerUpdate};
+use crate::actions::{MailCheck, MailEffect, Outgoing, ServerUpdate};
 use crate::i18n::CATALOG;
 use crate::resource::Mail;
 use crate::state::MailState;
+
+/// Carry out the checks for new mail that a window reaching no server asked,
+/// when this window reaches the account's server; and have this window ask
+/// those that do when it reaches none itself.
+fn carry_checks(cx: &ViewCx<Mail>, window: &mut MailApp) {
+    // A check for new mail a window that reaches no server asked: fetched
+    // here when this window reaches the account's server, and what it
+    // fetched reaches that window through the mailbox and the kept copies.
+    let outbox = window.server_outbox();
+    let (shared, carrier) = (Rc::clone(&window.shared), window.room());
+    let checks = cx.outbox(
+        Mail::paths().checks,
+        move |_, check: &MailCheck| {
+            carrier.borrow().reaches_servers() && holds_account(&shared.borrow(), &check.account)
+        },
+        move |_, check: MailCheck, cx| {
+            let reply = cx.reply();
+            outbox.borrow_mut().check(
+                check,
+                Box::new(move |result| {
+                    reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
+                }),
+            );
+            Ok(Effected::Pending)
+        },
+    );
+    window.follow_checks(checks);
+    // A live window that reaches no server itself asks those that do.
+    let asks = cx.mode().is_live() && !window.state().reaches_servers();
+    window.state().checks.asks = asks;
+}
 
 fn holds_account(state: &MailState, address: &str) -> bool {
     state
@@ -91,6 +122,7 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
         },
     );
     window.follow_delivery(delivery);
+    carry_checks(cx, &mut window);
     cx.on_open(window.opener());
     let room = window.room();
     {

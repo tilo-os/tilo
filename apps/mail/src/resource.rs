@@ -18,8 +18,8 @@ use ui::tilo_resource::{
 use ui::widget::Element;
 
 use crate::actions::{
-    DraftData, IngestBaseline, MailEffect, MailTarget, Outgoing, ServerUpdate, bounded_text,
-    valid_calendar_invitation,
+    DraftData, IngestBaseline, MailCheck, MailEffect, MailTarget, Outgoing, ServerUpdate,
+    bounded_text, valid_calendar_invitation,
 };
 use crate::app::MailApp;
 use crate::model::{Draft, DraftAttachment, DraftSender, Folder};
@@ -37,6 +37,10 @@ pub(crate) const MAX_DRAFT_BODY_CHARS: usize = 256 * 1024;
 
 /// How many settled server updates and sent messages the mailbox keeps.
 const SETTLED_KEPT: usize = 64;
+
+/// How many settled checks for new mail the mailbox keeps: enough for a
+/// window to read how its own last checks went.
+const CHECKS_KEPT: usize = 8;
 
 /// How many messages the published mailbox carries as places; the rest are
 /// the window's loaded rows.
@@ -60,6 +64,9 @@ pub struct Mail {
     /// What servers still have to be told: flags, moves and deletes the
     /// reader made that a message's server does not hold yet.
     pub server: Outbox<ServerUpdate>,
+    /// Checks for new mail asked by a window that reaches no mail server,
+    /// waiting for a device that holds their account.
+    pub checks: Outbox<MailCheck>,
     /// Messages the workspace holds whole, under the ids their state is kept
     /// under in `messages`: mail delivered without a server
     /// ([`crate::held`]).
@@ -616,6 +623,34 @@ impl Mail {
             None => self.draft.drafted = None,
         }
         outbox.push(id, outgoing);
+        Ok(())
+    }
+
+    /// Check for new mail
+    ///
+    /// Asks a device that holds the account to check one of its folders
+    /// for new mail, for a window that reaches no mail server itself, such
+    /// as a browser page. What the device fetches arrives in the mailbox as
+    /// fetched mail does. A check already waiting for the same folder is
+    /// not asked twice.
+    #[action(housekeeping)]
+    pub fn check_mail(
+        &mut self,
+        cx: &mut ActionCx,
+        checks: &mut Outbox<MailCheck>,
+        #[param("The address of the account to check")] account: String,
+        #[param("The folder to check")] folder: Folder,
+    ) -> Result<(), Refusal> {
+        let check = MailCheck { account, folder };
+        if !check.is_valid() {
+            return Err(Refusal::new(
+                "a check names an account's address and one of its server's folders",
+            ));
+        }
+        if !checks.pending().any(|(_, waiting)| *waiting == check) {
+            checks.push(cx.id(), check);
+        }
+        checks.prune(CHECKS_KEPT);
         Ok(())
     }
 

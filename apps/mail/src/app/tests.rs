@@ -12,6 +12,7 @@ mod shell;
 mod sync;
 
 use super::*;
+use crate::actions::ServerUpdate;
 use crate::resource::TestMail;
 use automerge::ReadDoc;
 
