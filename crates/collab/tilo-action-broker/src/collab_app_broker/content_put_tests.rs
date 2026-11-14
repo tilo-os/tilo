@@ -161,280 +161,177 @@ fn reason(error: &ActionHostError) -> &str {
     }
 }
 
-tilo_test_env::scenario! {
-    fn a_chunked_put_stores_exactly_what_was_finished;
-
-    phase a_chunked_put_stores_the_bytes_in_the_callers_workspace_and_answers_their_reference;
-    {
-        let fixture = fixture();
-        let bytes: Vec<u8> = (0..700_u32).map(|n| (n % 251) as u8).collect();
-        let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 700).unwrap();
-        let mut offset = 0;
-        for chunk in bytes.chunks(256) {
-            offset = upload.append(offset, chunk).unwrap();
-        }
-        assert_eq!(offset, 700);
-        let reference = upload.finish().unwrap();
-        let hash = blake3::hash(&bytes).to_hex().to_string();
-        assert_eq!(reference, format!("tilo.content:{hash}"));
-        let shelf = fixture.shelf.lock().unwrap();
-        assert_eq!(shelf.begun, std::slice::from_ref(&fixture.workspace));
-        assert_eq!(
-            shelf.stored,
-            [(fixture.workspace.clone(), hash.clone(), bytes)]
-        );
-        assert_eq!(shelf.aborted, 0);
-        // Who put it is kept, without the bytes.
-        let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
-        assert_eq!(records.len(), 1, "{records:?}");
-        assert_eq!(records[0].actor, owner_id());
-        assert_eq!(records[0].workspace, fixture.workspace);
-        assert_eq!(records[0].hash, hash);
-        assert_eq!(records[0].len, 700);
+#[test]
+fn a_chunked_put_stores_the_bytes_in_the_callers_workspace_and_answers_their_reference() {
+    let fixture = fixture();
+    let bytes: Vec<u8> = (0..700_u32).map(|n| (n % 251) as u8).collect();
+    let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 700).unwrap();
+    let mut offset = 0;
+    for chunk in bytes.chunks(256) {
+        offset = upload.append(offset, chunk).unwrap();
     }
-
-    phase a_chunk_at_the_wrong_offset_is_refused_with_where_to_resume;
-    {
-        let fixture = fixture();
-        let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 6).unwrap();
-        assert_eq!(upload.append(0, b"abc").unwrap(), 3);
-        // The same chunk again: refused, not stored twice.
-        let again = upload.append(0, b"abc").unwrap_err();
-        assert_eq!(reason(&again), "the upload has 3 bytes: append at offset 3");
-        let ahead = upload.append(5, b"f").unwrap_err();
-        assert_eq!(reason(&ahead), "the upload has 3 bytes: append at offset 3");
-        let past = upload.append(3, b"defg").unwrap_err();
-        assert!(reason(&past).contains("past the 6 bytes"), "{past:?}");
-        assert_eq!(upload.append(3, b"def").unwrap(), 6);
-        upload.finish().unwrap();
-        assert_eq!(fixture.shelf.lock().unwrap().stored[0].2, b"abcdef");
-    }
-
-    phase a_finish_short_of_the_size_stores_nothing;
-    {
-        let fixture = fixture();
-        let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 6).unwrap();
-        upload.append(0, b"abc").unwrap();
-        let short = upload.finish().unwrap_err();
-        assert_eq!(reason(&short), "the upload has 3 of 6 bytes");
-        let shelf = fixture.shelf.lock().unwrap();
-        assert!(shelf.stored.is_empty());
-        assert_eq!(shelf.aborted, 1);
-    }
-
-    phase a_dropped_upload_stores_nothing;
-    {
-        let fixture = fixture();
-        let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 6).unwrap();
-        upload.append(0, b"abc").unwrap();
-        drop(upload);
-        let shelf = fixture.shelf.lock().unwrap();
-        assert!(shelf.stored.is_empty());
-        assert_eq!(shelf.aborted, 1);
-    }
-
-    phase sizes_the_store_does_not_take_are_refused_before_anything_opens;
-    {
-        let fixture = fixture();
-        for size in [0, 1025] {
-            let refused = fixture
-                .puts
-                .begin(&owner(&fixture.workspace), size)
-                .err()
-                .unwrap();
-            assert_eq!(
-                reason(&refused),
-                format!("an upload is 1 to 1024 bytes, not {size}")
-            );
-        }
-        assert!(fixture.shelf.lock().unwrap().begun.is_empty());
-    }
-
-    phase a_put_whose_session_ended_before_finish_stores_nothing;
-    // Authority is decided again at finish: an upload whose session ended
-    // while the bytes arrived stores nothing.
-    {
-        let fixture = fixture();
-        let caller = agent("porter", &owner_id(), &fixture.workspace);
-        let mut upload = fixture.puts.begin(&caller, 3).unwrap();
-        upload.append(0, b"abc").unwrap();
-        caller.retire_execution();
-        assert!(upload.finish().is_err());
-        let shelf = fixture.shelf.lock().unwrap();
-        assert!(shelf.stored.is_empty());
-        assert_eq!(shelf.aborted, 1);
-    }
+    assert_eq!(offset, 700);
+    let reference = upload.finish().unwrap();
+    let hash = blake3::hash(&bytes).to_hex().to_string();
+    assert_eq!(reference, format!("tilo.content:{hash}"));
+    let shelf = fixture.shelf.lock().unwrap();
+    assert_eq!(shelf.begun, std::slice::from_ref(&fixture.workspace));
+    assert_eq!(
+        shelf.stored,
+        [(fixture.workspace.clone(), hash.clone(), bytes)]
+    );
+    assert_eq!(shelf.aborted, 0);
+    // Who put it is kept, without the bytes.
+    let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].actor, owner_id());
+    assert_eq!(records[0].workspace, fixture.workspace);
+    assert_eq!(records[0].hash, hash);
+    assert_eq!(records[0].len, 700);
 }
 
-tilo_test_env::scenario! {
-    fn an_agents_put_needs_its_persons_upload_grant;
-
-    phase an_agent_allowed_content_uploads_puts_content;
-    {
-        let fixture = fixture();
-        let mut upload = fixture
-            .puts
-            .begin(&agent("porter", &owner_id(), &fixture.workspace), 3)
-            .unwrap();
-        upload.append(0, b"abc").unwrap();
-        upload.finish().unwrap();
-        assert_eq!(fixture.shelf.lock().unwrap().stored.len(), 1);
-    }
-
-    phase an_agent_in_a_turn_by_a_member_who_may_not_upload_is_refused_with_the_rule;
-    // An agent inside a turn acts with its person's grants: a member who may not
-    // change what is there hands on no upload either.
-    // It is told the one rule that would let it, and nothing is opened or stored.
-    {
-        let fixture = fixture();
-        let refused = fixture
-            .puts
-            .begin(&agent("scribe", "ada", &fixture.workspace), 3)
-            .err()
-            .unwrap();
-        assert_eq!(
-            refused,
-            ActionHostError::Refused {
-                reason: "not allowed to add content to this workspace: allow content uploads in this workspace to let it".into()
-            }
-        );
-        let shelf = fixture.shelf.lock().unwrap();
-        assert!(shelf.begun.is_empty() && shelf.stored.is_empty());
-    }
-
-    phase an_agent_caused_by_someone_outside_the_workspace_stores_nothing;
-    // An agent whose turn was caused by someone who is not in the workspace at
-    // all stores nothing there.
-    {
-        let fixture = fixture();
-        let refused = fixture
-            .puts
-            .begin(&agent("stranger", "outsider", &fixture.workspace), 3)
-            .err()
-            .unwrap();
-        assert_eq!(refused, ActionHostError::NotPermitted);
-        let shelf = fixture.shelf.lock().unwrap();
-        assert!(shelf.begun.is_empty() && shelf.stored.is_empty());
-    }
-}
-
-tilo_test_env::scenario! {
-    fn put_attributions_are_kept_for_what_workspaces_hold;
-
-    phase a_put_whose_attribution_cannot_be_written_is_refused_and_tags_nothing;
-    // The put is recorded before the workspace references its content: when the
-    // record cannot be written, the put is refused and the workspace holds nothing.
-    {
-        let fixture = fixture();
-        // Where the attribution line goes, something that takes no line.
-        std::fs::create_dir_all(
-            fixture
-                .journal
-                .join(super::super::invocation_journal::CONTENT_PUTS_FILE),
-        )
+#[test]
+fn an_agent_allowed_content_uploads_puts_content() {
+    let fixture = fixture();
+    let mut upload = fixture
+        .puts
+        .begin(&agent("porter", &owner_id(), &fixture.workspace), 3)
         .unwrap();
-        let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 3).unwrap();
-        upload.append(0, b"abc").unwrap();
-        let refused = upload.finish().expect_err("an unrecorded put is refused");
-        assert!(
-            reason(&refused).contains("content put attribution"),
-            "{refused:?}"
-        );
-        let shelf = fixture.shelf.lock().unwrap();
-        assert!(shelf.stored.is_empty(), "nothing is kept or tagged");
-        assert_eq!(shelf.aborted, 1, "the store's upload is dropped");
-    }
+    upload.append(0, b"abc").unwrap();
+    upload.finish().unwrap();
+    assert_eq!(fixture.shelf.lock().unwrap().stored.len(), 1);
+}
 
-    phase the_attribution_log_stays_bounded_by_what_workspaces_hold;
-    // Each put appends one line beside the file's first, and the file stays as
-    // long as the content the workspace holds, not as many puts as the device ever
-    // made: once the appended lines reach the size of the snapshot, the next put
-    // rewrites the file whole, dropping the attributions of content the workspace no
-    // longer holds on the way.
-    {
-        let fixture = fixture();
-        let path = fixture
-            .journal
-            .join(super::super::invocation_journal::CONTENT_PUTS_FILE);
-        // Content the workspace keeps dropping, as an app discards what it uploaded.
-        let mut longest = 0;
-        for n in 0..256_u32 {
-            let hash = put(&fixture, &n.to_le_bytes().repeat(16));
-            fixture
-                .shelf
-                .lock()
-                .unwrap()
-                .stored
-                .retain(|(_, stored, _)| *stored != hash);
-            longest = longest.max(std::fs::metadata(&path).unwrap().len());
-        }
-        assert!(
-            longest < 4096,
-            "the attribution log grew with the puts made, not with what workspaces hold: {longest} bytes"
-        );
-        // A compaction only happens on the put after the appended lines outgrew
-        // the snapshot, so the file still holds the attributions of the few puts
-        // made since. That backlog is bounded too: it never outgrows the snapshot
-        // line, so the log is bounded by the content workspaces hold plus that backlog,
-        // never by every put the device ever made.
-        let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
-        assert!(
-            records.len() < 32,
-            "the attributions kept are a bounded backlog, not every put made: {}",
-            records.len()
+#[test]
+fn a_chunk_at_the_wrong_offset_is_refused_with_where_to_resume() {
+    let fixture = fixture();
+    let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 6).unwrap();
+    assert_eq!(upload.append(0, b"abc").unwrap(), 3);
+    // The same chunk again: refused, not stored twice.
+    let again = upload.append(0, b"abc").unwrap_err();
+    assert_eq!(reason(&again), "the upload has 3 bytes: append at offset 3");
+    let ahead = upload.append(5, b"f").unwrap_err();
+    assert_eq!(reason(&ahead), "the upload has 3 bytes: append at offset 3");
+    let past = upload.append(3, b"defg").unwrap_err();
+    assert!(reason(&past).contains("past the 6 bytes"), "{past:?}");
+    assert_eq!(upload.append(3, b"def").unwrap(), 6);
+    upload.finish().unwrap();
+    assert_eq!(fixture.shelf.lock().unwrap().stored[0].2, b"abcdef");
+}
+
+#[test]
+fn a_finish_short_of_the_size_stores_nothing() {
+    let fixture = fixture();
+    let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 6).unwrap();
+    upload.append(0, b"abc").unwrap();
+    let short = upload.finish().unwrap_err();
+    assert_eq!(reason(&short), "the upload has 3 of 6 bytes");
+    let shelf = fixture.shelf.lock().unwrap();
+    assert!(shelf.stored.is_empty());
+    assert_eq!(shelf.aborted, 1);
+}
+
+#[test]
+fn a_dropped_upload_stores_nothing() {
+    let fixture = fixture();
+    let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 6).unwrap();
+    upload.append(0, b"abc").unwrap();
+    drop(upload);
+    let shelf = fixture.shelf.lock().unwrap();
+    assert!(shelf.stored.is_empty());
+    assert_eq!(shelf.aborted, 1);
+}
+
+#[test]
+fn sizes_the_store_does_not_take_are_refused_before_anything_opens() {
+    let fixture = fixture();
+    for size in [0, 1025] {
+        let refused = fixture
+            .puts
+            .begin(&owner(&fixture.workspace), size)
+            .err()
+            .unwrap();
+        assert_eq!(
+            reason(&refused),
+            format!("an upload is 1 to 1024 bytes, not {size}")
         );
     }
+    assert!(fixture.shelf.lock().unwrap().begun.is_empty());
+}
 
-    phase every_put_a_workspace_holds_keeps_its_attribution_through_a_compaction;
-    // However many puts a workspace keeps, each one stays attributed: a compaction
-    // folds the appended lines into its snapshot instead of dropping them.
-    {
-        let fixture = fixture();
-        let mut hashes = Vec::new();
-        for n in 0..64_u32 {
-            hashes.push(put(&fixture, &n.to_le_bytes().repeat(16)));
+/// An agent inside a turn acts with its person's grants: a member who may not
+/// change what is there hands on no upload either.
+/// It is told the one rule that would let it, and nothing is opened or stored.
+#[test]
+fn an_agent_in_a_turn_by_a_member_who_may_not_upload_is_refused_with_the_rule() {
+    let fixture = fixture();
+    let refused = fixture
+        .puts
+        .begin(&agent("scribe", "ada", &fixture.workspace), 3)
+        .err()
+        .unwrap();
+    assert_eq!(
+        refused,
+        ActionHostError::Refused {
+            reason: "not allowed to add content to this workspace: allow content uploads in this workspace to let it".into()
         }
-        let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
-        let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
-        for hash in &hashes {
-            assert!(
-                stored.contains(hash),
-                "a put the workspace holds lost its attribution: {hash}"
-            );
-        }
-    }
+    );
+    let shelf = fixture.shelf.lock().unwrap();
+    assert!(shelf.begun.is_empty() && shelf.stored.is_empty());
+}
 
-    phase a_compaction_drops_the_attributions_of_content_no_workspace_holds;
-    // An attribution whose content the workspace no longer holds is dropped by a
-    // compaction, so the file stays as long as the content it describes is
-    // worth attributing.
-    {
-        let fixture = fixture();
-        let dropped = put(&fixture, b"gone before the next compaction");
-        // The workspace drops the content: no put left it, so nothing holds it.
+/// An agent whose turn was caused by someone who is not in the workspace at
+/// all stores nothing there.
+#[test]
+fn an_agent_caused_by_someone_outside_the_workspace_stores_nothing() {
+    let fixture = fixture();
+    let refused = fixture
+        .puts
+        .begin(&agent("stranger", "outsider", &fixture.workspace), 3)
+        .err()
+        .unwrap();
+    assert_eq!(refused, ActionHostError::NotPermitted);
+    let shelf = fixture.shelf.lock().unwrap();
+    assert!(shelf.begun.is_empty() && shelf.stored.is_empty());
+}
+
+/// Authority is decided again at finish: an upload whose session ended
+/// while the bytes arrived stores nothing.
+#[test]
+fn a_put_whose_session_ended_before_finish_stores_nothing() {
+    let fixture = fixture();
+    let caller = agent("porter", &owner_id(), &fixture.workspace);
+    let mut upload = fixture.puts.begin(&caller, 3).unwrap();
+    upload.append(0, b"abc").unwrap();
+    caller.retire_execution();
+    assert!(upload.finish().is_err());
+    let shelf = fixture.shelf.lock().unwrap();
+    assert!(shelf.stored.is_empty());
+    assert_eq!(shelf.aborted, 1);
+}
+
+/// The put is recorded before the workspace references its content: when the
+/// record cannot be written, the put is refused and the workspace holds nothing.
+#[test]
+fn a_put_whose_attribution_cannot_be_written_is_refused_and_tags_nothing() {
+    let fixture = fixture();
+    // Where the attribution line goes, something that takes no line.
+    std::fs::create_dir_all(
         fixture
-            .shelf
-            .lock()
-            .unwrap()
-            .stored
-            .retain(|(_, hash, _)| *hash != dropped);
-        let kept = put(&fixture, b"still held");
-        let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
-        let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
-        assert!(stored.contains(&kept), "the held put stays: {stored:?}");
-        // A compaction, made by enough further puts that the lines outgrow the
-        // snapshot, drops the one nothing holds.
-        for n in 0..64_u32 {
-            put(&fixture, &n.to_le_bytes().repeat(16));
-        }
-        let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
-        let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
-        assert!(
-            !stored.contains(&dropped),
-            "an attribution of content no workspace holds is dropped: {stored:?}"
-        );
-        assert!(stored.contains(&kept), "the held put survives: {stored:?}");
-    }
+            .journal
+            .join(super::super::invocation_journal::CONTENT_PUTS_FILE),
+    )
+    .unwrap();
+    let mut upload = fixture.puts.begin(&owner(&fixture.workspace), 3).unwrap();
+    upload.append(0, b"abc").unwrap();
+    let refused = upload.finish().expect_err("an unrecorded put is refused");
+    assert!(
+        reason(&refused).contains("content put attribution"),
+        "{refused:?}"
+    );
+    let shelf = fixture.shelf.lock().unwrap();
+    assert!(shelf.stored.is_empty(), "nothing is kept or tagged");
+    assert_eq!(shelf.aborted, 1, "the store's upload is dropped");
 }
 
 /// Put `bytes` into the fixture's workspace and answer its hash.
@@ -446,4 +343,95 @@ fn put(fixture: &Fixture, bytes: &[u8]) -> String {
     upload.append(0, bytes).unwrap();
     let reference = upload.finish().unwrap();
     reference.trim_start_matches("tilo.content:").to_owned()
+}
+
+/// Each put appends one line beside the file's first, and the file stays as
+/// long as the content the workspace holds, not as many puts as the device ever
+/// made: once the appended lines reach the size of the snapshot, the next put
+/// rewrites the file whole, dropping the attributions of content the workspace no
+/// longer holds on the way.
+#[test]
+fn the_attribution_log_stays_bounded_by_what_workspaces_hold() {
+    let fixture = fixture();
+    let path = fixture
+        .journal
+        .join(super::super::invocation_journal::CONTENT_PUTS_FILE);
+    // Content the workspace keeps dropping, as an app discards what it uploaded.
+    let mut longest = 0;
+    for n in 0..256_u32 {
+        let hash = put(&fixture, &n.to_le_bytes().repeat(16));
+        fixture
+            .shelf
+            .lock()
+            .unwrap()
+            .stored
+            .retain(|(_, stored, _)| *stored != hash);
+        longest = longest.max(std::fs::metadata(&path).unwrap().len());
+    }
+    assert!(
+        longest < 4096,
+        "the attribution log grew with the puts made, not with what workspaces hold: {longest} bytes"
+    );
+    // A compaction only happens on the put after the appended lines outgrew
+    // the snapshot, so the file still holds the attributions of the few puts
+    // made since. That backlog is bounded too: it never outgrows the snapshot
+    // line, so the log is bounded by the content workspaces hold plus that backlog,
+    // never by every put the device ever made.
+    let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+    assert!(
+        records.len() < 32,
+        "the attributions kept are a bounded backlog, not every put made: {}",
+        records.len()
+    );
+}
+
+/// However many puts a workspace keeps, each one stays attributed: a compaction
+/// folds the appended lines into its snapshot instead of dropping them.
+#[test]
+fn every_put_a_workspace_holds_keeps_its_attribution_through_a_compaction() {
+    let fixture = fixture();
+    let mut hashes = Vec::new();
+    for n in 0..64_u32 {
+        hashes.push(put(&fixture, &n.to_le_bytes().repeat(16)));
+    }
+    let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+    let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
+    for hash in &hashes {
+        assert!(
+            stored.contains(hash),
+            "a put the workspace holds lost its attribution: {hash}"
+        );
+    }
+}
+
+/// An attribution whose content the workspace no longer holds is dropped by a
+/// compaction, so the file stays as long as the content it describes is
+/// worth attributing.
+#[test]
+fn a_compaction_drops_the_attributions_of_content_no_workspace_holds() {
+    let fixture = fixture();
+    let dropped = put(&fixture, b"gone before the next compaction");
+    // The workspace drops the content: no put left it, so nothing holds it.
+    fixture
+        .shelf
+        .lock()
+        .unwrap()
+        .stored
+        .retain(|(_, hash, _)| *hash != dropped);
+    let kept = put(&fixture, b"still held");
+    let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+    let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
+    assert!(stored.contains(&kept), "the held put stays: {stored:?}");
+    // A compaction, made by enough further puts that the lines outgrow the
+    // snapshot, drops the one nothing holds.
+    for n in 0..64_u32 {
+        put(&fixture, &n.to_le_bytes().repeat(16));
+    }
+    let records = super::super::invocation_journal::attributions(&fixture.journal).unwrap();
+    let stored: Vec<String> = records.iter().map(|record| record.hash.clone()).collect();
+    assert!(
+        !stored.contains(&dropped),
+        "an attribution of content no workspace holds is dropped: {stored:?}"
+    );
+    assert!(stored.contains(&kept), "the held put survives: {stored:?}");
 }

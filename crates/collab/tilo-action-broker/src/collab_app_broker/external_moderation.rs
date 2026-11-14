@@ -405,84 +405,80 @@ pub(super) fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
-    tilo_test_env::scenario! {
-        fn external_moderation_binds_evidence_and_destination;
+    #[test]
+    fn external_moderation_appeal_optional_digest_cannot_bypass_committed_evidence() {
+        use automerge::{AutoCommit, ObjType, transaction::Transactable as _};
+        use registry_types::{
+            ExternalModerationOperation, ModerationDestination, ModerationMutation,
+        };
 
-        phase external_moderation_appeal_optional_digest_cannot_bypass_committed_evidence;
-        {
-            use automerge::{AutoCommit, ObjType, transaction::Transactable as _};
-            use registry_types::{
-                ExternalModerationOperation, ModerationDestination, ModerationMutation,
-            };
-
-            let app = "so.tilo.notes";
-            let note = "The reported behavior has been corrected.";
-            let status = "Submitted";
-            let case_id = "case-1";
-            let mut document = AutoCommit::new();
-            let reports = document
-                .put_object(automerge::ROOT, "reports", ObjType::Map)
-                .unwrap();
-            let report = document.put_object(&reports, app, ObjType::Map).unwrap();
-            document.put(&report, "note", note).unwrap();
-            document.put(&report, "status", status).unwrap();
-            document.put(&report, "case", case_id).unwrap();
-            let document = automerge::Automerge::load(&document.save()).unwrap();
-            let mut operation = ExternalModerationOperation {
-                destination: ModerationDestination {
-                    base_url: "https://registry.example".into(),
-                    owner_pubkey_hex: "ab".repeat(32),
-                },
-                request_id: "cd".repeat(16),
-                issued_at_unix: 10,
-                expires_at_unix: 20,
-                mutation: ModerationMutation::PublisherAppeal {
-                    case_id: case_id.into(),
-                    reason: note.into(),
-                    evidence_digest_hex: None,
-                },
-            };
-            assert!(validate_committed_report(&document, app, &operation).is_ok());
-            for (case, reason, digest) in [
-                ("another-case", note, None),
-                (case_id, "An unrelated appeal reason", None),
-                (case_id, note, Some("00".repeat(32))),
-            ] {
-                operation.mutation = ModerationMutation::PublisherAppeal {
-                    case_id: case.into(),
-                    reason: reason.into(),
-                    evidence_digest_hex: digest,
-                };
-                assert!(validate_committed_report(&document, app, &operation).is_err());
-            }
-            operation.mutation = ModerationMutation::PublisherAppeal {
+        let app = "so.tilo.notes";
+        let note = "The reported behavior has been corrected.";
+        let status = "Submitted";
+        let case_id = "case-1";
+        let mut document = AutoCommit::new();
+        let reports = document
+            .put_object(automerge::ROOT, "reports", ObjType::Map)
+            .unwrap();
+        let report = document.put_object(&reports, app, ObjType::Map).unwrap();
+        document.put(&report, "note", note).unwrap();
+        document.put(&report, "status", status).unwrap();
+        document.put(&report, "case", case_id).unwrap();
+        let document = automerge::Automerge::load(&document.save()).unwrap();
+        let mut operation = ExternalModerationOperation {
+            destination: ModerationDestination {
+                base_url: "https://registry.example".into(),
+                owner_pubkey_hex: "ab".repeat(32),
+            },
+            request_id: "cd".repeat(16),
+            issued_at_unix: 10,
+            expires_at_unix: 20,
+            mutation: ModerationMutation::PublisherAppeal {
                 case_id: case_id.into(),
                 reason: note.into(),
-                evidence_digest_hex: Some(
-                    registry_types::report_evidence_digest(app, status, note, Some(case_id)).unwrap(),
-                ),
+                evidence_digest_hex: None,
+            },
+        };
+        assert!(validate_committed_report(&document, app, &operation).is_ok());
+        for (case, reason, digest) in [
+            ("another-case", note, None),
+            (case_id, "An unrelated appeal reason", None),
+            (case_id, note, Some("00".repeat(32))),
+        ] {
+            operation.mutation = ModerationMutation::PublisherAppeal {
+                case_id: case.into(),
+                reason: reason.into(),
+                evidence_digest_hex: digest,
             };
-            assert!(validate_committed_report(&document, app, &operation).is_ok());
-            assert!(validate_committed_report(&document, "so.tilo.mail", &operation).is_err());
+            assert!(validate_committed_report(&document, app, &operation).is_err());
         }
+        operation.mutation = ModerationMutation::PublisherAppeal {
+            case_id: case_id.into(),
+            reason: note.into(),
+            evidence_digest_hex: Some(
+                registry_types::report_evidence_digest(app, status, note, Some(case_id)).unwrap(),
+            ),
+        };
+        assert!(validate_committed_report(&document, app, &operation).is_ok());
+        assert!(validate_committed_report(&document, "so.tilo.mail", &operation).is_err());
+    }
 
-        phase external_moderation_destination_requires_https_without_credentials_or_redirect_hints;
-        {
-            for base in [
-                "http://registry.example",
-                "https://user@registry.example",
-                "file:///registry",
-                "https://registry.example?q=1",
-                "https://registry.example/#fragment",
-            ] {
-                assert!(destination_url(base).is_err(), "{base}");
-            }
-            assert_eq!(
-                destination_url("https://registry.example/base/")
-                    .unwrap()
-                    .as_str(),
-                "https://registry.example/base/moderation/mutations"
-            );
+    #[test]
+    fn external_moderation_destination_requires_https_without_credentials_or_redirect_hints() {
+        for base in [
+            "http://registry.example",
+            "https://user@registry.example",
+            "file:///registry",
+            "https://registry.example?q=1",
+            "https://registry.example/#fragment",
+        ] {
+            assert!(destination_url(base).is_err(), "{base}");
         }
+        assert_eq!(
+            destination_url("https://registry.example/base/")
+                .unwrap()
+                .as_str(),
+            "https://registry.example/base/moderation/mutations"
+        );
     }
 }

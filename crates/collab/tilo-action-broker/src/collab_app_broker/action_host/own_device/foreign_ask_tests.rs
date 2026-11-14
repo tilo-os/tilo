@@ -164,130 +164,126 @@ fn asked_there(own_devices: &Arc<OwnDevices>) -> Fixture {
     )))
 }
 
-tilo_test_env::scenario! {
-    fn asking_a_person_at_a_foreign_device_on_their_own;
+#[test]
+fn a_person_at_a_foreign_device_is_asked_on_one_of_their_own() {
+    let own_devices = Arc::new(OwnDevices::default());
+    let fixture = asked_there(&own_devices);
+    assert!(
+        AppBrokerState::asks_on_own_device(&fixture.caller),
+        "a person at a foreign device is asked where they are"
+    );
+    let waiting = fixture
+        .state
+        .request_witness(&fixture.caller, None, &request());
+    let asked = own_devices.asked_about();
+    assert_eq!(asked.len(), 1, "one question names one invocation");
+    assert_eq!(
+        asked[0].workspace, fixture.workspace,
+        "about the workspace it runs in"
+    );
+    assert_eq!(
+        (
+            asked[0].action_label.as_str(),
+            asked[0].resource_label.as_str()
+        ),
+        ("Remove", "Identities"),
+        "named as this host names the action"
+    );
+    own_devices.answer(Ok(Confirmation::Witnessed("allowed".into())));
+    let answered = waiting.wait_timeout(Duration::from_secs(30));
+    assert!(
+        matches!(answered, Ok(Some(Ok(tilo_actions::remote::ConfirmedInvocation { confirmation: Confirmation::Witnessed(ref token), arguments: None }))) if token != "allowed"),
+        "the host answers with its own witness, not the device's word"
+    );
+    drop(fixture);
+}
 
-    phase a_person_at_a_foreign_device_is_asked_on_one_of_their_own;
-    {
-        let own_devices = Arc::new(OwnDevices::default());
-        let fixture = asked_there(&own_devices);
-        assert!(
-            AppBrokerState::asks_on_own_device(&fixture.caller),
-            "a person at a foreign device is asked where they are"
-        );
-        let waiting = fixture
-            .state
-            .request_witness(&fixture.caller, None, &request());
-        let asked = own_devices.asked_about();
-        assert_eq!(asked.len(), 1, "one question names one invocation");
-        assert_eq!(
-            asked[0].workspace, fixture.workspace,
-            "about the workspace it runs in"
-        );
-        assert_eq!(
-            (
-                asked[0].action_label.as_str(),
-                asked[0].resource_label.as_str()
-            ),
-            ("Remove", "Identities"),
-            "named as this host names the action"
-        );
-        own_devices.answer(Ok(Confirmation::Witnessed("allowed".into())));
-        let answered = waiting.wait_timeout(Duration::from_secs(30));
-        assert!(
-            matches!(answered, Ok(Some(Ok(tilo_actions::remote::ConfirmedInvocation { confirmation: Confirmation::Witnessed(ref token), arguments: None }))) if token != "allowed"),
-            "the host answers with its own witness, not the device's word"
-        );
-        drop(fixture);
-    }
+#[test]
+fn a_denied_answer_confirms_nothing() {
+    let own_devices = Arc::new(OwnDevices::default());
+    let fixture = asked_there(&own_devices);
+    let waiting = fixture
+        .state
+        .request_witness(&fixture.caller, None, &request());
+    own_devices.answer(Err(ActionHostError::NotPermitted));
+    assert!(matches!(
+        waiting.wait_timeout(Duration::from_secs(30)),
+        Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
+    ));
+    drop(fixture);
+}
 
-    phase a_denied_answer_confirms_nothing;
-    {
-        let own_devices = Arc::new(OwnDevices::default());
-        let fixture = asked_there(&own_devices);
-        let waiting = fixture
+#[test]
+fn a_device_of_their_own_is_asked_here() {
+    let own_devices = Arc::new(OwnDevices::default());
+    let fixture = asked_there(&own_devices);
+    let home = fixture.caller.clone().from_foreign_device(false);
+    assert!(
+        !AppBrokerState::asks_on_own_device(&home),
+        "at a device of their own the question stays here"
+    );
+    drop(fixture);
+}
+
+#[test]
+fn without_an_own_device_nobody_is_asked() {
+    let fixture = Fixture::new_certified_foreign(services(None));
+    assert!(matches!(
+        fixture
             .state
-            .request_witness(&fixture.caller, None, &request());
-        own_devices.answer(Err(ActionHostError::NotPermitted));
-        assert!(matches!(
-            waiting.wait_timeout(Duration::from_secs(30)),
+            .request_witness(&fixture.caller, None, &request())
+            .wait_timeout(Duration::from_secs(5)),
+        Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
+    ));
+    drop(fixture);
+}
+
+#[test]
+fn an_unanswered_question_refuses_the_invocation() {
+    let own_devices = Arc::new(OwnDevices::default());
+    let fixture = asked_there(&own_devices);
+    let request = request();
+    let binding = fixture
+        .state
+        .witness_binding("person", &fixture.workspace, &request);
+    // Nobody answers on the person's own device: what comes back to the
+    // foreign device is a refusal, never a confirmation.
+    let answered = fixture
+        .state
+        .own_device_witness_within(
+            &fixture.caller,
+            &binding,
+            &request,
+            Duration::from_millis(50),
+        )
+        .wait_timeout(Duration::from_secs(30));
+    assert!(
+        matches!(
+            answered,
             Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
-        ));
-        drop(fixture);
-    }
+        ),
+        "a question nobody answers confirms nothing"
+    );
+    assert_eq!(own_devices.asked_about().len(), 1, "one question was asked");
+    drop(fixture);
+}
 
-    phase a_device_of_their_own_is_asked_here;
-    {
-        let own_devices = Arc::new(OwnDevices::default());
-        let fixture = asked_there(&own_devices);
-        let home = fixture.caller.clone().from_foreign_device(false);
-        assert!(
-            !AppBrokerState::asks_on_own_device(&home),
-            "at a device of their own the question stays here"
-        );
-        drop(fixture);
-    }
-
-    phase without_an_own_device_nobody_is_asked;
-    {
-        let fixture = Fixture::new_certified_foreign(services(None));
-        assert!(matches!(
-            fixture
-                .state
-                .request_witness(&fixture.caller, None, &request())
-                .wait_timeout(Duration::from_secs(5)),
-            Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
-        ));
-        drop(fixture);
-    }
-
-    phase an_unanswered_question_refuses_the_invocation;
-    {
-        let own_devices = Arc::new(OwnDevices::default());
-        let fixture = asked_there(&own_devices);
-        let request = request();
-        let binding = fixture
+#[test]
+fn an_unreachable_own_device_confirms_nothing() {
+    let fixture = Fixture::new_certified_foreign(HostServices {
+        own_device: Some(
+            Arc::new(OwnDevices::unreachable(ActionHostError::Unavailable {
+                reason: "no device of theirs is reachable in this workspace".into(),
+            })) as Arc<dyn OwnDeviceActions>,
+        ),
+        ..HostServices::default()
+    });
+    assert!(matches!(
+        fixture
             .state
-            .witness_binding("person", &fixture.workspace, &request);
-        // Nobody answers on the person's own device: what comes back to the
-        // foreign device is a refusal, never a confirmation.
-        let answered = fixture
-            .state
-            .own_device_witness_within(
-                &fixture.caller,
-                &binding,
-                &request,
-                Duration::from_millis(50),
-            )
-            .wait_timeout(Duration::from_secs(30));
-        assert!(
-            matches!(
-                answered,
-                Ok(Some(Err(ActionHostError::ConfirmationRequired { .. })))
-            ),
-            "a question nobody answers confirms nothing"
-        );
-        assert_eq!(own_devices.asked_about().len(), 1, "one question was asked");
-        drop(fixture);
-    }
-
-    phase an_unreachable_own_device_confirms_nothing;
-    {
-        let fixture = Fixture::new_certified_foreign(HostServices {
-            own_device: Some(
-                Arc::new(OwnDevices::unreachable(ActionHostError::Unavailable {
-                    reason: "no device of theirs is reachable in this workspace".into(),
-                })) as Arc<dyn OwnDeviceActions>,
-            ),
-            ..HostServices::default()
-        });
-        assert!(matches!(
-            fixture
-                .state
-                .request_witness(&fixture.caller, None, &request())
-                .wait_timeout(Duration::from_secs(5)),
-            Ok(Some(Err(ActionHostError::Unavailable { .. })))
-        ));
-        drop(fixture);
-    }
+            .request_witness(&fixture.caller, None, &request())
+            .wait_timeout(Duration::from_secs(5)),
+        Ok(Some(Err(ActionHostError::Unavailable { .. })))
+    ));
+    drop(fixture);
 }

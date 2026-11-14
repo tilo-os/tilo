@@ -266,272 +266,145 @@ mod tests {
             .expect("admission answers at once")
     }
 
-    tilo_test_env::scenario! {
-        #[allow(
-            clippy::significant_drop_tightening,
-            reason = "the test keeps its fixture and guards alive through its assertions"
-        )]
-        fn a_certified_own_device_invocation_is_signed_journaled_and_fail_closed;
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
+    #[test]
+    fn certified_own_device_refuses_foreign_and_unproven_device_callers() {
+        for foreign in [false, true] {
+            let network = Arc::new(Network::default());
+            let services = crate::services::HostServices {
+                own_device: Some(network.clone()),
+                ..Default::default()
+            };
+            let f = if foreign {
+                super::super::super::host_steps::signed_test_support::Fixture::new_certified_foreign(
+                    services,
+                )
+            } else {
+                super::super::super::host_steps::signed_test_support::Fixture::new_certified(
+                    services,
+                )
+            };
+            let asked = request(&invocation(SETTINGS));
+            if foreign {
+                assert!(f.invoke(&asked).is_err());
+            } else {
+                assert!(invoked(&f.state, &f.caller, &asked).is_err());
+            }
+            assert!(network.sent.lock().unwrap().is_empty());
+        }
+    }
 
-        phase certified_own_device_refuses_foreign_and_unproven_device_callers;
-        {
-            for foreign in [false, true] {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
+    #[test]
+    fn certified_own_device_preserves_service_caller_and_signed_ownership() {
+        let network = Arc::new(Network::default());
+        let f = super::super::super::host_steps::signed_test_support::Fixture::new_certified(
+            crate::services::HostServices {
+                own_device: Some(network.clone()),
+                ..Default::default()
+            },
+        );
+        let asked = request(&invocation(SETTINGS));
+        *network.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
+        f.invoke(&asked).unwrap();
+        f.assert_signed(&asked, false);
+        assert_eq!(
+            network.callers.lock().unwrap().as_slice(),
+            std::slice::from_ref(&f.caller)
+        );
+        assert!(
+            f.caller.device_public_key().is_some(),
+            "certificate custody is retained"
+        );
+        network
+            .answers
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap()
+            .complete(Ok(tilo_actions::ActionOutput::default()));
+        f.assert_signed(&asked, true);
+        f.invoke(&asked).unwrap();
+        assert_eq!(network.sent.lock().unwrap().len(), 1);
+        f.authority
+            .revoked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(f.invoke(&request(&invocation(SETTINGS))).is_err());
+        assert_eq!(network.sent.lock().unwrap().len(), 1);
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
+    #[test]
+    fn own_device_rechecks_authority_after_blocked_durable_admission() {
+        use std::sync::{atomic::Ordering, mpsc};
+        use tilo_actions::InvocationUpdate;
+
+        for certified in [false, true] {
+            for change in [
+                "unchanged",
+                "certificate",
+                "execution",
+                "permission",
+                "time",
+            ] {
                 let network = Arc::new(Network::default());
                 let services = crate::services::HostServices {
                     own_device: Some(network.clone()),
                     ..Default::default()
                 };
-                let f = if foreign {
-                    super::super::super::host_steps::signed_test_support::Fixture::new_certified_foreign(
-                        services,
-                    )
-                } else {
+                let mut f = if certified {
                     super::super::super::host_steps::signed_test_support::Fixture::new_certified(
                         services,
                     )
+                } else {
+                    super::super::super::host_steps::signed_test_support::Fixture::new(services)
                 };
+                f.caller = f.caller.clone().in_new_execution();
                 let asked = request(&invocation(SETTINGS));
-                if foreign {
-                    assert!(f.invoke(&asked).is_err());
-                } else {
-                    assert!(invoked(&f.state, &f.caller, &asked).is_err());
-                }
-                assert!(network.sent.lock().unwrap().is_empty());
-            }
-        }
-
-        phase certified_own_device_preserves_service_caller_and_signed_ownership;
-        {
-            let network = Arc::new(Network::default());
-            let f = super::super::super::host_steps::signed_test_support::Fixture::new_certified(
-                crate::services::HostServices {
-                    own_device: Some(network.clone()),
-                    ..Default::default()
-                },
-            );
-            let asked = request(&invocation(SETTINGS));
-            *network.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
-            f.invoke(&asked).unwrap();
-            f.assert_signed(&asked, false);
-            assert_eq!(
-                network.callers.lock().unwrap().as_slice(),
-                std::slice::from_ref(&f.caller)
-            );
-            assert!(
-                f.caller.device_public_key().is_some(),
-                "certificate custody is retained"
-            );
-            network
-                .answers
-                .lock()
-                .unwrap()
-                .pop()
-                .unwrap()
-                .complete(Ok(tilo_actions::ActionOutput::default()));
-            f.assert_signed(&asked, true);
-            f.invoke(&asked).unwrap();
-            assert_eq!(network.sent.lock().unwrap().len(), 1);
-            f.authority
-                .revoked
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            assert!(f.invoke(&request(&invocation(SETTINGS))).is_err());
-            assert_eq!(network.sent.lock().unwrap().len(), 1);
-        }
-
-        phase own_device_rechecks_authority_after_blocked_durable_admission;
-        {
-            use std::sync::{atomic::Ordering, mpsc};
-            use tilo_actions::InvocationUpdate;
-
-            for certified in [false, true] {
-                for change in [
-                    "unchanged",
-                    "certificate",
-                    "execution",
-                    "permission",
-                    "time",
-                ] {
-                    let network = Arc::new(Network::default());
-                    let services = crate::services::HostServices {
-                        own_device: Some(network.clone()),
-                        ..Default::default()
-                    };
-                    let mut f = if certified {
-                        super::super::super::host_steps::signed_test_support::Fixture::new_certified(
-                            services,
-                        )
-                    } else {
-                        super::super::super::host_steps::signed_test_support::Fixture::new(services)
-                    };
-                    f.caller = f.caller.clone().in_new_execution();
-                    let asked = request(&invocation(SETTINGS));
-                    let (entered, blocked) = mpsc::sync_channel(0);
-                    let (release, resume) = mpsc::sync_channel(0);
-                    f.state
-                        .journal
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .after_admission = Some(Box::new(move || {
-                        entered.send(()).unwrap();
-                        resume.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                    }));
-                    let result = std::thread::scope(|scope| {
-                        let state = f.state.clone();
-                        let caller = f.caller.clone();
-                        let origin = f.origin.clone();
-                        let asked = &asked;
-                        let worker =
-                            scope.spawn(move || state.invoke_own_device(&caller, Some(&origin), asked));
-                        blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                        match change {
-                            "certificate" => f.authority.revoked.store(true, Ordering::SeqCst),
-                            "execution" => f.caller.retire_execution(),
-                            "permission" => f.tree.write().workspaces[0].set_owner("someone-else"),
-                            "time" => f.retire_policy_origin(),
-                            _ => {}
-                        }
-                        release.send(()).unwrap();
-                        worker.join().unwrap()
-                    });
-                    if change == "unchanged" {
-                        result.expect("unchanged custody must still forward");
-                        assert_eq!(network.sent.lock().unwrap().len(), 1);
-                        network
-                            .answers
-                            .lock()
-                            .unwrap()
-                            .pop()
-                            .unwrap()
-                            .complete(Ok(tilo_actions::ActionOutput::default()));
-                        let record = f.assert_signed(&asked, true);
-                        assert!(matches!(record.update, InvocationUpdate::Succeeded { .. }));
-                    } else {
-                        assert!(result.is_err(), "{certified}/{change}");
-                        assert!(
-                            network.sent.lock().unwrap().is_empty(),
-                            "{certified}/{change}"
-                        );
-                        let record = f.assert_signed(&asked, true);
-                        assert!(!record.uncertain);
-                        assert!(
-                            matches!(record.update, InvocationUpdate::Failed { ref error, .. }
-                            if error.code == "host_action_refused")
-                        );
-                    }
-                }
-            }
-        }
-
-        phase own_device_signs_before_send_and_preserves_uuid_through_completion;
-        {
-            let network = Arc::new(Network::default());
-            let f = super::super::super::host_steps::signed_test_support::Fixture::new(
-                crate::services::HostServices {
-                    own_device: Some(network.clone()),
-                    ..Default::default()
-                },
-            );
-            let asked = request(&invocation(SETTINGS));
-            *network.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
-            let receipt = f.invoke(&asked).unwrap();
-            let accepted = f.assert_signed(&asked, false);
-            assert_eq!(receipt.invocation, asked.invocation);
-            let repeated = f.invoke(&asked).unwrap();
-            assert_eq!(receipt, repeated);
-            assert_eq!(network.sent.lock().unwrap().len(), 1);
-            let mut changed = asked.clone();
-            changed.argument = invocation("so.tilo.notes").argument();
-            assert!(
-                f.invoke(&changed).is_err(),
-                "changed target cannot reuse an admitted id"
-            );
-            network
-                .answers
-                .lock()
-                .unwrap()
-                .pop()
-                .unwrap()
-                .complete(Ok(tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({"workspaces": []})),
-                    resources: Vec::new(),
+                let (entered, blocked) = mpsc::sync_channel(0);
+                let (release, resume) = mpsc::sync_channel(0);
+                f.state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .after_admission = Some(Box::new(move || {
+                    entered.send(()).unwrap();
+                    resume.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 }));
-            let completed = f.assert_signed(&asked, true);
-            assert_eq!(completed.admission, accepted.admission);
-            assert!(
-                matches!(completed.update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == asked.invocation)
-            );
-            assert_eq!(
-                completed.terminal.as_ref().unwrap().category,
-                crate::action_evidence::TerminalCategory::Succeeded
-            );
-            f.reopen_journal();
-            assert_eq!(f.assert_signed(&asked, true), completed);
-        }
-
-        phase own_device_signs_failure_and_a_lost_remote_answer_without_resending;
-        {
-            for dropped in [false, true] {
-                let network = Arc::new(Network::default());
-                let f = super::super::super::host_steps::signed_test_support::Fixture::new(
-                    crate::services::HostServices {
-                        own_device: Some(network.clone()),
-                        ..Default::default()
-                    },
-                );
-                let asked = request(&invocation(SETTINGS));
-                f.invoke(&asked).unwrap();
-                let answer = network.answers.lock().unwrap().pop().unwrap();
-                if dropped {
-                    drop(answer);
-                } else {
-                    answer.complete(Err(Box::new(tilo_actions::ActionFailure {
-                        code: "device_unreachable".into(),
-                        message: "the device disconnected".into(),
-                        details: None,
-                        retryable: true,
-                    })));
-                }
-                let completed = f.assert_signed(&asked, true);
-                assert!(
-                    matches!(completed.update, tilo_actions::InvocationUpdate::Failed { invocation, .. } if invocation == asked.invocation)
-                );
-                assert_eq!(
-                    completed.terminal.unwrap().category,
-                    if dropped {
-                        crate::action_evidence::TerminalCategory::Uncertain
-                    } else {
-                        crate::action_evidence::TerminalCategory::Failed
+                let result = std::thread::scope(|scope| {
+                    let state = f.state.clone();
+                    let caller = f.caller.clone();
+                    let origin = f.origin.clone();
+                    let asked = &asked;
+                    let worker =
+                        scope.spawn(move || state.invoke_own_device(&caller, Some(&origin), asked));
+                    blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+                    match change {
+                        "certificate" => f.authority.revoked.store(true, Ordering::SeqCst),
+                        "execution" => f.caller.retire_execution(),
+                        "permission" => f.tree.write().workspaces[0].set_owner("someone-else"),
+                        "time" => f.retire_policy_origin(),
+                        _ => {}
                     }
-                );
-                f.invoke(&asked).unwrap();
-                assert_eq!(network.sent.lock().unwrap().len(), 1);
-            }
-        }
-
-        phase own_device_journal_barriers_precede_dispatch_and_reported_success;
-        {
-            for admission_failure in [false, true] {
-                let network = Arc::new(Network::default());
-                let f = super::super::super::host_steps::signed_test_support::Fixture::new(
-                    crate::services::HostServices {
-                        own_device: Some(network.clone()),
-                        ..Default::default()
-                    },
-                );
-                let asked = request(&invocation(SETTINGS));
-                if admission_failure {
-                    f.fail_next_barrier();
-                    assert!(f.invoke(&asked).is_err());
-                    assert!(network.sent.lock().unwrap().is_empty());
-                    assert!(f.state.remote_job(&f.caller, &asked.invocation).is_none());
-                } else {
-                    let receipt = f.invoke(&asked).unwrap();
-                    let job = f.state.remote_job(&f.caller, &receipt.invocation).unwrap();
-                    f.fail_next_barrier();
+                    release.send(()).unwrap();
+                    worker.join().unwrap()
+                });
+                if change == "unchanged" {
+                    result.expect("unchanged custody must still forward");
+                    assert_eq!(network.sent.lock().unwrap().len(), 1);
                     network
                         .answers
                         .lock()
@@ -539,24 +412,83 @@ mod tests {
                         .pop()
                         .unwrap()
                         .complete(Ok(tilo_actions::ActionOutput::default()));
+                    let record = f.assert_signed(&asked, true);
+                    assert!(matches!(record.update, InvocationUpdate::Succeeded { .. }));
+                } else {
+                    assert!(result.is_err(), "{certified}/{change}");
                     assert!(
-                        matches!(f.state.invocation_status(job), Some(
-                        tilo_actions::InvocationUpdate::Accepted { invocation }
-                    ) if invocation == asked.invocation),
-                        "failed durability must not publish success"
+                        network.sent.lock().unwrap().is_empty(),
+                        "{certified}/{change}"
+                    );
+                    let record = f.assert_signed(&asked, true);
+                    assert!(!record.uncertain);
+                    assert!(
+                        matches!(record.update, InvocationUpdate::Failed { ref error, .. }
+                        if error.code == "host_action_refused")
                     );
                 }
             }
         }
+    }
 
-        phase own_device_immediate_refusal_is_signed_and_replayed_without_sending;
-        {
-            let network = Arc::new(Network {
-                refuse: Some(ActionHostError::Refused {
-                    reason: "the device is not enrolled".into(),
-                }),
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
+    #[test]
+    fn own_device_signs_before_send_and_preserves_uuid_through_completion() {
+        let network = Arc::new(Network::default());
+        let f = super::super::super::host_steps::signed_test_support::Fixture::new(
+            crate::services::HostServices {
+                own_device: Some(network.clone()),
                 ..Default::default()
-            });
+            },
+        );
+        let asked = request(&invocation(SETTINGS));
+        *network.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
+        let receipt = f.invoke(&asked).unwrap();
+        let accepted = f.assert_signed(&asked, false);
+        assert_eq!(receipt.invocation, asked.invocation);
+        let repeated = f.invoke(&asked).unwrap();
+        assert_eq!(receipt, repeated);
+        assert_eq!(network.sent.lock().unwrap().len(), 1);
+        let mut changed = asked.clone();
+        changed.argument = invocation("so.tilo.notes").argument();
+        assert!(
+            f.invoke(&changed).is_err(),
+            "changed target cannot reuse an admitted id"
+        );
+        network
+            .answers
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap()
+            .complete(Ok(tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({"workspaces": []})),
+                resources: Vec::new(),
+            }));
+        let completed = f.assert_signed(&asked, true);
+        assert_eq!(completed.admission, accepted.admission);
+        assert!(
+            matches!(completed.update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == asked.invocation)
+        );
+        assert_eq!(
+            completed.terminal.as_ref().unwrap().category,
+            crate::action_evidence::TerminalCategory::Succeeded
+        );
+        f.reopen_journal();
+        assert_eq!(f.assert_signed(&asked, true), completed);
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
+    #[test]
+    fn own_device_signs_failure_and_a_lost_remote_answer_without_resending() {
+        for dropped in [false, true] {
+            let network = Arc::new(Network::default());
             let f = super::super::super::host_steps::signed_test_support::Fixture::new(
                 crate::services::HostServices {
                     own_device: Some(network.clone()),
@@ -564,197 +496,285 @@ mod tests {
                 },
             );
             let asked = request(&invocation(SETTINGS));
-            *network.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
-            assert!(matches!(
-                f.invoke(&asked),
-                Err(ActionHostError::Refused { .. })
-            ));
+            f.invoke(&asked).unwrap();
+            let answer = network.answers.lock().unwrap().pop().unwrap();
+            if dropped {
+                drop(answer);
+            } else {
+                answer.complete(Err(Box::new(tilo_actions::ActionFailure {
+                    code: "device_unreachable".into(),
+                    message: "the device disconnected".into(),
+                    details: None,
+                    retryable: true,
+                })));
+            }
             let completed = f.assert_signed(&asked, true);
+            assert!(
+                matches!(completed.update, tilo_actions::InvocationUpdate::Failed { invocation, .. } if invocation == asked.invocation)
+            );
             assert_eq!(
                 completed.terminal.unwrap().category,
-                crate::action_evidence::TerminalCategory::Failed
-            );
-            assert!(
-                f.invoke(&asked).is_ok(),
-                "retry observes the durable refusal"
-            );
-            assert!(network.sent.lock().unwrap().is_empty());
-        }
-
-        phase own_device_missing_signer_and_revoked_custody_never_reach_the_network;
-        {
-            for revoked in [false, true] {
-                let network = Arc::new(Network::default());
-                let f = super::super::super::host_steps::signed_test_support::Fixture::new(
-                    crate::services::HostServices {
-                        own_device: Some(network.clone()),
-                        ..Default::default()
-                    },
-                );
-                if revoked {
-                    f.authority
-                        .revoked
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                if dropped {
+                    crate::action_evidence::TerminalCategory::Uncertain
                 } else {
-                    std::fs::remove_file(
-                        tilo_identity_host::provisioning::collaboration_identity_paths().device_privkey,
-                    )
-                    .unwrap();
+                    crate::action_evidence::TerminalCategory::Failed
                 }
-                let asked = request(&invocation(SETTINGS));
+            );
+            f.invoke(&asked).unwrap();
+            assert_eq!(network.sent.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
+    #[test]
+    fn own_device_journal_barriers_precede_dispatch_and_reported_success() {
+        for admission_failure in [false, true] {
+            let network = Arc::new(Network::default());
+            let f = super::super::super::host_steps::signed_test_support::Fixture::new(
+                crate::services::HostServices {
+                    own_device: Some(network.clone()),
+                    ..Default::default()
+                },
+            );
+            let asked = request(&invocation(SETTINGS));
+            if admission_failure {
+                f.fail_next_barrier();
                 assert!(f.invoke(&asked).is_err());
                 assert!(network.sent.lock().unwrap().is_empty());
                 assert!(f.state.remote_job(&f.caller, &asked.invocation).is_none());
+            } else {
+                let receipt = f.invoke(&asked).unwrap();
+                let job = f.state.remote_job(&f.caller, &receipt.invocation).unwrap();
+                f.fail_next_barrier();
+                network
+                    .answers
+                    .lock()
+                    .unwrap()
+                    .pop()
+                    .unwrap()
+                    .complete(Ok(tilo_actions::ActionOutput::default()));
+                assert!(
+                    matches!(f.state.invocation_status(job), Some(
+                    tilo_actions::InvocationUpdate::Accepted { invocation }
+                ) if invocation == asked.invocation),
+                    "failed durability must not publish success"
+                );
             }
         }
     }
 
-    tilo_test_env::scenario! {
-        fn an_own_device_invocation_is_for_the_person_here_and_their_apps;
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
+    #[test]
+    fn own_device_immediate_refusal_is_signed_and_replayed_without_sending() {
+        let network = Arc::new(Network {
+            refuse: Some(ActionHostError::Refused {
+                reason: "the device is not enrolled".into(),
+            }),
+            ..Default::default()
+        });
+        let f = super::super::super::host_steps::signed_test_support::Fixture::new(
+            crate::services::HostServices {
+                own_device: Some(network.clone()),
+                ..Default::default()
+            },
+        );
+        let asked = request(&invocation(SETTINGS));
+        *network.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
+        assert!(matches!(
+            f.invoke(&asked),
+            Err(ActionHostError::Refused { .. })
+        ));
+        let completed = f.assert_signed(&asked, true);
+        assert_eq!(
+            completed.terminal.unwrap().category,
+            crate::action_evidence::TerminalCategory::Failed
+        );
+        assert!(
+            f.invoke(&asked).is_ok(),
+            "retry observes the durable refusal"
+        );
+        assert!(network.sent.lock().unwrap().is_empty());
+    }
 
-        phase own_device_refuses_every_caller_but_the_person_here;
-        // Nobody but the person at this device reaches another device: not a
-        // remote device (of theirs or anyone's), an agent, a bot, an app under its own
-        // identity, a Shortcut's step, a foreign device, or a caller in no
-        // workspace. Nothing is sent for any of them. (Which person this device
-        // belongs to, and whether the target is one of theirs, the host's
-        // network decides.)
-        {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps its fixture and guards alive through its assertions"
+    )]
+    #[test]
+    fn own_device_missing_signer_and_revoked_custody_never_reach_the_network() {
+        for revoked in [false, true] {
             let network = Arc::new(Network::default());
-            let (state, owner, workspace) = broker(Arc::clone(&network));
-            let asked = request(&invocation(SETTINGS));
-            let refused = [
-                Caller::authenticated([41; 32], [43; 32]).in_workspace(workspace.clone()),
-                Caller::authenticated([77; 32], [78; 32]).in_workspace(workspace.clone()),
-                Caller::local_agent("assistant").in_workspace(workspace.clone()),
-                Caller::delegated_agent("assistant", [41; 32], [44; 32])
-                    .in_workspace(workspace.clone()),
-                Caller::bot("helper", [41; 32], [45; 32]).in_workspace(workspace.clone()),
-                Caller::local_app(SETTINGS).in_workspace(workspace.clone()),
-                Caller::local_person(owner.clone())
-                    .delegated_to("assistant")
-                    .in_workspace(workspace.clone()),
-                Caller::local_person(owner.clone())
-                    .running_shortcut("nightly")
-                    .in_workspace(workspace.clone()),
-                Caller::local_person(owner.clone())
-                    .from_foreign_device(true)
-                    .in_workspace(workspace),
-                Caller::local_person(owner),
-            ];
-            for caller in refused {
-                let mut fresh = asked.clone();
-                fresh.invocation = tilo_actions::InvocationId::new();
-                assert!(
-                    invoked(&state, &caller, &fresh).is_err(),
-                    "{:?} must not reach another device",
-                    caller.acting()
-                );
-            }
-            assert!(network.sent.lock().unwrap().is_empty(), "nothing was sent");
-        }
-
-        phase own_device_sends_once_per_invocation_and_follows_the_other_device;
-        // The person reaches the service once per invocation id, a retry
-        // observes the first run, and the other device's outcome becomes the
-        // invocation's.
-        {
-            let network = Arc::new(Network::default());
-            let (state, owner, workspace) = broker(Arc::clone(&network));
-            let person = Caller::local_person(owner).in_workspace(workspace);
-            let asked = request(&invocation(SETTINGS));
-
-            let receipt = invoked(&state, &person, &asked).expect("admitted");
-            let again = invoked(&state, &person, &asked).expect("the retry is the same run");
-            assert_eq!(again.invocation, receipt.invocation);
-            let sent = network.sent.lock().unwrap().clone();
-            assert_eq!(sent.len(), 1, "a retry is not sent again");
-            let (checked, forwarded) = &sent[0];
-            assert_eq!(checked.device, [42; 32]);
-            assert_eq!(checked.app, SETTINGS);
-            assert_eq!(checked.address.action, "storage-summary");
-            assert_eq!(forwarded.invocation, asked.invocation);
-
-            let job = state
-                .remote_job(&person, &receipt.invocation)
-                .expect("the invocation has a job");
-            assert!(matches!(
-                state.invocation_status(job),
-                Some(tilo_actions::InvocationUpdate::Accepted { .. })
-            ));
-            let summary = serde_json::json!({"workspaces": []});
-            network
-                .answers
-                .lock()
-                .unwrap()
-                .pop()
-                .expect("sent")
-                .complete(Ok(tilo_actions::ActionOutput {
-                    value: Some(summary.clone()),
-                    resources: Vec::new(),
-                }));
-            let Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
-                state.invocation_status(job)
-            else {
-                panic!("the other device's answer is the invocation's outcome");
-            };
-            assert_eq!(output.value, Some(summary));
-        }
-
-        phase a_device_the_host_refuses_retains_a_failed_invocation;
-        // A device the host does not recognise as one of the person's is
-        // refused by the host, and the refusal remains the invocation's outcome.
-        // A retry observes that refusal rather than attempting another dispatch.
-        {
-            let network = Arc::new(Network {
-                refuse: Some(ActionHostError::Refused {
-                    reason: "the device is not one of the person's enrolled devices".into(),
-                }),
-                ..Network::default()
-            });
-            let (state, owner, workspace) = broker(network);
-            let person = Caller::local_person(owner).in_workspace(workspace);
-            let asked = request(&invocation(SETTINGS));
-            assert!(matches!(
-                invoked(&state, &person, &asked),
-                Err(ActionHostError::Refused { .. })
-            ));
-            let job = state
-                .remote_job(&person, &asked.invocation)
-                .expect("refusal is retained");
-            assert!(matches!(
-                state.invocation_status(job),
-                Some(tilo_actions::InvocationUpdate::Failed { invocation, .. }) if invocation == asked.invocation
-            ));
-            let repeated = invoked(&state, &person, &asked).expect("retry observes retained failure");
-            assert_eq!(repeated.invocation, asked.invocation);
-            let mut malformed = asked;
-            malformed.invocation = tilo_actions::InvocationId::new();
-            malformed.argument = InvokeArgument::Text("aa".into());
-            assert!(matches!(
-                invoked(&state, &person, &malformed),
-                Err(ActionHostError::InvalidRequest { .. })
-            ));
-        }
-
-        phase an_app_reaches_only_its_own_actions_on_another_device;
-        // An application reaches its own actions on another device as the
-        // person using it; another application's actions are not reachable
-        // this way at all, whatever it declared.
-        {
-            let (state, owner, workspace) = broker(Arc::new(Network::default()));
-            let person = Caller::local_person(owner).in_workspace(workspace);
-            let own = RemoteActionMessage::Invoke(request(&invocation(SETTINGS)));
-            assert_eq!(
-                state
-                    .app_door(&person, SETTINGS, &own)
-                    .map(|caller| caller.acting().clone())
-                    .ok(),
-                Some(person.acting().clone())
+            let f = super::super::super::host_steps::signed_test_support::Fixture::new(
+                crate::services::HostServices {
+                    own_device: Some(network.clone()),
+                    ..Default::default()
+                },
             );
-            let other = RemoteActionMessage::Invoke(request(&invocation("so.tilo.notes")));
-            assert!(state.app_door(&person, SETTINGS, &other).is_err());
-            assert!(state.app_door(&person, "so.tilo.notes", &own).is_err());
+            if revoked {
+                f.authority
+                    .revoked
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            } else {
+                std::fs::remove_file(
+                    tilo_identity_host::provisioning::collaboration_identity_paths().device_privkey,
+                )
+                .unwrap();
+            }
+            let asked = request(&invocation(SETTINGS));
+            assert!(f.invoke(&asked).is_err());
+            assert!(network.sent.lock().unwrap().is_empty());
+            assert!(f.state.remote_job(&f.caller, &asked.invocation).is_none());
         }
+    }
+
+    /// Nobody but the person at this device reaches another device: not a
+    /// remote device (of theirs or anyone's), an agent, a bot, an app under its own
+    /// identity, a Shortcut's step, a foreign device, or a caller in no
+    /// workspace. Nothing is sent for any of them. (Which person this device
+    /// belongs to, and whether the target is one of theirs, the host's
+    /// network decides.)
+    #[test]
+    fn own_device_refuses_every_caller_but_the_person_here() {
+        let network = Arc::new(Network::default());
+        let (state, owner, workspace) = broker(Arc::clone(&network));
+        let asked = request(&invocation(SETTINGS));
+        let refused = [
+            Caller::authenticated([41; 32], [43; 32]).in_workspace(workspace.clone()),
+            Caller::authenticated([77; 32], [78; 32]).in_workspace(workspace.clone()),
+            Caller::local_agent("assistant").in_workspace(workspace.clone()),
+            Caller::delegated_agent("assistant", [41; 32], [44; 32])
+                .in_workspace(workspace.clone()),
+            Caller::bot("helper", [41; 32], [45; 32]).in_workspace(workspace.clone()),
+            Caller::local_app(SETTINGS).in_workspace(workspace.clone()),
+            Caller::local_person(owner.clone())
+                .delegated_to("assistant")
+                .in_workspace(workspace.clone()),
+            Caller::local_person(owner.clone())
+                .running_shortcut("nightly")
+                .in_workspace(workspace.clone()),
+            Caller::local_person(owner.clone())
+                .from_foreign_device(true)
+                .in_workspace(workspace),
+            Caller::local_person(owner),
+        ];
+        for caller in refused {
+            let mut fresh = asked.clone();
+            fresh.invocation = tilo_actions::InvocationId::new();
+            assert!(
+                invoked(&state, &caller, &fresh).is_err(),
+                "{:?} must not reach another device",
+                caller.acting()
+            );
+        }
+        assert!(network.sent.lock().unwrap().is_empty(), "nothing was sent");
+    }
+
+    /// The person reaches the service once per invocation id, a retry
+    /// observes the first run, and the other device's outcome becomes the
+    /// invocation's.
+    #[test]
+    fn own_device_sends_once_per_invocation_and_follows_the_other_device() {
+        let network = Arc::new(Network::default());
+        let (state, owner, workspace) = broker(Arc::clone(&network));
+        let person = Caller::local_person(owner).in_workspace(workspace);
+        let asked = request(&invocation(SETTINGS));
+
+        let receipt = invoked(&state, &person, &asked).expect("admitted");
+        let again = invoked(&state, &person, &asked).expect("the retry is the same run");
+        assert_eq!(again.invocation, receipt.invocation);
+        let sent = network.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "a retry is not sent again");
+        let (checked, forwarded) = &sent[0];
+        assert_eq!(checked.device, [42; 32]);
+        assert_eq!(checked.app, SETTINGS);
+        assert_eq!(checked.address.action, "storage-summary");
+        assert_eq!(forwarded.invocation, asked.invocation);
+
+        let job = state
+            .remote_job(&person, &receipt.invocation)
+            .expect("the invocation has a job");
+        assert!(matches!(
+            state.invocation_status(job),
+            Some(tilo_actions::InvocationUpdate::Accepted { .. })
+        ));
+        let summary = serde_json::json!({"workspaces": []});
+        network
+            .answers
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("sent")
+            .complete(Ok(tilo_actions::ActionOutput {
+                value: Some(summary.clone()),
+                resources: Vec::new(),
+            }));
+        let Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+            state.invocation_status(job)
+        else {
+            panic!("the other device's answer is the invocation's outcome");
+        };
+        assert_eq!(output.value, Some(summary));
+    }
+
+    /// A device the host does not recognise as one of the person's is
+    /// refused by the host, and the refusal remains the invocation's outcome.
+    /// A retry observes that refusal rather than attempting another dispatch.
+    #[test]
+    fn a_device_the_host_refuses_retains_a_failed_invocation() {
+        let network = Arc::new(Network {
+            refuse: Some(ActionHostError::Refused {
+                reason: "the device is not one of the person's enrolled devices".into(),
+            }),
+            ..Network::default()
+        });
+        let (state, owner, workspace) = broker(network);
+        let person = Caller::local_person(owner).in_workspace(workspace);
+        let asked = request(&invocation(SETTINGS));
+        assert!(matches!(
+            invoked(&state, &person, &asked),
+            Err(ActionHostError::Refused { .. })
+        ));
+        let job = state
+            .remote_job(&person, &asked.invocation)
+            .expect("refusal is retained");
+        assert!(matches!(
+            state.invocation_status(job),
+            Some(tilo_actions::InvocationUpdate::Failed { invocation, .. }) if invocation == asked.invocation
+        ));
+        let repeated = invoked(&state, &person, &asked).expect("retry observes retained failure");
+        assert_eq!(repeated.invocation, asked.invocation);
+        let mut malformed = asked;
+        malformed.invocation = tilo_actions::InvocationId::new();
+        malformed.argument = InvokeArgument::Text("aa".into());
+        assert!(matches!(
+            invoked(&state, &person, &malformed),
+            Err(ActionHostError::InvalidRequest { .. })
+        ));
+    }
+
+    /// An application reaches its own actions on another device as the
+    /// person using it; another application's actions are not reachable
+    /// this way at all, whatever it declared.
+    #[test]
+    fn an_app_reaches_only_its_own_actions_on_another_device() {
+        let (state, owner, workspace) = broker(Arc::new(Network::default()));
+        let person = Caller::local_person(owner).in_workspace(workspace);
+        let own = RemoteActionMessage::Invoke(request(&invocation(SETTINGS)));
+        assert_eq!(
+            state
+                .app_door(&person, SETTINGS, &own)
+                .map(|caller| caller.acting().clone())
+                .ok(),
+            Some(person.acting().clone())
+        );
+        let other = RemoteActionMessage::Invoke(request(&invocation("so.tilo.notes")));
+        assert!(state.app_door(&person, SETTINGS, &other).is_err());
+        assert!(state.app_door(&person, "so.tilo.notes", &own).is_err());
     }
 }

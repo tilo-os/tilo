@@ -138,140 +138,136 @@ fn publishers(
         .expect("the broker answers")
 }
 
-tilo_test_env::scenario! {
-    fn an_agents_list_of_apps;
+#[test]
+fn an_agent_is_told_every_installed_app_and_which_it_may_open() {
+    let workspace = workspace();
+    let workspace_id = workspace.id().to_string();
+    let state = broker(vec![workspace], vec![NOTES, SHEETS], true);
+    let agent = turn_caller("scribe", "owner", &workspace_id);
 
-    phase an_agent_is_told_every_installed_app_and_which_it_may_open;
-    {
-        let workspace = workspace();
-        let workspace_id = workspace.id().to_string();
-        let state = broker(vec![workspace], vec![NOTES, SHEETS], true);
-        let agent = turn_caller("scribe", "owner", &workspace_id);
+    let page = installed(&state, &agent, &workspace_id).expect("the workspace is reachable");
+    let listed: Vec<(String, Option<String>)> = page
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.resource.id.clone(),
+                row.action
+                    .as_ref()
+                    .map(|action| action.address.action.clone()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (
+                format!("app.{NOTES}"),
+                Some(APPLICATION_OPEN_ACTION.to_owned())
+            ),
+            (format!("app.{SHEETS}"), None),
+        ],
+        "Notes, which its person may open, opens; Sheets, which its record          does not let it open, is named without the action"
+    );
 
-        let page = installed(&state, &agent, &workspace_id).expect("the workspace is reachable");
-        let listed: Vec<(String, Option<String>)> = page
+    // The person is offered both to open, as before.
+    let owner = Caller::local_person("owner").in_workspace(&workspace_id);
+    let page = installed(&state, &owner, &workspace_id).expect("the owner reaches it");
+    drop(state);
+    assert!(
+        page.rows.iter().all(|row| row.action.is_some()) && page.rows.len() == 2,
+        "{:?}",
+        page.rows
+    );
+}
+
+#[test]
+fn an_agent_in_a_workspace_with_nothing_reads_an_empty_list() {
+    let workspace = workspace();
+    let workspace_id = workspace.id().to_string();
+    let state = broker(vec![workspace], Vec::new(), true);
+    let agent = turn_caller("scribe", "owner", &workspace_id);
+
+    let page = publishers(&state, &agent).expect("reachable, with nothing running");
+    assert!(page.providers.is_empty() && page.rows.is_empty());
+    let page = installed(&state, &agent, &workspace_id).expect("reachable, with nothing installed");
+    drop(state);
+    assert!(page.rows.is_empty());
+}
+
+#[test]
+fn an_agent_that_cannot_reach_its_workspace_is_told_why() {
+    let reason = |result: Result<CataloguePage, ActionHostError>| match result {
+        Err(ActionHostError::Unavailable { reason }) => reason,
+        other => panic!("an unreachable workspace answered {other:?}"),
+    };
+    let workspace = workspace();
+    let workspace_id = workspace.id().to_string();
+
+    // Not a member: the person removed it, or never admitted it here.
+    let state = broker(vec![workspace.clone()], vec![NOTES], true);
+    let stranger = turn_caller("scribe", "outsider", &workspace_id);
+    let why = reason(publishers(&state, &stranger));
+    assert!(
+        why.contains("scribe") && why.contains("no longer a member of workspace Home"),
+        "{why}"
+    );
+    let why = reason(installed(&state, &stranger, &workspace_id));
+    assert!(why.contains("no longer a member"), "{why}");
+
+    // The workspace it was admitted to is gone from this device.
+    let elsewhere = Workspace::new(WorkspaceSlot(15), "Elsewhere");
+    let gone = turn_caller("scribe", "owner", &elsewhere.id().to_string());
+    let why = reason(publishers(&state, &gone));
+    assert!(why.contains("no longer on this device"), "{why}");
+
+    // A person's own caller is not diagnosed: what it may not see is absent.
+    let person = Caller::local_person("someone").in_workspace(&workspace_id);
+    let answered = publishers(&state, &person);
+    drop(state);
+    assert!(answered.is_ok(), "{answered:?}");
+
+    // The session's workspaces never reached the broker.
+    let detached = broker(vec![workspace], vec![NOTES], false);
+    let agent = turn_caller("scribe", "owner", &workspace_id);
+    let why = reason(publishers(&detached, &agent));
+    drop(detached);
+    assert!(why.contains("not attached"), "{why}");
+}
+
+/// An app running only without a window (started for an action that shows
+/// nothing) is still opened: its open gives that instance its window. One
+/// with a window is not offered to open again.
+#[test]
+fn an_app_running_without_a_window_is_still_offered_to_open() {
+    let workspace = workspace();
+    let workspace_id = workspace.id().to_string();
+    let state = broker(vec![workspace], vec![NOTES], true);
+    state.replace_published_surfaces_for_test(vec![super::super::PublishedSurface {
+        peer_id: 9,
+        app_id: NOTES.into(),
+        route: tilo_broker_core::CrdtRoute::record(NOTES, &workspace_id, "notes"),
+        actions: Vec::new(),
+        live: true,
+    }]);
+    let owner = Caller::local_person("owner").in_workspace(&workspace_id);
+    let opens = |state: &Arc<AppBrokerState>| {
+        installed(state, &owner, &workspace_id)
+            .expect("the owner reaches it")
             .rows
             .iter()
-            .map(|row| {
-                (
-                    row.resource.id.clone(),
-                    row.action
-                        .as_ref()
-                        .map(|action| action.address.action.clone()),
-                )
+            .any(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|action| action.address.action == APPLICATION_OPEN_ACTION)
             })
-            .collect();
-        assert_eq!(
-            listed,
-            [
-                (
-                    format!("app.{NOTES}"),
-                    Some(APPLICATION_OPEN_ACTION.to_owned())
-                ),
-                (format!("app.{SHEETS}"), None),
-            ],
-            "Notes, which its person may open, opens; Sheets, which its record          does not let it open, is named without the action"
-        );
-
-        // The person is offered both to open, as before.
-        let owner = Caller::local_person("owner").in_workspace(&workspace_id);
-        let page = installed(&state, &owner, &workspace_id).expect("the owner reaches it");
-        drop(state);
-        assert!(
-            page.rows.iter().all(|row| row.action.is_some()) && page.rows.len() == 2,
-            "{:?}",
-            page.rows
-        );
-    }
-
-    phase an_agent_in_a_workspace_with_nothing_reads_an_empty_list;
-    {
-        let workspace = workspace();
-        let workspace_id = workspace.id().to_string();
-        let state = broker(vec![workspace], Vec::new(), true);
-        let agent = turn_caller("scribe", "owner", &workspace_id);
-
-        let page = publishers(&state, &agent).expect("reachable, with nothing running");
-        assert!(page.providers.is_empty() && page.rows.is_empty());
-        let page = installed(&state, &agent, &workspace_id).expect("reachable, with nothing installed");
-        drop(state);
-        assert!(page.rows.is_empty());
-    }
-
-    phase an_agent_that_cannot_reach_its_workspace_is_told_why;
-    {
-        let reason = |result: Result<CataloguePage, ActionHostError>| match result {
-            Err(ActionHostError::Unavailable { reason }) => reason,
-            other => panic!("an unreachable workspace answered {other:?}"),
-        };
-        let workspace = workspace();
-        let workspace_id = workspace.id().to_string();
-
-        // Not a member: the person removed it, or never admitted it here.
-        let state = broker(vec![workspace.clone()], vec![NOTES], true);
-        let stranger = turn_caller("scribe", "outsider", &workspace_id);
-        let why = reason(publishers(&state, &stranger));
-        assert!(
-            why.contains("scribe") && why.contains("no longer a member of workspace Home"),
-            "{why}"
-        );
-        let why = reason(installed(&state, &stranger, &workspace_id));
-        assert!(why.contains("no longer a member"), "{why}");
-
-        // The workspace it was admitted to is gone from this device.
-        let elsewhere = Workspace::new(WorkspaceSlot(15), "Elsewhere");
-        let gone = turn_caller("scribe", "owner", &elsewhere.id().to_string());
-        let why = reason(publishers(&state, &gone));
-        assert!(why.contains("no longer on this device"), "{why}");
-
-        // A person's own caller is not diagnosed: what it may not see is absent.
-        let person = Caller::local_person("someone").in_workspace(&workspace_id);
-        let answered = publishers(&state, &person);
-        drop(state);
-        assert!(answered.is_ok(), "{answered:?}");
-
-        // The session's workspaces never reached the broker.
-        let detached = broker(vec![workspace], vec![NOTES], false);
-        let agent = turn_caller("scribe", "owner", &workspace_id);
-        let why = reason(publishers(&detached, &agent));
-        drop(detached);
-        assert!(why.contains("not attached"), "{why}");
-    }
-
-    phase an_app_running_without_a_window_is_still_offered_to_open;
-    // An app running only without a window (started for an action that shows
-    // nothing) is still opened: its open gives that instance its window. One
-    // with a window is not offered to open again.
-    {
-        let workspace = workspace();
-        let workspace_id = workspace.id().to_string();
-        let state = broker(vec![workspace], vec![NOTES], true);
-        state.replace_published_surfaces_for_test(vec![super::super::PublishedSurface {
-            peer_id: 9,
-            app_id: NOTES.into(),
-            route: tilo_broker_core::CrdtRoute::record(NOTES, &workspace_id, "notes"),
-            actions: Vec::new(),
-            live: true,
-        }]);
-        let owner = Caller::local_person("owner").in_workspace(&workspace_id);
-        let opens = |state: &Arc<AppBrokerState>| {
-            installed(state, &owner, &workspace_id)
-                .expect("the owner reaches it")
-                .rows
-                .iter()
-                .any(|row| {
-                    row.action
-                        .as_ref()
-                        .is_some_and(|action| action.address.action == APPLICATION_OPEN_ACTION)
-                })
-        };
-        assert!(!opens(&state), "a window of it is up");
-        state
-            .launchable
-            .windowless_peers
-            .lock()
-            .expect("windowless")
-            .insert(9);
-        assert!(opens(&state), "it runs with no window");
-    }
+    };
+    assert!(!opens(&state), "a window of it is up");
+    state
+        .launchable
+        .windowless_peers
+        .lock()
+        .expect("windowless")
+        .insert(9);
+    assert!(opens(&state), "it runs with no window");
 }

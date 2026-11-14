@@ -675,357 +675,89 @@ mod anchor_tests {
         (surface, record.0)
     }
 
-    tilo_test_env::scenario! {
-        fn an_activity_anchor_names_what_a_step_acts_on;
-
-        phase a_step_on_an_item_names_the_item_its_app_labelled;
-        // A step on one of a collection's items names that item, by the label its
-        // app published for it: a rename of an issue by its id reads "Editing Book
-        // room 4 for Friday", never only "Editing Tasks". A step naming no item
-        // says the record.
-        {
-            let (surface, rename) = tracker();
-            let named = slot(&serde_json::json!({
-                "issue": "7d2b",
-                "title": "Book room four for Friday"
-            }));
-            assert_eq!(
-                item_named(&rename, &surface, Some(&named)),
-                Some("Book room 4 for Friday"),
-            );
-            // A title that merely looks like an id names no item: only an item of
-            // this record, addressed by its id, is the one the step acts on.
-            assert_eq!(
-                item_named(
-                    &rename,
-                    &surface,
-                    Some(&slot(&serde_json::json!({
-                        "issue": "nothing",
-                        "title": "Book room four for Friday"
-                    })))
-                ),
-                None
-            );
-            assert_eq!(item_named(&rename, &surface, None), None);
-            // An action names another item beside the one it acts on — moving an
-            // issue under another — and the step still says the issue it moves.
-            let under = |item: &str, label: &str| PublishedAction {
-                resource: format!("tasks.tracker/issues/{item}"),
-                resource_kind: "tasks.tracker.issues".into(),
-                resource_label: label.into(),
-                params: vec![ActionParam::required_owned(
-                    "parent",
-                    ParamType::Text,
-                    "Which issue it goes under",
-                )],
-                ..published("", "tasks.tracker", "move-under", Vec::new()).0
-            };
-            let (mover, _) = published(
-                "tasks.tracker",
-                "tasks.tracker",
-                "move-under",
-                vec![
-                    ActionParam::required_owned("issue", ParamType::Text, "Which issue to move"),
-                    ActionParam::required_owned("parent", ParamType::Text, "Which issue it goes under"),
-                ],
-            );
-            let moving_surface = PublishedSurface {
-                actions: vec![
-                    mover.clone(),
-                    under("7d2b", "Book room 4 for Friday"),
-                    under("9c1e", "Draft the launch plan"),
-                ],
-                ..surface.clone()
-            };
-            let moving = slot(&serde_json::json!({ "issue": "7d2b", "parent": "9c1e" }));
-            assert_eq!(
-                item_named(&mover, &moving_surface, Some(&moving)),
-                Some("Book room 4 for Friday"),
-                "the issue it moves, not the one it moves it under",
-            );
-            // The same verb on another record's item is another step's item.
-            let elsewhere = slot(&serde_json::json!({ "issue": "7d2b" }));
-            let (mut other, _) = published(
-                "notes.notebook/pages/7d2b",
-                "notes.notebook.pages",
-                "rename",
-                vec![ActionParam::required_owned(
-                    "title",
-                    ParamType::Text,
-                    "Its new title",
-                )],
-            );
-            other.resource_label = "Trip plan".into();
-            let surface = PublishedSurface {
-                actions: vec![rename.clone(), other],
-                ..surface
-            };
-            assert_eq!(item_named(&rename, &surface, Some(&elsewhere)), None);
-        }
-
-        phase an_item_action_names_the_item_it_acts_on;
-        {
-            // An item is published as its own resource (`<kind>/<field>/<item>`):
-            // a verb on it acts on that item, which the view draws as a row.
-            let (action, resource) = published(
-                "so.tilo.tasks/issues/7d2b",
-                "so.tilo.tasks.issues",
-                "set-done",
-                vec![ActionParam::required_owned(
-                    "done",
-                    ParamType::Boolean,
-                    "Whether it is done",
-                )],
-            );
-            let typed = slot(&serde_json::json!({ "done": true }));
-            for argument in [None, Some("true"), Some(typed.as_str())] {
-                assert_eq!(
-                    anchor_of(&action, &resource, argument),
-                    tilo_actions::InteractionAnchor::ListItems {
-                        ids: vec!["7d2b".into()]
-                    },
-                    "the item the verb acts on, whatever it was told",
-                );
-            }
-            // A resource that is no item of a collection is the resource.
-            let (action, resource) = published(
-                "so.tilo.tasks/issues",
-                "so.tilo.tasks",
-                "create-issue",
-                Vec::new(),
-            );
-            assert_eq!(
-                anchor_of(&action, &resource, None),
-                tilo_actions::InteractionAnchor::Resource
-            );
-        }
-
-        phase a_rich_text_field_edit_names_the_characters_it_writes;
-        // A field edit of rich text names the characters it writes, so the editor showing that
-        // text draws them as the writer's and its caret where the write ends — the same mark a
-        // note's body shows of an agent's write, in Tasks' descriptions as in Notes.
-        {
-            let (action, resource) = published(
-                "so.tilo.tasks",
-                "tasks.tracker",
-                "field-edit",
-                vec![ActionParam::required_owned(
-                    "edit",
-                    ParamType::Object,
-                    "The field and what to do to it",
-                )],
-            );
-            let spliced = slot(&serde_json::json!({
-                "edit": {
-                    "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "body"}],
-                    "op": "rich",
-                    "rich": {
-                        "SpliceText": {"region": "Body", "block": "b3", "at": 4, "del": 0, "ins": "héllo"}
-                    }
-                }
-            }));
-            assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&spliced))),
-                ("body".into(), "b3".into(), 4, 9),
-                "the characters it wrote, counted as the block counts them",
-            );
-            // Replacing a range leaves the range it wrote: what it inserts there.
-            let replaced = slot(&serde_json::json!({
-                "edit": {
-                    "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "body"}],
-                    "op": "rich",
-                    "rich": {
-                        "SpliceText": {"region": "Body", "block": "b3", "at": 2, "del": 6, "ins": "new"}
-                    }
-                }
-            }));
-            assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&replaced))),
-                ("body".into(), "b3".into(), 2, 5),
-            );
-            // A field edit that writes no characters (a whole value set) names the
-            // record, not a run.
-            let set = slot(&serde_json::json!({
-                "edit": {
-                    "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "title"}],
-                    "op": "set",
-                    "value": "Book room four"
-                }
-            }));
-            assert_eq!(
-                anchor_of(&action, &resource, Some(&set)),
-                tilo_actions::InteractionAnchor::Resource,
-            );
-        }
-
-        phase a_text_field_edit_and_a_rename_name_the_characters_they_write;
-        // A text field's own edit names the characters it writes in the item holding the field,
-        // so the field draws them as the writer's with its caret; a verb setting an item's text
-        // field from its parameter of that name (a rename) names the whole text it writes there.
-        {
-            let (action, resource) = published(
-                "so.tilo.tasks",
-                "tasks.tracker",
-                "field-edit",
-                vec![ActionParam::required_owned(
-                    "edit",
-                    ParamType::Object,
-                    "The field and what to do to it",
-                )],
-            );
-            let typed = slot(&serde_json::json!({
-                "edit": {
-                    "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "title"}],
-                    "op": "splice", "at": 5, "delete": 0, "insert": "rôom"
-                }
-            }));
-            assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&typed))),
-                ("title".into(), "7d2b".into(), 5, 9),
-            );
-            let replaced = slot(&serde_json::json!({
-                "edit": {"path": [{"field": "name"}], "op": "replace", "text": "Mixer"}
-            }));
-            assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&replaced))),
-                ("name".into(), String::new(), 0, 5),
-            );
-            let (mut action, resource) = published(
-                "so.tilo.tasks/issues/7d2b",
-                "so.tilo.tasks.issues",
-                "rename",
-                vec![ActionParam::required_owned(
-                    "title",
-                    ParamType::Text,
-                    "Title",
-                )],
-            );
-            action.contract.field = Some("title".into());
-            let renamed = slot(&serde_json::json!({ "title": "Book room four" }));
-            assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&renamed))),
-                ("title".into(), "7d2b".into(), 0, 14),
-            );
-            // Offered on the record, the item is its first parameter's id.
-            let (mut on_record, resource) = published(
-                "so.tilo.tasks",
-                "tasks.tracker",
-                "rename",
-                vec![
-                    ActionParam::required_owned("issue", ParamType::Text, "Issue"),
-                    ActionParam::required_owned("title", ParamType::Text, "Title"),
-                ],
-            );
-            on_record.contract.field = Some("title".into());
-            let renamed_by_id = slot(&serde_json::json!({ "issue": "7d2b", "title": "Book" }));
-            assert_eq!(
-                text_range(&anchor_of(&on_record, &resource, Some(&renamed_by_id))),
-                ("title".into(), "7d2b".into(), 0, 4),
-            );
-            let resource = tilo_actions::ActionResource {
-                id: "so.tilo.tasks/issues/7d2b".into(),
-                kind: "so.tilo.tasks.issues".into(),
-                label: "Label".into(),
-            };
-            // A verb under a field whose text parameter is something else (a comment under
-            // `comments`) acts on the item.
-            action.contract.field = Some("comments".into());
-            assert_eq!(
-                anchor_of(&action, &resource, Some(&renamed)),
-                tilo_actions::InteractionAnchor::ListItems {
-                    ids: vec!["7d2b".into()]
-                },
-            );
-        }
-
-        phase a_place_names_the_characters_a_text_edit_writes;
-        {
-            // `replace-range`: the characters it writes replace the range it was
-            // given, and are what the view highlights.
-            let (action, resource) = published(
-                "so.tilo.notes/pages/1",
-                "so.tilo.notes.page",
-                "replace-range",
-                vec![
-                    ActionParam::required_owned("at", ParamType::Object, "Where").as_place(),
-                    ActionParam::required_owned("text", ParamType::Text, "What to write"),
-                ],
-            );
-            let replaced = slot(&serde_json::json!({
-                "at": { "item": "b1", "start": 4, "end": 9 },
-                "text": "hello",
-            }));
-            assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&replaced))),
-                ("text".into(), "b1".into(), 4, 9),
-                "the characters it wrote, not the place it wrote them at",
-            );
-            // At a caret, the written characters are inserted there.
-            let inserted = slot(&serde_json::json!({
-                "at": { "item": "b1", "at": 12 },
-                "text": "héllo",
-            }));
-            assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&inserted))),
-                ("text".into(), "b1".into(), 12, 17),
-                "characters, as the place counts them, not bytes",
-            );
-            // A deletion writes nothing: the characters it removed are the change.
-            let deleted = slot(&serde_json::json!({
-                "at": { "item": "b1", "start": 3, "end": 11 },
-                "text": "",
-            }));
-            assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&deleted))),
-                ("text".into(), "b1".into(), 3, 11),
-            );
-            // A place naming its collection says which region its blocks sit in.
-            let (action, resource) = published(
-                "so.tilo.notes/pages/1",
-                "so.tilo.notes.page",
-                "replace-range",
-                vec![
-                    ActionParam::required_owned("at", ParamType::Object, "Where").as_place_in("blocks"),
-                    ActionParam::required_owned("text", ParamType::Text, "What to write"),
-                ],
-            );
-            assert_eq!(
-                text_range(&anchor_of(&action, &resource, Some(&replaced))).0,
-                "blocks",
-            );
-            // No place parameter, or no place argument: the resource.
-            let (action, resource) = published(
-                "so.tilo.notes/pages/1",
-                "so.tilo.notes.page",
-                "retitle",
-                vec![ActionParam::required_owned(
-                    "title",
-                    ParamType::Text,
-                    "The new title",
-                )],
-            );
-            assert_eq!(
-                anchor_of(
-                    &action,
-                    &resource,
-                    Some(&slot(&serde_json::json!({ "title": "x" })))
-                ),
-                tilo_actions::InteractionAnchor::Resource,
-            );
-            let (action, resource) = published(
-                "so.tilo.notes/pages/1",
-                "so.tilo.notes.page",
-                "replace-range",
-                vec![
-                    ActionParam::required_owned("at", ParamType::Object, "Where").as_place(),
-                    ActionParam::required_owned("text", ParamType::Text, "What to write"),
-                ],
-            );
-            assert_eq!(
-                anchor_of(&action, &resource, None),
-                tilo_actions::InteractionAnchor::Resource,
-            );
-        }
+    /// A step on one of a collection's items names that item, by the label its
+    /// app published for it: a rename of an issue by its id reads "Editing Book
+    /// room 4 for Friday", never only "Editing Tasks". A step naming no item
+    /// says the record.
+    #[test]
+    fn a_step_on_an_item_names_the_item_its_app_labelled() {
+        let (surface, rename) = tracker();
+        let named = slot(&serde_json::json!({
+            "issue": "7d2b",
+            "title": "Book room four for Friday"
+        }));
+        assert_eq!(
+            item_named(&rename, &surface, Some(&named)),
+            Some("Book room 4 for Friday"),
+        );
+        // A title that merely looks like an id names no item: only an item of
+        // this record, addressed by its id, is the one the step acts on.
+        assert_eq!(
+            item_named(
+                &rename,
+                &surface,
+                Some(&slot(&serde_json::json!({
+                    "issue": "nothing",
+                    "title": "Book room four for Friday"
+                })))
+            ),
+            None
+        );
+        assert_eq!(item_named(&rename, &surface, None), None);
+        // An action names another item beside the one it acts on — moving an
+        // issue under another — and the step still says the issue it moves.
+        let under = |item: &str, label: &str| PublishedAction {
+            resource: format!("tasks.tracker/issues/{item}"),
+            resource_kind: "tasks.tracker.issues".into(),
+            resource_label: label.into(),
+            params: vec![ActionParam::required_owned(
+                "parent",
+                ParamType::Text,
+                "Which issue it goes under",
+            )],
+            ..published("", "tasks.tracker", "move-under", Vec::new()).0
+        };
+        let (mover, _) = published(
+            "tasks.tracker",
+            "tasks.tracker",
+            "move-under",
+            vec![
+                ActionParam::required_owned("issue", ParamType::Text, "Which issue to move"),
+                ActionParam::required_owned("parent", ParamType::Text, "Which issue it goes under"),
+            ],
+        );
+        let moving_surface = PublishedSurface {
+            actions: vec![
+                mover.clone(),
+                under("7d2b", "Book room 4 for Friday"),
+                under("9c1e", "Draft the launch plan"),
+            ],
+            ..surface.clone()
+        };
+        let moving = slot(&serde_json::json!({ "issue": "7d2b", "parent": "9c1e" }));
+        assert_eq!(
+            item_named(&mover, &moving_surface, Some(&moving)),
+            Some("Book room 4 for Friday"),
+            "the issue it moves, not the one it moves it under",
+        );
+        // The same verb on another record's item is another step's item.
+        let elsewhere = slot(&serde_json::json!({ "issue": "7d2b" }));
+        let (mut other, _) = published(
+            "notes.notebook/pages/7d2b",
+            "notes.notebook.pages",
+            "rename",
+            vec![ActionParam::required_owned(
+                "title",
+                ParamType::Text,
+                "Its new title",
+            )],
+        );
+        other.resource_label = "Trip plan".into();
+        let surface = PublishedSurface {
+            actions: vec![rename.clone(), other],
+            ..surface
+        };
+        assert_eq!(item_named(&rename, &surface, Some(&elsewhere)), None);
     }
 
     fn text_range(anchor: &tilo_actions::InteractionAnchor) -> (String, String, u64, u64) {
@@ -1036,5 +768,269 @@ mod anchor_tests {
             panic!("one place names one range");
         };
         (region.clone(), range.block.clone(), range.start, range.end)
+    }
+
+    #[test]
+    fn an_item_action_names_the_item_it_acts_on() {
+        // An item is published as its own resource (`<kind>/<field>/<item>`):
+        // a verb on it acts on that item, which the view draws as a row.
+        let (action, resource) = published(
+            "so.tilo.tasks/issues/7d2b",
+            "so.tilo.tasks.issues",
+            "set-done",
+            vec![ActionParam::required_owned(
+                "done",
+                ParamType::Boolean,
+                "Whether it is done",
+            )],
+        );
+        let typed = slot(&serde_json::json!({ "done": true }));
+        for argument in [None, Some("true"), Some(typed.as_str())] {
+            assert_eq!(
+                anchor_of(&action, &resource, argument),
+                tilo_actions::InteractionAnchor::ListItems {
+                    ids: vec!["7d2b".into()]
+                },
+                "the item the verb acts on, whatever it was told",
+            );
+        }
+        // A resource that is no item of a collection is the resource.
+        let (action, resource) = published(
+            "so.tilo.tasks/issues",
+            "so.tilo.tasks",
+            "create-issue",
+            Vec::new(),
+        );
+        assert_eq!(
+            anchor_of(&action, &resource, None),
+            tilo_actions::InteractionAnchor::Resource
+        );
+    }
+
+    /// A field edit of rich text names the characters it writes, so the editor showing that
+    /// text draws them as the writer's and its caret where the write ends — the same mark a
+    /// note's body shows of an agent's write, in Tasks' descriptions as in Notes.
+    #[test]
+    fn a_rich_text_field_edit_names_the_characters_it_writes() {
+        let (action, resource) = published(
+            "so.tilo.tasks",
+            "tasks.tracker",
+            "field-edit",
+            vec![ActionParam::required_owned(
+                "edit",
+                ParamType::Object,
+                "The field and what to do to it",
+            )],
+        );
+        let spliced = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "body"}],
+                "op": "rich",
+                "rich": {
+                    "SpliceText": {"region": "Body", "block": "b3", "at": 4, "del": 0, "ins": "héllo"}
+                }
+            }
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&spliced))),
+            ("body".into(), "b3".into(), 4, 9),
+            "the characters it wrote, counted as the block counts them",
+        );
+        // Replacing a range leaves the range it wrote: what it inserts there.
+        let replaced = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "body"}],
+                "op": "rich",
+                "rich": {
+                    "SpliceText": {"region": "Body", "block": "b3", "at": 2, "del": 6, "ins": "new"}
+                }
+            }
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&replaced))),
+            ("body".into(), "b3".into(), 2, 5),
+        );
+        // A field edit that writes no characters (a whole value set) names the
+        // record, not a run.
+        let set = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "title"}],
+                "op": "set",
+                "value": "Book room four"
+            }
+        }));
+        assert_eq!(
+            anchor_of(&action, &resource, Some(&set)),
+            tilo_actions::InteractionAnchor::Resource,
+        );
+    }
+
+    /// A text field's own edit names the characters it writes in the item holding the field,
+    /// so the field draws them as the writer's with its caret; a verb setting an item's text
+    /// field from its parameter of that name (a rename) names the whole text it writes there.
+    #[test]
+    fn a_text_field_edit_and_a_rename_name_the_characters_they_write() {
+        let (action, resource) = published(
+            "so.tilo.tasks",
+            "tasks.tracker",
+            "field-edit",
+            vec![ActionParam::required_owned(
+                "edit",
+                ParamType::Object,
+                "The field and what to do to it",
+            )],
+        );
+        let typed = slot(&serde_json::json!({
+            "edit": {
+                "path": [{"field": "issues"}, {"item": "7d2b"}, {"field": "title"}],
+                "op": "splice", "at": 5, "delete": 0, "insert": "rôom"
+            }
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&typed))),
+            ("title".into(), "7d2b".into(), 5, 9),
+        );
+        let replaced = slot(&serde_json::json!({
+            "edit": {"path": [{"field": "name"}], "op": "replace", "text": "Mixer"}
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&replaced))),
+            ("name".into(), String::new(), 0, 5),
+        );
+        let (mut action, resource) = published(
+            "so.tilo.tasks/issues/7d2b",
+            "so.tilo.tasks.issues",
+            "rename",
+            vec![ActionParam::required_owned(
+                "title",
+                ParamType::Text,
+                "Title",
+            )],
+        );
+        action.contract.field = Some("title".into());
+        let renamed = slot(&serde_json::json!({ "title": "Book room four" }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&renamed))),
+            ("title".into(), "7d2b".into(), 0, 14),
+        );
+        // Offered on the record, the item is its first parameter's id.
+        let (mut on_record, resource) = published(
+            "so.tilo.tasks",
+            "tasks.tracker",
+            "rename",
+            vec![
+                ActionParam::required_owned("issue", ParamType::Text, "Issue"),
+                ActionParam::required_owned("title", ParamType::Text, "Title"),
+            ],
+        );
+        on_record.contract.field = Some("title".into());
+        let renamed_by_id = slot(&serde_json::json!({ "issue": "7d2b", "title": "Book" }));
+        assert_eq!(
+            text_range(&anchor_of(&on_record, &resource, Some(&renamed_by_id))),
+            ("title".into(), "7d2b".into(), 0, 4),
+        );
+        let resource = tilo_actions::ActionResource {
+            id: "so.tilo.tasks/issues/7d2b".into(),
+            kind: "so.tilo.tasks.issues".into(),
+            label: "Label".into(),
+        };
+        // A verb under a field whose text parameter is something else (a comment under
+        // `comments`) acts on the item.
+        action.contract.field = Some("comments".into());
+        assert_eq!(
+            anchor_of(&action, &resource, Some(&renamed)),
+            tilo_actions::InteractionAnchor::ListItems {
+                ids: vec!["7d2b".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn a_place_names_the_characters_a_text_edit_writes() {
+        // `replace-range`: the characters it writes replace the range it was
+        // given, and are what the view highlights.
+        let (action, resource) = published(
+            "so.tilo.notes/pages/1",
+            "so.tilo.notes.page",
+            "replace-range",
+            vec![
+                ActionParam::required_owned("at", ParamType::Object, "Where").as_place(),
+                ActionParam::required_owned("text", ParamType::Text, "What to write"),
+            ],
+        );
+        let replaced = slot(&serde_json::json!({
+            "at": { "item": "b1", "start": 4, "end": 9 },
+            "text": "hello",
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&replaced))),
+            ("text".into(), "b1".into(), 4, 9),
+            "the characters it wrote, not the place it wrote them at",
+        );
+        // At a caret, the written characters are inserted there.
+        let inserted = slot(&serde_json::json!({
+            "at": { "item": "b1", "at": 12 },
+            "text": "héllo",
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&inserted))),
+            ("text".into(), "b1".into(), 12, 17),
+            "characters, as the place counts them, not bytes",
+        );
+        // A deletion writes nothing: the characters it removed are the change.
+        let deleted = slot(&serde_json::json!({
+            "at": { "item": "b1", "start": 3, "end": 11 },
+            "text": "",
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&deleted))),
+            ("text".into(), "b1".into(), 3, 11),
+        );
+        // A place naming its collection says which region its blocks sit in.
+        let (action, resource) = published(
+            "so.tilo.notes/pages/1",
+            "so.tilo.notes.page",
+            "replace-range",
+            vec![
+                ActionParam::required_owned("at", ParamType::Object, "Where").as_place_in("blocks"),
+                ActionParam::required_owned("text", ParamType::Text, "What to write"),
+            ],
+        );
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&replaced))).0,
+            "blocks",
+        );
+        // No place parameter, or no place argument: the resource.
+        let (action, resource) = published(
+            "so.tilo.notes/pages/1",
+            "so.tilo.notes.page",
+            "retitle",
+            vec![ActionParam::required_owned(
+                "title",
+                ParamType::Text,
+                "The new title",
+            )],
+        );
+        assert_eq!(
+            anchor_of(
+                &action,
+                &resource,
+                Some(&slot(&serde_json::json!({ "title": "x" })))
+            ),
+            tilo_actions::InteractionAnchor::Resource,
+        );
+        let (action, resource) = published(
+            "so.tilo.notes/pages/1",
+            "so.tilo.notes.page",
+            "replace-range",
+            vec![
+                ActionParam::required_owned("at", ParamType::Object, "Where").as_place(),
+                ActionParam::required_owned("text", ParamType::Text, "What to write"),
+            ],
+        );
+        assert_eq!(
+            anchor_of(&action, &resource, None),
+            tilo_actions::InteractionAnchor::Resource,
+        );
     }
 }

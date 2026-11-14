@@ -240,81 +240,77 @@ fn invocation_fixture(
     (state, caller, receiver)
 }
 
-tilo_test_env::scenario! {
-    fn admission_samples_authority_once_and_copies_no_tree;
+#[test]
+fn the_heap_meter_sees_one_copy_of_the_receipt_history() {
+    let (tree, _) = owned_workspace();
+    meter_start();
+    let copy = tree.clone();
+    let copied = meter_stop();
+    assert_eq!(
+        copy.workspaces[0].effect_receipts.len(),
+        tree.workspaces[0].effect_receipts.len()
+    );
+    assert!(
+        copied >= receipt_history_bytes(),
+        "a tree copy requested {copied} bytes; the meter cannot observe a copy"
+    );
+    assert!(copy_free_budget() < copied, "the budget admits a copy");
+}
 
-    phase the_heap_meter_sees_one_copy_of_the_receipt_history;
-    {
-        let (tree, _) = owned_workspace();
-        meter_start();
-        let copy = tree.clone();
-        let copied = meter_stop();
-        assert_eq!(
-            copy.workspaces[0].effect_receipts.len(),
-            tree.workspaces[0].effect_receipts.len()
-        );
-        assert!(
-            copied >= receipt_history_bytes(),
-            "a tree copy requested {copied} bytes; the meter cannot observe a copy"
-        );
-        assert!(copy_free_budget() < copied, "the budget admits a copy");
-    }
+#[test]
+fn action_host_invocation_admission_samples_authority_once_without_an_owned_snapshot() {
+    let (tree, workspace) = owned_workspace();
+    let authority = SampledAuthority::new(tree);
+    let (state, caller, mut app) = invocation_fixture(&authority, &workspace);
 
-    phase action_host_invocation_admission_samples_authority_once_without_an_owned_snapshot;
-    {
-        let (tree, workspace) = owned_workspace();
-        let authority = SampledAuthority::new(tree);
-        let (state, caller, mut app) = invocation_fixture(&authority, &workspace);
+    meter_start();
+    let admitted = state
+        .action_invoke(&caller, None, None, &invoke_request())
+        .poll_ready();
+    let requested = meter_stop();
 
-        meter_start();
-        let admitted = state
-            .action_invoke(&caller, None, None, &invoke_request())
-            .poll_ready();
-        let requested = meter_stop();
+    assert!(
+        matches!(admitted, PendingPoll::Ready(Ok(_))),
+        "the owner is admitted"
+    );
+    assert!(app.try_recv().is_ok(), "the invocation reaches the app");
+    // One sample decides whether the action is offered to the caller (before
+    // any confirmation can reveal it); one decides every check of the
+    // admission itself. Neither asks for an owned snapshot of the tree.
+    assert_eq!(authority.samples(), 2);
+    assert_eq!(authority.owned_snapshots(), 0);
+    // Nor does anything on the path copy the tree another way.
+    assert!(
+        requested < copy_free_budget(),
+        "admission requested {requested} bytes with {RECEIPTS} receipts"
+    );
+}
 
-        assert!(
-            matches!(admitted, PendingPoll::Ready(Ok(_))),
-            "the owner is admitted"
-        );
-        assert!(app.try_recv().is_ok(), "the invocation reaches the app");
-        // One sample decides whether the action is offered to the caller (before
-        // any confirmation can reveal it); one decides every check of the
-        // admission itself. Neither asks for an owned snapshot of the tree.
-        assert_eq!(authority.samples(), 2);
-        assert_eq!(authority.owned_snapshots(), 0);
-        // Nor does anything on the path copy the tree another way.
-        assert!(
-            requested < copy_free_budget(),
-            "admission requested {requested} bytes with {RECEIPTS} receipts"
-        );
-    }
+#[test]
+fn admission_decides_on_one_consistent_sample() {
+    let (tree, workspace) = owned_workspace();
+    let authority = SampledAuthority::new(tree);
+    let (state, caller, mut app) = invocation_fixture(&authority, &workspace);
+    // The caller is offered the action on the first sample; ownership moves
+    // away just before the admission reads authority again.
+    authority.revise_before_sample(
+        2,
+        Box::new(|tree| tree.workspaces[0].set_owner("replacement")),
+    );
 
-    phase admission_decides_on_one_consistent_sample;
-    {
-        let (tree, workspace) = owned_workspace();
-        let authority = SampledAuthority::new(tree);
-        let (state, caller, mut app) = invocation_fixture(&authority, &workspace);
-        // The caller is offered the action on the first sample; ownership moves
-        // away just before the admission reads authority again.
-        authority.revise_before_sample(
-            2,
-            Box::new(|tree| tree.workspaces[0].set_owner("replacement")),
-        );
+    let admitted = state
+        .action_invoke(&caller, None, None, &invoke_request())
+        .poll_ready();
 
-        let admitted = state
-            .action_invoke(&caller, None, None, &invoke_request())
-            .poll_ready();
-
-        assert!(
-            matches!(admitted, PendingPoll::Ready(Err(_))),
-            "the admission decides on the revised policy"
-        );
-        assert!(app.try_recv().is_err(), "nothing reaches the app");
-        // The action check and the record check share the admission's one
-        // sample: there is no later read that could decide on other state.
-        assert_eq!(authority.samples(), 2);
-        assert_eq!(authority.owned_snapshots(), 0);
-    }
+    assert!(
+        matches!(admitted, PendingPoll::Ready(Err(_))),
+        "the admission decides on the revised policy"
+    );
+    assert!(app.try_recv().is_err(), "nothing reaches the app");
+    // The action check and the record check share the admission's one
+    // sample: there is no later read that could decide on other state.
+    assert_eq!(authority.samples(), 2);
+    assert_eq!(authority.owned_snapshots(), 0);
 }
 
 const PAGE_ROWS: usize = 200;

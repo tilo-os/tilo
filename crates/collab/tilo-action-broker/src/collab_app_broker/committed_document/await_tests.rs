@@ -151,134 +151,130 @@ fn holds(
     .is_some()
 }
 
-tilo_test_env::scenario! {
-    fn a_reader_waits_until_its_answer_would_change;
+#[test]
+fn a_reader_told_a_record_is_absent_waits_until_that_changes() {
+    let custody = Arc::new(AtomicBool::new(true));
+    let service = Service::new(Owner::Pending, true);
+    assert!(holds(&service, &custody, None, false));
+    *service.owner.lock().unwrap() = Owner::Absent;
+    assert!(
+        !holds(&service, &custody, None, false),
+        "the hosts saying they have none ends a wait on a record arriving"
+    );
+    assert!(
+        holds(&service, &custody, None, true),
+        "an absent record holds a reader told so"
+    );
+    *service.owner.lock().unwrap() = Owner::Pending;
+    assert!(
+        !holds(&service, &custody, None, true),
+        "a host connecting ends the wait of a reader told it is absent"
+    );
+    *service.owner.lock().unwrap() = Owner::At([1; 32]);
+    assert!(
+        !holds(&service, &custody, None, true),
+        "the record arriving ends it too"
+    );
+}
 
-    phase a_reader_told_a_record_is_absent_waits_until_that_changes;
-    {
+#[test]
+fn a_wait_holds_exactly_while_an_open_would_answer_what_the_reader_holds() {
+    for cheap in [true, false] {
         let custody = Arc::new(AtomicBool::new(true));
-        let service = Service::new(Owner::Pending, true);
-        assert!(holds(&service, &custody, None, false));
-        *service.owner.lock().unwrap() = Owner::Absent;
+        let service = Service::new(Owner::At([1; 32]), cheap);
+        assert!(unchanged(&service, &custody, Some([1; 32])));
         assert!(
-            !holds(&service, &custody, None, false),
-            "the hosts saying they have none ends a wait on a record arriving"
+            !unchanged(&service, &custody, Some([2; 32])),
+            "a reader holding another revision is stale"
         );
         assert!(
-            holds(&service, &custody, None, true),
-            "an absent record holds a reader told so"
+            !unchanged(&service, &custody, None),
+            "a readable record is stale to a reader that holds nothing"
+        );
+        *service.owner.lock().unwrap() = Owner::At([3; 32]);
+        assert!(
+            !unchanged(&service, &custody, Some([1; 32])),
+            "a newer committed revision ends the wait"
         );
         *service.owner.lock().unwrap() = Owner::Pending;
         assert!(
-            !holds(&service, &custody, None, true),
-            "a host connecting ends the wait of a reader told it is absent"
-        );
-        *service.owner.lock().unwrap() = Owner::At([1; 32]);
-        assert!(
-            !holds(&service, &custody, None, true),
-            "the record arriving ends it too"
+            unchanged(&service, &custody, None),
+            "a checkpoint still arriving holds a reader that holds nothing"
         );
     }
+}
 
-    phase a_wait_holds_exactly_while_an_open_would_answer_what_the_reader_holds;
-    {
-        for cheap in [true, false] {
-            let custody = Arc::new(AtomicBool::new(true));
-            let service = Service::new(Owner::At([1; 32]), cheap);
-            assert!(unchanged(&service, &custody, Some([1; 32])));
-            assert!(
-                !unchanged(&service, &custody, Some([2; 32])),
-                "a reader holding another revision is stale"
-            );
-            assert!(
-                !unchanged(&service, &custody, None),
-                "a readable record is stale to a reader that holds nothing"
-            );
-            *service.owner.lock().unwrap() = Owner::At([3; 32]);
-            assert!(
-                !unchanged(&service, &custody, Some([1; 32])),
-                "a newer committed revision ends the wait"
-            );
-            *service.owner.lock().unwrap() = Owner::Pending;
-            assert!(
-                unchanged(&service, &custody, None),
-                "a checkpoint still arriving holds a reader that holds nothing"
-            );
-        }
-    }
+#[test]
+fn a_refusal_ends_the_wait_so_the_reader_s_open_meets_it() {
+    let custody = Arc::new(AtomicBool::new(true));
+    let service = Service::new(Owner::At([1; 32]), true);
+    service.readable.store(false, Ordering::Release);
+    assert!(
+        !unchanged(&service, &custody, Some([1; 32])),
+        "a revoked read permission is never held"
+    );
+    service.readable.store(true, Ordering::Release);
+    custody.store(false, Ordering::Release);
+    assert!(
+        !unchanged(&service, &custody, Some([1; 32])),
+        "ended launcher custody is never held"
+    );
+    assert!(
+        read_unchanged(
+            service.as_ref(),
+            service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
+            || Err("committed read admission ended".into()),
+            &Arc::new(Budget::default()),
+            Some([1; 32]),
+            false,
+        )
+        .is_none(),
+        "a refused admission is never held"
+    );
+}
 
-    phase a_refusal_ends_the_wait_so_the_reader_s_open_meets_it;
-    {
-        let custody = Arc::new(AtomicBool::new(true));
-        let service = Service::new(Owner::At([1; 32]), true);
-        service.readable.store(false, Ordering::Release);
-        assert!(
-            !unchanged(&service, &custody, Some([1; 32])),
-            "a revoked read permission is never held"
-        );
-        service.readable.store(true, Ordering::Release);
-        custody.store(false, Ordering::Release);
-        assert!(
-            !unchanged(&service, &custody, Some([1; 32])),
-            "ended launcher custody is never held"
-        );
-        assert!(
-            read_unchanged(
-                service.as_ref(),
-                service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
-                || Err("committed read admission ended".into()),
-                &Arc::new(Budget::default()),
-                Some([1; 32]),
-                false,
-            )
-            .is_none(),
-            "a refused admission is never held"
-        );
+#[test]
+fn an_unchanged_revision_is_held_from_heads_without_a_capture() {
+    let custody = Arc::new(AtomicBool::new(true));
+    let service = Service::new(Owner::At([1; 32]), true);
+    for _ in 0..10 {
+        assert!(unchanged(&service, &custody, Some([1; 32])));
     }
+    assert_eq!(service.captures.load(Ordering::Acquire), 0);
+}
 
-    phase an_unchanged_revision_is_held_from_heads_without_a_capture;
-    {
-        let custody = Arc::new(AtomicBool::new(true));
-        let service = Service::new(Owner::At([1; 32]), true);
-        for _ in 0..10 {
-            assert!(unchanged(&service, &custody, Some([1; 32])));
-        }
-        assert_eq!(service.captures.load(Ordering::Acquire), 0);
-    }
-
-    phase a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget;
-    {
-        let custody = Arc::new(AtomicBool::new(true));
-        let service = Service::new(Owner::At([1; 32]), false);
-        let budget = Arc::new(Budget::default());
-        let held: Vec<_> = std::iter::from_fn(|| budget.try_reserve()).collect();
-        assert!(!held.is_empty());
-        assert!(
-            read_unchanged(
-                service.as_ref(),
-                service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
-                || Ok(context(&custody)),
-                &budget,
-                Some([1; 32]),
-                false,
-            )
-            .is_none(),
-            "with the budget spent the wait ends and the Open decides"
-        );
-        assert_eq!(service.captures.load(Ordering::Acquire), 0);
-        drop(held);
-        assert!(
-            read_unchanged(
-                service.as_ref(),
-                service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
-                || Ok(context(&custody)),
-                &budget,
-                Some([1; 32]),
-                false,
-            )
-            .is_some()
-        );
-    }
+#[test]
+fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
+    let custody = Arc::new(AtomicBool::new(true));
+    let service = Service::new(Owner::At([1; 32]), false);
+    let budget = Arc::new(Budget::default());
+    let held: Vec<_> = std::iter::from_fn(|| budget.try_reserve()).collect();
+    assert!(!held.is_empty());
+    assert!(
+        read_unchanged(
+            service.as_ref(),
+            service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
+            || Ok(context(&custody)),
+            &budget,
+            Some([1; 32]),
+            false,
+        )
+        .is_none(),
+        "with the budget spent the wait ends and the Open decides"
+    );
+    assert_eq!(service.captures.load(Ordering::Acquire), 0);
+    drop(held);
+    assert!(
+        read_unchanged(
+            service.as_ref(),
+            service.as_ref().record_read(WORKSPACE, "so.tilo.notes", ""),
+            || Ok(context(&custody)),
+            &budget,
+            Some([1; 32]),
+            false,
+        )
+        .is_some()
+    );
 }
 
 #[tokio::test(start_paused = true)]

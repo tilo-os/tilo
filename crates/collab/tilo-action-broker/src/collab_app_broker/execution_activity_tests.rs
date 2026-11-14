@@ -649,36 +649,6 @@ tilo_test_env::scenario! {
         assert!(events.try_recv().is_err());
     }
 
-    phase observer_backpressure_is_bounded_and_reports_loss_without_replaying_actions;
-    {
-        let (state, caller, mut app) = fixture();
-        let mut events = state.subscribe_execution_activity();
-        for _ in 0..300 {
-            assert!(matches!(
-                state
-                    .action_invoke(&caller, None, None, &request())
-                    .poll_ready(),
-                PendingPoll::Ready(Ok(_))
-            ));
-            assert!(app.try_recv().is_ok());
-        }
-        assert!(matches!(
-            events.try_recv(),
-            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(44))
-        ));
-        let first = events.try_recv().unwrap();
-        assert_eq!(first.sequence, 45);
-        let mut count = 1;
-        while events.try_recv().is_ok() {
-            count += 1;
-        }
-        assert_eq!(count, 256);
-        assert!(
-            app.try_recv().is_err(),
-            "observation does not execute or replay actions"
-        );
-    }
-
     phase disconnect_and_silence_produce_terminal_observations_and_new_brokers_have_new_epochs;
     {
         let (state, caller, mut app) = fixture();
@@ -876,6 +846,36 @@ async fn eighty_synthetic_runs_keep_exact_record_and_invocation_identity() {
     assert_eq!(runs.len(), 80);
     assert!(state.pending_invocations.lock().unwrap().is_empty());
     assert!(events.try_recv().is_err());
+}
+
+#[test]
+fn observer_backpressure_is_bounded_and_reports_loss_without_replaying_actions() {
+    let (state, caller, mut app) = fixture();
+    let mut events = state.subscribe_execution_activity();
+    for _ in 0..300 {
+        assert!(matches!(
+            state
+                .action_invoke(&caller, None, None, &request())
+                .poll_ready(),
+            PendingPoll::Ready(Ok(_))
+        ));
+        assert!(app.try_recv().is_ok());
+    }
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(44))
+    ));
+    let first = events.try_recv().unwrap();
+    assert_eq!(first.sequence, 45);
+    let mut count = 1;
+    while events.try_recv().is_ok() {
+        count += 1;
+    }
+    assert_eq!(count, 256);
+    assert!(
+        app.try_recv().is_err(),
+        "observation does not execute or replay actions"
+    );
 }
 
 #[tokio::test]

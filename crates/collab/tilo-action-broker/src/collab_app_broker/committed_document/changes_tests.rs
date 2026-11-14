@@ -233,180 +233,176 @@ impl Channel {
     }
 }
 
-tilo_test_env::scenario! {
-    fn changes_start_from_a_revision_the_reader_holds;
+#[test]
+fn changes_start_only_from_a_revision_this_channel_handed_out_entirely() {
+    let service = Service::new(true, 3);
+    let mut channel = Channel::new(&service);
+    // Before anything was handed out, OpenChanges is the Open it stands for.
+    let first = channel.open_changes([1; 32]).unwrap();
+    assert_eq!(first, Reply::Unchanged { revision: [1; 32] });
+    let first = channel.open(None).unwrap();
+    assert!(matches!(first, Reply::Chunk { revision, .. } if revision == [1; 32]));
+    let (capture, _, token) = channel.read_rest(&first).unwrap();
+    service.edit(2);
+    assert!(
+        channel.open_changes([1; 32]).is_err(),
+        "an unacknowledged capture still blocks the next read"
+    );
+    assert_eq!(
+        channel.slot.acknowledge(capture, token),
+        Ok(Reply::Cancelled)
+    );
+    let changes = channel.open_changes([1; 32]).unwrap();
+    let Reply::Changes { revision, base, .. } = &changes else {
+        panic!("a changed document is answered with the changes since: {changes:?}");
+    };
+    assert_eq!((*revision, base.clone()), ([2; 32], vec![[11; 32]]));
+    assert_eq!(channel.take(&changes), vec![2; 3]);
+    // The changes became what the channel handed out.
+    assert_eq!(
+        channel.open_changes([2; 32]).unwrap(),
+        Reply::Unchanged { revision: [2; 32] }
+    );
+    service.edit(3);
+    let changes = channel.open_changes([2; 32]).unwrap();
+    assert!(matches!(&changes, Reply::Changes { base, .. } if *base == vec![[12; 32]]));
+    channel.take(&changes);
+    // A revision this channel never handed out is read whole.
+    service.edit(4);
+    let whole = channel.open_changes([2; 32]).unwrap();
+    assert!(matches!(whole, Reply::Chunk { revision, .. } if revision == [4; 32]));
+    assert_eq!(service.since.load(Ordering::Acquire), 3);
+}
 
-    phase changes_start_only_from_a_revision_this_channel_handed_out_entirely;
-    {
-        let service = Service::new(true, 3);
-        let mut channel = Channel::new(&service);
-        // Before anything was handed out, OpenChanges is the Open it stands for.
-        let first = channel.open_changes([1; 32]).unwrap();
-        assert_eq!(first, Reply::Unchanged { revision: [1; 32] });
-        let first = channel.open(None).unwrap();
-        assert!(matches!(first, Reply::Chunk { revision, .. } if revision == [1; 32]));
-        let (capture, _, token) = channel.read_rest(&first).unwrap();
-        service.edit(2);
-        assert!(
-            channel.open_changes([1; 32]).is_err(),
-            "an unacknowledged capture still blocks the next read"
-        );
-        assert_eq!(
-            channel.slot.acknowledge(capture, token),
-            Ok(Reply::Cancelled)
-        );
-        let changes = channel.open_changes([1; 32]).unwrap();
-        let Reply::Changes { revision, base, .. } = &changes else {
-            panic!("a changed document is answered with the changes since: {changes:?}");
-        };
-        assert_eq!((*revision, base.clone()), ([2; 32], vec![[11; 32]]));
-        assert_eq!(channel.take(&changes), vec![2; 3]);
-        // The changes became what the channel handed out.
-        assert_eq!(
-            channel.open_changes([2; 32]).unwrap(),
-            Reply::Unchanged { revision: [2; 32] }
-        );
-        service.edit(3);
-        let changes = channel.open_changes([2; 32]).unwrap();
-        assert!(matches!(&changes, Reply::Changes { base, .. } if *base == vec![[12; 32]]));
+/// A capture that answered a held wait the reader gave up before the
+/// answer came is never seen: the reader's next read replaces it. Once the
+/// reader reads on, it is the reader's, and blocks the next read until
+/// acknowledged.
+#[test]
+fn a_waits_capture_the_reader_never_saw_is_replaced_by_its_next_read() {
+    let service = Service::new(true, CHUNK_BYTES + 1);
+    let mut channel = Channel::new(&service);
+    let first = channel.open(None).unwrap();
+    channel.slot.active.as_mut().unwrap().unseen = true;
+    let again = channel.open(None).unwrap();
+    assert!(matches!(again, Reply::Chunk { .. }), "{again:?}");
+    channel.slot.active.as_mut().unwrap().unseen = true;
+    let (capture, _, token) = channel.read_rest(&again).unwrap();
+    assert!(
+        channel.open(None).is_err(),
+        "a capture the reader read on blocks the next read"
+    );
+    assert_eq!(
+        channel.slot.acknowledge(capture, token),
+        Ok(Reply::Cancelled)
+    );
+    drop(first);
+}
+
+#[test]
+fn a_capture_abandoned_before_its_end_hands_out_nothing_to_start_from() {
+    let service = Service::new(true, CHUNK_BYTES + 1);
+    let mut channel = Channel::new(&service);
+    let Reply::Chunk { capture, token, .. } = channel.open(None).unwrap() else {
+        panic!("a whole first read");
+    };
+    // The reader gives up after the first piece (a deadline, a refusal).
+    assert_eq!(
+        channel.slot.acknowledge(capture, token),
+        Ok(Reply::Cancelled)
+    );
+    service.edit(2);
+    let whole = channel.open_changes([1; 32]).unwrap();
+    assert!(
+        matches!(whole, Reply::Chunk { revision, .. } if revision == [2; 32]),
+        "a revision never entirely handed out is not a base"
+    );
+    assert_eq!(service.since.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn every_piece_of_changes_is_authorized_and_a_revocation_while_editing_fails_closed() {
+    let service = Service::new(true, CHANGES_FIRST_BYTES + 10);
+    let mut channel = Channel::new(&service);
+    let first = channel.open(None).unwrap();
+    channel.take(&first);
+    // A collaborator keeps editing; each edit is read as changes.
+    for revision in 2..5 {
+        service.edit(revision);
+        let changes = channel.open_changes([revision - 1; 32]).unwrap();
+        assert!(matches!(changes, Reply::Changes { .. }));
         channel.take(&changes);
-        // A revision this channel never handed out is read whole.
-        service.edit(4);
-        let whole = channel.open_changes([2; 32]).unwrap();
-        assert!(matches!(whole, Reply::Chunk { revision, .. } if revision == [4; 32]));
-        assert_eq!(service.since.load(Ordering::Acquire), 3);
     }
+    service.edit(5);
+    let changes = channel.open_changes([4; 32]).unwrap();
+    let Reply::Changes {
+        capture,
+        bytes,
+        token,
+        ..
+    } = &changes
+    else {
+        panic!("changes in more than one piece");
+    };
+    assert_eq!(bytes.len(), CHANGES_FIRST_BYTES);
+    service.readable.store(false, Ordering::Release);
+    assert!(
+        channel
+            .slot
+            .next(*capture, u32::try_from(bytes.len()).unwrap(), *token)
+            .is_err(),
+        "the next piece re-checks the reader's permission"
+    );
+    // The reader cannot acknowledge an unread capture into a base, and its
+    // next read is refused like an Open.
+    assert_eq!(
+        channel.slot.acknowledge(*capture, *token),
+        Ok(Reply::Cancelled)
+    );
+    service.edit(6);
+    assert!(channel.open_changes([4; 32]).is_err());
+    assert!(channel.open(Some([4; 32])).is_err());
+    // Ended custody refuses as well, even where the owner would answer.
+    service.readable.store(true, Ordering::Release);
+    channel.custody.store(false, Ordering::Release);
+    assert!(channel.open_changes([4; 32]).is_err());
+}
 
-    phase a_waits_capture_the_reader_never_saw_is_replaced_by_its_next_read;
-    // A capture that answered a held wait the reader gave up before the
-    // answer came is never seen: the reader's next read replaces it. Once the
-    // reader reads on, it is the reader's, and blocks the next read until
-    // acknowledged.
-    {
-        let service = Service::new(true, CHUNK_BYTES + 1);
-        let mut channel = Channel::new(&service);
-        let first = channel.open(None).unwrap();
-        channel.slot.active.as_mut().unwrap().unseen = true;
-        let again = channel.open(None).unwrap();
-        assert!(matches!(again, Reply::Chunk { .. }), "{again:?}");
-        channel.slot.active.as_mut().unwrap().unseen = true;
-        let (capture, _, token) = channel.read_rest(&again).unwrap();
-        assert!(
-            channel.open(None).is_err(),
-            "a capture the reader read on blocks the next read"
-        );
-        assert_eq!(
-            channel.slot.acknowledge(capture, token),
-            Ok(Reply::Cancelled)
-        );
-        drop(first);
-    }
+#[test]
+fn a_pending_checkpoint_is_unavailable_never_changes() {
+    let service = Service::new(true, 3);
+    let mut channel = Channel::new(&service);
+    let first = channel.open(None).unwrap();
+    channel.take(&first);
+    service.pending.store(true, Ordering::Release);
+    assert_eq!(channel.open_changes([1; 32]).unwrap(), Reply::Unavailable);
+}
 
-    phase a_capture_abandoned_before_its_end_hands_out_nothing_to_start_from;
-    {
-        let service = Service::new(true, CHUNK_BYTES + 1);
-        let mut channel = Channel::new(&service);
-        let Reply::Chunk { capture, token, .. } = channel.open(None).unwrap() else {
-            panic!("a whole first read");
-        };
-        // The reader gives up after the first piece (a deadline, a refusal).
-        assert_eq!(
-            channel.slot.acknowledge(capture, token),
-            Ok(Reply::Cancelled)
-        );
-        service.edit(2);
-        let whole = channel.open_changes([1; 32]).unwrap();
-        assert!(
-            matches!(whole, Reply::Chunk { revision, .. } if revision == [2; 32]),
-            "a revision never entirely handed out is not a base"
-        );
-        assert_eq!(service.since.load(Ordering::Acquire), 0);
-    }
+#[test]
+fn changes_from_another_base_are_refused() {
+    let service = Service::new(true, 3);
+    let mut channel = Channel::new(&service);
+    let first = channel.open(None).unwrap();
+    channel.take(&first);
+    service.edit(2);
+    service.wrong_base.store(true, Ordering::Release);
+    assert!(
+        channel.open_changes([1; 32]).is_err(),
+        "changes that do not start from the held heads never reach the reader"
+    );
+    assert!(channel.slot.active.is_none());
+}
 
-    phase every_piece_of_changes_is_authorized_and_a_revocation_while_editing_fails_closed;
-    {
-        let service = Service::new(true, CHANGES_FIRST_BYTES + 10);
-        let mut channel = Channel::new(&service);
-        let first = channel.open(None).unwrap();
-        channel.take(&first);
-        // A collaborator keeps editing; each edit is read as changes.
-        for revision in 2..5 {
-            service.edit(revision);
-            let changes = channel.open_changes([revision - 1; 32]).unwrap();
-            assert!(matches!(changes, Reply::Changes { .. }));
-            channel.take(&changes);
-        }
-        service.edit(5);
-        let changes = channel.open_changes([4; 32]).unwrap();
-        let Reply::Changes {
-            capture,
-            bytes,
-            token,
-            ..
-        } = &changes
-        else {
-            panic!("changes in more than one piece");
-        };
-        assert_eq!(bytes.len(), CHANGES_FIRST_BYTES);
-        service.readable.store(false, Ordering::Release);
-        assert!(
-            channel
-                .slot
-                .next(*capture, u32::try_from(bytes.len()).unwrap(), *token)
-                .is_err(),
-            "the next piece re-checks the reader's permission"
-        );
-        // The reader cannot acknowledge an unread capture into a base, and its
-        // next read is refused like an Open.
-        assert_eq!(
-            channel.slot.acknowledge(*capture, *token),
-            Ok(Reply::Cancelled)
-        );
-        service.edit(6);
-        assert!(channel.open_changes([4; 32]).is_err());
-        assert!(channel.open(Some([4; 32])).is_err());
-        // Ended custody refuses as well, even where the owner would answer.
-        service.readable.store(true, Ordering::Release);
-        channel.custody.store(false, Ordering::Release);
-        assert!(channel.open_changes([4; 32]).is_err());
-    }
-
-    phase a_pending_checkpoint_is_unavailable_never_changes;
-    {
-        let service = Service::new(true, 3);
-        let mut channel = Channel::new(&service);
-        let first = channel.open(None).unwrap();
-        channel.take(&first);
-        service.pending.store(true, Ordering::Release);
-        assert_eq!(channel.open_changes([1; 32]).unwrap(), Reply::Unavailable);
-    }
-
-    phase changes_from_another_base_are_refused;
-    {
-        let service = Service::new(true, 3);
-        let mut channel = Channel::new(&service);
-        let first = channel.open(None).unwrap();
-        channel.take(&first);
-        service.edit(2);
-        service.wrong_base.store(true, Ordering::Release);
-        assert!(
-            channel.open_changes([1; 32]).is_err(),
-            "changes that do not start from the held heads never reach the reader"
-        );
-        assert!(channel.slot.active.is_none());
-    }
-
-    phase an_owner_that_reads_only_whole_documents_keeps_answering_whole;
-    {
-        let service = Service::new(false, 3);
-        let mut channel = Channel::new(&service);
-        let first = channel.open(None).unwrap();
-        channel.take(&first);
-        service.edit(2);
-        let whole = channel.open_changes([1; 32]).unwrap();
-        assert!(matches!(whole, Reply::Chunk { revision, .. } if revision == [2; 32]));
-        assert_eq!(service.whole.load(Ordering::Acquire), 2);
-    }
+#[test]
+fn an_owner_that_reads_only_whole_documents_keeps_answering_whole() {
+    let service = Service::new(false, 3);
+    let mut channel = Channel::new(&service);
+    let first = channel.open(None).unwrap();
+    channel.take(&first);
+    service.edit(2);
+    let whole = channel.open_changes([1; 32]).unwrap();
+    assert!(matches!(whole, Reply::Chunk { revision, .. } if revision == [2; 32]));
+    assert_eq!(service.whole.load(Ordering::Acquire), 2);
 }
 
 /// Run `test` on a local set, as the broker runs its channels.
@@ -425,134 +421,130 @@ async fn settle() {
     }
 }
 
-tilo_test_env::scenario! {
-    fn reads_wait_their_turn_within_the_capture_budget;
-
-    phase reads_beyond_the_budget_wait_their_turn_and_all_complete_in_order;
-    {
-        use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
-        on_the_broker(async {
-            // Room for one capture at a time: every other read must wait.
-            let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
-            let service = Service::new(false, 3);
-            let mut channels: Vec<Channel> = (0..6)
-                .map(|_| Channel::sharing(&service, &budget))
-                .collect();
-            let mut firsts = Vec::new();
-            for channel in &mut channels {
-                firsts.push(channel.open(None).unwrap());
-                settle().await;
+#[test]
+fn reads_beyond_the_budget_wait_their_turn_and_all_complete_in_order() {
+    use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
+    on_the_broker(async {
+        // Room for one capture at a time: every other read must wait.
+        let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
+        let service = Service::new(false, 3);
+        let mut channels: Vec<Channel> = (0..6)
+            .map(|_| Channel::sharing(&service, &budget))
+            .collect();
+        let mut firsts = Vec::new();
+        for channel in &mut channels {
+            firsts.push(channel.open(None).unwrap());
+            settle().await;
+        }
+        assert!(matches!(firsts[0], Reply::Chunk { .. }));
+        assert!(
+            firsts[1..].iter().all(|reply| *reply == Reply::Busy),
+            "the rest wait, refused by nothing: {firsts:?}"
+        );
+        let mut first = firsts.remove(0);
+        for turn in 0..channels.len() {
+            assert_eq!(channels[turn].take(&first), vec![1; 3]);
+            settle().await;
+            for later in channels.iter_mut().skip(turn + 2) {
+                assert_eq!(
+                    later.open(None).unwrap(),
+                    Reply::Busy,
+                    "a later read does not overtake an earlier one"
+                );
             }
-            assert!(matches!(firsts[0], Reply::Chunk { .. }));
-            assert!(
-                firsts[1..].iter().all(|reply| *reply == Reply::Busy),
-                "the rest wait, refused by nothing: {firsts:?}"
-            );
-            let mut first = firsts.remove(0);
-            for turn in 0..channels.len() {
-                assert_eq!(channels[turn].take(&first), vec![1; 3]);
-                settle().await;
-                for later in channels.iter_mut().skip(turn + 2) {
-                    assert_eq!(
-                        later.open(None).unwrap(),
-                        Reply::Busy,
-                        "a later read does not overtake an earlier one"
-                    );
-                }
-                if let Some(next) = channels.get_mut(turn + 1) {
-                    first = next.open(None).unwrap();
-                    assert!(
-                        matches!(first, Reply::Chunk { .. }),
-                        "read {} is served once read {turn} is done: {first:?}",
-                        turn + 1
-                    );
-                }
+            if let Some(next) = channels.get_mut(turn + 1) {
+                first = next.open(None).unwrap();
+                assert!(
+                    matches!(first, Reply::Chunk { .. }),
+                    "read {} is served once read {turn} is done: {first:?}",
+                    turn + 1
+                );
             }
-            drop(channels);
-            settle().await;
-            assert_eq!(budget.used(), 0);
-        });
-    }
+        }
+        drop(channels);
+        settle().await;
+        assert_eq!(budget.used(), 0);
+    });
+}
 
-    phase a_read_larger_than_the_whole_budget_completes;
-    {
-        on_the_broker(async {
-            let budget = Arc::new(Budget::with_total(1024));
-            let service = Service::new(false, 4096);
-            let mut large = Channel::sharing(&service, &budget);
-            let mut other = Channel::sharing(&service, &budget);
-            let first = large.open(None).unwrap();
-            assert_eq!(large.take(&first), vec![1; 4096]);
-            // While it is held, others wait; once it is read, they are served.
-            let first = large.open(None).unwrap();
-            assert_eq!(other.open(None).unwrap(), Reply::Busy);
-            large.take(&first);
-            settle().await;
-            let first = other.open(None).unwrap();
-            assert_eq!(other.take(&first), vec![1; 4096]);
-        });
-    }
+#[test]
+fn a_read_larger_than_the_whole_budget_completes() {
+    on_the_broker(async {
+        let budget = Arc::new(Budget::with_total(1024));
+        let service = Service::new(false, 4096);
+        let mut large = Channel::sharing(&service, &budget);
+        let mut other = Channel::sharing(&service, &budget);
+        let first = large.open(None).unwrap();
+        assert_eq!(large.take(&first), vec![1; 4096]);
+        // While it is held, others wait; once it is read, they are served.
+        let first = large.open(None).unwrap();
+        assert_eq!(other.open(None).unwrap(), Reply::Busy);
+        large.take(&first);
+        settle().await;
+        let first = other.open(None).unwrap();
+        assert_eq!(other.take(&first), vec![1; 4096]);
+    });
+}
 
-    phase a_refusal_of_authority_stays_final_whatever_the_budget_holds;
-    {
-        use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
-        on_the_broker(async {
-            let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
-            let service = Service::new(false, 3);
-            let mut holder = Channel::sharing(&service, &budget);
-            let held = holder.open(None).unwrap();
-            // A reader whose custody ended is refused, not queued.
-            let mut revoked = Channel::sharing(&service, &budget);
-            revoked.custody.store(false, Ordering::Release);
-            assert!(revoked.open(None).is_err());
-            // A reader queued behind the budget whose owner then refuses it is
-            // refused once its turn comes.
-            let mut queued = Channel::sharing(&service, &budget);
-            assert_eq!(queued.open(None).unwrap(), Reply::Busy);
-            service.readable.store(false, Ordering::Release);
-            holder.take(&held);
-            settle().await;
-            assert!(queued.open(None).is_err());
-            // The refused read released its turn.
-            service.readable.store(true, Ordering::Release);
-            let first = holder.open(None).unwrap();
-            assert!(matches!(first, Reply::Chunk { .. }));
-        });
-    }
+#[test]
+fn a_refusal_of_authority_stays_final_whatever_the_budget_holds() {
+    use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
+    on_the_broker(async {
+        let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
+        let service = Service::new(false, 3);
+        let mut holder = Channel::sharing(&service, &budget);
+        let held = holder.open(None).unwrap();
+        // A reader whose custody ended is refused, not queued.
+        let mut revoked = Channel::sharing(&service, &budget);
+        revoked.custody.store(false, Ordering::Release);
+        assert!(revoked.open(None).is_err());
+        // A reader queued behind the budget whose owner then refuses it is
+        // refused once its turn comes.
+        let mut queued = Channel::sharing(&service, &budget);
+        assert_eq!(queued.open(None).unwrap(), Reply::Busy);
+        service.readable.store(false, Ordering::Release);
+        holder.take(&held);
+        settle().await;
+        assert!(queued.open(None).is_err());
+        // The refused read released its turn.
+        service.readable.store(true, Ordering::Release);
+        let first = holder.open(None).unwrap();
+        assert!(matches!(first, Reply::Chunk { .. }));
+    });
+}
 
-    phase a_queued_read_refused_or_left_gives_up_its_place;
-    {
-        use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
-        on_the_broker(async {
-            let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
-            let service = Service::new(false, 3);
-            let mut holder = Channel::sharing(&service, &budget);
-            let held = holder.open(None).unwrap();
-            let mut revoked = Channel::sharing(&service, &budget);
-            let mut leaving = Channel::sharing(&service, &budget);
-            let mut last = Channel::sharing(&service, &budget);
-            for channel in [&mut revoked, &mut leaving, &mut last] {
-                assert_eq!(channel.open(None).unwrap(), Reply::Busy);
-                settle().await;
-            }
-            // The first in line loses custody while it waits; the second stops
-            // reading on its channel.
-            revoked.custody.store(false, Ordering::Release);
-            leaving.slot.leave();
-            holder.take(&held);
+#[test]
+fn a_queued_read_refused_or_left_gives_up_its_place() {
+    use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
+    on_the_broker(async {
+        let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
+        let service = Service::new(false, 3);
+        let mut holder = Channel::sharing(&service, &budget);
+        let held = holder.open(None).unwrap();
+        let mut revoked = Channel::sharing(&service, &budget);
+        let mut leaving = Channel::sharing(&service, &budget);
+        let mut last = Channel::sharing(&service, &budget);
+        for channel in [&mut revoked, &mut leaving, &mut last] {
+            assert_eq!(channel.open(None).unwrap(), Reply::Busy);
             settle().await;
-            // The refusal is final, and the workspace granted to it goes on.
-            assert!(revoked.open(None).is_err());
-            settle().await;
-            let first = last.open(None).unwrap();
-            assert!(
-                matches!(first, Reply::Chunk { .. }),
-                "the read behind a refused and a departed one is served: {first:?}"
-            );
-            assert_eq!(last.take(&first), vec![1; 3]);
-            drop((holder, revoked, leaving, last));
-            settle().await;
-            assert_eq!(budget.used(), 0);
-        });
-    }
+        }
+        // The first in line loses custody while it waits; the second stops
+        // reading on its channel.
+        revoked.custody.store(false, Ordering::Release);
+        leaving.slot.leave();
+        holder.take(&held);
+        settle().await;
+        // The refusal is final, and the workspace granted to it goes on.
+        assert!(revoked.open(None).is_err());
+        settle().await;
+        let first = last.open(None).unwrap();
+        assert!(
+            matches!(first, Reply::Chunk { .. }),
+            "the read behind a refused and a departed one is served: {first:?}"
+        );
+        assert_eq!(last.take(&first), vec![1; 3]);
+        drop((holder, revoked, leaving, last));
+        settle().await;
+        assert_eq!(budget.used(), 0);
+    });
 }

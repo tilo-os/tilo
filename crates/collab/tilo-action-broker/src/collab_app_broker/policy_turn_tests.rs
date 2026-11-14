@@ -99,79 +99,75 @@ fn expiring_workspace(guest_until: u64, agent_until: u64) -> (WorkspaceTree, Str
     (tree, workspace_id)
 }
 
-tilo_test_env::scenario! {
-    fn the_policy_turn_wakes_for_the_earliest_policy_change;
+#[test]
+fn the_turn_parks_without_a_deadline_and_wakes_for_the_earliest() {
+    let now = std::time::Instant::now();
+    let soon = now.checked_add(Duration::from_millis(30)).unwrap();
+    let later = now.checked_add(Duration::from_secs(1)).unwrap();
+    assert_eq!(broker_turn_deadline(None, None), None, "nothing due: park");
+    assert_eq!(broker_turn_deadline(Some(later), Some(soon)), Some(soon));
+    assert_eq!(broker_turn_deadline(Some(soon), Some(later)), Some(soon));
+    assert_eq!(broker_turn_deadline(None, Some(later)), Some(later));
+}
 
-    phase the_turn_parks_without_a_deadline_and_wakes_for_the_earliest;
-    {
-        let now = std::time::Instant::now();
-        let soon = now.checked_add(Duration::from_millis(30)).unwrap();
-        let later = now.checked_add(Duration::from_secs(1)).unwrap();
-        assert_eq!(broker_turn_deadline(None, None), None, "nothing due: park");
-        assert_eq!(broker_turn_deadline(Some(later), Some(soon)), Some(soon));
-        assert_eq!(broker_turn_deadline(Some(soon), Some(later)), Some(soon));
-        assert_eq!(broker_turn_deadline(None, Some(later)), Some(later));
-    }
-
-    phase the_next_policy_change_is_the_first_grant_or_certificate_expiry;
-    {
-        let now = tilo_clock::unix_now();
-        let (tree, workspace_id) = expiring_workspace(now.saturating_add(30), now.saturating_add(10));
-        let owner = owner_key();
-        let route = CrdtRoute::record("so.tilo.chat", &workspace_id, "main");
-        let mut admitted = admit_verified_join(
-            &tree,
-            &route,
-            VerifiedJoinIdentity {
-                user_public_key: owner.verifying_key().to_bytes(),
-                device_public_key: [72; 32],
-                capped: false,
-            },
-        )
-        .expect("the owner's workspace admits a verified person");
-        let authority = Arc::new(Announcing(tree.shared()));
-        let (state, _bridge) = AppBrokerState::test_state(Some(authority), HostServices::default());
-        let after = now.saturating_mul(NS);
-        assert_eq!(
-            state.next_policy_change(after).unwrap(),
-            (Some(now.saturating_add(10).saturating_mul(NS)), false),
-            "the agent's membership ends first"
-        );
-        assert_eq!(
-            state
-                .next_policy_change(now.saturating_add(10).saturating_mul(NS))
-                .unwrap()
-                .0,
-            Some(now.saturating_add(30).saturating_mul(NS)),
-            "then the guest's"
-        );
-
-        // An admitted native session whose certificate ends sooner still.
-        let certificate_ends = after.saturating_add(NS.saturating_mul(5));
-        admitted.certificate = Some(tilo_user_identity::DeviceCert {
+#[test]
+fn the_next_policy_change_is_the_first_grant_or_certificate_expiry() {
+    let now = tilo_clock::unix_now();
+    let (tree, workspace_id) = expiring_workspace(now.saturating_add(30), now.saturating_add(10));
+    let owner = owner_key();
+    let route = CrdtRoute::record("so.tilo.chat", &workspace_id, "main");
+    let mut admitted = admit_verified_join(
+        &tree,
+        &route,
+        VerifiedJoinIdentity {
             user_public_key: owner.verifying_key().to_bytes(),
             device_public_key: [72; 32],
-            device_label: "laptop".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: after.saturating_sub(NS),
-            expires_at_ns: Some(certificate_ends),
-            signature: [0; 64],
-            issuer: None,
-        });
-        let _context = state.subscribe_context(
-            &route.channel_key(),
-            1,
-            Some(NativeContext {
-                admitted,
-                roster: Vec::new(),
-            }),
-        );
-        assert_eq!(
-            state.next_policy_change(after).unwrap(),
-            (Some(certificate_ends), false),
-            "no certificate authority is installed, so no fleet is read"
-        );
-    }
+            capped: false,
+        },
+    )
+    .expect("the owner's workspace admits a verified person");
+    let authority = Arc::new(Announcing(tree.shared()));
+    let (state, _bridge) = AppBrokerState::test_state(Some(authority), HostServices::default());
+    let after = now.saturating_mul(NS);
+    assert_eq!(
+        state.next_policy_change(after).unwrap(),
+        (Some(now.saturating_add(10).saturating_mul(NS)), false),
+        "the agent's membership ends first"
+    );
+    assert_eq!(
+        state
+            .next_policy_change(now.saturating_add(10).saturating_mul(NS))
+            .unwrap()
+            .0,
+        Some(now.saturating_add(30).saturating_mul(NS)),
+        "then the guest's"
+    );
+
+    // An admitted native session whose certificate ends sooner still.
+    let certificate_ends = after.saturating_add(NS.saturating_mul(5));
+    admitted.certificate = Some(tilo_user_identity::DeviceCert {
+        user_public_key: owner.verifying_key().to_bytes(),
+        device_public_key: [72; 32],
+        device_label: "laptop".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: after.saturating_sub(NS),
+        expires_at_ns: Some(certificate_ends),
+        signature: [0; 64],
+        issuer: None,
+    });
+    let _context = state.subscribe_context(
+        &route.channel_key(),
+        1,
+        Some(NativeContext {
+            admitted,
+            roster: Vec::new(),
+        }),
+    );
+    assert_eq!(
+        state.next_policy_change(after).unwrap(),
+        (Some(certificate_ends), false),
+        "no certificate authority is installed, so no fleet is read"
+    );
 }
 
 /// An idle broker whose host announces its policy changes registers its

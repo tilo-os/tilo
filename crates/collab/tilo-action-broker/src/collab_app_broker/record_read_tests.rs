@@ -232,186 +232,182 @@ fn own_record(person: &str) -> String {
     tilo_action_policy::member_record_id(person, "tilolang.workspace")
 }
 
-tilo_test_env::scenario! {
-    fn records_are_read_here_as_the_workspace_allows;
+#[test]
+fn an_agent_task_reads_the_workspace_records_and_its_persons_own() {
+    let f = fixture();
+    let task = f.task("scribe");
+    assert_eq!(
+        f.read(&task, NOTES, "").unwrap(),
+        RecordCopy::Document(format!("{NOTES}/").into_bytes()),
+        "the workspace's Notes record, with no Notes window anywhere"
+    );
+    let own = own_record(&f.person);
+    assert_eq!(
+        f.read(&task, MAIL, &own).unwrap(),
+        RecordCopy::Document(format!("{MAIL}/{own}").into_bytes()),
+        "the person's own Mail record, read acting for them"
+    );
+}
 
-    phase an_agent_task_reads_the_workspace_records_and_its_persons_own;
-    {
-        let f = fixture();
-        let task = f.task("scribe");
-        assert_eq!(
-            f.read(&task, NOTES, "").unwrap(),
-            RecordCopy::Document(format!("{NOTES}/").into_bytes()),
-            "the workspace's Notes record, with no Notes window anywhere"
-        );
-        let own = own_record(&f.person);
-        assert_eq!(
-            f.read(&task, MAIL, &own).unwrap(),
-            RecordCopy::Document(format!("{MAIL}/{own}").into_bytes()),
-            "the person's own Mail record, read acting for them"
-        );
-    }
+#[test]
+fn a_sealed_workspaces_record_this_device_holds_nothing_of_reads_as_none_yet() {
+    let f = fixture_with(Owner {
+        sealed: Some(Sealed {
+            whole: vec!["kept"],
+            partial: vec!["torn"],
+        }),
+        ..Owner::default()
+    });
+    let task = f.task("scribe");
+    assert_eq!(
+        f.read(&task, NOTES, "").unwrap(),
+        RecordCopy::Absent,
+        "no app ever wrote the workspace's Notes record: the workspace has none yet"
+    );
+    assert_eq!(
+        f.read(&task, NOTES, "kept").unwrap(),
+        RecordCopy::Document(format!("{NOTES}/kept").into_bytes()),
+        "a record the workspace holds is read from its writes"
+    );
+    let torn = f.read(&task, NOTES, "torn").unwrap_err();
+    assert!(
+        torn.to_string().contains("build on changes"),
+        "writes that make no whole record are not read as an empty one: {torn}"
+    );
+}
 
-    phase a_sealed_workspaces_record_this_device_holds_nothing_of_reads_as_none_yet;
-    {
-        let f = fixture_with(Owner {
-            sealed: Some(Sealed {
-                whole: vec!["kept"],
-                partial: vec!["torn"],
-            }),
-            ..Owner::default()
-        });
-        let task = f.task("scribe");
-        assert_eq!(
-            f.read(&task, NOTES, "").unwrap(),
-            RecordCopy::Absent,
-            "no app ever wrote the workspace's Notes record: the workspace has none yet"
-        );
-        assert_eq!(
-            f.read(&task, NOTES, "kept").unwrap(),
-            RecordCopy::Document(format!("{NOTES}/kept").into_bytes()),
-            "a record the workspace holds is read from its writes"
-        );
-        let torn = f.read(&task, NOTES, "torn").unwrap_err();
-        assert!(
-            torn.to_string().contains("build on changes"),
-            "writes that make no whole record are not read as an empty one: {torn}"
-        );
-    }
-
-    phase a_record_either_may_not_read_stays_unreadable;
-    {
-        let f = fixture();
-        let task = f.task("scribe");
-        // Another member's own record: the person may not read it, so neither may their agent.
-        let theirs = own_record(&"b2".repeat(32));
-        assert!(
-            matches!(
-                f.read(&task, MAIL, &theirs),
-                Err(ActionHostError::Refused { .. })
-            ),
-            "another member's own record"
-        );
-        // A record the workspace denies the agent: its person's authority does not widen it.
-        assert!(matches!(
-            f.read(&task, NOTES, "private"),
+#[test]
+fn a_record_either_may_not_read_stays_unreadable() {
+    let f = fixture();
+    let task = f.task("scribe");
+    // Another member's own record: the person may not read it, so neither may their agent.
+    let theirs = own_record(&"b2".repeat(32));
+    assert!(
+        matches!(
+            f.read(&task, MAIL, &theirs),
             Err(ActionHostError::Refused { .. })
-        ));
-        // An agent the workspace grants nothing reads nothing, whatever its person may.
-        assert!(f.read(&f.task("idle"), NOTES, "").is_err());
-        assert_eq!(
-            f.owner.captures.load(Ordering::Acquire),
-            0,
-            "nothing was captured"
-        );
-    }
+        ),
+        "another member's own record"
+    );
+    // A record the workspace denies the agent: its person's authority does not widen it.
+    assert!(matches!(
+        f.read(&task, NOTES, "private"),
+        Err(ActionHostError::Refused { .. })
+    ));
+    // An agent the workspace grants nothing reads nothing, whatever its person may.
+    assert!(f.read(&f.task("idle"), NOTES, "").is_err());
+    assert_eq!(
+        f.owner.captures.load(Ordering::Acquire),
+        0,
+        "nothing was captured"
+    );
+}
 
-    phase a_grant_revoked_mid_task_cuts_the_reads_that_follow_and_one_under_way;
-    {
-        let f = fixture();
-        let task = f.task("scribe");
-        assert!(f.read(&task, NOTES, "").is_ok());
-        // Revoked while a capture is between its chunks: the capture stops.
-        let (membership, grant) = (f.membership.clone(), f.scribe.clone());
-        *f.owner.between.lock().unwrap() = Some(Box::new(move || {
-            assert!(membership.write().workspaces[0].revoke_grant(&grant));
-        }));
-        assert!(
-            matches!(
-                f.read(&task, NOTES, ""),
-                Err(ActionHostError::Refused { .. })
-            ),
-            "the capture under way is cut"
-        );
-        // And every read after it.
-        assert!(f.read(&task, NOTES, "").is_err());
-        assert_eq!(f.owner.captures.load(Ordering::Acquire), 1);
-    }
+#[test]
+fn a_grant_revoked_mid_task_cuts_the_reads_that_follow_and_one_under_way() {
+    let f = fixture();
+    let task = f.task("scribe");
+    assert!(f.read(&task, NOTES, "").is_ok());
+    // Revoked while a capture is between its chunks: the capture stops.
+    let (membership, grant) = (f.membership.clone(), f.scribe.clone());
+    *f.owner.between.lock().unwrap() = Some(Box::new(move || {
+        assert!(membership.write().workspaces[0].revoke_grant(&grant));
+    }));
+    assert!(
+        matches!(
+            f.read(&task, NOTES, ""),
+            Err(ActionHostError::Refused { .. })
+        ),
+        "the capture under way is cut"
+    );
+    // And every read after it.
+    assert!(f.read(&task, NOTES, "").is_err());
+    assert_eq!(f.owner.captures.load(Ordering::Acquire), 1);
+}
 
-    phase a_person_or_an_agent_task_acting_for_them_reads_records_here;
-    {
-        let f = fixture();
-        let refused = |caller: &Caller| {
-            matches!(
-                f.read(caller, NOTES, ""),
-                Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RECORD_READS_FOR_TASKS
-            )
-        };
-        // The person reads their own workspace's records, as their apps do.
-        let person = Caller::local_person(f.person.clone())
-            .in_workspace(f.workspace.clone())
-            .in_new_execution();
-        assert!(f.read(&person, NOTES, "").is_ok());
-        // An agent the person's own device handed its session to carries that device's
-        // delegation, which reads no record outside its app.
-        let handed = person.delegated_to("scribe");
-        assert!(refused(&handed));
-        // An agent acting for nobody, and an app.
-        let alone = Caller::local_agent("scribe")
-            .in_workspace(f.workspace.clone())
-            .in_new_execution();
-        assert!(refused(&alone));
-        assert!(refused(
-            &Caller::local_app(NOTES).in_workspace(f.workspace.clone())
-        ));
-        assert_eq!(f.owner.captures.load(Ordering::Acquire), 1);
-        drop(f.state);
-    }
+#[test]
+fn a_person_or_an_agent_task_acting_for_them_reads_records_here() {
+    let f = fixture();
+    let refused = |caller: &Caller| {
+        matches!(
+            f.read(caller, NOTES, ""),
+            Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RECORD_READS_FOR_TASKS
+        )
+    };
+    // The person reads their own workspace's records, as their apps do.
+    let person = Caller::local_person(f.person.clone())
+        .in_workspace(f.workspace.clone())
+        .in_new_execution();
+    assert!(f.read(&person, NOTES, "").is_ok());
+    // An agent the person's own device handed its session to carries that device's
+    // delegation, which reads no record outside its app.
+    let handed = person.delegated_to("scribe");
+    assert!(refused(&handed));
+    // An agent acting for nobody, and an app.
+    let alone = Caller::local_agent("scribe")
+        .in_workspace(f.workspace.clone())
+        .in_new_execution();
+    assert!(refused(&alone));
+    assert!(refused(
+        &Caller::local_app(NOTES).in_workspace(f.workspace.clone())
+    ));
+    assert_eq!(f.owner.captures.load(Ordering::Acquire), 1);
+    drop(f.state);
+}
 
-    phase an_app_reads_another_apps_record_as_its_person;
-    // An app reads another app's records as the person whose session runs it, and never
-    // acting for nobody.
-    {
-        const MESSAGES: &str = "so.tilo.messages";
-        let f = fixture();
-        let app = Caller::local_app(MESSAGES)
-            .acting_for(f.person.clone())
-            .in_workspace(f.workspace.clone());
-        assert_eq!(
-            f.read(&app, NOTES, "").unwrap(),
-            RecordCopy::Document(format!("{NOTES}/").into_bytes()),
-            "it reads the record with the person's device, as them"
-        );
-        let alone = Caller::local_app(MESSAGES).in_workspace(f.workspace.clone());
-        assert!(
-            matches!(
-                f.read(&alone, NOTES, ""),
-                Err(ActionHostError::Refused { reason }) if reason == RECORD_READS_FOR_TASKS
-            ),
-            "an app acting for nobody reads nothing"
-        );
-    }
+/// An app reads another app's records as the person whose session runs it, and never
+/// acting for nobody.
+#[test]
+fn an_app_reads_another_apps_record_as_its_person() {
+    const MESSAGES: &str = "so.tilo.messages";
+    let f = fixture();
+    let app = Caller::local_app(MESSAGES)
+        .acting_for(f.person.clone())
+        .in_workspace(f.workspace.clone());
+    assert_eq!(
+        f.read(&app, NOTES, "").unwrap(),
+        RecordCopy::Document(format!("{NOTES}/").into_bytes()),
+        "it reads the record with the person's device, as them"
+    );
+    let alone = Caller::local_app(MESSAGES).in_workspace(f.workspace.clone());
+    assert!(
+        matches!(
+            f.read(&alone, NOTES, ""),
+            Err(ActionHostError::Refused { reason }) if reason == RECORD_READS_FOR_TASKS
+        ),
+        "an app acting for nobody reads nothing"
+    );
+}
 
-    phase a_watched_record_wakes_its_reader_on_the_next_write;
-    // A reader watching a record is woken once by the next write that lands on it, and not by a
-    // write to another record.
-    {
-        let f = fixture();
-        let person = Caller::local_person(f.person.clone())
-            .in_workspace(f.workspace.clone())
-            .in_new_execution();
-        let address = RecordAddress {
-            app: NOTES.to_owned(),
-            record: String::new(),
-        };
-        let (wake, woken) = tilo_actions::remote::RecordWake::new();
-        f.reads.watch(&person, &address, &wake).unwrap();
-        f.state.wake_record_reads(&f.workspace, MAIL, "");
-        assert!(
-            wake.waiting(),
-            "a write to another record wakes nobody here"
-        );
-        f.state.wake_record_reads(&f.workspace, NOTES, "");
-        assert!(matches!(
-            woken.wait_timeout(std::time::Duration::from_secs(5)),
-            Ok(Some(()))
-        ));
-        assert!(!wake.waiting());
-        let alone = Caller::local_agent("scribe")
-            .in_workspace(f.workspace.clone())
-            .in_new_execution();
-        assert!(f.reads.watch(&alone, &address, &wake).is_err());
-    }
+/// A reader watching a record is woken once by the next write that lands on it, and not by a
+/// write to another record.
+#[test]
+fn a_watched_record_wakes_its_reader_on_the_next_write() {
+    let f = fixture();
+    let person = Caller::local_person(f.person.clone())
+        .in_workspace(f.workspace.clone())
+        .in_new_execution();
+    let address = RecordAddress {
+        app: NOTES.to_owned(),
+        record: String::new(),
+    };
+    let (wake, woken) = tilo_actions::remote::RecordWake::new();
+    f.reads.watch(&person, &address, &wake).unwrap();
+    f.state.wake_record_reads(&f.workspace, MAIL, "");
+    assert!(
+        wake.waiting(),
+        "a write to another record wakes nobody here"
+    );
+    f.state.wake_record_reads(&f.workspace, NOTES, "");
+    assert!(matches!(
+        woken.wait_timeout(std::time::Duration::from_secs(5)),
+        Ok(Some(()))
+    ));
+    assert!(!wake.waiting());
+    let alone = Caller::local_agent("scribe")
+        .in_workspace(f.workspace.clone())
+        .in_new_execution();
+    assert!(f.reads.watch(&alone, &address, &wake).is_err());
 }
 
 fn change(app: &str) -> tilo_actions::remote::RecordChange {
@@ -425,48 +421,44 @@ fn change(app: &str) -> tilo_actions::remote::RecordChange {
     }
 }
 
-tilo_test_env::scenario! {
-    fn records_are_changed_here_only_by_an_agent_task_for_its_person;
+#[test]
+fn an_agent_tasks_change_reaches_the_origin_acting_for_its_person() {
+    let f = fixture();
+    let changes = f.state.record_changes().expect("a host with an origin");
+    let answer = changes.apply(&f.task("scribe"), &change(NOTES)).unwrap();
+    assert_eq!(answer["differs"], false);
+    let handed = f.origin.0.lock().unwrap();
+    let (workspace, applied, invoker) = handed.first().expect("the origin was handed the change");
+    assert_eq!(workspace, &f.workspace);
+    assert_eq!(applied, &change(NOTES));
+    assert_eq!(invoker.actor, "agent:scribe");
+    assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
+    assert_eq!(invoker.on_behalf_of.as_deref(), Some(f.person.as_str()));
+}
 
-    phase an_agent_tasks_change_reaches_the_origin_acting_for_its_person;
-    {
-        let f = fixture();
-        let changes = f.state.record_changes().expect("a host with an origin");
-        let answer = changes.apply(&f.task("scribe"), &change(NOTES)).unwrap();
-        assert_eq!(answer["differs"], false);
-        let handed = f.origin.0.lock().unwrap();
-        let (workspace, applied, invoker) = handed.first().expect("the origin was handed the change");
-        assert_eq!(workspace, &f.workspace);
-        assert_eq!(applied, &change(NOTES));
-        assert_eq!(invoker.actor, "agent:scribe");
-        assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
-        assert_eq!(invoker.on_behalf_of.as_deref(), Some(f.person.as_str()));
-    }
+#[test]
+fn a_change_the_workspace_denies_the_agent_never_reaches_the_origin() {
+    let f = fixture();
+    let changes = f.state.record_changes().unwrap();
+    assert!(matches!(
+        changes.apply(&f.task("scribe"), &change(MAIL)),
+        Err(ActionHostError::Refused { .. })
+    ));
+    assert!(f.origin.0.lock().unwrap().is_empty());
+}
 
-    phase a_change_the_workspace_denies_the_agent_never_reaches_the_origin;
-    {
-        let f = fixture();
-        let changes = f.state.record_changes().unwrap();
+#[test]
+fn only_an_agent_task_acting_for_its_person_changes_records_here() {
+    let f = fixture();
+    let changes = f.state.record_changes().unwrap();
+    let person = Caller::local_person(f.person.clone())
+        .in_workspace(f.workspace.clone())
+        .in_new_execution();
+    for caller in [person.clone(), person.delegated_to("scribe")] {
         assert!(matches!(
-            changes.apply(&f.task("scribe"), &change(MAIL)),
-            Err(ActionHostError::Refused { .. })
+            changes.apply(&caller, &change(NOTES)),
+            Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RECORD_READS_FOR_TASKS
         ));
-        assert!(f.origin.0.lock().unwrap().is_empty());
     }
-
-    phase only_an_agent_task_acting_for_its_person_changes_records_here;
-    {
-        let f = fixture();
-        let changes = f.state.record_changes().unwrap();
-        let person = Caller::local_person(f.person.clone())
-            .in_workspace(f.workspace.clone())
-            .in_new_execution();
-        for caller in [person.clone(), person.delegated_to("scribe")] {
-            assert!(matches!(
-                changes.apply(&caller, &change(NOTES)),
-                Err(ActionHostError::Refused { reason }) if reason == tilo_actions::remote::RECORD_READS_FOR_TASKS
-            ));
-        }
-        assert!(f.origin.0.lock().unwrap().is_empty());
-    }
+    assert!(f.origin.0.lock().unwrap().is_empty());
 }

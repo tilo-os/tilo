@@ -650,180 +650,176 @@ async fn invocation_journal_crash_boundaries_never_repeat_real_effect() {
     }).await;
 }
 
-tilo_test_env::scenario! {
-    fn the_invocation_journal_is_owner_scoped_and_fails_safely;
+#[test]
+fn invocation_journal_owner_is_device_scoped_and_live_authority_precedes_duplicate_disclosure() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+    fixture
+        .state
+        .start_verified_invocation(&caller, &request, None)
+        .unwrap();
+    fixture.invocation_rx.try_recv().unwrap();
+    let other_device = SigningKey::from_bytes(&[53; 32]);
+    let other = fixture
+        .state
+        .verify_action_caller(
+            &fixture.cluster_id,
+            &certified_join(
+                &fixture.cluster_id,
+                &SigningKey::from_bytes(&[51; 32]),
+                &other_device,
+            )
+            .encode()
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(
+        fixture
+            .state
+            .verified_invocation_status(&other, request.invocation)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        futures::executor::block_on(
+            fixture
+                .state
+                .cancel_verified_invocation(&other, request.invocation)
+        )
+        .is_err()
+    );
+    assert!(
+        fixture
+            .state
+            .invocation_statuses(&caller.admitted.principal_id)
+            .is_empty(),
+        "legacy root-scoped queries must not disclose another device's private results"
+    );
+    let mut bad = request.clone();
+    bad.invocation = tilo_actions::InvocationId::new();
+    bad.record_id = "different-record".into();
+    assert!(
+        fixture
+            .state
+            .start_verified_invocation(&caller, &bad, None)
+            .is_err()
+    );
+    fixture.membership.as_ref().unwrap().write().workspaces[0].set_owner("new-owner");
+    assert!(
+        fixture
+            .state
+            .start_verified_invocation(&caller, &request, None)
+            .is_err()
+    );
+    assert!(
+        fixture
+            .state
+            .verified_invocation_status(&caller, request.invocation)
+            .is_err()
+    );
+    assert!(fixture.invocation_rx.try_recv().is_err());
+}
 
-    phase invocation_journal_owner_is_device_scoped_and_live_authority_precedes_duplicate_disclosure;
-    {
+#[test]
+fn invocation_journal_old_apps_wrong_workspaces_and_silence_fail_safely() {
+    for disconnected in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let (mut fixture, caller, request) = durable_fixture(root.path(), None);
         fixture
             .state
+            .stable_invocation_subscribers
+            .lock()
+            .unwrap()
+            .clear();
+        assert!(
+            fixture
+                .state
+                .start_verified_invocation(&caller, &request, None)
+                .unwrap_err()
+                .contains("stable_identity_unavailable")
+        );
+        assert!(fixture.invocation_rx.try_recv().is_err());
+        fixture
+            .state
+            .stable_invocation_subscribers
+            .lock()
+            .unwrap()
+            .insert(71);
+        let original_workspace = fixture
+            .state
+            .surfaces
+            .lock()
+            .unwrap()
+            .get(&71)
+            .unwrap()
+            .route
+            .cluster_id
+            .clone();
+        fixture
+            .state
+            .surfaces
+            .lock()
+            .unwrap()
+            .get_mut(&71)
+            .unwrap()
+            .route
+            .cluster_id = uuid::Uuid::new_v4().to_string();
+        assert!(
+            fixture
+                .state
+                .start_verified_invocation(&caller, &request, None)
+                .is_err()
+        );
+        fixture
+            .state
+            .surfaces
+            .lock()
+            .unwrap()
+            .get_mut(&71)
+            .unwrap()
+            .route
+            .cluster_id = original_workspace;
+        let admitted = fixture
+            .state
             .start_verified_invocation(&caller, &request, None)
             .unwrap();
         fixture.invocation_rx.try_recv().unwrap();
-        let other_device = SigningKey::from_bytes(&[53; 32]);
-        let other = fixture
+        let cancelled = futures::executor::block_on(
+            fixture
+                .state
+                .cancel_verified_invocation(&caller, request.invocation),
+        )
+        .unwrap();
+        assert!(cancelled.cancellation_requested);
+        // A durable cancellation request acknowledges receipt only; it
+        // does not assert that the running external effect stopped.
+        if disconnected {
+            fixture.state.remove_connection(71);
+        } else {
+            fixture.state.expire_stale_invocations_at(
+                std::time::Instant::now(),
+                Duration::ZERO,
+                Duration::ZERO,
+            );
+        }
+        let status = fixture
             .state
-            .verify_action_caller(
-                &fixture.cluster_id,
-                &certified_join(
-                    &fixture.cluster_id,
-                    &SigningKey::from_bytes(&[51; 32]),
-                    &other_device,
-                )
-                .encode()
-                .unwrap(),
-            )
+            .verified_invocation_status(&caller, request.invocation)
+            .unwrap()
             .unwrap();
+        assert!(status.uncertain);
         assert!(
-            fixture
-                .state
-                .verified_invocation_status(&other, request.invocation)
-                .unwrap()
-                .is_none()
+            matches!(status.update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown")
         );
-        assert!(
-            futures::executor::block_on(
-                fixture
-                    .state
-                    .cancel_verified_invocation(&other, request.invocation)
-            )
-            .is_err()
-        );
-        assert!(
-            fixture
-                .state
-                .invocation_statuses(&caller.admitted.principal_id)
-                .is_empty(),
-            "legacy root-scoped queries must not disclose another device's private results"
-        );
-        let mut bad = request.clone();
-        bad.invocation = tilo_actions::InvocationId::new();
-        bad.record_id = "different-record".into();
-        assert!(
-            fixture
-                .state
-                .start_verified_invocation(&caller, &bad, None)
-                .is_err()
-        );
-        fixture.membership.as_ref().unwrap().write().workspaces[0].set_owner("new-owner");
-        assert!(
+        assert_eq!(
             fixture
                 .state
                 .start_verified_invocation(&caller, &request, None)
-                .is_err()
-        );
-        assert!(
-            fixture
-                .state
-                .verified_invocation_status(&caller, request.invocation)
-                .is_err()
+                .unwrap()
+                .wire_id,
+            admitted.wire_id
         );
         assert!(fixture.invocation_rx.try_recv().is_err());
-    }
-
-    phase invocation_journal_old_apps_wrong_workspaces_and_silence_fail_safely;
-    {
-        for disconnected in [false, true] {
-            let root = tempfile::tempdir().unwrap();
-            let (mut fixture, caller, request) = durable_fixture(root.path(), None);
-            fixture
-                .state
-                .stable_invocation_subscribers
-                .lock()
-                .unwrap()
-                .clear();
-            assert!(
-                fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .unwrap_err()
-                    .contains("stable_identity_unavailable")
-            );
-            assert!(fixture.invocation_rx.try_recv().is_err());
-            fixture
-                .state
-                .stable_invocation_subscribers
-                .lock()
-                .unwrap()
-                .insert(71);
-            let original_workspace = fixture
-                .state
-                .surfaces
-                .lock()
-                .unwrap()
-                .get(&71)
-                .unwrap()
-                .route
-                .cluster_id
-                .clone();
-            fixture
-                .state
-                .surfaces
-                .lock()
-                .unwrap()
-                .get_mut(&71)
-                .unwrap()
-                .route
-                .cluster_id = uuid::Uuid::new_v4().to_string();
-            assert!(
-                fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .is_err()
-            );
-            fixture
-                .state
-                .surfaces
-                .lock()
-                .unwrap()
-                .get_mut(&71)
-                .unwrap()
-                .route
-                .cluster_id = original_workspace;
-            let admitted = fixture
-                .state
-                .start_verified_invocation(&caller, &request, None)
-                .unwrap();
-            fixture.invocation_rx.try_recv().unwrap();
-            let cancelled = futures::executor::block_on(
-                fixture
-                    .state
-                    .cancel_verified_invocation(&caller, request.invocation),
-            )
-            .unwrap();
-            assert!(cancelled.cancellation_requested);
-            // A durable cancellation request acknowledges receipt only; it
-            // does not assert that the running external effect stopped.
-            if disconnected {
-                fixture.state.remove_connection(71);
-            } else {
-                fixture.state.expire_stale_invocations_at(
-                    std::time::Instant::now(),
-                    Duration::ZERO,
-                    Duration::ZERO,
-                );
-            }
-            let status = fixture
-                .state
-                .verified_invocation_status(&caller, request.invocation)
-                .unwrap()
-                .unwrap();
-            assert!(status.uncertain);
-            assert!(
-                matches!(status.update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown")
-            );
-            assert_eq!(
-                fixture
-                    .state
-                    .start_verified_invocation(&caller, &request, None)
-                    .unwrap()
-                    .wire_id,
-                admitted.wire_id
-            );
-            assert!(fixture.invocation_rx.try_recv().is_err());
-        }
     }
 }
 

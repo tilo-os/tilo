@@ -79,131 +79,127 @@ mod tests {
             )
     }
 
-    tilo_test_env::scenario! {
-        fn an_invoker_is_recorded_as_who_acts;
-
-        phase a_person_never_gets_a_participant_from_the_envelope;
-        {
-            let actor = BrokerActor::person("person:guest");
-            let context = host_set_invoker(Some(forged()), &actor, None, None)
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                context.invoker,
-                Some(tilo_actions::ActionInvoker::actor("person:guest"))
-            );
-            assert_eq!(invoker_participant(Some(&context)), None);
-            assert_eq!(
-                tilo_actions::ActionInvoker::delivered(&actor.id, Some(&context)),
-                context.invoker.clone().unwrap(),
-                "the worker derives exactly the host-set invoker"
-            );
-            // No context stays no context: ordinary deliveries are unchanged.
-            assert_eq!(host_set_invoker(None, &actor, None, None).unwrap(), None);
-        }
-
-        phase a_legacy_agent_run_routes_to_its_host_task_participant;
-        {
-            let actor = BrokerActor::agent("agent:alpha");
-            let context = host_set_invoker(Some(forged()), &actor, None, None)
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                context.invoker,
-                Some(
-                    tilo_actions::ActionInvoker::actor("agent:alpha")
-                        .with_kind(tilo_actions::ActorKind::Agent)
-                        .with_participant(tilo_actions::ParticipantId::for_agent_task(TASK).unwrap())
-                )
-            );
-            // A task run's agent acting for its starter names them, with no caller to say so.
-            let started = BrokerActor::agent("agent:alpha").for_person("owner");
-            let context = host_set_invoker(Some(forged()), &started, None, None).unwrap();
-            let invoker = context.and_then(|context| context.invoker).unwrap();
-            assert_eq!(invoker.on_behalf_of.as_deref(), Some("owner"));
-            let untasked = tilo_actions::ActionContext::default();
-            let context = host_set_invoker(Some(untasked), &actor, None, None)
-                .unwrap()
-                .unwrap();
-            assert_eq!(invoker_participant(Some(&context)), None);
-        }
-
-        phase an_agent_acting_for_a_person_is_recorded_as_such;
-        {
-            let caller = tilo_actions::remote::Caller::local_agent("alpha").acting_for("owner");
-            let actor = BrokerActor::for_caller(&caller);
-            let context = host_set_invoker(
-                Some(tilo_actions::ActionContext::default()),
-                &actor,
-                Some(&caller),
-                None,
-            )
+    #[test]
+    fn a_person_never_gets_a_participant_from_the_envelope() {
+        let actor = BrokerActor::person("person:guest");
+        let context = host_set_invoker(Some(forged()), &actor, None, None)
             .unwrap()
             .unwrap();
-            assert_eq!(
-                context.invoker,
-                Some(
-                    tilo_actions::ActionInvoker::actor("agent:alpha")
-                        .with_kind(tilo_actions::ActorKind::Agent)
-                        .acting_for("owner")
-                )
-            );
+        assert_eq!(
+            context.invoker,
+            Some(tilo_actions::ActionInvoker::actor("person:guest"))
+        );
+        assert_eq!(invoker_participant(Some(&context)), None);
+        assert_eq!(
+            tilo_actions::ActionInvoker::delivered(&actor.id, Some(&context)),
+            context.invoker.clone().unwrap(),
+            "the worker derives exactly the host-set invoker"
+        );
+        // No context stays no context: ordinary deliveries are unchanged.
+        assert_eq!(host_set_invoker(None, &actor, None, None).unwrap(), None);
+    }
 
-            // Asked with no context at all, it is still the agent's, by the name its admission gave
-            // it, for the person: what it writes is never taken for theirs.
-            let named = caller.named("Helper");
-            let context = host_set_invoker(None, &actor, Some(&named), None)
-                .unwrap()
-                .expect("an agent's invocation always names it");
-            assert_eq!(
-                context.invoker,
-                Some(
-                    tilo_actions::ActionInvoker::actor("agent:alpha")
-                        .with_kind(tilo_actions::ActorKind::Agent)
-                        .acting_for("owner")
-                        .named(Some("Helper".into()))
-                )
-            );
-
-            // A Shortcut's step is its person's: the invoker stays the person.
-            let step = tilo_actions::remote::Caller::local_person("owner").running_shortcut("morning");
-            let context = host_set_invoker(
-                Some(tilo_actions::ActionContext::default()),
-                &BrokerActor::for_caller(&step),
-                Some(&step),
-                None,
-            )
+    #[test]
+    fn a_legacy_agent_run_routes_to_its_host_task_participant() {
+        let actor = BrokerActor::agent("agent:alpha");
+        let context = host_set_invoker(Some(forged()), &actor, None, None)
             .unwrap()
             .unwrap();
-            assert_eq!(
-                context.invoker,
-                Some(tilo_actions::ActionInvoker::actor("owner"))
-            );
-        }
+        assert_eq!(
+            context.invoker,
+            Some(
+                tilo_actions::ActionInvoker::actor("agent:alpha")
+                    .with_kind(tilo_actions::ActorKind::Agent)
+                    .with_participant(tilo_actions::ParticipantId::for_agent_task(TASK).unwrap())
+            )
+        );
+        // A task run's agent acting for its starter names them, with no caller to say so.
+        let started = BrokerActor::agent("agent:alpha").for_person("owner");
+        let context = host_set_invoker(Some(forged()), &started, None, None).unwrap();
+        let invoker = context.and_then(|context| context.invoker).unwrap();
+        assert_eq!(invoker.on_behalf_of.as_deref(), Some("owner"));
+        let untasked = tilo_actions::ActionContext::default();
+        let context = host_set_invoker(Some(untasked), &actor, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(invoker_participant(Some(&context)), None);
+    }
 
-        phase an_execution_cannot_borrow_another_principal_or_agent_view;
-        {
-            let caller = tilo_actions::remote::Caller::local_person("person:owner").in_new_execution();
-            let execution =
-                ExecutionScope::for_call(&caller, tilo_actions::InvocationId::new()).unwrap();
-            for actor in [
-                BrokerActor::person("person:other"),
-                BrokerActor::agent("person:owner"),
-            ] {
-                assert!(host_set_invoker(Some(forged()), &actor, None, Some(&execution)).is_err());
-            }
-            let actor = BrokerActor::person("person:owner");
-            let context = host_set_invoker(Some(forged()), &actor, None, Some(&execution))
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                invoker_participant(Some(&context)),
-                Some(tilo_actions::ParticipantId::for_execution(
-                    caller.execution_id().unwrap()
-                ))
-            );
-            caller.retire_execution();
-            assert!(host_set_invoker(None, &actor, None, Some(&execution)).is_err());
+    #[test]
+    fn an_agent_acting_for_a_person_is_recorded_as_such() {
+        let caller = tilo_actions::remote::Caller::local_agent("alpha").acting_for("owner");
+        let actor = BrokerActor::for_caller(&caller);
+        let context = host_set_invoker(
+            Some(tilo_actions::ActionContext::default()),
+            &actor,
+            Some(&caller),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            context.invoker,
+            Some(
+                tilo_actions::ActionInvoker::actor("agent:alpha")
+                    .with_kind(tilo_actions::ActorKind::Agent)
+                    .acting_for("owner")
+            )
+        );
+
+        // Asked with no context at all, it is still the agent's, by the name its admission gave
+        // it, for the person: what it writes is never taken for theirs.
+        let named = caller.named("Helper");
+        let context = host_set_invoker(None, &actor, Some(&named), None)
+            .unwrap()
+            .expect("an agent's invocation always names it");
+        assert_eq!(
+            context.invoker,
+            Some(
+                tilo_actions::ActionInvoker::actor("agent:alpha")
+                    .with_kind(tilo_actions::ActorKind::Agent)
+                    .acting_for("owner")
+                    .named(Some("Helper".into()))
+            )
+        );
+
+        // A Shortcut's step is its person's: the invoker stays the person.
+        let step = tilo_actions::remote::Caller::local_person("owner").running_shortcut("morning");
+        let context = host_set_invoker(
+            Some(tilo_actions::ActionContext::default()),
+            &BrokerActor::for_caller(&step),
+            Some(&step),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            context.invoker,
+            Some(tilo_actions::ActionInvoker::actor("owner"))
+        );
+    }
+
+    #[test]
+    fn an_execution_cannot_borrow_another_principal_or_agent_view() {
+        let caller = tilo_actions::remote::Caller::local_person("person:owner").in_new_execution();
+        let execution =
+            ExecutionScope::for_call(&caller, tilo_actions::InvocationId::new()).unwrap();
+        for actor in [
+            BrokerActor::person("person:other"),
+            BrokerActor::agent("person:owner"),
+        ] {
+            assert!(host_set_invoker(Some(forged()), &actor, None, Some(&execution)).is_err());
         }
+        let actor = BrokerActor::person("person:owner");
+        let context = host_set_invoker(Some(forged()), &actor, None, Some(&execution))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            invoker_participant(Some(&context)),
+            Some(tilo_actions::ParticipantId::for_execution(
+                caller.execution_id().unwrap()
+            ))
+        );
+        caller.retire_execution();
+        assert!(host_set_invoker(None, &actor, None, Some(&execution)).is_err());
     }
 }

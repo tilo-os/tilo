@@ -180,85 +180,81 @@ fn count(update: &InvocationUpdate) -> Option<u64> {
     }
 }
 
-tilo_test_env::scenario! {
-    fn a_live_view_follows_its_results_and_its_grant;
+#[test]
+fn a_live_view_sends_each_new_result_until_cancelled() {
+    let counter = Arc::new(Counter::new());
+    let (state, _tree, owner, workspace) = broker(Arc::clone(&counter), |_| {});
+    let person = Caller::local_person(owner).in_workspace(workspace);
+    let request = follow();
+    invoked(&state, &person, &request).expect("the person follows the view");
+    let first = observed(&state, &person, &request, |update| count(update) == Some(0));
+    assert!(matches!(first, InvocationUpdate::Item { sequence: 1, .. }));
 
-    phase a_live_view_sends_each_new_result_until_cancelled;
-    {
-        let counter = Arc::new(Counter::new());
-        let (state, _tree, owner, workspace) = broker(Arc::clone(&counter), |_| {});
-        let person = Caller::local_person(owner).in_workspace(workspace);
-        let request = follow();
-        invoked(&state, &person, &request).expect("the person follows the view");
-        let first = observed(&state, &person, &request, |update| count(update) == Some(0));
-        assert!(matches!(first, InvocationUpdate::Item { sequence: 1, .. }));
+    counter.set(3);
+    let moved = observed(&state, &person, &request, |update| count(update) == Some(3));
+    assert!(matches!(moved, InvocationUpdate::Item { sequence: 2, .. }));
 
-        counter.set(3);
-        let moved = observed(&state, &person, &request, |update| count(update) == Some(3));
-        assert!(matches!(moved, InvocationUpdate::Item { sequence: 2, .. }));
+    // A change that changed nothing is read, and sends nothing new.
+    let reads = counter.reads.load(Ordering::SeqCst);
+    counter.changed();
+    counter.set(4);
+    let moved = observed(&state, &person, &request, |update| count(update) == Some(4));
+    assert!(matches!(moved, InvocationUpdate::Item { sequence: 3, .. }));
+    assert!(counter.reads.load(Ordering::SeqCst) > reads);
 
-        // A change that changed nothing is read, and sends nothing new.
-        let reads = counter.reads.load(Ordering::SeqCst);
-        counter.changed();
-        counter.set(4);
-        let moved = observed(&state, &person, &request, |update| count(update) == Some(4));
-        assert!(matches!(moved, InvocationUpdate::Item { sequence: 3, .. }));
-        assert!(counter.reads.load(Ordering::SeqCst) > reads);
+    crate::collab_app_broker::answered(state.action_cancel(&person, &request.invocation))
+        .expect("the follower cancels it");
+    observed(&state, &person, &request, |update| {
+        matches!(update, InvocationUpdate::Cancelled { .. })
+    });
+    let reads = counter.reads.load(Ordering::SeqCst);
+    counter.set(5);
+    assert_eq!(
+        counter.reads.load(Ordering::SeqCst),
+        reads,
+        "a cancelled view is not read again"
+    );
+}
 
-        crate::collab_app_broker::answered(state.action_cancel(&person, &request.invocation))
-            .expect("the follower cancels it");
-        observed(&state, &person, &request, |update| {
-            matches!(update, InvocationUpdate::Cancelled { .. })
-        });
-        let reads = counter.reads.load(Ordering::SeqCst);
-        counter.set(5);
-        assert_eq!(
-            counter.reads.load(Ordering::SeqCst),
-            reads,
-            "a cancelled view is not read again"
+#[test]
+fn a_caller_without_read_permission_is_refused_and_a_withdrawn_grant_ends_the_view() {
+    let counter = Arc::new(Counter::new());
+    let (state, tree, _owner, workspace) = broker(Arc::clone(&counter), |workspace| {
+        workspace.allow_agent("scribe", KindSet::READ);
+    });
+
+    let stranger = Caller::local_agent("intruder").in_workspace(workspace.clone());
+    assert!(
+        invoked(&state, &stranger, &follow()).is_err(),
+        "an agent the workspace never admitted reads nothing"
+    );
+    assert_eq!(counter.reads.load(Ordering::SeqCst), 0, "nothing was read");
+
+    let agent = Caller::local_agent("scribe").in_workspace(workspace.clone());
+    let request = follow();
+    invoked(&state, &agent, &request).expect("the admitted agent follows the view");
+    observed(&state, &agent, &request, |update| count(update) == Some(0));
+
+    tree.write()
+        .workspaces
+        .iter_mut()
+        .find(|candidate| candidate.id().to_string() == workspace)
+        .unwrap()
+        .deny(
+            Grantee::agent("scribe"),
+            &TreePath::root().app(APP),
+            KindSet::READ,
         );
+    let reads = counter.reads.load(Ordering::SeqCst);
+    counter.set(7);
+    let ended = observed(&state, &agent, &request, InvocationUpdate::is_terminal);
+    match ended {
+        InvocationUpdate::Failed { error, .. } => assert_eq!(error.code, "not_permitted"),
+        other => panic!("the view must end refused, not {other:?}"),
     }
-
-    phase a_caller_without_read_permission_is_refused_and_a_withdrawn_grant_ends_the_view;
-    {
-        let counter = Arc::new(Counter::new());
-        let (state, tree, _owner, workspace) = broker(Arc::clone(&counter), |workspace| {
-            workspace.allow_agent("scribe", KindSet::READ);
-        });
-
-        let stranger = Caller::local_agent("intruder").in_workspace(workspace.clone());
-        assert!(
-            invoked(&state, &stranger, &follow()).is_err(),
-            "an agent the workspace never admitted reads nothing"
-        );
-        assert_eq!(counter.reads.load(Ordering::SeqCst), 0, "nothing was read");
-
-        let agent = Caller::local_agent("scribe").in_workspace(workspace.clone());
-        let request = follow();
-        invoked(&state, &agent, &request).expect("the admitted agent follows the view");
-        observed(&state, &agent, &request, |update| count(update) == Some(0));
-
-        tree.write()
-            .workspaces
-            .iter_mut()
-            .find(|candidate| candidate.id().to_string() == workspace)
-            .unwrap()
-            .deny(
-                Grantee::agent("scribe"),
-                &TreePath::root().app(APP),
-                KindSet::READ,
-            );
-        let reads = counter.reads.load(Ordering::SeqCst);
-        counter.set(7);
-        let ended = observed(&state, &agent, &request, InvocationUpdate::is_terminal);
-        match ended {
-            InvocationUpdate::Failed { error, .. } => assert_eq!(error.code, "not_permitted"),
-            other => panic!("the view must end refused, not {other:?}"),
-        }
-        assert_eq!(
-            counter.reads.load(Ordering::SeqCst),
-            reads,
-            "the withdrawn grant is decided before the read"
-        );
-    }
+    assert_eq!(
+        counter.reads.load(Ordering::SeqCst),
+        reads,
+        "the withdrawn grant is decided before the read"
+    );
 }

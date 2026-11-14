@@ -261,133 +261,129 @@ fn scoped_query(workspace: &str, app_id: &str) -> CatalogueQuery {
     }
 }
 
-tilo_test_env::scenario! {
-    fn an_app_scoped_query_is_bounded_to_its_app;
+#[test]
+fn an_app_scoped_query_builds_only_that_apps_rows() {
+    let fixture = fixture(vec![row("so.tilo.settings", "keyboard-shortcuts", "list")]);
+    let all = page(
+        &fixture,
+        &fixture.caller,
+        &workspace_query(&fixture.workspace),
+    );
+    assert_eq!(fixture.governance.0.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.keys.calls.load(Ordering::Relaxed), 1);
+    let expected: Vec<_> = all
+        .rows
+        .iter()
+        .filter(|row| row.app_id == SHORTCUTS_APP_ID)
+        .cloned()
+        .collect();
+    assert!(
+        expected.iter().any(|row| row
+            .action
+            .as_ref()
+            .is_some_and(|action| action.address.resource == "app.so.tilo.shortcuts")),
+        "the shortcuts app's own open row is offered"
+    );
+    assert!(
+        expected.iter().any(|row| row
+            .action
+            .as_ref()
+            .is_some_and(|action| action.address.action == "run")),
+        "the saved shortcut's run is offered"
+    );
 
-    phase an_app_scoped_query_builds_only_that_apps_rows;
-    {
-        let fixture = fixture(vec![row("so.tilo.settings", "keyboard-shortcuts", "list")]);
-        let all = page(
-            &fixture,
-            &fixture.caller,
-            &workspace_query(&fixture.workspace),
-        );
-        assert_eq!(fixture.governance.0.load(Ordering::Relaxed), 1);
-        assert_eq!(fixture.keys.calls.load(Ordering::Relaxed), 1);
-        let expected: Vec<_> = all
-            .rows
-            .iter()
-            .filter(|row| row.app_id == SHORTCUTS_APP_ID)
-            .cloned()
-            .collect();
-        assert!(
-            expected.iter().any(|row| row
-                .action
-                .as_ref()
-                .is_some_and(|action| action.address.resource == "app.so.tilo.shortcuts")),
-            "the shortcuts app's own open row is offered"
-        );
-        assert!(
-            expected.iter().any(|row| row
-                .action
-                .as_ref()
-                .is_some_and(|action| action.address.action == "run")),
-            "the saved shortcut's run is offered"
-        );
+    let scoped = page(
+        &fixture,
+        &fixture.caller,
+        &scoped_query(&fixture.workspace, SHORTCUTS_APP_ID),
+    );
+    assert_eq!(fixture.launcher.enumerations.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.launcher.lookups.load(Ordering::Relaxed), 1);
+    let governance_calls = fixture.governance.0.load(Ordering::Relaxed);
+    let keyboard_calls = fixture.keys.calls.load(Ordering::Relaxed);
+    drop(fixture);
+    assert_eq!(
+        scoped.rows, expected,
+        "the same shortcut rows as filtering the whole catalogue"
+    );
+    assert_eq!(
+        governance_calls, 1,
+        "another app's query builds no governance descriptors"
+    );
+    assert_eq!(
+        keyboard_calls, 1,
+        "another app's query builds no keyboard rows"
+    );
+}
 
-        let scoped = page(
-            &fixture,
-            &fixture.caller,
-            &scoped_query(&fixture.workspace, SHORTCUTS_APP_ID),
-        );
-        assert_eq!(fixture.launcher.enumerations.load(Ordering::Relaxed), 1);
-        assert_eq!(fixture.launcher.lookups.load(Ordering::Relaxed), 1);
-        let governance_calls = fixture.governance.0.load(Ordering::Relaxed);
-        let keyboard_calls = fixture.keys.calls.load(Ordering::Relaxed);
-        drop(fixture);
-        assert_eq!(
-            scoped.rows, expected,
-            "the same shortcut rows as filtering the whole catalogue"
-        );
-        assert_eq!(
-            governance_calls, 1,
-            "another app's query builds no governance descriptors"
-        );
-        assert_eq!(
-            keyboard_calls, 1,
-            "another app's query builds no keyboard rows"
-        );
-    }
+#[test]
+fn an_app_filter_applies_before_the_page_bound() {
+    // The keyboard service publishes more rows of another app than a page
+    // holds, and its last row is the one asked for.
+    let mut rows: Vec<_> = (0..MAX_CATALOGUE_PAGE)
+        .map(|index| {
+            row(
+                "so.tilo.notes",
+                &format!("keyboard-shortcut:{index}"),
+                "rebind",
+            )
+        })
+        .collect();
+    rows.push(row("so.tilo.settings", "keyboard-shortcuts", "list"));
+    let fixture = fixture(rows);
 
-    phase an_app_filter_applies_before_the_page_bound;
-    {
-        // The keyboard service publishes more rows of another app than a page
-        // holds, and its last row is the one asked for.
-        let mut rows: Vec<_> = (0..MAX_CATALOGUE_PAGE)
-            .map(|index| {
-                row(
-                    "so.tilo.notes",
-                    &format!("keyboard-shortcut:{index}"),
-                    "rebind",
-                )
-            })
-            .collect();
-        rows.push(row("so.tilo.settings", "keyboard-shortcuts", "list"));
-        let fixture = fixture(rows);
+    let scoped = page(
+        &fixture,
+        &fixture.caller,
+        &scoped_query(&fixture.workspace, "so.tilo.settings"),
+    );
+    assert_eq!(scoped.rows.len(), 1, "the wanted row is found, past a page");
+    assert_eq!(
+        scoped.rows[0]
+            .action
+            .as_ref()
+            .map(|action| action.address.action.as_str()),
+        Some("list")
+    );
+    assert!(scoped.exhausted);
 
-        let scoped = page(
-            &fixture,
-            &fixture.caller,
-            &scoped_query(&fixture.workspace, "so.tilo.settings"),
-        );
-        assert_eq!(scoped.rows.len(), 1, "the wanted row is found, past a page");
-        assert_eq!(
-            scoped.rows[0]
-                .action
-                .as_ref()
-                .map(|action| action.address.action.as_str()),
-            Some("list")
-        );
-        assert!(scoped.exhausted);
+    let all = page(
+        &fixture,
+        &fixture.caller,
+        &workspace_query(&fixture.workspace),
+    );
+    drop(fixture);
+    assert_eq!(
+        all.rows.len(),
+        usize::try_from(MAX_CATALOGUE_PAGE).unwrap_or(usize::MAX)
+    );
+    assert!(
+        all.rows.iter().all(|row| row.app_id != "so.tilo.settings"),
+        "unfiltered, the wanted row lies past the first page"
+    );
+    assert!(!all.exhausted);
+}
 
-        let all = page(
-            &fixture,
-            &fixture.caller,
-            &workspace_query(&fixture.workspace),
-        );
-        drop(fixture);
-        assert_eq!(
-            all.rows.len(),
-            usize::try_from(MAX_CATALOGUE_PAGE).unwrap_or(usize::MAX)
-        );
-        assert!(
-            all.rows.iter().all(|row| row.app_id != "so.tilo.settings"),
-            "unfiltered, the wanted row lies past the first page"
-        );
-        assert!(!all.exhausted);
-    }
-
-    phase an_app_scoped_query_still_refuses_a_stranger;
-    {
-        let fixture = fixture(vec![row("so.tilo.settings", "keyboard-shortcuts", "list")]);
-        let stranger =
-            Caller::authenticated([99; 32], [98; 32]).in_workspace(fixture.workspace.clone());
-        let page = page(
-            &fixture,
-            &stranger,
-            &scoped_query(&fixture.workspace, SHORTCUTS_APP_ID),
-        );
-        assert!(
-            page.rows.is_empty(),
-            "narrowing by app offers a caller without a role nothing"
-        );
-        assert_eq!(
-            fixture.governance.0.load(Ordering::Relaxed),
-            0,
-            "a caller with no role builds no governance descriptors"
-        );
-        drop(fixture);
-    }
+#[test]
+fn an_app_scoped_query_still_refuses_a_stranger() {
+    let fixture = fixture(vec![row("so.tilo.settings", "keyboard-shortcuts", "list")]);
+    let stranger =
+        Caller::authenticated([99; 32], [98; 32]).in_workspace(fixture.workspace.clone());
+    let page = page(
+        &fixture,
+        &stranger,
+        &scoped_query(&fixture.workspace, SHORTCUTS_APP_ID),
+    );
+    assert!(
+        page.rows.is_empty(),
+        "narrowing by app offers a caller without a role nothing"
+    );
+    assert_eq!(
+        fixture.governance.0.load(Ordering::Relaxed),
+        0,
+        "a caller with no role builds no governance descriptors"
+    );
+    drop(fixture);
 }
 
 /// One live directory row, `read` of `workspace:atlas`.

@@ -70,72 +70,68 @@ mod own_view_lookup_tests {
     use super::own_view_lookup;
     use tilo_actions::remote::{CatalogueQuery, ViewResourceQuery};
 
-    tilo_test_env::scenario! {
-        fn an_app_looks_up_views_only_within_its_admission;
+    #[test]
+    fn an_app_may_look_up_only_its_own_resources_views() {
+        let lookup = |provider: &str, view: bool| CatalogueQuery {
+            provider: Some(provider.into()),
+            view_resource: view.then(|| ViewResourceQuery {
+                id: "notes.page:1".into(),
+                kind: "notes.page".into(),
+            }),
+            ..CatalogueQuery::default()
+        };
+        assert!(own_view_lookup(
+            "so.tilo.notes",
+            &lookup("record:so.tilo.notes:", true)
+        ));
+        assert!(own_view_lookup(
+            "so.tilo.notes",
+            &lookup("record:so.tilo.notes:uuid:1", true)
+        ));
+        assert!(!own_view_lookup(
+            "so.tilo.notes",
+            &lookup("record:so.tilo.notes.evil:", true)
+        ));
+        assert!(!own_view_lookup(
+            "so.tilo.chat",
+            &lookup("record:so.tilo.notes:", true)
+        ));
+        assert!(
+            !own_view_lookup("so.tilo.notes", &lookup("record:so.tilo.notes:", false)),
+            "the action catalogue still needs declared access"
+        );
+    }
 
-        phase an_app_may_look_up_only_its_own_resources_views;
-        {
-            let lookup = |provider: &str, view: bool| CatalogueQuery {
-                provider: Some(provider.into()),
-                view_resource: view.then(|| ViewResourceQuery {
-                    id: "notes.page:1".into(),
-                    kind: "notes.page".into(),
-                }),
-                ..CatalogueQuery::default()
-            };
-            assert!(own_view_lookup(
-                "so.tilo.notes",
-                &lookup("record:so.tilo.notes:", true)
-            ));
-            assert!(own_view_lookup(
-                "so.tilo.notes",
-                &lookup("record:so.tilo.notes:uuid:1", true)
-            ));
-            assert!(!own_view_lookup(
-                "so.tilo.notes",
-                &lookup("record:so.tilo.notes.evil:", true)
-            ));
-            assert!(!own_view_lookup(
-                "so.tilo.chat",
-                &lookup("record:so.tilo.notes:", true)
-            ));
-            assert!(
-                !own_view_lookup("so.tilo.notes", &lookup("record:so.tilo.notes:", false)),
-                "the action catalogue still needs declared access"
-            );
-        }
-
-        phase only_linking_and_opening_a_resource_are_open_to_every_app;
-        {
-            let request = |provider: &str, action: &str| tilo_actions::remote::InvokeRequest {
-                on_behalf_of: None,
-                invocation: tilo_actions::InvocationId::new(),
-                target: tilo_actions::remote::RemoteActionTarget {
-                    provider: provider.into(),
-                    address: tilo_actions::ActionAddress::new("notes.page:1", action),
-                },
-                argument: tilo_actions::remote::InvokeArgument::None,
-                context: None,
-                confirmation: None,
-                revision: None,
-                wait_ms: None,
-                appearance: None,
-            };
-            let record = "record:so.tilo.notes:";
-            let app = "application:workspace-1:so.tilo.notes:uuid:1";
-            assert!(super::reference_request(&request(record, "share-link")));
-            assert!(!super::reference_request(&request(
-                record,
-                "share-invite-link"
-            )));
-            assert!(!super::reference_request(&request(record, "rename")));
-            assert!(super::reference_request(&request(app, "open")));
-            assert!(!super::reference_request(&request(app, "rename")));
-            assert!(
-                !super::reference_request(&request("7", "open")),
-                "only the resource's own app opens it"
-            );
-        }
+    #[test]
+    fn only_linking_and_opening_a_resource_are_open_to_every_app() {
+        let request = |provider: &str, action: &str| tilo_actions::remote::InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: provider.into(),
+                address: tilo_actions::ActionAddress::new("notes.page:1", action),
+            },
+            argument: tilo_actions::remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let record = "record:so.tilo.notes:";
+        let app = "application:workspace-1:so.tilo.notes:uuid:1";
+        assert!(super::reference_request(&request(record, "share-link")));
+        assert!(!super::reference_request(&request(
+            record,
+            "share-invite-link"
+        )));
+        assert!(!super::reference_request(&request(record, "rename")));
+        assert!(super::reference_request(&request(app, "open")));
+        assert!(!super::reference_request(&request(app, "rename")));
+        assert!(
+            !super::reference_request(&request("7", "open")),
+            "only the resource's own app opens it"
+        );
     }
 }
 
@@ -232,117 +228,113 @@ mod invitation_request_tests {
         )
     }
 
-    tilo_test_env::scenario! {
-        fn an_apps_invitation_request_reaches_only_the_desk;
-
-        phase an_app_asks_the_desk_for_the_invitation_and_nothing_else;
-        {
-            let desk = |action: &str| {
-                request(
-                    tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
-                    session_actions::DESK_RESOURCE,
-                    action,
-                )
-            };
-            assert!(super::invitation_request(&desk(
-                session_actions::ISSUE_INVITATION
-            )));
+    #[test]
+    fn an_app_asks_the_desk_for_the_invitation_and_nothing_else() {
+        let desk = |action: &str| {
+            request(
+                tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
+                session_actions::DESK_RESOURCE,
+                action,
+            )
+        };
+        assert!(super::invitation_request(&desk(
+            session_actions::ISSUE_INVITATION
+        )));
+        assert!(
+            super::invitation_request(&desk(session_actions::SHOW_INVITE)),
+            "the sheet an app shares through is the person's own invite sheet"
+        );
+        assert!(
+            super::connect_request(&desk(session_actions::SHOW_CONNECT)),
+            "an app offers the person's own connect setup"
+        );
+        assert!(
+            super::connect_request(&desk(session_actions::SHOW_PAIR_DEVICE)),
+            "an app offers the person's own code for another of their devices"
+        );
+        for other in [
+            "invitations",
+            "cancel-invitation",
+            "switch-workspace",
+            "show-surface",
+            "stop-agent",
+        ] {
             assert!(
-                super::invitation_request(&desk(session_actions::SHOW_INVITE)),
-                "the sheet an app shares through is the person's own invite sheet"
-            );
-            assert!(
-                super::connect_request(&desk(session_actions::SHOW_CONNECT)),
-                "an app offers the person's own connect setup"
-            );
-            assert!(
-                super::connect_request(&desk(session_actions::SHOW_PAIR_DEVICE)),
-                "an app offers the person's own code for another of their devices"
-            );
-            for other in [
-                "invitations",
-                "cancel-invitation",
-                "switch-workspace",
-                "show-surface",
-                "stop-agent",
-            ] {
-                assert!(
-                    !super::invitation_request(&desk(other)) && !super::connect_request(&desk(other)),
-                    "the desk's `{other}` is the person's own"
-                );
-            }
-            assert!(
-                !super::invitation_request(&request(
-                    "record:so.tilo.notes:",
-                    session_actions::DESK_RESOURCE,
-                    session_actions::ISSUE_INVITATION,
-                )),
-                "an invitation is the desk's, not a resource's"
-            );
-            assert!(
-                !super::invitation_request(&request(
-                    tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
-                    "session:chrome",
-                    session_actions::ISSUE_INVITATION,
-                )),
-                "and it is the desk's resource that offers it"
+                !super::invitation_request(&desk(other)) && !super::connect_request(&desk(other)),
+                "the desk's `{other}` is the person's own"
             );
         }
+        assert!(
+            !super::invitation_request(&request(
+                "record:so.tilo.notes:",
+                session_actions::DESK_RESOURCE,
+                session_actions::ISSUE_INVITATION,
+            )),
+            "an invitation is the desk's, not a resource's"
+        );
+        assert!(
+            !super::invitation_request(&request(
+                tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
+                "session:chrome",
+                session_actions::ISSUE_INVITATION,
+            )),
+            "and it is the desk's resource that offers it"
+        );
+    }
 
-        phase an_apps_invitation_is_refused_for_a_member_who_may_only_read;
-        // An app sharing what it shows asks the desk for the invitation as the person using it: the
-        // workspace's own grants decide, so a member who may only read is refused, and the desk is
-        // never asked to make one.
-        {
-            let owner = hex::encode([7; 32]);
-            let viewer = hex::encode([8; 32]);
-            let mut workspace = Workspace::new(WorkspaceSlot(96), "Shared folder");
-            workspace.set_owner(owner.clone());
-            workspace.admit(viewer.clone(), tilo_action_policy::Role::Viewer);
-            let workspace_id = workspace.id().to_string();
-            let mut tree = WorkspaceTree::default();
-            tree.workspaces.push(workspace);
-            let desk = Arc::new(Desk {
-                started: Mutex::default(),
-            });
-            let (state, _bridge) = AppBrokerState::test_state(
-                Some(tree.shared().authority()),
-                crate::services::HostServices {
-                    host_steps: vec![desk.clone()],
-                    ..Default::default()
-                },
-            );
-            let app = "so.tilo.file-explorer";
-            let ask = invitation();
-            let door = |person: &Caller| {
-                state
-                    .app_door(person, app, &RemoteActionMessage::Invoke(ask.clone()))
-                    .expect("the app reaches the desk's invitation as the person")
-            };
-            let invoke = |caller: &Caller| {
-                state
-                    .action_invoke(caller, None, None, &ask)
-                    .wait_timeout(tilo_test_env::hang_bound())
-                    .ok()
-                    .flatten()
-                    .expect("admission answers at once")
-                    .map(|_| ())
-            };
+    /// An app sharing what it shows asks the desk for the invitation as the person using it: the
+    /// workspace's own grants decide, so a member who may only read is refused, and the desk is
+    /// never asked to make one.
+    #[test]
+    fn an_apps_invitation_is_refused_for_a_member_who_may_only_read() {
+        let owner = hex::encode([7; 32]);
+        let viewer = hex::encode([8; 32]);
+        let mut workspace = Workspace::new(WorkspaceSlot(96), "Shared folder");
+        workspace.set_owner(owner.clone());
+        workspace.admit(viewer.clone(), tilo_action_policy::Role::Viewer);
+        let workspace_id = workspace.id().to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let desk = Arc::new(Desk {
+            started: Mutex::default(),
+        });
+        let (state, _bridge) = AppBrokerState::test_state(
+            Some(tree.shared().authority()),
+            crate::services::HostServices {
+                host_steps: vec![desk.clone()],
+                ..Default::default()
+            },
+        );
+        let app = "so.tilo.file-explorer";
+        let ask = invitation();
+        let door = |person: &Caller| {
+            state
+                .app_door(person, app, &RemoteActionMessage::Invoke(ask.clone()))
+                .expect("the app reaches the desk's invitation as the person")
+        };
+        let invoke = |caller: &Caller| {
+            state
+                .action_invoke(caller, None, None, &ask)
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("admission answers at once")
+                .map(|_| ())
+        };
 
-            let reading = Caller::local_person(viewer).in_workspace(workspace_id.clone());
-            assert_eq!(
-                invoke(&door(&reading)),
-                Err(ActionHostError::NotPermitted),
-                "a viewer makes no invitation"
-            );
-            assert!(desk.started.lock().unwrap().is_empty());
+        let reading = Caller::local_person(viewer).in_workspace(workspace_id.clone());
+        assert_eq!(
+            invoke(&door(&reading)),
+            Err(ActionHostError::NotPermitted),
+            "a viewer makes no invitation"
+        );
+        assert!(desk.started.lock().unwrap().is_empty());
 
-            let owning = Caller::local_person(owner).in_workspace(workspace_id);
-            invoke(&door(&owning)).expect("the owner makes one");
-            assert_eq!(
-                *desk.started.lock().unwrap(),
-                [session_actions::ISSUE_INVITATION]
-            );
-        }
+        let owning = Caller::local_person(owner).in_workspace(workspace_id);
+        invoke(&door(&owning)).expect("the owner makes one");
+        assert_eq!(
+            *desk.started.lock().unwrap(),
+            [session_actions::ISSUE_INVITATION]
+        );
     }
 }
