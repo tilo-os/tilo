@@ -459,7 +459,7 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
 // (3) One record answers what the layout is: the layout's own, which the workspace shares.
 // Nothing is kept beside it, and another member of the workspace reads none of it.
 #[test]
-fn the_arrangement_is_the_shells_own_and_no_record_beside_it() {
+fn the_layout_is_the_shells_own_and_no_record_beside_it() {
     let _settled = ui::motion::testing::settled();
     // A device of this machine's own, holding its workspaces: the identity is minted in its home,
     // so its engine opens and its layout is the workspace's.
@@ -731,7 +731,7 @@ fn invoke_as(session: &mut Session, resource: &str, action: &str, arguments: &se
 // The layout as the shell draws it: every workspace, row, strip and place, by key, as the
 // session publishes it for the shell's views. Which way it is shown is not the layout's.
 #[test]
-fn the_arrangement_reads_out_by_key_for_the_shells_views() {
+fn the_layout_reads_out_by_key_for_the_shells_views() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     step(&mut session);
@@ -907,10 +907,7 @@ fn maximizing_a_window_is_one_step_and_undone() {
     let strip = strip_of(&session, window).expect("it has a strip");
     let other_strip = strip_of(&session, other).expect("the other place is in a strip");
     assert!(
-        layout(&session)
-            .strips
-            .iter()
-            .all(|strip| !strip.maximized),
+        layout(&session).strips.iter().all(|strip| !strip.maximized),
         "the layout starts beside itself"
     );
 

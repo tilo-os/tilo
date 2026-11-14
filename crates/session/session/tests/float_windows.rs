@@ -487,9 +487,7 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
     );
 
     // The record's undo takes that one step back, and the window floats again.
-    session
-        .undo_layout()
-        .expect("the shell undoes the step");
+    session.undo_layout().expect("the shell undoes the step");
     until(
         &mut session,
         "one undo floats the window again",

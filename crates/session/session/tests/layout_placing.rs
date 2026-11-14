@@ -202,7 +202,7 @@ fn with_mailbox(session: &mut Session) -> (String, Rc<std::cell::RefCell<Vec<Str
 // resource and the view, `shows` follows from the resource's app, and the change is the person's
 // one undoable step.
 #[test]
-fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
+fn a_resource_a_view_and_a_point_make_an_layout_entry() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     step(&mut session);

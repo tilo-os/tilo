@@ -2,7 +2,7 @@
 //! "Asking from the canvas").
 //!
 //! A line said at the canvas's caret that finds something places it, as it always did
-//! (`arrangement_placing.rs`). A line that is a question, or that names nothing, is the person's
+//! (`layout_placing.rs`). A line that is a question, or that names nothing, is the person's
 //! send to the agent they keep in the workspace: `session:send-to#send`, the one send a send-to
 //! box, an agent and a script run, so it lands in their conversation with the agent exactly as a
 //! box's message does. The conversation does not open: the turn the message opens stands where

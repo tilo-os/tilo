@@ -98,7 +98,7 @@ fn place(session: &mut Session, resource: &str) -> u64 {
 /// The whole screen: the bar's controls stand on it, the preset changes what stands there, and a
 /// note placed on the canvas stands on it as the notes app draws it.
 #[test]
-fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
+fn the_shell_is_the_screen_and_its_layout_follows_the_published_actions() {
     let _settled = ui::motion::testing::settled();
     let (mut session, note) = session();
 

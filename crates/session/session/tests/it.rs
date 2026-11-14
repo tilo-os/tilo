@@ -49,12 +49,6 @@ mod app_records;
 mod app_sheets;
 #[path = "app_side_records.rs"]
 mod app_side_records;
-#[path = "arrangement.rs"]
-mod arrangement;
-#[path = "layout_placing.rs"]
-mod layout_placing;
-#[path = "layout_record.rs"]
-mod layout_record;
 #[path = "ask.rs"]
 mod ask;
 #[path = "atspi_bus.rs"]
@@ -137,6 +131,10 @@ mod join;
 mod launch;
 #[path = "layout.rs"]
 mod layout;
+#[path = "layout_placing.rs"]
+mod layout_placing;
+#[path = "layout_record.rs"]
+mod layout_record;
 #[path = "layout_view.rs"]
 mod layout_view;
 #[path = "live_relay_bound.rs"]
@@ -267,6 +265,8 @@ mod vpn;
 mod wifi_continuity;
 #[path = "window_bar_actions.rs"]
 mod window_bar_actions;
+#[path = "window_layout.rs"]
+mod window_layout;
 #[path = "window_menu.rs"]
 mod window_menu;
 #[path = "window_menu_probe.rs"]
