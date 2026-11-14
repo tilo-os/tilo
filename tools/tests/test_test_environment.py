@@ -211,7 +211,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # Chat's acceptance starts the app, the launcher that starts it and the
         # runtime host the app runs on, so the run that drives it builds the
         # three packages of other crates first; a branched device runs that
-        # same acceptance, with its host away.
+        # same acceptance, with its host away, and a window lifted across to
+        # the person's phone lands in a Chat started the same way.
         chat = scripts.pop("chat-siblings")
         self.assertEqual(chat["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
         self.assertEqual(chat["command"][2:], ["chat:chat", "launcher:tilo-launcher",
@@ -221,7 +222,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                      if rule["setup"] == "chat-siblings"]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))",
+                [("package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::)"
+                  " or test(shared_input::a_window_lifted))",
                   {"host": 'cfg(target_os = "linux")'})],
                 f"the {profile} profile builds Chat and its launcher for the acceptance",
             )
@@ -306,7 +308,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": "test-runtime",
                                  "package(tilo-session) and binary(it) and (test(chat_2x2::) or "
-                                 "test(device_branch::))": "chat-siblings",
+                                 "test(device_branch::) or test(shared_input::a_window_lifted))":
+                                     "chat-siblings",
                                  "package(tilo-session) and binary(it) and test(closed_tasks::)": "tasks-siblings",
                                  "package(tilo-session) and binary(it) and test(device_branch::)":
                                      "vault-siblings",
