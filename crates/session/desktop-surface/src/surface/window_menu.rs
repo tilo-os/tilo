@@ -98,6 +98,8 @@ pub const WIDTH_NARROW: &str = "window-width-narrow";
 pub const WIDTH_NORMAL: &str = "window-width-normal";
 pub const WIDTH_WIDE: &str = "window-width-wide";
 pub const EQUALIZE: &str = "window-width-equal";
+pub const MOVE_LEFT: &str = "window-move-left";
+pub const MOVE_RIGHT: &str = "window-move-right";
 pub const MOVE_TO_STRIP: &str = "window-move-to-strip";
 pub const MOVE_TO_WORKSPACE: &str = "window-move-to-workspace";
 pub const MOVE_TO_DISPLAY: &str = "window-move-to-display";
@@ -247,7 +249,7 @@ impl Row {
 }
 
 /// The id of the row carrying the window into strip `strip` .
-fn move_to_strip_id(strip: StripId) -> String {
+pub fn move_to_strip_id(strip: StripId) -> String {
     format!("{MOVE_TO_STRIP}:{}", strip.0)
 }
 
@@ -257,7 +259,7 @@ fn move_to_workspace_id(workspace: WorkspaceId) -> String {
 }
 
 /// The id of the row showing the window on display `display` .
-fn move_to_display_id(display: u32) -> String {
+pub fn move_to_display_id(display: u32) -> String {
     format!("{MOVE_TO_DISPLAY}:{display}")
 }
 
@@ -537,10 +539,29 @@ fn step(id: &str, label: &str, steps: bool, reason: &str) -> Row {
     }
 }
 
-/// The rows carrying the window to another strip, workspace or display, each place by its name; a
-/// place with nowhere to go offers no submenu at all.
+/// The rows moving the window one place along its strip, then those carrying it to another strip,
+/// workspace or display, each place by its name; a side or a place with nowhere to go offers no row
+/// at all.
 fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
     let mut rows = Vec::new();
+    for (id, label, side, icon) in [
+        (
+            MOVE_LEFT,
+            "window-menu-move-left",
+            Side::Left,
+            Icon::ArrowLeft,
+        ),
+        (
+            MOVE_RIGHT,
+            "window-menu-move-right",
+            Side::Right,
+            Icon::ArrowRight,
+        ),
+    ] {
+        if moved_along(tree, route, side).is_some() {
+            rows.push(Row::offered(id, t(label)).with_icon(icon));
+        }
+    }
     let strips: Vec<Row> = workspace_at(tree, route)
         .map(|workspace| {
             workspace
@@ -608,6 +629,34 @@ fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
         );
     }
     rows
+}
+
+/// Which way along its strip a window moves.
+#[derive(Clone, Copy)]
+enum Side {
+    Left,
+    Right,
+}
+
+/// Where the window at `route` goes moving one place to `side` along its strip: before the window
+/// after the one it passes, or the strip's end. `None` at that end of the strip.
+fn moved_along(tree: &Layout, route: &RouteIds, side: Side) -> Option<Destination> {
+    let groups = &workspace_at(tree, route)?
+        .strips
+        .iter()
+        .find(|strip| strip.id == route.strip)?
+        .window_groups;
+    let at = groups.iter().position(|group| group.id == route.group)?;
+    let (passed, land) = match side {
+        Side::Left => (at.checked_sub(1)?, at.checked_sub(1)?),
+        Side::Right => (at.checked_add(1)?, at.checked_add(2)?),
+    };
+    groups.get(passed)?;
+    Some(Destination {
+        strip: Some(route.strip.0.to_string()),
+        before: groups.get(land).map(|group| group.id.to_string()),
+        ..Destination::default()
+    })
 }
 
 /// `index` as the number a person counts from, one on.
@@ -692,13 +741,27 @@ pub fn command(tree: &Layout, route: &RouteIds, id: &str, name: Option<&str>) ->
         CLOSE => Verb::Layout(LayoutEffect::CloseTab { tab: tab_id }),
         CLOSE_WINDOW => Verb::Chrome(ChromeEffect::CloseWindow { group: group_id }),
         STOP_DESKTOP_CONTROL => Verb::Chrome(ChromeEffect::StopDesktopControl { group: group_id }),
-        place => {
-            let to = if let Some(strip) = place.strip_prefix(MOVE_TO_STRIP) {
+        place => Verb::Chrome(ChromeEffect::MoveTab {
+            tab: tab_id,
+            to: destination(tree, route, place)?,
+        }),
+    };
+    Some(verb)
+}
+
+/// Where the row `id` carries the window at `route`: one place along its strip, or into the strip,
+/// workspace or display it names.
+fn destination(tree: &Layout, route: &RouteIds, id: &str) -> Option<Destination> {
+    Some(match id {
+        MOVE_LEFT => moved_along(tree, route, Side::Left)?,
+        MOVE_RIGHT => moved_along(tree, route, Side::Right)?,
+        _ => {
+            if let Some(strip) = id.strip_prefix(MOVE_TO_STRIP) {
                 Destination {
                     strip: Some(place_number(strip)?.to_string()),
                     ..Destination::default()
                 }
-            } else if let Some(workspace) = place.strip_prefix(MOVE_TO_WORKSPACE) {
+            } else if let Some(workspace) = id.strip_prefix(MOVE_TO_WORKSPACE) {
                 Destination {
                     workspace: Some(
                         tilo_desktop_model::WorkspaceId::parse(workspace.strip_prefix(':')?)?
@@ -708,14 +771,12 @@ pub fn command(tree: &Layout, route: &RouteIds, id: &str, name: Option<&str>) ->
                 }
             } else {
                 Destination {
-                    display: Some(place_number(place.strip_prefix(MOVE_TO_DISPLAY)?)?.to_string()),
+                    display: Some(place_number(id.strip_prefix(MOVE_TO_DISPLAY)?)?.to_string()),
                     ..Destination::default()
                 }
-            };
-            Verb::Chrome(ChromeEffect::MoveTab { tab: tab_id, to })
+            }
         }
-    };
-    Some(verb)
+    })
 }
 
 /// The id `place` names after its `kind:` prefix.

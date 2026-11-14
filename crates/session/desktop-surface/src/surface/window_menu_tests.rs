@@ -1498,3 +1498,34 @@ fn a_window_that_is_gone_offers_nothing() {
     assert!(super::rows(&tree, &route, &Facts::default()).is_empty());
     assert!(command(&tree, &route, CLOSE, None).is_none());
 }
+
+/// A window moves one place along its strip from its menu, and a side it cannot go to offers no row.
+#[test]
+fn a_window_moves_one_place_along_its_strip() {
+    let (surface, handle) = apps_shell(3);
+    let mut frame = present(surface);
+    let order = || -> Vec<TabId> { (0..3).map(|group| tab_at(&handle, group)).collect() };
+    let [first, second, third] = order()[..] else {
+        panic!("three windows");
+    };
+    let offers = |tab: TabId| {
+        let rows = handle.window_menu(tab);
+        (
+            row(&rows, MOVE_LEFT).is_some(),
+            row(&rows, MOVE_RIGHT).is_some(),
+        )
+    };
+    assert_eq!(
+        [offers(first), offers(second), offers(third)],
+        [(false, true), (true, true), (true, false)]
+    );
+    for (id, after) in [
+        (MOVE_RIGHT, [second, first, third]),
+        (MOVE_RIGHT, [second, third, first]),
+        (MOVE_LEFT, [second, first, third]),
+    ] {
+        handle.choose_window_menu(first, id, None).unwrap();
+        settle(&mut frame);
+        assert_eq!(order(), after, "{id}");
+    }
+}

@@ -845,6 +845,8 @@ impl ShellService {
             window_menu::SPLIT_RIGHT => ShortcutAction::DetachTab,
             window_menu::WIDER => ShortcutAction::ResizeWider,
             window_menu::NARROWER => ShortcutAction::ResizeNarrower,
+            window_menu::MOVE_LEFT => ShortcutAction::MoveGroupLeft,
+            window_menu::MOVE_RIGHT => ShortcutAction::MoveGroupRight,
             _ => return None,
         };
         self.shortcuts

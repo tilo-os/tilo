@@ -1519,53 +1519,6 @@ impl DesktopChrome {
         }
     }
 
-    /// Maximize the focused window (`Some(true)`), restore it (`Some(false)`), or toggle it
-    /// (`None`).
-    fn maximize_focused(&self, want: Option<bool>) {
-        let maximized = self.handle.read(|tree| {
-            let workspace = tree.active_workspace()?;
-            let strip = *tree.active_strip.get(&workspace.id())?;
-            let group = tree.active_group_for(strip)?;
-            workspace
-                .strips
-                .iter()
-                .flat_map(|s| &s.window_groups)
-                .find(|g| g.id == group)
-                .map(|g| g.maximized)
-        });
-        let Some(maximized) = maximized else {
-            return;
-        };
-        let target = want.unwrap_or(!maximized);
-        if target == maximized {
-            return;
-        }
-        let Some(route) = self.handle.snapshot(&self.generation, Vec::new()).active else {
-            return;
-        };
-        self.dispatch(ChromeEffect::Maximize {
-            group: route.group,
-            on: target,
-        });
-    }
-
-    /// Cover the display with the focused window, or give it back.
-    fn toggle_fullscreen(&self) {
-        let covering = self.handle.read(|tree| {
-            let focused = tree
-                .active_strip_id()
-                .and_then(|strip| tree.active_group_for(strip));
-            focused.is_some() && focused == tree.fullscreen_group()
-        });
-        let Some(route) = self.handle.snapshot(&self.generation, Vec::new()).active else {
-            return;
-        };
-        self.dispatch(ChromeEffect::Fullscreen {
-            group: route.group,
-            on: !covering,
-        });
-    }
-
     /// Whether chords are read with a Mac's keys.
     #[must_use]
     pub fn mac(&self) -> bool {

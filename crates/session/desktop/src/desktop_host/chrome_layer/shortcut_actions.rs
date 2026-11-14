@@ -2,10 +2,10 @@
 //! through the verb its menu row, its palette row and an agent's invocation name, and the rest
 //! handed to the session.
 
-use tilo_desktop_model::layout::TileContent;
 use tilo_desktop_surface::navigation::{
     ActivityView, ChromeEffect, Destination, LayoutEffect, Route,
 };
+use tilo_desktop_surface::surface::window_menu;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
 use super::DesktopChrome;
@@ -32,26 +32,45 @@ impl DesktopChrome {
                 self.apply_intent(ChromeIntent::SwitchWorkspace(-1));
             }
             ShortcutAction::NextWorkspace => self.apply_intent(ChromeIntent::SwitchWorkspace(1)),
-            ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
-            ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
+            ShortcutAction::MaximizeWindow => {
+                self.choose_row(&[window_menu::MAXIMIZE]);
+            }
+            ShortcutAction::RestoreWindow => {
+                self.choose_row(&[window_menu::RESTORE]);
+            }
             // The window the person closed last comes back where it was; the desk answers the chord
             // either way, as the shell it replaces did.
             ShortcutAction::ReopenClosedTab => self.dispatch(ChromeEffect::ReopenClosed),
-            ShortcutAction::ToggleMaximize => self.maximize_focused(None),
-            ShortcutAction::ToggleFullscreen => self.toggle_fullscreen(),
-            ShortcutAction::ToggleFloat => self.toggle_float(),
+            ShortcutAction::ToggleMaximize => {
+                self.choose_row(&[window_menu::MAXIMIZE, window_menu::RESTORE]);
+            }
+            ShortcutAction::ToggleFullscreen => {
+                self.choose_row(&[window_menu::FULLSCREEN, window_menu::EXIT_FULLSCREEN]);
+            }
+            ShortcutAction::ToggleFloat => {
+                self.choose_row(&[window_menu::FLOAT, window_menu::SNAP_BACK]);
+            }
             // The tab leaves its window for one of its own, as the window menu's Split right does.
             ShortcutAction::DetachTab => self.split_focused_tab(),
             ShortcutAction::AttachTabLeft => self.attach_focused_tab(-1),
             ShortcutAction::AttachTabRight => self.attach_focused_tab(1),
-            ShortcutAction::MoveGroupLeft => self.reorder_focused_group(-1),
-            ShortcutAction::MoveGroupRight => self.reorder_focused_group(1),
+            // One place along its strip: the keyboard twin of dragging its bar's ground.
+            ShortcutAction::MoveGroupLeft => {
+                self.move_focused_group_to(Some(window_menu::MOVE_LEFT.to_owned()));
+            }
+            ShortcutAction::MoveGroupRight => {
+                self.move_focused_group_to(Some(window_menu::MOVE_RIGHT.to_owned()));
+            }
             ShortcutAction::MoveGroupToPreviousStrip => self.move_focused_group_to_strip(-1),
             ShortcutAction::MoveGroupToNextStrip => self.move_focused_group_to_strip(1),
             ShortcutAction::MoveGroupToPreviousDisplay => self.move_focused_group_to_display(-1),
             ShortcutAction::MoveGroupToNextDisplay => self.move_focused_group_to_display(1),
-            ShortcutAction::ResizeNarrower => self.resize_focused_group(-50),
-            ShortcutAction::ResizeWider => self.resize_focused_group(50),
+            ShortcutAction::ResizeNarrower => {
+                self.choose_row(&[window_menu::NARROWER]);
+            }
+            ShortcutAction::ResizeWider => {
+                self.choose_row(&[window_menu::WIDER]);
+            }
             ShortcutAction::OpenFiles => self.open_app("so.tilo.file-explorer"),
             ShortcutAction::OpenTerminal => self.open_app("so.tilo.terminal"),
             ShortcutAction::ReportProblem => self.ask(DesktopAsk::ReportProblem),
@@ -113,19 +132,8 @@ impl DesktopChrome {
             // Another window of the app in front, right after it, as the menu's New tab row opens
             // one; with no window, the app picker.
             FixedAction::DuplicateTab => {
-                match self.focused_route().and_then(|route| {
-                    let app = self.app_of(&route)?;
-                    Some((app, route))
-                }) {
-                    Some((app, route)) => {
-                        self.dispatch(ChromeEffect::OpenApp {
-                            app,
-                            beside: Some(route.tab),
-                            background: None,
-                            float: None,
-                        });
-                    }
-                    None => self.open_the_app_picker(),
+                if !self.choose_row(&[window_menu::NEW_TAB]) {
+                    self.open_the_app_picker();
                 }
             }
             // A new window is the app picker: the rule for where it stands is the desk's, and the
@@ -169,34 +177,6 @@ impl DesktopChrome {
     fn open_the_app_picker(&self) {
         self.handle
             .open_search(ui::search::Scope::WindowGroup(None), None);
-    }
-
-    /// Where the window in front stands, and the app it runs, when it runs one.
-    fn app_of(&self, route: &Route) -> Option<String> {
-        self.handle.read(|tree| {
-            let workspace = tree
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id().to_string() == route.workspace)?;
-            let strip = workspace
-                .strips
-                .iter()
-                .find(|strip| strip.id.0.to_string() == route.strip)?;
-            let group = strip
-                .window_groups
-                .iter()
-                .find(|group| group.id.to_string() == route.group)?;
-            let tab = group
-                .tabs
-                .iter()
-                .find(|tab| tab.id.to_string() == route.tab)?;
-            match &tab.tile {
-                TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
-                    Some(app_id.clone())
-                }
-                _ => None,
-            }
-        })
     }
 
     /// The workspace shown, as the desk addresses it.
@@ -310,120 +290,57 @@ impl DesktopChrome {
         });
     }
 
-    /// Move the window in front one place along its strip: the keyboard twin of dragging its tab
-    /// bar's ground.
-    fn reorder_focused_group(&self, direction: isize) {
-        let Some(route) = self.focused_route() else {
-            return;
+    /// Do to the window in front what the first of `rows` its menu offers does: a chord is its menu
+    /// row's twin and runs the row's own command. Whether the window offered one of them.
+    fn choose_row(&self, rows: &[&str]) -> bool {
+        let Some(tab) = self
+            .focused_route()
+            .and_then(|route| route.tab.parse::<u64>().ok())
+        else {
+            return false;
         };
-        // The window stands before the one it lands in front of: the window that was before it when
-        // it goes left, the one after the window it passes when it goes right, and the strip's end
-        // when that was the last window.
-        let before = self.handle.read(|tree| {
-            let workspace = tree.active_workspace()?;
-            let strip = workspace
-                .strips
-                .iter()
-                .find(|strip| strip.id.0.to_string() == route.strip)?;
-            let at = strip
-                .window_groups
-                .iter()
-                .position(|group| group.id.to_string() == route.group)?;
-            let passed = isize::try_from(at).ok()?.checked_add(direction)?;
-            strip.window_groups.get(usize::try_from(passed).ok()?)?;
-            let land = if direction < 0 {
-                at.checked_sub(1)?
-            } else {
-                at.checked_add(2)?
-            };
-            let before = strip
-                .window_groups
-                .get(land)
-                .map(|group| group.id.to_string());
-            Some(before)
-        });
-        let Some(before) = before else {
-            return;
-        };
-        self.dispatch(ChromeEffect::MoveTab {
-            tab: route.tab,
-            to: Destination {
-                strip: Some(route.strip),
-                before,
-                ..Destination::default()
-            },
-        });
+        rows.iter()
+            .any(|row| self.handle.choose_window_menu(tab, row, None).is_ok())
     }
 
-    /// Carry the window in front into the strip above (`steps < 0`) or below,
-    /// landing last there; focus follows it.
+    /// Carry the window in front into the strip above (`steps < 0`) or below, landing last there,
+    /// as its menu's row for that strip does; focus follows it.
     fn move_focused_group_to_strip(&self, steps: isize) {
-        let Some(route) = self.focused_route() else {
-            return;
-        };
-        let target = self.handle.read(|tree| {
-            let workspace = tree.active_workspace()?;
-            let at = workspace
-                .strips
-                .iter()
-                .position(|strip| strip.id.0.to_string() == route.strip)?;
-            let index = isize::try_from(at).ok()?.checked_add(steps)?;
-            let strip = workspace.strips.get(usize::try_from(index).ok()?)?;
-            Some(strip.id.0.to_string())
+        let row = self.focused_route().and_then(|route| {
+            self.handle.read(|tree| {
+                let strips = &tree.active_workspace()?.strips;
+                let at = strips
+                    .iter()
+                    .position(|strip| strip.id.0.to_string() == route.strip)?;
+                let strip = strips.get(at.checked_add_signed(steps)?)?;
+                Some(window_menu::move_to_strip_id(strip.id))
+            })
         });
-        let Some(strip) = target else {
-            self.handle.acknowledge(crate::i18n::t("shell-window-edge"));
-            return;
-        };
-        self.dispatch(ChromeEffect::MoveTab {
-            tab: route.tab,
-            to: Destination {
-                strip: Some(strip),
-                ..Destination::default()
-            },
-        });
+        self.move_focused_group_to(row);
     }
 
-    /// Show the window in front on the display `steps` on.
+    /// Show the window in front on the display `steps` on, as its menu's row for that display does.
     fn move_focused_group_to_display(&self, steps: isize) {
-        let Some(route) = self.focused_route() else {
-            return;
-        };
-        let target = self.handle.read(|tree| {
-            let group = route.group.parse::<u64>().ok()?;
-            let displays = &tree.outputs.displays;
-            let at = displays
-                .iter()
-                .position(|display| Some(display.id) == tree.outputs.display_of(group))?;
-            let index = isize::try_from(at).ok()?.checked_add(steps)?;
-            let display = displays.get(usize::try_from(index).ok()?)?;
-            Some(display.id.to_string())
+        let row = self.focused_route().and_then(|route| {
+            self.handle.read(|tree| {
+                let group = route.group.parse::<u64>().ok()?;
+                let displays = &tree.outputs.displays;
+                let at = displays
+                    .iter()
+                    .position(|display| Some(display.id) == tree.outputs.display_of(group))?;
+                let display = displays.get(at.checked_add_signed(steps)?)?;
+                Some(window_menu::move_to_display_id(display.id))
+            })
         });
-        let Some(display) = target else {
-            self.handle.acknowledge(crate::i18n::t("shell-window-edge"));
-            return;
-        };
-        self.dispatch(ChromeEffect::MoveTab {
-            tab: route.tab,
-            to: Destination {
-                display: Some(display),
-                ..Destination::default()
-            },
-        });
+        self.move_focused_group_to(row);
     }
 
-    /// Give the window in front `delta` permille more or less of its strip.
-    fn resize_focused_group(&self, delta: i64) {
-        let snapshot = self.handle.snapshot(&self.generation, Vec::new());
-        let (Some(route), Some(permille)) = (snapshot.active, snapshot.width_permille) else {
-            return;
-        };
-        let next = i64::from(permille).saturating_add(delta);
-        self.dispatch(ChromeEffect::SetWidth {
-            group: route.group,
-            permille: Some(u32::try_from(next).unwrap_or(permille)),
-            preset: None,
-        });
+    /// Choose the menu row `row` carrying the window in front somewhere; with no such place, say
+    /// the window can go no further that way.
+    fn move_focused_group_to(&self, row: Option<String>) {
+        if !row.is_some_and(|row| self.choose_row(&[&row])) {
+            self.handle.acknowledge(crate::i18n::t("shell-window-edge"));
+        }
     }
 
     /// Open the app `app` in the shown strip, as its launcher card does.
@@ -437,27 +354,7 @@ impl DesktopChrome {
     }
 
     /// The window in front, as the desk addresses it now.
-    fn focused_route(&self) -> Option<tilo_desktop_surface::navigation::Route> {
+    fn focused_route(&self) -> Option<Route> {
         self.handle.snapshot(&self.generation, Vec::new()).active
-    }
-
-    /// Lift the focused window above the desk, or put it back into its strip.
-    fn toggle_float(&self) {
-        let floating = self.handle.read(|tree| -> Option<bool> {
-            let workspace = tree.active_workspace()?;
-            let strip = *tree.active_strip.get(&workspace.id())?;
-            let group = tree.active_group_for(strip)?;
-            Some(workspace.arrangement.float_of(group).is_some())
-        });
-        let Some(floating) = floating else {
-            return;
-        };
-        let Some(route) = self.handle.snapshot(&self.generation, Vec::new()).active else {
-            return;
-        };
-        self.dispatch(ChromeEffect::Float {
-            group: route.group,
-            on: !floating,
-        });
     }
 }
