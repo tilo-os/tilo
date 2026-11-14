@@ -745,22 +745,25 @@ async fn in_replica<T>(
 /// Wait until every write `peer` published is durable on its host; a timeout says what the
 /// session's channels, failures and custody were.
 pub async fn durable(peer: &Link) {
+    // The receipt is awaited, as a page awaits it: it completes the moment the host answers the
+    // barrier, where a poll found the answer up to a whole interval later, once for every write
+    // of a history written one write at a time.
     let receipt = peer.barrier().unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        if let Ok(answer) = receipt.try_recv() {
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
+    let unanswered = match tokio::time::timeout_at(deadline, receipt).await {
+        Ok(Ok(answer)) => {
             answer.unwrap();
             return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for the writes to be durable; pending {}; channels:\n{}\nfailures: {:?}",
-            peer.status().outgoing_pending,
-            peer.status().key_state,
-            peer.status().failures
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+        Ok(Err(_)) => "the session let go of the barrier unanswered",
+        Err(_) => "no answer within the hang bound",
+    };
+    panic!(
+        "timed out waiting for the writes to be durable ({unanswered}); pending {}; channels:\n{}\nfailures: {:?}",
+        peer.status().outgoing_pending,
+        peer.status().key_state,
+        peer.status().failures
+    );
 }
 
 /// What `peer`'s replica last refused to keep and how many writes it refused, as its status
