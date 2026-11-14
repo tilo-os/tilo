@@ -347,6 +347,15 @@ remembered is a form's shape, never what anyone answered.
 
 ## Other devices
 
+A Browser window is a window of the device whose engine holds its page, and of
+no other. Browser says so of its windows in its manifest (`[entrypoint] window
+= "device"`), and the session does the rest for any app that says it: the
+device writes the window into the workspace's layout as one that runs on it,
+and every other desk lists it as that device's window and starts no Browser
+for it ([Workspaces](workspace.md), "Sharing a window"). What Browser keeps in
+records (bookmarks, history, the tab's record, continuing a page on another
+device) is unchanged: that is the Browser's records, not its window.
+
 Two things carry a tab to other devices, and both are the session's, not the
 Browser's.
 
@@ -379,10 +388,13 @@ from, by its whole key and its name, and none beside the tab's own agent.
 The device's way to the tab is checked in parts on one machine: the door's
 run keeps the device its connection's certificate names, the broker tells an
 application that device and never one the caller names, and the Browser's
-record, its field review and its review screen keep and show it. A further
+record, its field review and its review screen keep and show it. The tab
+steps also read that the Browser's window stands live on the device that runs
+it and that no other machine opened a Browser of its own in its tab. A further
 step has one device of the person share the Browser's window by its tab and
-another hold its picture in a tab of its own, as a window that runs on the
-sharing device, whatever its desk lists as its own view of that window.
+another hold its picture in the tab its desk lists the window in, as a window
+that runs on the sharing device, before the share, during it and after it
+ended.
 
 On three booted machines the three tab steps pass: two machines, then three,
 answer one form in one tab, and the record and the review name each remote
@@ -395,6 +407,15 @@ started never asked again, and a desk that listed the window as its own view
 of it had no tab to picture the shared window in. The second is held by the
 shares' own tests, which carry the workspace's governance between two
 sessions by hand.
+
+After the session came to open another device's window as each device's own
+view of it, the tab steps broke on the machines: every device started a
+Browser of its own for the tab, a second start of a running Browser opened no
+window, and the desks' launches overwrote the tab in the layout until the
+device that ran the page had no window in it. A Browser window is now written
+as a window that runs on its device, which no other device opens. The desk
+model's, the session's and the shares' own tests hold that; the machines have
+not run it yet.
 
 When it ran again the pictures crossed and then stopped: the device relaying
 the plane turned the sharing device away, and went on doing so through a

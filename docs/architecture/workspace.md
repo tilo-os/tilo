@@ -374,6 +374,17 @@ holds, so sharing it shares the resource and nothing is streamed: other
 members open the same resource in the same app. Driving someone else's window
 needs its owner's control grant.
 
+An app says which of the two its windows are. What a window shows may live in
+the app's own process on the device that opened it, as a Browser's page lives
+in its engine: its manifest says so (`[entrypoint] window = "device"`), and no
+session code names the app. The device that opened such a window writes it
+into the workspace's layout as a window that runs on it. Every other device
+holds it as that device's window: it starts no instance of the app for it,
+asking for the app there opens that device's own window, and the window's tab
+shows its picture while its device shares it. An app that says nothing has
+windows that are views of records, and a window one device opens is one every
+other device opens for itself.
+
 A person shares a window from its own menu, "Share with workspace", on the
 device that has it, and stops there. The row is one more caller of the
 session's window share (`session:window-share`, `share` and `stop` by the
@@ -391,9 +402,12 @@ and shows the window from there. A desk takes the grants into its own copy of
 a workspace only when the device holds no governance of that workspace: one
 that lives on that desk alone, which has no other device to tell.
 
-Every other device shows the shared window in a tab of its own, as a window
-that runs on the sharing device, and asks that device for its pictures. Where
-a desk already lists the window under the window's own id, that tab is the
+Every other device shows the shared window as a window that runs on the
+sharing device, and asks that device for its pictures. Where a desk already
+lists the window as one that runs on that device, it is pictured in that tab,
+and the tab stays when the share ends: the window still runs there, and its
+tab is the layout's. Otherwise it stands in a tab of its own. Where a desk
+lists the window under the window's own id as an app's window, that tab is the
 device's own view of it, which it opened itself: it is left as it is, and the
 shared window stands beside it in a tab the viewing device mints. That tab is
 the viewing desk's alone, and never goes into the desk's record: a window that
