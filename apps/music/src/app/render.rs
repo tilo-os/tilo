@@ -816,58 +816,6 @@ impl Widget for Music {
                     ),
             );
         }
-        if matches!(self.view, View::Home)
-            && !self.home_is_loading()
-            && self.lib.playlists.is_empty()
-            && self.lib.albums.is_empty()
-            && self.lib.tracks.is_empty()
-            && self
-                .home
-                .as_ref()
-                .is_none_or(crate::backend::HomeContent::is_empty)
-        {
-            if !self.catalogue_connected && super::ONLINE_CATALOGUE {
-                page_content.push(
-                    AccessNode::new(Role::Group)
-                        .with_hashed_key("home-empty")
-                        .with_name(crate::i18n::t(super::HOME_EMPTY_TITLE))
-                        .with_description(crate::i18n::t(super::HOME_EMPTY_MESSAGE))
-                        .with_children(vec![{
-                            let button = AccessNode::new(Role::Button)
-                                .with_name(crate::i18n::t(super::HOME_EMPTY_ACTION))
-                                .with_description(crate::i18n::t("music-a11y-choose-source"))
-                                .with_action_target("music.connect-source");
-                            // Where the empty state paints it, so a reader that meets the button
-                            // can also reach it with a pointer.
-                            match self.hits.iter().find(|hit| {
-                                matches!(
-                                    hit.action,
-                                    Action::SpotifyEffect(crate::actions::MusicEffect::Sources)
-                                )
-                            }) {
-                                Some(hit) => button.with_bounds(hit.rect),
-                                None => button,
-                            }
-                        }]),
-                );
-            } else {
-                let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
-                let message = crate::i18n::t(message);
-                let search = offers_search.then(|| {
-                    AccessNode::new(Role::Button)
-                        .with_name(crate::i18n::t("music-a11y-search"))
-                        .with_description(crate::i18n::t("music-a11y-search-description-simple"))
-                        .with_action_target("music.open-search")
-                });
-                page_content.push(
-                    AccessNode::new(Role::Group)
-                        .with_hashed_key("library-empty")
-                        .with_name(crate::i18n::t("music-a11y-empty"))
-                        .with_description(message)
-                        .with_children(search.into_iter().collect()),
-                );
-            }
-        }
         let page_name = match &self.view {
             View::Home => CATALOG.t("music-view-home"),
             View::Recommendations => crate::i18n::t("music-recommendations-title"),
@@ -1180,7 +1128,6 @@ impl Widget for Music {
         }
         let action = match target {
             "music.open-search" => Action::OpenSearch,
-            "music.connect-source" => Action::SpotifyEffect(crate::actions::MusicEffect::Sources),
             _ => {
                 if let Some(id) = target.strip_prefix("music.nav.") {
                     let Some(view) = Self::top_level_view(id) else {

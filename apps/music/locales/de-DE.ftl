@@ -118,9 +118,6 @@ music-title = Musik
 music-a11y-player = Musikwiedergabe
 music-a11y-search = Musik suchen
 music-a11y-search-description = Songs, Alben, Künstler und Playlists suchen
-music-a11y-search-description-simple = Suche nach einem Song, Album oder Künstler
-music-a11y-choose-source = Wähle, woher deine Musik kommt
-music-a11y-empty = Leere Musikbibliothek
 music-a11y-description = Musikbibliothek und Wiedergabesteuerung
 
 ## Fenster- und Barrierefreiheits-Texte

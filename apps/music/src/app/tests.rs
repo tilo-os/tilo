@@ -700,6 +700,53 @@ fn track_control(
         .unwrap_or_else(|| panic!("track {id} shows its {name} control under the pointer"))
 }
 
+/// Draw the empty state once and hand back where the toolkit's description puts
+/// `label`'s button: the action the page painted is a button in the tree, where
+/// it was drawn, as `RootWidget` describes it.
+fn described_empty_state_action(
+    app: &mut Music,
+    doc: &mut AutoCommit,
+    action: &Action,
+    label: &str,
+) -> Rect {
+    use ui::widget::Widget as _;
+
+    let mut painted = ui::widget::empty_state::PaintedEmptyStates::default();
+    painted.draw(Affine::IDENTITY, || draw_once(app, doc));
+    let drawn = app
+        .hits
+        .iter()
+        .find(|hit| hit.action == *action)
+        .map(|hit| hit.rect)
+        .expect("the empty state painted its action");
+    let tree = painted
+        .describe(app.accessibility(), app)
+        .expect("music semantics");
+    let button = described_button(&tree, label)
+        .unwrap_or_else(|| panic!("the tree describes no {label:?} button"));
+    let bounds = button
+        .bounds
+        .expect("the button stands where it is drawn")
+        .to_rect();
+    assert!(
+        (bounds.center() - drawn.center()).hypot() <= 2.0,
+        "the button at {bounds:?} stands where the action is drawn, {drawn:?}"
+    );
+    drawn
+}
+
+fn described_button<'a>(
+    node: &'a ui::a11y::AccessNode,
+    label: &str,
+) -> Option<&'a ui::a11y::AccessNode> {
+    if node.role == ui::a11y::Role::Button && node.name.as_deref() == Some(label) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| described_button(child, label))
+}
+
 fn click_track(app: &mut Music, doc: &mut AutoCommit, id: &str) {
     let row = track_row(app, id);
     hosted_click(
@@ -1115,9 +1162,6 @@ fn request_identities_keep_stale_responses_from_winning() {
 
 #[test]
 fn home_fetches_nothing_until_a_source_is_connected() {
-    use ui::a11y::Action as A11yAction;
-    use ui::widget::Widget as _;
-
     let mut app = Music::new();
     app.reload(&seed::empty_document());
     app.use_worker(crate::stream::StreamWorker::spawn_offline());
@@ -1137,32 +1181,23 @@ fn home_fetches_nothing_until_a_source_is_connected() {
             .any(|hit| hit.action == Action::SpotifyEffect(crate::actions::MusicEffect::Sources)),
         "the empty state's button chooses a source"
     );
-    let tree = app.accessibility().expect("music semantics");
-    let page = tree
-        .children
-        .iter()
-        .find(|node| node.name.as_deref() == Some("Home"))
-        .expect("active page is exposed");
-    let empty = page
-        .children
-        .iter()
-        .find(|node| node.name.as_deref() == Some("Add music"))
-        .expect("the empty state invites adding music");
-    assert!(
-        empty
-            .children
-            .iter()
-            .any(
-                |node| node.action_target.as_deref() == Some("music.connect-source")
-                    && node.name.as_deref() == Some("Connect a source")
-            )
+    let drawn = described_empty_state_action(
+        &mut app,
+        &mut doc,
+        &Action::SpotifyEffect(crate::actions::MusicEffect::Sources),
+        "Connect a source",
     );
-    assert!(app.perform_semantic_action(
-        "music.connect-source",
-        &A11yAction::Activate,
-        &mut ui::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
+    send(&mut app, &cursor_at(drawn.center()), &mut doc);
+    assert!(
+        send(&mut app, &press(MouseButton::Left), &mut doc),
+        "a press on the empty state's button is the page's"
+    );
+    let intent = ui::widget::controls::take_control_invocation(&mut app)
+        .expect("the empty state's button asks for what choosing a source does");
+    assert_eq!(
+        intent.address.action,
+        ui::tilo_resource::Effect::id(&crate::actions::MusicEffect::Sources)
+    );
 
     app.catalogue_connected = true;
     draw_once(&mut app, &mut doc);
@@ -1202,9 +1237,6 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
     }
 
     {
-        use ui::a11y::Action as A11yAction;
-        use ui::widget::Widget as _;
-
         let mut app = Music::new();
         app.disconnect();
         app.catalogue_connected = true;
@@ -1220,29 +1252,13 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
             "the empty-state Search button is a real action"
         );
 
-        let tree = app.accessibility().expect("music semantics");
-        let page = tree
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Home"))
-            .expect("active page is exposed");
-        let empty_library = page
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Empty music library"))
-            .expect("empty state is separate from transport semantics");
-        let search = empty_library
-            .children
-            .iter()
-            .find(|node| node.action_target.as_deref() == Some("music.open-search"))
-            .expect("empty-state Search button has an accessible action");
-        assert_eq!(search.name.as_deref(), Some("Search music"));
-        assert!(app.perform_semantic_action(
-            "music.open-search",
-            &A11yAction::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
+        let drawn =
+            described_empty_state_action(&mut app, &mut doc, &Action::OpenSearch, "Search music");
+        send(&mut app, &cursor_at(drawn.center()), &mut doc);
+        assert!(
+            send(&mut app, &press(MouseButton::Left), &mut doc),
+            "a press on the empty state's button is the page's"
+        );
         assert!(
             app.search_opener.is_pending(),
             "it opens the platform search"
