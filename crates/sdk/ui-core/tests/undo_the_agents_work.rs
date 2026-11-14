@@ -291,6 +291,10 @@ tilo_test_env::scenario! {
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // Somebody built on it.
+    // ---------------------------------------------------------------------------
+
     phase undo_keeps_later_human_edits_and_is_idempotent;
     {
         {
@@ -442,6 +446,10 @@ tilo_test_env::scenario! {
             );
         }
     }
+
+    // ---------------------------------------------------------------------------
+    // Two applications, one instruction.
+    // ---------------------------------------------------------------------------
 
     phase runs_span_applications_and_are_refused_whole_when_unresolvable;
     {
@@ -677,6 +685,10 @@ tilo_test_env::scenario! {
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // Undoing from an identity alone — what an author chip beside the text has.
+    // ---------------------------------------------------------------------------
+
     phase author_chips_find_and_bound_an_authors_run;
     {
         {
@@ -757,10 +769,6 @@ tilo_test_env::scenario! {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Somebody built on it.
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Two applications, one instruction.
@@ -856,7 +864,3 @@ fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentRun) {
     let run = read_runs(&workspace).pop().expect("the run reads back");
     (workspace, photo, report, run)
 }
-
-// ---------------------------------------------------------------------------
-// Undoing from an identity alone — what an author chip beside the text has.
-// ---------------------------------------------------------------------------
