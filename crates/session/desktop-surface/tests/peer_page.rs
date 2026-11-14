@@ -19,7 +19,8 @@ use std::time::Duration;
 use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent as ModelTile, Workspace};
 use tilo_desktop_surface::page_view::PageStream;
 use tilo_desktop_surface::{
-    NeighbourMsg, PeerId, PeerStreamStart, PeerSurfaces, SurfaceId, TileSource, seed_tree,
+    DesktopHandle, DesktopSurface, NeighbourMsg, PeerId, PeerStreamStart, PeerSurfaces, Standing,
+    SurfaceId, TileSource, seed_tree,
 };
 use ui::headless::FrameHarness;
 use ui::offscreen::OffscreenRenderer;
@@ -273,6 +274,166 @@ fn a_tile_draws_the_page_the_desk_gives_it() {
         peers.borrow().read(tab).map(|read| read.standing),
         Some(tilo_desktop_surface::Standing::Pictured)
     );
+}
+
+/// A desk whose one tab lists a window another device runs, in the toolkit's own frame pipeline.
+fn shown_desk() -> (FrameHarness, DesktopHandle, TabId) {
+    let mut minter = IdMinter::new(7);
+    let (tree, tab) = desk(&mut minter);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(NoTiles));
+    handle.set_viewport_width(1200.0);
+    let mut driver = FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver.relayout();
+    (driver, handle, tab)
+}
+
+/// The names of the widgets the first widget called `under` is built of, itself first: what a
+/// tile holds in its place.
+fn built_of(root: &dyn ui::widget::Widget, under: &str) -> Vec<String> {
+    fn all(widget: &dyn ui::widget::Widget, out: &mut Vec<String>) {
+        out.push(widget.name().to_owned());
+        widget.for_each_child(&mut |child| all(child, out));
+    }
+    fn find(widget: &dyn ui::widget::Widget, under: &str, out: &mut Vec<String>) -> bool {
+        if widget.name() == under {
+            all(widget, out);
+            return true;
+        }
+        let mut found = false;
+        widget.for_each_child(&mut |child| {
+            if !found {
+                found = find(child, under, out);
+            }
+        });
+        found
+    }
+    let mut out = Vec::new();
+    find(root, under, &mut out);
+    out
+}
+
+/// A person who cannot see the tile is told what one who can sees there: the tile is a document
+/// called what it is, holding the text its page shows, each run where the tile draws it. That is
+/// also what anything listing the desk's named elements reads of the page.
+#[test]
+fn a_tile_names_the_text_its_page_shows_where_it_draws_it() {
+    let engine = engine();
+    let mut stream = PageStream::new();
+    for object in payloads(&engine) {
+        stream.apply(&object);
+    }
+    let stream = Rc::new(RefCell::new(stream));
+    let mut harness = FrameHarness::new(
+        ui::state::State::new(),
+        PageStream::view(&stream, "Browser on Laptop".into()),
+        (WIDTH, HEIGHT),
+    );
+    harness.relayout();
+    let texts = ui::a11y::texts(harness.root_widget());
+    assert!(
+        texts.iter().any(|text| text == "Browser on Laptop"),
+        "the tile says what it is: {texts:?}"
+    );
+    for shown in ["Paint stream", "Alpha"] {
+        assert!(
+            texts.iter().any(|text| text.contains(shown)),
+            "the tile names {shown:?}, which its page shows: {texts:?}"
+        );
+    }
+    let placed: Vec<(String, [f64; 4])> = harness
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| {
+            let bounds = node.bounds()?;
+            Some((
+                node.label()?.to_owned(),
+                [bounds.x0, bounds.y0, bounds.x1, bounds.y1],
+            ))
+        })
+        .collect();
+    let (_, [x0, y0, x1, y1]) = placed
+        .iter()
+        .find(|(name, _)| name.contains("Alpha"))
+        .expect("the run is exported with where it stands");
+    assert!(
+        *x0 >= 0.0
+            && *y0 >= 0.0
+            && *x1 <= f64::from(WIDTH)
+            && *y1 <= f64::from(HEIGHT)
+            && x1 > x0
+            && y1 > y0,
+        "the run stands in the tile's box: {placed:?}"
+    );
+}
+
+/// The tab a desk lists another device's window in shows the arriving card while only the start
+/// of that window's page came, and the page once its whole frame did: the tile is built again
+/// from what it holds, with no part of the placeholder left in it.
+#[test]
+fn the_tab_listing_a_window_leaves_its_arriving_card_for_the_page_that_came() {
+    let (mut driver, handle, tab) = shown_desk();
+    let started = PeerStreamStart::announced(&announcement(tab), LOCAL, "Laptop", "Browser", false)
+        .expect("a page stream is announced like any other");
+    assert_eq!(
+        handle.show_peer_surface(&started),
+        Some(tab),
+        "the tab that lists the window takes its page"
+    );
+    driver.relayout();
+    let waiting = built_of(driver.root_widget(), "PeerView");
+    let holds = |built: &[String], name: &str| built.iter().any(|part| part == name);
+    assert!(
+        holds(&waiting, "ArrivingView") && !holds(&waiting, "PageView"),
+        "a page of which only the start came waits in the arriving card: {waiting:?}"
+    );
+    assert_eq!(
+        handle.peer_surface_read(tab).map(|read| read.standing),
+        Some(Standing::Started)
+    );
+    let texts = ui::a11y::texts(driver.root_widget());
+    assert!(
+        !texts.iter().any(|text| text.contains("Paint stream")),
+        "nothing of the page is named before it came: {texts:?}"
+    );
+
+    for object in payloads(&engine()) {
+        assert!(
+            handle
+                .peer_surface_page(PUBLISHER, SURFACE, &object)
+                .is_some(),
+            "every object of the page reaches the tile"
+        );
+    }
+    driver.relayout();
+    driver.relayout();
+    let drawn = built_of(driver.root_widget(), "PeerView");
+    assert!(
+        holds(&drawn, "PageView") && !holds(&drawn, "ArrivingView"),
+        "the tile draws the page that came, and no placeholder: {drawn:?}"
+    );
+    assert_eq!(
+        handle.peer_surface_read(tab).map(|read| read.standing),
+        Some(Standing::Pictured)
+    );
+    let texts = ui::a11y::texts(driver.root_widget());
+    assert!(
+        texts.iter().any(|text| text == "Browser on Laptop"),
+        "the tile says whose window it is: {texts:?}"
+    );
+    for shown in ["Paint stream", "Alpha"] {
+        assert!(
+            texts.iter().any(|text| text.contains(shown)),
+            "the desk names {shown:?}, which the page shows: {texts:?}"
+        );
+    }
 }
 
 /// A host with nothing of its own in the tab.

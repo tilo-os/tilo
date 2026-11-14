@@ -12,18 +12,22 @@
 //! [`PageView`] is that as a tile: the frame letterboxed in the window's box,
 //! or the framework's arriving card until the first whole frame comes. Input
 //! never reaches it: a viewer of a page watches it, and what a click means is
-//! the publisher's to decide.
+//! the publisher's to decide. The tile names the text its page shows, each run
+//! where it is drawn, so a reader who cannot see the page is told what a
+//! reader who can sees there.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use ui::a11y::{AccessNode, Role, SharedAccessNode};
 use ui::kurbo::{Affine, Point, Rect};
 use ui::taffy::NodeId;
 use ui::taffy::{Dimension, Size, Style};
 use ui::vello::peniko::Fill;
 use ui::webview::paint::stream::wire::{Payload, Receiver};
+use ui::webview::paint::stream::{Frame, Item, LayerId, ROOT, Rect as PageRect};
 use ui::webview::paint::{BlobSource, PageCanvas, PageRenderer};
 use ui::widget::{MediaAspect, MediaGrid, TaffyTreeExt, Widget};
 use ui::{TextRenderer, Theme};
@@ -34,6 +38,14 @@ use crate::page_code::PageHandle;
 /// that replaced more than this since its last whole frame starts again at one
 /// anyway.
 const MAX_BLOBS: usize = 128;
+
+/// Most runs of text one page's tile names. A page that paints more is named by the first of
+/// them, in the order it paints them.
+const MAX_TEXT_RUNS: usize = 512;
+
+/// The text a tile last named of its page: the frame it read, the box it placed the page in, and
+/// the runs.
+type Named = (u64, Rect, Vec<Arc<AccessNode>>);
 
 /// A window's page as a viewer holds it: the frame, the images it references,
 /// and the renderer that draws it.
@@ -96,11 +108,7 @@ impl PageStream {
     #[must_use]
     pub fn view(this: &Rc<RefCell<Self>>, alt: String) -> Box<dyn Widget> {
         if this.borrow().frame().is_some() {
-            Box::new(PageView {
-                stream: Rc::clone(this),
-                rect: Rect::ZERO,
-                alt,
-            })
+            Box::new(PageView::new(Rc::clone(this), alt))
         } else {
             Box::new(MediaGrid::arriving(
                 1,
@@ -138,6 +146,8 @@ pub struct PageView {
     rect: Rect,
     /// What the tile is, for a reader who cannot see the page.
     alt: String,
+    /// The page's text as the tile last named it, kept while the frame and the box stay.
+    named: RefCell<Option<Named>>,
 }
 
 impl PageView {
@@ -148,8 +158,124 @@ impl PageView {
             stream,
             rect: Rect::ZERO,
             alt: alt.into(),
+            named: RefCell::new(None),
         }
     }
+
+    /// How the page stands in the tile's box: its scale, and where its top left corner is drawn.
+    /// The page keeps its shape and is centred, as [`Widget::draw`] draws it. `None` for a page or
+    /// a box without an area.
+    fn placement(&self, frame: &Frame) -> Option<(f64, f64, f64)> {
+        let (width, height) = (f64::from(frame.viewport.x), f64::from(frame.viewport.y));
+        if width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        let scale = (self.rect.width() / width).min(self.rect.height() / height);
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let left = self.rect.x0 + (self.rect.width() - width * scale) / 2.0;
+        let top = self.rect.y0 + (self.rect.height() - height * scale) / 2.0;
+        Some((scale, left, top))
+    }
+
+    /// The tile's own node: a document, called what the tile is.
+    fn document(&self) -> AccessNode {
+        AccessNode::new(Role::Document).with_name(self.alt.clone())
+    }
+
+    /// The text the page shows, each run where the tile draws it. It is read again only when the
+    /// frame or the tile's box changed, so a reader's tree keeps the runs of the last frame as
+    /// they are.
+    fn text_runs(&self) -> Vec<Arc<AccessNode>> {
+        let stream = self.stream.borrow();
+        let Some(frame) = stream.frame() else {
+            return Vec::new();
+        };
+        if let Some((seq, rect, runs)) = self.named.borrow().as_ref()
+            && *seq == frame.seq
+            && *rect == self.rect
+        {
+            return runs.clone();
+        }
+        let runs: Vec<Arc<AccessNode>> = self
+            .placement(frame)
+            .map(|(scale, left, top)| {
+                shown_text(frame)
+                    .into_iter()
+                    .map(|(text, at)| {
+                        let x = f64::from(at.x).mul_add(scale, left);
+                        let y = f64::from(at.y).mul_add(scale, top);
+                        let bounds = Rect::new(
+                            x,
+                            y,
+                            f64::from(at.w).mul_add(scale, x),
+                            f64::from(at.h).mul_add(scale, y),
+                        );
+                        Arc::new(
+                            AccessNode::new(Role::StaticText)
+                                .with_name(text)
+                                .with_bounds(bounds),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        *self.named.borrow_mut() = Some((frame.seq, self.rect, runs.clone()));
+        runs
+    }
+}
+
+/// The text a page shows, in the order it paints it, each run with the box it is painted in, in
+/// the page's viewport: what a tile tells a reader who cannot see it. Text scrolled or clipped out
+/// of view is left out, as it is on the screen, and so is text in a layer that is not drawn.
+fn shown_text(frame: &Frame) -> Vec<(String, PageRect)> {
+    let mut runs = Vec::new();
+    text_in(frame, ROOT, 0, &mut runs);
+    runs
+}
+
+/// The runs of `layer` and of the layers it paints, added to `runs` in paint order.
+fn text_in(frame: &Frame, layer: LayerId, depth: usize, runs: &mut Vec<(String, PageRect)>) {
+    if depth > frame.layers.len() {
+        return;
+    }
+    let Some(held) = frame.layers.get(&layer) else {
+        return;
+    };
+    let Some((offset, clip)) = frame.layer_to_viewport(layer) else {
+        return;
+    };
+    if held.opacity <= 0.0 {
+        return;
+    }
+    let viewport = PageRect::new(0.0, 0.0, frame.viewport.x, frame.viewport.y);
+    let seen = clip.map_or(viewport, |clip| overlap(clip, viewport));
+    for item in &held.items {
+        if runs.len() >= MAX_TEXT_RUNS {
+            return;
+        }
+        match item {
+            Item::Text { rect, text, .. } => {
+                let said = text.trim();
+                let shown = overlap(rect.translate(offset.x, offset.y), seen);
+                if !said.is_empty() && shown.w > 0.0 && shown.h > 0.0 {
+                    runs.push((said.to_owned(), shown));
+                }
+            }
+            Item::Layer(child) => text_in(frame, *child, depth.saturating_add(1), runs),
+            _ => {}
+        }
+    }
+}
+
+/// The part of `first` that lies in `second`: a box without an area when they do not meet.
+fn overlap(first: PageRect, second: PageRect) -> PageRect {
+    let left = first.x.max(second.x);
+    let top = first.y.max(second.y);
+    let right = (first.x + first.w).min(second.x + second.w);
+    let bottom = (first.y + first.h).min(second.y + second.h);
+    PageRect::new(left, top, (right - left).max(0.0), (bottom - top).max(0.0))
 }
 
 impl ui::widget::AppWidget for PageView {
@@ -202,6 +328,24 @@ impl Widget for PageView {
         self.rect
     }
 
+    /// The page for a reader who cannot see it: a document called what the tile is, holding the
+    /// text the page shows, each run where the tile draws it.
+    fn accessibility(&self) -> Option<AccessNode> {
+        self.accessibility_shared()
+            .map(SharedAccessNode::into_owned)
+    }
+
+    fn accessibility_shared(&self) -> Option<SharedAccessNode> {
+        Some(SharedAccessNode {
+            node: self.document(),
+            children: self.text_runs(),
+        })
+    }
+
+    fn accessibility_root(&self) -> Option<AccessNode> {
+        Some(self.document())
+    }
+
     #[expect(
         clippy::arithmetic_side_effects,
         reason = "a page's size and the tile's box are finite, and a scale that is not is refused above"
@@ -249,7 +393,6 @@ impl Widget for PageView {
             blobs: &source,
         };
         stream.renderer.borrow_mut().draw(&mut canvas, frame);
-        let _ = &self.alt;
     }
 }
 

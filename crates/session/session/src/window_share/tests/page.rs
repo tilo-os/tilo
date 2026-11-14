@@ -299,6 +299,27 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_desk_lists_its_window_in() {
         Some(host_key.as_str()),
         "which the desk still lists as a window that runs on its host"
     );
+
+    // What the person at the watching desk is shown, as anything that reads a desk by the names
+    // on it reads it: the text of the page, in the tab that draws it.
+    let named = |two: &Two| -> Vec<String> {
+        two.viewer
+            .session
+            .controls()
+            .into_iter()
+            .map(|control| control.name)
+            .collect()
+    };
+    assert!(
+        two.within(LINK, true, |two| {
+            let named = named(two);
+            ["Paint stream", "Alpha"]
+                .iter()
+                .all(|shown| named.iter().any(|name| name.contains(shown)))
+        }),
+        "the watching desk does not name the text of the page it draws: {:?}",
+        named(&two)
+    );
 }
 
 /// What the two sessions say of a shared page is what is on the two screens. While the watching
