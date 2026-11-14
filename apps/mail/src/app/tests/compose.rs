@@ -1,188 +1,195 @@
 use super::*;
 
-#[test]
-fn compose_stands_in_the_window_and_sends_only_with_an_account_and_a_recipient() {
-    // No account yet: the composer is the window's page, never a panel
-    // floating over the empty state, and it cannot send.
-    let mut first = MailApp::new_first_run();
-    let mut doc = crate::resource::TestMail::doc();
-    first.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-    first.sync(&doc, &automerge::ROOT);
-    first.layout_for_test(1100.0, 780.0);
-    first.shared.borrow_mut().push_intent(Intent::Compose);
-    first.process_intents();
-    first.layout_for_test(1100.0, 780.0);
-    assert!(first.compose.open);
-    assert!(
-        !first.compose.is_modal(),
-        "no floating panel over a scrim, so nothing blurred shows through"
-    );
-    assert_eq!(
-        first.compose.window_rect(),
-        first.rect,
-        "the page is the window"
-    );
-    first.compose.type_recipient("tomas@example.org");
-    first.sync(&doc, &automerge::ROOT);
-    assert!(!first.compose.can_send(), "no account to send from");
+tilo_test_env::scenario! {
+    /// Composing in the window: where the composer stands, when it sends, and what is handed to it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn the_window_composes_sends_and_takes_invitations_as_drafts;
 
-    // With an account: a reply stands in the message column, beside the
-    // list that holds the message it answers.
-    let (mut app, doc) = app();
-    app.layout_for_test(1280.0, 800.0);
-    app.stage_reply();
-    app.sync(&doc, &automerge::ROOT);
-    app.layout_for_test(1280.0, 800.0);
-    assert!(
-        app.compose.open && app.compose.in_pane(),
-        "the reply is inline"
-    );
-    assert!(!app.compose.is_modal());
-    let geometry = app.nav.geometry();
-    let column = app.compose.window_rect();
-    assert!(
-        column.intersect(geometry.overview_column).is_zero_area(),
-        "the reply {column:?} leaves the list {:?} in view",
-        geometry.overview_column
-    );
-    assert!(
-        app.compose.can_send(),
-        "a reply has its recipient and account"
-    );
-
-    app.compose.open_blank();
-    app.sync(&doc, &automerge::ROOT);
-    app.layout_for_test(1280.0, 800.0);
-    assert!(!app.compose.can_send(), "no recipient yet");
-    let send = app
-        .compose
-        .accessibility_node()
-        .children
-        .into_iter()
-        .find(|node| node.name.as_deref() == Some("Send"))
-        .expect("Send is published");
-    assert!(send.state.disabled, "Send is announced as unavailable");
-    app.compose.type_recipient("tomas@example.org");
-    assert!(app.compose.can_send());
-}
-#[test]
-fn compose_send_accepts_recipients_in_any_header_field() {
-    for (to, cc, bcc) in [
-        ("dest@example.test", "", ""),
-        ("", "dest@example.test", ""),
-        ("", "", "hidden@example.test"),
-        ("", "", ""),
-    ] {
-        let (mut app, mut doc) = app();
-        let (requests, outgoing) = std::sync::mpsc::channel();
-        let (_events, incoming) = std::sync::mpsc::channel();
-        app.state().engine = Some(EngineHandle {
-            tx: requests,
-            rx: incoming,
-        });
-        let sent_before = app.shared.borrow().mailbox.count(Folder::Sent);
-        let draft = Draft {
-            to: to.into(),
-            cc: cc.into(),
-            bcc: bcc.into(),
-            subject: "Recipient regression".into(),
-            body: "Hello".into(),
-            ..Default::default()
-        };
-        app.compose.open_with_draft(&draft);
-        app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
-        assert!(
-            outgoing.try_recv().is_err(),
-            "nothing reaches the server before the undo time is up"
-        );
-        if to.is_empty() && cc.is_empty() && bcc.is_empty() {
-            assert!(app.compose.open, "an empty recipient list keeps the draft");
-            assert_eq!(
-                app.shared.borrow().status.as_deref(),
-                Some("Add a recipient before sending")
-            );
-            continue;
-        }
-        assert!(!app.compose.open, "To={to:?}, Cc={cc:?}, Bcc={bcc:?}");
-        let dispatcher = app.shared.borrow().dispatcher.clone().unwrap();
-        TestMail::confirm(&mut doc, &dispatcher);
-        let outbox = TestMail::outbox(&doc);
-        let [(queued, None)] = outbox.as_slice() else {
-            panic!("one send action must queue a message: {outbox:?}");
-        };
-        assert_eq!(queued.draft.to, to);
-        assert_eq!(queued.draft.cc, cc);
-        assert_eq!(queued.draft.bcc, bcc);
-        app.server_outbox()
-            .borrow_mut()
-            .deliver(queued.clone(), Box::new(|_| {}));
-        app.flush_server_outbox();
-        app.undo_time_is_up(&mut doc);
-        let EngineRequest::Send { account, draft, .. } = outgoing.try_recv().unwrap() else {
-            panic!("the compose action must reach the send backend");
-        };
-        assert_eq!(draft.to, to);
-        assert_eq!(draft.cc, cc);
-        assert_eq!(draft.bcc, bcc);
-        let wire = crate::transport::build_mime(
-            &app.content,
-            &Addr::new(account.display_name, account.email),
-            &draft,
-        )
-        .unwrap();
-        let wire = String::from_utf8(wire).unwrap();
-        assert!(!wire.to_ascii_lowercase().contains("bcc:"));
-        assert!(!wire.contains("hidden@example.test"));
-        assert!(outgoing.try_recv().is_err(), "only one send is submitted");
-        assert_eq!(app.shared.borrow().mailbox.count(Folder::Sent), sent_before);
-    }
-}
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn calendar_invitation_handoff_creates_reviewable_drafts_and_refuses_bad_payloads() {
+    phase compose_stands_in_the_window_and_sends_only_with_an_account_and_a_recipient;
     {
-        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:event@example\r\nDTSTART:20260915T120000Z\r\nDTEND:20260915T130000Z\r\nSUMMARY:Review\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        let draft = prepare_calendar_invitation_draft(
-            "guest@example.com",
-            "Invitation: Review",
-            "Please review this invitation.",
-            ics,
-        )
-        .unwrap();
+        // No account yet: the composer is the window's page, never a panel
+        // floating over the empty state, and it cannot send.
+        let mut first = MailApp::new_first_run();
         let mut doc = crate::resource::TestMail::doc();
-        let mut state = MailState::new_sample(crate::avatars::Avatars::new());
-        state.save_draft(&mut ui::widget::Edits::lend(&mut doc), &draft);
-        let stored = TestMail::load_draft(&doc);
-        assert_eq!(stored.to, "guest@example.com");
-        assert_eq!(stored.subject, "Invitation: Review");
-        assert_eq!(stored.calendar_ics.as_deref(), Some(ics));
+        first.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        first.sync(&doc, &automerge::ROOT);
+        first.layout_for_test(1100.0, 780.0);
+        first.shared.borrow_mut().push_intent(Intent::Compose);
+        first.process_intents();
+        first.layout_for_test(1100.0, 780.0);
+        assert!(first.compose.open);
         assert!(
-            stored.attachments.is_empty(),
-            "no host path crosses the action"
+            !first.compose.is_modal(),
+            "no floating panel over a scrim, so nothing blurred shows through"
         );
-        let steps = ui::tilo_resource::history::versions(&mut doc.clone())
+        assert_eq!(
+            first.compose.window_rect(),
+            first.rect,
+            "the page is the window"
+        );
+        first.compose.type_recipient("tomas@example.org");
+        first.sync(&doc, &automerge::ROOT);
+        assert!(!first.compose.can_send(), "no account to send from");
+
+        // With an account: a reply stands in the message column, beside the
+        // list that holds the message it answers.
+        let (mut app, doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        app.stage_reply();
+        app.sync(&doc, &automerge::ROOT);
+        app.layout_for_test(1280.0, 800.0);
+        assert!(
+            app.compose.open && app.compose.in_pane(),
+            "the reply is inline"
+        );
+        assert!(!app.compose.is_modal());
+        let geometry = app.nav.geometry();
+        let column = app.compose.window_rect();
+        assert!(
+            column.intersect(geometry.overview_column).is_zero_area(),
+            "the reply {column:?} leaves the list {:?} in view",
+            geometry.overview_column
+        );
+        assert!(
+            app.compose.can_send(),
+            "a reply has its recipient and account"
+        );
+
+        app.compose.open_blank();
+        app.sync(&doc, &automerge::ROOT);
+        app.layout_for_test(1280.0, 800.0);
+        assert!(!app.compose.can_send(), "no recipient yet");
+        let send = app
+            .compose
+            .accessibility_node()
+            .children
             .into_iter()
-            .filter_map(|version| version.context)
-            .filter(|context| context.change.is_step())
-            .count();
-        assert_eq!(steps, 1, "saving the draft is one undo step");
+            .find(|node| node.name.as_deref() == Some("Send"))
+            .expect("Send is published");
+        assert!(send.state.disabled, "Send is announced as unavailable");
+        app.compose.type_recipient("tomas@example.org");
+        assert!(app.compose.can_send());
     }
 
+    phase compose_send_accepts_recipients_in_any_header_field;
     {
-        let valid = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:x\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        assert!(prepare_calendar_invitation_draft("bad", "Invite", "", valid).is_err());
-        assert!(
-            prepare_calendar_invitation_draft(
-                "a@example.com",
-                "Invite",
-                "",
-                &"x".repeat(256 * 1024 + 1),
+        for (to, cc, bcc) in [
+            ("dest@example.test", "", ""),
+            ("", "dest@example.test", ""),
+            ("", "", "hidden@example.test"),
+            ("", "", ""),
+        ] {
+            let (mut app, mut doc) = app();
+            let (requests, outgoing) = std::sync::mpsc::channel();
+            let (_events, incoming) = std::sync::mpsc::channel();
+            app.state().engine = Some(EngineHandle {
+                tx: requests,
+                rx: incoming,
+            });
+            let sent_before = app.shared.borrow().mailbox.count(Folder::Sent);
+            let draft = Draft {
+                to: to.into(),
+                cc: cc.into(),
+                bcc: bcc.into(),
+                subject: "Recipient regression".into(),
+                body: "Hello".into(),
+                ..Default::default()
+            };
+            app.compose.open_with_draft(&draft);
+            app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+            assert!(
+                outgoing.try_recv().is_err(),
+                "nothing reaches the server before the undo time is up"
+            );
+            if to.is_empty() && cc.is_empty() && bcc.is_empty() {
+                assert!(app.compose.open, "an empty recipient list keeps the draft");
+                assert_eq!(
+                    app.shared.borrow().status.as_deref(),
+                    Some("Add a recipient before sending")
+                );
+                continue;
+            }
+            assert!(!app.compose.open, "To={to:?}, Cc={cc:?}, Bcc={bcc:?}");
+            let dispatcher = app.shared.borrow().dispatcher.clone().unwrap();
+            TestMail::confirm(&mut doc, &dispatcher);
+            let outbox = TestMail::outbox(&doc);
+            let [(queued, None)] = outbox.as_slice() else {
+                panic!("one send action must queue a message: {outbox:?}");
+            };
+            assert_eq!(queued.draft.to, to);
+            assert_eq!(queued.draft.cc, cc);
+            assert_eq!(queued.draft.bcc, bcc);
+            app.server_outbox()
+                .borrow_mut()
+                .deliver(queued.clone(), Box::new(|_| {}));
+            app.flush_server_outbox();
+            app.undo_time_is_up(&mut doc);
+            let EngineRequest::Send { account, draft, .. } = outgoing.try_recv().unwrap() else {
+                panic!("the compose action must reach the send backend");
+            };
+            assert_eq!(draft.to, to);
+            assert_eq!(draft.cc, cc);
+            assert_eq!(draft.bcc, bcc);
+            let wire = crate::transport::build_mime(
+                &app.content,
+                &Addr::new(account.display_name, account.email),
+                &draft,
             )
-            .is_err()
-        );
+            .unwrap();
+            let wire = String::from_utf8(wire).unwrap();
+            assert!(!wire.to_ascii_lowercase().contains("bcc:"));
+            assert!(!wire.contains("hidden@example.test"));
+            assert!(outgoing.try_recv().is_err(), "only one send is submitted");
+            assert_eq!(app.shared.borrow().mailbox.count(Folder::Sent), sent_before);
+        }
+    }
+
+    phase calendar_invitation_handoff_creates_reviewable_drafts_and_refuses_bad_payloads;
+    {
+        {
+            let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:event@example\r\nDTSTART:20260915T120000Z\r\nDTEND:20260915T130000Z\r\nSUMMARY:Review\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+            let draft = prepare_calendar_invitation_draft(
+                "guest@example.com",
+                "Invitation: Review",
+                "Please review this invitation.",
+                ics,
+            )
+            .unwrap();
+            let mut doc = crate::resource::TestMail::doc();
+            let mut state = MailState::new_sample(crate::avatars::Avatars::new());
+            state.save_draft(&mut ui::widget::Edits::lend(&mut doc), &draft);
+            let stored = TestMail::load_draft(&doc);
+            assert_eq!(stored.to, "guest@example.com");
+            assert_eq!(stored.subject, "Invitation: Review");
+            assert_eq!(stored.calendar_ics.as_deref(), Some(ics));
+            assert!(
+                stored.attachments.is_empty(),
+                "no host path crosses the action"
+            );
+            let steps = ui::tilo_resource::history::versions(&mut doc.clone())
+                .into_iter()
+                .filter_map(|version| version.context)
+                .filter(|context| context.change.is_step())
+                .count();
+            assert_eq!(steps, 1, "saving the draft is one undo step");
+        }
+
+        {
+            let valid = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:x\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+            assert!(prepare_calendar_invitation_draft("bad", "Invite", "", valid).is_err());
+            assert!(
+                prepare_calendar_invitation_draft(
+                    "a@example.com",
+                    "Invite",
+                    "",
+                    &"x".repeat(256 * 1024 + 1),
+                )
+                .is_err()
+            );
+        }
     }
 }
 #[test]

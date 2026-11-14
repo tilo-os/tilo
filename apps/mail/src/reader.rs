@@ -1722,97 +1722,372 @@ mod tests {
         );
     }
 
-    #[test]
-    fn message_bodies_grow_once_at_enlarged_scales() {
-        let shared = shared();
-        let id = message_from(&shared, "billing@lumen-energy.example");
-        let base = Theme::dark();
-        for html in [None, Some("<h1>A heading</h1><p>A message.</p>")] {
+    tilo_test_env::scenario! {
+        /// The reader over a conversation: its text, sender details, attachments, quotes and earlier messages.
+        fn the_reader_shows_a_conversation_as_text_with_its_attachments_and_quotes;
+
+        phase message_bodies_grow_once_at_enlarged_scales;
+        {
+            let shared = shared();
+            let id = message_from(&shared, "billing@lumen-energy.example");
+            let base = Theme::dark();
+            for html in [None, Some("<h1>A heading</h1><p>A message.</p>")] {
+                {
+                    let mut state = shared.borrow_mut();
+                    let message = state.mailbox.messages.get_mut(&id).unwrap();
+                    message.body = "A message.".to_owned();
+                    message.html_body = html.map(str::to_owned);
+                }
+                let mut reader = reader_for(&shared, id, 960.0, 1200.0);
+                draw_themed(&mut reader, &base);
+                let base_height = reader.bodies[&id].input.caret_rect(&base, 0).height();
+                for theme in [
+                    Theme::dark().with_text_scale(1.5),
+                    Theme::dark().with_ui_scale(1.5),
+                    Theme::dark().with_ui_scale(1.5).with_text_scale(1.5),
+                ] {
+                    draw_themed(&mut reader, &theme);
+                    let body = &reader.bodies[&id];
+                    let expected = theme.text(TextRole::Body);
+                    assert!(
+                        (body.style.font_px - expected.size).abs() < 0.01,
+                        "{html:?}: the document style is the theme's body type"
+                    );
+                    let growth = f64::from(expected.size / base.text(TextRole::Body).size);
+                    let height = body.input.caret_rect(&theme, 0).height();
+                    assert!(
+                        (height - base_height * growth).abs() < 0.1,
+                        "{html:?}: grows once with the theme: {height} vs {base_height} x {growth}"
+                    );
+                }
+            }
+        }
+
+        phase sender_details_reflow_rather_than_elide_at_large_text;
+        {
+            let shared = shared();
+            let id = message_from(&shared, "billing@lumen-energy.example");
+            let theme = Theme::dark().with_text_scale(1.5);
             {
                 let mut state = shared.borrow_mut();
                 let message = state.mailbox.messages.get_mut(&id).unwrap();
-                message.body = "A message.".to_owned();
-                message.html_body = html.map(str::to_owned);
+                message.html_body = None;
+                message.from.name = Some("A".to_owned());
+                message.to.clear();
+                message.cc.clear();
             }
-            let mut reader = reader_for(&shared, id, 960.0, 1200.0);
-            draw_themed(&mut reader, &base);
-            let base_height = reader.bodies[&id].input.caret_rect(&base, 0).height();
-            for theme in [
-                Theme::dark().with_text_scale(1.5),
-                Theme::dark().with_ui_scale(1.5),
-                Theme::dark().with_ui_scale(1.5).with_text_scale(1.5),
-            ] {
-                draw_themed(&mut reader, &theme);
-                let body = &reader.bodies[&id];
-                let expected = theme.text(TextRole::Body);
-                assert!(
-                    (body.style.font_px - expected.size).abs() < 0.01,
-                    "{html:?}: the document style is the theme's body type"
-                );
-                let growth = f64::from(expected.size / base.text(TextRole::Body).size);
-                let height = body.input.caret_rect(&theme, 0).height();
-                assert!(
-                    (height - base_height * growth).abs() < 0.1,
-                    "{html:?}: grows once with the theme: {height} vs {base_height} x {growth}"
-                );
-            }
-        }
-    }
+            let mut reader = reader_for(&shared, id, 420.0, 1400.0);
+            let body_top = |reader: &mut MessageReader| {
+                draw_themed(reader, &theme);
+                reader.bodies[&id].input.get_rect().y0
+            };
+            let inline = body_top(&mut reader);
+            shared
+                .borrow_mut()
+                .mailbox
+                .messages
+                .get_mut(&id)
+                .unwrap()
+                .from
+                .name = Some("Alexandria from the community garden planning group".to_owned());
+            let stacked = body_top(&mut reader);
+            let caption = theme.text(TextRole::Caption);
+            let mut text = TextRenderer::new();
+            let caption_h = f64::from(text.measure_style("Ag", None, &caption).1);
+            assert!(
+                (stacked - inline - caption_h).abs() < 0.1,
+                "a crowded date takes its own line: {inline} then {stacked}"
+            );
 
-    #[test]
-    fn sender_details_reflow_rather_than_elide_at_large_text() {
-        let shared = shared();
-        let id = message_from(&shared, "billing@lumen-energy.example");
-        let theme = Theme::dark().with_text_scale(1.5);
+            let recipients = {
+                let mut state = shared.borrow_mut();
+                let message = state.mailbox.messages.get_mut(&id).unwrap();
+                message.to = vec![crate::model::Addr::new(
+                    "The community garden volunteer coordinators",
+                    "volunteers@garden.example",
+                )];
+                message.cc = vec![crate::model::Addr::new(
+                    "The neighbourhood planning and maintenance group",
+                    "planning@garden.example",
+                )];
+                recipients_line(message)
+            };
+            let wrapped = body_top(&mut reader);
+            assert!(
+                wrapped - stacked > 2.0 * caption_h,
+                "every recipient shows, wrapped over lines of their own: {stacked} then {wrapped} for {recipients}"
+            );
+        }
+
+        phase a_message_reads_as_selectable_text_and_html_loads_nothing;
         {
-            let mut state = shared.borrow_mut();
-            let message = state.mailbox.messages.get_mut(&id).unwrap();
-            message.html_body = None;
-            message.from.name = Some("A".to_owned());
-            message.to.clear();
-            message.cc.clear();
+            let shared = shared();
+            let html = message_from(&shared, "hello@fieldnotes.example");
+            let mut reader = reader_for(&shared, html, 960.0, 820.0);
+            assert!(
+                !reader.is_focusable(),
+                "nothing to select before it is drawn"
+            );
+            draw(&mut reader);
+            assert!(
+                reader.html_loaded().is_none(),
+                "without an isolated engine nothing is fetched"
+            );
+            let body = reader
+                .active
+                .and_then(|id| reader.bodies.get(&id))
+                .expect("the message text is a field");
+            assert!(body.input.is_read_only(), "selectable, never editable");
+            assert!(
+                !body.input.value().contains('<'),
+                "the markup is read, not shown: {:?}",
+                body.input.value()
+            );
+            assert!(reader.is_focusable(), "the keys can reach the text");
+            reader.set_focus(true);
+            assert!(
+                reader
+                    .active
+                    .and_then(|id| reader.bodies.get(&id))
+                    .is_some_and(|b| b.input.is_focused())
+            );
         }
-        let mut reader = reader_for(&shared, id, 420.0, 1400.0);
-        let body_top = |reader: &mut MessageReader| {
-            draw_themed(reader, &theme);
-            reader.bodies[&id].input.get_rect().y0
-        };
-        let inline = body_top(&mut reader);
-        shared
-            .borrow_mut()
-            .mailbox
-            .messages
-            .get_mut(&id)
-            .unwrap()
-            .from
-            .name = Some("Alexandria from the community garden planning group".to_owned());
-        let stacked = body_top(&mut reader);
-        let caption = theme.text(TextRole::Caption);
-        let mut text = TextRenderer::new();
-        let caption_h = f64::from(text.measure_style("Ag", None, &caption).1);
-        assert!(
-            (stacked - inline - caption_h).abs() < 0.1,
-            "a crowded date takes its own line: {inline} then {stacked}"
-        );
 
-        let recipients = {
-            let mut state = shared.borrow_mut();
-            let message = state.mailbox.messages.get_mut(&id).unwrap();
-            message.to = vec![crate::model::Addr::new(
-                "The community garden volunteer coordinators",
-                "volunteers@garden.example",
-            )];
-            message.cc = vec![crate::model::Addr::new(
-                "The neighbourhood planning and maintenance group",
-                "planning@garden.example",
-            )];
-            recipients_line(message)
-        };
-        let wrapped = body_top(&mut reader);
-        assert!(
-            wrapped - stacked > 2.0 * caption_h,
-            "every recipient shows, wrapped over lines of their own: {stacked} then {wrapped} for {recipients}"
-        );
+        phase an_attachment_chip_opens_it_and_its_button_saves_it_through_the_portal;
+        {
+            let shared = shared();
+            let id = message_from(&shared, "billing@lumen-energy.example");
+            let mut reader = reader_for(&shared, id, 760.0, 900.0);
+            draw(&mut reader);
+            let (rect, message, index) = *reader
+                .attachment_rects()
+                .first()
+                .expect("the attachment is a chip");
+            assert_eq!(message, id);
+            assert!(
+                reader.press(
+                    rect.center(),
+                    &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+                ),
+                "chip press consumed"
+            );
+            assert!(
+                shared.borrow_mut().take_intents().iter().any(|intent| matches!(
+                    intent,
+                    Intent::OpenAttachment(found, found_index) if *found == id && *found_index == index
+                )),
+                "the chip opens the attachment"
+            );
+            let (save, _, _) = *reader
+                .attachment_saves
+                .first()
+                .expect("a downloaded attachment can be saved");
+            assert!(reader.press(
+                save.center(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+            ));
+            assert!(
+                shared.borrow_mut().take_intents().iter().any(|intent| matches!(
+                    intent,
+                    Intent::SaveAttachment(found, found_index) if *found == id && *found_index == index
+                )),
+                "the reader hands the attachment's address to the app, which owns the portal"
+            );
+        }
+
+        phase a_refetched_message_is_one_message_in_the_conversation;
+        {
+            let shared = MailState::shared(MailState::new_live(
+                crate::account::AccountStore::new(),
+                crate::avatars::Avatars::new(),
+            ));
+            let raw = b"From: Maya <maya@x.example>\r\nTo: sam@rivera.example\r\n\
+    Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
+            {
+                let mut st = shared.borrow_mut();
+                let m = crate::transport::parse_eml(raw, 100, Folder::Inbox).unwrap();
+                st.selected = Some(m.id);
+                st.mailbox.insert(m);
+                st.mailbox
+                    .insert(crate::transport::parse_eml(raw, 200, Folder::Inbox).unwrap());
+                st.mailbox
+                    .insert(crate::transport::parse_eml(raw, 300, Folder::Inbox).unwrap());
+            }
+            assert_eq!(shared.borrow().mailbox.count(Folder::Inbox), 1);
+            assert_eq!(shared.borrow().selected_thread_messages().len(), 1);
+        }
+
+        phase the_reader_shows_the_conversation_the_list_shows_and_opens_earlier_messages;
+        {
+            let shared = MailState::shared(MailState::new_live(
+                crate::account::AccountStore::new(),
+                crate::avatars::Avatars::new(),
+            ));
+            let parse = |bytes: Vec<u8>, at: i64| {
+                let mut message = crate::transport::parse_eml(&bytes, at, Folder::Inbox).unwrap();
+                message.read = true;
+                message
+            };
+            // Two conversations that only share a subject, and a reply in the
+            // first one.
+            let first = parse(raw("a@x", "Status update", None, "First status."), 100);
+            let other = parse(raw("b@x", "Status update", None, "Unrelated status."), 200);
+            let reply = parse(
+                raw(
+                    "c@x",
+                    "Re: Status update",
+                    Some("a@x"),
+                    "Reply to the first.",
+                ),
+                300,
+            );
+            let (first_id, reply_id) = (first.id, reply.id);
+            {
+                let mut st = shared.borrow_mut();
+                st.mailbox.insert(first);
+                st.mailbox.insert(other);
+                st.mailbox.insert(reply);
+                st.selected = Some(reply_id);
+            }
+            assert_eq!(shared.borrow().list_rows().len(), 2, "two conversations");
+            let thread: Vec<MessageId> = shared
+                .borrow()
+                .selected_thread_messages()
+                .iter()
+                .map(|message| message.id)
+                .collect();
+            assert_eq!(
+                thread,
+                [first_id, reply_id],
+                "a shared subject is not a conversation"
+            );
+
+            let mut reader = MessageReader::new(shared);
+            reader.rect = Rect::new(0.0, 0.0, 900.0, 800.0);
+            draw(&mut reader);
+            assert!(reader.bodies.contains_key(&reply_id), "the newest is open");
+            assert!(
+                !reader.bodies.contains_key(&first_id),
+                "a read earlier message waits closed"
+            );
+            let header = reader
+                .headers
+                .iter()
+                .find(|(_, id)| *id == first_id)
+                .map(|(rect, _)| *rect)
+                .expect("the earlier message's header can be clicked");
+            assert!(reader.press(
+                header.center(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+            ));
+            draw(&mut reader);
+            assert!(
+                reader.bodies.contains_key(&first_id),
+                "a click opens the earlier message"
+            );
+            let header = reader
+                .headers
+                .iter()
+                .find(|(_, id)| *id == first_id)
+                .map(|(rect, _)| *rect)
+                .expect("an open earlier message keeps its header");
+            assert!(reader.press(
+                header.center(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+            ));
+            assert!(
+                !reader.expanded.contains(&first_id),
+                "a second click closes it"
+            );
+        }
+
+        phase a_closing_quote_folds_behind_a_button;
+        {
+            let body =
+                "Sounds good, see you then.\n\nOn Jun 30, Maya wrote:\n> Lunch at noon?\n> \n> Maya\n";
+            let (shown, quote) = split_trailing_quote(body);
+            assert!(quote);
+            assert_eq!(shown, "Sounds good, see you then.");
+            assert_eq!(
+                split_trailing_quote("> all of it is quote\n"),
+                ("> all of it is quote\n", false),
+                "a message that is only a quote keeps it"
+            );
+            assert!(!split_trailing_quote("No quote.\n").1);
+
+            let shared = MailState::shared(MailState::new_live(
+                crate::account::AccountStore::new(),
+                crate::avatars::Avatars::new(),
+            ));
+            let mut message = crate::transport::parse_eml(
+                format!("From: a@x\r\nSubject: S\r\nMessage-ID: <q@x>\r\n\r\n{body}").as_bytes(),
+                100,
+                Folder::Inbox,
+            )
+            .unwrap();
+            message.read = true;
+            let id = message.id;
+            {
+                let mut st = shared.borrow_mut();
+                st.mailbox.insert(message);
+                st.selected = Some(id);
+            }
+            let mut reader = MessageReader::new(shared);
+            reader.rect = Rect::new(0.0, 0.0, 900.0, 800.0);
+            draw(&mut reader);
+            let text = |reader: &MessageReader| {
+                reader
+                    .bodies
+                    .get(&id)
+                    .map(|body| body.input.value().to_owned())
+                    .unwrap_or_default()
+            };
+            assert!(!text(&reader).contains("Lunch at noon"), "the quote waits");
+            let (button, _) = *reader.quote_buttons.first().expect("a button unfolds it");
+            assert!(reader.press(
+                button.center(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+            ));
+            draw(&mut reader);
+            assert!(
+                text(&reader).contains("Lunch at noon"),
+                "and shows on a click"
+            );
+        }
+
+        phase unread_earlier_messages_open_with_the_conversation;
+        {
+            let shared = MailState::shared(MailState::new_live(
+                crate::account::AccountStore::new(),
+                crate::avatars::Avatars::new(),
+            ));
+            let first = crate::transport::parse_eml(
+                &raw("a@x", "Plan", None, "Unread start."),
+                100,
+                Folder::Inbox,
+            )
+            .unwrap();
+            let reply = crate::transport::parse_eml(
+                &raw("c@x", "Re: Plan", Some("a@x"), "Latest."),
+                200,
+                Folder::Inbox,
+            )
+            .unwrap();
+            let (first_id, reply_id) = (first.id, reply.id);
+            {
+                let mut st = shared.borrow_mut();
+                st.mailbox.insert(first);
+                st.mailbox.insert(reply);
+                st.selected = Some(reply_id);
+            }
+            let mut reader = MessageReader::new(shared);
+            reader.rect = Rect::new(0.0, 0.0, 900.0, 800.0);
+            draw(&mut reader);
+            assert!(
+                reader.bodies.contains_key(&first_id),
+                "unread mail above the newest is shown open"
+            );
+        }
     }
 
     fn message_from(shared: &Shared, email: &str) -> MessageId {
@@ -1826,133 +2101,373 @@ mod tests {
             .id
     }
 
-    #[test]
-    fn an_html_body_is_as_tall_as_its_document_and_scrolls_with_the_reader() {
-        use ui::webview::WebViewEvent;
-        let shared = shared();
-        let id = message_from(&shared, "hello@fieldnotes.example");
-        let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        let engine = html_engine();
-        engine.set_measures_document(true);
-        reader.set_html_engine(engine.clone());
-        draw(&mut reader);
-        assert!(
-            engine
-                .commands()
-                .contains(&WebViewCommand::ReportDocumentSize(true)),
-            "the reader asks how tall the document is"
-        );
-        assert!(
-            reader.html.rect().is_none(),
-            "not shown before its height is known"
-        );
+    tilo_test_env::scenario! {
+        /// The reader over an HTML body, each case with a test engine of its own.
+        fn an_html_body_is_shown_sealed_sized_found_and_followed;
 
-        let document = |height: f64, scroll_y: f64| WebViewEvent::DocumentSize {
-            width: 912.0,
-            height,
-            scroll_y,
-        };
-        engine.push_event(document(300.0, 0.0));
-        draw(&mut reader);
-        draw(&mut reader);
-        let short = reader.html.rect().expect("shown once measured");
-        assert!((short.height() - 300.0).abs() < 0.01, "{short:?}");
-        assert!(
-            short.y1 < reader.rect.y1,
-            "the conversation goes on below a short body"
-        );
-        let wheel_down = ui::synthetic_input::mouse_wheel(0.0, -3.0);
-        reader.pointer = short.center();
-        assert!(
-            !reader.wheel_scrolls_body(&wheel_down),
-            "a body that fits never scrolls inside"
-        );
-
-        engine.push_event(document(5000.0, 0.0));
-        draw(&mut reader);
-        draw(&mut reader);
-        let tall = reader.html.rect().expect("still shown");
-        assert!(
-            (tall.height() - 5000.0).abs() < 0.01,
-            "a tall body is as tall as its document: {tall:?}"
-        );
-        assert!(
-            reader.scroll_max > 0.0,
-            "the reader scrolls it with the header"
-        );
-        reader.pointer = tall.center();
-        assert!(
-            !reader.wheel_scrolls_body(&wheel_down),
-            "the reader scrolls a tall body too"
-        );
-        reader.region.set_offset(Vec2::new(0.0, reader.scroll_max));
-        let wheel_up = ui::synthetic_input::mouse_wheel(0.0, 3.0);
-        assert!(
-            !reader.wheel_scrolls_body(&wheel_down) && !reader.wheel_scrolls_body(&wheel_up),
-            "and never inside it: one scroll surface"
-        );
-    }
-
-    #[test]
-    fn an_opened_html_mail_is_never_presented_blank() {
-        use ui::webview::WebViewEvent;
-        let shared = shared();
-        let id = message_from(&shared, "hello@fieldnotes.example");
-        let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        let engine = html_engine();
-        engine.set_measures_document(true);
-        reader.set_html_engine(engine.clone());
-        let present = |reader: &mut MessageReader, when: &str| {
-            draw(reader);
+        phase an_html_body_is_as_tall_as_its_document_and_scrolls_with_the_reader;
+        {
+            use ui::webview::WebViewEvent;
+            let shared = shared();
+            let id = message_from(&shared, "hello@fieldnotes.example");
+            let mut reader = reader_for(&shared, id, 960.0, 820.0);
+            let engine = html_engine();
+            engine.set_measures_document(true);
+            reader.set_html_engine(engine.clone());
+            draw(&mut reader);
             assert!(
-                reader.html.rect().is_none() || reader.html.draws_page(),
-                "{when}: the body is drawn without a frame of the page at its size"
+                engine
+                    .commands()
+                    .contains(&WebViewCommand::ReportDocumentSize(true)),
+                "the reader asks how tall the document is"
             );
-        };
-        present(&mut reader, "opened");
-        engine.hold_frames(true);
-        engine.push_event(WebViewEvent::DocumentSize {
-            width: 912.0,
-            height: 1400.0,
-            scroll_y: 0.0,
-        });
-        for _ in 0..4 {
-            present(&mut reader, "measured, the engine still painting");
-        }
-        assert!(
-            reader.html.rect().is_none() && reader.html.pending(),
-            "hidden, and still on its way, until the engine paints it"
-        );
-        // The engine paints the grown view before the page has drawn there.
-        engine.paint_before_page();
-        present(&mut reader, "grown, painted before the page");
-        assert!(
-            reader.html.rect().is_none() && reader.html.pending(),
-            "a frame of the right size without the page is not the page"
-        );
-        engine.hold_frames(false);
-        present(&mut reader, "painted");
-        let shown = reader.html.rect().expect("shown with its first frame");
-        assert!((shown.height() - 1400.0).abs() < 0.01, "{shown:?}");
-        assert!(!reader.html.pending(), "on screen");
-        // Ready for the screen, and then the engine delivers a frame it
-        // painted for an earlier size, or a blank one, before the draw.
-        engine.paint_stale(912, 600);
-        present(&mut reader, "a late frame for another size");
-        assert!(reader.html.rect().is_some(), "the message stays on screen");
-        engine.paint_before_page();
-        present(&mut reader, "a late blank frame");
-        assert!(reader.html.rect().is_some(), "the message stays on screen");
+            assert!(
+                reader.html.rect().is_none(),
+                "not shown before its height is known"
+            );
 
-        engine.hold_frames(true);
-        engine.push_event(WebViewEvent::DocumentSize {
-            width: 912.0,
-            height: 1600.0,
-            scroll_y: 0.0,
-        });
-        draw(&mut reader);
-        draw(&mut reader);
-        assert!(reader.html.rect().is_some(), "the message stays on screen");
+            let document = |height: f64, scroll_y: f64| WebViewEvent::DocumentSize {
+                width: 912.0,
+                height,
+                scroll_y,
+            };
+            engine.push_event(document(300.0, 0.0));
+            draw(&mut reader);
+            draw(&mut reader);
+            let short = reader.html.rect().expect("shown once measured");
+            assert!((short.height() - 300.0).abs() < 0.01, "{short:?}");
+            assert!(
+                short.y1 < reader.rect.y1,
+                "the conversation goes on below a short body"
+            );
+            let wheel_down = ui::synthetic_input::mouse_wheel(0.0, -3.0);
+            reader.pointer = short.center();
+            assert!(
+                !reader.wheel_scrolls_body(&wheel_down),
+                "a body that fits never scrolls inside"
+            );
+
+            engine.push_event(document(5000.0, 0.0));
+            draw(&mut reader);
+            draw(&mut reader);
+            let tall = reader.html.rect().expect("still shown");
+            assert!(
+                (tall.height() - 5000.0).abs() < 0.01,
+                "a tall body is as tall as its document: {tall:?}"
+            );
+            assert!(
+                reader.scroll_max > 0.0,
+                "the reader scrolls it with the header"
+            );
+            reader.pointer = tall.center();
+            assert!(
+                !reader.wheel_scrolls_body(&wheel_down),
+                "the reader scrolls a tall body too"
+            );
+            reader.region.set_offset(Vec2::new(0.0, reader.scroll_max));
+            let wheel_up = ui::synthetic_input::mouse_wheel(0.0, 3.0);
+            assert!(
+                !reader.wheel_scrolls_body(&wheel_down) && !reader.wheel_scrolls_body(&wheel_up),
+                "and never inside it: one scroll surface"
+            );
+        }
+
+        phase an_opened_html_mail_is_never_presented_blank;
+        {
+            use ui::webview::WebViewEvent;
+            let shared = shared();
+            let id = message_from(&shared, "hello@fieldnotes.example");
+            let mut reader = reader_for(&shared, id, 960.0, 820.0);
+            let engine = html_engine();
+            engine.set_measures_document(true);
+            reader.set_html_engine(engine.clone());
+            let present = |reader: &mut MessageReader, when: &str| {
+                draw(reader);
+                assert!(
+                    reader.html.rect().is_none() || reader.html.draws_page(),
+                    "{when}: the body is drawn without a frame of the page at its size"
+                );
+            };
+            present(&mut reader, "opened");
+            engine.hold_frames(true);
+            engine.push_event(WebViewEvent::DocumentSize {
+                width: 912.0,
+                height: 1400.0,
+                scroll_y: 0.0,
+            });
+            for _ in 0..4 {
+                present(&mut reader, "measured, the engine still painting");
+            }
+            assert!(
+                reader.html.rect().is_none() && reader.html.pending(),
+                "hidden, and still on its way, until the engine paints it"
+            );
+            // The engine paints the grown view before the page has drawn there.
+            engine.paint_before_page();
+            present(&mut reader, "grown, painted before the page");
+            assert!(
+                reader.html.rect().is_none() && reader.html.pending(),
+                "a frame of the right size without the page is not the page"
+            );
+            engine.hold_frames(false);
+            present(&mut reader, "painted");
+            let shown = reader.html.rect().expect("shown with its first frame");
+            assert!((shown.height() - 1400.0).abs() < 0.01, "{shown:?}");
+            assert!(!reader.html.pending(), "on screen");
+            // Ready for the screen, and then the engine delivers a frame it
+            // painted for an earlier size, or a blank one, before the draw.
+            engine.paint_stale(912, 600);
+            present(&mut reader, "a late frame for another size");
+            assert!(reader.html.rect().is_some(), "the message stays on screen");
+            engine.paint_before_page();
+            present(&mut reader, "a late blank frame");
+            assert!(reader.html.rect().is_some(), "the message stays on screen");
+
+            engine.hold_frames(true);
+            engine.push_event(WebViewEvent::DocumentSize {
+                width: 912.0,
+                height: 1600.0,
+                scroll_y: 0.0,
+            });
+            draw(&mut reader);
+            draw(&mut reader);
+            assert!(reader.html.rect().is_some(), "the message stays on screen");
+        }
+
+        phase html_mail_renders_sealed_with_remote_content_blocked_until_allowed;
+        {
+            let shared = shared();
+            let id = message_from(&shared, "hello@fieldnotes.example");
+            let mut reader = reader_for(&shared, id, 960.0, 820.0);
+            let engine = html_engine();
+            reader.set_html_engine(engine.clone());
+            draw(&mut reader);
+            assert_eq!(
+                loaded(&reader),
+                Some((id, false)),
+                "the HTML body loads with remote content blocked"
+            );
+            let commands = engine.commands();
+            let rules = commands
+                .iter()
+                .position(|c| matches!(c, WebViewCommand::SetNativeFilterRules { rules, enabled: Some(true) } if rules.lines().any(|line| line == "|https://")))
+                .expect("the request filter blocks the web");
+            let navigate = commands
+                .iter()
+                .position(|c| matches!(c, WebViewCommand::Navigate(_)))
+                .expect("the body loads");
+            assert!(rules < navigate, "the rules come before the document");
+            let document = shown_document(&engine);
+            assert!(!document.contains("track.fieldnotes.example"), "{document}");
+            assert!(document.contains("img-src data:;"));
+
+            let button = reader.remote_button().expect("the Load images button");
+            assert!(reader.press(
+                button.center(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+            ));
+            draw(&mut reader);
+            assert_eq!(loaded(&reader), Some((id, true)));
+            assert!(shown_document(&engine).contains("track.fieldnotes.example"));
+            assert!(
+                engine.commands().iter().rev().any(|c| matches!(c, WebViewCommand::SetNativeFilterRules { rules, .. } if !rules.lines().any(|line| line == "|https://"))),
+                "allowed, images load; the rules still refuse everything else"
+            );
+            assert!(
+                !shared
+                    .borrow()
+                    .remote_senders
+                    .contains("hello@fieldnotes.example"),
+                "one message is not its sender"
+            );
+
+            let plain = message_from(&shared, "lena@fischer.example");
+            let mut doc = crate::resource::TestMail::doc();
+            shared
+                .borrow_mut()
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), plain);
+            draw(&mut reader);
+            assert!(loaded(&reader).is_none(), "plain text skips the webview");
+            assert!(reader.remote_button().is_none());
+            shared
+                .borrow_mut()
+                .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
+            draw(&mut reader);
+            assert_eq!(
+                loaded(&reader),
+                Some((id, true)),
+                "the message stays allowed while the window is open"
+            );
+
+            shared.borrow_mut().remote_messages.clear();
+            draw(&mut reader);
+            assert_eq!(loaded(&reader), Some((id, false)));
+            let always = reader.remote_buttons.always.expect("the always button");
+            assert!(reader.press(
+                always.center(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+            ));
+            assert!(
+                shared
+                    .borrow()
+                    .remote_senders
+                    .contains("hello@fieldnotes.example"),
+                "the permission is the person's preference, not the reader's memory"
+            );
+            draw(&mut reader);
+            assert_eq!(loaded(&reader), Some((id, true)));
+            let stop = reader.remote_buttons.stop.expect("a way to stop it again");
+            assert!(reader.press(
+                stop.center(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+            ));
+            draw(&mut reader);
+            assert_eq!(loaded(&reader), Some((id, false)));
+        }
+
+        phase a_followed_link_opens_in_the_browser_and_its_address_shows_first;
+        {
+            use ui::webview::WebViewEvent;
+            let shared = shared();
+            let id = message_from(&shared, "hello@fieldnotes.example");
+            let mut reader = reader_for(&shared, id, 960.0, 820.0);
+            let engine = html_engine();
+            reader.set_html_engine(engine.clone());
+            draw(&mut reader);
+            let rect = reader.html.rect().expect("the body is shown");
+            reader.pointer = rect.center();
+            engine.push_event(WebViewEvent::LinkHovered(
+                "https://fieldnotes.example/read".into(),
+            ));
+            draw(&mut reader);
+            assert_eq!(
+                reader.tooltip().as_deref(),
+                Some("https://fieldnotes.example/read"),
+                "the pointer over a link shows where it really goes"
+            );
+            assert!(
+                reader.open_menu(rect.center()),
+                "a long press opens the menu"
+            );
+            let menu = shared.borrow_mut().take_intents();
+            assert!(
+                menu.iter().any(|intent| matches!(
+                    intent,
+                    Intent::ReaderMenu(found, _, choices) if *found == id
+                        && choices.first() == Some(&ReaderChoice::OpenLink("https://fieldnotes.example/read".into()))
+                        && choices.contains(&ReaderChoice::CopyLink("https://fieldnotes.example/read".into()))
+                )),
+                "{menu:?}"
+            );
+            // The engine hands back a followed link; the reader opens nothing
+            // but web and mail addresses, and only through the app.
+            engine.push_new_tab_request("https://fieldnotes.example/read");
+            engine.push_new_tab_request("file:///etc/passwd");
+            draw(&mut reader);
+            let intents = shared.borrow_mut().take_intents();
+            let opened: Vec<&String> = intents
+                .iter()
+                .filter_map(|intent| match intent {
+                    Intent::OpenLink(url) => Some(url),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(opened, ["https://fieldnotes.example/read"]);
+            engine.push_event(WebViewEvent::UriChanged(
+                "https://elsewhere.example/".into(),
+            ));
+            draw(&mut reader);
+            assert!(
+                !shared
+                    .borrow_mut()
+                    .take_intents()
+                    .iter()
+                    .any(|intent| matches!(intent, Intent::OpenLink(_))),
+                "a navigation the person did not ask for opens nothing"
+            );
+        }
+
+        phase find_and_copy_reach_the_html_body;
+        {
+            use ui::webview::WebViewEvent;
+            let shared = shared();
+            let id = message_from(&shared, "hello@fieldnotes.example");
+            let mut reader = reader_for(&shared, id, 960.0, 820.0);
+            let engine = html_engine();
+            reader.set_html_engine(engine.clone());
+            draw(&mut reader);
+            let mut bar = ui::widget::FindBar::new();
+            bar.set_query("garden");
+            bar.drive(&mut reader);
+            let find = engine
+                .commands()
+                .iter()
+                .find_map(|c| match c {
+                    WebViewCommand::Find {
+                        id,
+                        text,
+                        next: false,
+                        ..
+                    } => Some((*id, text.clone())),
+                    _ => None,
+                })
+                .expect("the engine finds in the page");
+            assert_eq!(find.1, "garden");
+            engine.push_event(WebViewEvent::FindResult {
+                id: find.0,
+                count: 3,
+                active: 1,
+                final_update: true,
+            });
+            draw(&mut reader);
+            bar.drive(&mut reader);
+            assert_eq!(
+                bar.position(),
+                Some((1, 3)),
+                "the bar counts the page's matches"
+            );
+            bar.next();
+            bar.drive(&mut reader);
+            assert!(
+                engine.commands().iter().any(|c| matches!(
+                    c,
+                    WebViewCommand::Find {
+                        next: true,
+                        forward: true,
+                        ..
+                    }
+                )),
+                "the engine steps"
+            );
+
+            engine.set_selection("Seed swap on Saturday");
+            reader.html.copy();
+            assert!(
+                engine
+                    .commands()
+                    .iter()
+                    .any(|c| matches!(c, WebViewCommand::CopySelection { .. })),
+                "a copy reads the page's selection for the system clipboard"
+            );
+        }
+
+        phase find_is_the_messages_once_the_reader_has_the_keyboard;
+        {
+            let shared = shared();
+            let id = message_from(&shared, "hello@fieldnotes.example");
+            let mut reader = reader_for(&shared, id, 960.0, 820.0);
+            reader.set_html_engine(html_engine());
+            draw(&mut reader);
+            assert!(
+                ui::widget::with_findable(&mut reader, &mut |_| ()).is_none(),
+                "the list has the keyboard: the folder is searched"
+            );
+            reader.set_focus(true);
+            assert!(
+                ui::widget::with_findable(&mut reader, &mut |_| ()).is_some(),
+                "the message has the keyboard: it is found in"
+            );
+        }
     }
 
     #[test]
@@ -2025,339 +2540,6 @@ mod tests {
         .expect("utf-8")
     }
 
-    #[test]
-    fn html_mail_renders_sealed_with_remote_content_blocked_until_allowed() {
-        let shared = shared();
-        let id = message_from(&shared, "hello@fieldnotes.example");
-        let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        let engine = html_engine();
-        reader.set_html_engine(engine.clone());
-        draw(&mut reader);
-        assert_eq!(
-            loaded(&reader),
-            Some((id, false)),
-            "the HTML body loads with remote content blocked"
-        );
-        let commands = engine.commands();
-        let rules = commands
-            .iter()
-            .position(|c| matches!(c, WebViewCommand::SetNativeFilterRules { rules, enabled: Some(true) } if rules.lines().any(|line| line == "|https://")))
-            .expect("the request filter blocks the web");
-        let navigate = commands
-            .iter()
-            .position(|c| matches!(c, WebViewCommand::Navigate(_)))
-            .expect("the body loads");
-        assert!(rules < navigate, "the rules come before the document");
-        let document = shown_document(&engine);
-        assert!(!document.contains("track.fieldnotes.example"), "{document}");
-        assert!(document.contains("img-src data:;"));
-
-        let button = reader.remote_button().expect("the Load images button");
-        assert!(reader.press(
-            button.center(),
-            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
-        ));
-        draw(&mut reader);
-        assert_eq!(loaded(&reader), Some((id, true)));
-        assert!(shown_document(&engine).contains("track.fieldnotes.example"));
-        assert!(
-            engine.commands().iter().rev().any(|c| matches!(c, WebViewCommand::SetNativeFilterRules { rules, .. } if !rules.lines().any(|line| line == "|https://"))),
-            "allowed, images load; the rules still refuse everything else"
-        );
-        assert!(
-            !shared
-                .borrow()
-                .remote_senders
-                .contains("hello@fieldnotes.example"),
-            "one message is not its sender"
-        );
-
-        let plain = message_from(&shared, "lena@fischer.example");
-        let mut doc = crate::resource::TestMail::doc();
-        shared
-            .borrow_mut()
-            .open_message(&mut ui::widget::Edits::lend(&mut doc), plain);
-        draw(&mut reader);
-        assert!(loaded(&reader).is_none(), "plain text skips the webview");
-        assert!(reader.remote_button().is_none());
-        shared
-            .borrow_mut()
-            .open_message(&mut ui::widget::Edits::lend(&mut doc), id);
-        draw(&mut reader);
-        assert_eq!(
-            loaded(&reader),
-            Some((id, true)),
-            "the message stays allowed while the window is open"
-        );
-
-        shared.borrow_mut().remote_messages.clear();
-        draw(&mut reader);
-        assert_eq!(loaded(&reader), Some((id, false)));
-        let always = reader.remote_buttons.always.expect("the always button");
-        assert!(reader.press(
-            always.center(),
-            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
-        ));
-        assert!(
-            shared
-                .borrow()
-                .remote_senders
-                .contains("hello@fieldnotes.example"),
-            "the permission is the person's preference, not the reader's memory"
-        );
-        draw(&mut reader);
-        assert_eq!(loaded(&reader), Some((id, true)));
-        let stop = reader.remote_buttons.stop.expect("a way to stop it again");
-        assert!(reader.press(
-            stop.center(),
-            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
-        ));
-        draw(&mut reader);
-        assert_eq!(loaded(&reader), Some((id, false)));
-    }
-
-    #[test]
-    fn a_followed_link_opens_in_the_browser_and_its_address_shows_first() {
-        use ui::webview::WebViewEvent;
-        let shared = shared();
-        let id = message_from(&shared, "hello@fieldnotes.example");
-        let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        let engine = html_engine();
-        reader.set_html_engine(engine.clone());
-        draw(&mut reader);
-        let rect = reader.html.rect().expect("the body is shown");
-        reader.pointer = rect.center();
-        engine.push_event(WebViewEvent::LinkHovered(
-            "https://fieldnotes.example/read".into(),
-        ));
-        draw(&mut reader);
-        assert_eq!(
-            reader.tooltip().as_deref(),
-            Some("https://fieldnotes.example/read"),
-            "the pointer over a link shows where it really goes"
-        );
-        assert!(
-            reader.open_menu(rect.center()),
-            "a long press opens the menu"
-        );
-        let menu = shared.borrow_mut().take_intents();
-        assert!(
-            menu.iter().any(|intent| matches!(
-                intent,
-                Intent::ReaderMenu(found, _, choices) if *found == id
-                    && choices.first() == Some(&ReaderChoice::OpenLink("https://fieldnotes.example/read".into()))
-                    && choices.contains(&ReaderChoice::CopyLink("https://fieldnotes.example/read".into()))
-            )),
-            "{menu:?}"
-        );
-        // The engine hands back a followed link; the reader opens nothing
-        // but web and mail addresses, and only through the app.
-        engine.push_new_tab_request("https://fieldnotes.example/read");
-        engine.push_new_tab_request("file:///etc/passwd");
-        draw(&mut reader);
-        let intents = shared.borrow_mut().take_intents();
-        let opened: Vec<&String> = intents
-            .iter()
-            .filter_map(|intent| match intent {
-                Intent::OpenLink(url) => Some(url),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(opened, ["https://fieldnotes.example/read"]);
-        engine.push_event(WebViewEvent::UriChanged(
-            "https://elsewhere.example/".into(),
-        ));
-        draw(&mut reader);
-        assert!(
-            !shared
-                .borrow_mut()
-                .take_intents()
-                .iter()
-                .any(|intent| matches!(intent, Intent::OpenLink(_))),
-            "a navigation the person did not ask for opens nothing"
-        );
-    }
-
-    #[test]
-    fn find_and_copy_reach_the_html_body() {
-        use ui::webview::WebViewEvent;
-        let shared = shared();
-        let id = message_from(&shared, "hello@fieldnotes.example");
-        let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        let engine = html_engine();
-        reader.set_html_engine(engine.clone());
-        draw(&mut reader);
-        let mut bar = ui::widget::FindBar::new();
-        bar.set_query("garden");
-        bar.drive(&mut reader);
-        let find = engine
-            .commands()
-            .iter()
-            .find_map(|c| match c {
-                WebViewCommand::Find {
-                    id,
-                    text,
-                    next: false,
-                    ..
-                } => Some((*id, text.clone())),
-                _ => None,
-            })
-            .expect("the engine finds in the page");
-        assert_eq!(find.1, "garden");
-        engine.push_event(WebViewEvent::FindResult {
-            id: find.0,
-            count: 3,
-            active: 1,
-            final_update: true,
-        });
-        draw(&mut reader);
-        bar.drive(&mut reader);
-        assert_eq!(
-            bar.position(),
-            Some((1, 3)),
-            "the bar counts the page's matches"
-        );
-        bar.next();
-        bar.drive(&mut reader);
-        assert!(
-            engine.commands().iter().any(|c| matches!(
-                c,
-                WebViewCommand::Find {
-                    next: true,
-                    forward: true,
-                    ..
-                }
-            )),
-            "the engine steps"
-        );
-
-        engine.set_selection("Seed swap on Saturday");
-        reader.html.copy();
-        assert!(
-            engine
-                .commands()
-                .iter()
-                .any(|c| matches!(c, WebViewCommand::CopySelection { .. })),
-            "a copy reads the page's selection for the system clipboard"
-        );
-    }
-
-    #[test]
-    fn find_is_the_messages_once_the_reader_has_the_keyboard() {
-        let shared = shared();
-        let id = message_from(&shared, "hello@fieldnotes.example");
-        let mut reader = reader_for(&shared, id, 960.0, 820.0);
-        reader.set_html_engine(html_engine());
-        draw(&mut reader);
-        assert!(
-            ui::widget::with_findable(&mut reader, &mut |_| ()).is_none(),
-            "the list has the keyboard: the folder is searched"
-        );
-        reader.set_focus(true);
-        assert!(
-            ui::widget::with_findable(&mut reader, &mut |_| ()).is_some(),
-            "the message has the keyboard: it is found in"
-        );
-    }
-
-    #[test]
-    fn a_message_reads_as_selectable_text_and_html_loads_nothing() {
-        let shared = shared();
-        let html = message_from(&shared, "hello@fieldnotes.example");
-        let mut reader = reader_for(&shared, html, 960.0, 820.0);
-        assert!(
-            !reader.is_focusable(),
-            "nothing to select before it is drawn"
-        );
-        draw(&mut reader);
-        assert!(
-            reader.html_loaded().is_none(),
-            "without an isolated engine nothing is fetched"
-        );
-        let body = reader
-            .active
-            .and_then(|id| reader.bodies.get(&id))
-            .expect("the message text is a field");
-        assert!(body.input.is_read_only(), "selectable, never editable");
-        assert!(
-            !body.input.value().contains('<'),
-            "the markup is read, not shown: {:?}",
-            body.input.value()
-        );
-        assert!(reader.is_focusable(), "the keys can reach the text");
-        reader.set_focus(true);
-        assert!(
-            reader
-                .active
-                .and_then(|id| reader.bodies.get(&id))
-                .is_some_and(|b| b.input.is_focused())
-        );
-    }
-
-    #[test]
-    fn an_attachment_chip_opens_it_and_its_button_saves_it_through_the_portal() {
-        let shared = shared();
-        let id = message_from(&shared, "billing@lumen-energy.example");
-        let mut reader = reader_for(&shared, id, 760.0, 900.0);
-        draw(&mut reader);
-        let (rect, message, index) = *reader
-            .attachment_rects()
-            .first()
-            .expect("the attachment is a chip");
-        assert_eq!(message, id);
-        assert!(
-            reader.press(
-                rect.center(),
-                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
-            ),
-            "chip press consumed"
-        );
-        assert!(
-            shared.borrow_mut().take_intents().iter().any(|intent| matches!(
-                intent,
-                Intent::OpenAttachment(found, found_index) if *found == id && *found_index == index
-            )),
-            "the chip opens the attachment"
-        );
-        let (save, _, _) = *reader
-            .attachment_saves
-            .first()
-            .expect("a downloaded attachment can be saved");
-        assert!(reader.press(
-            save.center(),
-            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
-        ));
-        assert!(
-            shared.borrow_mut().take_intents().iter().any(|intent| matches!(
-                intent,
-                Intent::SaveAttachment(found, found_index) if *found == id && *found_index == index
-            )),
-            "the reader hands the attachment's address to the app, which owns the portal"
-        );
-    }
-
-    #[test]
-    fn a_refetched_message_is_one_message_in_the_conversation() {
-        let shared = MailState::shared(MailState::new_live(
-            crate::account::AccountStore::new(),
-            crate::avatars::Avatars::new(),
-        ));
-        let raw = b"From: Maya <maya@x.example>\r\nTo: sam@rivera.example\r\n\
-Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
-        {
-            let mut st = shared.borrow_mut();
-            let m = crate::transport::parse_eml(raw, 100, Folder::Inbox).unwrap();
-            st.selected = Some(m.id);
-            st.mailbox.insert(m);
-            st.mailbox
-                .insert(crate::transport::parse_eml(raw, 200, Folder::Inbox).unwrap());
-            st.mailbox
-                .insert(crate::transport::parse_eml(raw, 300, Folder::Inbox).unwrap());
-        }
-        assert_eq!(shared.borrow().mailbox.count(Folder::Inbox), 1);
-        assert_eq!(shared.borrow().selected_thread_messages().len(), 1);
-    }
-
     fn raw(id: &str, subject: &str, reply_to: Option<&str>, body: &str) -> Vec<u8> {
         let reply = reply_to.map_or_else(String::new, |parent| {
             format!("In-Reply-To: <{parent}>\r\nReferences: <{parent}>\r\n")
@@ -2367,177 +2549,5 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
 Message-ID: <{id}>\r\n{reply}\r\n{body}\r\n"
         )
         .into_bytes()
-    }
-
-    #[test]
-    fn the_reader_shows_the_conversation_the_list_shows_and_opens_earlier_messages() {
-        let shared = MailState::shared(MailState::new_live(
-            crate::account::AccountStore::new(),
-            crate::avatars::Avatars::new(),
-        ));
-        let parse = |bytes: Vec<u8>, at: i64| {
-            let mut message = crate::transport::parse_eml(&bytes, at, Folder::Inbox).unwrap();
-            message.read = true;
-            message
-        };
-        // Two conversations that only share a subject, and a reply in the
-        // first one.
-        let first = parse(raw("a@x", "Status update", None, "First status."), 100);
-        let other = parse(raw("b@x", "Status update", None, "Unrelated status."), 200);
-        let reply = parse(
-            raw(
-                "c@x",
-                "Re: Status update",
-                Some("a@x"),
-                "Reply to the first.",
-            ),
-            300,
-        );
-        let (first_id, reply_id) = (first.id, reply.id);
-        {
-            let mut st = shared.borrow_mut();
-            st.mailbox.insert(first);
-            st.mailbox.insert(other);
-            st.mailbox.insert(reply);
-            st.selected = Some(reply_id);
-        }
-        assert_eq!(shared.borrow().list_rows().len(), 2, "two conversations");
-        let thread: Vec<MessageId> = shared
-            .borrow()
-            .selected_thread_messages()
-            .iter()
-            .map(|message| message.id)
-            .collect();
-        assert_eq!(
-            thread,
-            [first_id, reply_id],
-            "a shared subject is not a conversation"
-        );
-
-        let mut reader = MessageReader::new(shared);
-        reader.rect = Rect::new(0.0, 0.0, 900.0, 800.0);
-        draw(&mut reader);
-        assert!(reader.bodies.contains_key(&reply_id), "the newest is open");
-        assert!(
-            !reader.bodies.contains_key(&first_id),
-            "a read earlier message waits closed"
-        );
-        let header = reader
-            .headers
-            .iter()
-            .find(|(_, id)| *id == first_id)
-            .map(|(rect, _)| *rect)
-            .expect("the earlier message's header can be clicked");
-        assert!(reader.press(
-            header.center(),
-            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
-        ));
-        draw(&mut reader);
-        assert!(
-            reader.bodies.contains_key(&first_id),
-            "a click opens the earlier message"
-        );
-        let header = reader
-            .headers
-            .iter()
-            .find(|(_, id)| *id == first_id)
-            .map(|(rect, _)| *rect)
-            .expect("an open earlier message keeps its header");
-        assert!(reader.press(
-            header.center(),
-            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
-        ));
-        assert!(
-            !reader.expanded.contains(&first_id),
-            "a second click closes it"
-        );
-    }
-
-    #[test]
-    fn a_closing_quote_folds_behind_a_button() {
-        let body =
-            "Sounds good, see you then.\n\nOn Jun 30, Maya wrote:\n> Lunch at noon?\n> \n> Maya\n";
-        let (shown, quote) = split_trailing_quote(body);
-        assert!(quote);
-        assert_eq!(shown, "Sounds good, see you then.");
-        assert_eq!(
-            split_trailing_quote("> all of it is quote\n"),
-            ("> all of it is quote\n", false),
-            "a message that is only a quote keeps it"
-        );
-        assert!(!split_trailing_quote("No quote.\n").1);
-
-        let shared = MailState::shared(MailState::new_live(
-            crate::account::AccountStore::new(),
-            crate::avatars::Avatars::new(),
-        ));
-        let mut message = crate::transport::parse_eml(
-            format!("From: a@x\r\nSubject: S\r\nMessage-ID: <q@x>\r\n\r\n{body}").as_bytes(),
-            100,
-            Folder::Inbox,
-        )
-        .unwrap();
-        message.read = true;
-        let id = message.id;
-        {
-            let mut st = shared.borrow_mut();
-            st.mailbox.insert(message);
-            st.selected = Some(id);
-        }
-        let mut reader = MessageReader::new(shared);
-        reader.rect = Rect::new(0.0, 0.0, 900.0, 800.0);
-        draw(&mut reader);
-        let text = |reader: &MessageReader| {
-            reader
-                .bodies
-                .get(&id)
-                .map(|body| body.input.value().to_owned())
-                .unwrap_or_default()
-        };
-        assert!(!text(&reader).contains("Lunch at noon"), "the quote waits");
-        let (button, _) = *reader.quote_buttons.first().expect("a button unfolds it");
-        assert!(reader.press(
-            button.center(),
-            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
-        ));
-        draw(&mut reader);
-        assert!(
-            text(&reader).contains("Lunch at noon"),
-            "and shows on a click"
-        );
-    }
-
-    #[test]
-    fn unread_earlier_messages_open_with_the_conversation() {
-        let shared = MailState::shared(MailState::new_live(
-            crate::account::AccountStore::new(),
-            crate::avatars::Avatars::new(),
-        ));
-        let first = crate::transport::parse_eml(
-            &raw("a@x", "Plan", None, "Unread start."),
-            100,
-            Folder::Inbox,
-        )
-        .unwrap();
-        let reply = crate::transport::parse_eml(
-            &raw("c@x", "Re: Plan", Some("a@x"), "Latest."),
-            200,
-            Folder::Inbox,
-        )
-        .unwrap();
-        let (first_id, reply_id) = (first.id, reply.id);
-        {
-            let mut st = shared.borrow_mut();
-            st.mailbox.insert(first);
-            st.mailbox.insert(reply);
-            st.selected = Some(reply_id);
-        }
-        let mut reader = MessageReader::new(shared);
-        reader.rect = Rect::new(0.0, 0.0, 900.0, 800.0);
-        draw(&mut reader);
-        assert!(
-            reader.bodies.contains_key(&first_id),
-            "unread mail above the newest is shown open"
-        );
     }
 }

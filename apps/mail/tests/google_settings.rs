@@ -26,109 +26,136 @@ impl BrowserOpener for Browser {
     }
 }
 
-#[test]
-fn explicit_google_mail_consent_connects_settings_to_mail_and_refresh() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = AccountRoot::at(dir.path().to_path_buf());
-    let oauth = FakeAuthorizationServer::start();
-    let registration = ClientTable::defaults()
-        .client_registration(OAuthIssuer::Google)
-        .unwrap();
-    oauth.require_client_secret(registration.secret().unwrap());
-    let gmail = Responder::start(vec![
-        Reply::status(200)
-            .header("Content-Type", "application/json")
-            .body(r#"{"emailAddress":"ada@example.org"}"#),
-    ]);
-    let custody = root
-        .custodian()
-        .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider())
-        .with_gmail_profile_endpoint(format!("{}/gmail/v1/users/me/profile", gmail.url()));
-    let browser = Arc::new(Browser::default());
-    let mut pane = AccountsPane::in_root(root.clone())
-        .with_custodian(custody.clone())
-        .with_browser_opener(browser.clone());
-    pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
-    pane.command(AccountViewCommand::SubmitGoogleMail);
-    assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
-    assert!(
-        !pane.sign_in_open(),
-        "{:?}",
-        pane.sign_in_message_for_test()
-    );
-    let urls = browser.0.lock().unwrap();
-    assert!(urls[0].contains("https%3A%2F%2Fmail.google.com%2F"));
-    assert!(urls[0].contains("https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive"));
-    drop(urls);
-    let request = gmail.next_request();
-    assert_eq!(request.target, "/gmail/v1/users/me/profile");
-    assert!(
-        request
-            .header("Authorization")
-            .unwrap()
-            .starts_with("Bearer ")
-    );
-    let store = mail::account::AccountStore::load_in(dir.path());
-    assert_eq!(store.accounts.len(), 1);
-    let account = &store.accounts[0];
-    assert_eq!(account.config.email, "ada@example.org");
-    assert_eq!(account.config.imap_host, "imap.gmail.com");
-    assert_eq!(account.config.smtp_host, "smtp.gmail.com");
-    assert_eq!(account.config.smtp_port, 587);
-    assert_eq!(account.config.auth, accounts::email::AuthMethod::OAuth);
-    assert!(account.config.password.is_empty());
-    assert_eq!(
-        root.store()
-            .list(&accounts::cloud_types::GOOGLE_DRIVE.into())
-            .len(),
-        1
-    );
-    assert!(
-        !serde_json::to_string(&root.store())
-            .unwrap()
-            .contains("refresh-")
-    );
-    oauth.issue_access_token("gmail-refreshed");
-    assert_eq!(
-        mail::oauth::access_token(
-            &custody,
-            &account.id,
-            mail::oauth::OAuthProvider::Google,
-            true
-        )
-        .unwrap(),
-        "gmail-refreshed"
-    );
-    assert_eq!(oauth.refreshes(), 1);
-}
+tilo_test_env::scenario! {
+    /// Google consent in Settings, each case with its own account root and authorization server.
+    fn google_consent_in_settings_gives_mail_an_account_only_when_asked;
 
-#[test]
-fn files_only_google_consent_does_not_create_a_mail_account() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = AccountRoot::at(dir.path().to_path_buf());
-    let oauth = FakeAuthorizationServer::start();
-    let custody = root
-        .custodian()
-        .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider());
-    let browser = Arc::new(Browser::default());
-    let mut pane = AccountsPane::in_root(root.clone())
-        .with_custodian(custody)
-        .with_browser_opener(browser.clone());
-    pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
-    pane.command(AccountViewCommand::Submit);
-    assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
-    assert!(
-        !pane.sign_in_open(),
-        "{:?}",
-        pane.sign_in_message_for_test()
-    );
-    assert!(!browser.0.lock().unwrap()[0].contains("mail.google.com"));
-    assert!(
-        mail::account::AccountStore::load_in(dir.path())
-            .accounts
-            .is_empty()
-    );
-    assert_eq!(root.store().len(), 1);
+    phase explicit_google_mail_consent_connects_settings_to_mail_and_refresh;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = AccountRoot::at(dir.path().to_path_buf());
+        let oauth = FakeAuthorizationServer::start();
+        let registration = ClientTable::defaults()
+            .client_registration(OAuthIssuer::Google)
+            .unwrap();
+        oauth.require_client_secret(registration.secret().unwrap());
+        let gmail = Responder::start(vec![
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(r#"{"emailAddress":"ada@example.org"}"#),
+        ]);
+        let custody = root
+            .custodian()
+            .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider())
+            .with_gmail_profile_endpoint(format!("{}/gmail/v1/users/me/profile", gmail.url()));
+        let browser = Arc::new(Browser::default());
+        let mut pane = AccountsPane::in_root(root.clone())
+            .with_custodian(custody.clone())
+            .with_browser_opener(browser.clone());
+        pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
+        pane.command(AccountViewCommand::SubmitGoogleMail);
+        assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+        assert!(
+            !pane.sign_in_open(),
+            "{:?}",
+            pane.sign_in_message_for_test()
+        );
+        let urls = browser.0.lock().unwrap();
+        assert!(urls[0].contains("https%3A%2F%2Fmail.google.com%2F"));
+        assert!(urls[0].contains("https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive"));
+        drop(urls);
+        let request = gmail.next_request();
+        assert_eq!(request.target, "/gmail/v1/users/me/profile");
+        assert!(
+            request
+                .header("Authorization")
+                .unwrap()
+                .starts_with("Bearer ")
+        );
+        let store = mail::account::AccountStore::load_in(dir.path());
+        assert_eq!(store.accounts.len(), 1);
+        let account = &store.accounts[0];
+        assert_eq!(account.config.email, "ada@example.org");
+        assert_eq!(account.config.imap_host, "imap.gmail.com");
+        assert_eq!(account.config.smtp_host, "smtp.gmail.com");
+        assert_eq!(account.config.smtp_port, 587);
+        assert_eq!(account.config.auth, accounts::email::AuthMethod::OAuth);
+        assert!(account.config.password.is_empty());
+        assert_eq!(
+            root.store()
+                .list(&accounts::cloud_types::GOOGLE_DRIVE.into())
+                .len(),
+            1
+        );
+        assert!(
+            !serde_json::to_string(&root.store())
+                .unwrap()
+                .contains("refresh-")
+        );
+        oauth.issue_access_token("gmail-refreshed");
+        assert_eq!(
+            mail::oauth::access_token(
+                &custody,
+                &account.id,
+                mail::oauth::OAuthProvider::Google,
+                true
+            )
+            .unwrap(),
+            "gmail-refreshed"
+        );
+        assert_eq!(oauth.refreshes(), 1);
+    }
+
+    phase files_only_google_consent_does_not_create_a_mail_account;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = AccountRoot::at(dir.path().to_path_buf());
+        let oauth = FakeAuthorizationServer::start();
+        let custody = root
+            .custodian()
+            .with_issuer_endpoints(OAuthIssuer::Google, oauth.provider());
+        let browser = Arc::new(Browser::default());
+        let mut pane = AccountsPane::in_root(root.clone())
+            .with_custodian(custody)
+            .with_browser_opener(browser.clone());
+        pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
+        pane.command(AccountViewCommand::Submit);
+        assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+        assert!(
+            !pane.sign_in_open(),
+            "{:?}",
+            pane.sign_in_message_for_test()
+        );
+        assert!(!browser.0.lock().unwrap()[0].contains("mail.google.com"));
+        assert!(
+            mail::account::AccountStore::load_in(dir.path())
+                .accounts
+                .is_empty()
+        );
+        assert_eq!(root.store().len(), 1);
+    }
+
+    phase a_build_without_gmail_scopes_refuses_mail_consent_before_opening_browser;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = AccountRoot::at(dir.path().to_path_buf());
+        let mut table = ClientTable::defaults().clone();
+        table.google.scopes.mail.clear();
+        let browser = Arc::new(Browser::default());
+        let mut pane = AccountsPane::in_root(root.clone())
+            .with_custodian(root.custodian().with_client_table(table))
+            .with_browser_opener(browser.clone());
+        pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
+        pane.command(AccountViewCommand::SubmitGoogleMail);
+        assert!(pane.sign_in_open());
+        assert!(
+            pane.sign_in_message_for_test()
+                .unwrap()
+                .contains("Gmail sign-in is not configured")
+        );
+        assert!(browser.0.lock().unwrap().is_empty());
+        assert!(root.store().is_empty());
+    }
 }
 
 #[test]
@@ -230,26 +257,4 @@ fn google_granular_consent_requires_both_mail_and_drive() {
                 .is_empty()
         );
     }
-}
-
-#[test]
-fn a_build_without_gmail_scopes_refuses_mail_consent_before_opening_browser() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = AccountRoot::at(dir.path().to_path_buf());
-    let mut table = ClientTable::defaults().clone();
-    table.google.scopes.mail.clear();
-    let browser = Arc::new(Browser::default());
-    let mut pane = AccountsPane::in_root(root.clone())
-        .with_custodian(root.custodian().with_client_table(table))
-        .with_browser_opener(browser.clone());
-    pane.command(AccountViewCommand::Add(AccountKind::GoogleDrive));
-    pane.command(AccountViewCommand::SubmitGoogleMail);
-    assert!(pane.sign_in_open());
-    assert!(
-        pane.sign_in_message_for_test()
-            .unwrap()
-            .contains("Gmail sign-in is not configured")
-    );
-    assert!(browser.0.lock().unwrap().is_empty());
-    assert!(root.store().is_empty());
 }

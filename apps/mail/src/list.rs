@@ -1181,201 +1181,206 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rows_open_their_conversation_and_hover_actions_act_on_their_row() {
-        let shared = shared();
-        let mut list = MessageList::new(shared.clone());
-        list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
-        draw(&mut list);
-        let rows = list.row_rects();
-        assert_eq!(rows.len(), shared.borrow().list_rows().len());
-        assert!(
-            rows.windows(2)
-                .all(|pair| pair[0].1.y1 <= pair[1].1.y0 + 0.5),
-            "rows stack without overlap"
-        );
+    tilo_test_env::scenario! {
+        /// The message list: its rows, a failed check above them and what an empty list says.
+        fn the_message_list_opens_rows_and_says_why_it_is_empty_or_unchecked;
 
-        let (second, rect) = rows[1];
-        let mut doc = crate::resource::TestMail::doc();
-        assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), rect.center()));
-        assert_eq!(shared.borrow().selected, Some(second));
-
-        let (first, rect) = rows[0];
-        list.pointer = Some(rect.center());
-        draw(&mut list);
-        let slot = list.slot_at(rect.center()).cloned().expect("first row");
-        let archive = slot.actions[1];
-        assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), archive.center()));
-        assert_eq!(
-            shared.borrow().mailbox.get(first).map(|m| m.folder),
-            Some(Folder::Archive)
-        );
-    }
-
-    #[test]
-    fn a_scroll_alone_offers_a_copy_of_the_rows() {
-        let shared = shared();
-        let mut list = MessageList::new(shared.clone());
-        list.rect = Rect::new(0.0, 0.0, 340.0, 400.0);
-        let frame = |list: &mut MessageList| {
-            draw(list);
-            list.mark_drawn();
-            shared.borrow_mut().dirty = false;
-        };
-        frame(&mut list);
-        list.pointer = Some(Point::new(120.0, 220.0));
-        frame(&mut list);
-        assert!(
-            list.region.scroll_by(vello::kurbo::Vec2::new(0.0, 40.0)),
-            "the sample mailbox overflows the list"
-        );
-        list.scrolled = true;
-        draw(&mut list);
-        let mut regions = Vec::new();
-        let offers = ui::scroll_copy::accepting(|| list.collect_damage(&mut regions));
-        assert_eq!(offers.len(), 1, "the scroll is offered");
-        assert_eq!(offers[0].delta(), vello::kurbo::Vec2::new(0.0, -40.0));
-        let hovered = list.hovered_drawing.expect("a row is under the pointer");
-        assert!(
-            regions
-                .iter()
-                .all(|rect| rect.area() <= hovered.area() * 1.5 || rect.width() < 40.0),
-            "only the track and the hovered row repaint: {regions:?}"
-        );
-        let mut plain = Vec::new();
-        list.collect_damage(&mut plain);
-        assert_eq!(
-            plain,
-            vec![list.rect],
-            "a host that does not copy repaints the list"
-        );
-        list.dirty = true;
-        let mut changed = Vec::new();
-        let offers = ui::scroll_copy::accepting(|| list.collect_damage(&mut changed));
-        assert!(offers.is_empty(), "another change repaints the list");
-        assert_eq!(changed, vec![list.rect]);
-    }
-
-    /// A check that cannot run stands above the rows and keeps its place
-    /// until it works: the rows move down for it, and its pill asks the app to
-    /// check again.
-    #[test]
-    fn a_failed_check_stands_above_the_rows_and_offers_to_check_again() {
-        let shared = shared();
-        let mut list = MessageList::new(shared.clone());
-        list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
-        draw(&mut list);
-        let rows_before = list.row_rects();
-        assert!(list.sync_action.is_none(), "a working account says nothing");
-
-        shared
-            .borrow_mut()
-            .note_sync_failure("Anna".into(), crate::state::SyncCause::Unreachable);
-        draw(&mut list);
-        let rows_after = list.row_rects();
-        assert_eq!(rows_before.len(), rows_after.len(), "no row is lost");
-        assert!(
-            rows_after[0].1.y0 > rows_before[0].1.y0,
-            "the words stand above the rows: {:?} then {:?}",
-            rows_before[0].1,
-            rows_after[0].1
-        );
-        let (_, intent) = list.sync_action.expect("the failure offers a way out");
-        assert!(matches!(intent, Intent::CheckMail));
-    }
-
-    /// The failed check's words keep the rows' inset: the same side edges as
-    /// the rows below, a step of air above them, never a strip welded to the
-    /// column's edges.
-    #[test]
-    fn a_failed_check_keeps_the_rows_inset() {
-        let shared = shared();
-        let mut list = MessageList::new(shared.clone());
-        // Once scrolling (the sample mailbox is longer than this) and once
-        // with every row in view: the banner's edges follow the rows' both
-        // times.
-        for (height, scrolls) in [(400.0, true), (2400.0, false)] {
-            list.rect = Rect::new(0.0, 0.0, 340.0, height);
+        phase rows_open_their_conversation_and_hover_actions_act_on_their_row;
+        {
+            let shared = shared();
+            let mut list = MessageList::new(shared.clone());
+            list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
             draw(&mut list);
-            assert_eq!(list.banner, Rect::ZERO, "a working check has no words");
+            let rows = list.row_rects();
+            assert_eq!(rows.len(), shared.borrow().list_rows().len());
+            assert!(
+                rows.windows(2)
+                    .all(|pair| pair[0].1.y1 <= pair[1].1.y0 + 0.5),
+                "rows stack without overlap"
+            );
+
+            let (second, rect) = rows[1];
+            let mut doc = crate::resource::TestMail::doc();
+            assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), rect.center()));
+            assert_eq!(shared.borrow().selected, Some(second));
+
+            let (first, rect) = rows[0];
+            list.pointer = Some(rect.center());
+            draw(&mut list);
+            let slot = list.slot_at(rect.center()).cloned().expect("first row");
+            let archive = slot.actions[1];
+            assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), archive.center()));
+            assert_eq!(
+                shared.borrow().mailbox.get(first).map(|m| m.folder),
+                Some(Folder::Archive)
+            );
+        }
+
+        phase a_scroll_alone_offers_a_copy_of_the_rows;
+        {
+            let shared = shared();
+            let mut list = MessageList::new(shared.clone());
+            list.rect = Rect::new(0.0, 0.0, 340.0, 400.0);
+            let frame = |list: &mut MessageList| {
+                draw(list);
+                list.mark_drawn();
+                shared.borrow_mut().dirty = false;
+            };
+            frame(&mut list);
+            list.pointer = Some(Point::new(120.0, 220.0));
+            frame(&mut list);
+            assert!(
+                list.region.scroll_by(vello::kurbo::Vec2::new(0.0, 40.0)),
+                "the sample mailbox overflows the list"
+            );
+            list.scrolled = true;
+            draw(&mut list);
+            let mut regions = Vec::new();
+            let offers = ui::scroll_copy::accepting(|| list.collect_damage(&mut regions));
+            assert_eq!(offers.len(), 1, "the scroll is offered");
+            assert_eq!(offers[0].delta(), vello::kurbo::Vec2::new(0.0, -40.0));
+            let hovered = list.hovered_drawing.expect("a row is under the pointer");
+            assert!(
+                regions
+                    .iter()
+                    .all(|rect| rect.area() <= hovered.area() * 1.5 || rect.width() < 40.0),
+                "only the track and the hovered row repaint: {regions:?}"
+            );
+            let mut plain = Vec::new();
+            list.collect_damage(&mut plain);
+            assert_eq!(
+                plain,
+                vec![list.rect],
+                "a host that does not copy repaints the list"
+            );
+            list.dirty = true;
+            let mut changed = Vec::new();
+            let offers = ui::scroll_copy::accepting(|| list.collect_damage(&mut changed));
+            assert!(offers.is_empty(), "another change repaints the list");
+            assert_eq!(changed, vec![list.rect]);
+        }
+
+        // A check that cannot run stands above the rows and keeps its place
+        // until it works: the rows move down for it, and its pill asks the app to
+        // check again.
+        phase a_failed_check_stands_above_the_rows_and_offers_to_check_again;
+        {
+            let shared = shared();
+            let mut list = MessageList::new(shared.clone());
+            list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
+            draw(&mut list);
+            let rows_before = list.row_rects();
+            assert!(list.sync_action.is_none(), "a working account says nothing");
 
             shared
                 .borrow_mut()
                 .note_sync_failure("Anna".into(), crate::state::SyncCause::Unreachable);
             draw(&mut list);
-            shared.borrow_mut().clear_sync_failure();
-            assert_eq!(
-                list.region.overflows_vertically(),
-                scrolls,
-                "the case is {height:?}"
-            );
-
-            let banner = list.banner;
-            let (_, first) = list.row_rects()[0];
-            assert!(banner.width() > 0.0 && banner.height() > 0.0);
+            let rows_after = list.row_rects();
+            assert_eq!(rows_before.len(), rows_after.len(), "no row is lost");
             assert!(
-                (banner.x0 - first.x0).abs() < 0.5,
-                "the banner starts on the rows' leading inset: {banner:?} then {first:?}"
+                rows_after[0].1.y0 > rows_before[0].1.y0,
+                "the words stand above the rows: {:?} then {:?}",
+                rows_before[0].1,
+                rows_after[0].1
             );
-            assert!(
-                (banner.x1 - first.x1).abs() < 0.5,
-                "the banner ends on the rows' trailing inset: {banner:?} then {first:?}"
-            );
-            assert!(
-                banner.y0 > list.rect.y0,
-                "the banner stands a step below the column's top: {banner:?}"
-            );
-            assert!(
-                banner.y1 <= first.y0,
-                "the rows start under the banner: {banner:?} then {first:?}"
-            );
+            let (_, intent) = list.sync_action.expect("the failure offers a way out");
+            assert!(matches!(intent, Intent::CheckMail));
         }
-    }
 
-    /// An empty mailbox whose check failed says that, not that nothing has
-    /// arrived, and its pill is the failure's own way out.
-    #[test]
-    fn an_empty_mailbox_whose_check_failed_says_so_instead_of_nothing_yet() {
-        let shared = shared();
-        let mut list = MessageList::new(shared.clone());
-        list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
+        // The failed check's words keep the rows' inset: the same side edges as
+        // the rows below, a step of air above them, never a strip welded to the
+        // column's edges.
+        phase a_failed_check_keeps_the_rows_inset;
         {
-            let mut state = shared.borrow_mut();
-            let ids: Vec<MessageId> = state.mailbox.messages.keys().copied().collect();
-            for id in ids {
-                state.mailbox.purge(id);
-            }
-            state.note_sync_failure("Anna".into(), crate::state::SyncCause::SignedOut);
-        }
-        draw(&mut list);
-        let (_, intent) = list
-            .zero_action
-            .expect("a failed check offers its own way out");
-        assert!(
-            matches!(intent, Intent::AccountSettings),
-            "a sign-in failure leads to the account that has to change"
-        );
-        assert!(
-            list.sync_action.is_none(),
-            "the words are in the empty list, not twice"
-        );
-    }
+            let shared = shared();
+            let mut list = MessageList::new(shared.clone());
+            // Once scrolling (the sample mailbox is longer than this) and once
+            // with every row in view: the banner's edges follow the rows' both
+            // times.
+            for (height, scrolls) in [(400.0, true), (2400.0, false)] {
+                list.rect = Rect::new(0.0, 0.0, 340.0, height);
+                draw(&mut list);
+                assert_eq!(list.banner, Rect::ZERO, "a working check has no words");
 
-    #[test]
-    fn every_empty_list_says_one_thing() {
-        let nothing_yet = zero_state(false, Folder::Inbox);
-        assert_eq!(nothing_yet.title, crate::i18n::t("mail-zero-nothing-yet"));
-        assert!(
-            nothing_yet.action.is_some(),
-            "a mailbox no mail has arrived in offers its account route"
-        );
-        for folder in Folder::ALL {
-            let empty = zero_state(true, folder);
+                shared
+                    .borrow_mut()
+                    .note_sync_failure("Anna".into(), crate::state::SyncCause::Unreachable);
+                draw(&mut list);
+                shared.borrow_mut().clear_sync_failure();
+                assert_eq!(
+                    list.region.overflows_vertically(),
+                    scrolls,
+                    "the case is {height:?}"
+                );
+
+                let banner = list.banner;
+                let (_, first) = list.row_rects()[0];
+                assert!(banner.width() > 0.0 && banner.height() > 0.0);
+                assert!(
+                    (banner.x0 - first.x0).abs() < 0.5,
+                    "the banner starts on the rows' leading inset: {banner:?} then {first:?}"
+                );
+                assert!(
+                    (banner.x1 - first.x1).abs() < 0.5,
+                    "the banner ends on the rows' trailing inset: {banner:?} then {first:?}"
+                );
+                assert!(
+                    banner.y0 > list.rect.y0,
+                    "the banner stands a step below the column's top: {banner:?}"
+                );
+                assert!(
+                    banner.y1 <= first.y0,
+                    "the rows start under the banner: {banner:?} then {first:?}"
+                );
+            }
+        }
+
+        // An empty mailbox whose check failed says that, not that nothing has
+        // arrived, and its pill is the failure's own way out.
+        phase an_empty_mailbox_whose_check_failed_says_so_instead_of_nothing_yet;
+        {
+            let shared = shared();
+            let mut list = MessageList::new(shared.clone());
+            list.rect = Rect::new(0.0, 0.0, 340.0, 760.0);
+            {
+                let mut state = shared.borrow_mut();
+                let ids: Vec<MessageId> = state.mailbox.messages.keys().copied().collect();
+                for id in ids {
+                    state.mailbox.purge(id);
+                }
+                state.note_sync_failure("Anna".into(), crate::state::SyncCause::SignedOut);
+            }
+            draw(&mut list);
+            let (_, intent) = list
+                .zero_action
+                .expect("a failed check offers its own way out");
             assert!(
-                empty.action.is_none(),
-                "{folder:?} is a folder of a working mailbox, not an account to fix"
+                matches!(intent, Intent::AccountSettings),
+                "a sign-in failure leads to the account that has to change"
             );
-            assert!(empty.title.chars().next().is_some_and(char::is_uppercase));
+            assert!(
+                list.sync_action.is_none(),
+                "the words are in the empty list, not twice"
+            );
+        }
+
+        phase every_empty_list_says_one_thing;
+        {
+            let nothing_yet = zero_state(false, Folder::Inbox);
+            assert_eq!(nothing_yet.title, crate::i18n::t("mail-zero-nothing-yet"));
+            assert!(
+                nothing_yet.action.is_some(),
+                "a mailbox no mail has arrived in offers its account route"
+            );
+            for folder in Folder::ALL {
+                let empty = zero_state(true, folder);
+                assert!(
+                    empty.action.is_none(),
+                    "{folder:?} is a folder of a working mailbox, not an account to fix"
+                );
+                assert!(empty.title.chars().next().is_some_and(char::is_uppercase));
+            }
         }
     }
 }

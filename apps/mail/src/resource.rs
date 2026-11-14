@@ -1773,47 +1773,220 @@ mod tests {
         })
     }
 
-    /// A draft is document state: an agent reads what it holds through the
-    /// draft's own document read, as `tilo_read` on it does, and the draft
-    /// is disclosed by that read rather than hidden behind its `open`.
-    #[test]
-    fn an_agent_reads_a_draft_through_its_document_read() {
-        let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
-        let id = "6a0d7c1e-7d3b-4c55-9a1e-2f4b8c9d0e1f";
-        app.call(
-            "create-draft",
-            serde_json::json!({
-                "id": id,
-                "message": {
-                    "to": "ada@example.org", "cc": "", "bcc": "",
-                    "subject": "Your portfolio", "body": "Thanks for applying.",
+    tilo_test_env::scenario! {
+        /// The draft as document state: read, attached to, sealed and shown.
+        fn a_draft_is_read_attached_to_and_kept_as_one_message;
+
+        // A draft is document state: an agent reads what it holds through the
+        // draft's own document read, as `tilo_read` on it does, and the draft
+        // is disclosed by that read rather than hidden behind its `open`.
+        phase an_agent_reads_a_draft_through_its_document_read;
+        {
+            let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
+            let id = "6a0d7c1e-7d3b-4c55-9a1e-2f4b8c9d0e1f";
+            app.call(
+                "create-draft",
+                serde_json::json!({
+                    "id": id,
+                    "message": {
+                        "to": "ada@example.org", "cc": "", "bcc": "",
+                        "subject": "Your portfolio", "body": "Thanks for applying.",
+                        "html_body": null,
+                    },
+                }),
+            )
+            .unwrap();
+            app.settle();
+            let place = draft_place_id(id);
+            let published = published_resource(&app.harness().resources(), &place)
+                .unwrap_or_else(|| panic!("the draft's place {place} is published"));
+            let draft = published.id.as_str().to_owned();
+            let read = published
+                .actions
+                .iter()
+                .find(|action| action.id == "read")
+                .expect("the draft offers its document read");
+            assert!(read.contract.reads_document());
+            let content = app
+                .call_on(&draft, "read", serde_json::json!({}))
+                .unwrap()
+                .expect("the read answers");
+            assert_eq!(content["draft"]["subject"], "Your portfolio", "{content}");
+            assert_eq!(content["draft"]["to"], "ada@example.org", "{content}");
+            assert_eq!(
+                tilo_actions::hidden_from_agents(&app.harness().resources()),
+                [],
+                "nothing of the mailbox is kept from an agent"
+            );
+        }
+
+        // A file another step handed over attaches to the draft by its
+        // content address: staged and verified where it is attached, carried as
+        // the same attachment on every replica, refused when it is not there.
+        phase a_handed_over_file_attaches_to_the_draft;
+        {
+            let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
+            let hash = app.content().put(b"quarterly numbers").unwrap();
+            app.call(
+                "attach",
+                serde_json::json!({
+                    "content": ui::tilo_actions::content_resource(&hash),
+                    "name": "numbers.csv",
+                }),
+            )
+            .unwrap();
+            let attachments = app.state().draft.attachments;
+            assert_eq!(attachments.len(), 1);
+            assert_eq!(attachments[0].filename, "numbers.csv");
+            assert_eq!(attachments[0].size, 17);
+            assert_eq!(
+                crate::attachment_store::materialize(&app.content(), &attachments[0]).unwrap(),
+                b"quarterly numbers"
+            );
+            let reference = attachments[0]
+                .content_id
+                .strip_prefix(crate::attachment_store::PREFIX)
+                .unwrap();
+            assert!(tilo_content::is_sealed(reference), "{reference}");
+            let again = app
+                .call(
+                    "attach",
+                    serde_json::json!({
+                        "content": &attachments[0].content_id,
+                        "name": "again.csv",
+                    }),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(again.contains("already carries"), "the same file: {again}");
+            let missing = tilo_content::hash_bytes(b"never stored");
+            assert!(
+                app.call(
+                    "attach",
+                    serde_json::json!({"content": missing, "name": "x.txt"}),
+                )
+                .is_err()
+            );
+            assert!(
+                app.call(
+                    "attach",
+                    serde_json::json!({"content": "/home/you/x.txt", "name": "x.txt"}),
+                )
+                .is_err(),
+                "a path is not content"
+            );
+            assert!(app.undo());
+            assert!(app.state().draft.attachments.is_empty());
+        }
+
+        // A file is attached sealed: the draft names it by a reference that
+        // carries the key, the store holds ciphertext alone under its address,
+        // and a member reading the draft, and one who joins later, open it
+        // from that ciphertext.
+        phase an_attachment_is_ciphertext_in_the_store_and_opens_for_every_member;
+        {
+            use ui::framework::testing::TestApp;
+            let file: Vec<u8> = (0..400)
+                .flat_map(|row| format!("row {row}: {}\n", row * 7919).into_bytes())
+                .collect();
+            let mut alice = TestApp::<MailShell>::new().unwrap();
+            let mut joined =
+                automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
+                    .unwrap();
+            let mut bob = TestApp::<MailShell>::with_workspace_record(&mut joined).unwrap();
+            let handed = alice.content().put(&file).unwrap();
+            alice
+                .call(
+                    "attach",
+                    serde_json::json!({
+                        "content": ui::tilo_actions::content_resource(&handed),
+                        "name": "numbers.txt",
+                    }),
+                )
+                .unwrap();
+            let attachment = alice.state().draft.attachments[0].clone();
+            let reference = attachment
+                .content_id
+                .strip_prefix(crate::attachment_store::PREFIX)
+                .unwrap()
+                .to_owned();
+            assert!(tilo_content::is_sealed(&reference), "{reference}");
+            let address = tilo_content::content_address(&reference).unwrap();
+            let ciphertext = alice.content().read(&address).unwrap();
+            assert!(
+                !ciphertext.windows(32).any(|window| window == &file[..32]),
+                "the store holds ciphertext"
+            );
+
+            assert!(alice.deliver_changes_to(&mut bob).unwrap());
+            let shared = bob.state().draft.attachments[0].clone();
+            assert_eq!(shared, attachment);
+            assert!(crate::attachment_store::materialize(&bob.content(), &shared).is_err());
+            bob.content().put_public(&ciphertext).unwrap();
+            assert_eq!(
+                crate::attachment_store::materialize(&bob.content(), &shared).unwrap(),
+                file
+            );
+
+            let mut later =
+                automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
+                    .unwrap();
+            let carol = TestApp::<MailShell>::with_workspace_record(&mut later).unwrap();
+            carol.content().put_public(&ciphertext).unwrap();
+            assert_eq!(
+                crate::attachment_store::materialize(
+                    &carol.content(),
+                    &carol.state().draft.attachments[0]
+                )
+                .unwrap(),
+                file
+            );
+        }
+
+        // The saved draft shows as the same Drafts message however often the
+        // app opens again, and opening it adds nothing to the mailbox.
+        phase the_draft_shows_as_one_message_across_restarts;
+        {
+            use ui::framework::testing::TestApp;
+            fn shown(app: &mut TestApp<MailShell>) -> Vec<crate::model::MessageId> {
+                app.with_surface(|mail: &mut MailApp| {
+                    mail.shared
+                        .borrow()
+                        .mailbox
+                        .messages_in(crate::model::Folder::Drafts)
+                        .iter()
+                        .map(|message| message.id)
+                        .collect()
+                })
+                .unwrap_or_default()
+            }
+            let profile = tempfile::tempdir().unwrap();
+            let mut app = TestApp::<MailShell>::open_data_dir(profile.path()).unwrap();
+            app.call(
+                "save-draft",
+                serde_json::json!({"message": {
+                    "to": "recipient@example.test",
+                    "cc": "",
+                    "bcc": "",
+                    "subject": "Across restarts",
+                    "body": "",
                     "html_body": null,
-                },
-            }),
-        )
-        .unwrap();
-        app.settle();
-        let place = draft_place_id(id);
-        let published = published_resource(&app.harness().resources(), &place)
-            .unwrap_or_else(|| panic!("the draft's place {place} is published"));
-        let draft = published.id.as_str().to_owned();
-        let read = published
-            .actions
-            .iter()
-            .find(|action| action.id == "read")
-            .expect("the draft offers its document read");
-        assert!(read.contract.reads_document());
-        let content = app
-            .call_on(&draft, "read", serde_json::json!({}))
-            .unwrap()
-            .expect("the read answers");
-        assert_eq!(content["draft"]["subject"], "Your portfolio", "{content}");
-        assert_eq!(content["draft"]["to"], "ada@example.org", "{content}");
-        assert_eq!(
-            tilo_actions::hidden_from_agents(&app.harness().resources()),
-            [],
-            "nothing of the mailbox is kept from an agent"
-        );
+                }}),
+            )
+            .unwrap();
+            app.settle();
+            let [first] = shown(&mut app)[..] else {
+                panic!("the draft shows in Drafts, once");
+            };
+            assert_eq!(app.state().draft.shown_as, Some(first.to_string()));
+            let messages = app.state().messages.len();
+            for _ in 0..2 {
+                app = app.reopen().unwrap();
+                app.settle();
+                assert_eq!(shown(&mut app), [first]);
+                assert_eq!(app.state().messages.len(), messages);
+            }
+        }
     }
 
     #[test]
@@ -1825,298 +1998,135 @@ mod tests {
         }
     }
 
-    /// A file another step handed over attaches to the draft by its
-    /// content address: staged and verified where it is attached, carried as
-    /// the same attachment on every replica, refused when it is not there.
-    #[test]
-    fn a_handed_over_file_attaches_to_the_draft() {
-        let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
-        let hash = app.content().put(b"quarterly numbers").unwrap();
-        app.call(
-            "attach",
-            serde_json::json!({
-                "content": ui::tilo_actions::content_resource(&hash),
-                "name": "numbers.csv",
-            }),
-        )
-        .unwrap();
-        let attachments = app.state().draft.attachments;
-        assert_eq!(attachments.len(), 1);
-        assert_eq!(attachments[0].filename, "numbers.csv");
-        assert_eq!(attachments[0].size, 17);
-        assert_eq!(
-            crate::attachment_store::materialize(&app.content(), &attachments[0]).unwrap(),
-            b"quarterly numbers"
-        );
-        let reference = attachments[0]
-            .content_id
-            .strip_prefix(crate::attachment_store::PREFIX)
-            .unwrap();
-        assert!(tilo_content::is_sealed(reference), "{reference}");
-        let again = app
-            .call(
-                "attach",
-                serde_json::json!({
-                    "content": &attachments[0].content_id,
-                    "name": "again.csv",
-                }),
-            )
-            .unwrap_err()
-            .to_string();
-        assert!(again.contains("already carries"), "the same file: {again}");
-        let missing = tilo_content::hash_bytes(b"never stored");
-        assert!(
-            app.call(
-                "attach",
-                serde_json::json!({"content": missing, "name": "x.txt"}),
-            )
-            .is_err()
-        );
-        assert!(
-            app.call(
-                "attach",
-                serde_json::json!({"content": "/home/you/x.txt", "name": "x.txt"}),
-            )
-            .is_err(),
-            "a path is not content"
-        );
-        assert!(app.undo());
-        assert!(app.state().draft.attachments.is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// The door between the published mailbox and the window.
+        fn the_window_reads_and_acts_through_its_one_door;
 
-    /// A file is attached sealed: the draft names it by a reference that
-    /// carries the key, the store holds ciphertext alone under its address,
-    /// and a member reading the draft, and one who joins later, open it
-    /// from that ciphertext.
-    #[test]
-    fn an_attachment_is_ciphertext_in_the_store_and_opens_for_every_member() {
-        use ui::framework::testing::TestApp;
-        let file: Vec<u8> = (0..400)
-            .flat_map(|row| format!("row {row}: {}\n", row * 7919).into_bytes())
-            .collect();
-        let mut alice = TestApp::<MailShell>::new().unwrap();
-        let mut joined =
-            automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
-                .unwrap();
-        let mut bob = TestApp::<MailShell>::with_workspace_record(&mut joined).unwrap();
-        let handed = alice.content().put(&file).unwrap();
-        alice
-            .call(
-                "attach",
-                serde_json::json!({
-                    "content": ui::tilo_actions::content_resource(&handed),
-                    "name": "numbers.txt",
-                }),
-            )
-            .unwrap();
-        let attachment = alice.state().draft.attachments[0].clone();
-        let reference = attachment
-            .content_id
-            .strip_prefix(crate::attachment_store::PREFIX)
-            .unwrap()
-            .to_owned();
-        assert!(tilo_content::is_sealed(&reference), "{reference}");
-        let address = tilo_content::content_address(&reference).unwrap();
-        let ciphertext = alice.content().read(&address).unwrap();
-        assert!(
-            !ciphertext.windows(32).any(|window| window == &file[..32]),
-            "the store holds ciphertext"
-        );
-
-        assert!(alice.deliver_changes_to(&mut bob).unwrap());
-        let shared = bob.state().draft.attachments[0].clone();
-        assert_eq!(shared, attachment);
-        assert!(crate::attachment_store::materialize(&bob.content(), &shared).is_err());
-        bob.content().put_public(&ciphertext).unwrap();
-        assert_eq!(
-            crate::attachment_store::materialize(&bob.content(), &shared).unwrap(),
-            file
-        );
-
-        let mut later =
-            automerge::AutoCommit::load(&alice.record_document(&alice.record().clone()).unwrap())
-                .unwrap();
-        let carol = TestApp::<MailShell>::with_workspace_record(&mut later).unwrap();
-        carol.content().put_public(&ciphertext).unwrap();
-        assert_eq!(
-            crate::attachment_store::materialize(
-                &carol.content(),
-                &carol.state().draft.attachments[0]
-            )
-            .unwrap(),
-            file
-        );
-    }
-
-    /// The saved draft shows as the same Drafts message however often the
-    /// app opens again, and opening it adds nothing to the mailbox.
-    #[test]
-    fn the_draft_shows_as_one_message_across_restarts() {
-        use ui::framework::testing::TestApp;
-        fn shown(app: &mut TestApp<MailShell>) -> Vec<crate::model::MessageId> {
+        // A loaded message reads as what it says, and reading it marks it read
+        // for no one.
+        phase a_loaded_message_reads_as_what_it_says;
+        {
+            let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
+            let id: crate::model::MessageId = "70c4b1cf-78ef-bd2b-7019-d7c509f29930".parse().unwrap();
             app.with_surface(|mail: &mut MailApp| {
                 mail.shared
-                    .borrow()
+                    .borrow_mut()
                     .mailbox
-                    .messages_in(crate::model::Folder::Drafts)
-                    .iter()
-                    .map(|message| message.id)
-                    .collect()
+                    .insert(crate::model::Message {
+                        id,
+                        rfc_message_id: Some("m7@example.test".into()),
+                        in_reply_to: None,
+                        from: crate::model::Addr::new("Sam", "sam@example.test"),
+                        to: vec![crate::model::Addr::new("", "me@example.test")],
+                        cc: Vec::new(),
+                        subject: "Quarterly numbers".into(),
+                        body: "They are up.".into(),
+                        html_body: None,
+                        attachments: Vec::new(),
+                        timestamp_min: 0,
+                        read: false,
+                        starred: false,
+                        folder: Folder::Inbox,
+                        labels: Vec::new(),
+                        account: String::new(),
+                        server: None,
+                    });
             })
-            .unwrap_or_default()
-        }
-        let profile = tempfile::tempdir().unwrap();
-        let mut app = TestApp::<MailShell>::open_data_dir(profile.path()).unwrap();
-        app.call(
-            "save-draft",
-            serde_json::json!({"message": {
-                "to": "recipient@example.test",
-                "cc": "",
-                "bcc": "",
-                "subject": "Across restarts",
-                "body": "",
-                "html_body": null,
-            }}),
-        )
-        .unwrap();
-        app.settle();
-        let [first] = shown(&mut app)[..] else {
-            panic!("the draft shows in Drafts, once");
-        };
-        assert_eq!(app.state().draft.shown_as, Some(first.to_string()));
-        let messages = app.state().messages.len();
-        for _ in 0..2 {
-            app = app.reopen().unwrap();
+            .unwrap();
             app.settle();
-            assert_eq!(shown(&mut app), [first]);
-            assert_eq!(app.state().messages.len(), messages);
+            let row = format!("mail.message:{id}");
+            let answer = app
+                .effect_on(
+                    &row,
+                    &MailEffect::ReadMessage {
+                        message: id.to_string(),
+                    },
+                )
+                .unwrap()
+                .value
+                .unwrap();
+            assert_eq!(answer["subject"], "Quarterly numbers");
+            assert_eq!(answer["from"], "Sam <sam@example.test>");
+            assert_eq!(answer["text"], "They are up.");
+            assert!(
+                !app.with_surface(|mail: &mut MailApp| mail.shared.borrow().mailbox.messages[&id].read)
+                    .unwrap(),
+                "reading it marks it read for no one"
+            );
         }
-    }
 
-    /// A loaded message reads as what it says, and reading it marks it read
-    /// for no one.
-    #[test]
-    fn a_loaded_message_reads_as_what_it_says() {
-        let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
-        let id: crate::model::MessageId = "70c4b1cf-78ef-bd2b-7019-d7c509f29930".parse().unwrap();
-        app.with_surface(|mail: &mut MailApp| {
-            mail.shared
-                .borrow_mut()
-                .mailbox
-                .insert(crate::model::Message {
-                    id,
-                    rfc_message_id: Some("m7@example.test".into()),
-                    in_reply_to: None,
-                    from: crate::model::Addr::new("Sam", "sam@example.test"),
-                    to: vec![crate::model::Addr::new("", "me@example.test")],
-                    cc: Vec::new(),
-                    subject: "Quarterly numbers".into(),
-                    body: "They are up.".into(),
-                    html_body: None,
-                    attachments: Vec::new(),
-                    timestamp_min: 0,
-                    read: false,
-                    starred: false,
-                    folder: Folder::Inbox,
-                    labels: Vec::new(),
-                    account: String::new(),
-                    server: None,
-                });
-        })
-        .unwrap();
-        app.settle();
-        let row = format!("mail.message:{id}");
-        let answer = app
-            .effect_on(
-                &row,
-                &MailEffect::ReadMessage {
-                    message: id.to_string(),
+        phase effects_reach_the_window_through_the_door;
+        {
+            let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
+            let surface = app.agent_surface().to_string();
+            assert!(surface.contains("prepare-calendar-invitation"), "{surface}");
+            app.effect(&MailEffect::Compose)
+                .expect("composing needs no account");
+            assert!(
+                app.effect(&MailEffect::Refresh).is_err(),
+                "nothing to refresh without a connected account"
+            );
+            app.effect_on(
+                &folder_resource("archive"),
+                &MailEffect::Open {
+                    target: crate::actions::MailTarget::Folder("archive".into()),
                 },
             )
-            .unwrap()
-            .value
-            .unwrap();
-        assert_eq!(answer["subject"], "Quarterly numbers");
-        assert_eq!(answer["from"], "Sam <sam@example.test>");
-        assert_eq!(answer["text"], "They are up.");
-        assert!(
-            !app.with_surface(|mail: &mut MailApp| mail.shared.borrow().mailbox.messages[&id].read)
-                .unwrap(),
-            "reading it marks it read for no one"
-        );
-    }
-
-    #[test]
-    fn effects_reach_the_window_through_the_door() {
-        let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
-        let surface = app.agent_surface().to_string();
-        assert!(surface.contains("prepare-calendar-invitation"), "{surface}");
-        app.effect(&MailEffect::Compose)
-            .expect("composing needs no account");
-        assert!(
-            app.effect(&MailEffect::Refresh).is_err(),
-            "nothing to refresh without a connected account"
-        );
-        app.effect_on(
-            &folder_resource("archive"),
-            &MailEffect::Open {
-                target: crate::actions::MailTarget::Folder("archive".into()),
-            },
-        )
-        .expect("a folder row opens its folder");
-    }
-
-    /// What the window adds beside the mailbox is its live rows, which
-    /// never carry a document action.
-    #[test]
-    fn the_window_keeps_no_second_door() {
-        let mut app = MailApp::new_sample();
-        let mut doc = Replica::<Mail>::new().doc().clone();
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        let state = read_mail(&doc).expect("a mailbox");
-        assert!(
-            !state.messages.is_empty(),
-            "sample sync ingests message flags into the mailbox"
-        );
-        let published = ui::tilo_resource::publish::<Mail>("mail.mailbox", "Mail", &state);
-        assert_eq!(published.kind, "mail.mailbox");
-        let inbox = published
-            .children
-            .iter()
-            .find(|child| child.id.as_str() == folder_resource("inbox"))
-            .expect("the inbox place on the published mailbox");
-        let message = inbox
-            .children
-            .iter()
-            .find(|child| child.kind == "mail.mailbox.message")
-            .expect("a message place under its folder");
-        for id in ["mark-read", "archive", "trash"] {
-            assert!(
-                message
-                    .actions
-                    .iter()
-                    .any(|action| action.id == id && action.kind == OperationKind::Document),
-                "{id} rides the message place"
-            );
+            .expect("a folder row opens its folder");
         }
-        let opened = message
-            .actions
-            .iter()
-            .find(|action| action.id == "open")
-            .expect("a published message opens where it is");
-        assert_eq!(opened.kind, OperationKind::View);
 
-        for row in app.state().live_rows() {
-            let row = row.into_resource();
-            assert_ne!(row.kind, "mail.mailbox");
+        // What the window adds beside the mailbox is its live rows, which
+        // never carry a document action.
+        phase the_window_keeps_no_second_door;
+        {
+            let mut app = MailApp::new_sample();
+            let mut doc = Replica::<Mail>::new().doc().clone();
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            let state = read_mail(&doc).expect("a mailbox");
             assert!(
-                row.actions
-                    .iter()
-                    .all(|action| action.kind != OperationKind::Document),
-                "{}",
-                row.id.as_str()
+                !state.messages.is_empty(),
+                "sample sync ingests message flags into the mailbox"
             );
+            let published = ui::tilo_resource::publish::<Mail>("mail.mailbox", "Mail", &state);
+            assert_eq!(published.kind, "mail.mailbox");
+            let inbox = published
+                .children
+                .iter()
+                .find(|child| child.id.as_str() == folder_resource("inbox"))
+                .expect("the inbox place on the published mailbox");
+            let message = inbox
+                .children
+                .iter()
+                .find(|child| child.kind == "mail.mailbox.message")
+                .expect("a message place under its folder");
+            for id in ["mark-read", "archive", "trash"] {
+                assert!(
+                    message
+                        .actions
+                        .iter()
+                        .any(|action| action.id == id && action.kind == OperationKind::Document),
+                    "{id} rides the message place"
+                );
+            }
+            let opened = message
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .expect("a published message opens where it is");
+            assert_eq!(opened.kind, OperationKind::View);
+
+            for row in app.state().live_rows() {
+                let row = row.into_resource();
+                assert_ne!(row.kind, "mail.mailbox");
+                assert!(
+                    row.actions
+                        .iter()
+                        .all(|action| action.kind != OperationKind::Document),
+                    "{}",
+                    row.id.as_str()
+                );
+            }
         }
     }
 
@@ -2149,214 +2159,219 @@ mod tests {
             }
         }
 
-        /// The window's one search source finds a loaded message by its
-        /// subject and a folder by its name, and each hit opens a resource
-        /// the window publishes.
-        #[test]
-        fn the_window_search_finds_loaded_mail_and_folders() {
-            ui::i18n::I18nManager::init("en-US");
-            let mut app = TestApp::<MailShell>::capture(None).unwrap();
-            let message = crate::sample::sample_mailbox()
-                .messages
-                .values()
-                .find(|message| message.folder == Folder::Inbox)
-                .expect("the sample has inbox mail")
-                .clone();
-            let providers = ui::search::capability::search_providers(app.harness().root_widget());
-            assert_eq!(providers.len(), 1, "one search source");
-            let hits = providers[0].search(&message.subject);
-            let hit = hits
-                .iter()
-                .find(|hit| hit.kind == crate::search::MAIL_KIND && hit.title == message.subject)
-                .expect("the loaded message is found by its subject");
-            assert!(
-                hit.anchor().starts_with("mail.message:"),
-                "{}",
-                hit.anchor()
-            );
-            app.call("open", serde_json::json!({ "anchor": hit.anchor() }))
-                .expect("the hit's message opens");
-            app.settle();
-            let folders = providers[0].search("Archive");
-            let archive = folders
-                .iter()
-                .find(|hit| hit.kind == crate::search::FOLDER_KIND && hit.title == "Archive")
-                .expect("the archive folder is found");
-            app.call("open", serde_json::json!({ "anchor": archive.anchor() }))
-                .expect("the hit's folder opens");
-            app.settle();
-            assert_eq!(
-                app.with_surface::<crate::app::MailApp, _>(|mail| mail.shared.borrow().folder),
-                Some(Folder::Archive)
-            );
-        }
+        tilo_test_env::scenario! {
+            /// The captured sample window, driven through the framework.
+            fn a_captured_window_searches_acts_and_reads_the_sample_it_stages;
 
-        /// A message the engine loaded that has no row in the document yet
-        /// still opens from a search hit: its address resolves to the
-        /// window's live row and its open view.
-        #[test]
-        fn a_loaded_message_without_a_document_row_opens_from_a_hit() {
-            ui::i18n::I18nManager::init("en-US");
-            let app = crate::app::MailApp::new_sample();
-            let message = app
-                .state()
-                .shared_mailbox()
-                .messages
-                .values()
-                .next()
-                .expect("the sample has mail")
-                .clone();
-            let id = format!("mail.message:{}", message.id);
-            let row = app
-                .state()
-                .live_row(&id)
-                .expect("a loaded message resolves to a live row")
-                .into_resource();
-            assert!(row.actions.iter().any(|action| action.id == "open"));
-            assert!(
-                app.state()
-                    .live_row("mail.message:00000000-0000-0000-0000-000000000000")
-                    .is_none(),
-                "a message that is not loaded resolves to nothing"
-            );
-        }
-
-        /// The purge confirmation shows messages that really are in Trash.
-        #[test]
-        fn the_purge_confirmation_stages_its_messages_in_trash_through_actions() {
-            ui::i18n::I18nManager::init("en-US");
-            let mut app = TestApp::<MailShell>::capture(Some("bulk_purge_confirmation")).unwrap();
-            let trashed = app
-                .state()
-                .messages
-                .values()
-                .filter(|message| !message.purged && message.folder == Folder::Trash)
-                .count();
-            let sample_trash = crate::sample::sample_mailbox()
-                .messages
-                .values()
-                .filter(|message| message.folder == Folder::Trash)
-                .count();
-            assert_eq!(trashed, sample_trash + 2);
-            let frame = app.harness().inspection_json().unwrap();
-            assert!(frame.contains("Delete permanently"), "{frame}");
-        }
-
-        /// A keyboard triage goes through the framework's door: the starred
-        /// message is in the document, and one undo takes it back.
-        #[test]
-        fn a_shortcut_is_one_undo_step_through_the_framework() {
-            ui::i18n::I18nManager::init("en-US");
-            let mut app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
-            let starred = |app: &TestApp<MailShell>| {
-                app.state()
+            // The window's one search source finds a loaded message by its
+            // subject and a folder by its name, and each hit opens a resource
+            // the window publishes.
+            phase the_window_search_finds_loaded_mail_and_folders;
+            {
+                ui::i18n::I18nManager::init("en-US");
+                let mut app = TestApp::<MailShell>::capture(None).unwrap();
+                let message = crate::sample::sample_mailbox()
                     .messages
                     .values()
-                    .filter(|message| message.starred)
-                    .count()
-            };
-            let before = starred(&app);
-            app.harness().type_text("s");
-            let after = starred(&app);
-            assert_ne!(after, before, "S toggled the selected message's star");
-            assert!(app.undo());
-            assert_eq!(starred(&app), before);
-        }
+                    .find(|message| message.folder == Folder::Inbox)
+                    .expect("the sample has inbox mail")
+                    .clone();
+                let providers = ui::search::capability::search_providers(app.harness().root_widget());
+                assert_eq!(providers.len(), 1, "one search source");
+                let hits = providers[0].search(&message.subject);
+                let hit = hits
+                    .iter()
+                    .find(|hit| hit.kind == crate::search::MAIL_KIND && hit.title == message.subject)
+                    .expect("the loaded message is found by its subject");
+                assert!(
+                    hit.anchor().starts_with("mail.message:"),
+                    "{}",
+                    hit.anchor()
+                );
+                app.call("open", serde_json::json!({ "anchor": hit.anchor() }))
+                    .expect("the hit's message opens");
+                app.settle();
+                let folders = providers[0].search("Archive");
+                let archive = folders
+                    .iter()
+                    .find(|hit| hit.kind == crate::search::FOLDER_KIND && hit.title == "Archive")
+                    .expect("the archive folder is found");
+                app.call("open", serde_json::json!({ "anchor": archive.anchor() }))
+                    .expect("the hit's folder opens");
+                app.settle();
+                assert_eq!(
+                    app.with_surface::<crate::app::MailApp, _>(|mail| mail.shared.borrow().folder),
+                    Some(Folder::Archive)
+                );
+            }
 
-        /// A change from any door — an agent's action, an undo, a
-        /// collaborator's edit — is what the server has to be told, exactly
-        /// as a click on the message is.
-        #[test]
-        fn every_door_reaches_the_server_through_the_document() {
-            use crate::actions::{IngestBaseline, ServerUpdate};
-            use crate::resource::{Mail, TestMail, mailbox};
-            use ui::tilo_resource::Id;
+            // A message the engine loaded that has no row in the document yet
+            // still opens from a search hit: its address resolves to the
+            // window's live row and its open view.
+            phase a_loaded_message_without_a_document_row_opens_from_a_hit;
+            {
+                ui::i18n::I18nManager::init("en-US");
+                let app = crate::app::MailApp::new_sample();
+                let message = app
+                    .state()
+                    .shared_mailbox()
+                    .messages
+                    .values()
+                    .next()
+                    .expect("the sample has mail")
+                    .clone();
+                let id = format!("mail.message:{}", message.id);
+                let row = app
+                    .state()
+                    .live_row(&id)
+                    .expect("a loaded message resolves to a live row")
+                    .into_resource();
+                assert!(row.actions.iter().any(|action| action.id == "open"));
+                assert!(
+                    app.state()
+                        .live_row("mail.message:00000000-0000-0000-0000-000000000000")
+                        .is_none(),
+                    "a message that is not loaded resolves to nothing"
+                );
+            }
 
-            ui::i18n::I18nManager::init("en-US");
-            let mut app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
-            let id = app
-                .state()
-                .messages
-                .iter()
-                .find(|(_, message)| {
-                    message.folder == Folder::Inbox && !message.read && !message.starred
-                })
-                .map(|(id, _)| id.as_str().to_owned())
-                .expect("an unread inbox message");
-            let fetched = IngestBaseline {
-                id: id.clone(),
-                read: Some(false),
-                starred: Some(false),
-                folder: Some("inbox".into()),
-                account: Some(crate::sample::sample_account_store().active_config().email),
-                locator: Some("launch@example.test".into()),
-                label: None,
-            };
-            app.invoke(Mail::INGEST.with(mailbox::Ingest {
-                messages: vec![fetched],
-            }))
-            .unwrap();
-            assert!(app.state().server_updates().is_empty());
+            // The purge confirmation shows messages that really are in Trash.
+            phase the_purge_confirmation_stages_its_messages_in_trash_through_actions;
+            {
+                ui::i18n::I18nManager::init("en-US");
+                let mut app = TestApp::<MailShell>::capture(Some("bulk_purge_confirmation")).unwrap();
+                let trashed = app
+                    .state()
+                    .messages
+                    .values()
+                    .filter(|message| !message.purged && message.folder == Folder::Trash)
+                    .count();
+                let sample_trash = crate::sample::sample_mailbox()
+                    .messages
+                    .values()
+                    .filter(|message| message.folder == Folder::Trash)
+                    .count();
+                assert_eq!(trashed, sample_trash + 2);
+                let frame = app.harness().inspection_json().unwrap();
+                assert!(frame.contains("Delete permanently"), "{frame}");
+            }
 
-            app.invoke(
-                ui::tilo_resource::Invoke::edit(
-                    &Mail::paths()
+            // A keyboard triage goes through the framework's door: the starred
+            // message is in the document, and one undo takes it back.
+            phase a_shortcut_is_one_undo_step_through_the_framework;
+            {
+                ui::i18n::I18nManager::init("en-US");
+                let mut app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
+                let starred = |app: &TestApp<MailShell>| {
+                    app.state()
                         .messages
-                        .item(&Id::from_raw(id.clone()))
-                        .starred
-                        .set(true),
+                        .values()
+                        .filter(|message| message.starred)
+                        .count()
+                };
+                let before = starred(&app);
+                app.harness().type_text("s");
+                let after = starred(&app);
+                assert_ne!(after, before, "S toggled the selected message's star");
+                assert!(app.undo());
+                assert_eq!(starred(&app), before);
+            }
+
+            // A change from any door — an agent's action, an undo, a
+            // collaborator's edit — is what the server has to be told, exactly
+            // as a click on the message is.
+            phase every_door_reaches_the_server_through_the_document;
+            {
+                use crate::actions::{IngestBaseline, ServerUpdate};
+                use crate::resource::{Mail, TestMail, mailbox};
+                use ui::tilo_resource::Id;
+
+                ui::i18n::I18nManager::init("en-US");
+                let mut app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
+                let id = app
+                    .state()
+                    .messages
+                    .iter()
+                    .find(|(_, message)| {
+                        message.folder == Folder::Inbox && !message.read && !message.starred
+                    })
+                    .map(|(id, _)| id.as_str().to_owned())
+                    .expect("an unread inbox message");
+                let fetched = IngestBaseline {
+                    id: id.clone(),
+                    read: Some(false),
+                    starred: Some(false),
+                    folder: Some("inbox".into()),
+                    account: Some(crate::sample::sample_account_store().active_config().email),
+                    locator: Some("launch@example.test".into()),
+                    label: None,
+                };
+                app.invoke(Mail::INGEST.with(mailbox::Ingest {
+                    messages: vec![fetched],
+                }))
+                .unwrap();
+                assert!(app.state().server_updates().is_empty());
+
+                app.invoke(
+                    ui::tilo_resource::Invoke::edit(
+                        &Mail::paths()
+                            .messages
+                            .item(&Id::from_raw(id.clone()))
+                            .starred
+                            .set(true),
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
-            )
-            .unwrap();
-            assert!(matches!(
-                app.state().server_updates().as_slice(),
-                [ServerUpdate::Flags { starred: true, .. }]
-            ));
-            assert!(app.undo());
-            assert!(
-                app.state().server_updates().is_empty(),
-                "undone before the server heard of it"
-            );
+                .unwrap();
+                assert!(matches!(
+                    app.state().server_updates().as_slice(),
+                    [ServerUpdate::Flags { starred: true, .. }]
+                ));
+                assert!(app.undo());
+                assert!(
+                    app.state().server_updates().is_empty(),
+                    "undone before the server heard of it"
+                );
 
-            app.merge_peer_edit(|doc| TestMail::set_folder_for(doc, &id, Folder::Archive));
-            assert!(matches!(
-                app.state().server_updates().as_slice(),
-                [ServerUpdate::Move {
-                    to: Folder::Archive,
-                    ..
-                }]
-            ));
-        }
+                app.merge_peer_edit(|doc| TestMail::set_folder_for(doc, &id, Folder::Archive));
+                assert!(matches!(
+                    app.state().server_updates().as_slice(),
+                    [ServerUpdate::Move {
+                        to: Folder::Archive,
+                        ..
+                    }]
+                ));
+            }
 
-        /// A capture is the same on every run: the sample mailbox's ids do
-        /// not change between captures.
-        #[test]
-        fn the_sample_mailbox_is_the_same_on_every_run() {
-            let ids = |mailbox: crate::model::Mailbox| {
-                let mut ids: Vec<_> = mailbox.messages.keys().copied().collect();
-                ids.sort();
-                ids
-            };
-            assert_eq!(
-                ids(crate::sample::sample_mailbox()),
-                ids(crate::sample::sample_mailbox())
-            );
-        }
+            // A capture is the same on every run: the sample mailbox's ids do
+            // not change between captures.
+            phase the_sample_mailbox_is_the_same_on_every_run;
+            {
+                let ids = |mailbox: crate::model::Mailbox| {
+                    let mut ids: Vec<_> = mailbox.messages.keys().copied().collect();
+                    ids.sort();
+                    ids
+                };
+                assert_eq!(
+                    ids(crate::sample::sample_mailbox()),
+                    ids(crate::sample::sample_mailbox())
+                );
+            }
 
-        /// History previews a past version from the document alone: it reads
-        /// no accounts and starts no engine, so the preview of a version is
-        /// the onboarding over that version's state.
-        #[test]
-        fn a_past_version_reads_no_accounts() {
-            ui::i18n::I18nManager::init("en-US");
-            let app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
-            let latest = app.versions().last().map(|version| version.hash).unwrap();
-            let past = app.past_version(&[latest]).unwrap();
-            let shown = past.texts().join("\n");
-            assert!(shown.contains("No email account yet"), "{shown}");
-            for account in crate::sample::sample_account_store().accounts {
-                assert!(!shown.contains(&account.config.email), "{shown}");
+            // History previews a past version from the document alone: it reads
+            // no accounts and starts no engine, so the preview of a version is
+            // the onboarding over that version's state.
+            phase a_past_version_reads_no_accounts;
+            {
+                ui::i18n::I18nManager::init("en-US");
+                let app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
+                let latest = app.versions().last().map(|version| version.hash).unwrap();
+                let past = app.past_version(&[latest]).unwrap();
+                let shown = past.texts().join("\n");
+                assert!(shown.contains("No email account yet"), "{shown}");
+                for account in crate::sample::sample_account_store().accounts {
+                    assert!(!shown.contains(&account.config.email), "{shown}");
+                }
             }
         }
     }
@@ -2455,117 +2470,122 @@ mod tests {
             app
         }
 
-        /// The format a person writes in follows them: switching it is
-        /// stored in their Mail preferences, and a window opened later (on
-        /// this device or another) starts its compositions in it.
-        #[test]
-        fn the_compose_format_follows_the_person() {
-            use super::super::MailPreferences;
-            use crate::model::ComposeFormat;
+        tilo_test_env::scenario! {
+            /// The draft body as rich text, edited by a person and by an agent.
+            fn the_draft_body_is_typed_formatted_and_linked_through_mail;
 
-            let mut app = composing();
-            let format = control(&mut app, "format");
-            app.harness().click_at(format.center().x, format.center().y);
-            assert_eq!(
-                app.settings::<MailPreferences>().get().compose_format,
-                ComposeFormat::Text
-            );
+            // The format a person writes in follows them: switching it is
+            // stored in their Mail preferences, and a window opened later (on
+            // this device or another) starts its compositions in it.
+            phase the_compose_format_follows_the_person;
+            {
+                use super::super::MailPreferences;
+                use crate::model::ComposeFormat;
 
-            let mut later = TestApp::<MailShell>::new().unwrap();
-            later
-                .settings::<MailPreferences>()
-                .set(&MailPreferences {
-                    compose_format: ComposeFormat::Text,
-                    ..MailPreferences::default()
-                })
-                .unwrap();
-            later.harness().relayout();
-            later.call("compose", serde_json::json!({})).unwrap();
-            let shown = later.harness().inspection_json().unwrap();
-            assert!(shown.contains("mail.compose:body"), "the composer is open");
-            assert!(
-                !shown.contains("mail.compose:bold"),
-                "a plain-text composition has no formatting: {shown}"
-            );
-        }
+                let mut app = composing();
+                let format = control(&mut app, "format");
+                app.harness().click_at(format.center().x, format.center().y);
+                assert_eq!(
+                    app.settings::<MailPreferences>().get().compose_format,
+                    ComposeFormat::Text
+                );
 
-        #[test]
-        fn typing_in_the_draft_body_edits_it_through_mail_a_word_a_step() {
-            let mut app = composing();
-            app.harness().type_text("Hi there");
-            assert_eq!(body(&app), ["Hi there"]);
-            let edits = app
-                .history()
-                .into_iter()
-                .filter(|context| {
-                    matches!(&context.what, Some(tilo_actions::Did::Edit(edit))
-                        if edit.field == "rich_body")
-                })
-                .count();
-            assert!(edits > 0, "history names the draft body as what was edited");
-            assert!(app.undo());
-            assert_eq!(body(&app), ["Hi "]);
-        }
+                let mut later = TestApp::<MailShell>::new().unwrap();
+                later
+                    .settings::<MailPreferences>()
+                    .set(&MailPreferences {
+                        compose_format: ComposeFormat::Text,
+                        ..MailPreferences::default()
+                    })
+                    .unwrap();
+                later.harness().relayout();
+                later.call("compose", serde_json::json!({})).unwrap();
+                let shown = later.harness().inspection_json().unwrap();
+                assert!(shown.contains("mail.compose:body"), "the composer is open");
+                assert!(
+                    !shown.contains("mail.compose:bold"),
+                    "a plain-text composition has no formatting: {shown}"
+                );
+            }
 
-        #[test]
-        fn formatting_marks_what_is_typed_next() {
-            let mut app = composing();
-            let bold = control(&mut app, "bold");
-            app.harness().click_at(bold.center().x, bold.center().y);
-            app.harness().type_text("Hi");
-            assert_eq!(body(&app), ["Hi"]);
-            let html = html(&app);
-            assert!(html.contains("<strong>Hi</strong>"), "got: {html}");
-        }
+            phase typing_in_the_draft_body_edits_it_through_mail_a_word_a_step;
+            {
+                let mut app = composing();
+                app.harness().type_text("Hi there");
+                assert_eq!(body(&app), ["Hi there"]);
+                let edits = app
+                    .history()
+                    .into_iter()
+                    .filter(|context| {
+                        matches!(&context.what, Some(tilo_actions::Did::Edit(edit))
+                            if edit.field == "rich_body")
+                    })
+                    .count();
+                assert!(edits > 0, "history names the draft body as what was edited");
+                assert!(app.undo());
+                assert_eq!(body(&app), ["Hi "]);
+            }
 
-        #[test]
-        fn the_link_prompt_links_the_typed_address() {
-            let mut app = composing();
-            // The command may sit in the bar's overflow menu in a narrow
-            // composer, so it is addressed by its name, as a screen reader
-            // does.
-            let owner = owner(&mut app, "mail.compose:link");
-            app.harness()
-                .perform_semantic_named(
-                    &owner,
-                    Some("mail.compose:link"),
-                    &ui::a11y::Action::Activate,
-                )
-                .unwrap();
-            assert!(
+            phase formatting_marks_what_is_typed_next;
+            {
+                let mut app = composing();
+                let bold = control(&mut app, "bold");
+                app.harness().click_at(bold.center().x, bold.center().y);
+                app.harness().type_text("Hi");
+                assert_eq!(body(&app), ["Hi"]);
+                let html = html(&app);
+                assert!(html.contains("<strong>Hi</strong>"), "got: {html}");
+            }
+
+            phase the_link_prompt_links_the_typed_address;
+            {
+                let mut app = composing();
+                // The command may sit in the bar's overflow menu in a narrow
+                // composer, so it is addressed by its name, as a screen reader
+                // does.
+                let owner = owner(&mut app, "mail.compose:link");
                 app.harness()
-                    .inspection_json()
-                    .unwrap()
-                    .contains("mail.compose:prompt"),
-                "the link prompt opened"
-            );
-            // The prompt starts with the scheme; the address goes after it.
-            app.harness().key("End");
-            app.harness().type_text("example.test/docs");
-            app.harness().key("Enter");
-            let html = html(&app);
-            assert!(
-                html.contains("href=\"https://example.test/docs\""),
-                "got: {html}"
-            );
-        }
+                    .perform_semantic_named(
+                        &owner,
+                        Some("mail.compose:link"),
+                        &ui::a11y::Action::Activate,
+                    )
+                    .unwrap();
+                assert!(
+                    app.harness()
+                        .inspection_json()
+                        .unwrap()
+                        .contains("mail.compose:prompt"),
+                    "the link prompt opened"
+                );
+                // The prompt starts with the scheme; the address goes after it.
+                app.harness().key("End");
+                app.harness().type_text("example.test/docs");
+                app.harness().key("Enter");
+                let html = html(&app);
+                assert!(
+                    html.contains("href=\"https://example.test/docs\""),
+                    "got: {html}"
+                );
+            }
 
-        #[test]
-        fn an_agent_edits_the_draft_body_through_its_own_address() {
-            let mut app = composing();
-            app.invoke_child::<tilo_document::RichText>(
-                &crate::resource::draft_body_resource_id(None),
-                ui::tilo_resource::Invoke::apply(&RichTextAction::ReplaceBody {
-                    markdown: "from an agent".into(),
-                })
-                .unwrap(),
-            )
-            .expect("the draft body is published at its own address");
-            assert_eq!(body(&app), ["from an agent"]);
-            let shown = app.harness().inspection_json().unwrap();
-            assert!(shown.contains("from an agent"), "the composer shows it");
-            assert!(app.undo());
-            assert_eq!(body(&app), [""]);
+            phase an_agent_edits_the_draft_body_through_its_own_address;
+            {
+                let mut app = composing();
+                app.invoke_child::<tilo_document::RichText>(
+                    &crate::resource::draft_body_resource_id(None),
+                    ui::tilo_resource::Invoke::apply(&RichTextAction::ReplaceBody {
+                        markdown: "from an agent".into(),
+                    })
+                    .unwrap(),
+                )
+                .expect("the draft body is published at its own address");
+                assert_eq!(body(&app), ["from an agent"]);
+                let shown = app.harness().inspection_json().unwrap();
+                assert!(shown.contains("from an agent"), "the composer shows it");
+                assert!(app.undo());
+                assert_eq!(body(&app), [""]);
+            }
         }
     }
 }

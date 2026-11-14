@@ -26,46 +26,83 @@ fn invitation(events: &str) -> String {
 
 const EVENT: &str = "BEGIN:VEVENT\r\nUID:a@tilo\r\nSUMMARY:Review\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\nEND:VEVENT\r\n";
 
-#[test]
-fn calendar_invitation_acceptance_is_structural_and_honours_overrides() {
+tilo_test_env::scenario! {
+    /// The values the verbs carry: a calendar invitation and the text a draft starts from.
+    fn invitations_and_draft_text_are_read_structurally;
+
+    phase calendar_invitation_acceptance_is_structural_and_honours_overrides;
     {
-        assert!(valid_calendar_invitation(&invitation(EVENT)));
-        let override_event = "BEGIN:VEVENT\r\nUID:a@tilo\r\nRECURRENCE-ID;VALUE=DATE:20260619\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n";
-        assert!(
-            valid_calendar_invitation(&invitation(&format!("{EVENT}{override_event}"))),
-            "an overridden occurrence of the same event is part of one invitation"
-        );
-        let folded = invitation(EVENT).replace("SUMMARY:Review", "SUMMARY:Rev\r\n iew");
-        assert!(valid_calendar_invitation(&folded));
+        {
+            assert!(valid_calendar_invitation(&invitation(EVENT)));
+            let override_event = "BEGIN:VEVENT\r\nUID:a@tilo\r\nRECURRENCE-ID;VALUE=DATE:20260619\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n";
+            assert!(
+                valid_calendar_invitation(&invitation(&format!("{EVENT}{override_event}"))),
+                "an overridden occurrence of the same event is part of one invitation"
+            );
+            let folded = invitation(EVENT).replace("SUMMARY:Review", "SUMMARY:Rev\r\n iew");
+            assert!(valid_calendar_invitation(&folded));
+        }
+
+        {
+            let lookalike = EVENT.replace("SUMMARY:Review", "SUMMARY:BEGIN:VEVENT");
+            assert!(
+                valid_calendar_invitation(&invitation(&lookalike)),
+                "event text that looks like a component is just text"
+            );
+            let two_events = format!("{EVENT}{}", EVENT.replace("UID:a@tilo", "UID:b@tilo"));
+            assert!(!valid_calendar_invitation(&invitation(&two_events)));
+            let method_in_event = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nMETHOD:REQUEST\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+            assert!(!valid_calendar_invitation(method_in_event));
+            let publish = invitation(EVENT).replace("METHOD:REQUEST", "METHOD:PUBLISH");
+            assert!(!valid_calendar_invitation(&publish));
+            let no_uid = invitation(&EVENT.replace("UID:a@tilo\r\n", ""));
+            assert!(!valid_calendar_invitation(&no_uid));
+            let misnested = invitation(&EVENT.replace("END:VALARM", "END:VEVENT"));
+            assert!(!valid_calendar_invitation(&misnested));
+            let trailing = format!("{}BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", invitation(EVENT));
+            assert!(!valid_calendar_invitation(&trailing));
+            assert!(!valid_calendar_invitation(
+                &invitation(EVENT).replace("\r\n", "\n")
+            ));
+            assert!(!valid_calendar_invitation(&invitation("")));
+            let oversized = invitation(&format!(
+                "BEGIN:VEVENT\r\nUID:a\r\nDESCRIPTION:{}\r\nEND:VEVENT\r\n",
+                "x".repeat(MAX_CALENDAR_ICS_BYTES)
+            ));
+            assert!(!valid_calendar_invitation(&oversized));
+        }
     }
 
+    phase a_blank_line_in_the_draft_text_only_separates_paragraphs;
     {
-        let lookalike = EVENT.replace("SUMMARY:Review", "SUMMARY:BEGIN:VEVENT");
-        assert!(
-            valid_calendar_invitation(&invitation(&lookalike)),
-            "event text that looks like a component is just text"
+        let mut mail = Replica::<Mail>::new();
+        let root = |mail: &Replica<Mail>| {
+            crate::resource::draft_body_object(mail.doc(), None).expect("a body")
+        };
+        apply(
+            &mut mail,
+            Mail::START_DRAFT_BODY.with(mailbox::StartDraftBody {
+                draft: None,
+                text: "Hi Ada,\n\nThanks for the notes.\n\n> the notes".into(),
+                html: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            tilo_rich_text::blocks_under(mail.doc(), &root(&mail))
+                .unwrap()
+                .into_iter()
+                .map(|block| (block.kind, block.text))
+                .collect::<Vec<_>>(),
+            [
+                (ui::widget::BlockKind::Paragraph, "Hi Ada,".to_owned()),
+                (
+                    ui::widget::BlockKind::Paragraph,
+                    "Thanks for the notes.".to_owned()
+                ),
+                (ui::widget::BlockKind::Quote, "the notes".to_owned()),
+            ]
         );
-        let two_events = format!("{EVENT}{}", EVENT.replace("UID:a@tilo", "UID:b@tilo"));
-        assert!(!valid_calendar_invitation(&invitation(&two_events)));
-        let method_in_event = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nMETHOD:REQUEST\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        assert!(!valid_calendar_invitation(method_in_event));
-        let publish = invitation(EVENT).replace("METHOD:REQUEST", "METHOD:PUBLISH");
-        assert!(!valid_calendar_invitation(&publish));
-        let no_uid = invitation(&EVENT.replace("UID:a@tilo\r\n", ""));
-        assert!(!valid_calendar_invitation(&no_uid));
-        let misnested = invitation(&EVENT.replace("END:VALARM", "END:VEVENT"));
-        assert!(!valid_calendar_invitation(&misnested));
-        let trailing = format!("{}BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", invitation(EVENT));
-        assert!(!valid_calendar_invitation(&trailing));
-        assert!(!valid_calendar_invitation(
-            &invitation(EVENT).replace("\r\n", "\n")
-        ));
-        assert!(!valid_calendar_invitation(&invitation("")));
-        let oversized = invitation(&format!(
-            "BEGIN:VEVENT\r\nUID:a\r\nDESCRIPTION:{}\r\nEND:VEVENT\r\n",
-            "x".repeat(MAX_CALENDAR_ICS_BYTES)
-        ));
-        assert!(!valid_calendar_invitation(&oversized));
     }
 }
 
@@ -118,128 +155,305 @@ fn fetched(id: &str, read: bool, folder: Folder) -> IngestBaseline {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each phase and its fixture visible"
-)]
-fn flags_and_purges_converge_without_resurrection() {
+tilo_test_env::scenario! {
+    /// The mailbox on its own: what its verbs do on replicas that merge, and what the servers are told.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each phase and its fixture visible"
+    )]
+    fn mailbox_verbs_converge_fail_closed_and_follow_the_server;
+
+    phase flags_and_purges_converge_without_resurrection;
     {
-        let mut mail = Replica::<Mail>::new();
-        let mut mb = sample_mailbox();
-        let id = *mb.messages.keys().next().unwrap();
-        mb.mark_read(id, true);
-        mb.toggle_star(id);
-        let starred = mb.get(id).unwrap().starred;
-        ingest(
-            &mut mail,
-            vec![IngestBaseline::from_message(mb.get(id).unwrap())],
-        );
-        let mut fresh = mb.clone();
-        for m in fresh.messages.values_mut() {
-            m.read = false;
-            m.starred = false;
+        {
+            let mut mail = Replica::<Mail>::new();
+            let mut mb = sample_mailbox();
+            let id = *mb.messages.keys().next().unwrap();
+            mb.mark_read(id, true);
+            mb.toggle_star(id);
+            let starred = mb.get(id).unwrap().starred;
+            ingest(
+                &mut mail,
+                vec![IngestBaseline::from_message(mb.get(id).unwrap())],
+            );
+            let mut fresh = mb.clone();
+            for m in fresh.messages.values_mut() {
+                m.read = false;
+                m.starred = false;
+            }
+            mail.state().unwrap().apply_flags(&mut fresh);
+            assert_eq!(fresh.get(id).unwrap().starred, starred);
+            assert!(fresh.get(id).unwrap().read);
         }
-        mail.state().unwrap().apply_flags(&mut fresh);
-        assert_eq!(fresh.get(id).unwrap().starred, starred);
-        assert!(fresh.get(id).unwrap().read);
-    }
 
-    {
-        let mut mail = Replica::<Mail>::new();
-        let mut mailbox = sample_mailbox();
-        let id = *mailbox.messages.keys().next().expect("sample message");
-        let fetched = mailbox.get(id).expect("sample message").clone();
-        ingest(&mut mail, vec![IngestBaseline::from_message(&fetched)]);
-        apply(
-            &mut mail,
-            Mail::MARK_READ.with(mailbox::MarkRead {
+        {
+            let mut mail = Replica::<Mail>::new();
+            let mut mailbox = sample_mailbox();
+            let id = *mailbox.messages.keys().next().expect("sample message");
+            let fetched = mailbox.get(id).expect("sample message").clone();
+            ingest(&mut mail, vec![IngestBaseline::from_message(&fetched)]);
+            apply(
+                &mut mail,
+                Mail::MARK_READ.with(mailbox::MarkRead {
+                    messages: vec![id.to_string()],
+                    read: true,
+                }),
+            )
+            .unwrap();
+            let mut stale_fetch = fetched;
+            stale_fetch.read = false;
+            ingest(&mut mail, vec![IngestBaseline::from_message(&stale_fetch)]);
+            assert!(state(&mail, &id.to_string()).unwrap().read);
+            mail.state().unwrap().apply_flags(&mut mailbox);
+            assert!(mailbox.get(id).is_some_and(|message| message.read));
+        }
+
+        {
+            let mut mail = Replica::<Mail>::new();
+            let mut mailbox = sample_mailbox();
+            let id = *mailbox.messages.keys().next().expect("sample message");
+            ingest(
+                &mut mail,
+                vec![IngestBaseline::from_message(mailbox.get(id).unwrap())],
+            );
+            edit(&mut mail, &at(&id.to_string()).folder.set(Folder::Trash)).unwrap();
+            apply(
+                &mut mail,
+                Mail::PURGE.with(mailbox::Purge {
+                    messages: vec![id.to_string()],
+                }),
+            )
+            .unwrap_err();
+            mail.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
                 messages: vec![id.to_string()],
-                read: true,
-            }),
-        )
-        .unwrap();
-        let mut stale_fetch = fetched;
-        stale_fetch.read = false;
-        ingest(&mut mail, vec![IngestBaseline::from_message(&stale_fetch)]);
-        assert!(state(&mail, &id.to_string()).unwrap().read);
-        mail.state().unwrap().apply_flags(&mut mailbox);
-        assert!(mailbox.get(id).is_some_and(|message| message.read));
+            }))
+            .unwrap();
+            mail.state().unwrap().apply_flags(&mut mailbox);
+            assert!(
+                mailbox.get(id).is_none(),
+                "a peer converges by dropping the purged hydrated message"
+            );
+            ingest(
+                &mut mail,
+                vec![IngestBaseline::from_message(
+                    sample_mailbox().messages.values().next().unwrap(),
+                )],
+            );
+            ingest(
+                &mut mail,
+                vec![IngestBaseline::register_only(id.to_string())],
+            );
+            assert!(
+                state(&mail, &id.to_string()).is_none(),
+                "still deleted for good"
+            );
+        }
+
+        {
+            let mut mail = Replica::<Mail>::new();
+            let mut mb = sample_mailbox();
+            let some = *mb.messages.keys().next().unwrap();
+            {
+                let m = mb.get_mut(some).unwrap();
+                m.read = false;
+                m.starred = false;
+                m.folder = Folder::Inbox;
+            }
+            let id = some.to_string();
+            register(&mut mail, &id, Folder::Inbox);
+            apply(
+                &mut mail,
+                Mail::MARK_READ.with(mailbox::MarkRead {
+                    messages: vec![id.clone()],
+                    read: true,
+                }),
+            )
+            .unwrap();
+            edit(&mut mail, &at(&id).starred.set(true)).unwrap();
+            edit(&mut mail, &at(&id).folder.set(Folder::Archive)).unwrap();
+            edit(&mut mail, &at(&id).labels.insert(&"work".to_owned())).unwrap();
+            assert!(
+                edit(&mut mail, &at(&id).read.set(false)).is_err(),
+                "read changes through the housekeeping verb"
+            );
+            mail.state().unwrap().apply_flags(&mut mb);
+            let m = mb.get(some).unwrap();
+            assert!(m.read && m.starred);
+            assert_eq!(m.folder, Folder::Archive);
+            assert_eq!(m.labels, vec!["work"]);
+        }
     }
 
+    phase server_updates_follow_the_mailbox_until_the_server_confirms;
     {
         let mut mail = Replica::<Mail>::new();
-        let mut mailbox = sample_mailbox();
-        let id = *mailbox.messages.keys().next().expect("sample message");
-        ingest(
-            &mut mail,
-            vec![IngestBaseline::from_message(mailbox.get(id).unwrap())],
+        ingest(&mut mail, vec![fetched("m1", false, Folder::Inbox)]);
+        let updates = |mail: &Replica<Mail>| mail.state().unwrap().server_updates();
+        assert!(updates(&mail).is_empty(), "nothing changed");
+
+        let mark = |mail: &mut Replica<Mail>, read| {
+            apply(
+                mail,
+                Mail::MARK_READ.with(mailbox::MarkRead {
+                    messages: ids(&["m1"]),
+                    read,
+                }),
+            )
+            .unwrap();
+        };
+        let confirm = |mail: &mut Replica<Mail>, update: &ServerUpdate| {
+            apply(
+                mail,
+                Mail::SERVER_APPLIED.with(mailbox::ServerApplied {
+                    update: update.clone(),
+                }),
+            )
+            .unwrap();
+        };
+        mark(&mut mail, true);
+        let flags = ServerUpdate::Flags {
+            id: "m1".into(),
+            account: "you@example.test".into(),
+            locator: "m1@example.test".into(),
+            folder: Folder::Inbox,
+            read: true,
+            starred: false,
+        };
+        assert_eq!(updates(&mail), std::slice::from_ref(&flags));
+        confirm(&mut mail, &flags);
+        assert!(updates(&mail).is_empty());
+
+        mark(&mut mail, false);
+        mark(&mut mail, true);
+        assert!(
+            updates(&mail).is_empty(),
+            "a change taken back leaves nothing to tell"
         );
-        edit(&mut mail, &at(&id.to_string()).folder.set(Folder::Trash)).unwrap();
-        apply(
-            &mut mail,
-            Mail::PURGE.with(mailbox::Purge {
-                messages: vec![id.to_string()],
-            }),
-        )
-        .unwrap_err();
+
+        edit(&mut mail, &at("m1").folder.set(Folder::Trash)).unwrap();
+        let moved = ServerUpdate::Move {
+            id: "m1".into(),
+            account: "you@example.test".into(),
+            locator: "m1@example.test".into(),
+            from: Folder::Inbox,
+            to: Folder::Trash,
+        };
+        assert_eq!(updates(&mail), std::slice::from_ref(&moved));
+        confirm(&mut mail, &moved);
+        assert!(updates(&mail).is_empty());
+
         mail.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
-            messages: vec![id.to_string()],
+            messages: ids(&["m1"]),
         }))
         .unwrap();
-        mail.state().unwrap().apply_flags(&mut mailbox);
-        assert!(
-            mailbox.get(id).is_none(),
-            "a peer converges by dropping the purged hydrated message"
-        );
-        ingest(
-            &mut mail,
-            vec![IngestBaseline::from_message(
-                sample_mailbox().messages.values().next().unwrap(),
-            )],
-        );
-        ingest(
-            &mut mail,
-            vec![IngestBaseline::register_only(id.to_string())],
-        );
-        assert!(
-            state(&mail, &id.to_string()).is_none(),
-            "still deleted for good"
-        );
+        let removed = ServerUpdate::Remove {
+            id: "m1".into(),
+            account: "you@example.test".into(),
+            locator: "m1@example.test".into(),
+            folder: Folder::Trash,
+        };
+        assert_eq!(updates(&mail), std::slice::from_ref(&removed));
+        confirm(&mut mail, &removed);
+        assert!(updates(&mail).is_empty());
+
+        let mut local =
+            IngestBaseline::from_message(&sample_mailbox().messages.values().next().cloned().unwrap());
+        local.id = "draft".into();
+        ingest(&mut mail, vec![local]);
+        edit(&mut mail, &at("draft").starred.set(true)).unwrap();
+        assert!(updates(&mail).is_empty(), "a local message stays local");
     }
 
+    phase batch_verbs_fail_closed_and_converge;
     {
-        let mut mail = Replica::<Mail>::new();
-        let mut mb = sample_mailbox();
-        let some = *mb.messages.keys().next().unwrap();
         {
-            let m = mb.get_mut(some).unwrap();
-            m.read = false;
-            m.starred = false;
-            m.folder = Folder::Inbox;
+            let mut mail = Replica::<Mail>::new();
+            register(&mut mail, "inbox", Folder::Inbox);
+            register(&mut mail, "trash", Folder::Trash);
+            let before = mail.heads();
+            assert!(
+                mail.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
+                    messages: ids(&["inbox", "missing", "trash"]),
+                }))
+                .is_err(),
+                "mixed/stale purge refuses rather than deleting a valid subset"
+            );
+            assert!(state(&mail, "inbox").is_some() && state(&mail, "trash").is_some());
+            assert_eq!(mail.heads(), before);
         }
-        let id = some.to_string();
-        register(&mut mail, &id, Folder::Inbox);
-        apply(
-            &mut mail,
-            Mail::MARK_READ.with(mailbox::MarkRead {
-                messages: vec![id.clone()],
-                read: true,
-            }),
-        )
-        .unwrap();
-        edit(&mut mail, &at(&id).starred.set(true)).unwrap();
-        edit(&mut mail, &at(&id).folder.set(Folder::Archive)).unwrap();
-        edit(&mut mail, &at(&id).labels.insert(&"work".to_owned())).unwrap();
-        assert!(
-            edit(&mut mail, &at(&id).read.set(false)).is_err(),
-            "read changes through the housekeeping verb"
-        );
-        mail.state().unwrap().apply_flags(&mut mb);
-        let m = mb.get(some).unwrap();
-        assert!(m.read && m.starred);
-        assert_eq!(m.folder, Folder::Archive);
-        assert_eq!(m.labels, vec!["work"]);
+
+        {
+            let mut a = Replica::<Mail>::new();
+            register(&mut a, "m", Folder::Trash);
+            let mut b = a.fork();
+            a.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
+                messages: ids(&["m"]),
+            }))
+            .unwrap();
+            a.sync_with(&mut b).unwrap();
+            assert!(state(&b, "m").is_none());
+            assert!(
+                apply(
+                    &mut b,
+                    Mail::MARK_READ.with(mailbox::MarkRead {
+                        messages: ids(&["m"]),
+                        read: true,
+                    })
+                )
+                .is_err(),
+                "a deleted message is not marked read"
+            );
+        }
+
+        {
+            let mut mail = Replica::<Mail>::new();
+            assert!(
+                apply(
+                    &mut mail,
+                    Mail::MARK_READ.with(mailbox::MarkRead {
+                        messages: ids(&["not-a-loaded-message"]),
+                        read: true,
+                    })
+                )
+                .is_err()
+            );
+            assert!(
+                edit(&mut mail, &at("not-a-loaded-message").starred.set(true)).is_err(),
+                "a stale palette row cannot mint flags"
+            );
+            assert!(mail.state().unwrap().messages.is_empty());
+        }
+
+        {
+            let mut mail = Replica::<Mail>::new();
+            register(&mut mail, "m", Folder::Inbox);
+            let many = std::iter::repeat_n("m".to_string(), MAX_MESSAGES_PER_ACTION + 20).collect();
+            apply(
+                &mut mail,
+                Mail::ARCHIVE.with(mailbox::Archive { messages: many }),
+            )
+            .unwrap();
+            assert_eq!(state(&mail, "m").unwrap().folder, Folder::Archive);
+        }
+
+        {
+            let mut read_replica = Replica::<Mail>::new();
+            register(&mut read_replica, "m", Folder::Inbox);
+            let mut star_replica = read_replica.fork();
+            apply(
+                &mut read_replica,
+                Mail::MARK_READ.with(mailbox::MarkRead {
+                    messages: ids(&["m"]),
+                    read: true,
+                }),
+            )
+            .unwrap();
+            edit(&mut star_replica, &at("m").starred.set(true)).unwrap();
+            read_replica.sync_with(&mut star_replica).unwrap();
+            let merged = state(&read_replica, "m").unwrap();
+            assert!(merged.read && merged.starred);
+            assert_eq!(read_replica.state().unwrap(), star_replica.state().unwrap());
+        }
     }
 }
 
@@ -405,86 +619,6 @@ fn save(mail: &mut Replica<Mail>, draft: &Draft) {
 }
 
 #[test]
-fn server_updates_follow_the_mailbox_until_the_server_confirms() {
-    let mut mail = Replica::<Mail>::new();
-    ingest(&mut mail, vec![fetched("m1", false, Folder::Inbox)]);
-    let updates = |mail: &Replica<Mail>| mail.state().unwrap().server_updates();
-    assert!(updates(&mail).is_empty(), "nothing changed");
-
-    let mark = |mail: &mut Replica<Mail>, read| {
-        apply(
-            mail,
-            Mail::MARK_READ.with(mailbox::MarkRead {
-                messages: ids(&["m1"]),
-                read,
-            }),
-        )
-        .unwrap();
-    };
-    let confirm = |mail: &mut Replica<Mail>, update: &ServerUpdate| {
-        apply(
-            mail,
-            Mail::SERVER_APPLIED.with(mailbox::ServerApplied {
-                update: update.clone(),
-            }),
-        )
-        .unwrap();
-    };
-    mark(&mut mail, true);
-    let flags = ServerUpdate::Flags {
-        id: "m1".into(),
-        account: "you@example.test".into(),
-        locator: "m1@example.test".into(),
-        folder: Folder::Inbox,
-        read: true,
-        starred: false,
-    };
-    assert_eq!(updates(&mail), std::slice::from_ref(&flags));
-    confirm(&mut mail, &flags);
-    assert!(updates(&mail).is_empty());
-
-    mark(&mut mail, false);
-    mark(&mut mail, true);
-    assert!(
-        updates(&mail).is_empty(),
-        "a change taken back leaves nothing to tell"
-    );
-
-    edit(&mut mail, &at("m1").folder.set(Folder::Trash)).unwrap();
-    let moved = ServerUpdate::Move {
-        id: "m1".into(),
-        account: "you@example.test".into(),
-        locator: "m1@example.test".into(),
-        from: Folder::Inbox,
-        to: Folder::Trash,
-    };
-    assert_eq!(updates(&mail), std::slice::from_ref(&moved));
-    confirm(&mut mail, &moved);
-    assert!(updates(&mail).is_empty());
-
-    mail.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
-        messages: ids(&["m1"]),
-    }))
-    .unwrap();
-    let removed = ServerUpdate::Remove {
-        id: "m1".into(),
-        account: "you@example.test".into(),
-        locator: "m1@example.test".into(),
-        folder: Folder::Trash,
-    };
-    assert_eq!(updates(&mail), std::slice::from_ref(&removed));
-    confirm(&mut mail, &removed);
-    assert!(updates(&mail).is_empty());
-
-    let mut local =
-        IngestBaseline::from_message(&sample_mailbox().messages.values().next().cloned().unwrap());
-    local.id = "draft".into();
-    ingest(&mut mail, vec![local]);
-    edit(&mut mail, &at("draft").starred.set(true)).unwrap();
-    assert!(updates(&mail).is_empty(), "a local message stays local");
-}
-
-#[test]
 fn a_fetch_adopts_server_changes_and_keeps_changes_on_their_way() {
     let mut mail = Replica::<Mail>::new();
     ingest(&mut mail, vec![fetched("m1", false, Folder::Inbox)]);
@@ -506,130 +640,6 @@ fn a_fetch_adopts_server_changes_and_keeps_changes_on_their_way() {
         state(&mail, "m1").unwrap().folder,
         Folder::Archive,
         "a move made elsewhere is adopted"
-    );
-}
-
-#[test]
-fn batch_verbs_fail_closed_and_converge() {
-    {
-        let mut mail = Replica::<Mail>::new();
-        register(&mut mail, "inbox", Folder::Inbox);
-        register(&mut mail, "trash", Folder::Trash);
-        let before = mail.heads();
-        assert!(
-            mail.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
-                messages: ids(&["inbox", "missing", "trash"]),
-            }))
-            .is_err(),
-            "mixed/stale purge refuses rather than deleting a valid subset"
-        );
-        assert!(state(&mail, "inbox").is_some() && state(&mail, "trash").is_some());
-        assert_eq!(mail.heads(), before);
-    }
-
-    {
-        let mut a = Replica::<Mail>::new();
-        register(&mut a, "m", Folder::Trash);
-        let mut b = a.fork();
-        a.apply_confirmed(Mail::PURGE.with(mailbox::Purge {
-            messages: ids(&["m"]),
-        }))
-        .unwrap();
-        a.sync_with(&mut b).unwrap();
-        assert!(state(&b, "m").is_none());
-        assert!(
-            apply(
-                &mut b,
-                Mail::MARK_READ.with(mailbox::MarkRead {
-                    messages: ids(&["m"]),
-                    read: true,
-                })
-            )
-            .is_err(),
-            "a deleted message is not marked read"
-        );
-    }
-
-    {
-        let mut mail = Replica::<Mail>::new();
-        assert!(
-            apply(
-                &mut mail,
-                Mail::MARK_READ.with(mailbox::MarkRead {
-                    messages: ids(&["not-a-loaded-message"]),
-                    read: true,
-                })
-            )
-            .is_err()
-        );
-        assert!(
-            edit(&mut mail, &at("not-a-loaded-message").starred.set(true)).is_err(),
-            "a stale palette row cannot mint flags"
-        );
-        assert!(mail.state().unwrap().messages.is_empty());
-    }
-
-    {
-        let mut mail = Replica::<Mail>::new();
-        register(&mut mail, "m", Folder::Inbox);
-        let many = std::iter::repeat_n("m".to_string(), MAX_MESSAGES_PER_ACTION + 20).collect();
-        apply(
-            &mut mail,
-            Mail::ARCHIVE.with(mailbox::Archive { messages: many }),
-        )
-        .unwrap();
-        assert_eq!(state(&mail, "m").unwrap().folder, Folder::Archive);
-    }
-
-    {
-        let mut read_replica = Replica::<Mail>::new();
-        register(&mut read_replica, "m", Folder::Inbox);
-        let mut star_replica = read_replica.fork();
-        apply(
-            &mut read_replica,
-            Mail::MARK_READ.with(mailbox::MarkRead {
-                messages: ids(&["m"]),
-                read: true,
-            }),
-        )
-        .unwrap();
-        edit(&mut star_replica, &at("m").starred.set(true)).unwrap();
-        read_replica.sync_with(&mut star_replica).unwrap();
-        let merged = state(&read_replica, "m").unwrap();
-        assert!(merged.read && merged.starred);
-        assert_eq!(read_replica.state().unwrap(), star_replica.state().unwrap());
-    }
-}
-
-#[test]
-fn a_blank_line_in_the_draft_text_only_separates_paragraphs() {
-    let mut mail = Replica::<Mail>::new();
-    let root = |mail: &Replica<Mail>| {
-        crate::resource::draft_body_object(mail.doc(), None).expect("a body")
-    };
-    apply(
-        &mut mail,
-        Mail::START_DRAFT_BODY.with(mailbox::StartDraftBody {
-            draft: None,
-            text: "Hi Ada,\n\nThanks for the notes.\n\n> the notes".into(),
-            html: None,
-        }),
-    )
-    .unwrap();
-    assert_eq!(
-        tilo_rich_text::blocks_under(mail.doc(), &root(&mail))
-            .unwrap()
-            .into_iter()
-            .map(|block| (block.kind, block.text))
-            .collect::<Vec<_>>(),
-        [
-            (ui::widget::BlockKind::Paragraph, "Hi Ada,".to_owned()),
-            (
-                ui::widget::BlockKind::Paragraph,
-                "Thanks for the notes.".to_owned()
-            ),
-            (ui::widget::BlockKind::Quote, "the notes".to_owned()),
-        ]
     );
 }
 

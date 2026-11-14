@@ -130,147 +130,152 @@ mod tests {
         ui::framework::testing::search_source::<Mail>(entries)
     }
 
-    #[test]
-    fn search_matches_subject_sender_and_folded_infixes() {
+    tilo_test_env::scenario! {
+        /// The search source over the mailbox.
+        fn search_finds_mail_by_its_words_recipients_and_place;
+
+        phase search_matches_subject_sender_and_folded_infixes;
         {
-            let mb = sample();
-            let some = mb
-                .messages
-                .values()
-                .find(|message| message.folder != Folder::Trash)
-                .expect("sample mailbox is populated")
-                .clone();
-            let word = some
-                .subject
-                .split_whitespace()
-                .next()
-                .unwrap_or(&some.subject);
-            let hits: Vec<_> = search(&mb)
-                .search(word)
-                .into_iter()
-                .filter(|hit| hit.kind == MAIL_KIND)
-                .collect();
-            assert!(
-                !hits.is_empty(),
-                "a real subject word surfaces at least its message"
-            );
-            assert!(
-                hits.iter().all(|r| r.subtitle.is_some()),
-                "every row shows a sender"
-            );
+            {
+                let mb = sample();
+                let some = mb
+                    .messages
+                    .values()
+                    .find(|message| message.folder != Folder::Trash)
+                    .expect("sample mailbox is populated")
+                    .clone();
+                let word = some
+                    .subject
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(&some.subject);
+                let hits: Vec<_> = search(&mb)
+                    .search(word)
+                    .into_iter()
+                    .filter(|hit| hit.kind == MAIL_KIND)
+                    .collect();
+                assert!(
+                    !hits.is_empty(),
+                    "a real subject word surfaces at least its message"
+                );
+                assert!(
+                    hits.iter().all(|r| r.subtitle.is_some()),
+                    "every row shows a sender"
+                );
+            }
+            {
+                let mut mailbox = sample();
+                let mut message = mailbox
+                    .messages
+                    .values()
+                    .next()
+                    .expect("seeded message")
+                    .clone();
+                message.id = uuid::Uuid::new_v4();
+                message.folder = Folder::Inbox;
+                message.subject = "Málaga release notes".into();
+                message.body.clear();
+                message.attachments.clear();
+                mailbox.insert(message.clone());
+                assert!(
+                    search(&mailbox)
+                        .search("ÁLAG")
+                        .iter()
+                        .any(|hit| hit.title == message.subject),
+                    "Unicode case folding keeps a mixed-case substring discoverable"
+                );
+            }
         }
+
+        phase a_sent_message_is_found_by_its_recipient;
         {
             let mut mailbox = sample();
-            let mut message = mailbox
+            let mut sent = mailbox
                 .messages
                 .values()
                 .next()
                 .expect("seeded message")
                 .clone();
-            message.id = uuid::Uuid::new_v4();
-            message.folder = Folder::Inbox;
-            message.subject = "Málaga release notes".into();
-            message.body.clear();
-            message.attachments.clear();
-            mailbox.insert(message.clone());
+            sent.id = uuid::Uuid::new_v4();
+            sent.folder = Folder::Sent;
+            sent.subject = "Launch plan".into();
+            sent.body = "The plan is attached.".into();
+            sent.to = vec![crate::model::Addr::new(
+                "Grace Hopper",
+                "grace@navy.example",
+            )];
+            sent.cc = vec![crate::model::Addr::bare("ops@navy.example")];
+            mailbox.insert(sent);
+            for query in ["Grace Hopper", "grace@navy.example", "ops@navy"] {
+                assert!(
+                    search(&mailbox)
+                        .search(query)
+                        .iter()
+                        .any(|hit| hit.title == "Launch plan"),
+                    "`{query}` finds the message sent to them"
+                );
+            }
+        }
+
+        phase trash_stays_out_and_every_hit_opens_its_resource;
+        {
+            let mb = sample();
+            let entries = message_entries(&mb);
             assert!(
-                search(&mailbox)
-                    .search("ÁLAG")
-                    .iter()
-                    .any(|hit| hit.title == message.subject),
-                "Unicode case folding keeps a mixed-case substring discoverable"
+                entries.iter().all(|entry| {
+                    let id = entry
+                        .anchor
+                        .as_deref()
+                        .and_then(|anchor| anchor.strip_prefix("mail.message:"))
+                        .and_then(|id| id.parse::<uuid::Uuid>().ok())
+                        .expect("a message anchor");
+                    mb.messages
+                        .values()
+                        .any(|message| message.id == id && message.folder != Folder::Trash)
+                }),
+                "trashed mail is not offered"
             );
-        }
-    }
-
-    #[test]
-    fn a_sent_message_is_found_by_its_recipient() {
-        let mut mailbox = sample();
-        let mut sent = mailbox
-            .messages
-            .values()
-            .next()
-            .expect("seeded message")
-            .clone();
-        sent.id = uuid::Uuid::new_v4();
-        sent.folder = Folder::Sent;
-        sent.subject = "Launch plan".into();
-        sent.body = "The plan is attached.".into();
-        sent.to = vec![crate::model::Addr::new(
-            "Grace Hopper",
-            "grace@navy.example",
-        )];
-        sent.cc = vec![crate::model::Addr::bare("ops@navy.example")];
-        mailbox.insert(sent);
-        for query in ["Grace Hopper", "grace@navy.example", "ops@navy"] {
-            assert!(
-                search(&mailbox)
-                    .search(query)
-                    .iter()
-                    .any(|hit| hit.title == "Launch plan"),
-                "`{query}` finds the message sent to them"
-            );
-        }
-    }
-
-    #[test]
-    fn trash_stays_out_and_every_hit_opens_its_resource() {
-        let mb = sample();
-        let entries = message_entries(&mb);
-        assert!(
-            entries.iter().all(|entry| {
-                let id = entry
-                    .anchor
-                    .as_deref()
-                    .and_then(|anchor| anchor.strip_prefix("mail.message:"))
-                    .and_then(|id| id.parse::<uuid::Uuid>().ok())
-                    .expect("a message anchor");
-                mb.messages
-                    .values()
-                    .any(|message| message.id == id && message.folder != Folder::Trash)
-            }),
-            "trashed mail is not offered"
-        );
-        let folders = search(&mb).search("archive");
-        let archive = folders
-            .iter()
-            .find(|hit| hit.kind == FOLDER_KIND)
-            .expect("the archive folder is found");
-        assert_eq!(archive.subtitle.as_deref(), Some("Mail folder"));
-        assert_eq!(archive.icon, Some(ui::icons::Icon::Archive));
-        assert_eq!(
-            archive.anchor(),
-            crate::resource::folder_resource(Folder::Archive.as_key())
-        );
-    }
-
-    #[test]
-    fn a_late_message_stays_reachable_in_a_large_mailbox() {
-        let mut mailbox = sample();
-        let template = mailbox
-            .messages
-            .values()
-            .next()
-            .expect("seeded message")
-            .clone();
-        for n in 0..3_000 {
-            let mut message = template.clone();
-            message.id = uuid::Uuid::new_v4();
-            message.folder = Folder::Inbox;
-            message.subject = format!("ordinary record {n}");
-            message.body.clear();
-            mailbox.insert(message);
-        }
-        let source = search(&mailbox);
-        let first = source.search_page(&ui::search::SearchQuery::new("ordinary"), None, 7, 3);
-        assert!(first.next.is_some(), "a broad query continues");
-        assert!(first.results.len() <= 3);
-        assert!(
-            source
-                .search("record 2999")
+            let folders = search(&mb).search("archive");
+            let archive = folders
                 .iter()
-                .any(|hit| hit.title == "ordinary record 2999")
-        );
+                .find(|hit| hit.kind == FOLDER_KIND)
+                .expect("the archive folder is found");
+            assert_eq!(archive.subtitle.as_deref(), Some("Mail folder"));
+            assert_eq!(archive.icon, Some(ui::icons::Icon::Archive));
+            assert_eq!(
+                archive.anchor(),
+                crate::resource::folder_resource(Folder::Archive.as_key())
+            );
+        }
+
+        phase a_late_message_stays_reachable_in_a_large_mailbox;
+        {
+            let mut mailbox = sample();
+            let template = mailbox
+                .messages
+                .values()
+                .next()
+                .expect("seeded message")
+                .clone();
+            for n in 0..3_000 {
+                let mut message = template.clone();
+                message.id = uuid::Uuid::new_v4();
+                message.folder = Folder::Inbox;
+                message.subject = format!("ordinary record {n}");
+                message.body.clear();
+                mailbox.insert(message);
+            }
+            let source = search(&mailbox);
+            let first = source.search_page(&ui::search::SearchQuery::new("ordinary"), None, 7, 3);
+            assert!(first.next.is_some(), "a broad query continues");
+            assert!(first.results.len() <= 3);
+            assert!(
+                source
+                    .search("record 2999")
+                    .iter()
+                    .any(|hit| hit.title == "ordinary record 2999")
+            );
+        }
     }
 }
 

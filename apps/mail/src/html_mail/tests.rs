@@ -168,133 +168,368 @@ fn is_web(url: &str) -> bool {
     lower.starts_with("http:") || lower.starts_with("https:") || lower.starts_with("//")
 }
 
-#[test]
-fn a_hostile_mail_keeps_no_script_form_plugin_frame_or_navigation() {
-    let html = html(HOSTILE);
-    for remote in [false, true] {
-        let prepared = prepare(&html, &policy(remote, false));
-        let document = prepared.document.to_ascii_lowercase();
-        for banned in [
-            "<script",
-            "javascript:",
-            "<form",
-            "<input",
-            "<button",
-            "<iframe",
-            "<object",
-            "<embed",
-            "<svg",
-            "<math",
-            "<video",
-            "<audio",
-            "<noscript",
-            "<template",
-            "<base href",
-            "refresh",
-            "onload",
-            "onerror",
-            "formaction",
-            "srcdoc",
-            "ping=",
-            "xlink",
-            "target=\"_self\" ping",
-            "data:text/html",
-            "default-src *",
-            "prefetch",
-            "preconnect",
-        ] {
+tilo_test_env::scenario! {
+    /// What the sealed document keeps of a mail and what it leaves out.
+    fn the_sealed_document_keeps_what_the_mail_wrote_and_nothing_active;
+
+    phase a_hostile_mail_keeps_no_script_form_plugin_frame_or_navigation;
+    {
+        let html = html(HOSTILE);
+        for remote in [false, true] {
+            let prepared = prepare(&html, &policy(remote, false));
+            let document = prepared.document.to_ascii_lowercase();
+            for banned in [
+                "<script",
+                "javascript:",
+                "<form",
+                "<input",
+                "<button",
+                "<iframe",
+                "<object",
+                "<embed",
+                "<svg",
+                "<math",
+                "<video",
+                "<audio",
+                "<noscript",
+                "<template",
+                "<base href",
+                "refresh",
+                "onload",
+                "onerror",
+                "formaction",
+                "srcdoc",
+                "ping=",
+                "xlink",
+                "target=\"_self\" ping",
+                "data:text/html",
+                "default-src *",
+                "prefetch",
+                "preconnect",
+            ] {
+                assert!(
+                    !document.contains(banned),
+                    "remote {remote}: `{banned}` survived:\n{}",
+                    prepared.document
+                );
+            }
+            // What a script would say may stay as words the mail shows (the
+            // engine reads `<scr<script>ipt>alert(5)` as text too), never as
+            let markup = markup(&document);
+            assert!(!markup.contains("alert("), "remote {remote}: {markup}");
             assert!(
-                !document.contains(banned),
-                "remote {remote}: `{banned}` survived:\n{}",
+                attribute_names(&document)
+                    .iter()
+                    .all(|name| !name.starts_with("on")),
+                "remote {remote}: {:?}",
+                attribute_names(&document)
+            );
+            assert_eq!(document.matches("<meta http-equiv").count(), 1);
+            let csp = document
+                .find("content-security-policy")
+                .unwrap_or(usize::MAX);
+            assert!(csp < document.find("<style").unwrap_or(0));
+            assert!(csp < document.find("<body").unwrap_or(0));
+            assert!(document.contains("script-src 'none'"));
+            assert!(document.contains("form-action 'none'"));
+            assert!(document.contains("object-src 'none'"));
+            assert!(document.contains("frame-src 'none'"));
+            assert_eq!(prepared.links, ["https://evil.example/login"]);
+            assert!(
+                prepared.document.contains(
+                    "href=\"https://evil.example/login\" target=\"_blank\" rel=\"noopener noreferrer\""
+                ),
+                "{}",
+                prepared.document
+            );
+            assert!(document.contains("<base target=\"_blank\">"));
+            assert!(prepared.document.contains("Your account is on hold."));
+            assert!(prepared.document.contains("tricky"));
+        }
+    }
+
+    phase a_mail_is_dark_only_when_it_says_it_can_be;
+    {
+        let dark = html(DARK);
+        let in_dark = prepare(&dark, &policy(false, true));
+        assert!(in_dark.dark);
+        assert!(
+            in_dark
+                .document
+                .contains("<meta name=\"color-scheme\" content=\"dark\">")
+        );
+        assert!(
+            in_dark
+                .document
+                .contains("html{background:#1c1c1e;color:#f2f2f7}")
+        );
+        assert!(!in_dark.document.contains("prefers-color-scheme"));
+        assert!(
+            in_dark.document.contains("min-width:0px"),
+            "the dark rules hold"
+        );
+        let in_light = prepare(&dark, &policy(false, false));
+        assert!(!in_light.dark);
+        assert!(
+            in_light.document.contains("max-width:-1px"),
+            "the dark rules do not hold"
+        );
+        for raw in [NEWSLETTER, GITHUB, RECEIPT, INLINE] {
+            let prepared = prepare(&html(raw), &policy(false, true));
+            assert!(!prepared.dark, "a mail without a dark form stays light");
+            assert!(
+                prepared.document.contains(
+                    ":root{color-scheme:light!important}html{background:#ffffff;color:#000000}"
+                )
+            );
+            assert!(!prepared.document.contains("invert"));
+        }
+    }
+
+    phase multipart_alternative_prefers_html_and_keeps_its_text;
+    {
+        let newsletter = message(NEWSLETTER);
+        assert!(newsletter.html_body.is_some());
+        assert!(
+            newsletter.body.contains("WEEKLY HARVEST"),
+            "{}",
+            newsletter.body
+        );
+        assert!(!newsletter.body.contains('<'), "the text part, not markup");
+        let github = message(GITHUB);
+        assert!(github.html_body.is_some());
+        assert!(!github.body.trim().is_empty());
+        let receipt = message(RECEIPT);
+        assert!(receipt.html_body.is_some(), "an HTML-only mail is HTML");
+        let plain = message(PLAIN);
+        assert!(
+            plain.html_body.is_none(),
+            "a text mail never goes to the engine"
+        );
+        assert!(plain.body.contains("https://"));
+    }
+
+    phase a_document_keeps_the_doctype_it_was_written_for_and_loads_as_data;
+    {
+        let standards = prepare(
+            "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"x\"><p>a</p>",
+            &policy(false, false),
+        );
+        assert!(standards.document.starts_with("<!DOCTYPE html PUBLIC"));
+        let quirks = prepare("<p>a</p>", &policy(false, false));
+        assert!(quirks.document.starts_with("<html>"));
+        let late = prepare("<p>a</p><!doctype html>", &policy(false, false));
+        assert!(late.document.starts_with("<html>"));
+
+        let url = data_url("<p>Grüße & #1 100%</p>").expect("small enough");
+        let encoded = url
+            .strip_prefix("data:text/html;charset=utf-8;base64,")
+            .expect("a base64 HTML document");
+        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+            .expect("valid base64");
+        assert_eq!(decoded, "<p>Grüße & #1 100%</p>".as_bytes());
+        assert!(
+            data_url(&"x".repeat(2 * 1024 * 1024)).is_none(),
+            "too large for the engine"
+        );
+    }
+
+    phase a_document_shows_no_scroll_bar_of_its_own;
+    {
+        for dark in [false, true] {
+            let prepared = prepare("<p>Hi</p>", &policy(false, dark));
+            assert!(
+                prepared
+                    .document
+                    .contains("html{scrollbar-width:none!important}"),
+                "{}",
                 prepared.document
             );
         }
-        // What a script would say may stay as words the mail shows (the
-        // engine reads `<scr<script>ipt>alert(5)` as text too), never as
-        let markup = markup(&document);
-        assert!(!markup.contains("alert("), "remote {remote}: {markup}");
-        assert!(
-            attribute_names(&document)
-                .iter()
-                .all(|name| !name.starts_with("on")),
-            "remote {remote}: {:?}",
-            attribute_names(&document)
+    }
+
+    phase the_mail_keeps_its_body_attributes_and_its_text_stays_text;
+    {
+        let prepared = prepare(
+            "<body bgcolor=\"#fafafa\" onload=\"alert(1)\" style=\"margin:0\">\
+    <p>Fish &amp; chips &lt;3 <b>bold <i>both</b> slanted</i></p></body>",
+            &policy(false, false),
         );
-        assert_eq!(document.matches("<meta http-equiv").count(), 1);
-        let csp = document
-            .find("content-security-policy")
-            .unwrap_or(usize::MAX);
-        assert!(csp < document.find("<style").unwrap_or(0));
-        assert!(csp < document.find("<body").unwrap_or(0));
-        assert!(document.contains("script-src 'none'"));
-        assert!(document.contains("form-action 'none'"));
-        assert!(document.contains("object-src 'none'"));
-        assert!(document.contains("frame-src 'none'"));
-        assert_eq!(prepared.links, ["https://evil.example/login"]);
+        let document = &prepared.document;
         assert!(
-            prepared.document.contains(
-                "href=\"https://evil.example/login\" target=\"_blank\" rel=\"noopener noreferrer\""
-            ),
-            "{}",
-            prepared.document
+            document.contains("<body bgcolor=\"#fafafa\" style=\"margin:0\">"),
+            "{document}"
         );
-        assert!(document.contains("<base target=\"_blank\">"));
-        assert!(prepared.document.contains("Your account is on hold."));
-        assert!(prepared.document.contains("tricky"));
+        assert_eq!(document.matches("<body").count(), 1, "{document}");
+        assert!(
+            document.contains("<p>Fish &amp; chips &lt;3 <b>bold <i>both</i></b><i> slanted</i></p>"),
+            "{document}"
+        );
     }
 }
 
-#[test]
-fn nothing_remote_is_fetched_before_the_person_allows_it() {
-    for raw in [NEWSLETTER, GITHUB, RECEIPT, DARK, INLINE, HOSTILE] {
-        let html = html(raw);
-        let blocked = prepare(&html, &policy(false, false));
-        for url in fetched(&blocked.document) {
+tilo_test_env::scenario! {
+    /// What the sealed document fetches: nothing remote until allowed, and what it shows meanwhile.
+    fn remote_content_is_held_back_until_the_person_allows_it;
+
+    phase nothing_remote_is_fetched_before_the_person_allows_it;
+    {
+        for raw in [NEWSLETTER, GITHUB, RECEIPT, DARK, INLINE, HOSTILE] {
+            let html = html(raw);
+            let blocked = prepare(&html, &policy(false, false));
+            for url in fetched(&blocked.document) {
+                assert!(
+                    url.is_empty() || url.starts_with("data:"),
+                    "fetched before consent: {url}"
+                );
+            }
+            assert!(!blocked.document.contains("@import"));
+            assert!(blocked.document.contains("img-src data:;"));
+            assert!(blocked.document.contains("font-src data:;"));
             assert!(
-                url.is_empty() || url.starts_with("data:"),
-                "fetched before consent: {url}"
+                blocked
+                    .document
+                    .contains("style-src 'unsafe-inline' data:;")
             );
         }
-        assert!(!blocked.document.contains("@import"));
-        assert!(blocked.document.contains("img-src data:;"));
-        assert!(blocked.document.contains("font-src data:;"));
-        assert!(
-            blocked
-                .document
-                .contains("style-src 'unsafe-inline' data:;")
-        );
+        // The newsletter's images, its font and its tracking pixel are counted,
+        // so the reader can offer them.
+        let newsletter = html(NEWSLETTER);
+        let blocked = prepare(&newsletter, &policy(false, false));
+        assert!(blocked.remote >= 3, "{}", blocked.remote);
+        let allowed = prepare(&newsletter, &policy(true, false));
+        assert_eq!(allowed.remote, blocked.remote);
+        assert!(fetched(&allowed.document).iter().any(|url| is_web(url)));
+        assert!(allowed.document.contains("img-src data: https: http:"));
+        assert!(allowed.document.contains("script-src 'none'"));
+        assert!(allowed.document.contains("connect-src 'none'"));
+        assert_eq!(prepare("<p>Hi</p>", &policy(false, false)).remote, 0);
     }
-    // The newsletter's images, its font and its tracking pixel are counted,
-    // so the reader can offer them.
-    let newsletter = html(NEWSLETTER);
-    let blocked = prepare(&newsletter, &policy(false, false));
-    assert!(blocked.remote >= 3, "{}", blocked.remote);
-    let allowed = prepare(&newsletter, &policy(true, false));
-    assert_eq!(allowed.remote, blocked.remote);
-    assert!(fetched(&allowed.document).iter().any(|url| is_web(url)));
-    assert!(allowed.document.contains("img-src data: https: http:"));
-    assert!(allowed.document.contains("script-src 'none'"));
-    assert!(allowed.document.contains("connect-src 'none'"));
-    assert_eq!(prepare("<p>Hi</p>", &policy(false, false)).remote, 0);
-}
 
-#[test]
-fn the_request_filter_refuses_every_web_request_until_allowed() {
-    let blocked = filter_rules(false);
-    let lines: Vec<&str> = blocked.lines().collect();
-    for scheme in ["http", "https"] {
-        assert!(lines.contains(&format!("|{scheme}://").as_str()));
-        assert!(lines.contains(&format!("|{scheme}://$document").as_str()));
-        assert!(lines.contains(&format!("|{scheme}://$subdocument").as_str()));
+    phase the_request_filter_refuses_every_web_request_until_allowed;
+    {
+        let blocked = filter_rules(false);
+        let lines: Vec<&str> = blocked.lines().collect();
+        for scheme in ["http", "https"] {
+            assert!(lines.contains(&format!("|{scheme}://").as_str()));
+            assert!(lines.contains(&format!("|{scheme}://$document").as_str()));
+            assert!(lines.contains(&format!("|{scheme}://$subdocument").as_str()));
+        }
+        let allowed = filter_rules(true);
+        let lines: Vec<&str> = allowed.lines().collect();
+        assert!(!lines.contains(&"|https://"));
+        assert!(lines.contains(&"|https://$script"));
+        assert!(lines.contains(&"|https://$xmlhttprequest"));
+        assert!(lines.contains(&"|https://$document"));
+        for kind in ["image", "font", "stylesheet", "media"] {
+            assert!(!allowed.contains(kind), "{kind} must load once allowed");
+        }
     }
-    let allowed = filter_rules(true);
-    let lines: Vec<&str> = allowed.lines().collect();
-    assert!(!lines.contains(&"|https://"));
-    assert!(lines.contains(&"|https://$script"));
-    assert!(lines.contains(&"|https://$xmlhttprequest"));
-    assert!(lines.contains(&"|https://$document"));
-    for kind in ["image", "font", "stylesheet", "media"] {
-        assert!(!allowed.contains(kind), "{kind} must load once allowed");
+
+    phase inline_parts_and_data_images_always_show;
+    {
+        let message = message(INLINE);
+        let html = message.html_body.clone().expect("an HTML part");
+        let inline: Vec<InlinePart> = message
+            .attachments
+            .iter()
+            .filter_map(|attachment| {
+                Some(InlinePart {
+                    id: attachment.inline_id.clone()?,
+                    mime: attachment.mime.clone(),
+                    bytes: attachment.content.clone(),
+                })
+            })
+            .collect();
+        assert_eq!(inline.len(), 1, "the logo is an inline part");
+        assert_eq!(
+            inline.first().map(|part| part.id.as_str()),
+            Some("logo-v3@studio-lima.example")
+        );
+        let prepared = prepare(
+            &html,
+            &Policy {
+                inline: &inline,
+                ..policy(false, false)
+            },
+        );
+        assert!(!prepared.document.contains("cid:"));
+        let images: Vec<String> = fetched(&prepared.document);
+        assert_eq!(
+            images
+                .iter()
+                .filter(|url| url.starts_with("data:image/png;base64,"))
+                .count(),
+            2,
+            "{images:?}"
+        );
+        assert_eq!(prepared.remote, 0);
+        assert!(message.shown_attachments().next().is_none());
+        let unreferenced = String::from_utf8_lossy(INLINE).replace("cid:logo-v3", "cid:other");
+        let unreferenced = self::message(unreferenced.as_bytes());
+        assert_eq!(unreferenced.shown_attachments().count(), 1);
+        let missing = prepare("<img src=\"cid:gone@x\">", &policy(false, false));
+        assert_eq!(fetched(&missing.document), [HELD_BACK_IMAGE]);
+    }
+
+    phase a_held_back_image_is_an_empty_box_at_its_declared_size;
+    {
+        let sized = prepare(
+            "<img src=\"https://t.example/a.png\" width=\"600\" height=\"300\" alt=\"Tomato plants\">",
+            &policy(false, false),
+        );
+        assert_eq!(sized.remote, 1);
+        assert_eq!(fetched(&sized.document), [HELD_BACK_IMAGE]);
+        assert!(
+            sized.document.contains("width=\"600\" height=\"300\""),
+            "{}",
+            sized.document
+        );
+        assert!(
+            sized.document.contains("alt=\"Tomato plants\""),
+            "{}",
+            sized.document
+        );
+        assert!(
+            sized.document.contains("background-color:"),
+            "{}",
+            sized.document
+        );
+        // Scaled to the mail's width (`height:auto`), it keeps the declared
+        // proportions, never the held-back pixel's square.
+        assert!(
+            sized.document.contains("aspect-ratio:600/300"),
+            "{}",
+            sized.document
+        );
+
+        let styled = prepare(
+            "<img src=\"https://t.example/a.png\" style=\"width:120px; height:40px\">",
+            &policy(false, false),
+        );
+        assert!(
+            styled.document.contains("background-color:"),
+            "{}",
+            styled.document
+        );
+
+        let bare = prepare(
+            "<img src=\"https://t.example/a.png\" alt=\"Logo\">",
+            &policy(false, false),
+        );
+        assert_eq!(fetched(&bare.document), [HELD_BACK_IMAGE]);
+        assert!(
+            !bare.document.contains("background-color:"),
+            "{}",
+            bare.document
+        );
+
+        let allowed = prepare(
+            "<img src=\"https://t.example/a.png\" width=\"600\" height=\"300\">",
+            &policy(true, false),
+        );
+        assert_eq!(fetched(&allowed.document), ["https://t.example/a.png"]);
+        assert!(!allowed.document.contains("background-color:"));
     }
 }
 
@@ -396,263 +631,105 @@ fn markup_cannot_escape_the_text_or_attribute_it_is_written_in() {
     }
 }
 
-#[test]
-fn inline_parts_and_data_images_always_show() {
-    let message = message(INLINE);
-    let html = message.html_body.clone().expect("an HTML part");
-    let inline: Vec<InlinePart> = message
-        .attachments
-        .iter()
-        .filter_map(|attachment| {
-            Some(InlinePart {
-                id: attachment.inline_id.clone()?,
-                mime: attachment.mime.clone(),
-                bytes: attachment.content.clone(),
-            })
-        })
-        .collect();
-    assert_eq!(inline.len(), 1, "the logo is an inline part");
-    assert_eq!(
-        inline.first().map(|part| part.id.as_str()),
-        Some("logo-v3@studio-lima.example")
-    );
-    let prepared = prepare(
-        &html,
-        &Policy {
-            inline: &inline,
-            ..policy(false, false)
-        },
-    );
-    assert!(!prepared.document.contains("cid:"));
-    let images: Vec<String> = fetched(&prepared.document);
-    assert_eq!(
-        images
-            .iter()
-            .filter(|url| url.starts_with("data:image/png;base64,"))
-            .count(),
-        2,
-        "{images:?}"
-    );
-    assert_eq!(prepared.remote, 0);
-    assert!(message.shown_attachments().next().is_none());
-    let unreferenced = String::from_utf8_lossy(INLINE).replace("cid:logo-v3", "cid:other");
-    let unreferenced = self::message(unreferenced.as_bytes());
-    assert_eq!(unreferenced.shown_attachments().count(), 1);
-    let missing = prepare("<img src=\"cid:gone@x\">", &policy(false, false));
-    assert_eq!(fetched(&missing.document), [HELD_BACK_IMAGE]);
-}
+tilo_test_env::scenario! {
+    /// The links of a mail, as the reader lists them and as plain text names them.
+    fn links_are_listed_once_and_named_in_plain_text;
 
-#[test]
-fn a_held_back_image_is_an_empty_box_at_its_declared_size() {
-    let sized = prepare(
-        "<img src=\"https://t.example/a.png\" width=\"600\" height=\"300\" alt=\"Tomato plants\">",
-        &policy(false, false),
-    );
-    assert_eq!(sized.remote, 1);
-    assert_eq!(fetched(&sized.document), [HELD_BACK_IMAGE]);
-    assert!(
-        sized.document.contains("width=\"600\" height=\"300\""),
-        "{}",
-        sized.document
-    );
-    assert!(
-        sized.document.contains("alt=\"Tomato plants\""),
-        "{}",
-        sized.document
-    );
-    assert!(
-        sized.document.contains("background-color:"),
-        "{}",
-        sized.document
-    );
-    // Scaled to the mail's width (`height:auto`), it keeps the declared
-    // proportions, never the held-back pixel's square.
-    assert!(
-        sized.document.contains("aspect-ratio:600/300"),
-        "{}",
-        sized.document
-    );
-
-    let styled = prepare(
-        "<img src=\"https://t.example/a.png\" style=\"width:120px; height:40px\">",
-        &policy(false, false),
-    );
-    assert!(
-        styled.document.contains("background-color:"),
-        "{}",
-        styled.document
-    );
-
-    let bare = prepare(
-        "<img src=\"https://t.example/a.png\" alt=\"Logo\">",
-        &policy(false, false),
-    );
-    assert_eq!(fetched(&bare.document), [HELD_BACK_IMAGE]);
-    assert!(
-        !bare.document.contains("background-color:"),
-        "{}",
-        bare.document
-    );
-
-    let allowed = prepare(
-        "<img src=\"https://t.example/a.png\" width=\"600\" height=\"300\">",
-        &policy(true, false),
-    );
-    assert_eq!(fetched(&allowed.document), ["https://t.example/a.png"]);
-    assert!(!allowed.document.contains("background-color:"));
-}
-
-#[test]
-fn a_mail_is_dark_only_when_it_says_it_can_be() {
-    let dark = html(DARK);
-    let in_dark = prepare(&dark, &policy(false, true));
-    assert!(in_dark.dark);
-    assert!(
-        in_dark
-            .document
-            .contains("<meta name=\"color-scheme\" content=\"dark\">")
-    );
-    assert!(
-        in_dark
-            .document
-            .contains("html{background:#1c1c1e;color:#f2f2f7}")
-    );
-    assert!(!in_dark.document.contains("prefers-color-scheme"));
-    assert!(
-        in_dark.document.contains("min-width:0px"),
-        "the dark rules hold"
-    );
-    let in_light = prepare(&dark, &policy(false, false));
-    assert!(!in_light.dark);
-    assert!(
-        in_light.document.contains("max-width:-1px"),
-        "the dark rules do not hold"
-    );
-    for raw in [NEWSLETTER, GITHUB, RECEIPT, INLINE] {
-        let prepared = prepare(&html(raw), &policy(false, true));
-        assert!(!prepared.dark, "a mail without a dark form stays light");
-        assert!(
-            prepared.document.contains(
-                ":root{color-scheme:light!important}html{background:#ffffff;color:#000000}"
-            )
+    phase links_are_listed_once_in_reading_order;
+    {
+        let links = links(
+            "<a href=\"https://b.example\">b</a><a href=\"mailto:a@example.com\">a</a>\
+    <a href=\"https://b.example\">again</a><a href=\"#top\">top</a><a href=\"//c.example/x\">c</a>",
         );
-        assert!(!prepared.document.contains("invert"));
-    }
-}
-
-#[test]
-fn multipart_alternative_prefers_html_and_keeps_its_text() {
-    let newsletter = message(NEWSLETTER);
-    assert!(newsletter.html_body.is_some());
-    assert!(
-        newsletter.body.contains("WEEKLY HARVEST"),
-        "{}",
-        newsletter.body
-    );
-    assert!(!newsletter.body.contains('<'), "the text part, not markup");
-    let github = message(GITHUB);
-    assert!(github.html_body.is_some());
-    assert!(!github.body.trim().is_empty());
-    let receipt = message(RECEIPT);
-    assert!(receipt.html_body.is_some(), "an HTML-only mail is HTML");
-    let plain = message(PLAIN);
-    assert!(
-        plain.html_body.is_none(),
-        "a text mail never goes to the engine"
-    );
-    assert!(plain.body.contains("https://"));
-}
-
-#[test]
-fn a_document_keeps_the_doctype_it_was_written_for_and_loads_as_data() {
-    let standards = prepare(
-        "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"x\"><p>a</p>",
-        &policy(false, false),
-    );
-    assert!(standards.document.starts_with("<!DOCTYPE html PUBLIC"));
-    let quirks = prepare("<p>a</p>", &policy(false, false));
-    assert!(quirks.document.starts_with("<html>"));
-    let late = prepare("<p>a</p><!doctype html>", &policy(false, false));
-    assert!(late.document.starts_with("<html>"));
-
-    let url = data_url("<p>Grüße & #1 100%</p>").expect("small enough");
-    let encoded = url
-        .strip_prefix("data:text/html;charset=utf-8;base64,")
-        .expect("a base64 HTML document");
-    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-        .expect("valid base64");
-    assert_eq!(decoded, "<p>Grüße & #1 100%</p>".as_bytes());
-    assert!(
-        data_url(&"x".repeat(2 * 1024 * 1024)).is_none(),
-        "too large for the engine"
-    );
-}
-
-#[test]
-fn links_are_listed_once_in_reading_order() {
-    let links = links(
-        "<a href=\"https://b.example\">b</a><a href=\"mailto:a@example.com\">a</a>\
-<a href=\"https://b.example\">again</a><a href=\"#top\">top</a><a href=\"//c.example/x\">c</a>",
-    );
-    assert_eq!(
-        links,
-        [
-            "https://b.example",
-            "mailto:a@example.com",
-            "https://c.example/x"
-        ]
-    );
-    let fragment = prepare("<a href=\"#top\">top</a>", &policy(false, false));
-    assert!(fragment.document.contains("href=\"#top\" target=\"_self\""));
-}
-
-#[test]
-fn plain_text_names_its_links() {
-    let text = "See https://harvest.example/112/elm-street. Or www.harvest.example/swaps, \
-(details at https://x.example/a_(b)) and write to ana@studio-lima.example!\n\
-Not links: a@b, http://, www.x, sam@localhost.";
-    let found: Vec<String> = text_links(text).into_iter().map(|(_, url)| url).collect();
-    assert_eq!(
-        found,
-        [
-            "https://harvest.example/112/elm-street",
-            "https://www.harvest.example/swaps",
-            "https://x.example/a_(b)",
-            "mailto:ana@studio-lima.example",
-        ]
-    );
-    for (range, url) in text_links(text) {
-        let shown = text.get(range).unwrap_or_default();
-        assert!(
+        assert_eq!(
+            links,
             [
-                shown.to_owned(),
-                format!("https://{shown}"),
-                format!("mailto:{shown}")
+                "https://b.example",
+                "mailto:a@example.com",
+                "https://c.example/x"
             ]
-            .contains(&url),
-            "{shown} -> {url}"
         );
+        let fragment = prepare("<a href=\"#top\">top</a>", &policy(false, false));
+        assert!(fragment.document.contains("href=\"#top\" target=\"_self\""));
     }
-    let plain = message(PLAIN);
-    let links = message_links(&plain);
-    assert!(!links.is_empty(), "{}", plain.body);
-    assert!(links.iter().all(|url| url.starts_with("https://")
-        || url.starts_with("http://")
-        || url.starts_with("mailto:")));
+
+    phase plain_text_names_its_links;
+    {
+        let text = "See https://harvest.example/112/elm-street. Or www.harvest.example/swaps, \
+    (details at https://x.example/a_(b)) and write to ana@studio-lima.example!\n\
+    Not links: a@b, http://, www.x, sam@localhost.";
+        let found: Vec<String> = text_links(text).into_iter().map(|(_, url)| url).collect();
+        assert_eq!(
+            found,
+            [
+                "https://harvest.example/112/elm-street",
+                "https://www.harvest.example/swaps",
+                "https://x.example/a_(b)",
+                "mailto:ana@studio-lima.example",
+            ]
+        );
+        for (range, url) in text_links(text) {
+            let shown = text.get(range).unwrap_or_default();
+            assert!(
+                [
+                    shown.to_owned(),
+                    format!("https://{shown}"),
+                    format!("mailto:{shown}")
+                ]
+                .contains(&url),
+                "{shown} -> {url}"
+            );
+        }
+        let plain = message(PLAIN);
+        let links = message_links(&plain);
+        assert!(!links.is_empty(), "{}", plain.body);
+        assert!(links.iter().all(|url| url.starts_with("https://")
+            || url.starts_with("http://")
+            || url.starts_with("mailto:")));
+    }
 }
 
-#[test]
-fn every_document_carries_its_end_mark() {
-    for dark in [false, true] {
-        let prepared = prepare(
-            "<html><head><style>:root{color-scheme:dark}</style></head><body><p>Hi</p></body></html>",
-            &policy(false, dark),
+tilo_test_env::scenario! {
+    /// The end mark the reader waits for.
+    fn every_document_carries_its_end_mark_whatever_the_mail_hides;
+
+    phase every_document_carries_its_end_mark;
+    {
+        for dark in [false, true] {
+            let prepared = prepare(
+                "<html><head><style>:root{color-scheme:dark}</style></head><body><p>Hi</p></body></html>",
+                &policy(false, dark),
+            );
+            assert!(
+                prepared.document.contains(END_MARK),
+                "{}",
+                prepared.document
+            );
+        }
+    }
+
+    phase a_mail_that_hides_the_root_after_still_carries_the_end_mark;
+    {
+        assert_end_mark_first(
+            "<html style=\"display:none\"><head><style>html::after{display:none;content:none}</style>\
+    </head><body><p>Hi</p></body></html>",
+            "html::after{display:none;content:none}",
         );
-        assert!(
-            prepared.document.contains(END_MARK),
-            "{}",
-            prepared.document
+    }
+
+    phase a_mail_that_hides_everything_still_carries_the_end_mark;
+    {
+        assert_end_mark_first(
+            "<style>* { display:none }*::after{display:none!important;content:none!important}\
+    @layer{html::after{display:none!important}}</style><p>Hi</p>",
+            "* { display:none }*::after{display:none!important;content:none!important}",
         );
+    }
+
+    phase the_engine_test_holds_chromium_to_the_end_mark_the_mail_writes;
+    {
+        let test = include_str!("../../../browser/chromium/tests/resize_frames.py");
+        assert!(test.contains(&format!("END_MARK = '{END_MARK}'")));
     }
 }
 
@@ -665,61 +742,4 @@ fn assert_end_mark_first(mail: &str, hostile: &str) {
         assert_eq!(document.find("@layer"), Some(mark), "{document}");
         assert_eq!(document.matches("<html").count(), 1, "{document}");
     }
-}
-
-#[test]
-fn a_mail_that_hides_the_root_after_still_carries_the_end_mark() {
-    assert_end_mark_first(
-        "<html style=\"display:none\"><head><style>html::after{display:none;content:none}</style>\
-</head><body><p>Hi</p></body></html>",
-        "html::after{display:none;content:none}",
-    );
-}
-
-#[test]
-fn a_mail_that_hides_everything_still_carries_the_end_mark() {
-    assert_end_mark_first(
-        "<style>* { display:none }*::after{display:none!important;content:none!important}\
-@layer{html::after{display:none!important}}</style><p>Hi</p>",
-        "* { display:none }*::after{display:none!important;content:none!important}",
-    );
-}
-
-#[test]
-fn the_engine_test_holds_chromium_to_the_end_mark_the_mail_writes() {
-    let test = include_str!("../../../browser/chromium/tests/resize_frames.py");
-    assert!(test.contains(&format!("END_MARK = '{END_MARK}'")));
-}
-
-#[test]
-fn a_document_shows_no_scroll_bar_of_its_own() {
-    for dark in [false, true] {
-        let prepared = prepare("<p>Hi</p>", &policy(false, dark));
-        assert!(
-            prepared
-                .document
-                .contains("html{scrollbar-width:none!important}"),
-            "{}",
-            prepared.document
-        );
-    }
-}
-
-#[test]
-fn the_mail_keeps_its_body_attributes_and_its_text_stays_text() {
-    let prepared = prepare(
-        "<body bgcolor=\"#fafafa\" onload=\"alert(1)\" style=\"margin:0\">\
-<p>Fish &amp; chips &lt;3 <b>bold <i>both</b> slanted</i></p></body>",
-        &policy(false, false),
-    );
-    let document = &prepared.document;
-    assert!(
-        document.contains("<body bgcolor=\"#fafafa\" style=\"margin:0\">"),
-        "{document}"
-    );
-    assert_eq!(document.matches("<body").count(), 1, "{document}");
-    assert!(
-        document.contains("<p>Fish &amp; chips &lt;3 <b>bold <i>both</i></b><i> slanted</i></p>"),
-        "{document}"
-    );
 }

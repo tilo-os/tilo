@@ -266,72 +266,77 @@ mod tests {
         crate::transport::parse_eml(raw.as_bytes(), at, Folder::Inbox).unwrap()
     }
 
-    #[test]
-    fn kept_mail_comes_back_for_its_account_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().to_path_buf());
-        let kept = vec![message(1), message(2)];
-        write(&store.file("me@x.example").unwrap(), kept.clone()).unwrap();
-        let loaded = store.load("me@x.example");
-        assert_eq!(loaded.len(), 2);
-        assert!(loaded.iter().all(|m| m.account == "me@x.example"));
-        assert_eq!(loaded[0].body, kept[0].body);
-        assert!(store.load("other@x.example").is_empty());
-        store.forget("me@x.example");
-        ui::testing::wait_until("the kept mail to be forgotten", || {
-            store.load("me@x.example").is_empty()
-        });
-        assert!(Store::nowhere().load("me@x.example").is_empty());
-    }
+    tilo_test_env::scenario! {
+        /// The kept-mail store, each case in a directory of its own.
+        fn the_store_keeps_mail_and_attachment_bytes_per_account;
 
-    #[test]
-    fn attachment_bytes_are_kept_once_and_read_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().to_path_buf());
-        let mut with_file = message(1);
-        with_file.attachments = vec![crate::model::Attachment::hydrated(
-            "plan.pdf",
-            "application/pdf",
-            b"%PDF-1.7".to_vec(),
-        )];
-        let id = with_file.id;
-        let kept = store.save("me@x.example", vec![with_file.clone()]);
-        assert_eq!(kept, [(id, 0)]);
-        let bytes = ui::testing::wait_for("the attachment to be kept", || {
-            store.attachment("me@x.example", id, 0)
-        });
-        assert_eq!(bytes, b"%PDF-1.7");
-        with_file.attachments[0].kept = true;
-        assert!(
-            store.save("me@x.example", vec![with_file]).is_empty(),
-            "what is kept is not written again"
-        );
-        let loaded = ui::testing::wait_for("the attachment to load as kept", || {
-            Some(store.load("me@x.example")).filter(|loaded| {
-                loaded
-                    .first()
-                    .is_some_and(|message| message.attachments.first().is_some_and(|a| a.kept))
-            })
-        });
-        assert!(loaded[0].attachments[0].is_downloadable());
+        phase kept_mail_comes_back_for_its_account_only;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::at(dir.path().to_path_buf());
+            let kept = vec![message(1), message(2)];
+            write(&store.file("me@x.example").unwrap(), kept.clone()).unwrap();
+            let loaded = store.load("me@x.example");
+            assert_eq!(loaded.len(), 2);
+            assert!(loaded.iter().all(|m| m.account == "me@x.example"));
+            assert_eq!(loaded[0].body, kept[0].body);
+            assert!(store.load("other@x.example").is_empty());
+            store.forget("me@x.example");
+            ui::testing::wait_until("the kept mail to be forgotten", || {
+                store.load("me@x.example").is_empty()
+            });
+            assert!(Store::nowhere().load("me@x.example").is_empty());
+        }
 
-        assert!(store.save("me@x.example", vec![message(2)]).is_empty());
-        ui::testing::wait_until("the attachment to go with its mail", || {
-            store.attachment("me@x.example", id, 0).is_none()
-        });
-    }
+        phase attachment_bytes_are_kept_once_and_read_back;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::at(dir.path().to_path_buf());
+            let mut with_file = message(1);
+            with_file.attachments = vec![crate::model::Attachment::hydrated(
+                "plan.pdf",
+                "application/pdf",
+                b"%PDF-1.7".to_vec(),
+            )];
+            let id = with_file.id;
+            let kept = store.save("me@x.example", vec![with_file.clone()]);
+            assert_eq!(kept, [(id, 0)]);
+            let bytes = ui::testing::wait_for("the attachment to be kept", || {
+                store.attachment("me@x.example", id, 0)
+            });
+            assert_eq!(bytes, b"%PDF-1.7");
+            with_file.attachments[0].kept = true;
+            assert!(
+                store.save("me@x.example", vec![with_file]).is_empty(),
+                "what is kept is not written again"
+            );
+            let loaded = ui::testing::wait_for("the attachment to load as kept", || {
+                Some(store.load("me@x.example")).filter(|loaded| {
+                    loaded
+                        .first()
+                        .is_some_and(|message| message.attachments.first().is_some_and(|a| a.kept))
+                })
+            });
+            assert!(loaded[0].attachments[0].is_downloadable());
 
-    #[test]
-    fn a_damaged_file_reads_as_nothing_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::at(dir.path().to_path_buf());
-        std::fs::write(store.file("me@x.example").unwrap(), b"{not json").unwrap();
-        assert!(store.load("me@x.example").is_empty());
-    }
+            assert!(store.save("me@x.example", vec![message(2)]).is_empty());
+            ui::testing::wait_until("the attachment to go with its mail", || {
+                store.attachment("me@x.example", id, 0).is_none()
+            });
+        }
 
-    #[test]
-    fn file_names_carry_no_path() {
-        assert_eq!(file_stem("Me+tag@X.example"), "me+tag@x.example");
-        assert_eq!(file_stem("../../etc/passwd"), ".._.._etc_passwd");
+        phase a_damaged_file_reads_as_nothing_kept;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::at(dir.path().to_path_buf());
+            std::fs::write(store.file("me@x.example").unwrap(), b"{not json").unwrap();
+            assert!(store.load("me@x.example").is_empty());
+        }
+
+        phase file_names_carry_no_path;
+        {
+            assert_eq!(file_stem("Me+tag@X.example"), "me+tag@x.example");
+            assert_eq!(file_stem("../../etc/passwd"), ".._.._etc_passwd");
+        }
     }
 }

@@ -60,252 +60,257 @@ fn form(body: &str, key: &str) -> Option<String> {
     })
 }
 
-#[test]
-fn gmail_signs_in_with_the_shared_google_client_and_its_secret() {
-    let google = registration(OAuthIssuer::Google);
-    let secret = google
-        .secret()
-        .expect("Google's Desktop client has a secret")
-        .to_string();
-    let server = FakeAuthorizationServer::start();
-    server.require_client_secret(&secret);
-    let dir = tempfile::tempdir().unwrap();
-    let custodian = custodian(dir.path(), OAuthIssuer::Google, &server);
-    let email = "ada@gmail.com";
+tilo_test_env::scenario! {
+    /// Sign-in through account custody, each case with its own vault and authorization server.
+    fn gmail_and_outlook_grants_are_sealed_refreshed_and_revoked_through_custody;
 
-    sign_in(&custodian, email, OAuthProvider::Google);
+    phase gmail_signs_in_with_the_shared_google_client_and_its_secret;
+    {
+        let google = registration(OAuthIssuer::Google);
+        let secret = google
+            .secret()
+            .expect("Google's Desktop client has a secret")
+            .to_string();
+        let server = FakeAuthorizationServer::start();
+        server.require_client_secret(&secret);
+        let dir = tempfile::tempdir().unwrap();
+        let custodian = custodian(dir.path(), OAuthIssuer::Google, &server);
+        let email = "ada@gmail.com";
 
-    let requests = server.requests();
-    let authorize = requests
-        .iter()
-        .find(|request| request.target.starts_with("/authorize?"))
-        .expect("the browser visited the authorization endpoint");
-    assert!(
-        authorize
-            .target
-            .contains("scope=https%3A%2F%2Fmail.google.com%2F&"),
-        "Gmail asks for the mail scope only: {}",
-        authorize.target
-    );
-    assert!(authorize.target.contains("access_type=offline"));
-    assert!(authorize.target.contains("login_hint=ada%40gmail.com"));
-    let client_id = url_encoded(&google.client_id);
-    assert!(
-        authorize
-            .target
-            .contains(&format!("client_id={client_id}&")),
-        "the shared Google client: {}",
-        authorize.target
-    );
-    let exchange = requests
-        .iter()
-        .find(|request| request.target == "/token")
-        .expect("the code was redeemed");
-    let body = exchange.body_text();
-    assert_eq!(
-        form(&body, "grant_type").as_deref(),
-        Some("authorization_code")
-    );
-    assert_eq!(
-        form(&body, "client_secret"),
-        Some(url_encoded(&secret)),
-        "Google's token endpoint gets the Desktop client secret"
-    );
+        sign_in(&custodian, email, OAuthProvider::Google);
 
-    // Custody holds the grant in its own format, and hands Mail the access
-    // token without a refresh while it is fresh.
-    let grant = sealed_grant(dir.path(), email);
-    assert_eq!(grant["kind"], "oauth2");
-    let access = grant["tokens"]["access_token"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(
-        oauth::access_token(&custodian, email, OAuthProvider::Google, false).unwrap(),
-        access
-    );
-    assert_eq!(server.refreshes(), 0);
-
-    // A forced refresh (the server rejected the token) goes through the
-    // same client, secret included, and is resealed.
-    server.issue_access_token("ya29.refreshed");
-    assert_eq!(
-        oauth::access_token(&custodian, email, OAuthProvider::Google, true).unwrap(),
-        "ya29.refreshed"
-    );
-    assert_eq!(server.refreshes(), 1);
-    let refresh = server
-        .requests()
-        .into_iter()
-        .find(|request| request.target == "/token")
-        .expect("the refresh request");
-    assert_eq!(
-        form(&refresh.body_text(), "client_secret"),
-        Some(url_encoded(&secret))
-    );
-    assert_eq!(
-        sealed_grant(dir.path(), email)["tokens"]["access_token"],
-        "ya29.refreshed"
-    );
-}
-
-#[test]
-fn outlook_signs_in_with_the_shared_microsoft_client_and_mail_scopes() {
-    let microsoft = registration(OAuthIssuer::Microsoft);
-    let server = FakeAuthorizationServer::start();
-    let dir = tempfile::tempdir().unwrap();
-    let custodian = custodian(dir.path(), OAuthIssuer::Microsoft, &server);
-    let email = "ada@outlook.com";
-
-    sign_in(&custodian, email, OAuthProvider::Microsoft);
-
-    let requests = server.requests();
-    let authorize = requests
-        .iter()
-        .find(|request| request.target.starts_with("/authorize?"))
-        .expect("the browser visited the authorization endpoint");
-    for scope in [
-        "offline_access",
-        "https%3A%2F%2Foutlook.office.com%2FIMAP.AccessAsUser.All",
-        "https%3A%2F%2Foutlook.office.com%2FSMTP.Send",
-    ] {
+        let requests = server.requests();
+        let authorize = requests
+            .iter()
+            .find(|request| request.target.starts_with("/authorize?"))
+            .expect("the browser visited the authorization endpoint");
         assert!(
-            authorize.target.contains(scope),
-            "{scope} in {}",
+            authorize
+                .target
+                .contains("scope=https%3A%2F%2Fmail.google.com%2F&"),
+            "Gmail asks for the mail scope only: {}",
             authorize.target
         );
+        assert!(authorize.target.contains("access_type=offline"));
+        assert!(authorize.target.contains("login_hint=ada%40gmail.com"));
+        let client_id = url_encoded(&google.client_id);
+        assert!(
+            authorize
+                .target
+                .contains(&format!("client_id={client_id}&")),
+            "the shared Google client: {}",
+            authorize.target
+        );
+        let exchange = requests
+            .iter()
+            .find(|request| request.target == "/token")
+            .expect("the code was redeemed");
+        let body = exchange.body_text();
+        assert_eq!(
+            form(&body, "grant_type").as_deref(),
+            Some("authorization_code")
+        );
+        assert_eq!(
+            form(&body, "client_secret"),
+            Some(url_encoded(&secret)),
+            "Google's token endpoint gets the Desktop client secret"
+        );
+
+        // Custody holds the grant in its own format, and hands Mail the access
+        // token without a refresh while it is fresh.
+        let grant = sealed_grant(dir.path(), email);
+        assert_eq!(grant["kind"], "oauth2");
+        let access = grant["tokens"]["access_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            oauth::access_token(&custodian, email, OAuthProvider::Google, false).unwrap(),
+            access
+        );
+        assert_eq!(server.refreshes(), 0);
+
+        // A forced refresh (the server rejected the token) goes through the
+        // same client, secret included, and is resealed.
+        server.issue_access_token("ya29.refreshed");
+        assert_eq!(
+            oauth::access_token(&custodian, email, OAuthProvider::Google, true).unwrap(),
+            "ya29.refreshed"
+        );
+        assert_eq!(server.refreshes(), 1);
+        let refresh = server
+            .requests()
+            .into_iter()
+            .find(|request| request.target == "/token")
+            .expect("the refresh request");
+        assert_eq!(
+            form(&refresh.body_text(), "client_secret"),
+            Some(url_encoded(&secret))
+        );
+        assert_eq!(
+            sealed_grant(dir.path(), email)["tokens"]["access_token"],
+            "ya29.refreshed"
+        );
     }
-    assert!(
-        !authorize.target.contains("Files.ReadWrite"),
-        "Mail does not ask for OneDrive"
-    );
-    let client_id = url_encoded(&microsoft.client_id);
-    assert!(
-        authorize
-            .target
-            .contains(&format!("client_id={client_id}&"))
-    );
-    let exchange = requests
-        .iter()
-        .find(|request| request.target == "/token")
-        .expect("the code was redeemed");
-    assert_eq!(
-        form(&exchange.body_text(), "client_secret"),
-        None,
-        "Microsoft's public client has no secret"
-    );
 
-    let expired = {
-        let mut grant = sealed_grant(dir.path(), email);
-        grant["tokens"]["obtained_at"] = 1.into();
-        grant
-    };
-    let mut vault = SecretVault::open_in(dir.path());
-    vault.put(
-        &AccountId::from(email),
-        &accounts::Secret {
-            password: String::new(),
-            token: Some(expired.to_string()),
-        },
-    );
-    vault.try_save().unwrap();
-    server.issue_access_token("outlook-refreshed");
-    assert_eq!(
-        oauth::access_token(&custodian, email, OAuthProvider::Microsoft, false).unwrap(),
-        "outlook-refreshed"
-    );
-    assert_eq!(server.refreshes(), 1);
-}
+    phase outlook_signs_in_with_the_shared_microsoft_client_and_mail_scopes;
+    {
+        let microsoft = registration(OAuthIssuer::Microsoft);
+        let server = FakeAuthorizationServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let custodian = custodian(dir.path(), OAuthIssuer::Microsoft, &server);
+        let email = "ada@outlook.com";
 
-#[test]
-fn a_revoked_grant_asks_mail_to_sign_in_again() {
-    let server = FakeAuthorizationServer::start();
-    server.require_client_secret(registration(OAuthIssuer::Google).secret().unwrap());
-    let dir = tempfile::tempdir().unwrap();
-    let custodian = custodian(dir.path(), OAuthIssuer::Google, &server);
-    let email = "ada@gmail.com";
-    sign_in(&custodian, email, OAuthProvider::Google);
-    server.revoke_all_refresh_tokens();
+        sign_in(&custodian, email, OAuthProvider::Microsoft);
 
-    let error = oauth::access_token(&custodian, email, OAuthProvider::Google, true).unwrap_err();
-    assert!(
-        error.contains("OAuth") && error.contains("sign in again"),
-        "{error}"
-    );
-    assert!(oauth::access_token(&custodian, email, OAuthProvider::Google, false).is_err());
-}
+        let requests = server.requests();
+        let authorize = requests
+            .iter()
+            .find(|request| request.target.starts_with("/authorize?"))
+            .expect("the browser visited the authorization endpoint");
+        for scope in [
+            "offline_access",
+            "https%3A%2F%2Foutlook.office.com%2FIMAP.AccessAsUser.All",
+            "https%3A%2F%2Foutlook.office.com%2FSMTP.Send",
+        ] {
+            assert!(
+                authorize.target.contains(scope),
+                "{scope} in {}",
+                authorize.target
+            );
+        }
+        assert!(
+            !authorize.target.contains("Files.ReadWrite"),
+            "Mail does not ask for OneDrive"
+        );
+        let client_id = url_encoded(&microsoft.client_id);
+        assert!(
+            authorize
+                .target
+                .contains(&format!("client_id={client_id}&"))
+        );
+        let exchange = requests
+            .iter()
+            .find(|request| request.target == "/token")
+            .expect("the code was redeemed");
+        assert_eq!(
+            form(&exchange.body_text(), "client_secret"),
+            None,
+            "Microsoft's public client has no secret"
+        );
 
-#[test]
-fn selected_microsoft_account_loads_and_refreshes_after_portable_import() {
-    use account_custody::portable::{import_sealed_accounts, seal_selected_accounts};
-    use accounts::{Account, AccountStore};
+        let expired = {
+            let mut grant = sealed_grant(dir.path(), email);
+            grant["tokens"]["obtained_at"] = 1.into();
+            grant
+        };
+        let mut vault = SecretVault::open_in(dir.path());
+        vault.put(
+            &AccountId::from(email),
+            &accounts::Secret {
+                password: String::new(),
+                token: Some(expired.to_string()),
+            },
+        );
+        vault.try_save().unwrap();
+        server.issue_access_token("outlook-refreshed");
+        assert_eq!(
+            oauth::access_token(&custodian, email, OAuthProvider::Microsoft, false).unwrap(),
+            "outlook-refreshed"
+        );
+        assert_eq!(server.refreshes(), 1);
+    }
 
-    let source = tempfile::tempdir().unwrap();
-    let target = tempfile::tempdir().unwrap();
-    let server = FakeAuthorizationServer::start();
-    let profile = test_http::Responder::start(vec![
-        test_http::Reply::status(200)
-            .header("Content-Type", "application/json")
-            .body(
-                r#"{"mail":"ada@hosted.example","userPrincipalName":"different@tenant.example"}"#,
-            ),
-    ]);
-    let source_custodian = custodian(source.path(), OAuthIssuer::Microsoft, &server)
-        .with_microsoft_profile_endpoint(format!("{}/me", profile.url()));
-    let tokens = account_custody::TokenSet {
-        access_token: "installed-microsoft-access".into(),
-        refresh_token: "installed-microsoft-refresh".into(),
-        obtained_at: 1,
-        ..Default::default()
-    };
-    server.accept_refresh_token("installed-microsoft-refresh");
-    let email = source_custodian.microsoft_mail_identity(&tokens).unwrap();
-    assert_eq!(email, "ada@hosted.example");
-    let request = profile.next_request();
-    assert_eq!(
-        request.header("Authorization"),
-        Some("Bearer installed-microsoft-access")
-    );
-    let config = OAuthIssuer::Microsoft.mail_config(&email).unwrap();
-    let id = AccountId::from("installed-microsoft-mailbox");
-    assert_ne!(id.as_str(), email);
-    let mut selected = Account::new(id.clone(), mail::account::TYPE_ID);
-    selected.display_name = "Work mailbox".into();
-    selected.set_config(&config);
-    let mut store = AccountStore::new();
-    store.upsert(selected.clone());
-    let omitted_id = AccountId::from("unselected-mailbox");
-    let mut omitted = Account::new(omitted_id.clone(), mail::account::TYPE_ID);
-    omitted.set_config(
-        &OAuthIssuer::Microsoft
-            .mail_config("other@hosted.example")
-            .unwrap(),
-    );
-    store.upsert(omitted);
-    store.save_in(source.path()).unwrap();
-    source_custodian.seal_oauth(&id, &tokens).unwrap();
-    source_custodian.seal_oauth(&omitted_id, &tokens).unwrap();
+    phase a_revoked_grant_asks_mail_to_sign_in_again;
+    {
+        let server = FakeAuthorizationServer::start();
+        server.require_client_secret(registration(OAuthIssuer::Google).secret().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let custodian = custodian(dir.path(), OAuthIssuer::Google, &server);
+        let email = "ada@gmail.com";
+        sign_in(&custodian, email, OAuthProvider::Google);
+        server.revoke_all_refresh_tokens();
 
-    let key = tilo_seal::SymmetricKey::generate().unwrap();
-    let binding = b"selected-mailbox-installation-target";
-    let artifact =
-        seal_selected_accounts(source.path(), std::slice::from_ref(&id), &key, binding).unwrap();
-    assert_eq!(
-        import_sealed_accounts(target.path(), &artifact, &key, binding).unwrap(),
-        std::slice::from_ref(&id)
-    );
-    let adopted = AccountStore::load_in(target.path());
-    assert_eq!(adopted.all(), &[selected]);
-    let vault = SecretVault::open_in(target.path());
-    assert!(vault.get(&id).is_some());
-    assert!(vault.get(&omitted_id).is_none());
-    assert_ne!(
-        std::fs::read(accounts::vault_dir_in(source.path()).join("vault.key")).unwrap(),
-        std::fs::read(accounts::vault_dir_in(target.path()).join("vault.key")).unwrap(),
-        "the target seals credentials with its own custody key"
-    );
+        let error = oauth::access_token(&custodian, email, OAuthProvider::Google, true).unwrap_err();
+        assert!(
+            error.contains("OAuth") && error.contains("sign in again"),
+            "{error}"
+        );
+        assert!(oauth::access_token(&custodian, email, OAuthProvider::Google, false).is_err());
+    }
 
-    assert_imported_microsoft_mail(source.path(), target.path(), &id, &config, &server);
+    phase selected_microsoft_account_loads_and_refreshes_after_portable_import;
+    {
+        use account_custody::portable::{import_sealed_accounts, seal_selected_accounts};
+        use accounts::{Account, AccountStore};
+
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let server = FakeAuthorizationServer::start();
+        let profile = test_http::Responder::start(vec![
+            test_http::Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(
+                    r#"{"mail":"ada@hosted.example","userPrincipalName":"different@tenant.example"}"#,
+                ),
+        ]);
+        let source_custodian = custodian(source.path(), OAuthIssuer::Microsoft, &server)
+            .with_microsoft_profile_endpoint(format!("{}/me", profile.url()));
+        let tokens = account_custody::TokenSet {
+            access_token: "installed-microsoft-access".into(),
+            refresh_token: "installed-microsoft-refresh".into(),
+            obtained_at: 1,
+            ..Default::default()
+        };
+        server.accept_refresh_token("installed-microsoft-refresh");
+        let email = source_custodian.microsoft_mail_identity(&tokens).unwrap();
+        assert_eq!(email, "ada@hosted.example");
+        let request = profile.next_request();
+        assert_eq!(
+            request.header("Authorization"),
+            Some("Bearer installed-microsoft-access")
+        );
+        let config = OAuthIssuer::Microsoft.mail_config(&email).unwrap();
+        let id = AccountId::from("installed-microsoft-mailbox");
+        assert_ne!(id.as_str(), email);
+        let mut selected = Account::new(id.clone(), mail::account::TYPE_ID);
+        selected.display_name = "Work mailbox".into();
+        selected.set_config(&config);
+        let mut store = AccountStore::new();
+        store.upsert(selected.clone());
+        let omitted_id = AccountId::from("unselected-mailbox");
+        let mut omitted = Account::new(omitted_id.clone(), mail::account::TYPE_ID);
+        omitted.set_config(
+            &OAuthIssuer::Microsoft
+                .mail_config("other@hosted.example")
+                .unwrap(),
+        );
+        store.upsert(omitted);
+        store.save_in(source.path()).unwrap();
+        source_custodian.seal_oauth(&id, &tokens).unwrap();
+        source_custodian.seal_oauth(&omitted_id, &tokens).unwrap();
+
+        let key = tilo_seal::SymmetricKey::generate().unwrap();
+        let binding = b"selected-mailbox-installation-target";
+        let artifact =
+            seal_selected_accounts(source.path(), std::slice::from_ref(&id), &key, binding).unwrap();
+        assert_eq!(
+            import_sealed_accounts(target.path(), &artifact, &key, binding).unwrap(),
+            std::slice::from_ref(&id)
+        );
+        let adopted = AccountStore::load_in(target.path());
+        assert_eq!(adopted.all(), &[selected]);
+        let vault = SecretVault::open_in(target.path());
+        assert!(vault.get(&id).is_some());
+        assert!(vault.get(&omitted_id).is_none());
+        assert_ne!(
+            std::fs::read(accounts::vault_dir_in(source.path()).join("vault.key")).unwrap(),
+            std::fs::read(accounts::vault_dir_in(target.path()).join("vault.key")).unwrap(),
+            "the target seals credentials with its own custody key"
+        );
+
+        assert_imported_microsoft_mail(source.path(), target.path(), &id, &config, &server);
+    }
 }
 
 fn assert_imported_microsoft_mail(
