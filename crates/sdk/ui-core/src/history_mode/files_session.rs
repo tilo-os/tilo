@@ -86,6 +86,12 @@ pub(super) struct FileController {
     pub versions: Vec<FileVersionV1>,
     /// Who caused those of [`Self::versions`] an agent caused.
     pub attributions: Attributions,
+    /// What a change did to the content, for the versions whose two contents
+    /// this session has read: what the row says beyond its writer.
+    pub change_facts: std::collections::BTreeMap<
+        FileVersionId,
+        crate::history_source::file_changes::FileChangeFacts,
+    >,
     pub scope: Option<Scope>,
     pub current_revision: Option<fs_protocol::ContentRevisionV1>,
     pub after: Option<FileHistorySnapshot>,
@@ -128,6 +134,7 @@ impl FileController {
             background,
             versions: vec![],
             attributions: Attributions::new(),
+            change_facts: std::collections::BTreeMap::new(),
             scope: None,
             current_revision: None,
             after: None,
@@ -214,6 +221,7 @@ impl FileController {
         self.parent = None;
         self.live_updates = false;
         self.versions.clear();
+        self.change_facts.clear();
         self.current_revision = None;
         self.after = None;
         self.before = None;
@@ -291,6 +299,43 @@ impl FileController {
         };
         self.run(move |transport| Reply::Outcome(request, transport.result(request.intent_id)));
     }
+    /// Record what the selected change did to the content, from the two
+    /// contents this session just read. Only a change that wrote one version
+    /// has exactly these two: a coalesced change's first version is older than
+    /// the parent read here, so its facts would describe only its last step
+    /// and are left unset rather than misstated.
+    fn record_change_facts(&mut self) {
+        let (Some(after), Some(before)) = (&self.after, &self.before) else {
+            return;
+        };
+        let changes = crate::history_source::file_changes::coalesce(
+            &self.versions,
+            &self.attributions,
+            crate::history_source::file_changes::QUIET,
+            &crate::history_source::file_changes::NoTurnBoundary,
+        );
+        let Some(change) = changes
+            .into_iter()
+            .find(|change| change.last().id == after.version.id)
+        else {
+            return;
+        };
+        if change.versions.len() != 1 || change.parent_before() != Some(before.version.id) {
+            return;
+        }
+        let (FileHistoricalContent::Bytes(was), FileHistoricalContent::Bytes(is)) =
+            (&before.content, &after.content)
+        else {
+            return;
+        };
+        self.change_facts.insert(
+            after.version.id,
+            crate::history_source::file_changes::FileChangeFacts::from_contents(
+                Some(was),
+                Some(is),
+            ),
+        );
+    }
     fn visible_identity(
         &self,
         workspace: uuid::Uuid,
@@ -313,6 +358,7 @@ impl FileController {
         self.before = None;
         self.versions.clear();
         self.attributions.clear();
+        self.change_facts.clear();
         self.current_revision = None;
         self.review = None;
         self.preview_changed = true;
@@ -444,6 +490,7 @@ impl FileController {
                         self.scope = Some(after.scope);
                         self.after = Some(after);
                         self.before = before;
+                        self.record_change_facts();
                         self.preview_changed = true;
                         self.message =
                             I18nManager::lookup_plain("history-files-historical-version");

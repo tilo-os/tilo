@@ -416,7 +416,10 @@ fn file_changes(files: &FileController) -> Vec<crate::history_source::file_chang
 fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
     file_changes(files)
         .into_iter()
-        .map(|change| {
+        .map(|mut change| {
+            // The change's own diff, when this session read both of its
+            // contents: the row says what it did, not only who did it.
+            change.facts = files.change_facts.get(&change.last().id).cloned();
             let version = change.last();
             let person = version.actor.person.as_bytes();
             // The device that signed the version names who wrote it: an
