@@ -727,13 +727,14 @@ pub fn probe_app(home: &mut tilo_test_env::TestHome, app: &str, name: &str) {
     home.env().set("TILO_APPS_DATA_DIR", &store);
 }
 
-/// The app store this test process's tilolang apps are installed in, built the first time it is
-/// asked for: [`dev_apps::install`] builds each app from this tree into a signed `.tapp` and
-/// puts it in the store, the way a device has them. Every session a test starts reads that
-/// store, as it would read a device's own.
+/// The app store this test process's tilolang apps are installed in, made the first time it is
+/// asked for: [`dev_apps::install`] puts each app, built from this tree into a signed `.tapp` ,
+/// in the store, the way a device has them. Every session a test starts reads that store, as it
+/// would read a device's own.
 ///
-/// The store lives under the run's temporary directory (`$TMPDIR`), which the test harness
-/// gives the run and removes with it, so a process builds the apps once. `TILO_APPS_DATA_DIR`
+/// The store lives under the process's temporary directory (`$TMPDIR`), which the test harness
+/// gives it and removes with it, so a process installs the apps once, into a store no other
+/// process reads or writes; the packages themselves are built once for the run. `TILO_APPS_DATA_DIR`
 /// names it for the rest of the process ([`tilo_test_env::pin`], written under the environment
 /// lock the scopes take): the store outlives every test that reads it, as a device's does.
 ///
