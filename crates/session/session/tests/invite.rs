@@ -277,7 +277,7 @@ fn scanned(code: &[u8]) -> Result<(Vec<u8>, usize), String> {
 
     let widget = QrWidget::new(code.to_vec())
         .with_id("invite-code")
-        .with_width_at_most(tilo_sheets::invite::CODE_MAX_PX);
+        .with_width_at_most(tilo_sheets::CODE_MAX_PX);
     let px = widget.module_px().ok_or("no module width")?;
     if let Some(error) = widget.error() {
         return Err(format!("the code does not fit: {error}"));

@@ -11,9 +11,7 @@
 )]
 
 use tilo_sheets::Seat as _;
-use tilo_sheets::invite::{
-    Created, Invite, InviteApp, InviteEffect, InviteSeat, Note, Pending, Person, Role,
-};
+use tilo_sheets::invite::{Invite, InviteApp, InviteEffect, InviteSeat, sample};
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
 
@@ -21,61 +19,6 @@ const VIEWPORT: (u32, u32) = (1280, 900);
 /// The link a made invitation hands over: the site's short link, which the
 /// code carries too.
 const LINK: &str = "https://tilo.sh/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGGHHHIIIJJJKKKLLLMMMNNNO";
-
-/// The sheet as the session hands it out with a link made.
-fn with_link() -> Invite {
-    Invite {
-        title: "Invite people".to_owned(),
-        description: "Make a link that brings someone into this workspace.".to_owned(),
-        close: "Close".to_owned(),
-        may_invite: true,
-        refusal: String::new(),
-        role_label: "They join as".to_owned(),
-        roles: vec![
-            Role {
-                key: "viewer".to_owned(),
-                label: "Viewer".to_owned(),
-                brings: "Can view shared work.".to_owned(),
-            },
-            Role {
-                key: "editor".to_owned(),
-                label: "Editor".to_owned(),
-                brings: "Can view, comment on, and edit shared work.".to_owned(),
-            },
-        ],
-        for_label: "This link is for".to_owned(),
-        people: vec![Person {
-            key: "9a1f".to_owned(),
-            name: "Ada Lovelace-Byron".to_owned(),
-        }],
-        anyone: "Anyone with the link".to_owned(),
-        create: "Create link".to_owned(),
-        create_another: "Create another link".to_owned(),
-        created: Some(Created {
-            invite: "8f2c".to_owned(),
-            link: LINK.to_owned(),
-            link_label: "The link".to_owned(),
-            brings: "Ada Lovelace-Byron joins as an editor.".to_owned(),
-            lasts: "The link stops working in 1 hr.".to_owned(),
-            copy: "Copy link".to_owned(),
-            revoke: "Take back".to_owned(),
-            alt: "The invitation link as a code to scan".to_owned(),
-        }),
-        pending_title: "Links that still work".to_owned(),
-        pending: vec![Pending {
-            key: "3b9d".to_owned(),
-            title: "Editor".to_owned(),
-            whose: "For anyone with the link".to_owned(),
-            lasts: "Ends in 59 min".to_owned(),
-            revoke: "Take back".to_owned(),
-        }],
-        pending_empty: "No link is waiting to be used.".to_owned(),
-        note: Some(Note {
-            text: "The link is on the clipboard.".to_owned(),
-            bad: false,
-        }),
-    }
-}
 
 /// The sheet shown through a seat as the shell lends it, which is where its
 /// asks arrive.
@@ -103,6 +46,26 @@ fn says(app: &mut HeadlessApp<InviteApp>, text: &str) -> bool {
             || node.description().is_some_and(|said| said.contains(text))
             || node.value().is_some_and(|value| value.contains(text))
     })
+}
+
+/// Whether the widget with test id `id` is drawn.
+fn drawn(app: &mut HeadlessApp<InviteApp>, id: &str) -> bool {
+    fn find(node: &ui::headless::InspectionNode, id: &str) -> bool {
+        (node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0 && node.rect[3] > 0.0)
+            || node.children.iter().any(|child| find(child, id))
+    }
+    find(&app.harness().inspection().root, id)
+}
+
+/// Which of `segments` stand chosen, in the order they are drawn.
+fn chosen(app: &mut HeadlessApp<InviteApp>, segments: &[&str]) -> Vec<String> {
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| node.toggled() == Some(ui::accesskit::Toggled::True))
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .filter(|label| segments.contains(&label.as_str()))
+        .collect()
 }
 
 /// Whether the control named `name` takes input.
@@ -140,13 +103,8 @@ tilo_test_env::scenario! {
     // The link made is shown as text and as a code, with what it brings and how
     // long it works, and its button hands it to the clipboard.
     {
-        let (mut app, seat) = seated(with_link());
-        for text in [
-            LINK,
-            "Ada Lovelace-Byron joins as an editor.",
-            "The link stops working in 1 hr.",
-            "The link is on the clipboard.",
-        ] {
+        let (mut app, seat) = seated(sample(Some("made")));
+        for text in [LINK, "Works for the next hour."] {
             assert!(says(&mut app, text), "{text:?} is shown");
         }
         press(&mut app, "invite-copy-link");
@@ -166,7 +124,7 @@ tilo_test_env::scenario! {
         assert!(
             says(
                 &mut app,
-                "Only a member whose part here allows inviting can make a link."
+                "Only someone whose part in this workspace allows inviting can make a link."
             ),
             "the sheet says why not"
         );
@@ -183,35 +141,59 @@ tilo_test_env::scenario! {
     // What the part picked brings whoever joins with it, in a line under the
     // choice, and it follows the pick.
     {
-        let (mut app, _seat) = seated(with_link());
+        let (mut app, _seat) = seated(sample(Some("made")));
         assert!(
             says(&mut app, "Can view, comment on, and edit shared work."),
             "the part the sheet opens on says what it brings"
         );
         press(&mut app, "invite-role:segment:0");
         assert!(
-            says(&mut app, "Can view shared work."),
+            says(&mut app, "Can view shared work, but cannot comment or edit it."),
             "picking another part says what that one brings"
         );
     }
 
-    phase on_a_phone_the_link_made_comes_first_and_making_another_after_it;
-    // On a phone, a sheet with a link made reads in the order the person goes: the link with the
-    // button that copies it and what that press did, the code to scan small, and only then the part
-    // another link would bring someone in at and the button that makes it. Nothing of it is wider
-    // than the screen.
+    phase the_link_shown_is_the_one_the_choices_describe;
+    // The choosers stand at what the link shown was made at, so nothing under them contradicts
+    // them; picking another part or person puts that link away among those that still work and
+    // offers to make one at the new choice, and picking back shows it again.
     {
-        const PHONE: (u32, u32) = (390, 844);
-        let (mut app, _seat) = seated(with_link());
-        app.harness().resize(PHONE).unwrap();
+        let (mut app, _seat) = seated(sample(Some("made")));
+        let segments = ["Viewer", "Editor", "Anyone with the link", "Ada Lovelace-Byron"];
+        assert_eq!(chosen(&mut app, &segments), ["Editor", "Ada Lovelace-Byron"]);
+        assert!(drawn(&mut app, "invite-link"));
+        assert!(!drawn(&mut app, "invite-pending-8f2c"), "the link shown is not listed again");
+
+        press(&mut app, "invite-for:segment:0");
+        assert_eq!(chosen(&mut app, &segments), ["Editor", "Anyone with the link"]);
+        assert!(!drawn(&mut app, "invite-link"), "Ada's link is not shown as anyone's");
+        assert!(!drawn(&mut app, "invite-code"));
+        assert!(enabled(&mut app, "Create link"));
+        assert!(drawn(&mut app, "invite-pending-8f2c"), "it still works, listed below");
+
+        press(&mut app, "invite-for:segment:1");
+        assert!(drawn(&mut app, "invite-link"));
+        press(&mut app, "invite-role:segment:0");
+        assert!(!drawn(&mut app, "invite-link"), "an editor's link is not shown as a viewer's");
+    }
+
+    phase the_choices_come_first_then_the_link_and_it_fits_without_scrolling;
+    // In the order the person goes: the part and the person, then the link made at them, its code
+    // centred as Add a device draws its own, then the links that still work. At 720 by 900 all of
+    // it stands above the Close button, with nothing to scroll.
+    {
+        let (mut app, _seat) = seated(sample(Some("made")));
+        app.harness().resize((720, 900)).unwrap();
         app.settle();
+        let segments = ["Editor", "Viewer", "Anyone with the link", "Ada Lovelace-Byron"];
+        assert_eq!(chosen(&mut app, &segments), ["Editor", "Ada Lovelace-Byron"]);
         let order = [
+            "invite-role",
+            "invite-for",
+            "invite-code",
             "invite-link",
             "invite-copy-link",
-            "invite-note",
-            "invite-code",
-            "invite-role",
-            "invite-create",
+            "invite-pending-77ad",
         ];
         let rects: Vec<[f64; 4]> = order.iter().map(|id| rect_of(&mut app, id)).collect();
         for (pair, ids) in rects.windows(2).zip(order.windows(2)) {
@@ -224,29 +206,44 @@ tilo_test_env::scenario! {
                 pair[1]
             );
         }
+        let code = rect_of(&mut app, "invite-code");
+        let field = rect_of(&mut app, "invite-link");
+        let centre = |rect: [f64; 4]| rect[0] + rect[2] / 2.0;
+        assert!((centre(code) - centre(field)).abs() <= 1.0, "the code is centred: {code:?}");
+        let last = *rects.last().expect("the last row");
+        let close = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.label() == Some("Close"))
+            .and_then(|(_, node)| node.bounds())
+            .expect("the Close button");
+        assert!(
+            last[1] + last[3] <= close.y0,
+            "the last link that still works stands above Close: {last:?}, {close:?}"
+        );
+    }
+
+    phase on_a_phone_nothing_is_wider_than_the_screen;
+    {
+        const PHONE: (u32, u32) = (390, 844);
+        let (mut app, _seat) = seated(sample(Some("made")));
+        app.harness().resize(PHONE).unwrap();
+        app.settle();
         let width = f64::from(PHONE.0);
-        for (id, rect) in order.iter().zip(&rects) {
+        for id in ["invite-role", "invite-for", "invite-code", "invite-link", "invite-copy-link", "invite-create"] {
+            let rect = rect_of(&mut app, id);
             assert!(
                 rect[0] >= 0.0 && rect[0] + rect[2] <= width,
                 "{id} fits the phone's width: {rect:?}"
             );
         }
-        let code = rect_of(&mut app, "invite-code");
-        let field = rect_of(&mut app, "invite-link");
-        assert!(
-            code[2] <= 160.0,
-            "the code is a small second way, not the sheet's subject: {code:?}"
-        );
-        assert!(
-            code[2] < field[2],
-            "the link, not the code, is the widest thing handed over"
-        );
     }
 
     phase with_a_link_made_the_button_makes_another;
     // With a link made, making another is the secondary press, and says so.
     {
-        let (mut app, _seat) = seated(with_link());
+        let (mut app, _seat) = seated(sample(Some("made")));
         assert!(enabled(&mut app, "Create another link"));
         assert!(
             app.harness()
@@ -265,40 +262,40 @@ tilo_test_env::scenario! {
     phase the_choices_reach_the_link_the_sheet_asks_for;
     // The person picks the part and whose device may redeem the link, and the
     // create button asks for the link they picked at: the sheet's own choices
-    // reach the shell.
+    // reach the shell, and what they did not change stays as the link shown.
     {
-        let (mut app, seat) = seated(with_link());
+        let (mut app, seat) = seated(sample(Some("made")));
         press(&mut app, "invite-role:segment:0");
         press(&mut app, "invite-create");
         let asked = seat.take_asked();
         assert!(
             asked.contains(&InviteEffect::Create {
                 role: "viewer".to_owned(),
-                recipient: String::new(),
+                recipient: "9a1f".to_owned(),
             }),
             "the part picked is the one asked for: {asked:?}"
         );
     }
 
-    phase the_create_button_asks_for_an_editor_for_the_person_chipped;
+    phase the_create_button_asks_for_an_editor_for_whoever_holds_it;
     {
-        let (mut app, seat) = seated(with_link());
+        let (mut app, seat) = seated(sample(Some("made")));
         // The first chip is anyone holding the link, the next the person listed.
-        press(&mut app, "invite-for:segment:1");
+        press(&mut app, "invite-for:segment:0");
         press(&mut app, "invite-create");
         assert_eq!(
             seat.take_asked(),
             vec![InviteEffect::Create {
                 role: "editor".to_owned(),
-                recipient: "9a1f".to_owned(),
+                recipient: String::new(),
             }],
-            "the sheet opens on the part a newcomer usually joins at, for the person chipped"
+            "the part stays the link's, for anyone holding it"
         );
     }
 
     phase taking_a_link_back_asks_for_that_invitation;
     {
-        let (mut app, seat) = seated(with_link());
+        let (mut app, seat) = seated(sample(Some("made")));
         press(&mut app, "invite-revoke-3b9d");
         assert_eq!(
             seat.take_asked(),
@@ -312,7 +309,7 @@ tilo_test_env::scenario! {
     phase taking_back_the_link_just_made_asks_for_that_invitation;
     // The link made is taken back beside the button that copies it.
     {
-        let (mut app, seat) = seated(with_link());
+        let (mut app, seat) = seated(sample(Some("made")));
         press(&mut app, "invite-revoke-made");
         assert_eq!(
             seat.take_asked(),

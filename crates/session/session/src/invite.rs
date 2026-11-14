@@ -15,8 +15,6 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilo_action_policy::Role;
-use tilo_desktop::workspace_settings as domain;
 use tilo_sheets::Seat as _;
 use tilo_sheets::invite as sheet;
 use tilo_sheets::{word, words};
@@ -152,17 +150,7 @@ impl sheet::Invitations for Invite {
     }
 
     fn create(&self, role: &str, recipient: &str) {
-        let label = Role::parse(role).map_or_else(|| role.to_owned(), domain::role_label);
-        // A link for a person names them as the sheet lists them.
-        let name = (!recipient.is_empty()).then(|| {
-            let person = self.workspace.people().into_iter();
-            person
-                .filter(|person| person.key == recipient)
-                .map(|person| person.name)
-                .next()
-                .unwrap_or_else(sheet::unnamed_person)
-        });
-        let brings = sheet::brings(&label, name.as_deref());
+        let asked = (role.to_owned(), recipient.to_owned());
         let (site, host) = self.workspace.shelf();
         let (store, made, issuing) = (
             Rc::clone(&self.store),
@@ -182,12 +170,12 @@ impl sheet::Invitations for Invite {
                 // The person hands over a link, not an invitation's kilobytes: the signed bytes
                 // are sealed under a fresh key and wait on the site's shelf under a handle, and
                 // the link carries the key in its fragment.
+                let (role, recipient) = &asked;
+                let created = sheet::made(&issued.invite, role, recipient, issued.expires_at_ns);
                 if let Err(reason) = store.hand_over(
                     &mut made.borrow_mut(),
-                    &issued.invite,
+                    created,
                     &issued.text,
-                    issued.expires_at_ns,
-                    brings,
                     site.as_ref(),
                     host.as_deref(),
                 ) {
@@ -220,7 +208,7 @@ impl sheet::Invitations for Invite {
 
     fn copy(&self, link: &str) {
         self.clipboard.copy(link.to_owned(), ON_CLIPBOARD_FOR);
-        self.made.borrow_mut().say(word("invite-copied"), false);
+        self.made.borrow_mut().copied(link);
     }
 
     fn clear_note(&self) {
@@ -262,7 +250,7 @@ impl Shared {
         let Some(seat) = self.invite.as_ref() else {
             return;
         };
-        sheet::drive(seat, &self.inviting);
+        sheet::answer(&seat.take_asked(), &self.inviting);
         self.inviting.follow_shelf();
         if seat.presentation().is_open() {
             self.show_invite();

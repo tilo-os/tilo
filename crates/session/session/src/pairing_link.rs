@@ -204,7 +204,7 @@ mod tests {
         let mut invites = Invites::default();
         let shown = invites.at(SITE, ORIGIN, ROOM, &PERSON, START).unwrap();
         let code = QrWidget::new(shown.link.clone().into_bytes())
-            .with_width_at_most(tilo_sheets::pair_device::CODE_MAX_PX);
+            .with_width_at_most(tilo_sheets::CODE_MAX_PX);
         let px = code.module_px().unwrap();
         assert!(code.error().is_none(), "the link fits a code");
         let quiet = code.quiet_modules();

@@ -583,7 +583,7 @@ workspace-delete-keep = Behalten
 # still work.
 invite-title = Personen einladen
 invite-title-workspace = Personen in „{ $workspace }“ einladen
-invite-description = Erstelle einen Link, der jemanden in diesen Arbeitsbereich bringt. Jeder Link gilt eine Stunde, und du kannst ihn hier zurücknehmen.
+invite-description = Erstelle einen Link, der jemanden in diesen Arbeitsbereich bringt.
 invite-close = Schließen
 invite-refusal = Nur wer hier eine Rolle hat, die Einladen erlaubt, kann einen Link erstellen.
 invite-role-label = Beitritt als
@@ -595,18 +595,21 @@ invite-making = Der Link wird erstellt…
 invite-link-label = Der Link
 invite-copy = Link kopieren
 invite-code-alt = Der Einladungslink als Code zum Scannen
-invite-created-anyone = Alle mit diesem Link treten als { $role } bei.
-invite-created-for = { $name } tritt als { $role } bei.
-invite-created-lasts = Der Link läuft { $left } ab.
-invite-lasts = Läuft { $left } ab
+invite-lasting-minutes = { $minutes ->
+    [one] Gilt für die nächste Minute.
+   *[other] Gilt für die nächsten { $minutes } Minuten.
+}
+invite-lasting-hours = { $hours ->
+    [one] Gilt für die nächste Stunde.
+   *[other] Gilt für die nächsten { $hours } Stunden.
+}
 invite-for-anyone = Für alle mit dem Link
 invite-for-person = Für { $name }
 invite-for-someone = Für eine Person, die dieser Arbeitsbereich kennt
 invite-person-unnamed = Jemand ohne Namen
 invite-pending-title = Links, die noch gelten
-invite-pending-empty = Kein Link wartet auf eine Nutzung.
 invite-revoke = Zurücknehmen
-invite-copied = Der Link liegt auf der Zwischenablage.
+invite-copied = Kopiert
 invite-revoked = Der Link gilt nicht mehr.
 invite-no-answer = Kein Link erstellt: Der Arbeitsbereich hat nicht geantwortet.
 invite-failed = Kein Link erstellt: { $reason }

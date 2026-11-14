@@ -64,10 +64,8 @@ fn a_link_no_site_keeps_is_not_handed_over_as_the_invitations_text() {
     let mut made = Making::default();
     let refused = store.hand_over(
         &mut made,
-        "invite",
+        tilo_sheets::invite::made("invite", "editor", "", u64::MAX),
         &text,
-        u64::MAX,
-        String::new(),
         None,
         None,
     );
@@ -80,10 +78,8 @@ fn a_link_no_site_keeps_is_not_handed_over_as_the_invitations_text() {
     store
         .hand_over(
             &mut made,
-            "invite",
+            tilo_sheets::invite::made("invite", "editor", "", u64::MAX),
             &text,
-            u64::MAX,
-            String::new(),
             Some(&site_url),
             None,
         )

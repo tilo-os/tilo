@@ -1,9 +1,9 @@
 //! "Invite people": the link into the workspace in front.
 //!
-//! The sheet makes one invitation at a time — the part it brings someone in
-//! at, and, for a person the workspace knows, a link only their device can
-//! redeem — and shows it as the site's short link to hand over and as a small
-//! code to scan, with the button that puts it on the clipboard. Below it stand
+//! The person first picks the part a link brings someone in at and, for a
+//! person the workspace knows, whose device alone may redeem it; under those
+//! choices stands the link made at them, as a code to scan and as the site's
+//! short link with the button that puts it on the clipboard. Below it stand
 //! the invitations that still work, each with the button that takes it back.
 //! The shell makes, lists and cancels them; it keeps the sheet current through
 //! [`InviteSeat`].
@@ -16,20 +16,15 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Banner, Button, ButtonRole, Column, ControlSize, Element, ListRow, ModalDialog, QrWidget, Row,
-    Section, Segment, TextInput, ToggleGroup,
+    Banner, Button, ButtonRole, Column, ControlSize, Element, ListRow, ModalDialog, Row, Section,
+    Segment, TextInput, ToggleGroup,
 };
 
 use crate::presentation::{Presentation, Seat, presented};
-use crate::{caption, word, words};
+use crate::{caption, code, word, words};
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.invite";
-
-/// The widest the code is drawn, quiet zone and all: room enough for squares a
-/// phone held near the screen reads, and small enough that the link and its
-/// buttons, not the code, are what the sheet is about.
-pub const CODE_MAX_PX: usize = 144;
 
 /// The sheet's resource: the door its actions are published on. It holds
 /// nothing; the invitations are the workspace's.
@@ -104,10 +99,16 @@ pub struct Created {
     /// The site's short link to it (`https://<site>/i/<handle>#<key>`), which
     /// the code to scan carries too.
     pub link: String,
-    /// What the link is called, who it brings in and how long it works, and
-    /// the button that copies it.
+    /// The part it brings someone in at, and the key of the person whose
+    /// device alone redeems it (empty: anyone holding it). The sheet shows the
+    /// link while its choices stand at these, so the choices describe it.
+    pub role: String,
+    pub recipient: String,
+    /// When it stops admitting anyone (nanoseconds since the epoch).
+    pub expires_at_ns: u64,
+    /// What the link is called, how long it works, and the button that
+    /// copies it.
     pub link_label: String,
-    pub brings: String,
     pub lasts: String,
     pub copy: String,
     /// Taking the link back, beside the one that copies it.
@@ -161,7 +162,6 @@ pub struct Invite {
     pub created: Option<Created>,
     pub pending_title: String,
     pub pending: Vec<Pending>,
-    pub pending_empty: String,
     pub note: Option<Note>,
 }
 
@@ -249,6 +249,13 @@ impl Making {
             .filter(|created| created.invite != invite);
     }
 
+    /// `link` is on the clipboard: its copy button says so while it shows.
+    pub fn copied(&mut self, link: &str) {
+        if let Some(created) = self.created.as_mut().filter(|created| created.link == link) {
+            created.copy = word("invite-copied");
+        }
+    }
+
     /// Say in the sheet what became of the last ask.
     pub fn say(&mut self, text: String, bad: bool) {
         self.note = Some(Note { text, bad });
@@ -265,16 +272,19 @@ impl Making {
     }
 }
 
-/// What the sheet shows of the link it just made, once its site answers with
-/// the link: the words around it, and how long it works.
+/// What the sheet shows of the link it just made at `role` for `recipient`
+/// (empty: anyone holding it), once its site answers with the link: the words
+/// around it, and how long it works.
 #[must_use]
-pub fn made(invite: &str, brings: String, expires_at_ns: u64) -> Created {
+pub fn made(invite: &str, role: &str, recipient: &str, expires_at_ns: u64) -> Created {
     Created {
         invite: invite.to_owned(),
         link: String::new(),
+        role: role.to_owned(),
+        recipient: recipient.to_owned(),
+        expires_at_ns,
         link_label: word("invite-link-label"),
-        brings,
-        lasts: words("invite-created-lasts", &[("left", &left(expires_at_ns))]),
+        lasts: lasting(expires_at_ns),
         copy: word("invite-copy"),
         revoke: word("invite-revoke"),
         alt: word("invite-code-alt"),
@@ -286,16 +296,6 @@ pub fn made(invite: &str, brings: String, expires_at_ns: u64) -> Created {
 #[must_use]
 pub fn unnamed_person() -> String {
     word("invite-person-unnamed")
-}
-
-/// Who a link brings in, in the sheet's words: the part it brings them in at,
-/// and the person it names when it names one.
-#[must_use]
-pub fn brings(role: &str, name: Option<&str>) -> String {
-    match name {
-        Some(name) => words("invite-created-for", &[("name", name), ("role", role)]),
-        None => words("invite-created-anyone", &[("role", role)]),
-    }
 }
 
 /// An invitation that still works, in the sheet's words. `invitee` is how the
@@ -317,17 +317,28 @@ pub fn pending(
             (None, true) => word("invite-for-someone"),
             (None, false) => word("invite-for-anyone"),
         },
-        lasts: words("invite-lasts", &[("left", &left(expires_at_ns))]),
+        lasts: lasting(expires_at_ns),
         revoke: word("invite-revoke"),
     }
 }
 
-/// How long a link has left, in the words the app says time ahead with
-/// everywhere (`in 59 min`, `in 6 days`).
+/// How long a link still works, as a sentence: the minutes left within the
+/// hour, else the hours, each counted up so a link never reads as spent early.
 #[must_use]
-pub fn left(expires_at_ns: u64) -> String {
+pub fn lasting(expires_at_ns: u64) -> String {
     let secs = expires_at_ns.saturating_sub(ui::time::unix_now_ns()) / 1_000_000_000;
-    ui::format::relative_ahead(i64::try_from(secs).unwrap_or(i64::MAX))
+    let minutes = secs.div_ceil(60).max(1);
+    let (key, name, count) = if minutes < 60 {
+        ("invite-lasting-minutes", "minutes", minutes)
+    } else {
+        ("invite-lasting-hours", "hours", minutes.div_ceil(60))
+    };
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a count of minutes or hours is far inside an f64's integers"
+    )]
+    let count = ui::i18n::ArgValue::Number(count as f64);
+    crate::t_args(key, &[(name, count)])
 }
 
 /// What the sheet asks of whoever makes its invitations: the session's desk,
@@ -384,7 +395,11 @@ pub trait Invitations {
 #[must_use]
 pub fn view(invitations: &dyn Invitations) -> Invite {
     let may_invite = invitations.may_invite();
-    let created = invitations.made();
+    // How long the link shown still works, as of this pass: the sheet counts it down.
+    let created = invitations.made().map(|created| Created {
+        lasts: lasting(created.expires_at_ns),
+        ..created
+    });
     let title = match invitations.workspace() {
         Some(workspace) => words("invite-title-workspace", &[("workspace", &workspace)]),
         None => word("invite-title"),
@@ -411,19 +426,12 @@ pub fn view(invitations: &dyn Invitations) -> Invite {
         create: word("invite-create"),
         create_another: word("invite-create-another"),
         pending_title: word("invite-pending-title"),
-        // The link shown above with its own buttons is not listed again under it.
         pending: if may_invite {
-            let shown = created.as_ref().map(|created| created.invite.as_str());
-            invitations
-                .pending()
-                .into_iter()
-                .filter(|pending| Some(pending.key.as_str()) != shown)
-                .collect()
+            invitations.pending()
         } else {
             Vec::new()
         },
         created,
-        pending_empty: word("invite-pending-empty"),
         note: invitations.note().or_else(|| {
             invitations.making().then(|| Note {
                 text: word("invite-making"),
@@ -449,18 +457,68 @@ pub fn answer(asked: &[InviteEffect], invitations: &dyn Invitations) {
     }
 }
 
-/// Carry out what the person pressed in the sheet since it was last shown.
-pub fn drive(seat: &InviteSeat, invitations: &dyn Invitations) {
-    answer(&seat.take_asked(), invitations);
-}
-
 /// What the person picked in the sheet: the part to bring someone in at, and
-/// whose device may redeem the link. `None` is nobody's choice yet, and shows
-/// the defaults.
+/// whose device may redeem the link, as the chooser's segment (0: anyone
+/// holding it, then the people). `None` is nobody's choice yet, and shows what
+/// the link shown was made at, else the defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Choosing {
     pub role: Option<usize>,
     pub whose: Option<usize>,
+}
+
+impl Choosing {
+    /// The segments the choosers stand on in `invite`: the part, and whose.
+    fn standing(&self, invite: &Invite) -> (usize, usize) {
+        let made = invite.created.as_ref();
+        let role = self
+            .role
+            .filter(|at| *at < invite.roles.len())
+            .or_else(|| {
+                made.and_then(|made| invite.roles.iter().position(|role| role.key == made.role))
+            })
+            .unwrap_or_else(|| invite.default_role());
+        let whose = self
+            .whose
+            .filter(|at| *at <= invite.people.len())
+            .or_else(|| {
+                made.and_then(|made| {
+                    if made.recipient.is_empty() {
+                        return Some(0);
+                    }
+                    let at = invite
+                        .people
+                        .iter()
+                        .position(|person| person.key == made.recipient);
+                    at.map(|at| at.saturating_add(1))
+                })
+            })
+            .unwrap_or(0);
+        (role, whose)
+    }
+
+    /// The link the choosers stand at in `invite`: the part's key, and the
+    /// person's (empty: anyone holding it).
+    fn asking(&self, invite: &Invite) -> (String, String) {
+        let (role, whose) = self.standing(invite);
+        let role = invite.roles.get(role).map(|role| role.key.clone());
+        let recipient = whose
+            .checked_sub(1)
+            .and_then(|at| invite.people.get(at))
+            .map(|person| person.key.clone());
+        (role.unwrap_or_default(), recipient.unwrap_or_default())
+    }
+
+    /// The link made, while the choosers stand at what it was made at: a link
+    /// shown under the choices is always the one they describe.
+    #[must_use]
+    pub fn shown<'a>(&self, invite: &'a Invite) -> Option<&'a Created> {
+        let (role, recipient) = self.asking(invite);
+        invite
+            .created
+            .as_ref()
+            .filter(|made| made.role == role && made.recipient == recipient)
+    }
 }
 
 /// What the shell lends the sheet: whether it is up, what it shows, and where
@@ -515,12 +573,12 @@ impl InviteSeat {
 /// into the seat its shell reads; a page's host hands it to the page.
 pub type Ask = Rc<dyn Fn(InviteEffect)>;
 
-/// The sheet as its hosts draw it, from the [`Invite`] they keep current:
-/// the part and the person the link is for, the link last made with its code
-/// and its copy button, and the links that still work. What the person picks
-/// is kept in `choosing` and the link shown in `link`; every press is asked
-/// through `ask`. The session's window ([`InviteApp`]) and a browser page
-/// build this same sheet from the same data.
+/// The sheet as its hosts draw it, from the [`Invite`] they keep current: the
+/// part and the person the link is for, the link made at those choices with
+/// its code and its copy button, and the links that still work. What the
+/// person picks is kept in `choosing` and the link shown in `link`; every
+/// press is asked through `ask`. The session's window ([`InviteApp`]) and a
+/// browser page build this same sheet from the same data.
 pub fn sheet(
     invite: &Invite,
     choosing: &LocalState<Choosing>,
@@ -532,21 +590,26 @@ pub fn sheet(
         .with_intrinsic_height()
         .with_no_padding()
         .with_rhythm(Rhythm::Section);
-    // In the order the person goes: who the link brings in and as what, and the button that makes
-    // it; once a link is made, that link first, with the buttons that copy it and take it back, and
-    // making another under it. What a press did is said under the press, not at the top of a sheet
-    // the person scrolled down.
-    if let Some(created) = &invite.created {
-        body = body.push(handover(created, link, ask, invite.note.as_ref()));
-        body = body.push(composing(invite, choosing, ask));
-    } else {
-        body = body.push(composing(invite, choosing, ask));
-        if let Some(note) = &invite.note {
-            body = body.push(notice(note, ask));
-        }
-    }
+    // In the order the person goes: who the link brings in and as what, then the link made at those
+    // choices with the buttons that copy it, take it back and make another, or the button that
+    // makes it. What a press did is said under the press.
+    let picked = choosing.get();
+    let shown = picked.shown(invite);
+    body = body.push(composing(invite, choosing, &picked));
     if invite.may_invite {
-        body = body.push(pending_rows(invite, ask));
+        let mut handing: Vec<Element> = if let Some(created) = shown {
+            handover(invite, created, choosing, link, ask)
+        } else {
+            let create = create_button(invite, choosing, ask, false);
+            vec![Box::new(Row::new().push(Box::new(create)))]
+        };
+        if let Some(note) = &invite.note {
+            handing.push(notice(note, ask));
+        }
+        body = body.push(Box::new(Section::new(handing)));
+        if let Some(rows) = pending_rows(invite, shown, ask) {
+            body = body.push(rows);
+        }
     }
     let dismissed = ask.clone();
     let escaped = ask.clone();
@@ -563,7 +626,7 @@ pub fn sheet(
 }
 
 /// What the person asked for last went wrong, or went as asked: said in a
-/// notice over the sheet.
+/// notice under the press.
 fn notice(note: &Note, ask: &Ask) -> Element {
     let dismiss = ask.clone();
     let banner = if note.bad {
@@ -579,93 +642,56 @@ fn notice(note: &Note, ask: &Ask) -> Element {
     )
 }
 
-/// Making a link: the part it brings someone in at, who it is for, and the
-/// button that makes it. Without the grant, why there is nothing to make.
-fn composing(invite: &Invite, choosing: &LocalState<Choosing>, ask: &Ask) -> Element {
+/// The choices a link is made at: the part it brings someone in at, with
+/// what that part may do, and who it is for. Without the grant, why there is
+/// nothing to make.
+fn composing(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing) -> Element {
     let mut items: Vec<Element> = Vec::new();
     if !invite.may_invite {
         items.push(caption(&invite.refusal));
         return Box::new(Section::new(items));
     }
-    let picked = choosing.get();
+    let (role_at, whose_at) = picked.standing(invite);
     if !invite.roles.is_empty() {
         items.push(caption(&invite.role_label));
-        items.push(roles(invite, choosing, &picked));
-        // What the part on offer means for whoever joins with the link, in
-        // one line under the choice: the same words its hint carries.
-        let at = picked
-            .role
-            .filter(|at| *at < invite.roles.len())
-            .unwrap_or_else(|| invite.default_role());
-        if let Some(role) = invite.roles.get(at) {
+        items.push(roles(invite, choosing, role_at));
+        if let Some(role) = invite.roles.get(role_at) {
             items.push(caption(&role.brings));
         }
     }
     if !invite.people.is_empty() {
         items.push(caption(&invite.for_label));
-        items.push(whose(invite, choosing, &picked));
+        items.push(whose(invite, choosing, whose_at));
     }
-    // What the link is made at, as the person stands having picked: the
-    // button reads it when pressed, so a choice made after the button was
-    // drawn is the one it asks with.
-    let picked_role = choosing.clone();
-    let picked_whose = choosing.clone();
-    let making = ask.clone();
-    let default_role = invite.default_role();
-    let role_keys: Vec<String> = invite.roles.iter().map(|role| role.key.clone()).collect();
-    let people_keys: Vec<String> = invite
-        .people
-        .iter()
-        .map(|person| person.key.clone())
-        .collect();
-    items.push(Box::new(
-        Row::new().with_rhythm(Rhythm::Related).push(Box::new(
-            // Once a link is made, copying it is what comes next: making another is not.
-            Button::new(
-                "invite-create",
-                if invite.created.is_some() {
-                    &invite.create_another
-                } else {
-                    &invite.create
-                },
-            )
-            .role(if invite.created.is_some() {
-                ButtonRole::Secondary
-            } else {
-                ButtonRole::Primary
-            })
-            .on_view(move || {
-                let at = picked_role.get().role.unwrap_or(default_role);
-                let role = role_keys.get(at).cloned().unwrap_or_default();
-                let recipient = picked_whose
-                    .get()
-                    .whose
-                    .and_then(|at| people_keys.get(at).cloned())
-                    .unwrap_or_default();
-                making(InviteEffect::Create { role, recipient });
-            }),
-        )),
-    ));
     Box::new(Section::new(items))
 }
 
-/// The link last made, standing on its own: the thing the person hands over, and what the last
-/// press on it did.
-fn handover(
-    created: &Created,
-    link: &LocalState<String>,
+/// The button that makes a link at the choices standing when it is pressed,
+/// or another one beside the link shown.
+fn create_button(
+    invite: &Invite,
+    choosing: &LocalState<Choosing>,
     ask: &Ask,
-    note: Option<&Note>,
-) -> Element {
-    Box::new(Section::new(handover_parts(created, link, ask, note)))
+    again: bool,
+) -> Button {
+    let (label, role) = if again {
+        (&invite.create_another, ButtonRole::Secondary)
+    } else {
+        (&invite.create, ButtonRole::Primary)
+    };
+    let making = ask.clone();
+    let choosing = choosing.clone();
+    let invite = invite.clone();
+    Button::new("invite-create", label)
+        .role(role)
+        .on_view(move || {
+            let (role, recipient) = choosing.get().asking(&invite);
+            making(InviteEffect::Create { role, recipient });
+        })
 }
 
-/// The parts on offer, the one the person may bring someone in at chosen.
-fn roles(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing) -> Element {
-    let at = picked
-        .role
-        .filter(|at| *at < invite.roles.len())
-        .unwrap_or_else(|| invite.default_role());
+/// The parts on offer, the one the choosers stand on chosen.
+fn roles(invite: &Invite, choosing: &LocalState<Choosing>, at: usize) -> Element {
     let choosing = choosing.clone();
     Box::new(
         ToggleGroup::new(
@@ -685,12 +711,7 @@ fn roles(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing) ->
 }
 
 /// Who the link is for: anyone holding it, or a person the workspace knows.
-fn whose(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing) -> Element {
-    // The first segment is anyone holding the link, the others the people.
-    let at = picked
-        .whose
-        .filter(|at| *at < invite.people.len())
-        .map_or(0, |at| at.saturating_add(1));
+fn whose(invite: &Invite, choosing: &LocalState<Choosing>, at: usize) -> Element {
     let mut segments = vec![Segment::new(invite.anyone.clone())];
     segments.extend(
         invite
@@ -704,19 +725,20 @@ fn whose(invite: &Invite, choosing: &LocalState<Choosing>, picked: &Choosing) ->
             .with_id("invite-for")
             .with_accessible_name(invite.for_label.clone())
             .on_view("invite-for", move |index| {
-                choosing.update(|choosing| choosing.whose = index.checked_sub(1));
+                choosing.update(|choosing| choosing.whose = Some(index));
             }),
     )
 }
 
-/// The link last made: the text to hand over with the buttons that copy it and take it back,
-/// what it brings someone in at and how long it works, then the code to scan, small, for a phone
-/// beside the screen.
-fn handover_parts(
+/// The link made at the choices, as Add a device shows its own: the code to
+/// scan, how long it works, and the link as text with the buttons that copy
+/// it, take it back and make another.
+fn handover(
+    invite: &Invite,
     created: &Created,
+    choosing: &LocalState<Choosing>,
     link: &LocalState<String>,
     ask: &Ask,
-    note: Option<&Note>,
 ) -> Vec<Element> {
     if link.get() != created.link {
         link.set(created.link.clone());
@@ -729,18 +751,16 @@ fn handover_parts(
         .with_id("invite-link")
         .with_read_only(true)
         .with_accessible_name(&created.link_label);
-    let code = QrWidget::new(created.link.clone().into_bytes())
-        .with_id("invite-code")
-        .with_width_at_most(CODE_MAX_PX)
-        .with_alt(created.alt.clone());
-    let mut parts: Vec<Element> = vec![
-        caption(&created.link_label),
+    vec![
+        crate::centred(code(&created.link, "invite-code", &created.alt)),
+        caption(&created.lasts),
         Box::new(text),
         Box::new(
             Row::new()
                 .with_rhythm(Rhythm::Tight)
                 .push(Box::new(
                     Button::new("invite-copy-link", &created.copy)
+                        .with_icon(Icon::Copy)
                         .role(ButtonRole::Primary)
                         .on_view(move || {
                             copying(InviteEffect::Copy {
@@ -754,25 +774,26 @@ fn handover_parts(
                             invite: invite_id.clone(),
                         });
                     }),
-                )),
+                ))
+                .push(Box::new(create_button(invite, choosing, ask, true))),
         ),
-    ];
-    if let Some(note) = note {
-        parts.push(notice(note, ask));
-    }
-    parts.push(caption(&created.brings));
-    parts.push(caption(&created.lasts));
-    parts.push(Box::new(code));
-    parts
+    ]
 }
 
-/// The links that still work, each with the button that takes it back.
-fn pending_rows(invite: &Invite, ask: &Ask) -> Element {
-    let mut items: Vec<Element> = Vec::new();
-    if invite.pending.is_empty() {
-        items.push(caption(&invite.pending_empty));
+/// The links that still work, each with the button that takes it back, when
+/// there are any; the link shown above with its own buttons is not listed again.
+fn pending_rows(invite: &Invite, shown: Option<&Created>, ask: &Ask) -> Option<Element> {
+    let shown = shown.map(|created| created.invite.as_str());
+    let listed: Vec<&Pending> = invite
+        .pending
+        .iter()
+        .filter(|pending| Some(pending.key.as_str()) != shown)
+        .collect();
+    if listed.is_empty() {
+        return None;
     }
-    for waiting in &invite.pending {
+    let mut items: Vec<Element> = Vec::new();
+    for waiting in listed {
         let revoking = ask.clone();
         let invite_id = waiting.key.clone();
         let revoke_id = format!("invite-revoke-{}", waiting.key);
@@ -794,7 +815,10 @@ fn pending_rows(invite: &Invite, ask: &Ask) -> Element {
             )),
         ));
     }
-    Box::new(Section::titled(invite.pending_title.clone(), items))
+    Some(Box::new(Section::titled(
+        invite.pending_title.clone(),
+        items,
+    )))
 }
 
 /// The sheet as an app.
@@ -869,100 +893,103 @@ impl ResourceApp for InviteApp {
     }
 
     fn fixture(fixture: &mut ui::framework::Fixture<InviteLinks>) {
-        let invite = match fixture.scenario() {
-            Some("unable") => Invite {
-                may_invite: false,
-                refusal: "Only a member whose part here allows inviting can make a link."
-                    .to_owned(),
-                roles: Vec::new(),
-                people: Vec::new(),
-                ..sample_invite()
-            },
-            Some("made") => {
-                let mut invite = sample_invite();
-                let link = "https://tilo.sh/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGG\
-                            HHHIIIJJJKKKLLLMMMNNNO";
-                invite.created = Some(Created {
-                    invite: "8f2c".to_owned(),
-                    link: link.to_owned(),
-                    link_label: "The link".to_owned(),
-                    brings: "Ada Lovelace-Byron joins as an editor.".to_owned(),
-                    lasts: "The link stops working in 1 hr.".to_owned(),
-                    copy: "Copy link".to_owned(),
-                    revoke: "Take back".to_owned(),
-                    alt: "The invitation link as a code to scan".to_owned(),
-                });
-                invite
-            }
-            _ => sample_invite(),
-        };
-        fixture.provide(invite);
+        fixture.provide(sample(fixture.scenario()));
     }
 }
 
-/// The sheet as a workspace hands it out, for captures.
-fn sample_invite() -> Invite {
-    Invite {
-        title: "Invite people".to_owned(),
-        description: "Make a link that brings someone into this workspace. Each link works for \
-                      one hour, and you can take it back here."
-            .to_owned(),
-        close: "Close".to_owned(),
-        may_invite: true,
-        refusal: String::new(),
-        role_label: "They join as".to_owned(),
-        roles: vec![
-            Role {
-                key: "viewer".to_owned(),
-                label: "Viewer".to_owned(),
-                brings: "Can view shared work, but cannot comment or edit it.".to_owned(),
-            },
-            Role {
-                key: "commenter".to_owned(),
-                label: "Commenter".to_owned(),
-                brings: "Can view shared work and add comments, but cannot edit it.".to_owned(),
-            },
-            Role {
-                key: "editor".to_owned(),
-                label: "Editor".to_owned(),
-                brings: "Can view, comment on, and edit shared work.".to_owned(),
-            },
-        ],
-        for_label: "This link is for".to_owned(),
-        people: vec![
-            Person {
-                key: "9a1f".to_owned(),
-                name: "Ada Lovelace-Byron".to_owned(),
-            },
-            Person {
-                key: "4c7e".to_owned(),
-                name: "Grace Hopper".to_owned(),
-            },
-        ],
-        anyone: "Anyone with the link".to_owned(),
-        create: "Create link".to_owned(),
-        create_another: "Create another link".to_owned(),
-        created: None,
-        pending_title: "Links that still work".to_owned(),
-        pending: vec![
-            Pending {
-                key: "3b9d".to_owned(),
-                title: "Editor".to_owned(),
-                whose: "For anyone with the link".to_owned(),
-                lasts: "Ends in 59 min".to_owned(),
-                revoke: "Take back".to_owned(),
-            },
-            Pending {
-                key: "77ad".to_owned(),
-                title: "Viewer".to_owned(),
-                whose: "For Grace Hopper".to_owned(),
-                lasts: "Ends in 12 min".to_owned(),
-                revoke: "Take back".to_owned(),
-            },
-        ],
-        pending_empty: "No link is waiting to be used.".to_owned(),
-        note: None,
+/// The sheet over a sample workspace, for captures and tests: three parts on
+/// offer, two people, two links that still work, and in `made` an editor's link
+/// for Ada just made; in `unable` the person may not invite.
+#[must_use]
+pub fn sample(scenario: Option<&str>) -> Invite {
+    view(&Sample {
+        may_invite: scenario != Some("unable"),
+        made: scenario == Some("made"),
+    })
+}
+
+/// The workspace [`sample`] shows.
+struct Sample {
+    may_invite: bool,
+    made: bool,
+}
+
+/// What [`Sample`]'s links work for from now, in minutes.
+fn sample_expiry(minutes: u64) -> u64 {
+    ui::time::unix_now_ns().saturating_add(minutes.saturating_mul(60_000_000_000))
+}
+
+impl Invitations for Sample {
+    fn may_invite(&self) -> bool {
+        self.may_invite
     }
+    fn roles(&self) -> Vec<Role> {
+        [
+            (
+                "viewer",
+                "Viewer",
+                "Can view shared work, but cannot comment or edit it.",
+            ),
+            (
+                "commenter",
+                "Commenter",
+                "Can view shared work and add comments, but cannot edit it.",
+            ),
+            (
+                "editor",
+                "Editor",
+                "Can view, comment on, and edit shared work.",
+            ),
+        ]
+        .map(|(key, label, brings)| Role {
+            key: key.to_owned(),
+            label: label.to_owned(),
+            brings: brings.to_owned(),
+        })
+        .to_vec()
+    }
+    fn people(&self) -> Vec<Person> {
+        [("9a1f", "Ada Lovelace-Byron"), ("4c7e", "Grace Hopper")]
+            .map(|(key, name)| Person {
+                key: key.to_owned(),
+                name: name.to_owned(),
+            })
+            .to_vec()
+    }
+    fn pending(&self) -> Vec<Pending> {
+        let mut listed = vec![
+            pending("3b9d", "Editor", None, false, sample_expiry(59)),
+            pending(
+                "77ad",
+                "Viewer",
+                Some("Grace Hopper"),
+                true,
+                sample_expiry(12),
+            ),
+        ];
+        if self.made {
+            let made = pending(
+                "8f2c",
+                "Editor",
+                Some("Ada Lovelace-Byron"),
+                true,
+                sample_expiry(60),
+            );
+            listed.push(made);
+        }
+        listed
+    }
+    fn made(&self) -> Option<Created> {
+        self.made.then(|| Created {
+            link: "https://tilo.sh/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGGHHHIIIJJJKKKLLLMMMNNNO"
+                .to_owned(),
+            ..made("8f2c", "editor", "9a1f", sample_expiry(60))
+        })
+    }
+    fn create(&self, _role: &str, _recipient: &str) {}
+    fn revoke(&self, _invite: &str) {}
+    fn copy(&self, _link: &str) {}
+    fn clear_note(&self) {}
 }
 
 /// The app's definition, which the shell mounts.
@@ -985,7 +1012,7 @@ mod tests {
         "https://tilo.sh/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGGHHHIIIJJJKKKLLLMMMNNNO";
 
     fn made_link() -> Created {
-        made(INVITE, brings("Editor", None), 0)
+        made(INVITE, "editor", "", 0)
     }
 
     /// A sheet whose links go into `workspace`, when it names one.
@@ -1006,7 +1033,7 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// `view`: what the sheet shows of the invitations it is given.
-        fn the_view_names_its_workspace_and_lists_each_link_once;
+        fn the_view_names_its_workspace;
 
         phase the_sheet_says_which_workspace_its_links_go_into;
         {
@@ -1020,19 +1047,6 @@ mod tests {
                 words("invite-title-workspace", &[("workspace", "Design")]),
                 "a sheet opened for a workspace names it, so the scope is never a guess"
             );
-        }
-
-        phase the_link_shown_is_not_listed_again_under_it;
-        {
-            let keys = |shown: Option<Created>| -> Vec<String> {
-                view(&Listing(shown))
-                    .pending
-                    .into_iter()
-                    .map(|pending| pending.key)
-                    .collect()
-            };
-            assert_eq!(keys(None), [INVITE, "another invitation"]);
-            assert_eq!(keys(Some(made_link())), ["another invitation"]);
         }
     }
 
@@ -1103,7 +1117,9 @@ mod tests {
             let mut making = Making::default();
             making.shelving(made_link());
             making.shelved(INVITE, Ok(SHORT.to_owned()));
-            making.say("Copied".to_owned(), false);
+            making.copied(SHORT);
+            assert_eq!(making.made().unwrap().copy, word("invite-copied"));
+            making.say("Taken back".to_owned(), false);
             making.opening();
             assert!(making.made().is_none());
             assert!(making.note().is_none());
@@ -1111,41 +1127,21 @@ mod tests {
         }
     }
 
-    /// Links that list themselves and the one this opening made.
-    struct Listing(Option<Created>);
-
-    impl Invitations for Listing {
-        fn may_invite(&self) -> bool {
-            true
-        }
-        fn pending(&self) -> Vec<Pending> {
-            [INVITE, "another invitation"]
-                .into_iter()
-                .map(|key| pending(key, "Editor", None, false, 0))
-                .collect()
-        }
-        fn made(&self) -> Option<Created> {
-            self.0.clone()
-        }
-        fn create(&self, _role: &str, _recipient: &str) {}
-        fn revoke(&self, _invite: &str) {}
-        fn copy(&self, _link: &str) {}
-        fn clear_note(&self) {}
-    }
-
     #[test]
-    fn time_left_reads_in_words() {
+    fn how_long_a_link_works_reads_as_a_sentence() {
         let now = ui::time::unix_now_ns();
+        // A few seconds pass between making a link and reading it: the count goes up, never down.
         let at = |secs: u64| now.saturating_add(secs.saturating_mul(1_000_000_000));
-        // A few seconds pass between making a link and reading it.
+        assert_eq!(lasting(at(60 * 60 - 5)), "Works for the next hour.");
+        assert_eq!(lasting(at(59 * 60 - 5)), "Works for the next 59 minutes.");
+        assert_eq!(lasting(at(30)), "Works for the next minute.");
+        assert_eq!(lasting(at(3 * 3600 - 5)), "Works for the next 3 hours.");
+        ui::i18n::I18nManager::set_locale("de-DE");
+        assert_eq!(lasting(at(60 * 60 - 5)), "Gilt für die nächste Stunde.");
         assert_eq!(
-            left(at(7 * 86_400 - 5)),
-            ui::format::relative_ahead(7 * 86_400 - 5)
+            lasting(at(12 * 60 - 5)),
+            "Gilt für die nächsten 12 Minuten."
         );
-        assert!(!left(at(7 * 86_400)).contains("10080"));
-        assert_eq!(
-            left(at(59 * 60 + 30)),
-            ui::format::relative_ahead(59 * 60 + 30)
-        );
+        ui::i18n::I18nManager::set_locale("en-US");
     }
 }

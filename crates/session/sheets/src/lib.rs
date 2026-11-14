@@ -36,6 +36,25 @@ pub fn word(key: &str) -> String {
     t(key)
 }
 
+/// The widest a sheet draws a link as a code, quiet zone and all: big enough for a phone held near
+/// the screen to read, and small enough that the sheet is about the link, not the code.
+pub const CODE_MAX_PX: usize = 200;
+
+/// `link` as a code a phone camera reads: kept out of screenshots, since it admits whoever scans it.
+pub(crate) fn code(link: &str, id: &str, alt: &str) -> ui::widget::QrWidget {
+    ui::widget::QrWidget::new(link.as_bytes().to_vec())
+        .with_secret()
+        .with_id(id)
+        .with_alt(alt)
+        .with_width_at_most(CODE_MAX_PX)
+}
+
+/// `code` centred across its sheet.
+pub(crate) fn centred(code: ui::widget::QrWidget) -> ui::widget::Element {
+    let row = ui::widget::Row::new().with_justify(ui::taffy::JustifyContent::Center);
+    Box::new(row.push(Box::new(code)))
+}
+
 /// `text` as small print: what a sheet says under a part of it.
 pub(crate) fn caption(text: &str) -> ui::widget::Element {
     Box::new(ui::widget::Text::new(text).with_role(ui::prelude::TextRole::Caption))

@@ -23,10 +23,6 @@ use crate::{caption, word};
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.pair-device";
 
-/// The widest the code is drawn, quiet zone and all: big enough for a phone held near the screen
-/// to read, and small enough that the sheet is about the link, not the code.
-pub const CODE_MAX_PX: usize = 200;
-
 /// The sheet's resource: the door its actions are published on. It holds nothing; the link is the
 /// session's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -148,11 +144,7 @@ pub fn sheet(
 
 /// The code the sheet draws for `device`: the link it was handed, as squares a camera reads.
 fn code_of(device: &AddDevice) -> QrWidget {
-    QrWidget::new(device.link.clone().into_bytes())
-        .with_secret()
-        .with_id("pair-device-code")
-        .with_alt(device.alt.clone())
-        .with_width_at_most(CODE_MAX_PX)
+    crate::code(&device.link, "pair-device-code", &device.alt)
 }
 
 /// The link as a code a camera reads, how long it works, and the link as text to open or paste
@@ -168,11 +160,7 @@ fn code(device: &AddDevice, link: &LocalState<String>, ask: &Ask) -> Element {
         .with_read_only(true)
         .with_accessible_name(device.link_label.clone());
     let parts: Vec<Element> = vec![
-        Box::new(
-            Row::new()
-                .with_justify(ui::taffy::JustifyContent::Center)
-                .push(Box::new(code_of(device))),
-        ),
+        crate::centred(code_of(device)),
         caption(&device.lasting),
         caption(&device.link_label),
         Box::new(written),

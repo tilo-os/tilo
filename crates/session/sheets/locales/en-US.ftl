@@ -583,7 +583,7 @@ workspace-delete-keep = Keep
 # still work.
 invite-title = Invite people
 invite-title-workspace = Invite people to “{ $workspace }”
-invite-description = Make a link that brings someone into this workspace. Each link works for one hour, and you can take it back here.
+invite-description = Make a link that brings someone into this workspace.
 invite-close = Close
 invite-refusal = Only someone whose part in this workspace allows inviting can make a link.
 invite-role-label = They join as
@@ -595,18 +595,21 @@ invite-making = Making the link…
 invite-link-label = The link
 invite-copy = Copy link
 invite-code-alt = The invitation link as a code to scan
-invite-created-anyone = Anyone with this link joins as { $role }.
-invite-created-for = { $name } joins as { $role }.
-invite-created-lasts = The link stops working { $left }.
-invite-lasts = Ends { $left }
+invite-lasting-minutes = { $minutes ->
+    [one] Works for the next minute.
+   *[other] Works for the next { $minutes } minutes.
+}
+invite-lasting-hours = { $hours ->
+    [one] Works for the next hour.
+   *[other] Works for the next { $hours } hours.
+}
 invite-for-anyone = For anyone with the link
 invite-for-person = For { $name }
 invite-for-someone = For a person this workspace knows
 invite-person-unnamed = Someone without a name yet
 invite-pending-title = Links that still work
-invite-pending-empty = No link is waiting to be used.
 invite-revoke = Take back
-invite-copied = The link is on the clipboard.
+invite-copied = Copied
 invite-revoked = The link no longer works.
 invite-no-answer = No link was made: the workspace did not answer.
 invite-failed = No link was made: { $reason }

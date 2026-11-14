@@ -432,8 +432,8 @@ impl Store {
         std::mem::take(&mut *self.shelvings.borrow_mut())
     }
 
-    /// Hand over the link `invite` names, whose text is `text`: `brings` says
-    /// who it brings in and how long it works. `site` is the shelf to keep it
+    /// Hand over the link `created` names, whose text is `text`. `site` is the
+    /// shelf to keep it
     /// — the community a computer is set up with, the site a page comes from —
     /// and `host` the origin the workspace is served from. The sheet shows the
     /// site's short link once the site keeps it ([`Self::follow_shelf`]): it
@@ -444,17 +444,15 @@ impl Store {
     pub fn hand_over(
         &self,
         made: &mut sheet::Making,
-        invite: &str,
+        created: sheet::Created,
         text: &str,
-        expires_at_ns: u64,
-        brings: String,
         site: Option<&url::Url>,
         host: Option<&str>,
     ) -> Result<(), String> {
         let bytes = tilo_workspace_join::invitation_bytes(text)?;
         let site = site.ok_or_else(|| "there is no site to keep the link on".to_owned())?;
-        self.shelve(invite, bytes, expires_at_ns, site, host)?;
-        made.shelving(sheet::made(invite, brings, expires_at_ns));
+        self.shelve(&created.invite, bytes, created.expires_at_ns, site, host)?;
+        made.shelving(created);
         Ok(())
     }
 
