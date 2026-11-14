@@ -988,6 +988,11 @@ impl Workspace {
     }
 
     fn pump(&mut self, workspace_id: WorkspaceId) {
+        // The records a run of writes landed in, once each. What a landing
+        // reads is the record as it stands at the read, so one per record
+        // answers for all of a run's landings — and a busy workspace's writes
+        // otherwise cost a read for every write since the last request.
+        let mut landed: Vec<DocumentRoute> = Vec::new();
         for event in self.member.take(workspace_id) {
             match event {
                 Event::HostReady {
@@ -1025,40 +1030,45 @@ impl Workspace {
                     if WorkspaceId::parse(&route.cluster_id) != Some(workspace_id) {
                         continue;
                     }
-                    let engine = self.peer.engine();
-                    // Undecided: the replica holds the record and cannot read it yet. Keys that
-                    // arrived for a record it holds nothing of leave nothing undecided.
-                    // Asked without reading the record out, as a write lands for every post;
-                    // this device's own writes not taken in yet leave only a read to decide.
-                    let reads = engine
-                        .record_revision(&route.cluster_id, &route.app_id, &route.record)
-                        .and_then(|revision| match revision {
-                            Some(_) => Ok(true),
-                            None => engine
-                                .record(&route.cluster_id, &route.app_id, &route.record)
-                                .map(|read| read.is_some()),
-                        });
-                    let undecided = match reads {
-                        Ok(reads) => !reads,
-                        Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
-                            records.iter().any(|(app, record)| {
-                                *app == route.app_id && *record == route.record
-                            })
-                        }),
-                    };
-                    if undecided {
-                        self.undecided.insert(route.clone());
-                    } else {
-                        self.undecided.remove(&route);
+                    if !landed.contains(&route) {
+                        landed.push(route);
                     }
-                    self.records
-                        .get_or_insert_with(|| {
-                            WorkspaceRecords::new(&route.cluster_id, Arc::clone(self.peer.engine()))
-                        })
-                        .landed(&route);
                 }
                 _ => {}
             }
+        }
+        for route in landed {
+            let engine = self.peer.engine();
+            // Undecided: the replica holds the record and cannot read it yet. Keys that
+            // arrived for a record it holds nothing of leave nothing undecided.
+            // Asked without reading the record out, as a write lands for every post;
+            // this device's own writes not taken in yet leave only a read to decide.
+            let reads = engine
+                .record_revision(&route.cluster_id, &route.app_id, &route.record)
+                .and_then(|revision| match revision {
+                    Some(_) => Ok(true),
+                    None => engine
+                        .record(&route.cluster_id, &route.app_id, &route.record)
+                        .map(|read| read.is_some()),
+                });
+            let undecided = match reads {
+                Ok(reads) => !reads,
+                Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
+                    records
+                        .iter()
+                        .any(|(app, record)| *app == route.app_id && *record == route.record)
+                }),
+            };
+            if undecided {
+                self.undecided.insert(route.clone());
+            } else {
+                self.undecided.remove(&route);
+            }
+            self.records
+                .get_or_insert_with(|| {
+                    WorkspaceRecords::new(&route.cluster_id, Arc::clone(self.peer.engine()))
+                })
+                .landed(&route);
         }
     }
 
@@ -1397,6 +1407,15 @@ impl Worker {
     /// waiting for every join and every key before it. A workspace's requests
     /// run in the order they came.
     fn admit(&mut self, queued: Instant, job: Job) {
+        // A workspace's change woke this thread to run what waited for it.
+        // Nothing waits usually, and most wakes then cost nothing: reading
+        // the workspace for each wake would make a busy workspace pay a read
+        // for every change the service hears, including the changes of every
+        // other workspace.
+        if matches!(job, Job::Joined(_)) {
+            self.timed(queued, job);
+            return;
+        }
         if let Some(workspace_id) = job.workspace() {
             let keys = self.keys(&job);
             // The workspace is in hand before the change is asked for below,
