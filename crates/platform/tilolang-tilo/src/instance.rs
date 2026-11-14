@@ -383,8 +383,6 @@ pub struct Instance {
     /// Whether the window was told the person has changes the workspace has not taken yet
     /// ([`ToUi::Kept`]).
     kept: bool,
-    /// Whether the workspace refuses the record's changes ([`Self::refused_by_workspace`]).
-    refused: bool,
     /// Whether the person asked to save again since the record last looked.
     save_again: bool,
     open_requests: Rc<RefCell<Vec<crate::effects::OpenEffect>>>,
@@ -499,7 +497,6 @@ impl Instance {
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
             kept: false,
-            refused: false,
             save_again: false,
             open_requests: Rc::default(),
             place_opens: false,
@@ -1491,7 +1488,7 @@ impl Instance {
             ToApp::Redo => self.history.push(HistoryAsk::Redo),
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,
-            // Handed on by the frame it arrives in ([`Self::hand_kept`], [`Self::take_save_again`]).
+            // Handed on by the next frame ([`Self::take_save_again`]).
             ToApp::SaveAgain => self.save_again = true,
             ToApp::Space {
                 lane,
@@ -2371,7 +2368,6 @@ impl Instance {
     /// runtime, and what changed sent. Whether anything changed.
     pub fn update(&mut self) -> bool {
         let received = self.receive();
-        let kept = self.hand_kept();
         let asked = self.take_suspended();
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
@@ -2394,7 +2390,6 @@ impl Instance {
         // The time a view read moved on: the frame its embedder woke for it.
         let timed = self.wakes_in().is_some_and(|wait| wait.is_zero());
         let changed = received
-            || kept
             || asked
             || opened
             || pulled
@@ -2420,35 +2415,14 @@ impl Instance {
         changed
     }
 
-    /// Hand on what the workspace refused before, once it takes changes again, and tell the
-    /// window whether changes are kept while it does not: the frame the next event brings asks,
-    /// and nothing asks again in between. Whether anything moved.
-    fn hand_kept(&mut self) -> bool {
-        if self.mode == Mode::Past {
-            return false;
-        }
-        let Some(host) = self.host() else {
-            return false;
-        };
-        let kept = host.store().hand_kept();
-        if let Some(why) = &kept.refused {
-            tracing::warn!(%why, "the workspace refused a change: it is kept here until it takes it");
-        }
-        let waiting = kept.waiting || self.refused;
-        let told = waiting != self.kept;
-        if told {
-            self.kept = waiting;
-            self.out.push(ToUi::Kept(waiting));
-        }
-        if kept.handed {
-            self.commit_planned();
-        }
-        kept.handed || told
-    }
-
-    /// The workspace refuses the record's changes, or takes them again ([`Self::hand_kept`]).
+    /// The workspace refuses the record's changes, or takes them again: the window marks them
+    /// unsaved, and offers to try again, while it does.
     pub fn refused_by_workspace(&mut self, refused: bool) {
-        self.refused = refused;
+        if refused != self.kept {
+            self.kept = refused;
+            self.out.push(ToUi::Kept(refused));
+            self.flush();
+        }
     }
 
     /// Whether the person asked to try saving again since the last ask: the record then hands

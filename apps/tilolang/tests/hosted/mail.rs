@@ -16,7 +16,7 @@ use tilolang_mail::serve::{Connector, Wakeup};
 use tilolang_tilo::runtime::store::Store as _;
 use tilolang_tilo::runtime::{ResourceRef, UiNode, Value as RtValue};
 
-use super::{Session, Window};
+use super::{Session, Window, WorkspaceEnd};
 use crate::change_marks::action_id;
 
 const APP: &str = "so.tilo.lang.mail";
@@ -187,9 +187,18 @@ impl MailConnector {
     /// connector over a socket as a session's host reaches it: holding no network and no
     /// credential of its own.
     fn window(&self) -> Session {
+        self.attach(Session::opened(APP, "ada", Window::in_harness))
+    }
+
+    /// [`Self::window`], its connection reaching the workspace `end`.
+    fn window_reaching(&self, end: &WorkspaceEnd) -> Session {
+        self.attach(Session::reaching(APP, end, Window::in_harness))
+    }
+
+    /// `session`'s origin, reaching this connector.
+    fn attach(&self, mut session: Session) -> Session {
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
         self.wakeups.send(Wakeup::Attach(theirs)).unwrap();
-        let mut session = Session::opened(APP, "ada", Window::in_harness);
         let origin =
             tilolang_mail::remote_origin(ours, session.woken.waker()).expect("the origin attaches");
         session.instance_mut().add_origin(origin);
@@ -1494,16 +1503,16 @@ fn a_reply_typed_in_the_conversation_goes_out_once_quoting_the_message_it_answer
     assert_eq!(servers.smtp.sent().len(), 1, "it goes once");
 }
 
-// USER REQUIREMENT: mail a workspace cannot keep is not half kept: no conversation stands
-// filed nowhere and no message is taken as known, the account says the mail could not be
-// saved, and the next sync takes the whole step in — once.
+// USER REQUIREMENT: mail the workspace refuses is not lost: it stands in the window, which says
+// it is not saved yet, and once the workspace takes changes again "Try again" hands it all of
+// it, each message once.
 #[test]
-fn a_sync_the_workspace_cannot_keep_leaves_nothing_behind_and_is_taken_in_again() {
+fn a_sync_the_workspace_refuses_is_kept_and_reaches_it_once_it_takes_changes() {
     let servers = empty_servers();
-    let (_connector, mut session) = window_of(account(&servers));
-    let store = session.instance_host().store().clone();
-    // The change a conversation is made by is refused, as a record that cannot take it is.
-    store.fail_commits_adding(&session.type_id("Thread"));
+    let workspace = WorkspaceEnd::default();
+    let connector = MailConnector::of(account(&servers));
+    let mut session = connector.window_reaching(&workspace);
+    workspace.refusing.store(true, Ordering::SeqCst);
     servers.imap.append("INBOX", &plan(), &[]);
     servers.imap.append(
         "INBOX",
@@ -1516,18 +1525,80 @@ fn a_sync_the_workspace_cannot_keep_leaves_nothing_behind_and_is_taken_in_again(
         ),
         &[],
     );
+    session.until("the mail to stand on this device", |session| {
+        session.threads().len() == 2
+    });
+    let said = ui::window_toolbar::notice().expect("the window says the mail is not saved");
+    assert!(said.text.contains("kept on this device"), "{said:?}");
+    assert!(ui::window_toolbar::edited(), "the window marks it unsaved");
+    assert!(!workspace.holds(&session), "the workspace does not hold it");
+
+    // The workspace takes changes again, and the person asks to save again, as the bar offers.
+    workspace.refusing.store(false, Ordering::SeqCst);
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+        id: ui::SAVE_RETRY_ACTION.to_owned(),
+    });
+    synced(&mut session);
+    assert!(
+        workspace.holds(&session),
+        "the workspace holds all the mail"
+    );
+    assert!(
+        !ui::window_toolbar::edited() && ui::window_toolbar::notice().is_none(),
+        "nothing is marked unsaved any more"
+    );
+    assert_eq!(
+        session
+            .refs(&session.thread("Launch plan"), "messages")
+            .len(),
+        1,
+        "each message once"
+    );
+    let account = session.accounts().remove(0);
+    assert_eq!(
+        session.text(&account, "trouble"),
+        "",
+        "the account says nothing"
+    );
+}
+
+// USER REQUIREMENT: a read the workspace cannot answer — its index has not caught up with what
+// it holds — leaves no mail half kept: the account says the mail could not be saved, the
+// window says what it cannot do and how old the mail is, and the next sync reads the workspace
+// again, never taking it as "the account is gone". An account stays one account, and the mail
+// the step waited on comes in once the workspace answers again.
+#[test]
+fn a_read_the_workspace_cannot_answer_keeps_one_account_and_its_inbox_fills() {
+    let servers = empty_servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    servers.imap.append("INBOX", &plan(), &[]);
+    session.until("the conversation to come in", |session| {
+        session.threads().len() == 1
+    });
+    let account = session.accounts().remove(0);
+    let root = session.mail_root();
+    let store = session.instance_host().store().clone();
+    // An answer arrives, and the workspace cannot read the conversation it joins: the step that
+    // keeps it waits for the next sync, and the account says so.
+    store.fail_reads_of(&session.thread("Launch plan").id_string());
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "plan-2@analytical.example",
+            "Ada Lovelace <ada@analytical.example>",
+            "Re: Launch plan",
+            "Agreed on the twelfth.",
+            Some("plan@hopper.example"),
+        ),
+        &[],
+    );
+    session.call("check_now", &account, &json!({}));
     session.until("the account to say the mail is not saved", |session| {
         session
             .accounts()
             .first()
             .is_some_and(|a| session.text(a, "trouble").contains("could not be saved"))
     });
-    let account = session.accounts().remove(0);
-    assert!(
-        session.threads().is_empty(),
-        "nothing of the step is kept: {:?}",
-        session.threads()
-    );
     assert!(
         session.flag(&account, "online"),
         "the server answered: it is the workspace that could not take what it said"
@@ -1551,51 +1622,6 @@ fn a_sync_the_workspace_cannot_keep_leaves_nothing_behind_and_is_taken_in_again(
         (0..24).any(|hour| (0..60).any(|minute| ui::clock::hour_minute(hour, minute) == when)),
         "the clock time a person reads: {when}, read in {clock:?}"
     );
-
-    // The workspace takes changes again, and the person asks for their mail again, as the
-    // notice offers: what the server said before is taken in, and the mail is there once.
-    store.take_commits();
-    session.call("check_now", &account, &json!({}));
-    synced(&mut session);
-    assert_eq!(
-        session
-            .refs(&session.thread("Launch plan"), "messages")
-            .len(),
-        1,
-        "the step that waited was taken in once"
-    );
-    let account = session.accounts().remove(0);
-    assert_eq!(
-        session.text(&account, "trouble"),
-        "",
-        "and the account says nothing more"
-    );
-}
-
-// USER REQUIREMENT: a read the workspace cannot answer — its index has not caught up with what
-// it holds — is read again on the next sync, never taken as "the account is gone". An account
-// stays one account, and its mail fills its inbox once the workspace answers again.
-#[test]
-fn a_read_the_workspace_cannot_answer_keeps_one_account_and_its_inbox_fills() {
-    let servers = empty_servers();
-    let (_connector, mut session) = window_of(account(&servers));
-    session.until("the account to be made", |session| {
-        !session.accounts().is_empty()
-    });
-    let account = session.accounts().remove(0);
-    let root = session.mail_root();
-    let store = session.instance_host().store().clone();
-    // Mail arrives, and the workspace cannot take the step that keeps it: the step waits for
-    // the next sync, though the account says nothing.
-    store.fail_commits_adding(&session.type_id("Thread"));
-    servers.imap.append("INBOX", &plan(), &[]);
-    session.call("check_now", &account, &json!({}));
-    session.until("the account to say the mail is not saved", |session| {
-        session
-            .accounts()
-            .first()
-            .is_some_and(|a| session.text(a, "trouble").contains("could not be saved"))
-    });
     // The step waits for the next sync — and the store answers none of the account's records
     // while it takes it in again, as an index that has not caught up with the workspace does.
     store.fail_reads_of(&root.id_string());
@@ -1603,9 +1629,8 @@ fn a_read_the_workspace_cannot_answer_keeps_one_account_and_its_inbox_fills() {
         session.settle();
     }
     // The workspace answers again: the account it holds is still the one account, and the mail
-    // the step waited on comes in.
+    // the step waited on comes in, once.
     store.take_reads();
-    store.take_commits();
     session.call("check_now", &account, &json!({}));
     let accounts = session.accounts();
     assert_eq!(
@@ -1615,10 +1640,13 @@ fn a_read_the_workspace_cannot_answer_keeps_one_account_and_its_inbox_fills() {
     );
     let account = accounts.into_iter().next().expect("the account");
     assert_eq!(session.text(&account, "address"), ME);
-    session.until("the inbox to fill", |session| {
-        let threads = session.threads();
-        threads.len() == 1 && !session.refs(&threads[0], "messages").is_empty()
+    session.until("the answer to come in", |session| {
+        session
+            .refs(&session.thread("Launch plan"), "messages")
+            .len()
+            == 2
     });
+    assert_eq!(session.threads().len(), 1, "one conversation");
     assert_eq!(
         session.text(&account, "trouble"),
         "",

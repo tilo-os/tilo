@@ -1032,39 +1032,21 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
 }
 
 // USER REQUIREMENT: a note the workspace does not take yet is kept, never lost: it stands in the
-// window at once, the window's bar marks it unsaved in plain words, and the window rests instead of trying again every frame: no spinning CPU, no drained
-// battery. Once the workspace takes changes again, "Try again" saves it, once, without pressing
-// New note again, and a peer replaying the workspace gets it, and the title typed into it.
+// window at once, the window's bar says once, in plain words, that it is unsaved, and the window
+// rests instead of trying again every frame: no spinning CPU, no drained battery. Once the
+// workspace takes changes again, "Try again" saves it, once, without pressing New note again, and
+// a peer replaying the workspace gets it, and the title typed into it.
 #[test]
 fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
-    let mut session = Session::notes();
-    session.settle();
+    let workspace = super::WorkspaceEnd::default();
+    let mut session = Session::crowded_notes(&workspace);
     let notes = session.titles().len();
-    let store = session.instance_host().store().clone();
-    let note = session
-        .instance_host()
-        .package(&session.app)
-        .expect("the notes package")
-        .meta
-        .type_named("Note")
-        .expect("Notes keeps notes")
-        .id
-        .clone();
-    let held = super::record(&session);
-    let changes_since = |session: &Session| -> usize {
-        let host = session.instance_host();
-        super::record(session)
-            .all()
-            .map(|(chunk, doc)| {
-                let from = held
-                    .held(chunk)
-                    .map(automerge::AutoCommit::committed_heads)
-                    .unwrap_or_default();
-                super::replayed(&mut doc.clone(), &from, &host)
-            })
-            .sum()
+    let before = workspace.heads();
+    let replayed = |session: &Session| {
+        let mut held = workspace.held.lock().unwrap().clone();
+        super::replayed(&mut held, &before, &session.instance_host())
     };
-    store.fail_commits_adding(&note);
+    workspace.refusing.store(true, Ordering::SeqCst);
     let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     // The host comes to rest: `settle` returns only once a turn reports no change.
@@ -1079,18 +1061,18 @@ fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
         notes + 1,
         "the new note stands, kept on this device"
     );
-    assert_eq!(changes_since(&session), 0, "nothing reached the workspace");
+    assert_eq!(workspace.heads(), before, "nothing reached the workspace");
     let said = ui::window_toolbar::notice().expect("the window says the note is not saved");
     assert_eq!(said.kind, ui::widget::toast::ToastKind::Error, "{said:?}");
     assert!(said.text.contains("kept on this device"), "{said:?}");
     assert!(
-        !said.text.contains("refused") && !said.text.contains("commit"),
-        "it says it in the person's words, not the store's: {said:?}"
+        !said.text.contains("refused") && !said.text.contains("grants"),
+        "it says it in the person's words, not the workspace's: {said:?}"
     );
     assert!(ui::window_toolbar::edited(), "the window marks it unsaved");
 
     // The workspace takes changes again: "Try again" saves the note.
-    store.take_commits();
+    workspace.refusing.store(false, Ordering::SeqCst);
     ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
         id: ui::SAVE_RETRY_ACTION.to_owned(),
     });
@@ -1101,16 +1083,19 @@ fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
         !ui::window_toolbar::edited() && ui::window_toolbar::notice().is_none(),
         "nothing is marked unsaved any more"
     );
+    assert!(workspace.holds(&session), "the workspace holds the note");
     assert_eq!(
-        changes_since(&session),
+        replayed(&session),
         1,
         "a peer replaying the workspace gets the note"
     );
     // The person names the note they kept: the title reaches the workspace, letter by letter.
+    let title = session.field("title");
+    session.window.click_at(title.0 + 40.0, title.1);
     session.window.type_text("Groceries");
     session.settle();
     assert_eq!(
-        changes_since(&session),
+        replayed(&session),
         1 + "Groceries".len(),
         "a peer replaying the workspace gets every letter of the title"
     );

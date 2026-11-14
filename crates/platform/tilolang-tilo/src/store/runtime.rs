@@ -236,15 +236,6 @@ impl Store for TiloStore {
 
     fn commit(&mut self, txn: Txn, note: &ChangeNote) -> Result<(), StoreError> {
         let mut inner = self.mutate();
-        // A step of an origin's sync that the workspace refuses is not made: what wrote it takes
-        // it back, and the origin takes the step again itself. Every other change is kept until
-        // the workspace takes it ([`Inner::enqueue`]).
-        if note.action == tilolang_runtime::origin::ORIGIN_ACTION
-            && let Some(state) = inner.txns.get(&txn.0)
-            && let Some(why) = inner.refusal(&state.edits)
-        {
-            return Err(invalid(why));
-        }
         let mut state = inner
             .txns
             .remove(&txn.0)

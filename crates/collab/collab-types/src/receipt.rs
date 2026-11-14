@@ -10,9 +10,10 @@
 //! surface, never from the claim; a receiver without that surface holds the
 //! change rather than trusting it.
 //!
-//! A device that has the app also replays each change
-//! ([`tilo_actions::verify_change`]), which catches an author who is granted
-//! an action but wrote something else inside its units.
+//! A change that passes is loaded as it is: no device replays it. So an
+//! author granted an action can write anything inside that action's units.
+//! The action is run again only before its recorded inverse is used for
+//! undo ([`tilo_actions::verify_change`]).
 
 use std::collections::BTreeSet;
 
@@ -467,7 +468,7 @@ pub fn decide_op(
 /// (`persona_author`, `bot:<installation>` for a bot device whose
 /// installation allows `Personas`), and the appearance is valid as written.
 /// The relay cannot read a sealed change, so devices run this once they hold
-/// the plaintext, like every other replay check.
+/// the plaintext.
 ///
 /// # Errors
 /// [`ReceiptRefusal::Appearance`] for the first change that breaks the rule.

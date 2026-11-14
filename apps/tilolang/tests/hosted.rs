@@ -584,7 +584,19 @@ impl Session {
     /// A person at a Notes window the live `App` runs, whose connection reaches the workspace
     /// `end`.
     fn crowded_notes(end: &WorkspaceEnd) -> Self {
-        let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
+        let mut session = Self::reaching(NOTES, end, Window::live);
+        session.settle();
+        session
+    }
+
+    /// Ada at the window `window` makes of the app `app`, whose connection reaches the workspace
+    /// `end`, before the window had a frame.
+    fn reaching(
+        app: &str,
+        end: &WorkspaceEnd,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
+        let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let manager = CollaborationManager::with_transport(Box::new(Crowded {
             route: route.clone(),
             end: end.clone(),
@@ -593,10 +605,8 @@ impl Session {
         }));
         let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
         let wire = (Box::new(()) as Box<dyn std::any::Any>, Rc::default());
-        let spec = Spec::new(NOTES, route.cluster_id.to_string(), 1, "ada");
-        let mut session = Self::launch(manager, &route, spec, chunks, None, wire, Window::live);
-        session.settle();
-        session
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, "ada").in_language("en-US");
+        Self::launch(manager, &route, spec, chunks, None, wire, window)
     }
 
     /// `person` at a harness window of the app `app`.
