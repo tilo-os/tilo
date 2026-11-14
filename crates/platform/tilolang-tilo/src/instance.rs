@@ -383,6 +383,10 @@ pub struct Instance {
     /// Whether the window was told the person has changes the workspace has not taken yet
     /// ([`ToUi::Kept`]).
     kept: bool,
+    /// Whether the workspace refuses the record's changes ([`Self::refused_by_workspace`]).
+    refused: bool,
+    /// Whether the person asked to save again since the record last looked.
+    save_again: bool,
     open_requests: Rc<RefCell<Vec<crate::effects::OpenEffect>>>,
     /// Whether the view of a shell places what it opens on the canvas, rather than opening a
     /// detail lane of the shell's own window ([`Instance::place_opens`]).
@@ -495,6 +499,8 @@ impl Instance {
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
             kept: false,
+            refused: false,
+            save_again: false,
             open_requests: Rc::default(),
             place_opens: false,
             opens_to_place: Vec::new(),
@@ -648,12 +654,6 @@ impl Instance {
         Rc::clone(&self.outgoing)
     }
 
-    /// The host, shared with whatever answers the door for it.
-    #[must_use]
-    pub fn shared_host(&self) -> Rc<RefCell<Option<Host>>> {
-        Rc::clone(&self.host)
-    }
-
     /// The host, once the instance has the record or its indexes.
     #[must_use]
     pub fn host(&self) -> Option<Host> {
@@ -740,12 +740,6 @@ impl Instance {
     /// frame then runs and the host carries it out. `None` when none is held back.
     fn held_in(&self) -> Option<std::time::Duration> {
         self.host()?.runtime().held_for()
-    }
-
-    /// The resource the root view shows.
-    #[must_use]
-    pub fn root_target(&self) -> Option<&ResourceRef> {
-        self.root.as_ref().map(|view| &view.target)
     }
 
     /// The resource the detail view shows.
@@ -1497,8 +1491,8 @@ impl Instance {
             ToApp::Redo => self.history.push(HistoryAsk::Redo),
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,
-            // The frame it arrives in hands what the workspace refused on ([`Self::hand_kept`]).
-            ToApp::SaveAgain => {}
+            // Handed on by the frame it arrives in ([`Self::hand_kept`], [`Self::take_save_again`]).
+            ToApp::SaveAgain => self.save_again = true,
             ToApp::Space {
                 lane,
                 width,
@@ -2440,15 +2434,27 @@ impl Instance {
         if let Some(why) = &kept.refused {
             tracing::warn!(%why, "the workspace refused a change: it is kept here until it takes it");
         }
-        let told = kept.waiting != self.kept;
+        let waiting = kept.waiting || self.refused;
+        let told = waiting != self.kept;
         if told {
-            self.kept = kept.waiting;
-            self.out.push(ToUi::Kept(kept.waiting));
+            self.kept = waiting;
+            self.out.push(ToUi::Kept(waiting));
         }
         if kept.handed {
             self.commit_planned();
         }
         kept.handed || told
+    }
+
+    /// The workspace refuses the record's changes, or takes them again ([`Self::hand_kept`]).
+    pub fn refused_by_workspace(&mut self, refused: bool) {
+        self.refused = refused;
+    }
+
+    /// Whether the person asked to try saving again since the last ask: the record then hands
+    /// the workspace what it refused.
+    pub fn take_save_again(&mut self) -> bool {
+        std::mem::take(&mut self.save_again)
     }
 
     /// Give the runtime the workspace's members as the workspace's policy has them now, when it

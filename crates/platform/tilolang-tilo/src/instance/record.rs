@@ -103,6 +103,11 @@ pub struct InstanceRecord {
     /// refused them for good (a change above its size limit). They are kept in the record and
     /// its on-disk copy, never dropped.
     unshared: Option<String>,
+    /// While the workspace refuses the record's changes: the heads of each chunk as last handed
+    /// to it. Every change after a refused one builds on it, so the workspace takes none of them
+    /// alone: [`Self::sent`] is cleared, and the record goes whole once the person makes another
+    /// step or asks to try again, and not before ([`Self::send`]).
+    refused: Option<Stamps>,
     /// Why the workspace's copy of the record could not be read here, waiting for the window to
     /// say it: the route went on with the record this device holds, and nothing says it twice.
     unreadable: Option<String>,
@@ -325,6 +330,7 @@ impl InstanceRecord {
             sent,
             joined: BTreeSet::new(),
             unshared: None,
+            refused: None,
             unreadable: None,
             words: HostWords::new("en-US"),
             writers,
@@ -1175,6 +1181,11 @@ impl InstanceRecord {
     /// [`Self::share`], said in `instance` when the workspace refused it for good, and bring
     /// `instance` up to date.
     fn share_into(&mut self, instance: &mut Instance) {
+        if instance.take_save_again()
+            && let Some(handed) = &mut self.refused
+        {
+            handed.clear();
+        }
         if let Some(why) = self.share() {
             instance.failed(why);
         }
@@ -1244,6 +1255,13 @@ impl InstanceRecord {
         if self.unshared.is_some() {
             return None;
         }
+        // While the workspace refuses, nothing goes again until the record moved on or the
+        // person asked to try again.
+        let heads = self.refused.is_some().then(|| self.marks());
+        if heads.is_some() && heads == self.refused {
+            return None;
+        }
+        let mut handed = true;
         let parts = self.unsent_parts();
         // The parts of one action that wrote several chunks go out as one workspace commit,
         // naming every one of them: a peer applies all of the action or none of it. A part whose
@@ -1278,11 +1296,42 @@ impl InstanceRecord {
                     false
                 }
             };
-            if sent {
+            handed &= sent;
+            // What goes while the workspace refuses is not known to be taken: the record goes
+            // whole until it is.
+            if sent && self.refused.is_none() {
                 self.note_sent(chunk);
             }
         }
+        if handed && heads.is_some() {
+            self.refused = heads;
+        }
         None
+    }
+
+    /// Follow whether the workspace refuses the record's changes, as its connection says: whether
+    /// it now does, when that changed.
+    fn follow_refusal(&mut self) -> Option<bool> {
+        match (self.manager.refused_change(), &self.refused) {
+            (Some(why), None) => {
+                tracing::warn!(
+                    app = %self.route.app_id,
+                    %why,
+                    "workspace: it refused a change; the record's changes wait on this device"
+                );
+                self.sent.clear();
+                self.refused = Some(self.marks());
+                Some(true)
+            }
+            // A change went through since: what the workspace was handed whole is its own now.
+            (None, Some(_)) => {
+                if let Some(handed) = self.refused.take() {
+                    self.sent = handed;
+                }
+                Some(false)
+            }
+            _ => None,
+        }
     }
 
     /// The commit each unsent part travels under: the parts of one action that wrote several
@@ -1685,6 +1734,9 @@ impl InstanceRecord {
     /// presence, the route's state) to `other`, in the order they came.
     pub fn receive_and(&mut self, instance: &mut Instance, other: impl FnMut(CollabEvent)) -> bool {
         let changed = self.take_in(other);
+        if let Some(refused) = self.follow_refusal() {
+            instance.refused_by_workspace(refused);
+        }
         if let Some(why) = self.unreadable.take() {
             instance.failed(why);
         }
@@ -1724,6 +1776,7 @@ impl InstanceRecord {
     /// dropped, and so is what a window would have said about them. Whether the record changed.
     pub fn take_in_record(&mut self) -> bool {
         let changed = self.take_in(|_| {});
+        self.follow_refusal();
         self.unreadable = None;
         changed
     }

@@ -122,13 +122,36 @@ const VIEWPORT: (u32, u32) = (1280, 800);
 /// frames.
 const WAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// The broker's end of a connection whose queue fills up: while `busy`, it takes no change of
-/// the record (`TransportError::Busy`, as the broker transport's queue says under fast typing);
-/// the changes it takes are kept in `changes`.
+/// The broker's end of a connection, as the workspace answers it: while `busy`, its queue takes
+/// no change of the record (`TransportError::Busy`, as the broker transport's queue says under
+/// fast typing); while `refusing`, it answers a change it took with a refusal, as the broker does
+/// a change the workspace's grants deny; and it refuses a change that builds on one it does not
+/// hold, as the workspace's owner does. What it took is `held`.
+#[derive(Clone, Default)]
+struct WorkspaceEnd {
+    busy: Arc<AtomicBool>,
+    refusing: Arc<AtomicBool>,
+    held: Arc<Mutex<automerge::AutoCommit>>,
+}
+
+impl WorkspaceEnd {
+    /// The heads of what the workspace took.
+    fn heads(&self) -> Vec<automerge::ChangeHash> {
+        self.held.lock().unwrap().get_heads()
+    }
+
+    /// Whether the workspace took all `session`'s record holds.
+    fn holds(&self, session: &Session) -> bool {
+        let mut record = session.host.instances().next().unwrap().record().doc();
+        self.heads() == record.get_heads()
+    }
+}
+
 struct Crowded {
     route: RouteSpec,
-    busy: Arc<AtomicBool>,
-    changes: Arc<Mutex<Vec<Vec<u8>>>>,
+    end: WorkspaceEnd,
+    /// Why the workspace refused the last change, while no later one went through.
+    refused: Option<String>,
     joined: Option<RouteSpec>,
 }
 
@@ -143,13 +166,22 @@ impl CollabTransport for Crowded {
                 self.joined = Some(self.route.clone());
             }
             TransportCommand::Primary(CollabRequest::Document { mutation, .. }) => {
-                if self.busy.load(Ordering::SeqCst) {
+                if self.end.busy.load(Ordering::SeqCst) {
                     return Err(TransportError::Busy);
                 }
-                match mutation {
-                    DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes) => {
-                        self.changes.lock().unwrap().push(bytes);
-                    }
+                if self.end.refusing.load(Ordering::SeqCst) {
+                    self.refused = Some("the workspace's grants deny this change".to_owned());
+                    return Ok(());
+                }
+                let (DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) =
+                    mutation;
+                let mut taking = self.end.held.lock().unwrap().clone();
+                taking.load_incoming(&bytes).unwrap();
+                if taking.get_missing_deps(&[]).is_empty() {
+                    *self.end.held.lock().unwrap() = taking;
+                    self.refused = None;
+                } else {
+                    self.refused = Some("the change builds on changes it does not hold".to_owned());
                 }
             }
             _ => {}
@@ -167,6 +199,14 @@ impl CollabTransport for Crowded {
         &mut self,
         _: &mut Vec<collaboration::ActionDirectoryRequest>,
     ) {
+    }
+
+    fn document_publication_failed(&self) -> bool {
+        self.refused.is_some()
+    }
+
+    fn refused_change(&self) -> Option<String> {
+        self.refused.clone()
     }
 }
 
@@ -541,14 +581,14 @@ impl Session {
         Self::open(RICHBODY, "ada", Window::live)
     }
 
-    /// A person at a Notes window the live `App` runs, whose connection's queue is full while
-    /// `busy`; the broker's end keeps the record's changes it took in `changes`.
-    fn crowded_notes(busy: &Arc<AtomicBool>, changes: &Arc<Mutex<Vec<Vec<u8>>>>) -> Self {
+    /// A person at a Notes window the live `App` runs, whose connection reaches the workspace
+    /// `end`.
+    fn crowded_notes(end: &WorkspaceEnd) -> Self {
         let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
         let manager = CollaborationManager::with_transport(Box::new(Crowded {
             route: route.clone(),
-            busy: Arc::clone(busy),
-            changes: Arc::clone(changes),
+            end: end.clone(),
+            refused: None,
             joined: None,
         }));
         let chunks = tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new());
@@ -1118,15 +1158,14 @@ fn keys_typed_after_each_of_several_presses_land_in_their_own_note_in_the_live_w
 #[test]
 fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspace_once_it_has_workspace()
  {
-    let busy = Arc::new(AtomicBool::new(false));
-    let changes = Arc::default();
-    let mut session = Session::crowded_notes(&busy, &changes);
+    let workspace = WorkspaceEnd::default();
+    let mut session = Session::crowded_notes(&workspace);
     let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
     session.settle();
     // The connection's queue fills up while the person types fast into notes, open and new.
-    busy.store(true, Ordering::SeqCst);
-    let before = changes.lock().unwrap().len();
+    workspace.busy.store(true, Ordering::SeqCst);
+    let before = workspace.heads();
     let title = session.field("title");
     session.window.click_at(title.0 + 40.0, title.1);
     for key in ["Be", "ta", "Gam", "ma"] {
@@ -1149,21 +1188,15 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_workspac
         "every key is kept while the workspace cannot take it yet"
     );
     assert_eq!(
-        changes.lock().unwrap().len(),
+        workspace.heads(),
         before,
         "nothing went out while the queue was full"
     );
     // The queue has workspace again: the host's next frames hand the workspace all of it.
-    busy.store(false, Ordering::SeqCst);
+    workspace.busy.store(false, Ordering::SeqCst);
     session.settle();
-    let mut workspace = automerge::AutoCommit::new();
-    for change in changes.lock().unwrap().iter() {
-        workspace.load_incoming(change).unwrap();
-    }
-    let mut record = session.host.instances().next().unwrap().record().doc();
-    assert_eq!(
-        workspace.get_heads(),
-        record.get_heads(),
+    assert!(
+        workspace.holds(&session),
         "the workspace holds every key typed while its connection was full"
     );
 }

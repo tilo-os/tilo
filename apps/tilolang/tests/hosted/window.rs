@@ -2,6 +2,8 @@
 //! window's search over a list, a tree and an open note, the chat's channels, what an agent finds
 //! and runs at the door, and a send that leaves the workspace only once a person allows it.
 
+use std::sync::atomic::Ordering;
+
 use serde_json::{Map, Value as Json, json};
 use tilo_ui_host::reconcile::{UiEvent, display};
 use tilo_ui_host::{UiNode, Value};
@@ -1112,6 +1114,68 @@ fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
         1 + "Groceries".len(),
         "a peer replaying the workspace gets every letter of the title"
     );
+}
+
+// USER REQUIREMENT: a change the workspace refuses never stays on this device unsaid. The window
+// marks it unsaved in plain words at once, and rests instead of sending it again every frame.
+// Every later change builds on the refused one, so the workspace can take none of them alone:
+// once it takes changes again, the person's next step, or "Try again", hands it the record whole,
+// and it holds every letter typed meanwhile.
+fn a_refused_title_is_said_and_reaches_the_workspace_once_it_takes_changes(try_again: bool) {
+    let workspace = super::WorkspaceEnd::default();
+    let mut session = Session::crowded_notes(&workspace);
+    let plus = session.control(&session.doing("Notebook", "new_note"));
+    session.window.click_at(plus.0, plus.1);
+    session.settle();
+    assert!(workspace.holds(&session), "the workspace has the note");
+    assert!(!ui::window_toolbar::edited(), "the note is saved");
+
+    // The workspace refuses the title typed into it.
+    workspace.refusing.store(true, Ordering::SeqCst);
+    let title = session.field("title");
+    session.window.click_at(title.0 + 40.0, title.1);
+    session.window.type_text("Gro");
+    session.settle();
+    let said = ui::window_toolbar::notice().expect("the window says the title is not saved");
+    assert!(said.text.contains("kept on this device"), "{said:?}");
+    assert!(ui::window_toolbar::edited(), "the window marks it unsaved");
+    let turns_at_rest = (0..5).filter(|_| session.host.turn()).count();
+    assert_eq!(
+        turns_at_rest, 0,
+        "the window rests while the workspace refuses"
+    );
+
+    // The workspace takes changes again.
+    workspace.refusing.store(false, Ordering::SeqCst);
+    if try_again {
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+            id: ui::SAVE_RETRY_ACTION.to_owned(),
+        });
+    } else {
+        session.window.type_text("ceries");
+    }
+    session.settle();
+    assert!(
+        workspace.holds(&session),
+        "the workspace holds every letter typed since it refused one"
+    );
+    assert!(
+        !ui::window_toolbar::edited() && ui::window_toolbar::notice().is_none(),
+        "nothing is marked unsaved any more"
+    );
+    let titles = session.titles();
+    let wanted = if try_again { "Gro" } else { "Groceries" };
+    assert!(titles.iter().any(|title| title == wanted), "{titles:?}");
+}
+
+#[test]
+fn a_refused_title_reaches_the_workspace_with_the_next_letter() {
+    a_refused_title_is_said_and_reaches_the_workspace_once_it_takes_changes(false);
+}
+
+#[test]
+fn a_refused_title_reaches_the_workspace_with_try_again() {
+    a_refused_title_is_said_and_reaches_the_workspace_once_it_takes_changes(true);
 }
 
 // ----- an app's own window ----------------------------------------------------------------
