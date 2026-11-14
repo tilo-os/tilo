@@ -241,8 +241,13 @@ pub fn desktop_navigation_revision(id: u64) -> Result<f64, JsValue> {
 pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
     use tilo_desktop_surface::navigation::{ChromeEffect, Verb};
     let verb = Verb::from_payload(command.as_bytes()).map_err(error)?;
+    // A launch on a record (`record:<app>:<record>`, what a link to a document opens) names
+    // its app inside it.
     if let Verb::Chrome(ChromeEffect::OpenApp { app, .. }) = &verb
-        && crate::desktop::known_application(app).is_none()
+        && crate::desktop::known_application(
+            tilo_desktop_search::launched_record(app).map_or(app.as_str(), |(app, _)| app),
+        )
+        .is_none()
     {
         return Err(error(format!("{app} is not available in the browser")));
     }
