@@ -197,14 +197,16 @@ async fn answer(
         Err(refused) => return refusal(&refused),
     };
     if !operation.mutating {
-        return reply(caller.handle(operation).await);
+        // A caller's answer is a large future: on the heap, not in the frames of
+        // the request that awaits it.
+        return reply(Box::pin(caller.handle(operation)).await);
     }
     let Some(key) = request
         .headers
         .get(idempotency::HEADER)
         .and_then(|value| value.to_str().ok())
     else {
-        return reply(caller.handle(operation).await);
+        return reply(Box::pin(caller.handle(operation)).await);
     };
     if !idempotency::valid(key) {
         return refusal(&ApiError::invalid(

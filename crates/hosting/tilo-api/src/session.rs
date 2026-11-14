@@ -338,7 +338,7 @@ impl Session {
         };
         let call = (request.get("method").and_then(Value::as_str) == Some("tools/call"))
             .then(|| request.clone());
-        let Some(answer) = run.server.handle(request).await else {
+        let Some(answer) = Box::pin(run.server.handle(request)).await else {
             return Reply::accepted();
         };
         if let Some(call) = call {
@@ -463,7 +463,7 @@ impl Session {
             ) {
                 return Reply::one(result(id, &refused));
             }
-            return self.serve(&workspace, request).await;
+            return Box::pin(self.serve(&workspace, request)).await;
         }
         let id = request.get("id").cloned();
         let method = request
@@ -622,7 +622,7 @@ impl Session {
         }
         let request = json!({"jsonrpc": "2.0", "id": "api", "method": "tools/call",
             "params": {"name": call.tool, "arguments": arguments, "_meta": {"so.tilo.mcp": meta}}});
-        let reply = self.handle(request).await;
+        let reply = Box::pin(self.handle(request)).await;
         let Some(message) = reply.messages.into_iter().last() else {
             return Err(CallError::unanswered());
         };
