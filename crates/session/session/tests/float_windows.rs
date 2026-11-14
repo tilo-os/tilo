@@ -30,6 +30,8 @@ use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 
+use crate::common::until;
+
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 /// One display's refresh: how often the session asks its clients for their next frame.
@@ -73,18 +75,6 @@ fn step(session: &mut Session) {
     session.step(REFRESH).expect("a turn of the session");
 }
 
-/// Run frames until `done` holds.
-#[track_caller]
-fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..120 {
-        if done(session) {
-            return;
-        }
-        step(session);
-    }
-    panic!("{what} never happened");
-}
-
 /// Open `app` on the desk, the way the launcher opens one, and answer its tab's id once the desk
 /// has it.
 fn open(session: &mut Session, app: &str) -> u64 {
@@ -125,6 +115,14 @@ fn rect(session: &Session, tab: u64) -> ui::kurbo::Rect {
         .handle()
         .window_rect(tab)
         .unwrap_or_else(|| panic!("the window {tab} is drawn"))
+}
+
+/// Where the desk draws each of its three windows, while it draws one.
+fn drawn_windows(session: &Session) -> Vec<Option<ui::kurbo::Rect>> {
+    [CHAT, MAIL, NOTES]
+        .iter()
+        .map(|app| tab_of(session, app).and_then(|tab| session.handle().window_rect(tab)))
+        .collect()
 }
 
 /// The window `tab` , as the desk's record reads it: the place it keeps, and whether it floats
@@ -205,10 +203,18 @@ fn desk() -> Session {
             group.width = tilo_desktop_model::WindowWidth::Narrow;
         }
     }
+    let before = drawn_windows(&session);
     handle.replace_tree(tree);
-    for _ in 0..20 {
-        step(&mut session);
-    }
+    // The desk lays the windows it was handed out on its next look: wait until it draws the three
+    // of them at the widths the record now holds, so what is measured below is that layout.
+    until(
+        &mut session,
+        "the desk draws its windows where it holds them",
+        |session| {
+            let windows = drawn_windows(session);
+            windows.iter().all(Option::is_some) && windows != before
+        },
+    );
     session
 }
 
@@ -296,7 +302,8 @@ fn rows(session: &Session) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Open the window menu for `tab` , as the shell's menu does.
+/// Open the window menu for `tab` , as the shell's menu does, and wait for the menu the session
+/// publishes: the one standing for this window, with the rows it offers.
 fn open_menu(session: &mut Session, tab: u64) {
     let arguments = json!({ "tab": tab.to_string() });
     session
@@ -306,11 +313,16 @@ fn open_menu(session: &mut Session, tab: u64) {
             arguments.as_object().expect("an object"),
         )
         .expect("the window menu opens");
-    // The menu is a surface of its own: give it the frames it takes to show and draw through the
-    // compositor before what it shows is read or seen.
-    for _ in 0..8 {
-        step(session);
-    }
+    let wanted = tab.to_string();
+    until(
+        session,
+        "the window menu stands for its window",
+        |session| {
+            let menu = window_menu(session);
+            menu["tab"].as_str() == Some(wanted.as_str())
+                && menu["rows"].as_array().is_some_and(|rows| !rows.is_empty())
+        },
+    );
 }
 
 /// Choose `row` of the open window menu, as the shell's menu does.
@@ -425,6 +437,10 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
     );
 
     // And the desk draws it there, at the floating size, on the display.
+    until(&mut session, "the window is drawn floating", |session| {
+        let over = rect(session, chat);
+        (over.width(), over.height()) == (640.0, 480.0) && over != in_strip
+    });
     let over = rect(&session, chat);
     assert_eq!(
         (over.width(), over.height()),
@@ -461,6 +477,11 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
     until(&mut session, "the window snaps back", |session| {
         !held(session, chat).floating
     });
+    until(
+        &mut session,
+        "the desk draws the window back in its strip",
+        |session| rect(session, chat) == in_strip,
+    );
     assert_eq!(
         rect(&session, chat),
         in_strip,
@@ -475,6 +496,14 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
         &mut session,
         "one undo floats the window again",
         |session| held(session, chat).floating,
+    );
+    until(
+        &mut session,
+        "the desk draws the floated window again",
+        |session| {
+            let over = rect(session, chat);
+            (over.width(), over.height()) == (640.0, 480.0)
+        },
     );
 
     // The same, in the light theme, for the pictures.
@@ -497,6 +526,10 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     until(&mut session, "the window floats", |session| {
         held(session, chat).floating
     });
+    until(&mut session, "the window is drawn floating", |session| {
+        let over = rect(session, chat);
+        (over.width(), over.height()) == (640.0, 480.0)
+    });
     let over = rect(&session, chat);
     let letter = rect(&session, mail);
     let note = rect(&session, notes);
@@ -514,9 +547,9 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     // Over the letter it covers, the float stands on its own ground and its own elevation: its bar
     // reads as its own, never as the letter's.
     pointer_at(&mut session, (letter.center().x, letter.center().y));
-    for _ in 0..4 {
-        step(&mut session);
-    }
+    until(&mut session, "the float is drawn carried", |session| {
+        rect(session, chat) != over
+    });
     capture(&mut session, "carried-dark");
     // The hand goes where the window would land: in the gap between the letter and the note, still
     // on the strip, so the strip shows it.
@@ -524,17 +557,23 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     let carried = (gap, letter.y0 + 22.0);
 
     pointer_at(&mut session, carried);
-    for _ in 0..4 {
-        step(&mut session);
-    }
+    let expected = (
+        over.x0 + (carried.0 - grab.0),
+        over.y0 + (carried.1 - grab.1),
+    );
+    until(
+        &mut session,
+        "the float is drawn where the hand carried it",
+        |session| {
+            let carried_to = rect(session, chat);
+            (carried_to.x0, carried_to.y0) == expected
+        },
+    );
     let carried_to = rect(&session, chat);
     assert_ne!(carried_to, over, "the float follows the hand");
     assert_eq!(
         (carried_to.x0, carried_to.y0),
-        (
-            over.x0 + (carried.0 - grab.0),
-            over.y0 + (carried.1 - grab.1)
-        ),
+        expected,
         "it moves with the hand, keeping the hold it was taken by: {carried_to:?}"
     );
     assert_eq!(
@@ -576,6 +615,14 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     until(&mut session, "the window floats again", |session| {
         held(session, chat).floating
     });
+    until(
+        &mut session,
+        "the desk draws the window floating again",
+        |session| {
+            let over = rect(session, chat);
+            (over.width(), over.height()) == (640.0, 480.0)
+        },
+    );
     let over = rect(&session, chat);
     let letter = rect(&session, mail);
     let note = rect(&session, notes);
@@ -585,9 +632,9 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
         &mut session,
         (f64::midpoint(letter.x1, note.x0), letter.y0 + 22.0),
     );
-    for _ in 0..4 {
-        step(&mut session);
-    }
+    until(&mut session, "the float is drawn carried", |session| {
+        rect(session, chat) != over
+    });
     capture(&mut session, "carried-light");
     button(&mut session, false);
     until(&mut session, "the window snaps back", |session| {
