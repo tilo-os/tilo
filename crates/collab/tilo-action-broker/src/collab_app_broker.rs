@@ -7243,6 +7243,12 @@ impl AppBrokerState {
                 Some((agents, people))
             })
             .ok()??;
+        let listed = self
+            .services
+            .agents
+            .as_deref()
+            .map(|roster| roster.listed(workspace))
+            .unwrap_or_default();
         let mut here: Vec<tilo_actions::remote::Here> = people
             .into_iter()
             .map(|(who, name)| tilo_actions::remote::Here {
@@ -7256,11 +7262,74 @@ impl AppBrokerState {
                 .into_iter()
                 .map(|(agent, _)| tilo_actions::remote::Here {
                     who: format!("agent:{agent}"),
-                    name: agent,
+                    name: Self::agent_name(&listed, &agent),
                     kind: "agent".into(),
                 }),
         );
         Some(here)
+    }
+
+    /// The name a person reads for `agent`: the one the workspace's record of its agents gives
+    /// it, or its id where the record names no agent.
+    fn agent_name(listed: &[crate::services::ListedAgent], agent: &str) -> String {
+        listed
+            .iter()
+            .find(|named| named.id == agent)
+            .map_or_else(|| agent.to_owned(), |named| named.name.clone())
+    }
+
+    /// The agents in a workspace, named as its record of its agents names them: those its grants
+    /// admit, and those only the record names, each with its keeper.
+    fn named_agent_members(
+        mut agents: Vec<(String, String, Option<String>)>,
+        listed: Vec<crate::services::ListedAgent>,
+    ) -> Vec<(String, String, Option<String>)> {
+        for named in listed {
+            match agents.iter_mut().find(|(agent, _, _)| *agent == named.id) {
+                Some((_, name, keeper)) => {
+                    name.clone_from(&named.name);
+                    keeper.get_or_insert(named.keeper);
+                }
+                None => agents.push((named.id, named.name, Some(named.keeper))),
+            }
+        }
+        agents.sort_by(|left, right| left.0.cmp(&right.0));
+        agents
+    }
+
+    /// The workspace's people as member rows, in id order: presence may supply a label, but only
+    /// owner-backed membership supplies the identity. An offline member remains a member.
+    fn people_members(workspace: &tilo_desktop_model::Workspace) -> Vec<collab_types::Member> {
+        let mut people: Vec<(String, tilo_action_policy::Role)> = workspace
+            .roster()
+            .into_iter()
+            .filter(|(person, _)| !workspace.is_blocked(person))
+            .collect();
+        people.sort_by(|left, right| left.0.cmp(&right.0));
+        people
+            .into_iter()
+            .map(|(person, role)| {
+                let row = workspace
+                    .members
+                    .iter()
+                    .find(|member| member.id == collab_types::MemberId::person(person.clone()));
+                // Someone presence has not named is unnamed here, never named by their key: an
+                // app calls them as it calls anyone it has no name for.
+                let name = row.map_or_else(String::new, |row| row.name.clone());
+                // The colour their member row stores: the one they chose, else the one their
+                // identity derives.
+                let colour = row.map_or_else(
+                    || ui::tokens::PresenceHue::of_identity(&person),
+                    |row| row.colour,
+                );
+                let mut member = collab_types::Member::of_person(
+                    &collab_types::Person::new(person.clone(), name).wearing(colour),
+                    Some(role),
+                );
+                member.joined_at = workspace.policy.joined_at(&person);
+                member
+            })
+            .collect()
     }
 
     /// Complete workspace membership for one retained native receiver. This is
@@ -7286,59 +7355,28 @@ impl AppBrokerState {
                         (agent.clone(), agent, keeper)
                     })
                     .collect();
-                let mut people: Vec<(String, tilo_action_policy::Role)> = workspace
-                    .roster()
-                    .into_iter()
-                    .filter(|(person, _)| !workspace.is_blocked(person))
-                    .collect();
-                people.sort_by(|left, right| left.0.cmp(&right.0));
-                // Presence may supply a label, but only owner-backed
-                // membership supplies the identity. An offline member
-                // remains a member.
-                let people = people
-                    .into_iter()
-                    .map(|(person, role)| {
-                        let row = workspace.members.iter().find(|member| {
-                            member.id == collab_types::MemberId::person(person.clone())
-                        });
-                        // Someone presence has not named is unnamed here, never named by their
-                        // key: an app calls them as it calls anyone it has no name for.
-                        let name = row.map_or_else(String::new, |row| row.name.clone());
-                        // The colour their member row stores: the one they chose, else the one
-                        // their identity derives.
-                        let colour = row.map_or_else(
-                            || ui::tokens::PresenceHue::of_identity(&person),
-                            |row| row.colour,
-                        );
-                        let mut member = collab_types::Member::of_person(
-                            &collab_types::Person::new(person.clone(), name).wearing(colour),
-                            Some(role),
-                        );
-                        member.joined_at = workspace.policy.joined_at(&person);
-                        member
-                    })
-                    .collect::<Vec<_>>();
+                let people = Self::people_members(workspace);
                 Ok::<_, &str>((agents, people))
             })??;
-        let mut agents = agents;
-        // The agents the workspace's record of its agents names are members too.
-        for listed in self
+        let listed = self
             .services
             .agents
             .as_deref()
             .map(|roster| roster.listed(&route.cluster_id))
-            .unwrap_or_default()
-        {
-            if !agents.iter().any(|(agent, _, _)| *agent == listed.id) {
-                agents.push((listed.id, listed.name, Some(listed.keeper)));
-            }
-        }
-        agents.sort_by(|left, right| left.0.cmp(&right.0));
+            .unwrap_or_default();
+        let agents = Self::named_agent_members(agents, listed);
         let self_id = Self::member_id(admitted);
-        let self_name = admitted
-            .display_handle
-            .clone()
-            .unwrap_or_else(|| admitted.principal_id.clone());
+        // An agent's row is named by the record; a person by the name they announced.
+        let self_name = match admitted.agent_id.as_deref() {
+            Some(agent) => agents
+                .iter()
+                .find(|(named, _, _)| named == agent)
+                .map_or_else(|| agent.to_owned(), |(_, name, _)| name.clone()),
+            None => admitted
+                .display_handle
+                .clone()
+                .unwrap_or_else(|| admitted.principal_id.clone()),
+        };
         let mut mine: Option<collab_types::Member> = None;
         let mut members =
             Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));

@@ -15,6 +15,8 @@ use tilo_peer_state::owner_commit::{
 };
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
+#[path = "certified_agent_tests.rs"]
+mod certified_agents;
 #[path = "native_task_launch_tests.rs"]
 mod closed_app;
 #[path = "native_task_confirmation_tests.rs"]
@@ -25,8 +27,6 @@ mod conversation_ask;
 mod cross_app;
 #[path = "native_store_witness_tests.rs"]
 mod store_witness;
-#[path = "native_task_agent_tests.rs"]
-mod task_agents;
 #[path = "task_run_host_tests.rs"]
 mod task_run_host;
 

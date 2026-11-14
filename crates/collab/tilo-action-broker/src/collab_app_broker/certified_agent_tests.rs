@@ -95,7 +95,7 @@ impl Fixture {
         self.state.refresh_native_task_delivery();
     }
 
-    fn end_task(&self) {
+    fn end_session(&self) {
         for run in self.native.runs.lock().unwrap().iter_mut() {
             if run.issue == TASK_ISSUE {
                 run.active = false;
@@ -104,9 +104,9 @@ impl Fixture {
         self.state.refresh_native_task_delivery();
     }
 
-    /// The task agent joins as the agent the launcher started does: its
-    /// presentation verified, its task asked about, as `join_channel` does.
-    fn task_join(&self, minted: &Minted) -> Result<AdmittedJoinIdentity, String> {
+    /// The agent joins as the launcher started does: its presentation
+    /// verified, its session asked about, as `join_channel` does.
+    fn agent_join(&self, minted: &Minted) -> Result<AdmittedJoinIdentity, String> {
         let route = CrdtRoute::record("so.tilo.agent", workspace_id().to_string(), "main");
         let admitted = verify_join_identity(
             &route,
@@ -135,8 +135,8 @@ impl Fixture {
         }
     }
 
-    fn task_channel(&self, peer: u64, minted: &Minted) -> runtime_collab::ChannelHandle {
-        let admitted = self.task_join(minted).unwrap();
+    fn agent_channel(&self, peer: u64, minted: &Minted) -> runtime_collab::ChannelHandle {
+        let admitted = self.agent_join(minted).unwrap();
         let route = CrdtRoute::record("so.tilo.agent", workspace_id().to_string(), "main");
         wire_channel(super::JoinedChannel {
             as_app: None,
@@ -238,11 +238,11 @@ async fn a_certified_agent_is_a_member_and_works_in_its_session() {
             let now = now_ns();
             let minted = mint(&f.native.key, &f.native.certificate, now - 1, now + HOUR_NS);
             f.ask(&minted);
-            let agent = f.task_channel(300, &minted);
+            let agent = f.agent_channel(300, &minted);
             let run = delivered(&agent).await;
             assert_eq!(run.task_id, TASK_ISSUE);
             report_progress(&agent, &run).await.unwrap();
-            let admitted = f.task_join(&minted).unwrap();
+            let admitted = f.agent_join(&minted).unwrap();
             let current = f
                 .state
                 .revalidate_admission(
@@ -274,7 +274,7 @@ async fn an_agent_the_workspace_does_not_list_is_refused() {
             let minted = mint(&f.native.key, &f.native.certificate, now - 1, now + HOUR_NS);
             f.ask(&minted);
             f.native.listed.lock().unwrap().clear();
-            let refused = f.task_join(&minted).unwrap_err();
+            let refused = f.agent_join(&minted).unwrap_err();
             assert!(refused.contains("lists no agent"), "{refused}");
             drop(f);
         })
@@ -294,7 +294,7 @@ async fn an_expired_agent_certificate_is_refused() {
                 now - HOUR_NS,
             );
             f.ask(&minted);
-            let refused = f.task_join(&minted).unwrap_err();
+            let refused = f.agent_join(&minted).unwrap_err();
             assert!(refused.contains("expired"), "{refused}");
             drop(f);
         })
@@ -318,13 +318,13 @@ async fn a_certificate_signed_by_an_uncertified_device_is_refused() {
             let minted = mint(&stranger_key, &stranger, now - 1, now + HOUR_NS);
             f.ask(&minted);
             assert!(
-                f.task_join(&minted).is_err(),
+                f.agent_join(&minted).is_err(),
                 "an unlisted device certifies nothing"
             );
             // A listed device's certificate, with another key's signature.
             let mut forged = mint(&stranger_key, &f.native.certificate, now - 1, now + HOUR_NS);
             forged.delegation.device_public_key = f.native.certificate.device_public_key;
-            let refused = f.task_join(&forged).unwrap_err();
+            let refused = f.agent_join(&forged).unwrap_err();
             assert!(refused.contains("agent certificate refused"), "{refused}");
             // The run's check refuses it too, whoever reads it.
             let mut run = f.native.runs.lock().unwrap()[0].clone();
@@ -348,13 +348,13 @@ async fn a_finished_or_cancelled_session_ends_its_agent() {
             let now = now_ns();
             let minted = mint(&f.native.key, &f.native.certificate, now - 1, now + HOUR_NS);
             f.ask(&minted);
-            let agent = f.task_channel(300, &minted);
+            let agent = f.agent_channel(300, &minted);
             let run = delivered(&agent).await;
             report_progress(&agent, &run).await.unwrap();
-            f.end_task();
+            f.end_session();
             let refused = report_progress(&agent, &run).await.unwrap_err().to_string();
             assert!(refused.contains("has ended"), "{refused}");
-            let rejoined = f.task_join(&minted).unwrap_err();
+            let rejoined = f.agent_join(&minted).unwrap_err();
             assert!(rejoined.contains("has ended"), "{rejoined}");
             drop(f);
         })
@@ -372,7 +372,7 @@ async fn an_agent_hears_its_own_finish() {
             let now = now_ns();
             let minted = mint(&f.native.key, &f.native.certificate, now - 1, now + HOUR_NS);
             f.ask(&minted);
-            let agent = f.task_channel(300, &minted);
+            let agent = f.agent_channel(300, &minted);
             let run = delivered(&agent).await;
             for run in f.native.runs.lock().unwrap().iter_mut() {
                 run.active = false;
@@ -382,7 +382,7 @@ async fn an_agent_hears_its_own_finish() {
             report_progress(&agent, &run)
                 .await
                 .expect("its own finish is still heard");
-            let rejoined = f.task_join(&minted).unwrap_err();
+            let rejoined = f.agent_join(&minted).unwrap_err();
             assert!(rejoined.contains("has ended"), "{rejoined}");
             for run in f.native.runs.lock().unwrap().iter_mut() {
                 run.finished_by_agent = false;
@@ -404,7 +404,7 @@ async fn revoking_the_device_cuts_its_agents() {
             let (phone_key, phone) = f.second_device();
             let minted = mint(&phone_key, &phone, now - 1, now + HOUR_NS);
             f.ask(&minted);
-            let agent = f.task_channel(300, &minted);
+            let agent = f.agent_channel(300, &minted);
             let run = delivered(&agent).await;
             report_progress(&agent, &run).await.unwrap();
             let mut revocation = tilo_user_identity::RevocationEntry {
@@ -427,7 +427,7 @@ async fn revoking_the_device_cuts_its_agents() {
                 report_progress(&agent, &run).await.is_err(),
                 "a revoked device's agent reports nothing more"
             );
-            assert!(f.task_join(&minted).is_err());
+            assert!(f.agent_join(&minted).is_err());
             let current = f.native.runs.lock().unwrap()[0].clone();
             let refused = f
                 .native
