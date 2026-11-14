@@ -149,41 +149,32 @@ where they run.
 ### How the swap stays inside custody in a session
 
 A dev-mode swap installs a package exactly as any install does: verified by
-`tilo-install`, its old version kept while it runs. Then the session's launcher hands
-the new module to the process it launched. Nothing else can.
+`tilo-install`, its old version kept while it runs. Then the session hands the new
+module to the tilolang host that runs the app's instances. Nothing else can.
 
-- **Development sessions only.** The launcher follows reinstalls only when two things
+- **Development sessions only.** The session follows reinstalls only when two things
   hold:
   - it is built with the developer overrides;
   - it is started with `TILO_LAUNCHER_LIVE_MODULES=1`, which `nested-session.sh` sets.
 
-  A shipped launcher ignores the variable (`package_store::dev_env`). A release
-  compositor strips it from every launcher it starts (`launcher::dev_env::
-  DEV_OVERRIDE_VARS`).
-- **Only module payloads, only pinned launches.** It applies to packages whose
-  entrypoint executes their runtime's binary (`[entrypoint] runtime`), launched by the
-  shell with a pinned package hash.
-- **Verified like a launch.** When the app store's registry changes, the launcher reads
-  the new installation of the same package id. It verifies it with the same check a
-  launch makes (`run::verified_launch_installation`: the signed record, the payload's
-  integrity, the revocation list). It takes the installation only if both hold:
-  - the same publisher key signed it;
-  - it executes the same runtime binary.
+  A shipped session ignores the variable (`package_store::dev_env`).
+- **Verified like a launch.** When the app store's registry changes, the session reads
+  the new installation of each app a running host runs. It verifies it with the same
+  check a launch makes (the signed record, the payload's integrity, the revocation
+  list). It hands it over only if the host would run it: the same author signed it
+  and it names the same runtimes. A build that names another runtime runs only on a
+  new start.
+- **Over the host's door.** The module goes to the host in a sealed memfd, on the
+  door the session hands it instances on. The host checks that it is still the app's
+  own id, and every instance of the app takes it over.
 
-  A build that names another runtime runs only on a new start.
-- **Read-only hand-over.** The launcher copies the verified payload into a directory
-  it owns, which is bound read-only into the sandbox (`TILO_APP_MODULE_UPDATES`). It
-  names the new generation by a rename. The app reads it and checks that it is still
-  its own id.
+The windows, their sandboxes and grants stay as they were launched. The only thing
+that changes is which verified module the host interprets. The code is in
+`crates/session/app-launch/src/tilolang_hosts.rs` and `crates/platform/tilolang-host`.
 
-The app's process, its sandbox, its grants and its custody record stay as they were
-launched. The only thing that changes is which verified module the runtime interprets.
-The code is in `crates/packaging/launcher/src/live_module.rs` and
-`apps/tilolang/src/updates.rs`; the generation protocol is `crates/platform/tilo-app-module`.
-
-On the desktop there is no launcher to hand anything over: the tool runs the app itself and
-publishes into a directory of its own, private to the person, which the app reads the same
-way.
+On the desktop there is no session to hand anything over: the tool runs the app itself and
+publishes into a directory of its own, private to the person, which the app reads
+(`apps/tilolang/src/updates.rs`, the generation protocol of `crates/platform/tilo-app-module`).
 
 ## The runtime loop
 
@@ -279,12 +270,11 @@ so a changed build there still needs two things a release launcher does not gran
    that a release launcher also reads. Settings would offer "Trust runtimes I build",
    recording the key `tilolang dev` signs with. The launcher would take such a key only
    for runtime versions marked `+dev`, and only for apps the person develops.
-2. **Live modules per app, by grant.** A release launcher never follows reinstalls. It
-   needs a per-app development grant that the person gives in Settings and the shell
-   records like other grants. The shell would then pass a launch flag for that app
-   only, not an environment variable. The launcher follows reinstalls of a granted
-   app's package with the checks it makes now: same publisher, same runtime, verified
-   like a launch.
+2. **Live modules per app, by grant.** A release session never follows reinstalls. It
+   needs a per-app development grant that the person gives in Settings and the session
+   records like other grants, in place of an environment variable. The session follows
+   reinstalls of a granted app's package with the checks it makes now: same author,
+   same runtimes, verified like a launch.
 3. **Open and restart from a terminal.** The tool opens and restarts apps through the
    session's test control socket, which only developer builds serve. On a desktop it
    needs the person's action door: `applications <id>`, `tab.close` and `tab.reopen`,

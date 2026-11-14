@@ -22,10 +22,10 @@
 //!
 //! With `--session` the package is developed inside a running nested session: a good build is
 //! signed into a `.tapp` and installed with `tilo-install`, exactly as any install: verified,
-//! recorded, its old version kept while something runs it. The session's launcher follows
-//! reinstalls of a module payload's package (`crates/packaging/launcher/src/live_module.rs`),
-//! verifies the new installation as a launch would, and hands its payload to the running
-//! `tilolang-app`, which takes the new module over in place or starts over, as on the desktop.
+//! recorded, its old version kept while something runs it. The session follows reinstalls of
+//! the apps its tilolang hosts run (`crates/session/app-launch/src/tilolang_hosts.rs`), verifies
+//! the new installation as a launch would, and hands its module to the host running the app,
+//! whose instances take it over in place or start over, as on the desktop.
 //! With `--runtime BIN` the apps run on a tilolang runtime binary of the developer's own build
 //! instead of the session's: the tool bakes it into a signed runtime bundle, installs that as a
 //! runtime package (`tilolang/<version>+dev`) with `tilo-install`, builds the apps naming it, and
@@ -294,7 +294,7 @@ impl Local {
         loaders: &[PathBuf],
     ) -> Result<(), String> {
         self.package.clone_from(&app.app);
-        let generation = tilo_app_module::publish_with(&self.updates, |generation| {
+        let generation = tilo_app_module::publish(&self.updates, |generation| {
             app.bundle
                 .write(generation)
                 .map_err(|error| std::io::Error::other(error.to_string()))
@@ -681,7 +681,7 @@ impl Dev {
             let local = self
                 .local_mut()
                 .ok_or_else(|| "the app is not run here".to_owned())?;
-            tilo_app_module::publish_with(&local.updates, |generation| {
+            tilo_app_module::publish(&local.updates, |generation| {
                 app.bundle
                     .write(generation)
                     .map_err(|error| std::io::Error::other(error.to_string()))

@@ -15,7 +15,7 @@ use crate::bundle::Bundle;
 use crate::host::Host;
 use crate::runtime::Words;
 
-use super::{Publication, Update};
+use super::Publication;
 
 /// What an instance asks of whatever runs it.
 pub trait Platform {
@@ -24,17 +24,10 @@ pub trait Platform {
     /// loaded, 0 for the installed package.
     fn load(&self, host: &Host) -> u64;
 
-    /// The latest later build of the package, once a development session handed one over.
-    fn latest(&self) -> Option<Update> {
+    /// The later builds of the package the instance takes over as they arrive, when it follows
+    /// them.
+    fn builds(&self) -> Option<std::sync::Arc<super::LaterBuilds>> {
         None
-    }
-
-    /// Wake this instance when a later build arrives. Called once, when it first follows them.
-    fn follow_updates(&self) {}
-
-    /// Whether this process follows later builds at all.
-    fn follows_updates(&self) -> bool {
-        false
     }
 
     /// A later build took over: what the package declares on the door is its now.

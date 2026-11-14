@@ -1,5 +1,6 @@
-//! A later build of the package, as `tilolang dev` hands one to the window it runs when the
-//! source is saved: the instance takes it over in its window while it runs.
+//! A later build of the package, as `tilolang dev` hands one over when the source is saved: in a
+//! development session on the host's door, without one to the window it runs. The instance takes
+//! it over in its window while it runs.
 
 use super::packages::{later, package_of};
 use super::{NOTES, Session, press_new_note};
@@ -27,6 +28,7 @@ fn tag_takes_int(source: &str, signature: &str) -> String {
     format!("{head}{signature}{before}: Int{after}){tail}")
 }
 
+/// The build arrives on the host's door, as a development session hands a reinstall over.
 #[test]
 fn a_later_build_takes_over_in_place_keeping_the_open_note_and_the_list() {
     let mut session = two_notes();
@@ -41,9 +43,10 @@ fn a_later_build_takes_over_in_place_keeping_the_open_note_and_the_list() {
             .any(|shown| shown == "Write something")
     );
 
-    tilolang_app::updates::hand_over(later(package_of(NOTES), |source| {
+    let later = later(package_of(NOTES), |source| {
         source.replace("\"Write something\"", "\"Write anything\"")
-    }));
+    });
+    session.take_build_over_the_door(&later);
     session.settle();
 
     let shown = session.shown();
@@ -61,12 +64,13 @@ fn a_later_build_takes_over_in_place_keeping_the_open_note_and_the_list() {
     assert_eq!(after, titles, "and the notebook still lists every note");
 }
 
+/// The build arrives as `tilolang dev` publishes it for a window without a session.
 #[test]
 fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
     let mut session = two_notes();
     assert_eq!(session.field_value("title"), Some(text("Plan")));
 
-    tilolang_app::updates::hand_over(later(package_of(NOTES), |source| {
+    tilolang_app::updates::builds().hand_over(later(package_of(NOTES), |source| {
         let source = ["action tag(", "action untag(", "action file_note("]
             .iter()
             .fold(
@@ -96,6 +100,28 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
         Some(text("Home")),
         "the window started over: it opens on the notebook's first note, not the one open before"
     );
+}
+
+impl Session {
+    /// Hand the host `bundle` on its door, as a development session hands a reinstall over.
+    fn take_build_over_the_door(&mut self, bundle: &tilolang_tilo::bundle::Bundle) {
+        let module = runtime_portal::tilolang_host::Module {
+            wasm: bundle.wasm.clone(),
+            ids: bundle.ids.clone(),
+            imports: bundle
+                .imports
+                .iter()
+                .map(|used| used.wasm.clone())
+                .collect(),
+        }
+        .encode();
+        let build = runtime_portal::tilolang_host::AppBuild {
+            app: bundle.meta.app.clone(),
+            module_len: module.len() as u64,
+        };
+        let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module).unwrap();
+        self.host.take_build(&build, &module).unwrap();
+    }
 }
 
 fn text(text: &str) -> tilo_ui_host::Value {

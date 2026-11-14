@@ -28,6 +28,10 @@
 //! runtimes it runs on, with the storage of that workspace and author; it ends once the last of its
 //! instances ended, which it says on its door.
 //!
+//! In a development session (`TILO_LAUNCHER_LIVE_MODULES`), a reinstall of an app a host runs is
+//! verified as a launch verifies it and handed to the host on its door ([`Hosts::reinstalled`]):
+//! its open windows take the new build over without restarting, as `tilolang dev` expects.
+//!
 //! A window that ran its instance in its own process kept the app's record in the app's own
 //! directory. The first time a host keeps that app's record in that workspace, it takes that copy
 //! over ([`adopt_window_copy`]), so nothing a person kept before is lost.
@@ -36,11 +40,13 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use launcher::run::tilolang_host::VerifiedInstance;
-use runtime_portal::tilolang_host::{FromHost, InstanceFds, InstanceRequest, receive_from_host};
+use runtime_portal::tilolang_host::{
+    AppBuild, FromHost, InstanceFds, InstanceRequest, receive_from_host,
+};
 
 /// The launcher's flag for a window whose instance a tilolang host runs.
 pub const HOSTED_ARG: &str = "--tilolang-hosted";
@@ -197,6 +203,14 @@ struct Host {
     instances: HashMap<u64, String>,
     /// Which start of the host this is, so the end of an earlier one never retires a later one.
     generation: u64,
+    /// The build of each app it runs, the one it was handed last.
+    builds: HashMap<String, Build>,
+}
+
+/// The build of an app a host runs: whose window it was handed for, and its module's hash.
+struct Build {
+    person: String,
+    module: u64,
 }
 
 /// One window's instance, as the session hands it over: the app and workspace it runs in, the
@@ -235,6 +249,8 @@ pub struct Hosts {
     verifies: Box<Verifies>,
     running: Mutex<HashMap<HostKey, Host>>,
     generations: AtomicU64,
+    /// Whether the app store is watched for reinstalls.
+    follows_reinstalls: AtomicBool,
 }
 
 impl Hosts {
@@ -271,6 +287,7 @@ impl Hosts {
             verifies,
             running: Mutex::new(HashMap::new()),
             generations: AtomicU64::new(1),
+            follows_reinstalls: AtomicBool::new(false),
         })
     }
 
@@ -389,14 +406,15 @@ impl Hosts {
             runtime: verified.runtime,
             app_runtime: verified.app_runtime,
         };
-        let mut module = verified.module;
-        if instance.app == PERSON_VIEWS_APP {
-            self.with_every_installed_app(&mut module, &key);
-        }
+        let module = self.module_for(&instance.app, verified.module, &key);
         // A package the app uses that is installed as an app is another app: its instance reads
         // that app's records from where it keeps them.
         let uses_packages = !module.imports.is_empty();
         let module = module.encode();
+        let build = Build {
+            person: instance.person.clone(),
+            module: hash(&module),
+        };
         let module_len = module.len() as u64;
         let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
         let records_under = Some(
@@ -441,7 +459,7 @@ impl Hosts {
             window: instance.patch,
             origin: instance.origin,
         };
-        let started = self.send(&key, &request, &fds)?;
+        let started = self.send(&key, &request, &fds, build)?;
         tracing::info!(
             target: tilo_startup_metrics::LAUNCH_LATENCY_TARGET,
             package_id = %instance.app,
@@ -453,19 +471,23 @@ impl Hosts {
         Ok(started)
     }
 
-    /// Give `module`, the person's views, every installed tilolang app its host can run (`key`'s
-    /// runtimes), each verified as a launch verifies it: a written view reads any type the
-    /// workspace has, so the host that draws them holds every app's package.
-    fn with_every_installed_app(
+    /// The module the host `key` runs `app` from, its verified `module`: the person's views get
+    /// every installed tilolang app its host can run (`key`'s runtimes), each verified as a launch
+    /// verifies it, since a written view reads any type the workspace has.
+    fn module_for(
         &self,
-        module: &mut runtime_portal::tilolang_host::Module,
+        app: &str,
+        mut module: runtime_portal::tilolang_host::Module,
         key: &HostKey,
-    ) {
+    ) -> runtime_portal::tilolang_host::Module {
+        if app != PERSON_VIEWS_APP {
+            return module;
+        }
         let apps = match app_catalogue::apps::read_from_env() {
             Ok(apps) => apps,
             Err(error) => {
                 tracing::error!(%error, "the person's views get no other app: the installed apps are not known");
-                return;
+                return module;
             }
         };
         for app in apps
@@ -484,6 +506,116 @@ impl Hosts {
                 module.imports.push(verified.module.wasm);
             }
         }
+        module
+    }
+
+    /// A package was installed, in a development session: every app a running host runs whose
+    /// installed build changed is verified as a launch verifies it and handed to that host on its
+    /// door, once, so its open windows take the new build over. A build that does not verify, or
+    /// that only a host of another author or other runtimes could run, is left for the app's next
+    /// start.
+    pub fn reinstalled(&self) {
+        let mut running = self.running();
+        for (key, host) in running.iter_mut() {
+            for (app, build) in &mut host.builds {
+                match self.send_later_build(key, &host.door, app, build) {
+                    Ok(true) => {
+                        tracing::info!(app, workspace = %key.workspace, "a later build was handed to its host");
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(app, workspace = %key.workspace, %error, "a later build was not handed to its host");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Hand the host `key` behind `door` the installed build of `app` when it is not `build`, the
+    /// one it runs, which it is from then on. Whether it was handed.
+    fn send_later_build(
+        &self,
+        key: &HostKey,
+        door: &OwnedFd,
+        app: &str,
+        build: &mut Build,
+    ) -> std::io::Result<bool> {
+        let refused =
+            |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
+        let verified = (self.verifies)(app).map_err(refused)?;
+        let runs_in = HostKey {
+            workspace: key.workspace.clone(),
+            author: Author::of(verified.publisher, &build.person).key(),
+            runtime: verified.runtime,
+            app_runtime: verified.app_runtime,
+        };
+        if runs_in != *key {
+            return Err(refused(
+                "another author signed it, or it names other runtimes: only a new start runs it"
+                    .to_owned(),
+            ));
+        }
+        let module = self.module_for(app, verified.module, key).encode();
+        let hashed = hash(&module);
+        if hashed == build.module {
+            return Ok(false);
+        }
+        let later = AppBuild {
+            app: app.to_owned(),
+            module_len: module.len() as u64,
+        };
+        let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
+        runtime_portal::tilolang_host::send_build(door, &later, &module)?;
+        build.module = hashed;
+        Ok(true)
+    }
+
+    /// Watch the person's app store for reinstalls, once, in a development session: each one is
+    /// [`Self::reinstalled`].
+    fn follow_reinstalls(self: &Arc<Self>) {
+        let develops = package_store::dev_env::dev_override(launcher::dev_env::LIVE_MODULES_ENV)
+            .is_some_and(|value| value == "1");
+        if !develops || self.follows_reinstalls.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let Some(store) = package_store::layout::default_user_root() else {
+            tracing::warn!("reinstalls are not followed: there is no app store");
+            return;
+        };
+        let hosts = Arc::downgrade(self);
+        let started = std::thread::Builder::new()
+            .name("tilolang-reinstalls".into())
+            .spawn(move || {
+                let (replaced, replacements) = std::sync::mpsc::channel();
+                let watch = tilo_files::native::watch_changes(
+                    &store,
+                    |path| {
+                        path.file_name()
+                            .is_some_and(|name| name == package_store::layout::REGISTRY_FILE)
+                    },
+                    move || {
+                        let _ = replaced.send(());
+                    },
+                );
+                let _watch = match watch {
+                    Ok(watch) => watch,
+                    Err(error) => {
+                        tracing::warn!(%error, store = %store.display(), "reinstalls are not followed");
+                        return;
+                    }
+                };
+                while replacements.recv().is_ok() {
+                    // A burst of replacements is one look at the store.
+                    while replacements.try_recv().is_ok() {}
+                    let Some(hosts) = hosts.upgrade() else {
+                        return;
+                    };
+                    hosts.reinstalled();
+                }
+            });
+        if let Err(error) = started {
+            tracing::warn!(%error, "reinstalls are not followed");
+        }
     }
 
     /// Send the instance to the host `key`, starting it first when none runs. Whether it started
@@ -497,12 +629,15 @@ impl Hosts {
         key: &HostKey,
         request: &InstanceRequest,
         fds: &InstanceFds,
+        build: Build,
     ) -> std::io::Result<bool> {
         let mut hosts = self.running();
         if let Some(host) = hosts.get_mut(key) {
             match runtime_portal::tilolang_host::send_instance(&host.door, request, fds) {
                 Ok(()) => {
                     host.instances.insert(request.instance, request.app.clone());
+                    // Its other windows run the build handed last; a later one reaches them all.
+                    host.builds.entry(request.app.clone()).or_insert(build);
                     return Ok(false);
                 }
                 // The host is ending: start another.
@@ -515,7 +650,9 @@ impl Hosts {
         let mut host = self.start(key)?;
         runtime_portal::tilolang_host::send_instance(&host.door, request, fds)?;
         host.instances.insert(request.instance, request.app.clone());
+        host.builds.insert(request.app.clone(), build);
         hosts.insert(key.clone(), host);
+        self.follow_reinstalls();
         Ok(true)
     }
 
@@ -583,6 +720,7 @@ impl Hosts {
             door,
             instances: HashMap::new(),
             generation,
+            builds: HashMap::new(),
         })
     }
 
@@ -647,7 +785,11 @@ impl Hosts {
             else {
                 return;
             };
-            host.instances.remove(&instance);
+            if let Some(app) = host.instances.remove(&instance)
+                && !host.instances.values().any(|running| *running == app)
+            {
+                host.builds.remove(&app);
+            }
             if host.instances.is_empty() {
                 hosts.remove(key)
             } else {
@@ -660,6 +802,14 @@ impl Hosts {
             let _ = unsafe { libc::shutdown(host.door.as_raw_fd(), libc::SHUT_WR) };
         }
     }
+}
+
+/// The hash of an encoded module: whether a host runs that build already.
+fn hash(module: &[u8]) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::hash::DefaultHasher::new();
+    module.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// `app`, installed here, verified as a launch verifies it.
@@ -811,6 +961,7 @@ mod tests {
                 door: Arc::new(door),
                 instances: HashMap::from([(7, NOTES.to_owned()), (8, NOTES.to_owned())]),
                 generation: 1,
+                builds: HashMap::new(),
             };
             hosts.running().insert(key, host);
         }
@@ -896,6 +1047,78 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "a host of another workspace is not told"
+        );
+    }
+
+    /// In a development session, a reinstall of an app a host runs reaches that host's door once,
+    /// as the module that verified; a reinstall that does not verify reaches it not at all.
+    #[test]
+    fn a_verified_later_build_is_handed_once_to_the_host_running_the_app() {
+        use runtime_portal::tilolang_host::{Handed, Module};
+        let module = |wasm: &[u8]| Module {
+            wasm: wasm.to_vec(),
+            ..Module::default()
+        };
+        // The build the store holds now, when it verifies.
+        let installed = Arc::new(Mutex::new(Some(module(b"old"))));
+        let store = Arc::clone(&installed);
+        let hosts = Hosts::with(
+            std::env::temp_dir(),
+            Box::new(|_, _, _| Command::new("true")),
+            Box::new(move |_| {
+                Ok(VerifiedInstance {
+                    runtime: "tilolang@1".to_owned(),
+                    app_runtime: "tilo@1".to_owned(),
+                    publisher: [7; 32],
+                    module: store.lock().unwrap().clone().ok_or("it does not verify")?,
+                })
+            }),
+        );
+        let (ours, theirs) = runtime_portal::tilolang_host::pair().unwrap();
+        let key = HostKey {
+            workspace: "7a110d00-0000-4000-8000-0000000000f4".to_owned(),
+            author: Author::Publisher([7; 32]).key(),
+            runtime: "tilolang@1".to_owned(),
+            app_runtime: "tilo@1".to_owned(),
+        };
+        let build = Build {
+            person: "ada".to_owned(),
+            module: hash(&module(b"old").encode()),
+        };
+        let builds = HashMap::from([(NOTES.to_owned(), build)]);
+        let instances = HashMap::from([(7, NOTES.to_owned())]);
+        let door = Arc::new(ours);
+        let host = Host {
+            door,
+            instances,
+            generation: 1,
+            builds,
+        };
+        hosts.running().insert(key, host);
+
+        // The build the host runs is installed still; then a later one, twice; then one that
+        // does not verify.
+        hosts.reinstalled();
+        *installed.lock().unwrap() = Some(module(b"new"));
+        hosts.reinstalled();
+        hosts.reinstalled();
+        *installed.lock().unwrap() = None;
+        hosts.reinstalled();
+
+        let handed = runtime_portal::tilolang_host::receive(&theirs).unwrap();
+        let Some(Handed::Build(later, fd)) = handed else {
+            panic!("the host is handed the later build: {handed:?}");
+        };
+        assert_eq!(later.app, NOTES);
+        let len = usize::try_from(later.module_len).unwrap();
+        let mapping = tilo_render_protocol::shm::Mapping::map_sealed(&fd, true, len, len).unwrap();
+        let handed = Module::decode(mapping.get(0, len).unwrap()).unwrap();
+        assert_eq!(handed, module(b"new"), "the module that verified");
+        drop(hosts);
+        let after = runtime_portal::tilolang_host::receive(&theirs).unwrap();
+        assert!(
+            after.is_none(),
+            "handed once, and a build that does not verify not at all"
         );
     }
 

@@ -9,9 +9,8 @@
 //! being written, and a build that fails to publish leaves the one before it
 //! current.
 //!
-//! A session's launcher hands a verified reinstall over
-//! (`crates/packaging/launcher/src/live_module.rs`), and `tilolang dev` runs its
-//! own app on this desktop (`crates/lang/tilolang-cli/src/dev.rs`).
+//! `tilolang dev` publishes builds this way for the app it runs on this desktop
+//! without a session (`crates/lang/tilolang-cli/src/dev.rs`).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -68,18 +67,12 @@ pub fn current(dir: &Path) -> io::Result<Option<u64>> {
         .map_err(|_| invalid(format!("{} names no build: {name:?}", path.display())))
 }
 
-/// Publish the payload tree at `payload` as the next generation in `dir` and
-/// name it current; the generation's number.
-pub fn publish(dir: &Path, payload: &Path) -> io::Result<u64> {
-    publish_with(dir, |generation| copy_tree(payload, generation))
-}
-
 /// Publish a generation that `write` fills, and name it current; the
 /// generation's number.
 ///
 /// A writer that holds the payload itself (a compiled bundle) writes it
 /// straight into the generation this makes; nothing is staged or copied.
-pub fn publish_with(dir: &Path, write: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<u64> {
+pub fn publish(dir: &Path, write: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<u64> {
     make_dir(dir)?;
     let generation = match current(dir)? {
         Some(last) => last
@@ -121,33 +114,16 @@ pub fn forget_before(dir: &Path, current: u64) {
     }
 }
 
-/// Copy the payload tree `from` into `to`: regular files and directories, and
-/// nothing else (a payload holds no links).
-fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        let target = to.join(entry.file_name());
-        if kind.is_dir() {
-            copy_tree(&entry.path(), &target)?;
-        } else if kind.is_file() {
-            std::fs::copy(entry.path(), &target)?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn payload(root: &Path, text: &str) -> PathBuf {
-        let dir = root.join(text);
-        std::fs::create_dir_all(dir.join("imports")).unwrap();
-        std::fs::write(dir.join("app.wasm"), text.as_bytes()).unwrap();
-        std::fs::write(dir.join("imports/other.wasm"), b"other").unwrap();
-        dir
+    /// A writer of a generation holding `text` as its module.
+    fn write(text: &str) -> impl FnOnce(&Path) -> io::Result<()> + '_ {
+        move |generation| {
+            std::fs::create_dir_all(generation)?;
+            std::fs::write(generation.join("app.wasm"), text)
+        }
     }
 
     fn generations(dir: &Path) -> Vec<String> {
@@ -161,43 +137,11 @@ mod tests {
     }
 
     #[test]
-    fn the_current_file_names_the_generation_a_publish_copied() {
-        let out = tempfile::tempdir().unwrap();
-        let updates = out.path().join("updates");
-        assert_eq!(current(&updates).unwrap(), None, "nothing published yet");
-        let first = publish(&updates, &payload(out.path(), "one")).unwrap();
-        assert_eq!(first, 1);
-        assert_eq!(current(&updates).unwrap(), Some(1));
-        let read = updates.join("1");
-        assert_eq!(
-            std::fs::read_to_string(read.join("app.wasm")).unwrap(),
-            "one"
-        );
-        assert_eq!(
-            std::fs::read_to_string(read.join("imports/other.wasm")).unwrap(),
-            "other",
-            "the packages it uses come with it"
-        );
-        let second = publish(&updates, &payload(out.path(), "two")).unwrap();
-        assert_eq!(second, 2);
-        assert_eq!(current(&updates).unwrap(), Some(2));
-        assert_eq!(
-            std::fs::read_to_string(updates.join("2/app.wasm")).unwrap(),
-            "two"
-        );
-        assert_eq!(
-            generations(&updates),
-            ["1", "2"],
-            "the one it replaced stays"
-        );
-    }
-
-    #[test]
     fn only_the_generation_before_the_current_one_is_kept() {
         let out = tempfile::tempdir().unwrap();
         let updates = out.path().join("updates");
         for text in ["one", "two", "three"] {
-            publish(&updates, &payload(out.path(), text)).unwrap();
+            publish(&updates, write(text)).unwrap();
         }
         assert_eq!(generations(&updates), ["2", "3"]);
     }
@@ -206,7 +150,7 @@ mod tests {
     fn a_writer_publishes_the_generation_it_fills_itself() {
         let out = tempfile::tempdir().unwrap();
         let updates = out.path().join("updates");
-        let first = publish_with(&updates, |generation| {
+        let first = publish(&updates, |generation| {
             std::fs::create_dir_all(generation)?;
             std::fs::write(generation.join("app.wasm"), "written")
         })
@@ -222,7 +166,7 @@ mod tests {
             ["1"],
             "no half-written staging is left"
         );
-        let second = publish_with(&updates, |generation| {
+        let second = publish(&updates, |generation| {
             std::fs::create_dir_all(generation)?;
             std::fs::write(generation.join("app.wasm"), "again")
         })
@@ -239,7 +183,7 @@ mod tests {
         let error = current(out.path()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("names no build"), "{error}");
-        assert!(publish(out.path(), &payload(out.path(), "one")).is_err());
+        assert!(publish(out.path(), write("one")).is_err());
     }
 
     #[test]
@@ -248,7 +192,7 @@ mod tests {
         let updates = out.path().join("updates");
         std::fs::create_dir_all(updates.join("1.partial")).unwrap();
         assert_eq!(current(&updates).unwrap(), None);
-        assert_eq!(publish(&updates, &payload(out.path(), "one")).unwrap(), 1);
+        assert_eq!(publish(&updates, write("one")).unwrap(), 1);
         assert_eq!(generations(&updates), ["1"], "the half one is gone");
         assert!(!updates.join("1.partial").exists());
     }

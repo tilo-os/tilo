@@ -453,10 +453,10 @@ export TILO_RUNTIME_BUNDLE_DIR=$runtimes
     || die "the runtime bundle $runtime_version does not verify"
 export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$trust
 export TILO_LAUNCHER_BIN=$bin/tilo-launcher
-# A development session: a running app whose payload is its module (a
-# tilolang app) follows reinstalls of its package, verified by the launcher
-# as a launch is, so `tilolang dev` swaps a new build in without a restart
-# (crates/packaging/launcher/src/live_module.rs). A shipped launcher ignores it.
+# A development session: the session hands a running tilolang app each
+# reinstall of its package, verified as a launch is, so `tilolang dev` swaps a
+# new build in without a restart
+# (crates/session/app-launch/src/tilolang_hosts.rs). A shipped session ignores it.
 export TILO_LAUNCHER_LIVE_MODULES=1
 # A development session logs warnings and errors unless RUST_LOG says
 # otherwise: a shipped session logs errors only, and a watch that could not

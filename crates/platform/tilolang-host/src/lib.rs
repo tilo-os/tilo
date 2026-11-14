@@ -44,7 +44,7 @@ use collaboration::native_initial::PrimaryRead;
 /// The person's formats and language, as the session says them on the door
 /// ([`TilolangHost::set_locale`]).
 pub use runtime_portal::tilolang_host::Locale;
-use runtime_portal::tilolang_host::{InstanceFds, InstanceRequest, Module};
+use runtime_portal::tilolang_host::{AppBuild, InstanceFds, InstanceRequest, Module};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_tilo::background::Waker;
@@ -53,6 +53,7 @@ use tilolang_tilo::meta::MetaExt as _;
 
 use hosted::{Hosted, Kept, Spec};
 use phrases::Phrases;
+use tilolang_tilo::instance::LaterBuilds;
 use tilolang_tilo::instance::record::InstanceRecord;
 
 /// The route an instance of `meta`'s package for `person` in `workspace` joins: the person's own
@@ -217,6 +218,8 @@ pub struct TilolangHost {
     ended: Vec<u64>,
     /// The agent task whose programs this host runs, when its author is a task.
     task: Option<task::Task>,
+    /// The later builds of each app it runs, which its instances of the app follow.
+    builds: std::collections::HashMap<String, Arc<LaterBuilds>>,
 }
 
 impl TilolangHost {
@@ -240,6 +243,7 @@ impl TilolangHost {
             appliers: Vec::new(),
             ended: Vec::new(),
             task: None,
+            builds: std::collections::HashMap::new(),
         }
     }
 
@@ -391,14 +395,44 @@ impl TilolangHost {
         self.opening.len()
     }
 
-    /// Run `hosted`, until its window closes (`window` hangs up) or the host ends.
+    /// Run `hosted`, until its window closes (`window` hangs up) or the host ends. It takes over
+    /// each later build of its app as it arrives ([`Self::take_build`]).
     pub fn add(&mut self, hosted: Hosted, window: Option<OwnedFd>) {
+        let builds = self.builds.entry(hosted.spec().app.clone()).or_default();
+        hosted.follow_builds(Arc::clone(builds));
         tracing::info!(
             app = hosted.spec().app,
             instance = hosted.spec().instance,
             "instance started"
         );
         self.running.push(Running { hosted, window });
+    }
+
+    /// The later builds of `app` its instances follow are `builds`: those `tilolang dev` publishes
+    /// for a window without a session, which runs its instance in its own process.
+    pub fn follow_builds(&mut self, app: &str, builds: Arc<LaterBuilds>) {
+        self.builds.insert(app.to_owned(), builds);
+    }
+
+    /// A development session verified a later build of an app this host runs, and handed its
+    /// module over the door in the sealed memfd `module`: every instance of the app takes it over,
+    /// in place when it reads the state the one before wrote, else starting over on its data.
+    ///
+    /// # Errors
+    /// The module does not read, or it is another app's.
+    pub fn take_build(&mut self, build: &AppBuild, module: &OwnedFd) -> Result<(), AdmitError> {
+        let bundle = module_bundle(module, build.module_len)?;
+        if bundle.meta.app != build.app {
+            return Err(AdmitError::IdMismatch {
+                launched: build.app.clone(),
+                declared: bundle.meta.app,
+            });
+        }
+        self.builds
+            .entry(build.app.clone())
+            .or_default()
+            .hand_over(bundle);
+        Ok(())
     }
 
     /// Open the instance the session handed over on the door: its module is read, its

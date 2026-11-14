@@ -1,90 +1,53 @@
-//! Later builds of the package while it runs.
+//! Later builds of the package while it runs, as `tilolang dev` publishes them without a session
+//! (`crates/lang/tilolang-cli/src/dev.rs`) in the directory protocol of `tilo_app_module`: the
+//! directory is named in `TILO_APP_MODULE_UPDATES`. Without one, nothing here runs. In a
+//! session the workspace's tilolang host runs the instance, and the session hands it later
+//! builds over the host's door.
 //!
-//! Whoever starts the app may give it a directory its later builds are published into: a
-//! development session's launcher follows reinstalls of the package
-//! (`crates/packaging/launcher/src/live_module.rs`), and `tilolang dev` on a desktop publishes
-//! each saved build itself (`crates/lang/tilolang-cli/src/dev.rs`). Both use the directory
-//! protocol of `tilo_app_module`: the directory is named in `TILO_APP_MODULE_UPDATES`. Without
-//! one, nothing here runs.
-//!
-//! A thread watches the directory and reads each new generation as a [`Bundle`], which it
-//! hands over ([`hand_over`]): [`Builds`] is how a window's instance follows them.
+//! A thread watches the directory and reads each new generation as a [`Bundle`], which it hands
+//! over to the later builds the window's instance follows ([`builds`]).
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::path::Path;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use tilo_app_module::CURRENT_FILE;
-use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::instance::Update;
+use tilolang_tilo::instance::LaterBuilds;
 
-#[derive(Default)]
 struct Shared {
-    latest: Option<Update>,
-    /// The generation of the directory's build that `latest` is, so a read
-    /// that finds the same one again takes nothing.
+    /// Whether the watch runs.
+    started: bool,
+    /// The generation of the directory's build handed over last, so a read that finds the same
+    /// one again takes nothing.
     taken: Option<u64>,
-    /// What each following instance is woken by, while it lives.
-    wakes: Vec<Weak<dyn Fn() + Send + Sync>>,
-}
-
-fn shared() -> &'static Mutex<Shared> {
-    static SHARED: OnceLock<Mutex<Shared>> = OnceLock::new();
-    SHARED.get_or_init(Mutex::default)
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Shared> {
-    shared()
+    static SHARED: Mutex<Shared> = Mutex::new(Shared {
+        started: false,
+        taken: None,
+    });
+    SHARED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The later builds this process took, as a window's instance follows them.
-pub struct Builds;
-
-#[cfg(target_os = "linux")]
-impl tilolang_host::hosted::LaterBuilds for Builds {
-    fn latest(&self) -> Option<Update> {
-        lock().latest.clone()
-    }
-
-    fn follow(&self, wake: &Waker) {
-        let mut shared = lock();
-        shared.wakes.retain(|wake| wake.strong_count() > 0);
-        shared.wakes.push(Arc::downgrade(wake));
-    }
-}
-
-/// Hand `bundle` over as the latest later build, and wake every instance that follows them:
-/// what the watch does with each build it reads.
-pub fn hand_over(bundle: Bundle) {
-    let mut shared = lock();
-    let generation = shared
-        .latest
-        .as_ref()
-        .map_or(1, |update| update.generation.saturating_add(1));
-    shared.latest = Some(Update {
-        generation,
-        bundle: Arc::new(bundle),
-    });
-    shared.wakes.retain(|wake| wake.strong_count() > 0);
-    let wakes: Vec<Waker> = shared.wakes.iter().filter_map(Weak::upgrade).collect();
-    drop(shared);
-    for wake in wakes {
-        wake();
-    }
-}
-
-fn updates_dir() -> Option<PathBuf> {
-    tilo_app_module::dir_from_env()
+/// The later builds this process took, which a window's instance follows.
+#[must_use]
+pub fn builds() -> Arc<LaterBuilds> {
+    static BUILDS: LazyLock<Arc<LaterBuilds>> = LazyLock::new(Arc::default);
+    Arc::clone(&BUILDS)
 }
 
 /// Start watching for later builds of the installed package `app`, when this process was
-/// started with an updates directory.
+/// started with an updates directory and does not watch already.
 pub fn start(app: &str) {
-    let Some(dir) = updates_dir() else {
+    let Some(dir) = tilo_app_module::dir_from_env() else {
         return;
     };
+    if std::mem::replace(&mut lock().started, true) {
+        return;
+    }
     let app = app.to_owned();
     let started = std::thread::Builder::new()
         .name("tilolang-updates".into())
@@ -99,7 +62,7 @@ pub fn start(app: &str) {
 /// place of `tilolang dev` — shows the build the running window showed, not the one the process
 /// was started on. Then [`start`] following the directory takes the builds after it.
 pub fn catch_up(app: &str) {
-    let Some(dir) = updates_dir() else {
+    let Some(dir) = tilo_app_module::dir_from_env() else {
         return;
     };
     let Ok(Some(generation)) = tilo_app_module::current(&dir) else {
@@ -185,5 +148,5 @@ fn take(dir: &Path, published: u64, app: &str) {
         return;
     }
     lock().taken = Some(published);
-    hand_over(bundle);
+    builds().hand_over(bundle);
 }

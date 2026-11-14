@@ -92,6 +92,63 @@ pub struct Update {
     pub bundle: Arc<Bundle>,
 }
 
+/// The later builds of one package, as they arrive while its instances run: the latest, and what
+/// wakes each instance that follows them. A development session hands them over the host's door;
+/// `tilolang dev` without one, from the directory it publishes builds into.
+#[derive(Default)]
+pub struct LaterBuilds(std::sync::Mutex<Arrived>);
+
+#[derive(Default)]
+struct Arrived {
+    latest: Option<Update>,
+    /// What each following instance is woken by, while it lives.
+    wakes: Vec<std::sync::Weak<dyn Fn() + Send + Sync>>,
+}
+
+impl LaterBuilds {
+    fn arrived(&self) -> std::sync::MutexGuard<'_, Arrived> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The latest later build, once there is one.
+    #[must_use]
+    pub fn latest(&self) -> Option<Update> {
+        self.arrived().latest.clone()
+    }
+
+    /// Call `wake` whenever a later build arrives, for as long as it lives.
+    pub fn follow(&self, wake: &crate::background::Waker) {
+        let mut arrived = self.arrived();
+        arrived.wakes.retain(|wake| wake.strong_count() > 0);
+        arrived.wakes.push(Arc::downgrade(wake));
+    }
+
+    /// Take `bundle` as the latest later build, and wake every instance that follows them.
+    pub fn hand_over(&self, bundle: Bundle) {
+        let mut arrived = self.arrived();
+        let generation = arrived
+            .latest
+            .as_ref()
+            .map_or(1, |update| update.generation.saturating_add(1));
+        arrived.latest = Some(Update {
+            generation,
+            bundle: Arc::new(bundle),
+        });
+        arrived.wakes.retain(|wake| wake.strong_count() > 0);
+        let wakes: Vec<_> = arrived
+            .wakes
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect();
+        drop(arrived);
+        for wake in wakes {
+            wake();
+        }
+    }
+}
+
 /// What the instance publishes on the door while it lives: the workspace's records with their
 /// actions, kept up to date change by change.
 pub trait Publication {
@@ -903,9 +960,12 @@ impl Instance {
             });
         }
         self.generation = self.platform.load(&host);
-        if self.platform.follows_updates() && self.mode != Mode::Past && !self.follows {
+        if let Some(builds) = self.platform.builds()
+            && self.mode != Mode::Past
+            && !self.follows
+        {
             self.follows = true;
-            self.platform.follow_updates();
+            builds.follow(&self.platform.waker());
         }
         if self.mode != Mode::Past {
             // What is published and found of the workspace is read off the frame the first time;
@@ -947,7 +1007,8 @@ impl Instance {
     fn follow_updates(&mut self, doc: Option<&tilo_resource::Doc>, host: Host) -> Host {
         let Some(update) = self
             .platform
-            .latest()
+            .builds()
+            .and_then(|builds| builds.latest())
             .filter(|update| update.generation > self.generation && self.mode != Mode::Past)
         else {
             return host;

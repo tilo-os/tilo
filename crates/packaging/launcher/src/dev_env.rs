@@ -14,9 +14,11 @@ pub const NET_GATE_ENV: &str = "TILO_LAUNCHER_NET_GATE";
 /// Names the `xdg-dbus-proxy` binary that filters an app's session bus.
 pub const DBUS_PROXY_BIN_ENV: &str = "TILO_LAUNCHER_DBUS_PROXY_BIN";
 
-/// Every variable the launcher (and the app host beside it) treats as a developer-only override.
+/// `1` in a development session: the session hands a running tilolang app each reinstall of its
+/// package, verified as a launch is, so a new build takes over without the app restarting.
 pub const LIVE_MODULES_ENV: &str = "TILO_LAUNCHER_LIVE_MODULES";
 
+/// Every variable the launcher (and the app host beside it) treats as a developer-only override.
 pub const DEV_OVERRIDE_VARS: &[&str] = &[
     package_store::layout::SYSTEM_DIR_ENV,
     package_store::layout::SYSTEM_PAYLOAD_DIR_ENV,

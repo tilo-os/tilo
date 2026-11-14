@@ -43,7 +43,7 @@ use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::record::{InstanceRecord, ReadRecord, RecordError};
-use tilolang_tilo::instance::{Config, Instance, Mode, Platform, Publication, Update};
+use tilolang_tilo::instance::{Config, Instance, LaterBuilds, Mode, Platform, Publication};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
@@ -436,17 +436,7 @@ fn with_app_actions(resource: ResourceSpec, activate: &tilo_actions::ActionSpec)
 
 type SurfaceSlot = Rc<RefCell<Option<Rc<Surface>>>>;
 
-/// Later builds of the package an instance runs, while it runs: the builds `tilolang dev`
-/// publishes for a window without a session. The instance takes each over as it arrives.
-pub trait LaterBuilds {
-    /// The latest later build, once there is one.
-    fn latest(&self) -> Option<Update>;
-
-    /// Call `wake` whenever a later build arrives, for as long as it lives.
-    fn follow(&self, wake: &Waker);
-}
-
-type BuildsSlot = Rc<RefCell<Option<Rc<dyn LaterBuilds>>>>;
+type BuildsSlot = Rc<RefCell<Option<Arc<LaterBuilds>>>>;
 
 /// The person's formats, as the session handed them over the host's door: shared by every
 /// instance the host runs, so a change in Settings reaches them together.
@@ -476,7 +466,7 @@ impl Platform for HostPlatform {
     /// started with.
     fn load(&self, host: &Host) -> u64 {
         let installed = |app: &str| self.installed.contains_key(app);
-        if let Some(update) = self.latest() {
+        if let Some(update) = self.builds().and_then(|builds| builds.latest()) {
             match host.load_bundle_using(&update.bundle, installed) {
                 Ok(_) => return update.generation,
                 Err(error) => {
@@ -490,18 +480,8 @@ impl Platform for HostPlatform {
         0
     }
 
-    fn latest(&self) -> Option<Update> {
-        self.builds.borrow().as_ref()?.latest()
-    }
-
-    fn follow_updates(&self) {
-        if let Some(builds) = self.builds.borrow().as_ref() {
-            builds.follow(&self.wake);
-        }
-    }
-
-    fn follows_updates(&self) -> bool {
-        self.builds.borrow().is_some()
+    fn builds(&self) -> Option<Arc<LaterBuilds>> {
+        self.builds.borrow().clone()
     }
 
     /// Receivers decide each change against the surface of the build that runs now.
@@ -1010,7 +990,7 @@ impl Hosted {
 
     /// Take over each later build `builds` hands over, from the first turn on: before it, as the
     /// instance loads its package.
-    pub fn follow_builds(&mut self, builds: Rc<dyn LaterBuilds>) {
+    pub(crate) fn follow_builds(&self, builds: Arc<LaterBuilds>) {
         *self.builds.borrow_mut() = Some(builds);
     }
 

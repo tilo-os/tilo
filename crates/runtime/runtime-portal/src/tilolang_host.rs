@@ -46,6 +46,17 @@ pub struct AppStanding {
     pub standing: Option<Standing>,
 }
 
+/// A later build of an app a host runs, as a development session verified it after a reinstall,
+/// with its module in a sealed memfd.
+pub const BUILD_VERB: &[u8] = b"build";
+
+/// A later build of one app the host runs ([`BUILD_VERB`]): its instances take it over.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppBuild {
+    pub app: String,
+    pub module_len: u64,
+}
+
 pub const TASK_VERB: &[u8] = b"task";
 
 /// The verb the host says on its door when an instance ended (its window closed, or it never
@@ -165,6 +176,7 @@ pub enum Handed {
     Task(TaskRequest, TaskFds),
     Locale(Locale),
     Standing(AppStanding),
+    Build(AppBuild, Descriptor),
 }
 
 const APPS_MAGIC: &[u8; 8] = b"tlappsl1";
@@ -414,116 +426,68 @@ pub fn take_door() -> Option<Descriptor> {
     None
 }
 
-/// Hand the host behind `door` the instance `request` with its descriptors.
+/// Say `message` on `door` under `verb`, with the descriptors `fds`.
 ///
 /// # Errors
-/// The socket's error, a request that does not encode, or
+/// The socket's error, a message that does not encode or is over the door's limit, or
 /// [`io::ErrorKind::Unsupported`] off Linux.
+fn say(
+    door: &Descriptor,
+    verb: &[u8],
+    message: &impl Serialize,
+    fds: &[&Descriptor],
+) -> io::Result<()> {
+    let encoded = serde_json::to_vec(message).map_err(io::Error::other)?;
+    if encoded.len() > MAX_MESSAGE {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        let fds: Vec<_> = fds.iter().map(|fd| fd.as_fd()).collect();
+        crate::door::send(door.as_fd(), &[verb, &encoded], &fds)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (door, verb, fds);
+        Err(unsupported())
+    }
+}
+
+/// Hand the host behind `door` the instance `request` with its descriptors ([`say`]).
 pub fn send_instance(
     door: &Descriptor,
     request: &InstanceRequest,
     fds: &InstanceFds,
 ) -> io::Result<()> {
-    let encoded = serde_json::to_vec(request).map_err(io::Error::other)?;
-    if encoded.len() > MAX_MESSAGE {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsFd as _;
-        crate::door::send(
-            door.as_fd(),
-            &[INSTANCE_VERB, &encoded],
-            &[
-                fds.broker.as_fd(),
-                fds.identity.as_fd(),
-                fds.module.as_fd(),
-                fds.window.as_fd(),
-            ]
-            .into_iter()
-            .chain(fds.origin.as_ref().map(std::os::fd::AsFd::as_fd))
-            .collect::<Vec<_>>(),
-        )
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (door, fds);
-        Err(unsupported())
-    }
+    let mut handed = vec![&fds.broker, &fds.identity, &fds.module, &fds.window];
+    handed.extend(&fds.origin);
+    say(door, INSTANCE_VERB, request, &handed)
 }
 
 /// Say on the host behind `door` that the person's formats or language changed: the clock and the
 /// date style their instances write in a sentence, and the language their windows read in, from
-/// now on.
-///
-/// # Errors
-/// The socket's error, a request that does not encode, or [`io::ErrorKind::Unsupported`] off
-/// Linux.
+/// now on ([`say`]).
 pub fn send_locale(door: &Descriptor, locale: &Locale) -> io::Result<()> {
-    let encoded = serde_json::to_vec(locale).map_err(io::Error::other)?;
-    if encoded.len() > MAX_MESSAGE {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsFd as _;
-        crate::door::send(door.as_fd(), &[LOCALE_VERB, &encoded], &[])
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = door;
-        Err(unsupported())
-    }
+    say(door, LOCALE_VERB, locale, &[])
 }
 
 /// Say on the host behind `door` what the person may now do in one app: its instances of the app
-/// offer and refuse by it from now on.
-///
-/// # Errors
-/// The socket's error, a standing that does not encode or is over the door's limit, or
-/// [`io::ErrorKind::Unsupported`] off Linux.
+/// offer and refuse by it from now on ([`say`]).
 pub fn send_standing(door: &Descriptor, standing: &AppStanding) -> io::Result<()> {
-    let encoded = serde_json::to_vec(standing).map_err(io::Error::other)?;
-    if encoded.len() > MAX_MESSAGE {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsFd as _;
-        crate::door::send(door.as_fd(), &[STANDING_VERB, &encoded], &[])
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = door;
-        Err(unsupported())
-    }
+    say(door, STANDING_VERB, standing, &[])
+}
+
+/// Hand the host behind `door` a later build of an app it runs, its module in the sealed memfd
+/// `module` ([`say`]).
+pub fn send_build(door: &Descriptor, build: &AppBuild, module: &Descriptor) -> io::Result<()> {
+    say(door, BUILD_VERB, build, &[module])
 }
 
 /// Hand the host behind `door` the task `request`: its program connection and the apps its
-/// programs are compiled against.
-///
-/// # Errors
-/// The socket's error, a request that does not encode, or
-/// [`io::ErrorKind::Unsupported`] off Linux.
+/// programs are compiled against ([`say`]).
 pub fn send_task(door: &Descriptor, request: &TaskRequest, fds: &TaskFds) -> io::Result<()> {
-    let encoded = serde_json::to_vec(request).map_err(io::Error::other)?;
-    if encoded.len() > MAX_MESSAGE {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsFd as _;
-        crate::door::send(
-            door.as_fd(),
-            &[TASK_VERB, &encoded],
-            &[fds.program.as_fd(), fds.apps.as_fd()],
-        )
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (door, fds);
-        Err(unsupported())
-    }
+    say(door, TASK_VERB, request, &[&fds.program, &fds.apps])
 }
 
 /// The next instance or task on `door`, with its descriptors; `None` at end of
@@ -575,6 +539,16 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
                 return Err(invalid("a standing carrying a connection"));
             }
             return Ok(Some(Handed::Standing(standing)));
+        }
+        if verb == BUILD_VERB {
+            let build: AppBuild = serde_json::from_slice(request)
+                .map_err(|_| invalid("a build that does not decode"))?;
+            let [module] = <[Descriptor; 1]>::try_from(fds)
+                .map_err(|_| invalid("a build without its module"))?;
+            if build.module_len > MAX_MODULE {
+                return Err(invalid("a module over the door's limit"));
+            }
+            return Ok(Some(Handed::Build(build, module)));
         }
         if verb != INSTANCE_VERB {
             return Err(invalid("the door carried something other than an instance"));

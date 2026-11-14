@@ -222,6 +222,12 @@ fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
                         tracing::info!(app = standing.app, "what the person may do changed");
                     }
                 }
+                Ok(Some(Handed::Build(build, module))) => {
+                    // A development session took a later build of the app: its windows show it.
+                    if let Err(error) = host.take_build(&build, &module) {
+                        tracing::error!(app = build.app, %error, "a later build was not taken");
+                    }
+                }
                 Ok(Some(Handed::Task(request, fds))) => {
                     if let Err(error) = host.begin_task(&request, fds) {
                         tracing::error!(task = request.task, %error, "a task did not start");

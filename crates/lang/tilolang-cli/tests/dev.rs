@@ -35,7 +35,7 @@ fn a_saved_build_is_the_generation_the_app_reads() {
         version: "0.1.0".into(),
     };
     let publish = |app: &package::Published, updates: &Path| {
-        tilo_app_module::publish_with(updates, |generation| {
+        tilo_app_module::publish(updates, |generation| {
             app.bundle
                 .write(generation)
                 .map_err(|error| std::io::Error::other(error.to_string()))

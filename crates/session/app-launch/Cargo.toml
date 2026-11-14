@@ -28,7 +28,7 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # Publishing the projection the launcher binds, and holding it for as long as
 # the session vouches for it.
-tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"] }
 blake3.workspace = true
 # A record's id: what one is, and the URI that asks an app to open it.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
