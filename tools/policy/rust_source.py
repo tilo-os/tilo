@@ -12,6 +12,9 @@ from pathlib import Path
 # for the inner form that gates its whole file.
 TEST_ATTRIBUTE = re.compile(r"#(!?)\[(?:cfg\((?:test|all\(test\b)|test\])")
 LINE_COMMENT = re.compile(r"(?m)^[ \t]*//.*$")
+# `tilo_test_env::scenario! { fn name; phase ...; { ... } }` expands to one
+# `#[test] fn`: the whole invocation is test code, as a `#[test]` item is.
+SCENARIO = re.compile(r"(?<![\w:])(?:tilo_test_env\s*::\s*)?scenario\s*!\s*\{")
 CLOSING = {")": "(", "]": "[", "}": "{"}
 STRING_START = re.compile(r'b?r#*"|b"')
 
@@ -39,7 +42,7 @@ def production_source(text: str) -> str:
 
 def blank_test_items(code: str) -> str:
     """`code` with each `#[cfg(test)]`, `#[cfg(all(test, …))]` or `#[test]`
-    item blanked on its own (a module, function, `use`, field or statement),
+    item, and each `scenario!` test, blanked on its own (a module, function, `use`, field or statement),
     keeping newlines; `#![cfg(test)]` blanks it all. A test-only import near
     the top does not hide the rest of the file. Braces inside comments and
     literals are counted, so callers that can should pass lexed code."""
@@ -48,6 +51,13 @@ def blank_test_items(code: str) -> str:
     while found := TEST_ATTRIBUTE.search(code, at):
         if found.group(1):
             return re.sub(r"[^\n]", " ", code)
+        end = test_item_end(code, found.start())
+        for i in range(found.start(), end):
+            if out[i] != "\n":
+                out[i] = " "
+        at = end
+    at = 0
+    while found := SCENARIO.search(code, at):
         end = test_item_end(code, found.start())
         for i in range(found.start(), end):
             if out[i] != "\n":
@@ -333,7 +343,8 @@ class Pruned:
 
 
 def strip_tests(text: str, code: str) -> Pruned:
-    """Blank ``#[test]`` and ``#[cfg(test)]`` items in lexed ``code``."""
+    """Blank ``#[test]`` and ``#[cfg(test)]`` items, and ``scenario!`` tests, in
+    lexed ``code``."""
     inner = INNER_TEST_CFG.search(code)
     if inner:
         close = matching(code, inner.end() - 1)
@@ -366,6 +377,16 @@ def strip_tests(text: str, code: str) -> Pruned:
                 out[index] = " "
         removed.append((attribute.start(), end))
         position = end
+    position = 0
+    while scenario := SCENARIO.search(code, position):
+        end = matching(code, scenario.end() - 1)
+        if not any(start <= scenario.start() < stop for start, stop in removed):
+            for index in range(scenario.start(), end):
+                if out[index] != "\n":
+                    out[index] = " "
+            removed.append((scenario.start(), end))
+        position = end
+    removed.sort()
     return Pruned("".join(out), removed, modules, False)
 
 
