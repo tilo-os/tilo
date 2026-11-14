@@ -45,7 +45,9 @@ use tilo_session_client::engine::RecordReading;
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
-use crate::support::{enrol, enter_page, start_workspace_host_relaying, wait_keyed, written};
+use crate::support::{
+    durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed, written,
+};
 
 /// The chain the chat keeps its posts in.
 const CHAT_CHAIN: &str = "messages";
@@ -304,6 +306,13 @@ async fn a_guest_takes_in_a_crowded_chat_as_a_snapshot_and_the_writes_since() {
         .iter()
         .map(|_| AutoCommit::load(&founded).unwrap())
         .collect();
+    // The history is what the host holds once it is all durable, not how long each write took
+    // to get there: every page opens the chat and holds its keys, then says its writes one
+    // behind the other, each still a write of its own, and one barrier per page covers them all.
+    for page in &introducers {
+        page.send(Cmd::OpenRoute(chat.clone())).unwrap();
+        wait_keyed(page, &chat).await;
+    }
     for person in 0..INTRODUCED {
         let by = person % INTRODUCERS;
         let introduction = write(&mut copies[by], |doc| {
@@ -314,17 +323,23 @@ async fn a_guest_takes_in_a_crowded_chat_as_a_snapshot_and_the_writes_since() {
             )
             .unwrap();
         });
-        written(&introducers[by], &chat, &introduction).await;
+        introducers[by].write(chat.clone(), &introduction).unwrap();
+    }
+    for page in &introducers {
+        durable(page).await;
     }
     let author = &introducers[0];
+    author.send(Cmd::OpenRoute(part.clone())).unwrap();
+    wait_keyed(author, &part).await;
     let mut part_doc = AutoCommit::new();
     for post in 0..POSTS {
         let posted = write(&mut part_doc, |doc| {
             doc.put(automerge::ROOT, format!("post-{post}"), post_text(post))
                 .unwrap();
         });
-        written(author, &part, &posted).await;
+        author.write(part.clone(), &posted).unwrap();
     }
+    durable(author).await;
     wait_keyed(author, &part).await;
     // The host folds each record's history once the chat is quiet: wait until it folded both
     // (a host that folds neither, or one, runs on to the guest when the wait is up).

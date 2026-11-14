@@ -38,7 +38,7 @@ use tilo_session_client::device::{Entering, door_entry};
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
-use crate::support::{enrol, enter_page, start_workspace_host_relaying, wait_keyed, written};
+use crate::support::{durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed};
 use collab_types::WorkspaceId;
 
 fn new_key() -> SigningKey {
@@ -256,6 +256,11 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
     )
     .await;
     author.send(Cmd::Join(lounge.workspace_id)).unwrap();
+    // The chat's history is what the host holds once it is durable: the author opens the chat
+    // and holds its keys, says its messages one behind the other, each still a write of its own,
+    // and one barrier covers them all.
+    author.send(Cmd::OpenRoute(chat.clone())).unwrap();
+    wait_keyed(&author, &chat).await;
     let mut history = automerge::AutoCommit::new();
     for message in 0..MESSAGES {
         use automerge::transaction::Transactable as _;
@@ -269,8 +274,9 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
         } else {
             DocumentMutation::Incremental(history.save_after(&before))
         };
-        written(&author, &chat, &post).await;
+        author.write(chat.clone(), &post).unwrap();
     }
+    durable(&author).await;
     wait_keyed(&author, &chat).await;
     let mut arriving = tokio::task::JoinSet::new();
     for n in 1..members {
