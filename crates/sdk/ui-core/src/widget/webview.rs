@@ -207,8 +207,12 @@ impl WebView {
 
     /// While the session shares this window's page with someone watching,
     /// hand it the page as a paint stream — the view on screen is the page
-    /// the window shows. Payloads the app → shell channel cannot carry are
-    /// dropped; a dropped whole frame is asked for again.
+    /// the window shows. It is taken where the engine's events are taken and
+    /// where the page is drawn, so a change reaches the share with no frame
+    /// drawn for it. A payload larger than a share hands over
+    /// ([`paint::MAX_SHARE_PAYLOAD`](crate::webview::paint::MAX_SHARE_PAYLOAD))
+    /// is not dropped: its size and its start are queued, which is how the
+    /// session learns that the page is too large and says so.
     fn share_page(&self) {
         use crate::webview::paint;
         if !paint::share_watched() {
@@ -221,23 +225,35 @@ impl WebView {
             self.rect.width(),
             self.rect.height(),
         ];
-        for payload in self.engine.take_paint_stream(keyframe) {
-            let whole = matches!(
-                payload,
-                crate::webview::paint::stream::wire::Payload::Key(_)
-            );
-            match payload.encode() {
-                Ok(bytes) if bytes.len() <= paint::MAX_SHARE_PAYLOAD => {
-                    paint::queue_share(paint::SharedFrame {
-                        payload: bytes,
-                        page,
-                        scale: f64::from(self.engine_scale()),
-                    });
+        let scale = f64::from(self.engine_scale());
+        for payload in self
+            .engine
+            .take_paint_stream_within(keyframe, paint::share_room())
+        {
+            // Encoded past what the paint stream's wire takes too: the size is what is
+            // said of a payload too large.
+            let mut bytes = match paint::stream::encode(&payload) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::warn!(%error, "a payload of the shared page could not be encoded");
+                    continue;
                 }
-                _ => {
-                    tracing::debug!(whole, "paint payload too large to share; skipped");
-                }
+            };
+            let of = bytes.len();
+            if of > paint::MAX_SHARE_PAYLOAD {
+                tracing::warn!(
+                    bytes = of,
+                    largest = paint::MAX_SHARE_PAYLOAD,
+                    "a payload of the shared page is too large to hand over"
+                );
+                bytes.truncate(paint::MAX_SHARE_PART);
             }
+            paint::queue_share(paint::SharedFrame {
+                payload: bytes,
+                of,
+                page,
+                scale,
+            });
         }
     }
 
@@ -762,6 +778,9 @@ impl Widget for WebView {
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        // The engine's events were just taken: what they changed of a watched page goes to
+        // its share now, whether or not a frame is drawn for it.
+        self.share_page();
         self.settle_composition();
         self.text_input.pump(
             &self.engine,
@@ -859,8 +878,13 @@ impl Widget for WebView {
     }
 
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        // A watched page's engine has work it wakes nobody for: the loop comes back then,
+        // takes its events and its stream, and draws nothing unless the page did.
         ((self.focused || self.text_input.has_work()) && self.engine.supports_text_input())
             .then(|| self.text_input.deadline())
+            .into_iter()
+            .chain(self.engine.paint_due())
+            .min()
     }
 
     fn build_layout(
@@ -2784,3 +2808,140 @@ mod ime_tests;
 #[path = "webview_component.rs"]
 mod component;
 pub use component::WebViewProps;
+
+#[cfg(test)]
+mod shared_page_tests {
+    use super::*;
+    use crate::time::testing::with_monotonic_time;
+    use crate::webview::WebViewCommand;
+    use crate::webview::paint::stream::wire::Payload;
+    use crate::webview::paint::{self, PaintEngine};
+    use crate::webview::test_engine::TestEngine;
+
+    const TOP: &str =
+        include_str!("../../../../browser/paint-stream/tests/fixtures/layers.top.json");
+    const SCROLLED: &str =
+        include_str!("../../../../browser/paint-stream/tests/fixtures/layers.scrolled.json");
+
+    fn draw(view: &mut WebView) {
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        view.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        view.mark_drawn();
+    }
+
+    /// What the share's outbox holds: how many whole frames and how many changes.
+    fn handed() -> (usize, usize) {
+        let frames = paint::take_share_frames();
+        let wholes = frames
+            .iter()
+            .filter(|frame| Payload::is_key(&frame.payload))
+            .count();
+        let changes = frames
+            .iter()
+            .filter(|frame| matches!(Payload::decode(&frame.payload), Ok(Payload::Patches(_))))
+            .count();
+        (wholes, changes)
+    }
+
+    /// A window's view is drawn from its engine's pixels while a session shares its page with
+    /// someone watching. Once the page is handed over and nothing changes it, the view asks
+    /// for no frame and no wake: before, it asked for one forever, because the display list the
+    /// share captured counted as something it had not painted. A change of the page reaches
+    /// the share when the engine's events are taken, with no frame drawn for it.
+    #[test]
+    #[serial_test::serial(paint_share)]
+    fn a_shared_view_drawn_from_pixels_asks_for_no_frame_and_hands_changes_over_undrawn() {
+        let test = TestEngine::new();
+        test.set_paint_snapshot(TOP);
+        let engine: SharedEngine = PaintEngine::streaming(test.clone());
+        let mut view = WebView::new(engine.clone());
+        view.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0), 1.0);
+        let state = crate::State::new();
+        let root = state.root.clone();
+        let captures = |test: &TestEngine| {
+            test.commands()
+                .iter()
+                .filter(|command| matches!(command, WebViewCommand::PaintCapture { .. }))
+                .count()
+        };
+        paint::set_share_watched(false);
+        let start = crate::time::now();
+        let at = |ms| start + crate::time::Duration::from_millis(ms);
+
+        // The session asks for the page: the ask draws a frame, and the engine's answers are
+        // taken as its wakes bring them.
+        with_monotonic_time(at(0), || {
+            paint::set_share_watched(true);
+            draw(&mut view);
+            for _ in 0..4 {
+                drop(engine.drain_events());
+                view.sync(&state.doc, &root);
+            }
+        });
+        let (wholes, _) = handed();
+        assert_eq!(wholes, 1, "the page was handed over whole, once");
+        with_monotonic_time(at(1000), || {
+            draw(&mut view);
+            assert!(
+                !view.needs_redraw() && !view.needs_animation_frame(),
+                "a still page that is watched asks for no frame"
+            );
+            assert_eq!(view.next_wake_deadline(), None, "and for no wake");
+            view.sync(&state.doc, &root);
+        });
+        assert_eq!(
+            handed(),
+            (0, 0),
+            "nothing more is handed over of a still page"
+        );
+        let captured = captures(&test);
+
+        // The page changes: the engine paints, which wakes the loop, and the loop takes its
+        // events. No frame is drawn here.
+        with_monotonic_time(at(2000), || {
+            test.set_paint_snapshot(SCROLLED);
+            test.paint_before_page();
+            drop(engine.drain_events());
+            view.sync(&state.doc, &root);
+            assert_eq!(captures(&test), captured + 1, "the change is captured");
+            drop(engine.drain_events());
+            view.sync(&state.doc, &root);
+        });
+        assert_eq!(
+            handed(),
+            (0, 1),
+            "the change was handed over with no frame drawn for it"
+        );
+
+        // A second change ten milliseconds later waits for the capture interval: the view asks
+        // to be woken then, and the wake hands it over.
+        with_monotonic_time(at(2010), || {
+            test.set_paint_snapshot(TOP);
+            test.paint_before_page();
+            drop(engine.drain_events());
+            view.sync(&state.doc, &root);
+            assert_eq!(captures(&test), captured + 1, "too soon to capture again");
+            assert_eq!(view.next_wake_deadline(), Some(at(2050)));
+        });
+        with_monotonic_time(at(2050), || {
+            for _ in 0..2 {
+                drop(engine.drain_events());
+                view.sync(&state.doc, &root);
+            }
+            assert_eq!(view.next_wake_deadline(), None);
+        });
+        assert_eq!(
+            handed(),
+            (0, 1),
+            "the second change came with the wake it asked for"
+        );
+        paint::set_share_watched(false);
+    }
+}

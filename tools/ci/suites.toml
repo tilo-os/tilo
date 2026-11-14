@@ -725,6 +725,7 @@ readers = [
   "crates/sdk/ui-core/src/app/close_admission.rs",
   "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
+  "crates/sdk/ui-core/src/widget/webview.rs",
   "crates/sdk/ui-core/src/theme_bundle/tests.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
   "crates/sdk/ui-core/src/component/coverage_tests.rs",

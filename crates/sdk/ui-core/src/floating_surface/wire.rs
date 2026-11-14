@@ -113,6 +113,21 @@ pub struct HistoryChangeDescription {
     pub generator: String,
 }
 
+/// One part of a paint payload too large for one message
+/// ([`FloatingSurfaceClientMessage::PaintStream`]): the parts of a payload follow each other on
+/// the connection, in order, and the shell joins them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaintPart {
+    /// This part's bytes, base64.
+    pub bytes: String,
+    /// Where this part starts in the payload: zero starts a payload.
+    pub at: u64,
+    /// How many bytes the whole payload has. A payload larger than the app hands over
+    /// (`ui::webview::paint::MAX_SHARE_PAYLOAD`) is said by its first part alone, so the shell
+    /// knows the page is too large and does not wait for it.
+    pub of: u64,
+}
+
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 #[cfg(unix)]
 pub(crate) const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
@@ -279,10 +294,20 @@ pub enum FloatingSurfaceClientMessage {
     /// `page` is where the page sits in the window, in logical pixels, and
     /// `scale` the window's buffer scale, so the session can place input.
     /// Sent only while the shell has asked for it ([`FloatingSurfaceHostMessage::PaintKeyframe`]).
+    ///
+    /// `instance` names the window whose page it is, as the shell launched it
+    /// ([`crate::shell_tabs::launch_instance`]): a process shows several windows, and a
+    /// frame is published as the page of the window it names and of no other. A payload
+    /// too large for one message goes in several, each with one `part` of it and an empty
+    /// `payload`.
     PaintStream {
         payload: String,
         page: [f64; 4],
         scale: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instance: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        part: Option<PaintPart>,
     },
     /// This app can stream its window's page (sent once): the shell may ask it to with
     /// [`FloatingSurfaceHostMessage::PaintKeyframe`].

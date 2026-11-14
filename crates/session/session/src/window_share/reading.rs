@@ -74,6 +74,11 @@ impl WindowShares {
             .into_iter()
             .filter(|tab| self.pages.contains_key(tab))
             .collect();
+        let oversized: BTreeSet<TabId> = pages
+            .oversized()
+            .into_iter()
+            .filter(|tab| self.pages.contains_key(tab))
+            .collect();
         let streaming: BTreeSet<TabId> = self
             .hosted
             .iter()
@@ -86,9 +91,10 @@ impl WindowShares {
                     .filter(|tab| sent.contains(tab) && !withheld.contains(tab)),
             )
             .collect();
-        if streaming != self.streaming || withheld != self.withheld {
+        if streaming != self.streaming || withheld != self.withheld || oversized != self.oversized {
             self.streaming = streaming;
             self.withheld = withheld;
+            self.oversized = oversized;
             self.changed();
         }
         // The pass that finds an app overdue is one nothing else may ask for.
@@ -181,12 +187,14 @@ impl WindowShares {
                     .collect();
                 // An announcement is no page: the window goes out once its app handed a whole
                 // page over for a desk that asks for it. One a member shows and nothing of which
-                // went out waits for that, and one whose app was asked and did not answer in time
-                // waits for its app.
+                // went out waits for that, one whose app was asked and did not answer in time
+                // waits for its app, and one whose page is larger than the plane carries says so.
                 let streaming = self.streaming.contains(tab);
                 let plane = self.waiting_for(&page.workspace);
                 let waiting_for = if !plane.is_empty() || streaming || page.announced.is_empty() {
                     plane
+                } else if self.oversized.contains(tab) {
+                    t("session-window-share-page-too-large")
                 } else if self.withheld.contains(tab) {
                     t("session-window-share-page-withheld")
                 } else {

@@ -19,6 +19,12 @@
 //! [`HAND_OVER_BOUND`] is asked again, every bound, and until a whole frame comes its window is
 //! among [`PageTracks::withheld`]: the shares' reading says of it that its app has not handed its
 //! page over, rather than that the page is on its way.
+//!
+//! A page is carried whole or not at all. Its app hands a payload over in as many parts as its
+//! connection needs, and the session joins them ([`crate::app_tabs`]); what the plane carries as
+//! one object ([`MAX_PAYLOAD`]) is the bound. A whole frame past it reaches nobody, and its
+//! window is among [`PageTracks::oversized`]: the reading says the page is too large to send,
+//! and the app is asked again every bound, since a page changes.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -33,9 +39,10 @@ use tilo_live::plane::Plane;
 /// yet: past it the app is asked for a whole frame instead, which is smaller
 /// than the backlog it would have to keep in order.
 const MAX_QUEUED: usize = 64;
-/// Largest page the live plane carries as one object, the same bound its
-/// profile refuses past.
-const MAX_PAYLOAD: usize = tilo_live::page::MAX_PAYLOAD_BYTES;
+/// Largest page payload the live plane carries as one object: what its profile refuses past,
+/// less what sealing adds, so that a payload this session takes is one its plane sends.
+pub(crate) const MAX_PAYLOAD: usize =
+    tilo_live::page::MAX_PAYLOAD_BYTES - tilo_live::frame::OVERHEAD;
 
 /// How long an app has to hand over the whole frame it was asked for, before this session says
 /// it has not and asks again. An app answers with one capture of its page and the frames it
@@ -92,6 +99,9 @@ struct Offered {
     sent: bool,
     /// How the app stands with the whole frame it was asked for and has not handed over since.
     asked: Asked,
+    /// The size of the whole frame the app has and the plane carries no object for, until a
+    /// whole frame it does carry comes.
+    too_large: Option<usize>,
 }
 
 impl Offered {
@@ -109,6 +119,7 @@ impl Offered {
             self.awaiting_whole = false;
             self.sent = false;
             self.asked = Asked::Nothing;
+            self.too_large = None;
             self.queue.clear();
             return Some(Watch::Stop);
         }
@@ -117,6 +128,7 @@ impl Offered {
             self.awaiting_whole = true;
             self.sent = false;
             self.asked = Asked::Nothing;
+            self.too_large = None;
             self.queue.clear();
         } else if start_over && !self.awaiting_whole {
             // A viewer joined, or lost the chain: the next frame starts
@@ -173,13 +185,17 @@ impl PageTracks {
         self.offered.remove(&tab);
     }
 
-    /// One payload the app handed over, as it encoded it. A payload nobody
-    /// shows, or one larger than the plane forwards, is dropped.
+    /// One payload the app handed over, as it encoded it. A payload nobody shows is dropped;
+    /// one larger than the plane carries is not sent, and said ([`Self::too_large`]).
     pub(crate) fn received(&mut self, tab: TabId, whole: bool, payload: Vec<u8>) {
+        if payload.len() > MAX_PAYLOAD {
+            self.too_large(tab, whole, payload.len());
+            return;
+        }
         let Some(page) = self.offered.get_mut(&tab) else {
             return;
         };
-        if !page.watched || payload.len() > MAX_PAYLOAD {
+        if !page.watched {
             return;
         }
         if page.awaiting_whole {
@@ -189,6 +205,9 @@ impl PageTracks {
             page.awaiting_whole = false;
             page.asked = Asked::Nothing;
             page.queue.clear();
+        }
+        if whole {
+            page.too_large = None;
         }
         if page.queue.len() >= MAX_QUEUED {
             // The plane is behind: a whole frame is what catches it up, and the next pass asks
@@ -201,15 +220,58 @@ impl PageTracks {
         page.queue.push_back((whole, payload));
     }
 
+    /// The app of the window `tab` has a payload of `bytes` bytes, which the plane carries no
+    /// object for ([`MAX_PAYLOAD`]). Nothing the app sends after it applies to what the members
+    /// showing the window hold, so they start over at a whole frame, which the app is asked
+    /// for. A whole frame that large means the page as it stands reaches nobody: the window is
+    /// among [`Self::oversized`] until a whole frame the plane carries comes.
+    pub(crate) fn too_large(&mut self, tab: TabId, whole: bool, bytes: usize) {
+        let Some(page) = self.offered.get_mut(&tab) else {
+            return;
+        };
+        if !page.watched {
+            return;
+        }
+        page.queue.clear();
+        if whole {
+            page.too_large = Some(bytes);
+            // Whatever went out before is not this page.
+            page.sent = false;
+        }
+        if !page.awaiting_whole {
+            page.awaiting_whole = true;
+            page.asked = Asked::Nothing;
+        }
+    }
+
+    /// What the app of the window `tab` handed over broke off: a payload it sent in parts did
+    /// not come whole. The members showing the window start over at a whole frame, which the
+    /// app is asked for.
+    pub(crate) fn lost(&mut self, tab: TabId) {
+        let Some(page) = self.offered.get_mut(&tab) else {
+            return;
+        };
+        if page.watched && !page.awaiting_whole {
+            page.queue.clear();
+            page.awaiting_whole = true;
+            page.asked = Asked::Nothing;
+        }
+    }
+
     /// What the planes ask of the pages this session offers, and what the apps
     /// sent: every window someone shows gets a keyframe asked of it, every
     /// window nobody shows any more is told to stop, and the payloads the
     /// planes want are published. The asks go back to the apps; an app that
     /// answers none within [`HAND_OVER_BOUND`] is asked again. `now_us` is a
     /// clock in microseconds.
+    ///
+    /// `shared` are the windows this session shares as their page. A plane takes any member's
+    /// ask for any window's page track, so what a desk asks for is no word on whether it may
+    /// have it: a window that is not shared is shown to nobody, whoever asks.
     pub(crate) fn step(
         &mut self,
         planes: &BTreeMap<String, Arc<Plane>>,
+        shared: &BTreeSet<TabId>,
         now_us: u64,
     ) -> Vec<(TabId, Watch)> {
         let mut wanted: BTreeSet<(String, TabId)> = BTreeSet::new();
@@ -225,7 +287,7 @@ impl PageTracks {
         let mut asks = Vec::new();
         for (tab, page) in &mut self.offered {
             let key = (page.workspace.clone(), *tab);
-            let shown = wanted.contains(&key);
+            let shown = shared.contains(tab) && wanted.contains(&key);
             let ask = page.follow(shown, wholes.contains(&key), now_us);
             if let Some(watch) = ask {
                 asks.push((*tab, watch));
@@ -280,7 +342,19 @@ impl PageTracks {
     pub(crate) fn withheld(&self) -> Vec<TabId> {
         self.offered
             .iter()
-            .filter(|(_, page)| page.watched && matches!(page.asked, Asked::Overdue(_)))
+            .filter(|(_, page)| {
+                page.watched && page.too_large.is_none() && matches!(page.asked, Asked::Overdue(_))
+            })
+            .map(|(tab, _)| *tab)
+            .collect()
+    }
+
+    /// The windows a member shows whose page, as it stands, is larger than the plane carries
+    /// ([`MAX_PAYLOAD`]): its app has it, and nobody can be sent it.
+    pub(crate) fn oversized(&self) -> Vec<TabId> {
+        self.offered
+            .iter()
+            .filter(|(_, page)| page.watched && page.too_large.is_some())
             .map(|(tab, _)| *tab)
             .collect()
     }
@@ -449,6 +523,63 @@ mod tests {
     fn asked_stop(pages: &mut PageTracks) -> Option<Watch> {
         pages.offered.get_mut(&7).unwrap().follow(false, false, 0)
     }
+
+    /// A whole frame larger than the plane carries goes to nobody and is said to be too large,
+    /// in other words than a page its app withholds; the app is asked again a bound later, and
+    /// the whole frame the plane does carry ends it. A change too large only starts the viewers
+    /// over.
+    #[test]
+    fn a_whole_frame_larger_than_the_plane_carries_is_said_and_asked_for_again() {
+        let mut pages = page("w1");
+        let asked = |pages: &mut PageTracks, now_us: u64| {
+            pages
+                .offered
+                .get_mut(&7)
+                .unwrap()
+                .follow(true, false, now_us)
+        };
+        assert_eq!(asked(&mut pages, 1_000), Some(Watch::Whole));
+        pages.received(7, true, vec![0; MAX_PAYLOAD + 1]);
+        assert_eq!(pages.oversized(), [7]);
+        assert!(pages.sent().is_empty(), "nobody was sent the page");
+        assert!(pages.offered.get(&7).unwrap().queue.is_empty());
+        assert_eq!(asked(&mut pages, 2_000), None, "the app was just asked");
+        assert_eq!(
+            asked(&mut pages, 1_000 + HAND_OVER_BOUND_US),
+            Some(Watch::Whole),
+            "a page changes: the app is asked again"
+        );
+        assert_eq!(pages.oversized(), [7]);
+        assert!(
+            pages.withheld().is_empty(),
+            "the app handed over what it has: it withholds nothing"
+        );
+        // The same said by the first part of a payload, before the rest came.
+        pages.too_large(7, true, 9 * 1024 * 1024);
+        assert_eq!(pages.oversized(), [7]);
+        // The page became one the plane carries.
+        pages.received(7, true, vec![0; MAX_PAYLOAD]);
+        assert!(pages.oversized().is_empty());
+        assert_eq!(pages.offered.get(&7).unwrap().queue.len(), 1);
+        // A change too large for the plane: the viewers start over at a whole frame.
+        pages.received(7, false, vec![1; MAX_PAYLOAD + 1]);
+        assert!(
+            pages.oversized().is_empty(),
+            "the page itself is not said to be too large"
+        );
+        assert!(pages.offered.get(&7).unwrap().queue.is_empty());
+        assert_eq!(
+            asked(&mut pages, 3_000 + HAND_OVER_BOUND_US),
+            Some(Watch::Whole)
+        );
+        // A payload that broke off does the same.
+        pages.received(7, true, vec![0, 1]);
+        pages.lost(7);
+        assert_eq!(
+            asked(&mut pages, 4_000 + HAND_OVER_BOUND_US),
+            Some(Watch::Whole)
+        );
+    }
 }
 
 /// A window's page on the workspace's live plane, as a session runs it: what
@@ -544,6 +675,16 @@ mod over_the_plane {
         }
     }
 
+    /// A desk asks for the page of a window nobody shared: its app is asked for nothing, and
+    /// the window is shown to nobody.
+    fn unshared_is_shown_to_nobody(pages: &mut PageTracks, planes: &BTreeMap<String, Arc<Plane>>) {
+        assert!(
+            pages.step(planes, &BTreeSet::new(), 0).is_empty(),
+            "the page of a window nobody shared was asked of its app"
+        );
+        assert!(pages.viewed().is_empty());
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_windows_page_reaches_its_viewer_and_only_while_one_shows_it() {
         let relay = relay();
@@ -567,9 +708,10 @@ mod over_the_plane {
         });
         let mut pages = PageTracks::default();
         pages.capable(TAB, WORKSPACE);
+        let shared = BTreeSet::from([TAB]);
         // Nobody shows the window: the session asks the app for nothing, and
         // publishes nothing.
-        assert!(pages.step(&planes, 0).is_empty());
+        assert!(pages.step(&planes, &shared, 0).is_empty());
         assert!(
             publishing
                 .send_page(
@@ -589,7 +731,8 @@ mod over_the_plane {
         wait_until("the window's page is asked for", || {
             publishing.wanted_pages() == [TAB]
         });
-        assert_eq!(pages.step(&planes, 0), [(TAB, Watch::Whole)]);
+        unshared_is_shown_to_nobody(&mut pages, &planes);
+        assert_eq!(pages.step(&planes, &shared, 0), [(TAB, Watch::Whole)]);
         assert!(
             pages.sent().is_empty(),
             "a page that is asked for and not handed over went to nobody"
@@ -604,7 +747,7 @@ mod over_the_plane {
             pages.received(TAB, whole, bytes);
         }
         assert!(
-            pages.step(&planes, 1_000).is_empty(),
+            pages.step(&planes, &shared, 1_000).is_empty(),
             "the ask was answered"
         );
         assert_eq!(pages.sent(), [TAB], "its whole frame went out");
@@ -642,10 +785,10 @@ mod over_the_plane {
         wait_until("the page is no longer shown", || {
             publishing.wanted_pages().is_empty()
         });
-        assert_eq!(pages.step(&planes, 2_000), [(TAB, Watch::Stop)]);
+        assert_eq!(pages.step(&planes, &shared, 2_000), [(TAB, Watch::Stop)]);
         assert!(pages.sent().is_empty(), "nobody shows the window any more");
         pages.received(TAB, false, vec![0]);
-        assert!(pages.step(&planes, 3_000).is_empty());
+        assert!(pages.step(&planes, &shared, 3_000).is_empty());
         assert!(
             publishing
                 .send_page(

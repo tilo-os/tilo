@@ -181,11 +181,19 @@ struct Link {
     /// The tab the window takes, when the session connected it itself: what its asks about its own
     /// window are answered for. A window the launcher connected names its tab itself, in each ask.
     instance: Option<u64>,
-    /// The tab whose page this connection's app offered
-    /// ([`FloatingSurfaceClientMessage::PaintCapable`]): where the app is asked for that page, and
-    /// what the frames it sends on this connection are of. A window its launcher connected names
-    /// no tab on its connection, so the offer is what ties the two.
+    /// The window that speaks on a connection its launcher made, as its own asks name it (their
+    /// `instance`): such a connection names no tab itself, and an app has several windows.
+    named: Option<u64>,
+    /// Whether the window on this connection said it hands its page over
+    /// ([`FloatingSurfaceClientMessage::PaintCapable`]). The offer names no window, so it is taken
+    /// up for the window the connection speaks for, once that is known ([`Answers::window_of`]).
+    offers: bool,
+    /// The tab whose page this connection's window offered: where the window is asked for that
+    /// page, and the only page the frames it sends on this connection are published as.
     page: Option<u64>,
+    /// A payload of that page that arrives in parts: how many bytes it has, and the ones that
+    /// came ([`ui::floating_surface::PaintPart`]).
+    assembling: Option<(usize, Vec<u8>)>,
     /// Whether this app's launch let it know the network's state; a window never widens that for
     /// itself.
     network_allowed: bool,
@@ -298,6 +306,32 @@ impl AppTabs {
         app: &str,
         workspace: &str,
     ) -> std::io::Result<UnixStream> {
+        self.window_connected(app, workspace, None)
+    }
+
+    /// The app's end of a connection for one more window of `app` in `workspace`, as the session
+    /// makes it for a window it opens in the app's running process: the connection is the
+    /// session's own, so it names the tab the window takes, `instance`.
+    ///
+    /// # Errors
+    /// As [`Self::launched_window`].
+    #[cfg(test)]
+    pub(crate) fn opened_window(
+        &self,
+        app: &str,
+        workspace: &str,
+        instance: u64,
+    ) -> std::io::Result<UnixStream> {
+        self.window_connected(app, workspace, Some(instance))
+    }
+
+    #[cfg(test)]
+    fn window_connected(
+        &self,
+        app: &str,
+        workspace: &str,
+        instance: Option<u64>,
+    ) -> std::io::Result<UnixStream> {
         let (theirs, ours) = UnixStream::pair()?;
         let writer = ours.try_clone()?;
         let connection = self.socket.next.fetch_add(1, Ordering::Relaxed);
@@ -306,7 +340,7 @@ impl AppTabs {
             app: app.to_owned(),
             workspace: workspace.to_owned(),
             launch: std::process::id(),
-            instance: None,
+            instance,
             network_allowed: false,
         };
         let (requests, wake) = (self.socket.requests.clone(), Arc::clone(&self.socket.wake));
@@ -378,19 +412,32 @@ impl AppTabs {
     /// connection it offered the page on, which for an app's first window is the one its launcher
     /// made and names no tab; an app that hands nothing over is asked again
     /// ([`crate::page_track::HAND_OVER_BOUND`]).
-    fn follow_pages(&self, shared: &crate::Shared) {
+    fn follow_pages(&mut self, shared: &crate::Shared) {
         let planes = shared
             .sync
             .as_deref()
             .map(crate::calls::planes_of)
             .unwrap_or_default();
         let now_us = tilo_clock::unix_now_ms().saturating_mul(1000);
-        let asks = shared.pages.borrow_mut().step(&planes, now_us);
+        // Only a window shared as its page goes out: a member's desk that asks for the page of
+        // a window nobody shared is sent nothing, and its app is never asked.
+        let shared_pages = shared.window_shares.borrow().paged();
+        let asks = shared
+            .pages
+            .borrow_mut()
+            .step(&planes, &shared_pages, now_us);
         for (tab, watch) in asks {
-            let offered = self.links.values().find(|link| link.page == Some(tab));
-            let Some(link) =
-                offered.or_else(|| self.links.values().find(|link| link.instance == Some(tab)))
-            else {
+            let offered = self
+                .links
+                .iter()
+                .find(|(_, link)| link.page == Some(tab))
+                .or_else(|| {
+                    self.links
+                        .iter()
+                        .find(|(_, link)| link.instance == Some(tab))
+                })
+                .map(|(connection, _)| *connection);
+            let Some(link) = offered.and_then(|connection| self.links.get_mut(&connection)) else {
                 if watch == Watch::Whole {
                     tracing::warn!(
                         tab,
@@ -401,7 +448,11 @@ impl AppTabs {
             };
             let message = match watch {
                 Watch::Whole => FloatingSurfaceHostMessage::PaintKeyframe,
-                Watch::Stop => FloatingSurfaceHostMessage::PaintStop,
+                Watch::Stop => {
+                    // Nobody takes the rest of a payload the window was sending in parts.
+                    link.assembling = None;
+                    FloatingSurfaceHostMessage::PaintStop
+                }
             };
             tell(&link.writer, &message, &link.app);
         }
@@ -759,6 +810,125 @@ impl Answers<'_> {
         }
     }
 
+    /// The window that speaks on `connection`: the tab the session gave the connection, else
+    /// the tab the window names in its asks, else the app's only window. A connection its
+    /// launcher made that named no window yet, in an app with several, speaks for none of them
+    /// until it does: which one stands in front says nothing about who is talking.
+    fn window_of(&self, connection: u64, app: &str) -> Option<u64> {
+        let link = self.links.get(&connection)?;
+        if let Some(instance) = link.instance.or(link.named) {
+            return self
+                .desktop
+                .with_policy(|policy| policy.tab_of_instance(app, instance));
+        }
+        self.desktop.with_policy(|policy| {
+            let mut windows = policy
+                .app_tabs_in_front()
+                .into_iter()
+                .filter(|(_, id)| app_ids_match(id, app))
+                .map(|(tab, _)| tab);
+            match (windows.next(), windows.next()) {
+                (Some(only), None) => Some(only),
+                _ => None,
+            }
+        })
+    }
+
+    /// Take up the offer the window on `connection` made of its page, for the window the
+    /// connection speaks for ([`Self::window_of`]); `None` while it made none or that window is
+    /// not known. The page is asked for where it was offered, and of the window's newest
+    /// connection alone. An offer taken up for another tab before the window named itself moves
+    /// with it, and the tab it stood under offers no page unless a connection of its own does.
+    fn settle_offer(&mut self, connection: u64, app: &str, workspace: &str) -> Option<u64> {
+        let link = self.links.get(&connection)?;
+        if !link.offers {
+            return None;
+        }
+        let earlier = link.page;
+        let tab = self.window_of(connection, app)?;
+        if earlier == Some(tab) {
+            return Some(tab);
+        }
+        self.pages.borrow_mut().capable(tab, workspace);
+        for (other, link) in &mut *self.links {
+            if *other == connection {
+                link.page = Some(tab);
+                link.assembling = None;
+            } else if link.page == Some(tab) {
+                link.page = None;
+            }
+        }
+        if let Some(earlier) = earlier
+            && !self.links.values().any(|link| link.page == Some(earlier))
+        {
+            self.pages.borrow_mut().closed(earlier);
+        }
+        Some(tab)
+    }
+
+    /// The payload a frame of the page of `tab` completes: the frame's own, or the one whose
+    /// last part it brings ([`ui::floating_surface::PaintPart`]); `None` while parts are still
+    /// to come. A payload that says it is larger than the plane carries is not waited for: its
+    /// first part is enough to say so ([`PageTracks::too_large`]). Parts that do not follow
+    /// each other join nothing, and the window is asked for a whole frame again.
+    fn page_payload(
+        &mut self,
+        connection: u64,
+        tab: u64,
+        payload: &str,
+        part: Option<ui::floating_surface::PaintPart>,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
+        use base64::Engine as _;
+        let decode = |text: &str| {
+            base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .map_err(|_| "it is not base64")
+        };
+        let link = self
+            .links
+            .get_mut(&connection)
+            .ok_or("its connection is gone")?;
+        let Some(part) = part else {
+            link.assembling = None;
+            return decode(payload).map(Some);
+        };
+        let bytes = decode(&part.bytes)?;
+        let of = usize::try_from(part.of).unwrap_or(usize::MAX);
+        let at = usize::try_from(part.at).unwrap_or(usize::MAX);
+        if at == 0 {
+            link.assembling = None;
+            if of > crate::page_track::MAX_PAYLOAD {
+                let whole = ui::webview::paint::stream::wire::Payload::is_key(&bytes);
+                self.pages.borrow_mut().too_large(tab, whole, of);
+                return Ok(None);
+            }
+            return match bytes.len().cmp(&of) {
+                std::cmp::Ordering::Less => {
+                    link.assembling = Some((of, bytes));
+                    Ok(None)
+                }
+                std::cmp::Ordering::Equal => Ok(Some(bytes)),
+                std::cmp::Ordering::Greater => Err("a part is longer than its payload"),
+            };
+        }
+        match link.assembling.as_mut() {
+            Some((expected, held))
+                if *expected == of && held.len() == at && at.saturating_add(bytes.len()) <= of =>
+            {
+                held.extend_from_slice(&bytes);
+                if held.len() < of {
+                    return Ok(None);
+                }
+            }
+            _ => {
+                link.assembling = None;
+                self.pages.borrow_mut().lost(tab);
+                return Err("a part does not follow the one before it");
+            }
+        }
+        Ok(link.assembling.take().map(|(_, held)| held))
+    }
+
     /// Answer one ask of the app it came from: an ask never changes another app's tab, and an app
     /// whose ask this session cannot answer is told so rather than left waiting.
     #[allow(
@@ -819,7 +989,10 @@ impl Answers<'_> {
                         app,
                         launch,
                         instance,
+                        named: None,
+                        offers: false,
                         page: None,
+                        assembling: None,
                         network_allowed,
                         selection: false,
                         writer: reply,
@@ -838,6 +1011,18 @@ impl Answers<'_> {
             .get(&connection)
             .and_then(|link| link.instance)
             .or_else(|| instance_of(&message));
+        // A window its launcher connected says which window it is in what it asks: from then on
+        // that is the window its connection speaks for, and an offer of its page that waited for
+        // that is taken up. It says so once: an ask that names another window later moves
+        // nothing.
+        if let Some(named) = instance_of(&message)
+            && let Some(link) = self.links.get_mut(&connection)
+            && link.instance.is_none()
+            && link.named.is_none()
+        {
+            link.named = Some(named);
+            self.settle_offer(connection, &app, &workspace);
+        }
         let own = self.desktop.with_policy(|policy| match instance {
             Some(instance) => policy.tab_of_instance(&app, instance),
             None => policy.anchor_for(&app).map(|(tab, ..)| tab),
@@ -1032,44 +1217,43 @@ impl Answers<'_> {
             // plane as its window's page track, and only while a member shows
             // it. Tilo apps' own views are never streamed, and neither is
             // anything but a page.
-            FloatingSurfaceClientMessage::PaintCapable => match own {
-                Some(tab) => {
-                    self.pages.borrow_mut().capable(tab, &workspace);
-                    // The page is asked for where it was offered, and of the window's newest
-                    // connection alone.
-                    for (other, link) in &mut *self.links {
-                        if *other == connection {
-                            link.page = Some(tab);
-                        } else if link.page == Some(tab) {
-                            link.page = None;
+            //
+            // The offer names no window. It is taken up for the window its connection speaks
+            // for, which is never guessed from which window is in front: an app has several
+            // windows, each with a page and a connection of its own, and a page offered as
+            // another window's would be shown to whoever watches that one.
+            FloatingSurfaceClientMessage::PaintCapable => {
+                if let Some(link) = self.links.get_mut(&connection) {
+                    link.offers = true;
+                }
+                if self.settle_offer(connection, &app, &workspace).is_none() && own.is_none() {
+                    refuse(&reply, &app, &name, NO_WINDOW);
+                }
+            }
+            // A frame is of the page its connection offered, and of no other: one that names
+            // another window of the app, or comes where no page was offered, is published as
+            // nobody's. `page` and `scale` place a viewer's input in the page, which this
+            // session does not take: the page is drawn, not typed into, by the members that
+            // show it.
+            FloatingSurfaceClientMessage::PaintStream { payload, part, .. } => {
+                match self.links.get(&connection).and_then(|link| link.page) {
+                    Some(tab) if instance.is_none() || own == Some(tab) => {
+                        match self.page_payload(connection, tab, &payload, part) {
+                            Ok(Some(bytes)) => {
+                                let whole =
+                                    ui::webview::paint::stream::wire::Payload::is_key(&bytes);
+                                self.pages.borrow_mut().received(tab, whole, bytes);
+                            }
+                            Ok(None) => {}
+                            Err(reason) => {
+                                tracing::warn!(%app, reason, "a window's page frame was not taken");
+                            }
                         }
                     }
+                    Some(_) => refuse(&reply, &app, &name, OTHER_WINDOW),
+                    None => refuse(&reply, &app, &name, NO_PAGE),
                 }
-                None => refuse(&reply, &app, &name, NO_WINDOW),
-            },
-            FloatingSurfaceClientMessage::PaintStream { payload, .. } => match self
-                .links
-                .get(&connection)
-                .and_then(|link| link.page)
-                .or(own)
-            {
-                // `page` and `scale` place a viewer's input in the page, which
-                // this session does not take: the page is drawn, not typed
-                // into, by the members that show it.
-                Some(tab) => {
-                    use base64::Engine as _;
-                    match base64::engine::general_purpose::STANDARD.decode(&payload) {
-                        Ok(bytes) => {
-                            let whole = ui::webview::paint::stream::wire::Payload::is_key(&bytes);
-                            self.pages.borrow_mut().received(tab, whole, bytes);
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, %app, "a window's page frame is not base64");
-                        }
-                    }
-                }
-                None => refuse(&reply, &app, &name, NO_WINDOW),
-            },
+            }
             // The device's own shell is what a window of Terminal asks about: not asked here.
             FloatingSurfaceClientMessage::DeviceShellOutcome { .. } => {
                 refuse(&reply, &app, &name, NO_DEVICE);
@@ -1249,6 +1433,13 @@ impl Answers<'_> {
 /// or it is not the app of the tab that asked.
 const NO_WINDOW: &str = "this session shows no window of that app";
 
+/// A window sent a frame of its page on a connection that offered none.
+const NO_PAGE: &str = "this connection offered no page";
+
+/// A window sent a frame that names another window than the one its connection offered the
+/// page of.
+const OTHER_WINDOW: &str = "this connection offered another window's page";
+
 /// An app asked for the capture studio where the session has none.
 const NO_CAPTURE: &str = "this session has no capture studio";
 
@@ -1289,6 +1480,7 @@ fn instance_of(message: &FloatingSurfaceClientMessage) -> Option<u64> {
         | FloatingSurfaceClientMessage::OpenAppSearch { instance, .. }
         | FloatingSurfaceClientMessage::OpenFloated { instance, .. }
         | FloatingSurfaceClientMessage::WindowRecord { instance, .. }
+        | FloatingSurfaceClientMessage::PaintStream { instance, .. }
         | FloatingSurfaceClientMessage::Embeds { instance, .. } => *instance,
         _ => None,
     }

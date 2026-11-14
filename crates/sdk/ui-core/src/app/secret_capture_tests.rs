@@ -77,11 +77,11 @@ fn capture_submission_waits_for_the_matching_transport_ack_and_latches_until_tea
     ));
     app.set_secret_on_screen(true);
     crate::webview::paint::set_share_watched(true);
-    crate::webview::paint::queue_share(crate::webview::paint::SharedFrame {
-        payload: b"secret page payload".to_vec(),
-        page: [0.0, 0.0, 600.0, 400.0],
-        scale: 1.0,
-    });
+    crate::webview::paint::queue_share(crate::webview::paint::SharedFrame::whole(
+        b"secret page payload".to_vec(),
+        [0.0, 0.0, 600.0, 400.0],
+        1.0,
+    ));
     assert!(
         !app.capture_frame_ready(),
         "sending does not establish protection"

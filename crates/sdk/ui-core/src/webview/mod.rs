@@ -1273,6 +1273,24 @@ pub trait WebViewEngine: Send + Sync {
     fn take_paint_stream(&self, _keyframe: bool) -> Vec<tilo_paint_stream::wire::Payload> {
         Vec::new()
     }
+
+    /// [`Self::take_paint_stream`], with at most `room` bytes of images: the rest stay with
+    /// the engine until a later call takes them, and [`Self::paint_due`] says when to call.
+    fn take_paint_stream_within(
+        &self,
+        keyframe: bool,
+        _room: usize,
+    ) -> Vec<tilo_paint_stream::wire::Payload> {
+        self.take_paint_stream(keyframe)
+    }
+
+    /// When the engine next has work for a watched share although it wakes nobody for it: a
+    /// change of the page it has not captured yet because it captured a moment ago, a
+    /// capture whose answer is overdue, or images the share had no room for. Whoever runs
+    /// the engine takes its events and its stream again then.
+    fn paint_due(&self) -> Option<crate::time::Instant> {
+        None
+    }
 }
 
 /// Shared engine handle, as stored by the widget and the host app.

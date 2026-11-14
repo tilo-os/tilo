@@ -267,6 +267,8 @@ pub(crate) struct WindowShares {
     /// The windows a member shows whose app was asked for its page and has not handed it over
     /// ([`crate::page_track::PageTracks::withheld`]).
     withheld: BTreeSet<TabId>,
+    /// The windows a member shows whose page is larger than the plane carries.
+    oversized: BTreeSet<TabId>,
     /// When the next page that was asked for is overdue, here or at its app: what the reading
     /// says of it changes then, with nothing arriving to say so.
     page_due: Option<Instant>,

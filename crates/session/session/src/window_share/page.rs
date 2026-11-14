@@ -10,6 +10,7 @@
 //! card until a picture is decoded or a page's whole frame came, so whether a window is pictured
 //! is asked of its tile, every pass, and never read off the start.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use iroh::EndpointId;
@@ -41,6 +42,12 @@ pub(super) enum Awaited {
 }
 
 impl WindowShares {
+    /// The windows this session shares as their page: the only ones whose page leaves the device
+    /// ([`crate::page_track::PageTracks::step`]).
+    pub(crate) fn paged(&self) -> BTreeSet<TabId> {
+        self.pages.keys().copied().collect()
+    }
+
     /// One object of the page of the window `tab` the device `from` shares, as the plane opened
     /// it: its payload goes to the tile that draws that window.
     pub(super) fn page_heard(

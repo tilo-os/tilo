@@ -19,6 +19,12 @@ fn sideways_travel_of(event: &WindowEvent, scale_factor: f64) -> Option<f64> {
     }
 }
 
+/// How soon the loop tries again to send what a shared page has to hand over, when the
+/// connection had no room for it: the shell reads on a thread of its own, so room comes
+/// within a few milliseconds.
+#[cfg(feature = "native")]
+const SHARE_BACKLOG_RETRY: crate::time::Duration = crate::time::Duration::from_millis(5);
+
 /// What the shell was last told on this connection, where telling it
 /// nothing yet differs from telling it "none".
 pub enum Told<T> {
@@ -98,6 +104,11 @@ pub(super) struct FloatingRuntime {
     pub auxiliary_capture_frames: HashMap<String, AuxiliaryCaptureFrames>,
     /// The shell was told this app can stream its page.
     pub paint_capable_sent: bool,
+    /// The payload of this window's page that is being sent, and how much of it went: one too
+    /// large for a message goes in parts, and the connection takes only so much at once.
+    pub share_sending: Option<(crate::webview::paint::SharedFrame, usize)>,
+    /// When to send on: the connection had no room for the next part of the page.
+    pub share_backlog: Option<crate::time::Instant>,
     /// The shell was told this app answers selection requests.
     pub selection_capable_sent: bool,
     /// The window resource last told the shell on this connection.
@@ -215,6 +226,8 @@ impl FloatingRuntime {
             submitted_action_markers: std::collections::VecDeque::new(),
             auxiliary_capture_frames: HashMap::new(),
             paint_capable_sent: false,
+            share_sending: None,
+            share_backlog: None,
             selection_capable_sent: false,
             window_resource_sent: Told::Nothing,
             close_window_requested: false,
@@ -601,6 +614,80 @@ impl App {
             .then_some(gesture)
     }
 
+    /// Send what this window's page has to hand its session, as much as the connection takes
+    /// now. Every message names the window ([`crate::shell_tabs::launch_instance`]): the
+    /// frames in this window's outbox are of its page alone, and the session publishes them
+    /// as that window's. A payload too large for one message goes in parts, in order; what
+    /// the connection has no room for waits here, and the loop comes back for it
+    /// ([`Self::share_backlog_at`]) once the shell has read on, so a page of megabytes never
+    /// overruns the connection every other ask of the window travels.
+    #[cfg(feature = "native")]
+    fn send_shared_page(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+    ) -> Result<(), String> {
+        use crate::webview::paint;
+        use base64::Engine as _;
+        let instance = crate::shell_tabs::launch_instance();
+        self.floating.share_backlog = None;
+        loop {
+            if self.floating.share_sending.is_none() {
+                self.floating.share_sending = paint::next_share_frame().map(|frame| (frame, 0));
+            }
+            let Some((frame, sent)) = self.floating.share_sending.as_mut() else {
+                return Ok(());
+            };
+            let end = frame
+                .payload
+                .len()
+                .min(sent.saturating_add(paint::MAX_SHARE_PART));
+            let bytes = frame.payload.get(*sent..end).unwrap_or_default();
+            // What the part takes of the connection: its base64, and the message around it.
+            let needs = bytes
+                .len()
+                .div_ceil(3)
+                .saturating_mul(4)
+                .saturating_add(1024);
+            if client.room() < needs {
+                self.floating.share_backlog = crate::time::now().checked_add(SHARE_BACKLOG_RETRY);
+                return Ok(());
+            }
+            let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+            let (payload, part) = if *sent == 0 && end == frame.payload.len() && frame.complete() {
+                (encoded, None)
+            } else {
+                (
+                    String::new(),
+                    Some(crate::floating_surface::PaintPart {
+                        bytes: encoded,
+                        at: u64::try_from(*sent).unwrap_or(u64::MAX),
+                        of: u64::try_from(frame.of).unwrap_or(u64::MAX),
+                    }),
+                )
+            };
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::PaintStream {
+                    payload,
+                    page: frame.page,
+                    scale: frame.scale,
+                    instance,
+                    part,
+                },
+            )?;
+            *sent = end;
+            if end >= frame.payload.len() {
+                self.floating.share_sending = None;
+            }
+        }
+    }
+
+    /// When the loop sends on what its page has to hand over: the connection had no room for
+    /// all of it.
+    #[cfg(feature = "native")]
+    pub(crate) fn share_backlog_at(&self) -> Option<crate::time::Instant> {
+        self.floating.share_backlog
+    }
+
     #[cfg(feature = "native")]
     fn send_pending_floating_requests(
         &mut self,
@@ -620,19 +707,14 @@ impl App {
             client.send(&crate::floating_surface::FloatingSurfaceClientMessage::PaintCapable)?;
             self.floating.paint_capable_sent = true;
         }
-        // A window withheld from captures shares no page either.
-        let shared = crate::webview::paint::take_share_frames();
-        if !protected {
-            use base64::Engine as _;
-            for frame in shared {
-                client.send(
-                    &crate::floating_surface::FloatingSurfaceClientMessage::PaintStream {
-                        payload: base64::engine::general_purpose::STANDARD.encode(&frame.payload),
-                        page: frame.page,
-                        scale: frame.scale,
-                    },
-                )?;
-            }
+        // A window withheld from captures shares no page either: what it queued is dropped,
+        // and so is a payload half sent.
+        if protected {
+            drop(crate::webview::paint::take_share_frames());
+            self.floating.share_sending = None;
+            self.floating.share_backlog = None;
+        } else {
+            self.send_shared_page(client)?;
         }
         if self.floating.capture_protection_sent != protected {
             self.floating.capture_generation = self
@@ -1135,6 +1217,9 @@ impl App {
                 }
                 FloatingSurfaceHostMessage::PaintStop => {
                     crate::webview::paint::set_share_watched(false);
+                    // Nobody takes the rest of a payload half sent.
+                    self.floating.share_sending = None;
+                    self.floating.share_backlog = None;
                 }
                 FloatingSurfaceHostMessage::ToolbarEvent { event, after_input } => {
                     // In its place among the window's own input.

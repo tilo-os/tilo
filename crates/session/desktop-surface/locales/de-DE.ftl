@@ -1094,6 +1094,7 @@ session-window-share-first-picture = Wartet auf das erste Bild des Fensters
 session-window-share-page-unsent = Wartet darauf, dass die Seite des Fensters an die Geräte geht, die es zeigen
 session-window-share-page-withheld = Die App des Fensters wurde nach dessen Seite gefragt und hat sie nicht übergeben
 session-window-share-page-overdue = Das Gerät, auf dem das Fenster läuft, wurde nach dessen Seite gefragt und hat sie nicht gesendet
+session-window-share-page-too-large = Die Seite des Fensters ist zu groß, um sie an die Geräte zu senden, die es zeigen
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = Bildschirmanzeige

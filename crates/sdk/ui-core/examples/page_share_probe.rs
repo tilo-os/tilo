@@ -3,8 +3,11 @@
 //! The engine runs as Browser's windows run it: drawn from its pixels, its page captured as a
 //! display list only while a session shares the window with someone watching. A web view draws
 //! it, as a window does, and the probe plays the session: it says the window is watched (what
-//! `FloatingSurfaceHostMessage::PaintKeyframe` does in an app), draws a frame when the app's own
-//! loop would, and reads the share's outbox as the app sends it on. The view is placed and drawn
+//! `FloatingSurfaceHostMessage::PaintKeyframe` does in an app), turns the loop as the app's
+//! runner turns it, and reads the share's outbox as the app sends it on. The runner draws a
+//! frame for the session's ask and for each wake of the engine, takes the engine's events and
+//! syncs its tree before it, and does the same without a frame when the view's own wake time
+//! has come; it draws nothing because a widget says it would like a frame. The view is placed and drawn
 //! directly, with no window, no layout around it and no fonts: a page drawn from its pixels sets
 //! no text, and the probe runs where no font catalogue is prepared. What came out is applied as
 //! the device showing the window applies it, and the page it then holds is printed as one line of
@@ -66,12 +69,19 @@ struct Handed {
     largest: usize,
     /// The images that came, by content hash, with their size.
     images: HashMap<[u8; 32], usize>,
+    /// The size of a payload the app said is larger than a share hands over, of which only the
+    /// start came.
+    too_large: Option<usize>,
 }
 
 impl Handed {
     /// Take what the app would send its session now.
     fn take(&mut self) {
         for frame in paint::take_share_frames() {
+            if !frame.complete() {
+                self.too_large = Some(frame.of);
+                continue;
+            }
             self.payloads = self.payloads.saturating_add(1);
             self.largest = self.largest.max(frame.payload.len());
             if Payload::is_key(&frame.payload) {
@@ -204,6 +214,8 @@ impl Asked {
 /// The web view of a window, and what a frame of it is drawn with.
 struct Window {
     view: WebView,
+    /// The document the window's tree is synced against: the view reads nothing of it.
+    state: tilo_ui::State,
     text: TextRenderer,
     theme: Theme,
     presence: PresenceCtx,
@@ -219,6 +231,7 @@ impl Window {
         );
         Self {
             view,
+            state: tilo_ui::State::new(),
             // No face at all: nothing here sets text.
             text: TextRenderer::with_font_system(FontSystem::new_with_locale_and_db(
                 "en-US".to_owned(),
@@ -241,9 +254,23 @@ impl Window {
         );
     }
 
-    /// Whether the view asks for a frame, as the app's loop asks it.
+    /// Whether the view says it would like a frame: what a host that asks its widgets draws
+    /// for, and the app's runner does not.
     fn due(&self) -> bool {
         self.view.needs_redraw() || self.view.needs_animation_frame()
+    }
+
+    /// Sync the view, as the runner's state pass syncs the window's tree.
+    fn sync(&mut self) {
+        let root = self.state.root.clone();
+        self.view.sync(&self.state.doc, &root);
+    }
+
+    /// Whether the wake time the view asked for has come.
+    fn wake_due(&self) -> bool {
+        self.view
+            .next_wake_deadline()
+            .is_some_and(|due| due <= tilo_ui::time::now())
     }
 }
 
@@ -272,33 +299,24 @@ fn load(window: &mut Window, engine: &SharedEngine, url: &str, handed: &mut Hand
 
 /// Wait, for at most `asked.within`, until what was handed over is a whole page carrying the
 /// text asked for. The first frame is the one the session's message asks the app's loop for;
-/// from there the view is drawn when it says it needs it, as that loop draws it. Returns after
-/// how many milliseconds the page was whole, and how many frames were drawn.
-fn watch(
-    window: &mut Window,
-    engine: &SharedEngine,
-    asked: &Asked,
-    handed: &mut Handed,
-) -> (Option<u128>, u32) {
+/// from there the loop turns as the runner turns it. Returns after how many milliseconds the
+/// page was whole, and how many frames were drawn.
+fn watch(turning: &mut Loop<'_>, asked: &Asked) -> (Option<u128>, u32) {
     let since = tilo_ui::time::now();
-    let mut frames = 0_u32;
-    let mut due = true;
+    turning.window.draw();
+    let mut frames = 1_u32;
     loop {
         let waited = tilo_ui::time::now().saturating_duration_since(since);
-        if due {
-            window.draw();
-            frames = frames.saturating_add(1);
-        }
-        drop(engine.drain_events());
-        handed.take();
-        if handed.receiver.frame().is_some() && handed.missing(&asked.expected).is_empty() {
+        turning.handed.take();
+        if turning.handed.receiver.frame().is_some()
+            && turning.handed.missing(&asked.expected).is_empty()
+        {
             return (Some(waited.as_millis()), frames);
         }
-        if waited >= asked.within {
+        if waited >= asked.within || turning.handed.too_large.is_some() {
             return (None, frames);
         }
-        due = window.due();
-        pause();
+        frames = frames.saturating_add(u32::from(turning.turn()));
     }
 }
 
@@ -354,14 +372,18 @@ impl Loop<'_> {
             .unwrap_or(0)
     }
 
-    /// One turn: a frame when the engine woke the loop since the last one. Whether it drew.
+    /// One turn: the state pass and a frame when the engine woke the loop since the last one,
+    /// the state pass alone when the view's own wake time has come. Whether it drew.
     fn turn(&mut self) -> bool {
         pause();
         let wakes = self.wakes.load(Ordering::Relaxed);
         let woken = wakes != self.served;
+        if woken || self.window.wake_due() {
+            drop(self.engine.drain_events());
+            self.window.sync();
+        }
         if woken {
             self.served = wakes;
-            drop(self.engine.drain_events());
             self.window.draw();
         }
         self.handed.take();
@@ -479,7 +501,6 @@ fn main() {
     if !asked.watched_before_load {
         paint::set_share_watched(true);
     }
-    let (complete_ms, frames) = watch(&mut window, &engine, &asked, &mut handed);
     let mut turning = Loop {
         window: &mut window,
         engine: &engine,
@@ -487,6 +508,7 @@ fn main() {
         wakes: &wakes,
         served: wakes.load(Ordering::Relaxed),
     };
+    let (complete_ms, frames) = watch(&mut turning, &asked);
     let change_ms = if asked.changes > 0 {
         turning.changes(asked.changes, Duration::from_secs(30))
     } else {
@@ -496,10 +518,10 @@ fn main() {
     let (watched, unwatched) = if asked.still.is_zero() {
         (None, None)
     } else {
-        drop(turning.run(Duration::from_millis(2500)));
+        turning.run(Duration::from_millis(2500));
         let watched = turning.run(asked.still);
         paint::set_share_watched(false);
-        drop(turning.run(Duration::from_millis(500)));
+        turning.run(Duration::from_millis(500));
         (Some(watched), Some(turning.run(asked.still)))
     };
     let images_missing = handed.images_missing();
@@ -524,6 +546,7 @@ fn main() {
             "images": handed.images.len(),
             "image_bytes": handed.images.values().sum::<usize>(),
             "images_missing": images_missing,
+            "too_large": handed.too_large,
             "page": size,
             "change_ms": change_ms,
             "still_watched": watched.as_ref().map(Cost::json),
