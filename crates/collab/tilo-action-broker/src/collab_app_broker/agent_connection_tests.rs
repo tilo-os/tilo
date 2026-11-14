@@ -47,6 +47,7 @@ impl crate::services::HostStepServices for Desktop {
     }
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
+            did: None,
             semantic_identity: None,
             address: ActionAddress::new("desktop", "list-windows"),
             resource_kind: "desktop".into(),

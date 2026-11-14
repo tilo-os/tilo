@@ -35,6 +35,8 @@ const PERSON: &str = "Pat";
 const KEY_ESCAPE: u32 = 1;
 /// The Enter key, evdev's.
 const KEY_ENTER: u32 = 28;
+/// The Backspace key, evdev's.
+const KEY_BACKSPACE: u32 = 14;
 
 fn options() -> Options {
     Options {
@@ -355,8 +357,13 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
             session.shell_control("Notes").is_some()
         });
         // Typing narrows to Notes: the only app row left named before the desk's own doors.
+        // The launcher keeps the person's last query in its field (`launcher.tl`): a style shown
+        // after another opens it on the "no" typed there, which the person clears first.
         let field = crate::common::LAUNCHER_SEARCH;
         press(&mut session, field);
+        for _ in 0.."no".len() {
+            crate::common::key(&mut session, KEY_BACKSPACE);
+        }
         type_text(&mut session, "no");
         until(&mut session, |session| {
             session.shell_control("Notes").is_some()

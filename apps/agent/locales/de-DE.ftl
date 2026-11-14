@@ -46,7 +46,12 @@ agent-step-searching = Sucht im Web nach „{ $what }“…
 agent-step-reading = Liest { $what }…
 agent-step-editing = Ändert { $what }…
 agent-step-exploring = Sieht nach, was { $what } kann…
-agent-step-program = ein Programm
+agent-step-program = Nachgeschlagen
+agent-step-looked-up = { $what } nachgeschlagen
+agent-step-on = { $action }: { $subject }
+agent-step-edited = { $what } bearbeitet
+agent-step-searched = Im Web nach „{ $what }“ gesucht
+agent-step-read = { $what } gelesen
 
 ## Ein Lauf, der angehalten wurde
 
@@ -90,3 +95,4 @@ agent-failure-truncated = Die Antwort des Modells wurde abgeschnitten.
 agent-failure-refused = Das Modell hat diese Anfrage abgelehnt.
 agent-failure-transport = Das Modell war nicht erreichbar. Versuche es noch einmal.
 agent-failure-no-answer = Der Agent hat nichts getan und nicht gesagt, was er getan hat.
+agent-failure-empty-answer = Der Agent hat ohne Antwort aufgehört. Frag noch einmal.

@@ -187,3 +187,129 @@ fn native_stop_disconnects_provider_and_second_inference_succeeds() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// A provider whose whole answer arrives at once — many deltas, then a tool
+/// call — reaches the agent whole. The provider produces the deltas faster
+/// than they are written, so the writer is behind it for the whole burst;
+/// that is no sign the agent left.
+async fn burst_answer() {
+    const DELTAS: usize = 200;
+    let served = Responder::serve(move |peer| {
+        assert_eq!(peer.request().method, "POST");
+        let mut body = String::new();
+        for _ in 0..DELTAS {
+            body += &delta("word ", &serde_json::Value::Null);
+        }
+        let call = serde_json::json!({
+            "id":"reply", "object":"chat.completion.chunk", "created":1, "model":"test-model",
+            "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function",
+                "function":{"name":"lookup","arguments":"{\"count\":2}"}}]},"finish_reason":null}]
+        });
+        body += "data: ";
+        body += &call.to_string();
+        body += "\n\n";
+        body += &delta("", &serde_json::json!("tool_calls"));
+        body += "data: [DONE]\n\n";
+        let _ = peer.write(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        );
+    });
+    let mut profile = ProviderProfile::local_vllm();
+    profile.id = "test-provider".into();
+    profile.endpoint = format!("{}/v1", served.url());
+    profile.models = vec![agent_provider_config::ModelDescriptor::new("test-model")];
+    ProviderConfig {
+        profiles: vec![profile.clone()],
+        default_profile: None,
+        ..Default::default()
+    }
+    .save()
+    .unwrap();
+    let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
+    let (reference, authorization) = credential_binding(&profile).unwrap();
+    ServiceCredentials::open_in(&root)
+        .store(&reference, &authorization, "fabricated-test-key")
+        .unwrap();
+
+    let (mut original, peer) = UnixStream::pair().unwrap();
+    write_frame(
+        &mut original,
+        &serde_json::json!({"protocol":1,"app_id":AGENT_APP}),
+    )
+    .unwrap();
+    let transport = FdTransport::new(original.as_fd()).unwrap();
+    peer.set_nonblocking(true).unwrap();
+    let http = provider_client().unwrap();
+    let gateway = serve_connection(tokio::net::UnixStream::from_std(peer).unwrap(), &http);
+    let client = async move {
+        let tool = agent_provider_config::protocol::ToolDefinition {
+            name: "lookup".into(),
+            description: "Look something up.".into(),
+            input_schema: serde_json::json!({
+                "type":"object","properties":{"count":{"type":"integer"}},"required":["count"]
+            }),
+        };
+        let request = Request::Complete {
+            profile_id: "test-provider".into(),
+            model_id: "test-model".into(),
+            request: agent_provider_config::protocol::Conversation::new("system", "question")
+                .request(vec![tool], 64),
+            timeout_ms: 5000,
+            stream: true,
+        };
+        let mut deltas = 0_usize;
+        let answer = transport
+            .call(request, &mut |event| {
+                if event.event.as_deref() == Some("text_delta") {
+                    deltas = deltas.saturating_add(1_usize);
+                }
+                true
+            })
+            .await
+            .unwrap();
+        assert!(answer.ok, "{:?}", answer.error);
+        assert_eq!(deltas, DELTAS);
+        let answer: agent_provider_config::protocol::ModelResponse =
+            serde_json::from_str(answer.output.as_deref().unwrap()).unwrap();
+        assert_eq!(answer.tool_calls().unwrap()[0].input["count"], 2);
+        drop(transport);
+        drop(original);
+    };
+    Box::pin(tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        tokio::join!(gateway, client);
+    }))
+    .await
+    .unwrap();
+}
+
+#[test]
+fn a_burst_of_deltas_and_a_tool_call_reaches_the_agent_whole() {
+    const MARKER: &str = "GATEWAY_BURST_CHILD";
+    if std::env::var_os(MARKER).is_some() {
+        tilo_rt::block_on(burst_answer()).unwrap();
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "service::cancellation_tests::a_burst_of_deltas_and_a_tool_call_reaches_the_agent_whole",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("PATH", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env(MARKER, "1")
+        .output_locked()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

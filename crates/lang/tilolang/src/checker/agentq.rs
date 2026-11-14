@@ -306,7 +306,7 @@ impl Checker<'_> {
 
     /// `changed: -14d` (or `2026-10-01..`, `today`): a time as search writes it, which the runtime resolves
     /// against the log.
-    fn when_text(&mut self, what: &str, e: &ast::Expr) -> Option<String> {
+    pub(super) fn when_text(&mut self, what: &str, e: &ast::Expr) -> Option<String> {
         match &e.kind {
             ExprKind::Duration(..)
             | ExprKind::Calendar(_)

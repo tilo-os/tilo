@@ -477,6 +477,7 @@ mod tests {
 
     fn action(name: &str, confirmation: tilo_actions::ConfirmationPolicy) -> PublishedAction {
         PublishedAction {
+            did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: "files.app".into(),

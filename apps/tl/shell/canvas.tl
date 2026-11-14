@@ -8,44 +8,166 @@
 /// `canvas_width`, `canvas_height`); the places of a strip stand in a row from that corner, so a
 /// strip of several windows is one run of work and a strip of one is one window where it was
 /// dropped (canvas.md §6).
-/// The framed canvas: every strip at its point, its places standing side by side from there.
+/// The canvas: every strip at its point, its places standing side by side from there.
 /// Panning and zooming is the map's camera (a middle drag, Ctrl and a wheel, the arrow keys, two
 /// fingers); it moves the lens and nothing in the arrangement, so a place stays where it was
 /// while the person looks around, and the places keep their canvas points.
-/// The map fills the room under the entry: it cuts off what it holds at its edge, so a map only
-/// as tall as its content would show none of it.
+/// The map fills the desk: it cuts off what it holds at its edge, so a map only as tall as its
+/// content would show none of it.
 ///
 /// A resource dragged out of a view — a message's attachment chip, a search hit, a row of
 /// another view — and let go over the canvas is placed at the point it was dropped: the map
 /// reports the drop with the canvas point under the pointer, and the shell runs the system's
 /// `place`, which is what an agent's `place_at` runs too. The shell never handles the drop
 /// itself, exactly as it never handles an attachment's press.
+///
+/// Pointing is the canvas's one gesture (canvas.md §1): a click on free space puts a caret there
+/// and a rectangle dragged on free space puts the caret inside it, and what is typed at the caret
+/// is placed there: what it finds fills the rectangle, and what it asks stands as the turn's
+/// answer there (`session.place_found`). The map reports both in canvas pixels (`press`,
+/// `frame`), and a press on a place stays the place's. Escape takes the caret away.
+///
+/// Free space invites writing (`canvas.md` §7): over it the pointer is a text cursor, its ground
+/// has a grain so faint it only says "surface", and until the person has asked once the empty
+/// canvas says at its middle what it is for. That it has been said is the person's record
+/// (`Shell.canvas_asked`), so it is said once, never on every empty canvas.
+///
+/// An answer arrives from where it was asked: each place grows out of the caret or the rectangle
+/// the person pointed at (`grows`), and a turn hugs its words up to the rectangle it was asked in
+/// (`hug`), where a find fills it.
 view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
-    stack(gap: .related, fill) {
-        canvas_entry(here_x(a), here_y(a))
-        ui.Map(name: name, fill) {
-            on drop(target: host.Resource, at: List<Int>): place_dropped(target, at)
-            for s in a.strips {
-                if s.placed {
-                    for p in places_of(a, s.key) {
-                        ui.MapPin(
-                            name: p.key,
-                            x: pin_x(a, s, p),
-                            y: s.canvas_y,
-                            width: pin_width(s),
-                            height: pin_height(s),
-                        ) {
-                            if framed {
-                                framed_place(a, p, lists and p.key == front_place(a))
-                            } else {
-                                space_content(a, p)
-                            }
+    state typed: Text = ""
+    // Where the person pointed, in canvas pixels: a point (`x`, `y`) for a click, a rectangle
+    // (`x`, `y`, width, height) for a drag, and nothing while no caret stands.
+    state pointed: List<Int> = []
+    // The place a right press pointed at, by its key: what the words said there are about.
+    // Empty for free space and for a click.
+    state pointed_at: Text = ""
+    // What the person saw of the canvas as they pointed, in canvas pixels (`x`, `y`, width,
+    // height): the agent's views beside their answer stand in free room inside it, so what they
+    // asked for stays in view (canvas.md §7).
+    state seen: List<Int> = []
+    ui.Map(
+        name: name,
+        ground: true,
+        outline: pointed,
+        hint: if shell.canvas_asked { "" } else { "Click anywhere and say what you want" },
+        fill,
+    ) {
+        on drop(target: host.Resource, at: List<Int>): place_dropped(target, at)
+        on seen(at: List<Int>): set(seen, at)
+        on press(at: List<Int>): set(pointed, at).then(set(pointed_at, ""))
+        on frame(at: List<Int>): set(pointed, at).then(set(pointed_at, ""))
+        // A right press the canvas answers itself — free space, or a place whose content took
+        // none — points there as a click does: the caret stands at it.
+        on context(target: Text, at: List<Int>): set(pointed, at).then(set(pointed_at, target))
+        on resize(target: Text, at: List<Int>): size_place(target, at)
+        for s in a.strips {
+            if s.placed {
+                for p in places_of(a, s.key) {
+                    ui.MapPin(
+                        name: p.key,
+                        item: p.key,
+                        x: pin_x(a, s, p),
+                        y: s.canvas_y,
+                        width: pin_width(s),
+                        height: pin_height(s),
+                        band: framed and composed(p),
+                        hug: hugs(s, p),
+                        grows: true,
+                    ) {
+                        // A place's handle shows in a band over its view: the pin stands that
+                        // much higher, so the view's top is where the place was put.
+                        if framed {
+                            canvas_place(a, p, lists and p.key == front_place(a), fill)
+                        } else {
+                            space_content(a, p)
                         }
                     }
                 }
             }
         }
+        if pointed.len() > 0 {
+            ui.MapPin(
+                name: "Caret",
+                x: (pointed.at(0) ?? 0) + caret_inset(pointed),
+                y: (pointed.at(1) ?? 0) + caret_inset(pointed),
+                width: caret_room(pointed.at(2) ?? 0),
+                height: caret_line(),
+            ) {
+                ui.TextInput(
+                    bind: typed,
+                    placeholder: "Find or ask",
+                    autofocus: true,
+                    caret: true,
+                ) {
+                    on submit: session
+                        .place_found(
+                            text: typed,
+                            view: .none,
+                            strip: .none,
+                            x: pointed.at(0) ?? 0,
+                            y: pointed.at(1) ?? 0,
+                            width: pointed.at(2) ?? 0,
+                            height: pointed.at(3) ?? 0,
+                            seen_x: seen.at(0) ?? 0,
+                            seen_y: seen.at(1) ?? 0,
+                            seen_width: seen.at(2) ?? 0,
+                            seen_height: seen.at(3) ?? 0,
+                        )
+                        .then(set(typed, ""))
+                        .then(set(pointed, []))
+                        .then(asked_on_canvas(shell))
+                    on cancel: set(typed, "").then(set(pointed, []))
+                }
+            }
+        }
     }
+}
+
+/// Whether the place `p` of the strip `s` hugs what it holds up to its box rather than filling
+/// it (`canvas.md` §7, "The card hugs what it holds"): a turn, whose answer is as long as its
+/// words, and a thing found where the person clicked, which named no size (`canvas_hugs`). What
+/// a find placed in a rectangle the person dragged fills it.
+fn hugs(s: ArrangementStrip, p: ArrangementPlace) -> Bool {
+    p.shown_as == "turn" or s.canvas_hugs
+}
+
+/// The person asked on the canvas: the hint the empty canvas says until then has been said
+/// (`Shell.canvas_asked`), and stays away from now on.
+action asked_on_canvas(s: Shell) (label: "Asked on the canvas") {
+    s.canvas_asked = true
+}
+
+/// How wide the caret's line stands, in canvas pixels: the rectangle's width when the person
+/// dragged one narrower than a line, and a line's measure otherwise.
+fn caret_room(width: Int) -> Int {
+    if width > 0 and width < 444 { width - 2 * caret_step() } else { 420 }
+}
+
+/// How tall the caret's line stands, in canvas pixels: one line of text and its field's room. The
+/// caret is where the person just pointed, so it is in view already: a pin as tall as a window
+/// would have the canvas pan to show it.
+fn caret_line() -> Int {
+    40
+}
+
+/// How far inside a dragged rectangle the caret stands, in canvas pixels: clear of the
+/// rectangle's outline, on the rhythm's sibling step.
+fn caret_step() -> Int {
+    12
+}
+
+/// Where the caret stands from the point the person pointed at: at a click's point, and a step
+/// inside a dragged rectangle ([`caret_step`]).
+fn caret_inset(pointed: List<Int>) -> Int {
+    if pointed.len() > 2 { caret_step() } else { 0 }
+}
+
+/// Gives the place `key` the size a drag of its edge or corner left it at, `size` its width and
+/// height in canvas pixels: one arranging step of the person's, its corner where it stood.
+action size_place(key: Text, size: List<Int>) (label: "Size it") {
+    session.size(place: the_place(key), width: size.at(0) ?? 720, height: size.at(1) ?? 520)
 }
 
 /// Puts a resource dropped on the canvas where it was let go. A place that already stands on the
@@ -127,18 +249,53 @@ fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
     s.canvas_x
 }
 
-/// A place on the framed canvas: the shell's frame around it (the window frame a desktop's
-/// windows stand in, its controls at the end of the bar), and its resource's view composed
-/// inside, filling it, or the well its window shows in (shell.md §8). The toolbar stands
-/// outside it.
+/// A place on the canvas: its resource's view standing on the canvas as content (canvas.md §2),
+/// on the theme's window surface with no frame and no title bar. Hovering it, or working in it,
+/// shows its handle over its corner: what it is, its resource's actions, pin and close. Picking
+/// the handle up carries the place's resource: let go over the canvas, the map reports the drop
+/// and the place stands where it was let go; over a composer, it attaches what the place shows.
 ///
-/// The place's bar is its handle: the frame carries the place's resource, so a press on the
-/// bar's empty area and a drag lifts the whole place. Picked up there and let go over a
-/// composer, it attaches what the place shows to that draft (shell.md §8.1, "Dropping on the
-/// composer"); let go over the canvas, the map reports the drop and the place stands where it
-/// was let go. The pin and close controls are buttons on that bar and take their presses; the
-/// body is never a source, so a press inside it stays the app's — a field, a row, a message
-/// takes input as it always did.
+/// A foreign window — an app's own surface the shell cannot compose — keeps its frame
+/// (`framed_place`): it is the one thing on the canvas that is a window.
+view canvas_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
+    if composed(p) {
+        ui.Place(
+            name: content_title(p),
+            carries: p.record,
+            subject: placed_resource(p.record),
+            fill,
+        ) {
+            controls: {
+                place_controls(a, p, false)
+            }
+            body: {
+                place_content(p)
+            }
+        }
+    } else {
+        framed_place(a, p, lists)
+    }
+}
+
+/// What a place on the canvas is called on its handle: what it shows, by its own title (an
+/// answer by its question, an inbox as Inbox). It is content, not a window, so its app's name is
+/// not joined to it as a window's title is (`place_title`); a place with no title of its own goes
+/// by that one.
+fn content_title(p: ArrangementPlace) -> Text {
+    if p.title != "" { p.title } else { place_title(p) }
+}
+
+/// Whether the place `p` draws its view itself — its resource's view, or the query it stands for
+/// while an app answers it — rather than showing an app's window.
+fn composed(p: ArrangementPlace) -> Bool {
+    if let q = query_of(p.key) {
+        true
+    } else if let r = placed_resource(p.record) { p.shown_as != "" or meta(r).opens } else { false }
+}
+
+/// A foreign window on the canvas: the shell's frame around the well its window shows in, its
+/// controls at the end of the bar. The bar is its handle: the frame carries the place's resource,
+/// so a press on the bar's empty area and a drag lifts the whole place.
 view framed_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
     ui.WindowFrame(
         name: place_title(p),
@@ -173,46 +330,4 @@ view space_content(a: Arrangement, p: ArrangementPlace) {
 /// before it kept one stands as tall as a desktop frame does.
 fn pin_height(s: ArrangementStrip) -> Int {
     if s.canvas_height > 0 { s.canvas_height } else { 480 }
-}
-
-/// What the person types on the canvas: a search whose hit stands where they
-/// typed, or a question their agent answers there (`shell.md` §8, §8.1).
-/// `session.place_found` is one action: what the text finds is placed as its
-/// primary view at the caret, one arranging step of the person's, attributed
-/// to them and undone as one step; what the text asks is posted into their
-/// conversation with the agent, and that conversation stands at the caret
-/// instead. `x` and `y` are where the caret was, in canvas pixels.
-template view canvas_entry(x: Int, y: Int) {
-    state typed: Text = ""
-    ui.TextInput(bind: typed, placeholder: "Find something, or ask") {
-        on submit: session
-            .place_found(text: typed, view: .none, strip: .none, x: x, y: y)
-            .then(set(typed, ""))
-    }
-}
-
-/// Where text typed on the canvas puts what it finds: the canvas point the
-/// first place stands at, so a new place lands where the person looks rather
-/// than over what is already there. Zero on an empty canvas.
-fn here_x(a: Arrangement) -> Int {
-    if let first = a.places.first() {
-        for s in a.strips {
-            if s.key == first.strip and s.placed {
-                return s.canvas_x
-            }
-        }
-    }
-    0
-}
-
-/// See [`here_x`].
-fn here_y(a: Arrangement) -> Int {
-    if let first = a.places.first() {
-        for s in a.strips {
-            if s.key == first.strip and s.placed {
-                return s.canvas_y
-            }
-        }
-    }
-    0
 }

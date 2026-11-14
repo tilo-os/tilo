@@ -108,6 +108,14 @@ pub struct FrameSample {
     /// owed after motion ended; `+`-joined, empty when nothing animated. A
     /// desktop that keeps animating while idle is attributed here.
     pub paint_animations: &'static str,
+    /// The hosted surfaces' own frames before the submit: each surface the session hosts (the
+    /// shell's desk, its panels and sheets) laying its tree out and building its scene. Every
+    /// frame a tick draws counts, the ones a catch-up draws included.
+    pub hosts_us: u32,
+    /// The session's share after the frame is out, besides the control socket: what assistive
+    /// technology reads of it, the desk and its views read back over it, and the session's
+    /// observations of what it published.
+    pub after_us: u32,
 }
 
 /// [`FrameSample::paint_reasons`] bits: why the compositor decided a tick had
@@ -304,7 +312,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -336,6 +344,8 @@ impl FrameSample {
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
             self.paint_animations,
+            self.hosts_us,
+            self.after_us,
         )
     }
 }
@@ -344,7 +354,7 @@ impl FrameSample {
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
 input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us,\
-paint_reasons,paint_clients,testctl_cpu_us,paint_animations";
+paint_reasons,paint_clients,testctl_cpu_us,paint_animations,hosts_us,after_us";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -407,6 +417,10 @@ pub struct FrameSummary {
     pub scene: Percentiles,
     pub submit: Percentiles,
     pub testctl: Percentiles,
+    /// The hosted surfaces' frames, on ticks that painted ([`FrameSample::hosts_us`]).
+    pub hosts: Percentiles,
+    /// The session's share after the frame ([`FrameSample::after_us`]).
+    pub after: Percentiles,
     pub clients: Percentiles,
     pub sleep: Percentiles,
     /// Input-to-submit-return; this is input-to-queue on threaded presenters.
@@ -518,6 +532,8 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
         scene: painted_field(|s| s.scene_us),
         submit: painted_field(|s| s.submit_us),
         testctl: field(|s| s.testctl_us),
+        hosts: painted_field(|s| s.hosts_us),
+        after: field(|s| s.after_us),
         clients: field(|s| s.clients_us),
         sleep: field(|s| s.sleep_us),
         input_latency: percentiles(
@@ -826,6 +842,15 @@ impl FrameRecorder {
     }
     pub fn mark_testctl(&mut self, d: Duration) {
         self.cur.testctl_us = us(d);
+    }
+    /// The hosted surfaces' frames took `d` more this tick ([`FrameSample::hosts_us`]): a tick
+    /// that draws again to catch up adds the frames it draws then.
+    pub fn add_hosts(&mut self, d: Duration) {
+        self.cur.hosts_us = self.cur.hosts_us.saturating_add(us(d));
+    }
+    /// The session's share after the frame ([`FrameSample::after_us`]).
+    pub fn mark_after(&mut self, d: Duration) {
+        self.cur.after_us = us(d);
     }
     /// The loop thread's CPU clock now, for [`Self::mark_testctl_cpu`];
     /// `None` while nothing is recorded.
@@ -1652,6 +1677,8 @@ mod tests {
                 paint_clients: "so.tilo.file-explorer",
                 testctl_cpu_us: Some(17),
                 paint_animations: "notification+content/DesktopSurface/TileHost",
+                hosts_us: 18,
+                after_us: 19,
             }
             .write_csv_row(&mut buf)
             .expect("write csv row into a Vec");

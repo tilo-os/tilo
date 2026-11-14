@@ -1924,6 +1924,7 @@ mod tests {
 
     fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
         ActionDescriptor {
+            did: None,
             state: crate::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new(resource, action),

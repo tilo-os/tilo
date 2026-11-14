@@ -1445,4 +1445,44 @@ mod tests {
             assert_eq!(editor.blocks()[1].content().text, "shipped");
         }
     }
+
+    /// Markdown shown read-only keeps its lists: a reply's bulleted items are bullets, their
+    /// text set in the list's column after the marker, not paragraphs flush with the line before.
+    #[test]
+    fn a_shown_markdown_list_is_a_bulleted_list() {
+        let reading =
+            BlockEditor::reading_markdown("Overdue:\n- Book a haircut\n- Call the landlord");
+        let blocks: Vec<crate::widget::BlockContent> = reading
+            .blocks()
+            .iter()
+            .map(crate::widget::Block::content)
+            .collect();
+        let rich = crate::widget::rich_doc::rich_of_blocks(&blocks, &RichText::default());
+        let mut editor = BlockEditor::new();
+        assert!(editor.show_rich_text(&rich));
+        let kinds: Vec<crate::widget::BlockKind> =
+            editor.blocks().iter().map(|b| b.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            [
+                crate::widget::BlockKind::Paragraph,
+                crate::widget::BlockKind::Bullet { indent: 0 },
+                crate::widget::BlockKind::Bullet { indent: 0 }
+            ]
+        );
+        let mut renderer = TextRenderer::new();
+        laid_out(&mut editor, &mut renderer);
+        let x = |index: usize| {
+            editor.blocks()[index]
+                .line
+                .caret_rect(&Theme::light(), 0)
+                .x0
+        };
+        assert!(
+            x(1) > x(0) + 8.0,
+            "an item's text stands after its bullet: {} against {}",
+            x(1),
+            x(0)
+        );
+    }
 }

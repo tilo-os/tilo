@@ -311,6 +311,11 @@ pub const KINDS: &[OriginKind] = &[
             field("canvas_width", "Int", "How wide it stands on the canvas."),
             field("canvas_height", "Int", "How tall it stands on the canvas."),
             field(
+                "canvas_hugs",
+                "Bool",
+                "Whether its height is the most it takes: what it shows hugs what it holds.",
+            ),
+            field(
                 "shell",
                 "Text",
                 "The shell that made it; empty reads as this shell's.",

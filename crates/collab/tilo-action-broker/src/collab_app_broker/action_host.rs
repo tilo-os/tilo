@@ -318,6 +318,7 @@ pub(super) fn offered_action(
         ),
     };
     PublishedAction {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: offer.resource.clone(),
@@ -361,6 +362,7 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
         )
     };
     ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new(
@@ -444,6 +446,7 @@ fn app_named_row(provider: &str, app: &crate::services::LaunchableApplication) -
 
 fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
     ActionDescriptor {
+        did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new(
@@ -3817,6 +3820,7 @@ mod device_pairing_tests {
                         contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
                     }
                     tilo_actions::ActionDescriptor {
+                        did: None,
                         state: tilo_actions::ActionState::default(),
                         semantic_identity: None,
                         address: tilo_actions::ActionAddress::new(device_pairing::RESOURCE, step),

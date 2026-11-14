@@ -342,6 +342,11 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
     let rows = crate::testing::mounted_rows(&mut bob_window, &conversation.to_string());
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text, "please look");
+    assert_eq!(
+        value["message"].as_str(),
+        Some(rows[0].id.as_str()),
+        "the send says which message it posted: what asked stands its turn by it"
+    );
     bob_window.harness().relayout();
     bob_window.with_chat(|chat| {
         assert!(

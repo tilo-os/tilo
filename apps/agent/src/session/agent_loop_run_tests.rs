@@ -663,3 +663,95 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// An empty or stand-in reply ("…", "placeholder") never passes as an answer: the loop treats the
+/// turn as failed, tells the model why and asks once more; the model's real answer then finishes
+/// the run, and a model that still says nothing ends it with the readable failure.
+#[test]
+fn a_reply_that_says_nothing_is_asked_for_once_then_fails() {
+    // Words alone, "…": asked again with the reason, and the answer that follows is the reply.
+    let mut f = fixture(
+        "which of my tasks are due this week?",
+        World::default(),
+        vec![said_turn("…"), said_turn("Nothing is due this week.")],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 2, "one more turn, asked for the answer");
+    let second = bodies[1]["messages"].to_string();
+    assert!(
+        second.contains("Not an answer") && second.contains("…"),
+        "the model is told what was wrong: {second}"
+    );
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Succeeded {
+            message: "Nothing is due this week.".into()
+        }
+    );
+
+    // Asked once, and still a stand-in: the readable failure, never "placeholder" as the answer.
+    let mut f = fixture(
+        "which of my tasks are due this week?",
+        World::default(),
+        vec![said_turn("…"), said_turn("placeholder")],
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.script.bodies.lock().unwrap().len(), 2, "asked only once");
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Failed {
+            message: crate::i18n::t("agent-failure-empty-answer")
+        }
+    );
+
+    // Work done, then `plan` finishing with "…" twice: asked once for the words, then failed
+    // rather than reported as a success the person cannot read.
+    let mut f = fixture(
+        "write hi",
+        World::default(),
+        vec![
+            turn(
+                &[invoke("type-text", &serde_json::json!({"text": "Hi."}))],
+                64,
+            ),
+            turn(&[finish("…", true)], 64),
+            turn(&[finish("…", true)], 64),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.script.bodies.lock().unwrap().len(), 3);
+    assert_eq!(f.world.borrow().blocks[0].1, "Hi.", "the work stays done");
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Failed {
+            message: crate::i18n::t("agent-failure-empty-answer")
+        }
+    );
+}
+
+/// What says nothing, and what does.
+#[test]
+fn stand_in_replies_say_nothing() {
+    for nothing in [
+        "",
+        "  ",
+        "…",
+        "...",
+        "—",
+        "placeholder",
+        "Placeholder",
+        "<at most eight words>",
+    ] {
+        assert!(tools::says_nothing(nothing), "{nothing:?}");
+    }
+    for something in [
+        "None.",
+        "Done.",
+        "3 tasks",
+        "Nothing is due this week.",
+        "<b>Hi</b> there",
+    ] {
+        assert!(!tools::says_nothing(something), "{something:?}");
+    }
+}
