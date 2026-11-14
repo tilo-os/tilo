@@ -210,6 +210,16 @@ impl Store {
         self.held.lock_recover().bytes
     }
 
+    /// The bytes the store holds of `workspace`.
+    #[must_use]
+    pub fn bytes_of(&self, workspace: WorkspaceId) -> u64 {
+        self.held
+            .lock_recover()
+            .workspaces
+            .get(&workspace)
+            .map_or(0, |stored| stored.bytes)
+    }
+
     /// Each lineage of `workspace` with the earliest and latest sequence
     /// number the store holds there: what a member asks about and what a
     /// diagnostic shows.
@@ -401,6 +411,39 @@ impl Store {
         }
         drop(held);
         Ok(replay)
+    }
+
+    /// Forget `workspace` and every frame the store retains of it: what a
+    /// workspace deleted on its host leaves behind, since nothing names it
+    /// again. The index entry goes under the lock; its directory, whose files
+    /// are what replay reads, is removed after it, so a store serving the
+    /// other workspaces does not wait for the unlink while it holds the lock.
+    /// Removing a workspace's files is left to the caller to run off the
+    /// thread that serves requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the workspace's directory cannot be removed.
+    pub fn forget(&self, workspace: WorkspaceId) -> Result<Retired, StoreError> {
+        let (bytes, frames) = {
+            let mut held = self.held.lock_recover();
+            let Some(stored) = held.workspaces.remove(&workspace) else {
+                return Ok(Retired::default());
+            };
+            held.bytes = held.bytes.saturating_sub(stored.bytes);
+            let frames = stored.lineages.values().map(Vec::len).sum::<usize>();
+            drop(held);
+            (stored.bytes, frames)
+        };
+        match fs::remove_dir_all(workspace_dir(&self.root, workspace)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(Retired {
+            frames: u64::try_from(frames).unwrap_or(u64::MAX),
+            bytes,
+        })
     }
 
     /// Retire the frames of `workspace` published before `before_ns`, for an
@@ -1099,6 +1142,66 @@ mod tests {
         assert_eq!(
             store.compact(WorkspaceId::from_u128(8), u64::MAX).unwrap(),
             Retired::default()
+        );
+    }
+
+    /// Forgetting a workspace ends everything the store keeps of it, in one
+    /// pass: its frames, its bytes and its files, and no reopen reads it
+    /// again. The store's other workspaces are untouched.
+    #[test]
+    fn forgetting_a_workspace_removes_its_frames_and_files() {
+        let (dir, store) = open();
+        let key = device(2);
+        let other = WorkspaceId::from_u128(9);
+        for seq in 1..=3 {
+            store
+                .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
+                .unwrap();
+            store
+                .retain(other, &frame(&key, seq, ContentRetention::Delta))
+                .unwrap();
+        }
+        let size = store.bytes();
+        let forgotten = store.bytes_of(workspace());
+        let retired = store.forget(workspace()).unwrap();
+        assert_eq!(retired.frames, 3, "every frame it held went");
+        assert_eq!(retired.bytes, forgotten);
+        assert_eq!(
+            store.bytes(),
+            size - forgotten,
+            "the other workspace's bytes stay"
+        );
+        assert!(
+            !workspace_dir(dir.path(), workspace()).exists(),
+            "its directory went whole"
+        );
+        assert!(
+            store
+                .replay(workspace(), &[], Budget::default())
+                .unwrap()
+                .frames
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .replay(other, &[], Budget::default())
+                .unwrap()
+                .frames
+                .len(),
+            3,
+            "the other workspace still replays"
+        );
+        assert_eq!(store.forget(workspace()).unwrap(), Retired::default());
+        drop(store);
+
+        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        assert!(
+            reopened
+                .replay(workspace(), &[], Budget::default())
+                .unwrap()
+                .frames
+                .is_empty(),
+            "a reopened store does not read a forgotten workspace back"
         );
     }
 
