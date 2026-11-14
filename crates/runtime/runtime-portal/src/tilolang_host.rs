@@ -431,6 +431,10 @@ pub fn take_door() -> Option<Descriptor> {
 /// # Errors
 /// The socket's error, a message that does not encode or is over the door's limit, or
 /// [`io::ErrorKind::Unsupported`] off Linux.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "off Unix a descriptor has no values, and its callers hold a reference to one"
+)]
 fn say(
     door: &Descriptor,
     verb: &[u8],
