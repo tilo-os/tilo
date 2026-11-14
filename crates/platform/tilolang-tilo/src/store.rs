@@ -631,8 +631,12 @@ pub struct Changes {
     pub docs: BTreeMap<DocId, BTreeSet<FieldKey>>,
     /// The documents that may have changed anywhere.
     pub whole: BTreeSet<DocId>,
-    /// Anything anywhere may have changed: the record was taken anew, or an index built.
+    /// Anything anywhere may have changed: the record was taken anew, or an index opened or
+    /// rebuilt.
     pub everything: bool,
+    /// The apps whose index answers more of the record than it did (a step of its build was
+    /// taken in): no record changed, but a read through their index may find more.
+    pub indexed: BTreeSet<AppId>,
     /// How collections' items changed, in the order the changes happened (see
     /// [`ChangeSummary::listings`]); a collection named in `docs` without steps here changed in
     /// a way the store could not say.
@@ -684,7 +688,7 @@ impl Changes {
     /// Whether nothing changed.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.docs.is_empty() && self.whole.is_empty() && !self.everything
+        self.docs.is_empty() && self.whole.is_empty() && !self.everything && self.indexed.is_empty()
     }
 }
 
@@ -698,6 +702,19 @@ impl Watch {
     #[must_use]
     pub fn take(&self) -> Changes {
         std::mem::take(&mut self.changes.borrow_mut())
+    }
+
+    /// Whether what changed since the last [`Self::take`] may reach the document `doc`.
+    #[must_use]
+    pub fn names(&self, doc: &str) -> bool {
+        let changes = self.changes.borrow();
+        changes.everything || changes.whole.contains(doc) || changes.docs.contains_key(doc)
+    }
+
+    /// The apps whose index answered more of the record since the last [`Self::take`].
+    #[must_use]
+    pub fn indexed(&self) -> BTreeSet<AppId> {
+        self.changes.borrow().indexed.clone()
     }
 }
 
@@ -1706,6 +1723,16 @@ impl Inner {
         let docs: BTreeSet<DocId> = self.subs.iter().map(|sub| sub.doc.clone()).collect();
         for doc in docs {
             self.notify(&ChangeSummary::whole(doc));
+        }
+    }
+
+    /// Tell every subscriber that the indexes of `apps` answer more of the record: no record
+    /// changed, but a read through them may find more than it did (a list's rows, a count). A
+    /// watch is told that, not that a record changed: its trees of the records stand.
+    fn notify_indexed(&mut self, apps: &BTreeSet<AppId>) {
+        self.watched(|changes| changes.indexed.extend(apps.iter().cloned()));
+        for sub in &mut self.subs {
+            (sub.callback)(&ChangeSummary::whole(sub.doc.clone()));
         }
     }
 

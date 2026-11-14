@@ -866,6 +866,12 @@ pub struct Publications {
     /// What the window showed when the reached trees were read, and the snapshot they were read
     /// from: a frame that shows the same reads nothing.
     shown: Option<(Arc<crate::store::Snapshot>, Vec<String>)>,
+    /// The reached records whose tree holds less than the window reaches of them: an item the
+    /// index did not answer yet when the record was read. One is read again once its app's
+    /// index answers more ([`Self::grown`]).
+    short: std::collections::BTreeSet<String>,
+    /// The apps whose index answered more of the record since the reached trees were read.
+    grown: std::collections::BTreeSet<tilolang_runtime::ids::AppId>,
 }
 
 /// A record built whole off the frame: its tree and the resource whose text names it.
@@ -1064,6 +1070,8 @@ impl Publications {
             text_moves: std::collections::VecDeque::new(),
             reached: std::collections::BTreeSet::new(),
             shown: None,
+            short: std::collections::BTreeSet::new(),
+            grown: std::collections::BTreeSet::new(),
         }
     }
 
@@ -1204,8 +1212,12 @@ impl Publications {
     /// shows nothing of is not published: a workspace of ten thousand publishes the rows on
     /// screen.
     ///
-    /// The answer stands while the store holds what it was read from and the window shows what
-    /// it showed: a frame that changed neither publishes without reading anything.
+    /// The answer stands while the window shows what it showed and nothing it reaches changed:
+    /// a frame that changed neither publishes without reading anything. What changed is what
+    /// the store's watch names, which [`Self::update`] takes in by reading the records it
+    /// reaches again; a change elsewhere in the store (an index answering more of the record, a
+    /// trial run put back) reads nothing here, but a record whose tree holds less than the
+    /// window reaches is read again then.
     pub fn reached(
         &mut self,
         host: &crate::host::Host,
@@ -1214,11 +1226,21 @@ impl Publications {
         shown: &[String],
     ) -> Vec<Rc<ResourceSpec>> {
         let snapshot = host.store().snapshot();
-        let stands = self
-            .shown
-            .as_ref()
-            .is_some_and(|(at, ids)| Arc::ptr_eq(at, &snapshot) && ids.as_slice() == shown);
         let reach = reached_by_doc(app, shown);
+        let mut grown = std::mem::take(&mut self.grown);
+        grown.extend(self.watch.indexed());
+        let regrown = |doc: &str| {
+            snapshot
+                .record_of(doc)
+                .is_some_and(|(app, _)| grown.contains(app))
+        };
+        let stands = self.shown.as_ref().is_some_and(|(at, ids)| {
+            ids.as_slice() == shown
+                && reach.keys().all(|doc| {
+                    self.trees.contains_key(doc) && !(self.short.contains(doc) && regrown(doc))
+                })
+                && (Arc::ptr_eq(at, &snapshot) || !reach.keys().any(|doc| self.watch.names(doc)))
+        });
         if !stands {
             // What the window no longer reaches is no longer published: a window scrolled away
             // from a record holds no part of it.
@@ -1237,6 +1259,11 @@ impl Publications {
                     continue;
                 };
                 let built = whole.build(&snapshot, Some(this));
+                if reach_of(&built.tree, doc) == *this {
+                    self.short.remove(doc);
+                } else {
+                    self.short.insert(doc.clone());
+                }
                 self.trees.insert(doc.clone(), Rc::new(built.tree));
                 self.named_by.insert(doc.clone(), built.named_by);
                 self.reached.insert(doc.clone());
@@ -1245,8 +1272,8 @@ impl Publications {
             // The revision counts what a reader of the whole workspace saw: a reached tree is
             // read for the frame that reached it, so what moved here is the window's, which the
             // surface holds by the ids it shows.
-            self.shown = Some((snapshot, shown.to_vec()));
         }
+        self.shown = Some((snapshot, shown.to_vec()));
         reach
             .keys()
             .filter_map(|doc| self.trees.get(doc).cloned())
@@ -1281,6 +1308,7 @@ impl Publications {
             self.trees.insert(doc.clone(), Rc::new(tree));
             self.named_by.insert(doc.clone(), named_by);
             self.reached.remove(&doc);
+            self.short.remove(&doc);
             touched.push(doc);
             self.revision = self.revision.wrapping_add(1);
             self.structural = self.revision;
@@ -1292,6 +1320,7 @@ impl Publications {
     /// of it, and one the workspace no longer has is gone.
     fn unpublish(&mut self, doc: &str) {
         self.reached.remove(doc);
+        self.short.remove(doc);
         self.named_by.remove(doc);
         if self.trees.remove(doc).is_some() {
             self.revision = self.revision.wrapping_add(1);
@@ -1506,10 +1535,18 @@ impl Publications {
         if reworded {
             self.types.clear();
         }
+        self.grown.extend(changes.indexed.iter().cloned());
         // A package loaded or replaced: the records of a type none declares any more go, and
         // those of a type one declares now are published.
         let reloaded = std::mem::replace(&mut self.packages, host.package_ids()) != self.packages;
-        let all = std::mem::take(&mut self.fresh) || reworded || reloaded || changes.everything;
+        // An index answering more of the record changes no record: a window's trees hold what
+        // it shows, read already ([`Self::reached`]), and only a publication of every item of
+        // every record has more to publish.
+        let all = std::mem::take(&mut self.fresh)
+            || reworded
+            || reloaded
+            || changes.everything
+            || (!changes.indexed.is_empty() && self.whole);
         if all {
             if self.whole {
                 // A caller that reads the whole workspace — a host without frames, the
@@ -1538,7 +1575,7 @@ impl Publications {
             // Every field a change named, not its record alone: what an item's requirement
             // reads is the item's fields, and a record of ten thousand items reads one item's
             // again.
-            let moved = if all || changes.everything {
+            let moved = if all || changes.everything || !changes.indexed.is_empty() {
                 None
             } else {
                 let mut fields: std::collections::BTreeSet<Field> = changes
@@ -1564,7 +1601,7 @@ impl Publications {
             if self.text_moves.len() >= MOTIONS_KEPT {
                 self.text_moves.pop_front();
             }
-            let moved_text = if all || changes.everything {
+            let moved_text = if all || changes.everything || !changes.indexed.is_empty() {
                 TextMoves::Everything
             } else {
                 text_moves(&changes)
@@ -1687,6 +1724,7 @@ impl Publications {
     fn forget(&mut self, touched: &mut Vec<String>) {
         self.shown = None;
         self.reached.clear();
+        self.short.clear();
         if self.trees.is_empty() {
             return;
         }

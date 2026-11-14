@@ -256,6 +256,8 @@ impl TiloStore {
         let mut inner = self.mutate();
         let apps: Vec<AppId> = inner.apps.keys().cloned().collect();
         let mut any = false;
+        let mut reopened = false;
+        let mut landed = BTreeSet::new();
         // An index a read found corrupt is not read again: it is built anew from the record.
         let broken: Vec<AppId> = inner
             .apps
@@ -265,6 +267,7 @@ impl TiloStore {
             .collect();
         for app in broken {
             any = true;
+            reopened = true;
             inner.reopen_broken(&app);
         }
         for app in apps {
@@ -284,6 +287,7 @@ impl TiloStore {
                 continue;
             };
             any = true;
+            landed.insert(app.clone());
             if let Ok((heads, reads)) = ended {
                 inner.count(reads);
                 if inner.after_step(&app, heads, step) {
@@ -322,7 +326,13 @@ impl TiloStore {
         if any {
             inner.rebuild_overlay();
             inner.changed();
-            inner.notify_all();
+            if reopened {
+                inner.notify_all();
+            } else {
+                // A step answers more of the record and changes none of it: what a window
+                // published of the records it shows stands.
+                inner.notify_indexed(&landed);
+            }
         }
         // An index built over fewer chunks than the manifest names answers no row in the ones
         // it does not, and a window would show a list shorter than the workspace's.

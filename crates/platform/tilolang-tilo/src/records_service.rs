@@ -392,8 +392,9 @@ impl RecordService {
     fn watched(&mut self) -> bool {
         use tilolang_runtime::store::Store as _;
         let changes = self.watch.take();
-        let any = changes.everything || !changes.whole.is_empty() || !changes.docs.is_empty();
-        self.moved_unsaid |= changes.everything || !changes.whole.is_empty();
+        let any = !changes.is_empty();
+        self.moved_unsaid |=
+            changes.everything || !changes.indexed.is_empty() || !changes.whole.is_empty();
         // A resource that is gone has no app to name it by: what listed it moved too, and
         // names it no more.
         for key in changes.docs.values().flatten() {
