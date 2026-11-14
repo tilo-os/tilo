@@ -18,7 +18,7 @@ pub(crate) fn new_tab_name() -> String {
 }
 
 /// The window's own door to another application, as a bar reads it at `rect`: the "+" every
-/// tabbed app wears, in no words a bar would hold area for, named as [`new_tab_name`] says.
+/// tabbed app wears, in no words a bar would keep width for, named as [`new_tab_name`] says.
 pub(crate) fn new_tab_control(rect: Rect) -> crate::window_toolbar::BarControl {
     crate::window_toolbar::BarControl::new("new-tab", NEW_TAB_TARGET, rect)
         .named(new_tab_name())

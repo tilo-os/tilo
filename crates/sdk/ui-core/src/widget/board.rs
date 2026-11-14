@@ -320,7 +320,7 @@ impl Board {
     }
 
     /// The width a lane takes on a board `width` wide: a lane's comfortable measure, the same
-    /// on every board and at every window width, so lanes stand left-aligned with the area a
+    /// on every board and at every window width, so lanes stand left-aligned with the width a
     /// wider pane leaves open beside them. Only a pane too narrow for one lane and the board's
     /// gutters narrows it, and then to the pane, so a narrow board shows one whole lane per
     /// page rather than one lane and a sliver of the next.
@@ -802,7 +802,7 @@ mod tests {
 
         phase a_board_keeps_a_gutter_at_both_ends_of_its_lanes;
         // The lanes stand left-aligned at their comfortable measure: the first a gutter in from
-        // the leading edge, each the sibling gap from the last, and the area a wider pane leaves
+        // the leading edge, each the sibling gap from the last, and the width a wider pane leaves
         // open beside them at the trailing edge.
         {
             let theme = Theme::dark();

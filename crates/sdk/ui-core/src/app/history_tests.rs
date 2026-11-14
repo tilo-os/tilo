@@ -5794,7 +5794,9 @@ fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
     use crate::host_chrome::model::CommandGroup;
     use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
     let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
-    let store = RecordOwners::portable(cache).open("test", "workspace").unwrap();
+    let store = RecordOwners::portable(cache)
+        .open("test", "workspace")
+        .unwrap();
     let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
     store.create_record(&checkout).unwrap();
     let mut state = State::from_doc(

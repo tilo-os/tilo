@@ -5,7 +5,7 @@
 use crate::time::{Duration, Instant};
 
 /// Only when the output reports no refresh rate (some X11 and headless
-/// hosts): the common shell rate, until the output says otherwise.
+/// hosts): the common display rate, until the output says otherwise.
 const UNREPORTED_REFRESH_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
 const REFRESH_MILLIHERTZ: std::ops::RangeInclusive<u32> = 1_000..=1_000_000;

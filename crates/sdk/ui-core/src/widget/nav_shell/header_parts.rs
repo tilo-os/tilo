@@ -33,7 +33,7 @@ pub(super) struct HeaderTitle {
     pub(super) edited: Option<super::TitleShown>,
     theme: Theme,
     rect: Rect,
-    /// The least area the title and its count need to read as words rather than as an ellipsis
+    /// The least width the title and its count need to read as words rather than as an ellipsis
     /// alone, as the last measure found it.
     least_width: f64,
     /// The title, count, cover and edited place the last measure saw; a change needs another.
@@ -64,14 +64,14 @@ impl HeaderTitle {
         }
     }
 
-    /// The least area the title needs to read as words rather than as an ellipsis alone, as the
+    /// The least width the title needs to read as words rather than as an ellipsis alone, as the
     /// last measure found it.
     pub(super) fn least_width(&self) -> f64 {
         self.least_width
     }
 
-    /// Whether the row's `has` leaves the title area to show its first letter and an ellipsis,
-    /// rather than an ellipsis alone (`HeaderRowLayout::title_opens`). A title given no area at
+    /// Whether the row's `has` leaves the title width to show its first letter and an ellipsis,
+    /// rather than an ellipsis alone (`HeaderRowLayout::title_opens`). A title given no width at
     /// all is not painted, so there is no ellipsis to misread.
     pub(super) fn opens_within(&self, has: f64) -> bool {
         self.title.is_none()

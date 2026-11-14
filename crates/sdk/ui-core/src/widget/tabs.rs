@@ -420,8 +420,8 @@ pub struct TabBar {
     /// settings window's sections) has no close control.
     closable: bool,
     new_tab: bool,
-    /// The area the window's search keeps for its open query at the least (`None`: the app does
-    /// not search in place, so the bar's slots need no area for it): a narrow window's bar leaves
+    /// The width the window's search keeps for its open query at the least (`None`: the app does
+    /// not search in place, so the bar's slots need no width for it): a narrow window's bar leaves
     /// the app's slots at least that much to reach back over.
     search_least: Option<f64>,
     marks: HashMap<u64, TabMark>,
@@ -704,13 +704,13 @@ impl TabBar {
     }
 
     /// The window carries its own search control after the tabs, `width` wide with its gap; the
-    /// tabs leave it that area and carry no chip of their own. `None` gives the area back.
+    /// tabs leave it that width and carry no chip of their own. `None` gives the width back.
     pub fn set_search_control(&mut self, width: Option<f64>) {
         self.touch();
         self.search_control = width;
     }
 
-    /// The window's search keeps `least` of area for its open query, reaching back over the
+    /// The window's search keeps `least` of width for its open query, reaching back over the
     /// active tab's slots ([`crate::widget::WindowSearch::least_span`]); `None` where the app
     /// does not search in place, and the slots owe it nothing.
     pub fn set_search_least(&mut self, least: Option<f64>) {
@@ -1893,7 +1893,7 @@ impl TabBar {
         );
     }
 
-    /// Maximize and search chips, painted exactly when `apply_layout` found area, so they slide out
+    /// Maximize and search chips, painted exactly when `apply_layout` found width, so they slide out
     /// of the pill's right edge as it opens. Split out to stay inside the `too_many_lines` budget.
     fn draw_pill_action_chips(&self, ctx: &mut PaintCtx<'_>, pill: &PillPaint<'_>) {
         let PaintCtx {
@@ -6261,7 +6261,7 @@ mod tests {
                         "pill {i} renders {shown:?}, which is not a prefix of {title:?}",
                     );
                 }
-                // The squeeze is what buys the titles their area, not an overflow.
+                // The squeeze is what buys the titles their width, not an overflow.
                 for (i, r) in b.tab_rects().iter().enumerate() {
                     assert!(
                         r.x1 <= bar_rect.x1 + 0.5,

@@ -129,7 +129,7 @@ impl PolarAreaMarks {
         )
     }
     /// Each sector's label inside its sector, centred on the sector's
-    /// middle, largest sector first: shortened to the area the sector has
+    /// middle, largest sector first: shortened to the width the sector has
     /// there and dropped (the tooltip names it) where it would spill out of
     /// the sector or collide with a label already placed.
     fn draw_sector_labels(

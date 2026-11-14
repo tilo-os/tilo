@@ -333,7 +333,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// Keep a readable cell width while flexible columns share extra area.
+    /// Keep a readable cell width while flexible columns share extra width.
     #[must_use]
     pub fn min_width(mut self, width: f32) -> Self {
         self.min_width = if width.is_finite() {
@@ -344,7 +344,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
         self
     }
 
-    /// Keep a flexible column from growing past `width` (a key beside its value); the area it leaves
+    /// Keep a flexible column from growing past `width` (a key beside its value); the width it leaves
     /// goes to the other flexible columns.
     #[must_use]
     pub fn max_width(mut self, width: f32) -> Self {
@@ -770,7 +770,7 @@ pub struct DataTableCore {
     hbar: Scrollbar,
     /// The table takes the height its parent gives it and scrolls inside.
     fill_height: bool,
-    /// Columns hidden for area, by priority.
+    /// Columns hidden for width, by priority.
     hidden: Vec<bool>,
     tree: Option<TreeRows<AnyRow>>,
     /// A sort shown on a header without the table reordering its rows.
@@ -4149,7 +4149,7 @@ impl Widget for DataTableCore {
         );
         self.content_w = content_w;
         // Keep a gutter under the rows for the sideways bar while the columns
-        // overflow; the next layout makes the area.
+        // overflow; the next layout makes it.
         let reserve = if content_w > band.width() + 0.5 {
             self.gutter
         } else {

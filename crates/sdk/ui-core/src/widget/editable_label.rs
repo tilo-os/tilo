@@ -148,7 +148,7 @@ impl EditableLabel {
         self
     }
 
-    /// The area the editing field keeps beside its value: its own insets and the carets at its
+    /// The width the editing field keeps beside its value: its own insets and the carets at its
     /// ends. A surface as wide as the value plus this shows the whole value while it is typed,
     /// which is what a label sizing the surface it stands in has to give it.
     #[must_use]

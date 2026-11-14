@@ -114,10 +114,10 @@ pub struct WindowFrame {
     /// The name the frame's own bar shows, and whether the window was in front: pressing the
     /// bar again is nothing, so the name is built again only when it says something else.
     title: Option<(String, bool)>,
-    /// The name the bar last built: the window's name elided to one line in the area the bar
+    /// The name the bar last built: the window's name elided to one line in the width the bar
     /// has, and nothing while the bar cannot fit a name at all.
     shown: Option<(String, bool)>,
-    /// How wide the controls were laid out, the area the content's header row keeps for
+    /// How wide the controls were laid out, the width the content's header row keeps for
     /// them.
     controls_width: f64,
     /// The controls' width changed since the header row was told: lay out again.
@@ -160,14 +160,14 @@ const CONTROLS: usize = 1;
 /// In the content's column: the frame's own bar, then the content.
 const OWN_BAR: usize = 0;
 const BODY: usize = 1;
-/// The area the frame's own bar keeps for the window's name, logical pixels: below it a name
+/// The width the frame's own bar keeps for the window's name, logical pixels: below it a name
 /// would be an ellipsis and nothing more, so the bar shows the decorations alone. Six steps of
 /// the spacing scale, so it follows the theme's own.
 fn name_width(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s16 + theme.tokens.spacing.s8)
 }
 
-/// In the frame's own bar: the window's tabs, its name, then the area the controls keep.
+/// In the frame's own bar: the window's tabs, its name, then the width the controls keep.
 const TABS: usize = 0;
 const NAME: usize = 1;
 const AFTER: usize = 2;
@@ -177,12 +177,12 @@ fn empty() -> Element {
 }
 
 /// How the tabs stand in the frame's own bar: the bar of a window of several places is
-/// theirs, so they take its area; a window of one leaves that slot empty.
+/// theirs, so they take its width; a window of one leaves that slot empty.
 fn tabs_fit(tabbed: bool) -> Fit {
     if tabbed { Fit::fill(1.0) } else { Fit::hug() }
 }
 
-/// How the area after the tabs stands in the bar: what the tabs leave, which a window of one
+/// How the width after the tabs stands in the bar: what the tabs leave, which a window of one
 /// gives to its name.
 fn after_fit(tabbed: bool) -> Fit {
     if tabbed { Fit::hug() } else { Fit::fill(1.0) }
@@ -360,7 +360,7 @@ impl WindowFrame {
         self.stack_at(CONTROLS)
     }
 
-    /// The row of the frame's own bar: the window's tabs, its name, and the area the controls
+    /// The row of the frame's own bar: the window's tabs, its name, and the width the controls
     /// keep.
     fn own_bar_row(&mut self) -> Option<&mut Stack> {
         self.column()?
@@ -463,9 +463,9 @@ impl WindowFrame {
         }
     }
 
-    /// The window's name, elided to one line of the area `spare` the bar has for it, as a tab's
+    /// The window's name, elided to one line of the width `spare` the bar has for it, as a tab's
     /// title is: a name too long for the bar ends in an ellipsis, never in a second line taller
-    /// than the bar. Below the area a name needs at all the bar shows no name: the decorations
+    /// than the bar. Below the width a name needs at all the bar shows no name: the decorations
     /// alone say whose window it is.
     fn elided(&self, name: &str, m: &HeaderRowMetrics, theme: &Theme, spare: f64) -> String {
         let budget = spare - m.gutter;
@@ -707,9 +707,9 @@ impl Decorator for WindowFrame {
         fit.height.max = Some(height);
         self.layers
             .set_placement(CONTROLS, fit, 1, Some(At::TopTrailing));
-        // // The tabs and the name have the area the controls leave, never more: a window narrow // enough
-        // that its bar cannot hold them both squeezes them, and the strip shows the // titles it can,
-        // rather than the two covering each other.
+        // The tabs and the name have the width the controls leave, never more: a window narrow
+        // enough that its bar cannot hold them both squeezes them, and the strip shows the titles
+        // it can, rather than the two covering each other.
         if spare > 0.0 {
             #[allow(
                 clippy::cast_possible_truncation,

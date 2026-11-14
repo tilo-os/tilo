@@ -289,7 +289,7 @@ impl GroupRow {
     }
 
     /// The rect a window let go at `p` floats in: the floating size, hung from the hand,
-    /// kept inside the row's display with the area its card draws in.
+    /// kept inside the row's display with the margin its card draws in.
     #[must_use]
     pub fn float_rect_at(&self, p: Point) -> Rect {
         let at = Rect::from_origin_size(
@@ -299,7 +299,7 @@ impl GroupRow {
         self.keep_float_inside(at)
     }
 
-    /// `at` kept inside the shell the row stands on ([`keep_float_inside`]).
+    /// `at` kept inside the display the row stands on ([`keep_float_inside`]).
     #[must_use]
     pub fn keep_float_inside(&self, at: Rect) -> Rect {
         keep_float_inside(self.rect, at)
@@ -370,7 +370,7 @@ impl GroupRow {
     }
 }
 
-/// `at` kept inside the shell `area`, clear of its edge by [`FLOAT_CARD_MARGIN`]: the card a
+/// `at` kept inside `area`, clear of its edge by [`FLOAT_CARD_MARGIN`]: the card a
 /// float draws round its window — the band of its own ground and the focus ring outside it
 /// — stays whole.
 #[must_use]

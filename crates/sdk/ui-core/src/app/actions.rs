@@ -3135,7 +3135,7 @@ impl App {
     }
 }
 
-/// Area for a directory page's own fields (revision, cursor, flags and the
+/// The wire bytes for a directory page's own fields (revision, cursor, flags and the
 /// row list) beyond its rows, on the wire.
 const DIRECTORY_PAGE_WIRE_BYTES: usize = ::collaboration::action_directory::PAGE_WIRE_BYTES;
 

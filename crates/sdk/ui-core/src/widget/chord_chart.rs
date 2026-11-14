@@ -141,7 +141,7 @@ impl ChordMarks {
         theme.tokens.colors.presence.series(index)
     }
 
-    /// The area the labels need beside the ring: the widest label, never
+    /// The width the labels need beside the ring: the widest label, never
     /// more than a quarter of the chart, so the ring keeps its size.
     fn measure_label_width(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         if !self.style.show_labels {
@@ -159,7 +159,7 @@ impl ChordMarks {
     }
 
     /// Each arc's label outside its arc, largest arc first: shortened to the
-    /// area left before the chart's edge, and dropped (the tooltip names
+    /// width left before the chart's edge, and dropped (the tooltip names
     /// the arc) where it would collide with a label already placed.
     fn label_layout(
         &self,

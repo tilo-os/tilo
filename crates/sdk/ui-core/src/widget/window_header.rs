@@ -129,7 +129,7 @@ pub trait WindowHeader {
     /// Merge the window's bar into this header row, or stop (`None`). The row reserves
     /// `bar.controls_width` at its trailing end for the window's controls, which the host paints
     /// there, so the app's header and the window's controls read as one bar instead of two
-    /// stacked ones. The row stands at every time: the window's controls come into the area it
+    /// stacked ones. The row stands at every time: the window's controls come into the width it
     /// keeps for them, never over the app's title or actions. Returns whether the row took the
     /// bar; a row that does not leaves the host to float its controls over the window.
     fn set_window_bar(&mut self, bar: Option<WindowBar>) -> bool {
@@ -361,7 +361,7 @@ impl RowControl {
     }
 }
 
-/// The area a header row keeps at its trailing end for the window's furniture
+/// The width a header row keeps at its trailing end for the window's furniture
 /// ([`RowFurniture`]): the window's own controls, the window's search and its new-tab door, each
 /// with the gap the bar keeps between its sections. Every window that lets its row hold the bar
 /// reserves this, so its app's own controls end where the window's begin.
@@ -375,7 +375,7 @@ pub fn merged_row_width() -> f64 {
 
 /// What a row `width` wide keeps at its trailing end for the window's furniture: everything
 /// [`merged_row_width`] names while the bar is wider than a phone's, and the window's own controls
-/// alone where it is not. A bar that narrow is the app's row, and the area its own controls need
+/// alone where it is not. A bar that narrow is the app's row, and the width its own controls need
 /// there is worth more than the window's search and new-tab door, which such a row draws for
 /// itself (its own search control, its own tabs `+`).
 #[must_use]
@@ -394,7 +394,7 @@ pub fn merged_row_width_in(width: f64) -> f64 {
     (wide.x1 - leading).max(0.0)
 }
 
-/// Whether a bar `width` wide keeps area for the window's search beside the window's own controls
+/// Whether a bar `width` wide keeps a place for the window's search beside the window's own controls
 /// ([`RowFurniture::place_search`]): not where the bar is no wider than a phone's, so a row there
 /// keeps its own search control instead ([`WindowHeader::set_window_presents_search`]).
 #[must_use]

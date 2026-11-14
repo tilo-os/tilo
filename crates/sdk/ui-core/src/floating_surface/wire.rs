@@ -467,7 +467,7 @@ pub struct HostNetworkStatus {
 }
 
 /// Shell → app lifecycle. The shell supplies one authoritative combined
-/// shell coordinate space and explicitly acknowledges ownership changes;
+/// one combined coordinate space and explicitly acknowledges ownership changes;
 /// transports must not infer either from timing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

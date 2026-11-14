@@ -756,7 +756,7 @@ fn placement_parent<'a>(
 mod tests {
     use super::Disclosing;
 
-    /// A band opening reaches its whole height and gap, so what holds it knows the area it
+    /// A band opening reaches its whole height and gap, so what holds it knows the height it
     /// ends in while it is still small.
     #[test]
     fn a_band_on_its_way_reaches_its_whole_height() {

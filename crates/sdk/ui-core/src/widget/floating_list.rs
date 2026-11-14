@@ -198,7 +198,7 @@ struct WidthKey {
     text_scale: f32,
 }
 
-/// A floating list of rows under (or, without area, above) an anchor: the
+/// A floating list of rows under (or, without height, above) an anchor: the
 /// one menu list behind [`crate::widget::Autocomplete`], a code editor's
 /// caret completion, the filter and slash menus, a dropdown's open list and
 /// every context menu.
@@ -206,7 +206,7 @@ struct WidthKey {
 /// It is a floating Panel (`floating_surface`, the panel radius, the floating
 /// shadow) placed by `floating_surface::place_aligned`, so it flips above its
 /// anchor near the window's bottom and shifts to stay inside it. More rows
-/// than fit scroll, the armed row always in view; a list taller than the area
+/// than fit scroll, the armed row always in view; a list taller than the height
 /// beside its anchor shrinks to it. While rows are on their way the
 /// framework's placeholder stands where the first will be
 /// ([`crate::arriving`]); a status line stands in for rows when there are
@@ -319,7 +319,7 @@ impl<R: FloatingRow> FloatingList<R> {
     }
 
     /// Never narrower than `width`, so a picker over short labels keeps
-    /// area for its field and hints.
+    /// width for its field and hints.
     #[must_use]
     pub fn with_min_width(mut self, width: f64) -> Self {
         self.set_min_width(width);
@@ -813,7 +813,7 @@ impl<R: FloatingRow> FloatingList<R> {
             .snap(self.placed.map_or(0.0, |rect| rect.height()));
     }
 
-    /// The panel's rect: under the anchor, or above it when there is more area there,
+    /// The panel's rect: under the anchor, or above it when there is more height there,
     /// inside the viewport.
     #[must_use]
     pub fn rect(&self) -> Option<Rect> {

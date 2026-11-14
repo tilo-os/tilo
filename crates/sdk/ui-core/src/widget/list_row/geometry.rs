@@ -298,7 +298,7 @@ impl ListRowFace<'_> {
     }
 
     /// How far inside the row's edge its trailing slot ends: its own marks
-    /// after it, or the area its list keeps there if that is wider.
+    /// after it, or the width its list keeps there if that is wider.
     pub(super) fn after_trailing(&self, m: &RowMetrics) -> f64 {
         self.marks_after_trailing(m).max(self.trailing_after)
     }

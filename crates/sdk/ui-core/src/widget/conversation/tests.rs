@@ -459,7 +459,7 @@ fn enter(held: ModifiersState, repeat: bool) -> ComposerIntent {
 }
 
 tilo_test_env::scenario! {
-    /// Runs, reserved area and the colour of your own words in the list.
+    /// Runs, reserved width and the colour of your own words in the list.
     /// Each phase was a test of its own and builds its own fixture.
     fn the_conversation_list_groups_runs_and_marks_days;
 

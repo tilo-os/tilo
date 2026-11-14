@@ -112,7 +112,7 @@ impl WindowGroup {
     /// What a control of the window's furniture does when a person presses it there, as assistive
     /// technology and automation press it by its node. `None` for a target that is not the
     /// furniture's (the window's bar answers those), else whether the action ran: nothing runs
-    /// while no row holds the bar, or where the row had no area to place the control.
+    /// while no row holds the bar, or where the row had no width to place the control.
     pub(super) fn perform_held_furniture_action(
         &mut self,
         target: &str,

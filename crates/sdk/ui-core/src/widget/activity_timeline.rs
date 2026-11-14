@@ -3048,7 +3048,7 @@ impl ActivityTimeline {
         }
     }
 
-    /// The area the author pill takes at the strip's right edge, which the
+    /// The width the author pill takes at the strip's right edge, which the
     /// class chips leave it: its label, clamped under half the strip.
     fn author_pill_width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
         if !self.show_author_pill {
@@ -3091,7 +3091,7 @@ impl ActivityTimeline {
     }
 
     /// Where the strip's chips stand, in the strip's height, measured in the
-    /// theme's type: the class chips left to right in the area the author
+    /// theme's type: the class chips left to right in the width the author
     /// pill leaves them, or — when the strip filters by who — Everyone and
     /// then a chip per person and agent. Chips that do not fit are left out
     /// rather than squeezed, and a chip left out has no place to press.

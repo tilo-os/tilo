@@ -2433,7 +2433,7 @@ pub use tree_component::{
     TreeViewRowProps,
 };
 /// A box a widget paints text into, whose own box cannot hold that text: the height the text
-/// takes at the width of its box, the area the box gives it, and what it says. Rows a box lays
+/// takes at the width of its box, the width the box gives it, and what it says. Rows a box lays
 /// out and never paints read as a line that had nothing to say above space standing empty, so
 /// an audit looks for them rather than trusting the geometry around them.
 #[derive(Clone, Debug, PartialEq)]

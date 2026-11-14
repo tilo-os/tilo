@@ -54,7 +54,7 @@ impl LabelPlacer {
     }
 }
 
-/// The smallest area a label is shortened into: three characters' worth.
+/// The smallest width a label is shortened into: three characters' worth.
 /// Below it the label is dropped rather than shown as a stub.
 pub(crate) fn min_label_width(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
     3.0 * f64::from(tr.measure_style("M", None, style).0)

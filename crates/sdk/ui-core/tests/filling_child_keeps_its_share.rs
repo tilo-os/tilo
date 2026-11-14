@@ -1,6 +1,6 @@
-//! A child that fills its parent takes exactly its share of the area along the parent's main
+//! A child that fills its parent takes exactly its share along the parent's main axis: a
 //! axis: a fixed strip above it keeps its own height, and the filling child holds the rest,
-//! scrolling or clipping its content inside that share. It never pushes the parent past the area
+//! scrolling or clipping its content inside that share. It never pushes the parent past the size
 //! the parent was given.
 
 #![cfg(test)]

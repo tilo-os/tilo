@@ -1,5 +1,5 @@
 //! Synthetic two-device topology rendered locally by the production widget.
-//! No shell, pairing, input capture, video decoder, or privileged service.
+//! No real shell, pairing, input capture, video decoder, or privileged service.
 use std::path::Path;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::state::State;

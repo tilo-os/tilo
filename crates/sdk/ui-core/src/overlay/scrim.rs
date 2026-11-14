@@ -138,7 +138,7 @@ mod tests {
         fn a_scrim_plate_and_fade_draw_what_their_area_asks;
 
         phase the_plate_keeps_its_area_behind_the_words_and_its_rounded_corners;
-        // The plate is the words' own area and nothing more: a fill over the picture, rounded at the
+        // The plate is the words' box and nothing more: a fill over the picture, rounded at the
         // theme's control radius, so what it covers still reads as the picture around it.
         {
             let theme = Theme::dark();
@@ -173,7 +173,7 @@ mod tests {
             }
             #[cfg(feature = "native")]
             {
-                // The words' own area is dimmed, and a corner inside the rect but
+                // The words' box is dimmed, and a corner inside the rect but
                 // outside the radius still shows the picture, so a caption never
                 // reads as a black rectangle laid over the frame.
                 let (width, height) = (240_u32, 60_u32);

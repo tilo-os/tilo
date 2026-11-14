@@ -539,7 +539,7 @@ mod tests {
 
         phase stacked_faces_still_overlap_and_fit_a_bar;
         // The overlap still reads as a stack: each face stands nearer than its whole width, and the
-        // bar's four faces fit the area a bar gives them.
+        // bar's four faces fit the width a bar gives them.
         {
             let bar = FaceStack::BAR;
             let outer = bar.side + 2.0 * (RING + GAP);

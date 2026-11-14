@@ -1273,7 +1273,7 @@ impl WindowGroup {
     /// The window's own node style. `flex_grow: 0` keeps a group at its
     /// declared `WindowWidth` regardless of sibling count or slack: placing
     /// a new app never resizes siblings, the strip extends past the viewport
-    /// instead. A maximized window takes the area instead.
+    /// instead. A maximized window takes the width instead.
     pub(crate) fn own_style(&self) -> Style {
         let mut style = Style {
             display: taffy::Display::Flex,
@@ -1291,7 +1291,7 @@ impl WindowGroup {
         };
         if self.maximized {
             style.size.width = Dimension::auto();
-            // A maximized window takes the strip's area and no more: it is not
+            // A maximized window takes the strip's width and no more: it is not
             // measured at its content's least width (`filling`).
             style = crate::widget::layout::filling(style, 1.0e6);
         }

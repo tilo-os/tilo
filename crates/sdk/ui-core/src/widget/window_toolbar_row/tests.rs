@@ -445,7 +445,7 @@ tilo_test_env::scenario! {
         assert!(after > saved.width, "the word follows the whole label");
         assert!(edited.width > saved.width);
         assert_eq!(edited.line, saved.line, "the label itself is unchanged");
-        // Too narrow for both: the label keeps the area.
+        // Too narrow for both: the label keeps the width.
         let narrow = LocationLabel::measure(&mut tr, &theme, "Harbour cut", Some(edited_word()), 30.0);
         assert!(narrow.edited.is_none());
 
@@ -1373,7 +1373,7 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A row with no area for the switcher folds the views into a menu that
+/// A row with no width for the switcher folds the views into a menu that
 /// names the chosen view: a press (a click or a tap) lists every view, the
 /// chosen one checked, and choosing one hands the app its id. The menu is
 /// as wide as its widest view, so choosing another never moves the row.

@@ -42,7 +42,7 @@ pub struct DataTableColumnProps {
     /// What the column is called, as its header, and the key its cells are held under in a row.
     #[component(required, positional)]
     pub header: String,
-    /// How wide it is: as wide as its content, one share of the spare area, or `pixels` wide.
+    /// How wide it is: as wide as its content, one share of the spare width, or `pixels` wide.
     pub width: Option<TableColumnWidth>,
     /// Its width in pixels, when `width` is `fixed`.
     pub pixels: Option<f64>,

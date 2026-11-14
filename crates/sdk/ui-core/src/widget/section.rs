@@ -70,7 +70,7 @@ struct HeaderMetrics {
     action_pad: f64,
 }
 
-/// How far below the top of `rect` the header's own box stands: area the box holds past the
+/// How far below the top of `rect` the header's box stands: the margin it keeps past the
 /// header's height is the finger's, and stands over the header's line, never between it and
 /// what it heads.
 fn foot(rect: Rect, header_h: f64) -> f64 {
@@ -258,7 +258,7 @@ impl SectionHeader {
     }
 }
 
-/// The area a group's heading takes over the rows it holds: one small control's height around
+/// The band a group's heading takes over the rows it holds: one small control's height around
 /// the heading's line.
 #[must_use]
 pub fn band_height(theme: &Theme) -> f64 {
@@ -1612,7 +1612,7 @@ impl Section {
 
     /// One column of trailing controls per run of consecutive list rows:
     /// where a row's control has marks after it (a status dot, a check, a
-    /// chevron), every row's control keeps that area, and a run whose
+    /// chevron), every row's control keeps that width, and a run whose
     /// controls have none keeps them on the edge.
     fn share_trailing_column(&mut self, theme: &Theme) {
         let marks: Vec<Option<f64>> = self

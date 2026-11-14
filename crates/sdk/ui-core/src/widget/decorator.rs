@@ -73,7 +73,7 @@ pub trait Decorated: Widget {
 }
 
 /// [`Decorated`], mutably: the control a decorator wraps, to change how it shows. A row that
-/// gives its actions less area asks the face it fits whether it can shrink, and a wrapped one
+/// gives its actions less width asks the face it fits whether it can shrink, and a wrapped one
 /// answers for the control inside.
 pub trait DecoratedMut: Widget {
     fn decorated_mut(&mut self) -> &mut dyn Widget;

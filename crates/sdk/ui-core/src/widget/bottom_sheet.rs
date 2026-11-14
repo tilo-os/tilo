@@ -73,7 +73,7 @@ pub struct SheetGeometry {
 /// while it peeks; `grip` is the grip's height; `least_half` is the least
 /// a half-height sheet must hold (the panel's width where it docks): in a
 /// window too short for that, half height is the whole height, so what it
-/// holds keeps the area it needs.
+/// holds keeps the height it needs.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SheetFrame {
     pub area: Rect,

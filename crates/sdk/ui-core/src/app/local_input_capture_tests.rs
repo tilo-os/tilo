@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
                 .unwrap()
         };
         // CapturePeer never returns a reply. Every synchronous call commits its
-        // edit, whether or not the reports still on their way leave area for
+        // edit, whether or not the reports still on their way leave a place for
         // its own: an edit beyond the queue lands unreported, and says so.
         let mut reported = 0;
         for expected in 1..=129 {

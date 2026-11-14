@@ -410,7 +410,7 @@ impl PresenceCtx {
         let left = (rect.x0 - bounds.x0 - gap).max(0.0);
         let (preferred_w, preferred_h) = chip_size(ctx.theme, ctx.text, label);
         // Where the chip may stand, best first: beside the control, then under
-        // it, then squeezed into what area either side leaves.
+        // it, then squeezed into the width either side leaves.
         let mut candidates = Vec::with_capacity(4);
         if right >= preferred_w {
             candidates.push((right, rect.x1 + gap, rect.y0));

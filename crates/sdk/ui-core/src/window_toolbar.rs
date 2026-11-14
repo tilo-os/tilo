@@ -217,8 +217,8 @@ pub struct ToolbarLocation {
     pub label: String,
     /// Narrower forms of the label, widest first, each saying the same (a period's
     /// `Jun 29 – Jul 5` for `Mon, Jun 29 – Sun, Jul 5`): where the label does not fit,
-    /// the bar shows the widest of them that fits the area the location has once
-    /// everything else it can fold is in the menu, and keeps that area for it, so a wider
+    /// the bar shows the widest of them that fits the width the location has once
+    /// everything else it can fold is in the menu, and keeps that width for it, so a wider
     /// window never shows a narrower form.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shorter: Vec<String>,
@@ -1608,7 +1608,7 @@ impl BarLabel {
 }
 
 /// One window's bar, as it lays itself out across the window: what a person sees in it,
-/// and what area it leaves empty.
+/// and what width it leaves empty.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct BarLayout {
     pub spare: f64,

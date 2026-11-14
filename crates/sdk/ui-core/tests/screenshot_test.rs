@@ -203,7 +203,7 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
             use tilo_ui::theme::Theme;
             use tilo_ui::widget::{TabBar, TabDescriptor, Widget};
 
-            // 240 wide gives us area for the first 96 px min-width pill + gap;
+            // 240 wide leaves width for the first 96 px min-width pill + gap;
             // 44 tall matches TAB_BAR_HEIGHT exactly.
             let (bar_w, bar_h) = (240u32, 44u32);
             let mut renderer = tilo_test_env::require_capability!(

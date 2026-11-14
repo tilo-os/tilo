@@ -48,7 +48,7 @@ pub struct DragItemProps {
     #[component(required)]
     pub title: String,
     /// The part of the run it belongs to: a bar's leading group, its centre, its trailing
-    /// group, or the area between two groups.
+    /// group, or the gap between two groups.
     pub group: Option<super::drag_run::RunGroup>,
     /// What it shows.
     #[component(slot(default))]

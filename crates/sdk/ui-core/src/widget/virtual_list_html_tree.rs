@@ -124,7 +124,7 @@ fn nest_rows(
     out
 }
 
-/// `children` in a group of their own under `parent`, standing over the area they take.
+/// `children` in a group of their own under `parent`, standing over the region they take.
 fn group(parent: &str, row: [f64; 4], children: Vec<Composed>) -> Composed {
     let mut rect = Rect::new(
         children.first().map_or(row[0], |child| child.rect[0]),

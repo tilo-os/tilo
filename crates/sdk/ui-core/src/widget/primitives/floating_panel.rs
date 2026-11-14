@@ -279,7 +279,7 @@ impl FloatingPanel {
         self.width = px;
     }
 
-    /// Take the width of the area it is offered rather than the width of
+    /// Take the width it is offered rather than the width of
     /// its content: a panel that is the whole of its surface, as a popover's
     /// is, so a long row never stands past the window's edge.
     #[must_use]
@@ -288,7 +288,7 @@ impl FloatingPanel {
         self
     }
 
-    /// Take the height of the area it is offered rather than the height of
+    /// Take the height it is offered rather than the height of
     /// its content: a panel whose surface fixes its footprint, so a page that
     /// shows less never moves the panel's edges and one that shows more
     /// scrolls inside the body it was given.
@@ -833,7 +833,7 @@ mod tests {
         );
     }
 
-    /// A panel arriving asks for the height of its page on its first frame, not the area it was
+    /// A panel arriving asks for the height of its page on its first frame, not the height it was
     /// given before: the frame a person first sees is fitted.
     #[test]
     fn a_panel_arriving_asks_for_the_height_of_its_page() {

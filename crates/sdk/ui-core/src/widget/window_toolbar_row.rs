@@ -555,10 +555,10 @@ impl ToolbarRow {
         self.shown.as_ref().map(|(_, toolbar)| toolbar)
     }
 
-    /// Whether the last layout was short of the area the slots need: a button
+    /// Whether the last layout was short of the width the slots need: a button
     /// sharing another's place, the app's location with nowhere to stand, or
     /// that location cut short in the shorter form it names itself in. A bar
-    /// that can give the row more area asks before it keeps it.
+    /// that can give the row more width asks before it keeps it.
     pub(crate) fn crowded(&self) -> bool {
         let (app_row, _, _) = self.place_reactions(self.row);
         let forms = self.views_size.as_ref().map(|measured| &measured.forms);

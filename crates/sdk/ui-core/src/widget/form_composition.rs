@@ -291,7 +291,7 @@ pub struct Field {
     has_help: bool,
     label_placement: Option<LabelPlacement>,
     trailing_control: bool,
-    /// The control takes the area the label leaves instead of its own
+    /// The control takes the width the label leaves instead of its own
     /// width, even in a grouped section (a read-only value that wraps only
     /// when the row is full).
     filling_control: bool,
@@ -442,7 +442,7 @@ impl Field {
         self.trailing_control = true;
         self
     }
-    /// The control takes all the area the label leaves, instead of the
+    /// The control takes all the width the label leaves, instead of the
     /// narrow column a chooser gets, even in a grouped (settings) row: for a
     /// read-only value, which then wraps only when the row is really full.
     #[must_use]

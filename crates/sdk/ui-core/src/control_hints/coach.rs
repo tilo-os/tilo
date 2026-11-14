@@ -138,7 +138,7 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
     }
 
     /// The hint on screen has nowhere to stand now (a card over the shell covers what it points at, or
-    /// leaves it no area beside it): it goes, as one whose anchor went, and may come back once it has
+    /// leaves it no place beside it): it goes, as one whose anchor went, and may come back once it has
     /// been away.
     pub fn dismiss(&mut self, now: Instant) {
         let Some(current) = self.current else {

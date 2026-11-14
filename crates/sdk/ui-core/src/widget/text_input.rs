@@ -3360,7 +3360,7 @@ impl TextInput {
     /// button beside it. A single-line field centres its text in that band ([`Self::text_band`]);
     /// a wrapping field that holds one line centres it the same way, so the words and the caret
     /// stand in the middle of the control a person touches rather than at its top edge. Anything
-    /// more is not a band's area: text that wraps, a field given lines of its own (`min_lines`, a
+    /// more is not a band's height: text that wraps, a field given lines of its own (`min_lines`, a
     /// note's box), a document's page and a field stretched to fill a pane all start at the inset
     /// and grow down.
     fn multiline_top(&self) -> f64 {
@@ -5139,8 +5139,8 @@ impl Widget for TextInput {
                 );
             }
             self.layout_dirty = false;
-            // Its height is the band `build_layout` set. Its width is the area
-            // it is given; where nothing gives it area (a row that wraps, a run
+            // Its height is the band `build_layout` set. Its width is the width
+            // it is given; where nothing gives it a width (a row that wraps, a run
             // that hugs its items) it stands at its own width, never at 0.
             return taffy::Size {
                 width: known.width.unwrap_or(self.own_width),
@@ -5356,7 +5356,7 @@ impl Widget for TextInput {
             text_y,
         );
 
-        // The text shows only in the area its scroll keeps the caret in: inside the field's inset
+        // The text shows only in the width its scroll keeps the caret in: inside the field's inset
         // on both edges, never under the show/hide control or the trailing accessory.
         #[allow(
             clippy::arithmetic_side_effects,

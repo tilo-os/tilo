@@ -91,7 +91,7 @@ pub struct BarGaugeProps {
     pub label: Option<String>,
     /// The reading over the track's end: "412 GB of 512 GB".
     pub readout: Option<String>,
-    /// A share with no status (storage by kind, a quota with area): the plain fill, never a
+    /// A share with no status (storage by kind, a quota not yet full): the plain fill, never a
     /// status colour.
     pub neutral: bool,
     /// Where the fill turns warning, from 0 to 1: 0.6 unless said.

@@ -1320,7 +1320,7 @@ tilo_test_env::scenario! {
                 "the row gave up the words for the face"
             );
             // A change arrives while the row is short: the mark takes the new words for when the row
-            // gives it area again, and stays one face where it stands now.
+            // gives it width again, and stays one face where it stands now.
             let fresh = Button::new("mark", "3 changes by Ada and Bo").with_faces_of(faces());
             assert!(
                 button.take_words(&fresh),
@@ -1478,7 +1478,7 @@ tilo_test_env::scenario! {
     fn a_button_measures_from_its_label_and_control_size;
 
     phase a_menu_button_makes_way_for_its_chevron;
-    // A button that opens a menu makes way for its chevron after the
+    // A button that opens a menu keeps a chevron after the
     // label, so the label is never elided to fit it; an icon-only one
     // stays square.
     {

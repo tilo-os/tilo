@@ -633,10 +633,10 @@ impl TileHost {
         }
         Style {
             size: fill,
-            // The window gives its app its area; what the app shows never
+            // The window gives its app its size; what the app shows never
             // sets a floor under it. With the automatic minimum, a page whose
-            // document was taller than the window kept the tile from making
-            // way for the window's bar, and pushed the window past its strip.
+            // document was taller than the window kept the tile from shrinking for the window's bar, and
+            // pushed the window past its strip.
             min_size: Size {
                 width: Dimension::length(0.0),
                 height: Dimension::length(0.0),

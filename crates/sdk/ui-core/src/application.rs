@@ -1147,7 +1147,7 @@ pub enum WindowRole {
     Ordinary,
     /// The session's on-screen input surface, such as an on-screen keyboard.
     InputSurface,
-    /// A sheet the shell shows over the shell (the power menu).
+    /// A sheet the shell shows over the whole screen (the power menu).
     Sheet,
 }
 

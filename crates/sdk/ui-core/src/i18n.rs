@@ -165,7 +165,7 @@ pub struct I18nManager {
 }
 
 /// Where one catalogue's Fluent text comes from. Text is parsed only while its language is shown, so a
-/// catalogue in a language nobody on the shell reads costs its embedded bytes and nothing else.
+/// catalogue in a language nobody using the shell reads costs its embedded bytes and nothing else.
 #[derive(Clone)]
 enum CatalogText {
     Embedded(&'static str),

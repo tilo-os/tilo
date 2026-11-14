@@ -1341,7 +1341,7 @@ impl EmptyState {
 
     /// Wrap this retained empty state in the toolkit's vertical viewport.
     /// The child keeps at least the viewport height for ordinary centering and
-    /// grows to its measured content height when wrapped text needs more area,
+    /// grows to its measured content height when wrapped text needs more height,
     /// making a below-fold action reachable by wheel, keyboard, or scrollbar.
     #[must_use]
     pub fn into_scrollable(mut self) -> Scrollable {
@@ -1398,7 +1398,7 @@ impl EmptyState {
     }
 
     /// Where [`Self::paint`] draws `content`'s action inside `rect`, for hit-testing it
-    /// between paints; `None` with no action or no area.
+    /// between paints; `None` with no action or no width.
     #[must_use]
     pub fn action_rect_in(
         text: &mut TextRenderer,

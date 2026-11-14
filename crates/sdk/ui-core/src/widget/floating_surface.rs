@@ -14,7 +14,7 @@ use crate::theme::Theme;
 /// `rect` with its edges on the device pixels the frame draws on: a panel
 /// placed against a measured label width or a rounded row would otherwise
 /// stand between two pixels and be painted soft across both. Its leading
-/// edges round out and its trailing edges up, so a snap never takes area
+/// edges round out and its trailing edges up, so a snap never takes width
 /// from a row.
 #[must_use]
 pub fn on_device_pixels(rect: Rect) -> Rect {
@@ -221,7 +221,7 @@ pub fn viewport_margin(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s2)
 }
 
-/// The area an anchored floating Panel is placed in: `window` less the [`viewport_margin`]
+/// The rect an anchored floating Panel is placed in: `window` less the [`viewport_margin`]
 /// on every side.
 #[must_use]
 pub fn panel_area(window: Rect, theme: &Theme) -> Rect {
@@ -283,7 +283,7 @@ impl PopoverSide {
     }
 }
 
-/// The area a Panel has on `side` of `anchor`, `gap` away, inside `viewport`: the most a
+/// The height a Panel has on `side` of `anchor`, `gap` away, inside `viewport`: the most a
 /// menu opening there can grow before it scrolls.
 #[must_use]
 pub fn anchored_extent(anchor: Rect, side: PopoverSide, gap: f64, viewport: Rect) -> f64 {
@@ -382,7 +382,7 @@ pub fn place_aligned(
         side.opposite()
     };
     // Cross axis: leading-aligned with the anchor, or trailing-aligned when
-    // the leading alignment runs past the viewport and that has more area;
+    // the leading alignment runs past the viewport and that has more width;
     // a centred panel stays centred and only shifts below.
     let cross = |a0: f64, a1: f64, len: f64, v0: f64, v1: f64| {
         if align == PanelAlign::Centre {
@@ -413,7 +413,7 @@ pub fn place_aligned(
     };
     // Shift into the viewport on the cross axis only: on the main axis the
     // panel never slides over its own anchor. A caller whose panel can be
-    // taller than either side's area caps it with [`anchored_extent`].
+    // taller than either side's height caps it with [`anchored_extent`].
     let (x0, y0) = if side.vertical() {
         (x0.min(viewport.x1 - w).max(viewport.x0), y0)
     } else {

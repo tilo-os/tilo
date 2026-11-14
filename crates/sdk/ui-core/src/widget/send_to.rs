@@ -328,7 +328,7 @@ impl SendToBox {
 
     /// Stand the box beside `beside` — what it is about — on its trailing
     /// side with the same top, or its leading side where the window leaves no
-    /// area, or under it where neither side holds it, inside the window.
+    /// width, or under it where neither side holds it, inside the window.
     pub fn place(&mut self, beside: Rect, viewport: Option<Rect>) {
         self.anchor = beside.center();
         if !self.open && !self.appear.is_drawn() {
@@ -426,7 +426,7 @@ impl SendToBox {
     }
 
     /// How tall the message stands: two rows while its words fit on one line,
-    /// and as much of them as wrap, up to four, so the box makes way for what
+    /// and as much of them as wrap, up to four, so the box grows to fit what
     /// is written in it rather than scrolling sideways.
     fn message_height(&self) -> f64 {
         let theme = &self.theme;
@@ -1497,7 +1497,7 @@ impl SendToBox {
         }
 
         // The message: air enough to write in, its words wrapped inside it and
-        // area made for them as they wrap.
+        // height made for them as they wrap.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,

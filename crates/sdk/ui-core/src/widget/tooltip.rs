@@ -114,7 +114,7 @@ fn chip_rect_beside(m: &ChipMetrics, anchor: Rect, size: (f64, f64), viewport: R
 }
 
 /// Preferred placement is centred just below the anchor; flips above when
-/// it would spill past the bottom edge and there is more area above.
+/// it would spill past the bottom edge and there is more height above.
 /// Clamped horizontally too, so a control at the far edge gets a chip that
 /// hugs it instead of painting off-screen.
 pub fn chip_rect(theme: &Theme, anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {

@@ -57,7 +57,7 @@ fn metrics() -> Metrics {
 }
 
 tilo_test_env::scenario! {
-    /// What an empty state shows in the area it has.
+    /// What an empty state shows in the width it has.
     /// Each phase was a test of its own and builds its own fixture.
     fn an_empty_state_lays_out_wraps_and_sheds;
 
@@ -92,7 +92,7 @@ tilo_test_env::scenario! {
                 docked.total
             );
 
-            // Barely any area: the message goes too, but never the title.
+            // Barely any width: the message goes too, but never the title.
             let cramped = Fit::choose(30.0, want, m);
             assert!(!cramped.icon && !cramped.message);
             assert_eq!(cramped.total, m.title_h, "the title always survives");

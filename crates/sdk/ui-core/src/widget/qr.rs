@@ -75,7 +75,7 @@ pub struct QrWidget {
     error_correction: EcLevel,
     /// How wide each module is drawn, when the caller asked for a code dense
     /// enough that its squares must be counted rather than guessed at: the
-    /// code then takes the area its payload needs instead of a fixed box.
+    /// code then takes the size its payload needs instead of a fixed box.
     module_px: Option<u32>,
     /// Encoding error, if any. Surfaced inline (the widget paints a
     /// `"QR: <error>"` label) rather than panicking so a too-large
@@ -85,7 +85,7 @@ pub struct QrWidget {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
-    /// A new payload or module width changed the area a code drawn at a named module size
+    /// A new payload or module width changed the size a code drawn at a named module size
     /// takes, since the layout pass last placed it.
     layout_dirty: bool,
 }
@@ -264,7 +264,7 @@ impl Widget for QrWidget {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // 240x240 unless the caller named a module size: then the box is as large as the
-        // modules the code carries need, and a card gives it the line that area takes.
+        // modules the code carries need, and a card gives it the line that size takes.
         let side = if self.error.is_some() {
             240.0
         } else {

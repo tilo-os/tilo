@@ -112,7 +112,7 @@ pub(super) fn flow(
 
 /// `rect` split among segments of natural widths `naturals` (full label,
 /// short label): equal segments while every full label fits an equal share;
-/// otherwise each segment as wide as its label needs with the area left
+/// otherwise each segment as wide as its label needs with the width left
 /// shared equally; only when the full labels cannot all fit, the short forms
 /// where a segment has one; and only past that, shares in proportion (the
 /// labels then elide). Returns the rects and, per segment, whether it shows

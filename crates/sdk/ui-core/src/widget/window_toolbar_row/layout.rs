@@ -405,8 +405,8 @@ impl Slots {
                 slots = labelled;
             }
         }
-        // A row short of area for the words keeps the window's main action and puts the rest
-        // behind its door, rather than standing glyphs nobody can name with area beside them.
+        // A row too narrow for the words keeps the window's main action and puts the rest
+        // behind its door, rather than showing unlabelled glyphs while width stands empty beside them.
         let floor = main_action_floor(
             toolbar,
             toolbar
@@ -414,8 +414,8 @@ impl Slots {
                 .min(crate::window_toolbar::MAX_ACTIONS),
         );
         if !slots.actions_labelled && slots.actions.len() > floor && floor > 0 {
-            // The main action keeps its words where the row leaves area for them once the rest
-            // are behind the door: a glyph with area to say what it does is a glyph nobody can
+            // The main action keeps its words where the row has width for them once the rest
+            // are behind the door: a glyph with width to spare is a glyph nobody can
             // name. Every other action goes behind the door unnamed, as before.
             let main = floor.saturating_sub(1);
             let mut below =
@@ -545,7 +545,7 @@ impl Slots {
         Self::arranged_below(toolbar, row, views, shown, labels, usize::MAX, true)
     }
 
-    /// [`Self::arranged`] keeping at most `most` actions in the row: a bar short of area for
+    /// [`Self::arranged`] keeping at most `most` actions in the row: a bar too narrow for
     /// the words keeps the window's main action and puts the rest behind its door. A row that
     /// folds down to one action keeps it (`keep_alone`) unless its words are what it cannot
     /// show: then the menu's row says what its glyph cannot.
@@ -818,9 +818,9 @@ impl Slots {
             .all(|rect| rect.x0 >= lead)
     }
 
-    /// Whether the slots could not keep the area they need across `row`: a button standing on
+    /// Whether the slots could not keep the width they need across `row`: a button standing on
     /// another's place, a location `toolbar` declared with nowhere to stand, or a location with
-    /// shorter forms cut short in the one it shows. Where the bar itself took that area (its
+    /// shorter forms cut short in the one it shows. Where the bar itself took that width (its
     /// strip's "+" ahead of the row), it asks before it keeps it.
     pub(super) fn crowded(
         &self,

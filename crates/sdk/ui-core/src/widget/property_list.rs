@@ -245,7 +245,7 @@ fn lay_out(
     let readable = f64::from(READABLE_LINES) * line;
     // A label wider than its column wraps within it; a word of one that is
     // wider than the column on its own cannot, and then every label stands
-    // over its value, as when the value has too little area beside it.
+    // over its value, as when the value has too little width beside it.
     let longest_word = all
         .iter()
         .flat_map(|row| row.label.split_whitespace())

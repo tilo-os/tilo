@@ -1,6 +1,6 @@
 //! One view under each surface finish, as PNGs to look at: a real widget
 //! view (buttons, switches) and the surface roles, with text on them, over
-//! three shells (window ground, bar, floating panel, control faces at
+//! three backdrops (window ground, bar, floating panel, control faces at
 //! rest, hovered and pressed), so a finish's backdrop pass, the legible
 //! range it holds what shows through in, and the theme's response show.
 //!
@@ -11,7 +11,7 @@
 //! own id. Run it on a software adapter (lavapipe) where the GPU is not to
 //! be touched.
 //!
-//! The shells: a bright, photo-like wallpaper of colour; a white page of
+//! The three backdrops: a bright, photo-like wallpaper of colour; a white page of
 //! dark text; a dark page of light text. Text runs under every rim, so a
 //! lens's bend shows as bent lines.
 

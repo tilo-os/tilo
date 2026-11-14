@@ -174,7 +174,7 @@ tilo_test_env::scenario! {
     // A hugging grid at its smallest still holds its cards whole: a card's body is as tall as
     // what it holds whether the card is measured or laid out, so a column that shrinks the grid
     // to its minimum never leaves a card standing past the grid's edge or over the next row. (A
-    // layers' cell takes the area it is given; under a min-content constraint it is given none,
+    // layers' cell takes the width it is given; under a min-content constraint it is given none,
     // so a card whose body holds layers measured them away: a preset picker's card stood past
     // its grid.)
     {
@@ -474,7 +474,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_phone_screen_keeps_no_lead_where_a_column_does;
-    // A column without the area for a row lead keeps none: on a phone's screen what a document's
+    // A column without the width for a row lead keeps none: on a phone's screen what a document's
     // body holds starts on the page's gutter, so the words keep the width a control's cell would
     // take from every line, while the column what it holds is read in is a column.
     {
@@ -665,9 +665,9 @@ tilo_test_env::scenario! {
     }
 
     phase a_spacer_takes_the_leftover_area_and_no_gap_of_its_own;
-    // A spacer that takes a row's leftover area is area, not a sibling: the row's gap stands once
-    // between what comes before it and what follows, so a row with no area to spare still holds
-    // both, and with area the spacer sends what follows it to the far end — in either direction.
+    // A spacer that takes a row's leftover width is not a sibling: the row's gap stands once
+    // between what comes before it and what follows, so a row with no width to spare still holds
+    // both, and with width to spare the spacer sends what follows it to the far end, either way.
     {
         let theme = Theme::dark();
         let between = gap(&theme, Rhythm::Related);
@@ -897,7 +897,7 @@ tilo_test_env::scenario! {
     phase an_aspect_layer_in_a_filling_page_keeps_its_width_and_ratio;
     // The same in a canvas that fills its pane and scrolls inside its own parts, where the layers
     // gets no width of its own from the page: the ratio must not feed its width back from the
-    // height it derived, or the box shrinks to a fraction of the area and grows back every solve.
+    // height it derived, or the box shrinks to a fraction of its width and grows back every solve.
     {
         let theme = Theme::dark();
         let inner = Layers::layers().push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
@@ -1088,7 +1088,7 @@ tilo_test_env::scenario! {
     phase a_page_keeps_one_content_gutter_at_every_width;
     // A page keeps one content gutter at every width: a phone, a laptop and a wide monitor hold
     // what they show the same distance in from the column, so what stands at the top of a page has
-    // the same area over it as the gap under it wherever the window is.
+    // the same margin over it as the gap under it wherever the window is.
     {
         let theme = Theme::dark();
         let content = || Box::new(Stack::stack().push(boxed(10.0))) as crate::widget::Element;

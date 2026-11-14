@@ -519,8 +519,8 @@ pub enum Period {
 impl Period {
     /// How the period reads, widest first, each naming the same span:
     /// `Mon, Jun 29 – Sun, Jul 5` then `Jun 29 – Jul 5`; `Mon, Jun 29`
-    /// then `Jun 29`; `June 2026` then `Jun 2026`. Where area is short a
-    /// narrower form is instead of a cut-off wider one.
+    /// then `Jun 29`; `June 2026` then `Jun 2026`. Where the width is short a
+    /// narrower form is used instead of a cut-off wider one.
     #[must_use]
     pub fn forms(self) -> Vec<String> {
         match self {

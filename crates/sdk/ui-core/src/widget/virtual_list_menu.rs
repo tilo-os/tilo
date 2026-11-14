@@ -375,7 +375,7 @@ impl<M: ListModel> VirtualList<M> {
         Some(performed)
     }
 
-    /// The area the open menu takes, as the modal capture a host checks before it places
+    /// The rect the open menu takes, as the modal capture a host checks before it places
     /// anything over the list.
     pub(super) fn menu_capture(&self) -> Option<Rect> {
         self.menus

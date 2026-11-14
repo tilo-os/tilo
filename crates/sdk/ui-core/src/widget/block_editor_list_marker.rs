@@ -27,7 +27,7 @@ pub(crate) fn ordinal_label(ordinal: u32, depth: u8) -> String {
     }
 }
 
-/// How much area, in logical pixels at 1× text, each block of a list needs
+/// How much margin, in logical pixels at 1× text, each block of a list needs
 /// left of its marker column so the widest top-level ordinal of its list
 /// fits beside the text rather than hanging past the content edge into the
 /// handle gutter: `12.` and `100.` move their whole list in by what they
@@ -218,7 +218,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// Ordinal labels and the area a long list makes for them.
+        /// Ordinal labels and the margin a long list makes for them.
         /// Each phase was a test of its own and builds its own fixture.
         fn list_ordinals_follow_tex_enumerate_and_make_way;
 

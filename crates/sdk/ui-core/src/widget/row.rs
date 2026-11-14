@@ -208,7 +208,7 @@ impl Widget for Row {
             padding: super::layout::insets_xy(pad_x, pad_y),
             ..Default::default()
         };
-        // A body row that fills what its parent's column leaves takes that area and no more
+        // A body row that fills what its parent's column leaves takes that width and no more
         // (`super::layout::filling`), its children sharing it.
         let style = super::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
         let node = taffy.parent_node(style, &self.flow.child_nodes);
@@ -278,7 +278,7 @@ impl Widget for Row {
 
 flow_capabilities!(Row);
 
-/// Along a row's axis, children ask only for the area they need: * A child that claims its
+/// Along a row's axis, children ask only for the width they need: * A child that claims its
 /// parent's full width and refuses to shrink — a nested `Row`, a fluid `Container` — keeps a
 /// `Column` from squashing it vertically, but beside siblings in a row the same style takes the
 /// whole row on top of them and overflows it, starving any spacer to nothing.
@@ -454,7 +454,7 @@ mod tests {
         }
 
         phase a_growing_child_does_not_widen_a_row_measured_for_its_content;
-        // A child growing into the leftover area from the least it names
+        // A child growing into the leftover width from the least it names
         // does not make a row measured for its content (no scrollable above
         // it) as wide as that child's longest label.
         {
@@ -490,7 +490,7 @@ mod tests {
         }
 
         phase a_line_of_buttons_wraps_before_it_overlaps;
-        // A line of buttons that runs out of area moves the buttons that do
+        // A line of buttons that runs out of width moves the buttons that do
         // not fit onto lines of their own, one gap apart, rather than letting
         // them overlap or run past the edge.
         {

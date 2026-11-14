@@ -469,7 +469,7 @@ fn a_window_bar_wears_its_workspace_s_temperature_and_the_person_s_colour() {
         corner_radius: Some(12.0),
     };
 
-    // The area's temperature tints the bar's material: a warm area and a cool
+    // The background's temperature tints the bar's material: a warm background and a cool
     // one are not painted the same.
     let (_, warm) = paint(&spare);
     let (_, cool) = paint(&WindowAppearance {
@@ -1598,7 +1598,7 @@ fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
 }
 
 /// The window's own keyboard stops (the agent's mark, the furniture of a row holding the bar) take
-/// no area and measure nothing: they never ask the layout to measure again, whatever the keyboard
+/// no width and measure nothing: they never ask the layout to measure again, whatever the keyboard
 /// or the bar does with them. Were they to, every frame of the window, a keystroke's included,
 /// would re-measure its whole path to the root.
 #[test]

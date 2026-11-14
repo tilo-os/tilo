@@ -470,7 +470,7 @@ impl ListRowFace<'_> {
         crate::num::f32_of_f64((title_width - accessories).max(0.0))
     }
 
-    /// The area the row's quiet word before the title takes, with the gap after it: none for
+    /// The width the row's quiet word before the title takes, with the gap after it: none for
     /// a row that names none.
     pub(super) fn prefix_width(&self, text: &mut TextRenderer, m: &RowMetrics) -> f64 {
         match &self.prefix {

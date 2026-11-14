@@ -697,7 +697,7 @@ impl AppConstructionInputs {
 
     fn production(collab_manager: CollaborationManager) -> Self {
         // The screen reader below speaks through the host's services, so a
-        // process that never installed any gets the native shell's.
+        // process that never installed any gets the native platform's.
         #[cfg(feature = "native")]
         crate::host::native::install_default_if_unset(None);
         #[cfg(feature = "native")]

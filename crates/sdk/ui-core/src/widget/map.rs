@@ -31,7 +31,7 @@ pub const MAP_ZOOM_MAX: f64 = 2.5;
 /// How much one wheel notch zooms, when a gesture zooms over the map.
 const ZOOM_PER_DETENT: f64 = 1.1;
 
-/// The area a place that arrives keeps from the viewport's edges when the camera shows it:
+/// The margin a place that arrives keeps from the viewport's edges when the camera shows it:
 /// a window's frame at the very edge of the canvas reads as cut off, so the pan leaves a
 /// gap of one section step.
 const ARRIVAL_MARGIN: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
@@ -397,7 +397,7 @@ impl Map {
         self.shown.set(lens.shown);
         self.followed.set(lens.followed);
         self.glide = lens.glide;
-        // The area the places stand in was laid out last frame: a place that arrived is shown in
+        // The rect the places stand in was laid out last frame: a place that arrived is shown in
         // it before this layout places it.
         self.rect = lens.rect;
         self.placed.borrow_mut().extend(lens.placed);

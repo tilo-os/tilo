@@ -1288,7 +1288,7 @@ impl Widget for Banner {
     ) -> bool {
         let mut changed = self.style_visibility(taffy, node);
         // The body's height depends on the buttons' sizes: measure them. On touch they are a
-        // finger's target tall, and the banner makes way for that.
+        // finger's target tall, and the banner grows to fit that.
         let secondary = self.secondary.as_mut().map(|b| button_size(b, text));
         let main = self.action.as_mut().map(|b| button_size(b, text));
         let dismiss = self.dismiss.as_mut().map(|b| button_size(b, text));

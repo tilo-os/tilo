@@ -145,7 +145,7 @@ impl Breadcrumb {
     /// and the last two; then the first, `...` and the last; then `...`
     /// and the last (for a trail of two as well), the last cut short where
     /// it does not stand whole; and at the narrowest, where the `...`
-    /// leaves the last no area for a letter, the last alone, cut short.
+    /// leaves the last no width for a letter, the last alone, cut short.
     /// The current folder always shows.
     /// Pure function — does not mutate `self`. Exposed for tests that want
     /// to pin the truncation behaviour without running a full layout pass.
@@ -285,7 +285,7 @@ impl Breadcrumb {
             let spare = rect.width() as f32;
             let style = theme.text(self.role);
             *label = tr.elide_to_width_style(label, spare, &style);
-            // Too little area for even the ellipsis: nothing is painted
+            // Too little width for even the ellipsis: nothing is painted
             // rather than something past the trail's end.
             if tr.measure_style(label, None, &style).0 > spare {
                 label.clear();

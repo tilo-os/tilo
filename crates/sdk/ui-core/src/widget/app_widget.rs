@@ -140,7 +140,7 @@ pub trait AppWidget: Widget {
         Vec::new()
     }
 
-    /// The area kept what `text` says the app did: say it now.
+    /// The workspace kept what `text` says the app did: say it now.
     fn record_said(&mut self, _text: &str) {}
 
     /// Answer a device-owner operation from the authenticated hosting shell.

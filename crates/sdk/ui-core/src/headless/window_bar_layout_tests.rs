@@ -1,5 +1,5 @@
 //! The window bar at every width from a phone's to a wide display's: every control has a slot of its
-//! own, and the location stays inside the area the controls leave it.
+//! own, and the location stays inside the width the controls leave it.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};

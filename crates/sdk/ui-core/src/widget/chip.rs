@@ -769,7 +769,7 @@ impl Chip {
     /// How tall the chip's box is laid out: the pill, or on a coarse
     /// pointer the minimum target for a chip a person presses. The pill
     /// keeps its height and stands centred in the box, so the band a finger
-    /// may land in is the chip's own area in its line, never its
+    /// may land in is the chip's own cell in its line, never its
     /// neighbour's.
     fn box_height(&self) -> f64 {
         let pill = self.metrics.height.ceil();
@@ -1465,7 +1465,7 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
 
-    /// A chip in a bar's area for it: whatever it says, its row is 60 high.
+    /// A chip in a bar's row: whatever it says, its row is 60 high.
     fn lay_out(w: &mut dyn Widget) {
         lay_out_with_theme(w, &Theme::dark());
     }
@@ -1904,7 +1904,7 @@ mod activation_tests {
             assert!(!Chip::new("label").is_focusable());
         }
 
-        // On a touchscreen a chip a person presses takes a finger's target of area in its line,
+        // On a touchscreen a chip a person presses takes a finger's target of height in its line,
         // with its pill the selector height centred in it, so a press above or below the pill
         // lands on the chip and never on what is next to it; a label chip, or a chip under a
         // mouse, keeps the pill's height.

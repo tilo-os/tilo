@@ -55,7 +55,7 @@ pub fn strip_ground(theme: &Theme) -> Color {
 
 /// The active selector's fill on `ground`: one surface step of it
 /// ([`Colors::lift_on`]), opaque. On a light palette a selector rises
-/// toward the light, as a raised surface does, while the ground leaves area
+/// toward the light, as a raised surface does, while the ground leaves headroom
 /// for at least [`SELECTION_MIN_STEP`] above it (the strip's light ground
 /// does, a white window does not); elsewhere it takes the palette's way.
 fn active_lift(theme: &Theme, ground: Color) -> Color {

@@ -1003,7 +1003,7 @@ impl BlockEditor {
     /// The height of the host's visible document area (a scrolling host's
     /// viewport, not the editor's content extent). An image preview is
     /// never taller than [`IMAGE_VIEWPORT_FRACTION`] of it, so a large
-    /// picture leaves area to see and drag past it. Hosts refresh it before
+    /// picture leaves a margin to see and drag past it. Hosts refresh it before
     /// layout; returns whether it changed, so a host can lay out again.
     pub fn set_viewport_height(&mut self, height: Option<f64>) -> bool {
         let height = height.filter(|height| height.is_finite() && *height > 0.0);
@@ -8773,7 +8773,7 @@ impl Widget for BlockEditor {
                 ));
             }
             if let Some(image) = self.image_attachments.get_mut(&b.id) {
-                // The area the picture's source takes at the width this block is applied at,
+                // The size the picture's source takes at the width this block is applied at,
                 // not the one it was last measured at: a host measures lines at widths it never
                 // applies, and a source measured at one of those would place the picture inside
                 // itself.

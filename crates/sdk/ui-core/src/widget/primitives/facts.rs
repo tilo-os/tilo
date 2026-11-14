@@ -424,7 +424,7 @@ mod tests {
         }
 
         // Something happening now is marked by a dot in its own colour, in the slot an icon takes: the
-        // same area, and the words after it read as they do anywhere.
+        // same width, and the words after it read as they do anywhere.
         phase a_live_fact_is_a_dot_in_its_tone_before_its_words;
         {
             let theme = Theme::dark();

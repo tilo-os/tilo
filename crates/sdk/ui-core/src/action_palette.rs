@@ -464,7 +464,7 @@ pub struct ActionPalette {
     /// Chip rows the host's band is reserving: the palette doesn't know how many controls the host has,
     /// so this is negotiated, not fixed.
     max_list_height: Option<f64>,
-    /// The widest the card may be: the area the host has for it.
+    /// The widest the card may be: the width the host gives it.
     max_width: Option<f64>,
     /// The modifiers held now, so a selected row can show what its alternative activation would do
     /// before it is chosen.

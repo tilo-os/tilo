@@ -22,7 +22,7 @@ pub const EDGE_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// controls are a section of their own, apart from the app's by the gap
 /// between sections and by the glass the app's ground has no part of, never
 /// by a drawn line. One step below the gap between groups, so the app's
-/// content keeps the area it names its place with in a narrow window.
+/// content keeps the width it names its place with in a narrow window.
 pub const LEAD_GAP: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
 pub const HISTORY_GAP: f64 = CONTROL_GAP;
 const ACTION_GLYPH_PX: f64 = crate::tokens::Metrics::BASE.icon_sm as f64;

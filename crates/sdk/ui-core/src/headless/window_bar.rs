@@ -132,7 +132,7 @@ impl FrameHarness {
         }
     }
 
-    /// The window's bar as the frame offers it to the content's header row: the area the window's
+    /// The window's bar as the frame offers it to the content's header row: the width the window's
     /// furniture takes at its trailing end ([`crate::widget::merged_row_width`]), shown now, listing
     /// nothing else.
     fn window_bar_offer(&self) -> WindowBar {
@@ -143,7 +143,7 @@ impl FrameHarness {
     }
 
     /// Whether the window presents the app's search in its own bar: always while its bar stands over
-    /// the frame, and while a row holds the bar only where the area it keeps for its furniture holds
+    /// the frame, and while a row holds the bar only where the width it keeps for its furniture holds
     /// one ([`crate::widget::merged_row_holds_search`]) — otherwise the row draws its own search
     /// control.
     fn presents_search(&self) -> bool {
@@ -618,7 +618,7 @@ impl FrameHarness {
 
     /// The window's bar as it lays itself out across a window `width` wide, as the shell draws
     /// it: the app's slots, the bar's own overflow, the History control and the window's own
-    /// controls, and the area it leaves empty. A capture, an inspector and a layout check read
+    /// controls, and the width it leaves empty. A capture, an inspector and a layout check read
     /// the bar through it.
     /// Quiet: lays out a scratch bar and reads it; nothing a frame reads.
     pub fn window_bar_layout(&mut self, width: f64) -> crate::window_toolbar::BarLayout {
@@ -1275,7 +1275,7 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// A compact (420 px) window with a long title and no location: the title takes the area the row
+    /// A compact (420 px) window with a long title and no location: the title takes the width the row
     /// leaves it, with no slots and beside one trailing action alike, and is cut short only where none
     /// is left.
     #[test]
@@ -1939,7 +1939,7 @@ mod tests {
     }
 
     /// A document's slots in the bar: navigation, a location and actions, which leave a narrow window's
-    /// search little area before the location.
+    /// search little width before the location.
     fn writer_slots() -> crate::window_toolbar::WindowToolbar {
         use crate::window_toolbar::{
             ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,

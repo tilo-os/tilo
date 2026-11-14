@@ -1,4 +1,4 @@
-//! Drawing for a presenter that keeps the shell between frames. Such a presenter rasterizes a strip
+//! Drawing for a presenter that keeps its canvas between frames. Such a presenter rasterizes a strip
 //! once into a canvas as wide as its content and shows the strip's pan by reading that canvas at an
 //! offset.
 

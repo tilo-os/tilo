@@ -15,7 +15,7 @@ fn menu() -> ContextMenu {
 }
 
 /// The row "Find the last service date" in the reported capture: a wide row
-/// with area below it.
+/// with a gap below it.
 fn row(y0: f64) -> Rect {
     Rect::new(25.0, y0, 505.0, y0 + 39.0)
 }
@@ -85,7 +85,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    // Taller than the area it has, a menu scrolls its rows and ends with the last one it shows
+    // Taller than the height it has, a menu scrolls its rows and ends with the last one it shows
     // whole: a row cut to a sliver at its edge is a target a person sees but cannot aim at.
     phase a_menu_that_scrolls_cuts_no_row_in_half;
     {

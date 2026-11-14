@@ -355,7 +355,7 @@ impl ManualContext<'_> {
         Ok(())
     }
     /// The retained widget of child `index`, for a policy that asks it something only the
-    /// widget itself knows (a title, the least area its words read in).
+    /// widget itself knows (a title, the least width its words read in).
     pub fn widget(&self, index: usize) -> Option<&dyn Widget> {
         let node = self.children.get(index)?.0;
         let pointer = *self.nodes.get(&node)?;

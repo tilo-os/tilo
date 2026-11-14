@@ -474,7 +474,7 @@ impl Button {
     /// Take the words and glyph of `fresh`, keeping this button's place and press; a shape apart
     /// (icon-only for a label, another role or size) can only change by building it again. A
     /// button a row has compacted takes `fresh`'s words as what it shows when the row gives it
-    /// area again, and keeps showing its face.
+    /// width again, and keeps showing its face.
     pub(crate) fn take_words(&mut self, fresh: &Button) -> bool {
         let compact = self.compact_presentation.is_some();
         if fresh.icon.is_some() != self.icon.is_some()
@@ -819,7 +819,7 @@ impl Button {
             && (!self.label.is_empty() || self.compact_presentation.is_some())
     }
 
-    /// Whether the button is shown icon-only by a row short of area
+    /// Whether the button is shown icon-only by a row short of width
     /// ([`Self::set_compact_toolbar_presentation`]).
     pub fn is_shown_compact(&self) -> bool {
         self.compact_presentation.is_some()
@@ -2012,12 +2012,12 @@ impl Button {
 
     /// Whether the face stands flush on the button's own edges: a plain control's words have no
     /// padding of their own, and a control a row compacted stands as its one face's square — the
-    /// area the row planned for it — rather than a padded pill wider than the square it planned.
+    /// square the row planned for it — rather than a padded pill wider than that square.
     fn flush_face(&self, label: &str) -> bool {
         self.role.flush() && (!label.is_empty() || self.compact_presentation.is_some())
     }
 
-    /// The faces the button shows: one while a row short of area has it compact — the one who
+    /// The faces the button shows: one while a row short of width has it compact — the one who
     /// changed it newest, which the group names last — and the group itself otherwise.
     fn shown_faces(&self) -> &[(String, String)] {
         if self.compact_presentation.is_some() {
@@ -2106,7 +2106,7 @@ impl Button {
     }
 
     /// Measure the count so [`Self::count_rect`] can place it. The count stands inside the
-    /// face, so the face's own size is the area it needs: the node's margins are its parent's
+    /// face, so the face's own size is all it needs: the node's margins are its parent's
     /// and stay as the parent gave them.
     fn measure_count(&mut self, text: &mut TextRenderer) {
         self.count_size = self
@@ -2236,7 +2236,7 @@ impl Widget for Button {
         let height = f32_of_f64(self.face_height());
         let style = Style {
             // An intrinsic button never shrinks below its label: a parent
-            // with area shows it whole, and only a parent without area
+            // with width shows it whole, and only a parent without width
             // (capped by `max_size`) makes the painter elide it.
             flex_shrink: 0.0,
             min_size: Size::from_lengths(height, height),
@@ -2435,7 +2435,7 @@ impl Widget for Button {
     /// `apply_layout` can populate it; after that it stays clean (pure
     /// translation handled via the cache's append transform, no taffy
     /// involvement). Only a button the solver has *never* placed counts as
-    /// missing: a slot its parent gives no area is placed at zero size, and
+    /// missing: a button its parent gives no width is placed at zero size, and
     /// asking for that measure again every frame kept a still window
     /// recomposing. The rect is the laid-out one, not the paint cache's: a
     /// button that is not drawn (scrolled or panned out of view) has

@@ -505,7 +505,7 @@ impl SearchResultsView {
     }
 
     /// How many rows of one band the list takes in `cap` under `groups`
-    /// headers, never less than one: the area left once the padding,
+    /// headers, never less than one: the height left once the padding,
     /// headers and gaps are paid for.
     pub(crate) fn row_capacity(&self, cap: f64, groups: usize, two_line: bool) -> usize {
         let band = self.row_band(two_line).max(1.0);
@@ -857,7 +857,7 @@ impl SearchResultsView {
     }
 
     /// The height the list takes when the most rows that fit in `cap` show, preview band
-    /// included: an owner sizing the list must leave the band its area, or it would eat into
+    /// included: an owner sizing the list must leave the band its height, or it would eat into
     /// the last row, and the card's own padding at the foot, or it would clip one.
     pub fn fitted_height(&self, cap: f64) -> f64 {
         let band = self.preview_band();

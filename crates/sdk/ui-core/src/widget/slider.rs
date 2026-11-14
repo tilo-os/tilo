@@ -802,7 +802,7 @@ impl SliderFace {
     }
 
     /// How far the knob reaches past the track's ends (its pressed radius):
-    /// a host keeps this much area either side of a slider's rect.
+    /// a host keeps this much margin either side of a slider's rect.
     #[must_use]
     pub fn overhang() -> f64 {
         KNOB_RADIUS * KNOB_RADIUS_PRESS_SCALE
@@ -997,7 +997,7 @@ pub fn paint_held_readout(
     crate::widget::tooltip::draw_hover_tooltip(scene, transform, text, theme, knob, label, span);
 }
 
-/// The area a shown value takes from the track: the widest value, a gap, and the knob's reach
+/// The width a shown value takes from the track: the widest value, a gap, and the knob's reach
 /// past the track's end, so a knob at the top of the range never stands on the value.
 fn value_lane(widest: f64, theme: &Theme) -> f64 {
     widest + f64::from(theme.gap_standard) + SliderFace::overhang() + KNOB_BORDER

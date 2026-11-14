@@ -86,11 +86,11 @@ pub struct Popover<C: Widget = NoContent> {
     /// paints over.
     viewport: Option<Rect>,
     /// Prefer retaining the complete panel over preserving anchor separation
-    /// when neither side has enough area. Ordinary menus keep their policy.
+    /// when neither side has enough height. Ordinary menus keep their policy.
     confine_to_viewport: bool,
     /// The widest the panel's body may be, however wide the window: a list it
     /// holds reads as a list, not as a page across the window. `None` bounds it
-    /// only by the area the window leaves.
+    /// only by the width the window leaves.
     max_width: Option<f64>,
     /// Stand at the bottom edge, as wide as the window, while the window is
     /// narrow ([`SHEET_WIDTH`]): a sheet, as a phone shows one, rather than a
@@ -203,8 +203,8 @@ impl<C: Widget> Popover<C> {
         self.sheet_when_narrow && self.presented.is_some_and(|w| w.width() < SHEET_WIDTH)
     }
 
-    /// The width the panel's body is laid out at: the area the window leaves less the panel's
-    /// padding, narrowed to [`Self::max_width`]; a sheet spans the area.
+    /// The width the panel's body is laid out at: the width the window leaves less the panel's
+    /// padding, narrowed to [`Self::max_width`]; a sheet spans the window's width.
     fn body_width(&self, theme: &Theme) -> f64 {
         let Some(window) = self.presented else {
             return 0.0;
@@ -356,7 +356,7 @@ impl<C: Widget> Popover<C> {
     }
 
     /// The side the panel opened on: the preferred one unless the window
-    /// had no area there.
+    /// had no height there.
     pub fn resolved_side(&self) -> PopoverSide {
         self.resolved_side
     }
@@ -473,7 +473,7 @@ impl<C: Widget> Popover<C> {
         self.menu.set_rect(self.rect);
     }
 
-    /// Stand a panel of `size` beside the anchor: its side, the area it keeps
+    /// Stand a panel of `size` beside the anchor: its side, the rect it keeps
     /// from `avoid`, the window it stays in, and the display's pixels.
     fn panel_in(&mut self, viewport: Rect, (w, h): (f64, f64), theme: &Theme) {
         let gap = f64::from(theme.tokens.spacing.s1);
@@ -1238,7 +1238,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         node: NodeId,
         _text: &mut TextRenderer,
     ) -> bool {
-        // The content's max-content width is bounded by the popover node: give it the area the
+        // The content's max-content width is bounded by the popover node: give it the width the
         // window leaves, narrowed to the panel's own bound, once the top layer has named the
         // window it floats in.
         let (Some(_), true) = (self.presented, self.host_content.is_some()) else {
@@ -1755,7 +1755,7 @@ mod protected_placement_tests {
             assert_eq!(panel.resolved_side(), PopoverSide::Above);
         }
 
-        // With no area clear of the protected text anywhere, the panel covers
+        // With no width clear of the protected text anywhere, the panel covers
         // as little of it as it can rather than sitting on its preferred side.
         phase a_protected_panel_without_clear_area_covers_the_least;
         {

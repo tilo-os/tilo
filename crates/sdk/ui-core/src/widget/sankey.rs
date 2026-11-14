@@ -150,7 +150,7 @@ impl SankeyMarks {
         )
     }
 
-    /// The trailing area the last column's labels need: its widest label,
+    /// The trailing width the last column's labels need: its widest label,
     /// never more than a third of the chart, so the flow keeps its width.
     fn measure_label_reserve(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let links = self.resolved_links();
@@ -338,8 +338,8 @@ impl SankeyMarks {
     }
 
     /// Where each node's label goes, laid out so no two collide at any size: after its node, in
-    /// the gap before the next column (the last column's in the trailing area the chart
-    /// reserves for them), elided to that area, and dropped (the tooltip still names the node)
+    /// the gap before the next column (the last column's in the trailing width the chart
+    /// reserves for them), elided to it, and dropped (the tooltip still names the node)
     /// where even a short label does not fit or it would run into the label above it.
     fn label_layout(
         &self,

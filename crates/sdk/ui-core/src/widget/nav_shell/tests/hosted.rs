@@ -466,7 +466,7 @@ fn a_sections_menu_and_rename_come_back_through_the_feed() {
 /// Every column's header row — its title and the buttons that act on what it shows — stands at
 /// the top of its column while the shell's bar hosts the window, at rest and with the bar out:
 /// the rows share one height and top, the row is the window's bar (its controls come into the
-/// area the row keeps at its trailing end), the bar declares none of the columns' titles or
+/// width the row keeps at its trailing end), the bar declares none of the columns' titles or
 /// buttons, and a button pressed in its row runs.
 #[test]
 fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {

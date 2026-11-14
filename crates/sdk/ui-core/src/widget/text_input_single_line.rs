@@ -214,7 +214,7 @@ impl TextInput {
         }
     }
 
-    /// The area a one-line field's chrome keeps beside its text: its own inset on each edge,
+    /// The width a one-line field's chrome keeps beside its text: its own inset on each edge,
     /// whatever its trailing edge carries, and the caret that stands at either end. A field laid
     /// out at its text's width plus this shows all of its text, unscrolled.
     #[must_use]

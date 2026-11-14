@@ -270,7 +270,7 @@ impl Widget for Column {
             },
             ..Default::default()
         };
-        // A column that fills what its parent's column leaves takes that area and no more: its
+        // A column that fills what its parent's column leaves takes that height and no more: its
         // content scrolls or clips inside it rather than growing it past the parent.
         let style = crate::widget::layout::filling(
             style,

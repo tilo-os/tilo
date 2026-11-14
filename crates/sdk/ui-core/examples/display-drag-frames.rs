@@ -1,5 +1,5 @@
 //! A recorded drag on the Displays arrangement canvas, frame by frame: a
-//! laptop panel and a external monitor, the monitor pressed and moved by 240
+//! laptop panel and an external monitor, the monitor pressed and moved by 240
 //! pointer samples paced as a 120 Hz display presents them, each answered by
 //! a frame. Prints every frame's cost against the 120 Hz budget and whether
 //! any frame relaid the page out; exits non-zero when a frame is over budget

@@ -325,7 +325,7 @@ fn key(
         .handled
 }
 
-/// The area the painted heading of the first group leaves between its lowest ink and the row
+/// The gap the painted heading of the first group leaves between its lowest ink and the row
 /// it heads: the gap a person sees, which a finger's taller band must not widen.
 fn heading_gap(list: &mut VirtualList<Grouped>, theme: &Theme) -> f64 {
     let top = list.groups.bands.first().map_or(0.0, |band| band.top);

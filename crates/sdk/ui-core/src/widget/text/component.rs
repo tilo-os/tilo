@@ -23,7 +23,7 @@ pub struct TextProps {
     /// How many lines it takes: what does not fit is elided at the last of them, so a clamp
     /// holds however long the words are. Unset, it wraps to as many lines as its width needs.
     pub lines: Option<i64>,
-    /// It elides at the area it is given rather than wrapping wider, so its box may shrink to
+    /// It elides at the width it is given rather than wrapping wider, so its box may shrink to
     /// nothing and what does not fit ends in an ellipsis: a title in a narrow card.
     pub truncate: bool,
 }

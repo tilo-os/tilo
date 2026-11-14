@@ -1,5 +1,5 @@
 //! A host's control hints on screen: the [`Coach`] deciding, the card placed beside its anchor or in
-//! the bar's area and drawn through its motion.
+//! the bar, drawn through its motion.
 
 use super::card::{self, Contents, Frame, Look};
 use super::coach::{Coach, Phase, Timing};
@@ -51,7 +51,7 @@ pub struct HintPlace {
     /// clear of them, the hint is in [`Self::bar`], or has nowhere to
     /// stand and does not show.
     pub clear: Vec<Rect>,
-    /// The area the top bar keeps beside its clock, for a hint beside a control whose sides are all
+    /// The width the top bar keeps beside its clock, for a hint beside a control whose sides are all
     /// content (a window's bar over its body, a window's edge between two windows, or at the screen's):
     /// the hint is there instead, as one for a gesture with no control on screen does, while
     /// [`Self::edge`] lights where the gesture is done.
@@ -443,8 +443,8 @@ const ANCHOR_GAP: f64 = 4.0;
 const AREA_MARGIN: f64 = 8.0;
 
 /// Where a card of `size` is `place` inside `area`: in the bar, at the leading end of the
-/// area it keeps beside its clock; or beside its anchor, on its side (the other side when there is
-/// no area), centred on it, kept inside the area. `None` where nothing can be cleared: a hint never
+/// width it keeps beside its clock; or beside its anchor, on its side (the other side when there is
+/// no width), centred on it, kept inside `area`. `None` where nothing can be cleared: a hint never
 /// sits over another surface's content, nor over the bar controls, so one with nowhere to
 /// stand does not show.
 fn place(
@@ -457,8 +457,8 @@ fn place(
     let clear = |rect: Rect| !place.clear.iter().any(|card| card.overlaps(rect));
     let (anchor, side, points) = match place.stand {
         // A hint with no control on screen to point at is in the bar, right beside the clock:
-        // the bar keeps that area clear of everything it draws, and where the area cannot hold the
-        // pill whole it does not show rather than stand over the clock or another control.
+        // the bar keeps that width clear of everything it draws, and where it is too narrow for the
+        // whole pill, the hint does not show rather than stand over the clock or another control.
         Stand::InBar { band } => {
             if w > band.width() || h > band.height() {
                 return None;
@@ -646,7 +646,7 @@ mod place_tests {
     }
 
     /// Every placement keeps out of the content it is given, wherever it is: in the bar at the
-    /// leading end of the area beside its clock, or beside its anchor on either side. A placement
+    /// leading end of the width beside its clock, or beside its anchor on either side. A placement
     /// that cannot is one that does not show.
     #[test]
     fn no_placement_stands_over_the_content_it_keeps_clear_of() {

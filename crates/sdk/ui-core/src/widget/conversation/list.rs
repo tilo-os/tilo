@@ -195,7 +195,7 @@ impl Column {
         let readable = f64::from(theme.tokens.metrics.readable_width);
         let floor = f64::from(theme.tokens.spacing.s16);
         let pad_x = f64::from(theme.tokens.spacing.s3);
-        // The conversation column: the area the list leaves, but never wider
+        // The conversation column: the width the list leaves, but never wider
         // than the readable measure, and centred in what is left over. Two
         // bubbles that hug the edges of a wide window are two bubbles nobody
         // reads as a conversation.
@@ -506,7 +506,7 @@ impl<'a> ListFace<'a> {
         let run_gap = f64::from(spacing.s4);
         let pad_x = f64::from(spacing.s3);
         let pad_y = f64::from(spacing.s2);
-        // The kept rows are placed again into their own area: a scrolling list
+        // The kept rows are placed again in the same rect: a scrolling list
         // re-places on every frame it moves, and that must not allocate.
         let mut rows: Vec<Row> = std::mem::take(&mut cache.layout.rows);
         rows.clear();

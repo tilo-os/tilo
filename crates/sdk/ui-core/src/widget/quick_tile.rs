@@ -120,7 +120,7 @@ fn text_extent(rect: Rect, has_details: bool, metrics: &TileMetrics) -> (f64, f3
     (x, width)
 }
 
-/// The state line in the area it has: whole on one line when it fits, else broken after the
+/// The state line in the width it has: whole on one line when it fits, else broken after the
 /// last word that does and the rest elided on a second.
 fn detail_lines(
     text: &mut TextRenderer,
@@ -171,7 +171,7 @@ pub struct QuickTile {
     switch_action: Option<crate::widget::ActionEmitter<()>>,
     details_action: Option<crate::widget::ActionEmitter<()>>,
     metrics: Option<TileMetrics>,
-    /// How much of the area the tile is offered it draws in: half while it
+    /// How much of the width the tile is offered it draws in: half while it
     /// stands two to a row, so its state line breaks where it will when it
     /// is drawn.
     share: f32,
@@ -210,9 +210,9 @@ impl QuickTile {
         self
     }
 
-    /// How much of the area the tile is offered it draws in: half when it
+    /// How much of the width the tile is offered it draws in: half when it
     /// stands two to a row, so its height follows the state line it will
-    /// have there ([`Self::height`] alone assumes the whole area).
+    /// have there ([`Self::height`] alone assumes the whole width).
     #[must_use]
     pub fn share(mut self, share: f32) -> Self {
         self.share = share.clamp(0.0, 1.0);

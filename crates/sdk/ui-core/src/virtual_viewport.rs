@@ -1289,7 +1289,7 @@ where
         true
     }
 
-    /// Forget a row's folded-away measurement: it takes the area it measures again, as a
+    /// Forget a row's folded-away measurement: it takes its measured size again, as a
     /// row that was never folded does.
     pub fn expand(&mut self, index: usize, key: &K) -> bool {
         if index >= self.count

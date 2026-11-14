@@ -554,7 +554,7 @@ tilo_test_env::scenario! {
         assert!(geometry(&h).inspector_column.width() > 0.0);
     }
 
-    // The overview column follows what it lists, up to its cap: the area the
+    // The overview column follows what it lists, up to its cap: the width the
     // detail has past the measure it reads at is the list's, so a long row fits
     // whole while the page beside it still reads as a page.
     phase the_overview_grows_to_fit_its_rows_while_the_page_keeps_its_measure;

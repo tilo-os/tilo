@@ -76,7 +76,7 @@ impl Default for ToolbarButtonProps {
 #[component(name = "ToolbarSeparator", role = "Separator")]
 pub struct ToolbarSeparatorProps {}
 
-/// The area left in a toolbar, between the commands before it and those after it, which it
+/// The width left in a toolbar, between the commands before it and those after it, which it
 /// pushes to the far end.
 #[derive(Component, Default)]
 #[component(name = "ToolbarSpacer", role = "Generic")]

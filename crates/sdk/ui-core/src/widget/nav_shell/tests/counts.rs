@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
         assert_eq!(header_count(&h).as_deref(), Some("7"));
     }
 
-    // Zero is never drawn: the header shows no badge and keeps the area one would
+    // Zero is never drawn: the header shows no badge and keeps the width one would
     // have taken, and the place's row says nothing.
     phase zero_draws_no_count_and_keeps_no_area_for_one;
     {

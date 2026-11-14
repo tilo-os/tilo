@@ -17,7 +17,7 @@ pub(super) struct LocationLabel {
 
 impl LocationLabel {
     /// `shown` in `spare`: the edited word keeps its place and the label
-    /// elides before it; an area too narrow for both shows the label alone.
+    /// elides before it; a bar too narrow for both shows the label alone.
     pub(super) fn measure(
         tr: &mut TextRenderer,
         theme: &Theme,

@@ -239,7 +239,7 @@ impl Container {
     /// Bound the content to the readable width (`metrics.readable_width`,
     /// resolved from the theme so it follows `ui_scale`; any inset sits
     /// outside it) on the parent's leading edge: a form, a page of facts, settings. A wider parent
-    /// leaves its extra area beside it, not around it; a narrower one
+    /// leaves its extra width beside it, not around it; a narrower one
     /// shrinks it. Use [`Container::with_centered_max_width`] only for
     /// content that is genuinely centred (an empty state, a sign-in card).
     #[must_use]
@@ -257,7 +257,7 @@ impl Container {
     }
 
     /// Never wider than the row it stands in: in a row too narrow for its content it narrows
-    /// to the area there is, and what it holds scrolls or gives way inside it (a dock along an
+    /// to the width there is, and what it holds scrolls or gives way inside it (a dock along an
     /// edge holding more than the edge fits). Its height still never squashes below
     /// its content's.
     #[must_use]
@@ -479,7 +479,7 @@ impl Widget for Container {
             max_size: taffy::Size {
                 width: match max_width {
                     Some(px) => length(px),
-                    // A hugging body is as wide as its content only up to the area it has.
+                    // A hugging body is as wide as its content only up to the width it has.
                     None if self.narrows => percent(1.0_f32),
                     None => taffy::Dimension::auto(),
                 },

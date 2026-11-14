@@ -2216,7 +2216,7 @@
         },
         {
           "name": "neutral",
-          "doc": "A share with no status (storage by kind, a quota with area): the plain fill, never a status colour.",
+          "doc": "A share with no status (storage by kind, a quota not yet full): the plain fill, never a status colour.",
           "type": "bool"
         },
         {
@@ -5026,7 +5026,7 @@
         },
         {
           "name": "truncate",
-          "doc": "It elides at the area it is given rather than wrapping wider, so its box may shrink to nothing and what does not fit ends in an ellipsis: a title in a narrow card.",
+          "doc": "It elides at the width it is given rather than wrapping wider, so its box may shrink to nothing and what does not fit ends in an ellipsis: a title in a narrow card.",
           "type": "bool"
         }
       ],
@@ -6523,7 +6523,7 @@
         },
         {
           "name": "width",
-          "doc": "How wide it is: as wide as its content, one share of the spare area, or `pixels` wide.",
+          "doc": "How wide it is: as wide as its content, one share of the spare width, or `pixels` wide.",
           "type": {
             "option": {
               "choice": {
@@ -6664,7 +6664,7 @@
         },
         {
           "name": "group",
-          "doc": "The part of the run it belongs to: a bar's leading group, its centre, its trailing group, or the area between two groups.",
+          "doc": "The part of the run it belongs to: a bar's leading group, its centre, its trailing group, or the gap between two groups.",
           "type": {
             "option": {
               "choice": {
@@ -7385,7 +7385,7 @@
     },
     {
       "name": "ToolbarSpacer",
-      "doc": "The area left in a toolbar, between the commands before it and those after it, which it pushes to the far end.",
+      "doc": "The width left in a toolbar, between the commands before it and those after it, which it pushes to the far end.",
       "semantics": {
         "role": "Generic"
       }

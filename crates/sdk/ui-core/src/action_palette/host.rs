@@ -204,8 +204,8 @@ impl ActionPalette {
         self.sync_list();
     }
 
-    /// The width the card takes, in logical pixels: the host sets it from the area it shows the palette
-    /// in, so the card follows the window or the display rather than its size.
+    /// The width the card takes, in logical pixels: the host sets it from the width of the window
+    /// or display it shows the palette in, so the card follows the window or the display rather than its size.
     pub fn set_max_width(&mut self, width: Option<f64>) {
         self.max_width = width.map(|width| width.max(0.0));
         self.structure_dirty = true;
@@ -418,8 +418,8 @@ impl ActionPalette {
         self.entry_row_capacity_with(0)
     }
 
-    /// How many result rows a full list has under the headers of `groups` groups: a header takes area a
-    /// row would have held, so a list with four groups has fewer rows than one with two.
+    /// How many result rows a full list has under the headers of `groups` groups: a header takes the
+    /// height of a row, so a list with four groups has fewer rows than one with two.
     #[must_use]
     pub fn entry_row_capacity_with(&self, groups: usize) -> usize {
         self.entry_row_capacity_for(groups, self.show_two_lines())

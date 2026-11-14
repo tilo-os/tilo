@@ -1011,7 +1011,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
                     style.flex_basis = taffy::Dimension::auto();
                     style.flex_grow = grow;
                 } else {
-                    // A pane that takes a share of the split's area takes that
+                    // A pane that takes a share of the split's width takes that
                     // share and no more (`layout::filling`), a long document
                     // scrolling inside its pane.
                     style.size = cross;

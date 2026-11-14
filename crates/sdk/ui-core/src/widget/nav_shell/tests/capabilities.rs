@@ -219,7 +219,7 @@ tilo_test_env::scenario! {
         assert!(part_rect(&h, Part::Action(Column::Content, 0)).x0 >= title.x1);
     }
 
-    // A title takes the area the actions leave: where most of the row's actions wait in the
+    // A title takes the width the actions leave: where most of the row's actions wait in the
     // menu, the title says what it says instead of being held to a third of the row with empty
     // space beside it.
     phase a_title_takes_the_area_its_actions_leave;
@@ -332,7 +332,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    // A header row reports what it settled on: the title's width against what it says, the area it
+    // A header row reports what it settled on: the title's width against what it says, the width it
     // left beside it, and what its actions kept.
     phase a_header_row_reports_what_it_settled_on;
     {
@@ -614,7 +614,7 @@ tilo_test_env::scenario! {
 /// A title's box reaches the actions that follow it, not just the width its words measure: a
 /// box the size of the measure itself cuts the last glyph where the renderer shaping the words
 /// rounds wider than the measure that sized the box, so a short column name reads as
-/// "Not…" beside area standing empty.
+/// "Not…" beside a column standing empty.
 #[test]
 fn a_titles_box_reaches_the_actions_that_follow_it() {
     let theme = Theme::dark();

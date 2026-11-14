@@ -1336,7 +1336,7 @@ impl App {
     }
 
     /// Re-express a held pointer delivered through the primary app window in
-    /// shell space while a prepared floating presentation is still active.
+    /// shell coordinates while a prepared floating presentation is still active.
     /// This is the transfer-proxy interval: pixels already live in the shell,
     /// but the native secondary may not have committed and taken pointer focus
     /// yet. Once the root reattaches, its presentation disappears immediately,

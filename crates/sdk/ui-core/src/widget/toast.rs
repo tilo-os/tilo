@@ -756,7 +756,7 @@ fn line_height(text_renderer: &mut TextRenderer, style: &TextStyle) -> f64 {
 
 /// Height of a card `width` wide: the attribution line (the app, and how
 /// long ago it arrived), the title, the body clamped to two lines, the
-/// actions and the padding. A card never reserves less area than
+/// actions and the padding. A card never reserves less height than
 /// [`paint_card`] paints into it.
 pub fn card_height(
     text_renderer: &mut TextRenderer,
@@ -1295,7 +1295,7 @@ pub fn card_ground(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color
 
 /// The width of a card's single action face.
 /// Whether a card `width` wide keeps its one action beside the text: only
-/// while the text keeps area to read, its whole title or some eight lines'
+/// while the text keeps width to read, its whole title or some eight lines'
 /// height of width. Large text in a narrow column moves the action under
 /// the text instead.
 fn single_action_inline(

@@ -34,7 +34,7 @@ impl HeldControl {
         }
     }
 
-    /// Whether the row had area to place it: a control it holds nothing for is not there at all.
+    /// Whether the row had width to place it: a control it holds nothing for is not there at all.
     pub(super) fn placed(&self) -> bool {
         self.rect.area() > 0.0
     }

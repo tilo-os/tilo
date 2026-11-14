@@ -196,7 +196,7 @@ impl TabBar {
     }
 
     /// Size the pill by the field the name is typed into, so the field shows all of it: the text at
-    /// the bar's role, measured, plus the area the field's own chrome keeps beside it, is the tab's
+    /// the bar's role, measured, plus the width the field's chrome keeps beside it, is the tab's
     /// own width until the person commits. A name longer than the row fits is a pill the
     /// row's own fit squeezes, and the field scrolls to its caret inside it.
     pub(super) fn measure_rename(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
@@ -314,7 +314,7 @@ mod tests {
 
         phase the_pill_is_the_field_and_leaves_it_its_own_area;
         // The pill is the field: it takes no inset of its own, so the title's glyphs do not move when
-        // it turns into a field, and the area it needs past the text is the carets at its ends. Sizing
+        // it turns into a field, and the width it needs past the text is the carets at its ends. Sizing
         // the pill by the text alone scrolled the field and cut the name's first letter off.
         {
             let mut bar = bar();

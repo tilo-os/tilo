@@ -338,7 +338,7 @@ impl BlockEditor {
 
     /// Measure how tall each embed's card stands at the width the blocks are stacked at: its
     /// title, and the lines of what it projects a card shows, as the draw reads them, so the
-    /// stack gives the card the area it needs as what it projects says more or less.
+    /// stack gives the card the height it needs as what it projects says more or less.
     pub(super) fn measure_card_heights(&mut self, width: f32, text_renderer: &mut TextRenderer) {
         let theme = std::sync::Arc::clone(&self.layout_theme);
         let card_width = f64::from(width) - 2.0 * self.text_pad;

@@ -1715,7 +1715,7 @@ impl GroupRow {
         self.structure_dirty = true;
     }
 
-    /// Make area for a window that just opened, beside the one it opened to the right of, else the
+    /// Make width for a window that just opened, beside the one it opened to the right of, else the
     /// one after it: two that don't fit share the display, and when no share leaves both usable the
     /// strip scrolls instead. New widths are stamped as pending changes.
     pub fn share_with_neighbour(&mut self, group_id: u64) -> bool {
@@ -1729,7 +1729,7 @@ impl GroupRow {
         self.share_with_neighbour_placing(group_id, true)
     }
 
-    /// Make area for the window `group_id` that opened over the shell beside its neighbour: the
+    /// Make width for the window `group_id` that opened over the shell beside its neighbour: the
     /// card a floating window draws at — the window and the band and ring it draws round it — is
     /// `card_px` wide, and the window it opened next to gives up exactly that much of the strip,
     /// so the card stands beside what the person was reading rather than over it. Both widths
@@ -1972,7 +1972,7 @@ impl GroupRow {
     }
 
     /// [`Pan::canvas_pad`] on the presenter's pan step, rounded up so the
-    /// canvas keeps at least that much area: with whole-device-pixel pans,
+    /// canvas keeps at least that much margin: with whole-device-pixel pans,
     /// a canvas shift (`pan + pad`) is then whole device pixels too.
     fn lane_canvas_pad(&self, pan: &Pan) -> f64 {
         let pad = pan.canvas_pad();
@@ -3606,7 +3606,7 @@ impl GroupRow {
         self.sync_sibling_fade(theme);
         self.set_width_bases();
         // Every slot springs from where it is drawn to where it goes, the closing one to nothing
-        // and its neighbours into the area, whether or not the strip overflows: the pan's bounds
+        // and its neighbours into the gap, whether or not the strip overflows: the pan's bounds
         // follow where the springs are going ([`Self::dest_content_w`]), so a slot in flight never
         // makes the strip scrollable.
         for group in &mut self.groups {

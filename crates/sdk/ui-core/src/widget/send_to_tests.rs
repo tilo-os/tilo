@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
             narrow.rect()
         );
 
-        // No area anywhere: it still stays inside the window, over what it is about.
+        // No width anywhere: it still stays inside the window, over what it is about.
         let tight = box_beside(
             Rect::new(150.0, 20.0, 250.0, 160.0),
             Rect::new(0.0, 0.0, 400.0, 200.0),
@@ -129,7 +129,7 @@ tilo_test_env::scenario! {
             "inside the window: {}",
             tight.rect()
         );
-        // A menu at the window's trailing edge with a little area before it: the
+        // A menu at the window's trailing edge with a little width before it: the
         // box covers as little of it as the window allows.
         let edge = box_beside(
             Rect::new(300.0, 100.0, 460.0, 560.0),
@@ -358,7 +358,7 @@ tilo_test_env::scenario! {
     }
 
     phase the_message_wraps_and_the_box_makes_way_for_it;
-    // The message wraps at the box's width and the box makes way for it: a
+    // The message wraps at the box's width and the box grows to fit it: a
     // sentence longer than the field is read whole, in lines, never run past the
     // card sideways.
     {
@@ -442,7 +442,7 @@ tilo_test_env::scenario! {
         let mut text = TextRenderer::new();
         let (hint_width, _) = text.measure_style(&hint, None, &Theme::dark().text(TextRole::Body));
         // The hint is set in from the field's edge as a chip's mark is, so the
-        // area it needs is its own width plus that inset.
+        // width it needs is its own width plus that inset.
         let inset = send_to.mark_inset();
         assert!(
             drawn.width() + 0.5 >= f64::from(hint_width) + inset,

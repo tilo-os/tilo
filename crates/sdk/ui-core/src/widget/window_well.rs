@@ -8,7 +8,7 @@
 //! windows reads those rectangles, so a well that moves without changing size moves its window
 //! in the same frame.
 //!
-//! The well is a leaf that fills the area its frame leaves it: a frame's bar and chrome stand
+//! The well is a leaf that fills the rect its frame leaves: a frame's bar and chrome stand
 //! outside it, in the layout around it.
 
 use std::cell::RefCell;
@@ -342,7 +342,7 @@ mod tests {
         }
 
         phase a_well_in_a_framed_column_fills_the_height_it_is_given;
-        // A frame that names the well a height gets it back whole: the well fills the area it was
+        // A frame that names the well a height gets it back whole: the well fills the rect it was
         // given, whatever shape a window is.
         {
             let (_, height) = well_in(column(taffy::Dimension::length(300.0)));

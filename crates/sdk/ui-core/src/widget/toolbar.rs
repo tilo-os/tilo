@@ -1225,7 +1225,7 @@ impl Toolbar {
 }
 
 /// Main-axis extent a separator occupies: its painted hairline alone, not
-/// a spacing step. The sibling gap on either side is its breathing area, so
+/// a spacing step. The sibling gap on either side is its breathing margin, so
 /// a group boundary reads as `gap + rule + gap` and never doubles up with
 /// margins of its own.
 const SEPARATOR_HAIRLINE: f32 = 1.0;

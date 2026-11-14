@@ -798,8 +798,8 @@ impl ContextMenu {
         self.dirty = true;
     }
 
-    /// Open over `anchor`: a control, a row, or a point (a box with no area).
-    /// The menu stands below it, or above it where below has less area, and
+    /// Open over `anchor`: a control, a row, or a point (a box of no size).
+    /// The menu stands below it, or above it where below has less height, and
     /// inside the window it was opened in. Everything that opens a menu —
     /// the pointer, a control, the keyboard's row — names where it stands
     /// this way, so they are placed by one rule.
@@ -850,7 +850,7 @@ impl ContextMenu {
     }
 
     /// Keep the menu inside an owner-provided viewport. It opens on the side
-    /// of its anchor with more area, then wheel and keyboard navigation scroll
+    /// of its anchor with more height, then wheel and keyboard navigation scroll
     /// rows internally when neither side can fit them. The accessibility tree
     /// still exposes every complete label.
     pub fn set_viewport(&mut self, viewport: Option<Rect>) {

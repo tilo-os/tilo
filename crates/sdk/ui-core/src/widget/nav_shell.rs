@@ -441,7 +441,7 @@ struct ColumnFit {
     header: Option<HeaderRowFacts>,
 }
 
-/// What one header row laid itself out as: the area it gave its title against what the title
+/// What one header row laid itself out as: the width it gave its title against what the title
 /// says, what it left beside it, and what its actions kept. The shell names the column and says
 /// whether the title reads, which only the title's own words can answer.
 #[derive(Clone, Copy, Debug)]
@@ -541,7 +541,7 @@ impl Held {
 }
 
 /// Whether `spare` reaches `threshold`, given the side the layout stood on
-/// last: a layout that does not hold needs `band` more area to come back.
+/// last: a layout that does not hold needs `band` more width to come back.
 fn reaches(spare: f64, threshold: f64, held: Option<bool>, band: f64) -> bool {
     let threshold = if held == Some(false) {
         threshold + band
@@ -711,7 +711,7 @@ pub struct NavShell {
     overview: Option<Element>,
     content: Element,
     /// Whether the window shows a content column: a window whose content only stands in for what
-    /// the overview has not opened yet gives its area to the overview
+    /// the overview has not opened yet gives its width to the overview
     /// ([`Self::content_shown`]).
     content_shown: bool,
     inspector: Option<Element>,
@@ -1022,7 +1022,7 @@ impl NavShell {
     }
 
     /// The fill of the content's header between the shell's leading buttons and the actions: a path
-    /// bar, or a mode or tab switcher with no title; it stands at its own width and takes more area
+    /// bar, or a mode or tab switcher with no title; it stands at its own width and takes more width
     /// when it needs it.
     #[must_use]
     pub fn content_header_leading(mut self, leading: Element) -> Self {

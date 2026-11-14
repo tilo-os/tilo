@@ -230,7 +230,7 @@ pub struct ListRowFace<'a> {
     reveal_actions: bool,
     swipe: Option<(SwipeAction<'a>, f64)>,
     trailing_width: Option<f64>,
-    /// The area the list keeps after every row's trailing control, at
+    /// The width the list keeps after every row's trailing control, at
     /// least: its rows' controls stand in one column.
     trailing_after: f64,
     interaction: Interaction,
@@ -1390,7 +1390,7 @@ impl ListRow {
         self
     }
 
-    /// The area an avatar takes, left empty ([`RowLeading::AvatarSpace`]): for a row
+    /// The width an avatar takes, left empty ([`RowLeading::AvatarSpace`]): for a row
     /// without one in a list whose rows show avatars.
     #[must_use]
     pub fn avatar_space(mut self) -> Self {
@@ -1757,7 +1757,7 @@ impl ListRow {
         }
     }
 
-    /// Set by the list: the area its consecutive rows keep after their
+    /// Set by the list: the width its consecutive rows keep after their
     /// trailing controls, so the controls stand in one column.
     pub(crate) fn set_shared_after_trailing(&mut self, width: Option<f64>) {
         if self.shared_after_trailing != width {
@@ -1766,7 +1766,7 @@ impl ListRow {
         }
     }
 
-    /// The area this row's own marks take after its trailing control, for
+    /// The width this row's marks take after its trailing control, for
     /// the list to share across its rows; none without a control.
     pub(crate) fn marks_after_trailing(&self, theme: &Theme) -> f64 {
         if self.trailing.is_none() {

@@ -228,7 +228,7 @@ pub struct Badge {
     moved_drawn: bool,
     layout_dirty: bool,
     laid_out: bool,
-    /// The layout keeps area for a leaving badge until it has gone.
+    /// The layout keeps the badge's width until it has gone.
     laid_out_leaving: bool,
     motion: Option<crate::tokens::EffectiveMotion>,
     feel: crate::motion::Feel,
@@ -701,7 +701,7 @@ impl Widget for Badge {
             || self.laid_out_leaving && !self.presence.is_visible(crate::motion::frame_now())
     }
 
-    /// The area a badge asked for is measured even when no frame draws it: a
+    /// The width a badge asked for is measured even when no frame draws it: a
     /// count of none or one scrolled out of view is laid out and never drawn.
     fn layout_measured(&mut self) {
         self.layout_dirty = false;

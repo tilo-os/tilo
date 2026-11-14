@@ -469,7 +469,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 .any(|c| in_row(*c) && inputs.header_wanted(*c)));
     // Each column's header is the app's own — its title and the buttons that act on what it
     // shows — never the window's: it stands at the top of its column at every time, and the
-    // window's controls come into the area the row keeps for them.
+    // window's controls come into the width the row keeps for them.
     let sidebar_reads_as_rail = match g.sidebar {
         SidebarPlacement::Docked => inputs.sidebar_reads_as_rail(sw),
         SidebarPlacement::Screen => inputs.sidebar_reads_as_rail(w),

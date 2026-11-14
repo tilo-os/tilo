@@ -1371,7 +1371,7 @@ impl SecretPrompt {
             .dismiss_on_scrim(false)
     }
 
-    /// The area a sheet lays out in: the window above an on-screen keyboard.
+    /// The rect a sheet lays out in: the window above an on-screen keyboard.
     fn sheet_window(&self) -> Rect {
         let mut window = self.window;
         window.y1 = (window.y1 - self.keyboard_inset).max(window.y0);

@@ -51,7 +51,7 @@ pub enum RunGroup {
     Leading,
     Center,
     Trailing,
-    /// The area a group leaves the next: a part of the run that is only a gap.
+    /// The width a group leaves the next: a part of the run that is only a gap.
     Space,
 }
 
@@ -473,7 +473,7 @@ impl DragRun {
     /// its clock centred, its people and status trailing) is three columns, so the centre group
     /// stands in the middle whatever the side groups weigh; a run of one group (a dock) packs
     /// that group as `distribute` and `align` say. A part that is only a gap (`RunGroup::Space`)
-    /// draws nothing: the grouped run's columns are the area between its groups.
+    /// draws nothing: the grouped run's columns are the gaps between its groups.
     fn build_items(
         &mut self,
         views: Vec<Element>,
@@ -532,7 +532,7 @@ impl DragRun {
             RunAxis::Horizontal if grouped => {
                 // Three columns: each group stands at its own edge of the run, and the centre
                 // group in the middle whatever the side groups weigh. A column never gives a
-                // group less area than its items take, so a part is never squeezed into a
+                // group less width than its items take, so a part is never squeezed into a
                 // sliver of itself; a run too narrow for its parts overflows whole, which its
                 // owner sees and gives parts up for.
                 let mut groups = Vec::with_capacity(3);

@@ -209,7 +209,7 @@ fn opened_beside(viewport_w: f64, inset: f64) -> GroupRow {
 }
 
 /// A window opened beside a lone one on a 1440 px display: the window in
-/// use narrows to make way on its slot spring while the strip pans to the
+/// use narrows on its slot spring while the strip pans to the
 /// new one. The pan aims at the strip as it will be, so the new window
 /// lands whole with the strip's gutter after it, whether it grows in from
 /// nothing or arrives at its width.

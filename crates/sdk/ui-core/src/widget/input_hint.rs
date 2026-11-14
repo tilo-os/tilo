@@ -223,7 +223,7 @@ impl InputHint {
     }
 
     /// Another chord shows where the hint stands: the keycaps it draws, measured again for
-    /// the area they take.
+    /// the width they take.
     pub fn set_binding(&mut self, binding: InputBinding) {
         if self.binding == binding {
             return;

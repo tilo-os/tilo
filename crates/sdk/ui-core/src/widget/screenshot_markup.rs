@@ -816,7 +816,7 @@ impl Widget for ScreenshotMarkup {
         let (hint_w, _) = tr.measure_style(&hint, None, &caption_style);
         let hint_x = self.rect.x1 - CANVAS_INSET - f64::from(hint_w);
         let caption_x = title_x + f64::from(title_w) + HEADER_GAP;
-        // Elided to the area left before the hint, never wrapped: a wrap
+        // Elided to the width left before the hint, never wrapped: a wrap
         // width would fold the caption into a column under the header.
         let caption = tr.elide_to_width_style(
             &format!("{} × {} · original pixels", self.width, self.height),

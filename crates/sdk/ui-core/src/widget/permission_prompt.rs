@@ -433,7 +433,7 @@ impl Widget for PermissionPrompt {
             crate::chrome::shell::paint_panel_edge(scene, transform, self.rect, radius, theme);
 
             // Placeholder pulled from the accent ramp until the portal layer
-            // surfaces real icons via the app's shell-file metadata.
+            // surfaces real icons via the app's `.desktop` file metadata.
             let icon_x = self.rect.x0 + PADDING_X;
             let icon_y = self.rect.y0 + (self.rect.height() - ICON_SIZE) / 2.0;
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);

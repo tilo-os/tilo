@@ -28,7 +28,7 @@ pub struct BarChipFace<'a> {
     hovered: bool,
     pressed: bool,
     focused: bool,
-    /// The label may grow to this width before it elides; `None`: as wide as the area the chip is given.
+    /// The label may grow to this width before it elides; `None`: as wide as the chip is given.
     label_width: Option<f64>,
     /// The chip's height; `None` uses the theme's bar control height.
     height: Option<f64>,

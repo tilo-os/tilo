@@ -392,9 +392,9 @@ fn count_pill_size(text: &mut TextRenderer, theme: &Theme, count: usize) -> (f64
     (f64::from(w) + 2.0 * pad, f64::from(h) + pad / 2.0)
 }
 
-/// The least area a title needs to read as words rather than as an ellipsis alone: its first
+/// The least width a title needs to read as words rather than as an ellipsis alone: its first
 /// letter and the ellipsis that says the rest is cut. The count beside it gives way first, so it
-/// never takes that area from the words.
+/// never takes that width from the words.
 pub(crate) fn least_title_width(text: &mut TextRenderer, theme: &Theme, title: &str) -> f64 {
     let first = match crate::text_break::grapheme_indices(title).nth(1) {
         Some((end, _)) => title.get(..end).unwrap_or(title),
@@ -426,7 +426,7 @@ pub(crate) fn paint_title_in(
     let related = f64::from(theme.tokens.spacing.rhythm.related);
     let style = title_style(theme);
     // The count is quiet and the title is the name: the pill stands only where the words keep
-    // area to read as words, and gives way to them otherwise.
+    // width to read as words, and gives way to them otherwise.
     let least = least_title_width(text, theme, title);
     let pill = count
         .map(|count| (count, count_pill_size(text, theme, count)))

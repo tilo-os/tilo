@@ -644,7 +644,7 @@ fn primary_window_attributes(
         Some((x, y)) => window_attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
         None => window_attributes,
     };
-    // Benchmarks can keep their own windows above unrelated shell apps.
+    // Benchmarks can keep their own windows above unrelated apps.
     // This does not change normal application window ordering.
     let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1") {
         window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
@@ -2636,7 +2636,7 @@ impl AppHandler {
         mark_first_frame("first-frame-layout-done");
         // A window that fits its content asks for the size its layout just measured before this
         // frame is committed: the frame a client sees is at the size its page needs, not one
-        // drawn at the area it was given and resized after.
+        // drawn at the size it was given and resized after.
         app.reconcile_minimum_size(window, true);
         // A local read this frame would show has not answered and is still
         // inside its frame budget ([`crate::arriving`]): the frame on screen
@@ -3204,7 +3204,7 @@ impl AppHandler {
         } else {
             // The callback that woke this redraw changed no pixels. Presenting
             // would commit a new buffer and a new frame callback, and the
-            // shell would paint that echo while the shell sat still.
+            // compositor would paint that echo with nothing changed.
             scene.reset();
             render.buffers.unprepare((scene, damage_regions));
         }

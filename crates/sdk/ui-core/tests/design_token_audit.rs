@@ -599,7 +599,7 @@ fn selector_tiers_clear_the_selection_step_on_every_ground_they_stand_on() {
                 let active_step = lightness_step(active.fill, ground);
                 let hover_step = lightness_step(seen_over(hover.fill, ground), ground);
                 // On a light palette the active selector on the strip rises
-                // toward the light, as the strip's light ground leaves area
+                // toward the light, as the strip's light ground leaves headroom
                 // for; a dark one always does.
                 let light = !theme.document.palette.dark && !theme.document.palette.high_contrast;
                 if (name == "strip" || theme.document.palette.dark)

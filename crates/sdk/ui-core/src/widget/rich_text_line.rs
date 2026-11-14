@@ -230,7 +230,7 @@ pub struct RichTextLine {
     /// The height a picture's editable source took beside its picture, with the width it was
     /// measured at, newest first: a host measures a line at widths it never applies (a flex
     /// solve probes a child's intrinsic size), and a source measured at one of those is not the
-    /// area the source takes at the width the line is applied at, so the picture would start
+    /// size the source takes at the width the line is applied at, so the picture would start
     /// inside itself.
     image_source: Vec<(f32, f32)>,
     /// Kept sorted by `range.start`.
@@ -1220,7 +1220,7 @@ impl RichTextLine {
     /// shows, so this frame only moves it: nothing of its own changed, the
     /// document did not, and nothing in it moves on its own — the person's
     /// own caret, a settling suggestion, a completion list, a scroll glide,
-    /// or someone else in the area.
+    /// or someone else in the document.
     fn keeps_its_drawing(&self, theme: &Theme, presence: &PresenceCtx) -> bool {
         if self.paint_dirty || self.face.is_empty() {
             return false;
