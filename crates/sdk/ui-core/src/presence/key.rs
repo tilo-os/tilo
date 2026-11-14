@@ -113,9 +113,9 @@ mod view_key_tests {
             // the other, so this is the only guard.
             {
                 assert_eq!(
-                    postcard::to_stdvec(&PresenceKey::desktop_pointer("r")).unwrap(),
+                    postcard::to_stdvec(&PresenceKey::shell_pointer("r")).unwrap(),
                     vec![5u8, 0, 1, b'r'],
-                    "PresenceKey::Pointer must stay variant 5 and PointerSpace::Desktop variant 0",
+                    "PresenceKey::Pointer must stay variant 5 and PointerSpace::Shell variant 0",
                 );
                 assert_eq!(
                     postcard::to_stdvec(&PresenceKey::surface_pointer("s")).unwrap(),
@@ -134,7 +134,7 @@ mod view_key_tests {
             // one end and not the other.
             {
                 for key in [
-                    PresenceKey::desktop_pointer("workspace-7"),
+                    PresenceKey::shell_pointer("workspace-7"),
                     PresenceKey::surface_pointer("so.tilo.word-processor"),
                     PresenceKey::tile_pointer("workspace-7", 0x1234_5678_9abc),
                 ] {
@@ -156,26 +156,26 @@ mod view_key_tests {
                 let wp = PresenceKey::surface_pointer("so.tilo.word-processor");
                 let fm = PresenceKey::surface_pointer("so.tilo.files");
                 assert_ne!(wp.pointer_space(), fm.pointer_space());
-                assert!(!wp.scopes_a_desktop_pointer());
-                assert!(!fm.scopes_a_desktop_pointer());
+                assert!(!wp.scopes_a_shell_pointer());
+                assert!(!fm.scopes_a_shell_pointer());
             }
             // phase: every_spelling_of_the_desktop_reads_as_the_desktop
             // The two older spellings of the desktop still mean it: a session's
             // workspace-scoped republish, and the tag the old keyless cursor path was
             // re-keyed to.
             {
-                assert!(PresenceKey::desktop_pointer("r").scopes_a_desktop_pointer());
-                assert!(PresenceKey::Workspace { id: "r".into() }.scopes_a_desktop_pointer());
-                assert!(PresenceKey::pointer_default().scopes_a_desktop_pointer());
+                assert!(PresenceKey::shell_pointer("r").scopes_a_shell_pointer());
+                assert!(PresenceKey::Workspace { id: "r".into() }.scopes_a_shell_pointer());
+                assert!(PresenceKey::pointer_default().scopes_a_shell_pointer());
                 // A pointer placed over a tab's tile is drawn by the compositor
                 // above every window, like any desktop pointer.
-                assert!(PresenceKey::tile_pointer("r", 1).scopes_a_desktop_pointer());
+                assert!(PresenceKey::tile_pointer("r", 1).scopes_a_shell_pointer());
                 // A position inside a document is not a position on a screen.
                 assert!(
                     !PresenceKey::Widget {
                         path: vec![PathSegment::Index(0)]
                     }
-                    .scopes_a_desktop_pointer()
+                    .scopes_a_shell_pointer()
                 );
                 assert_eq!(
                     PresenceKey::Tab { id: "t".into() }.pointer_space(),

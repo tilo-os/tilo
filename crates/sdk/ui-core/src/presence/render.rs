@@ -2063,7 +2063,7 @@ mod tests {
             );
 
             // Owned by the compositor: the overlay already draws that person.
-            let (r, g, b, _) = paint(PointerOwner::Desktop);
+            let (r, g, b, _) = paint(PointerOwner::Shell);
             assert_eq!(
                 (r, g, b),
                 (0, 0, 0),

@@ -130,7 +130,7 @@ mod workspace_activity {
         let ada = ui::permissions::UserId("ada".into());
         presence.names.insert(ada.clone(), "Ada".into());
         presence.set_pointer(
-            &ui::presence::PresenceKey::desktop_pointer("design-workspace"),
+            &ui::presence::PresenceKey::shell_pointer("design-workspace"),
             ada,
             (420., 260.),
         );

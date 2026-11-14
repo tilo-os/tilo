@@ -561,7 +561,7 @@ pub enum PointerOwner {
     Window,
     /// The compositor overlay paints it, from [`PresenceCtx::pointers`]. Still
     /// kept here so "follow that peer" can read it via [`PresenceCtx::peer_pointer`].
-    Desktop,
+    Shell,
     /// In some other surface's content coordinates — the frame arrived (the
     /// broker fans presence to every app in the workspace) but is not this
     /// process's to place. Makes the fan-out safe: exactly one of N apps
@@ -1054,7 +1054,7 @@ impl PresenceCtx {
     pub fn pointer_owner_for(&self, key: &PresenceKey) -> PointerOwner {
         match key.pointer_space() {
             None => PointerOwner::Window,
-            Some(PointerSpace::Desktop { .. } | PointerSpace::Tile { .. }) => PointerOwner::Desktop,
+            Some(PointerSpace::Shell { .. } | PointerSpace::Tile { .. }) => PointerOwner::Shell,
             Some(PointerSpace::Surface { surface }) => match self.surface.as_deref() {
                 Some(mine) if mine == surface => PointerOwner::Window,
                 _ => PointerOwner::OtherSurface,
@@ -1190,13 +1190,13 @@ impl PresenceCtx {
         self.pointer_seen.insert((key.clone(), user.clone()), now);
         // Shell scopes only: a pointer inside a surface's content is a
         // position in a document, not a presence dot on the shell. (Not
-        // `scopes_a_desktop_pointer`, which also answers yes for a routing
+        // `scopes_a_shell_pointer`, which also answers yes for a routing
         // artefact that is nobody's presence.)
         if matches!(
             key,
             PresenceKey::Workspace { .. }
                 | PresenceKey::Pointer {
-                    space: PointerSpace::Desktop { .. }
+                    space: PointerSpace::Shell { .. }
                 }
         ) {
             self.register_presence(key, user);

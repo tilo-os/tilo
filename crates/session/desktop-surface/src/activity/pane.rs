@@ -2078,7 +2078,7 @@ impl WorkspaceActivityPane {
         };
         let mut pointers = Vec::new();
         for (key, people) in &presence.pointers {
-            let desktop_space = key.scopes_a_desktop_pointer();
+            let desktop_space = key.scopes_a_shell_pointer();
             for (user, _) in people {
                 pointers.push(ReplayPointer {
                     name: presence.display_name(user),

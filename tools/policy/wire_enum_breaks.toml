@@ -292,3 +292,8 @@ reason = "`ChannelKeys` is renamed `GroupKeys` at the same index: postcard write
 file = "crates/hosting/tilo-relay-protocol/src/transport.rs"
 enum = "Envelope"
 reason = "`ChannelReader` is renamed `KeyFollower` at the same index: postcard writes no names, so the bytes read the same"
+
+[[break]]
+file = "crates/collab/collab-types/src/presence/key.rs"
+enum = "PointerSpace"
+reason = "a rename in place: the variant keeps its position, so the postcard bytes of a presence key are unchanged; presence is never stored"

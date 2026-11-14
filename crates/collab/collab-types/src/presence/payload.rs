@@ -1,4 +1,4 @@
-//! What a presence update says, and who is in a room: the typed payloads apps
+//! What a presence update says, and who is in a workspace: the typed payloads apps
 //! publish under a [`PresenceKey`](super::PresenceKey), how available a person
 //! says they are, and a roster row.
 
@@ -28,7 +28,7 @@ pub enum PresencePayload {
     },
     Arrived,
     Left,
-    /// A room-scoped, transient follow relationship announced by the
+    /// A workspace-scoped, transient follow relationship announced by the
     /// authenticated sender. It is a visual presence cue only; the local
     /// Follow command remains private to the follower's session.
     Following {
@@ -38,14 +38,14 @@ pub enum PresencePayload {
     /// authenticated event envelope; this payload never describes a mouse or
     /// keyboard gesture and therefore cannot create a synthetic cursor.
     Interaction(Box<tilo_actions::SemanticInteraction>),
-    /// Short room-scoped intention. `automatic` distinguishes a local-model
+    /// Short workspace-scoped intention. `automatic` distinguishes a local-model
     /// suggestion from participant-authored words; empty text clears it.
     Status {
         text: String,
         automatic: bool,
     },
     /// How available the authenticated sender is, and the voice channel
-    /// they are in, if any. Desktop presence: the shell shows it on faces
+    /// they are in, if any. Shell presence: the shell shows it on faces
     /// and in the roster; it never reaches an app ([`Self::reaches_apps`]).
     Availability {
         state: Availability,
@@ -62,7 +62,7 @@ pub enum PresencePayload {
 }
 
 impl PresencePayload {
-    /// Whether apps receive this: everything but the desktop's own
+    /// Whether apps receive this: everything but the shell's own
     /// presence (availability), which only the shell shows.
     #[must_use]
     pub const fn reaches_apps(&self) -> bool {

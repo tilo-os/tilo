@@ -54,10 +54,10 @@ pub enum PresenceKey {
 /// The coordinate space a pointer position is measured in.
 ///
 /// A pointer is a pair of numbers that mean nothing on their own: the same
-/// `(230, 34)` is a place on the desktop, in a file manager, and in a word
+/// `(230, 34)` is a place on the shell, in a file manager, and in a word
 /// processor. The space travels with the position because it's what decides
 /// who may place it — and who may not: a presence frame reaches every app in
-/// a room, so without this each read the position as its own and one person
+/// a workspace, so without this each read the position as its own and one person
 /// was drawn once per open window. With the space carried, at most one
 /// receiver can answer "that is my space".
 ///
@@ -66,16 +66,11 @@ pub enum PresenceKey {
 /// silently misreads every pointer scope rather than failing to build.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum PointerSpace {
-    /// Compositor scene coordinates on this device's own desktop. Only
-    /// meaningful on the device that measured them: its monitors decide
-    /// where anything is, so a member's desktop is a different shape.
-    /// A person's pointer goes to other devices as [`Self::Tile`] instead.
-    Desktop {
-        /// The workspace whose desktop this is. It keeps the key `room` on
-        /// the wire, the name every build before the rename wrote.
-        #[serde(rename = "room")]
-        workspace: String,
-    },
+    /// Compositor scene coordinates across this device's displays, as the
+    /// shell shows `workspace`. Only meaningful on the device that measured
+    /// them: its displays decide where anything is. A person's pointer goes
+    /// to other devices as [`Self::Tile`] instead.
+    Shell { workspace: String },
     /// Content coordinates inside the surface `surface` names — the app id
     /// that surface announces (`ui::local_surface_id`). Named by the
     /// app rather than the window instance: two windows of one app on one
@@ -85,16 +80,10 @@ pub enum PointerSpace {
     /// Logical pixels from the top-left corner of the tile that shows tab
     /// `tab` of `workspace`. Tabs are the workspace's, shared by every device
     /// in it, while which monitor shows a tab and where is each device's own
-    /// layout — so this is how a person's desktop pointer travels: every
+    /// layout — so this is how a person's shell pointer travels: every
     /// receiver places it over its own tile for that tab, above every
-    /// window, whatever its monitors look like.
-    Tile {
-        /// The workspace whose tab `tab` shows. It keeps the key `room` on
-        /// the wire, the name every build before the rename wrote.
-        #[serde(rename = "room")]
-        workspace: String,
-        tab: u64,
-    },
+    /// window, whatever its displays look like.
+    Tile { workspace: String, tab: u64 },
 }
 
 /// First path field of a [`PresenceKey::digest_form`] key.
@@ -159,11 +148,11 @@ impl PresenceKey {
         }
     }
 
-    /// The key a pointer measured on `workspace`'s desktop is published
-    /// under.
-    pub fn desktop_pointer(workspace: impl Into<String>) -> Self {
+    /// The key a pointer measured on the shell showing `workspace` is
+    /// published under.
+    pub fn shell_pointer(workspace: impl Into<String>) -> Self {
         PresenceKey::Pointer {
-            space: PointerSpace::Desktop {
+            space: PointerSpace::Shell {
                 workspace: workspace.into(),
             },
         }
@@ -204,17 +193,17 @@ impl PresenceKey {
 
     /// The coordinate space a pointer arriving under this key is measured
     /// in, or `None` for a key that is not a pointer scope at all. Two
-    /// older spellings still mean "desktop": [`PresenceKey::Workspace`],
-    /// the session's own desktop pointer republished per room, and
+    /// older spellings still mean the shell: [`PresenceKey::Workspace`],
+    /// the session's own shell pointer republished per workspace, and
     /// [`Self::pointer_default`], the tag a keyless pointer publish was
     /// re-keyed to.
     pub fn pointer_space(&self) -> Option<PointerSpace> {
         match self {
             PresenceKey::Pointer { space } => Some(space.clone()),
-            PresenceKey::Workspace { id } => Some(PointerSpace::Desktop {
+            PresenceKey::Workspace { id } => Some(PointerSpace::Shell {
                 workspace: id.clone(),
             }),
-            PresenceKey::Widget { path } if path.is_empty() => Some(PointerSpace::Desktop {
+            PresenceKey::Widget { path } if path.is_empty() => Some(PointerSpace::Shell {
                 workspace: String::new(),
             }),
             _ => None,
@@ -222,17 +211,17 @@ impl PresenceKey {
     }
 
     /// Whether a pointer arriving under this key is a position on the
-    /// *desktop* — one the compositor overlay places, above every window —
+    /// shell — one the compositor overlay places, above every window —
     /// rather than inside one window's content. Reading the legacy keyless
     /// tag as an ordinary widget scope is what drew one person once per
     /// window: the broker hands every inbound frame to every app in the
-    /// room, so each window claimed the pointer as its own. Deliberately
+    /// workspace, so each window claimed the pointer as its own. Deliberately
     /// about the *scope*, not the transport: a pointer with no key at all
     /// never comes through here and stays the window's to paint.
-    pub fn scopes_a_desktop_pointer(&self) -> bool {
+    pub fn scopes_a_shell_pointer(&self) -> bool {
         matches!(
             self.pointer_space(),
-            Some(PointerSpace::Desktop { .. } | PointerSpace::Tile { .. })
+            Some(PointerSpace::Shell { .. } | PointerSpace::Tile { .. })
         )
     }
 

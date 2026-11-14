@@ -338,7 +338,7 @@ pub const PEER_PALETTE: [(u8, u8, u8); 12] = [
     (0xee, 0x83, 0xaf), // 355° pink — pinned for "alice"
 ];
 
-/// Give everyone in a room a colour nobody else in it is wearing.
+/// Give everyone in a workspace a colour nobody else in it is wearing.
 ///
 /// [`user_color`] alone can't promise this — it's a hash, so `carol` lands
 /// on `alice`'s pink. Whoever collides steps to the next free ring entry,
