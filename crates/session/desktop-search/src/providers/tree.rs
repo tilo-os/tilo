@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use ui::search::FieldWeight;
-use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, rank_fields};
+use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 use crate::model::{Hit, Source, Target};
 
@@ -144,12 +144,17 @@ impl Source for TreeFiles {
         }
         let files = Arc::clone(&self.files.read().unwrap_or_else(PoisonError::into_inner));
         let texts = Arc::clone(&self.texts.read().unwrap_or_else(PoisonError::into_inner));
+        // One index over every file's name: a keystroke over a workspace of
+        // many files ranks them at once, not with an index built per file.
+        let names: Vec<Vec<(String, FieldWeight)>> = files
+            .iter()
+            .map(|file| vec![(file.name.clone(), FieldWeight::TITLE)])
+            .collect();
+        let ranks = crate::rank::rank_rows(&ui::search::ListIndex::default(), needle, &names);
         let mut hits: Vec<Hit> = files
             .iter()
-            .filter_map(|file| {
-                rank_fields(needle, &[(&file.name, FieldWeight::TITLE)])
-                    .map(|score| self.hit(file, score))
-            })
+            .zip(ranks)
+            .filter_map(|(file, score)| score.map(|score| self.hit(file, score)))
             .collect();
         hits.sort_by_key(|hit| std::cmp::Reverse(hit.score));
         hits.truncate(MAX_ROWS);

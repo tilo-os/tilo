@@ -28,7 +28,7 @@ use ui::search::{PagePoll, PendingToken, SearchQuery};
 
 use crate::model::{ActionTarget, Hit, LaunchPlace, Source, Target};
 use crate::rank;
-use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, rank_fields};
+use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 /// An application the desktop can open. A desktop lists only the apps it
 /// can run ([`crate::availability::runs_on`]).
@@ -202,7 +202,39 @@ pub struct CommandSpec {
     pub unasked: bool,
 }
 
-pub struct Commands(pub Vec<CommandSpec>);
+/// The host's commands, each ranked by its title and what it says it does.
+pub struct Commands {
+    specs: Vec<CommandSpec>,
+    /// Each command's searchable text, built once with the list.
+    fields: Vec<Vec<(String, ui::search::FieldWeight)>>,
+    /// The commands' searchable text, indexed while it stays the same: one
+    /// index for the list, so a keystroke ranks every command at once rather
+    /// than building an index per command.
+    ranker: ui::search::ListIndex,
+}
+
+impl Commands {
+    #[must_use]
+    pub fn new(commands: Vec<CommandSpec>) -> Self {
+        let fields = commands
+            .iter()
+            .map(|command| {
+                vec![
+                    (command.title.clone(), ui::search::FieldWeight::TITLE),
+                    (
+                        command.subtitle.clone().unwrap_or_default(),
+                        ui::search::FieldWeight::SUBTITLE,
+                    ),
+                ]
+            })
+            .collect();
+        Self {
+            specs: commands,
+            fields,
+            ranker: ui::search::ListIndex::default(),
+        }
+    }
+}
 
 impl Source for Commands {
     fn id(&self) -> &'static str {
@@ -224,7 +256,12 @@ impl Source for Commands {
         // every one of them. Each stands below the one before it, and one
         // the person chose before rises above the rest.
         let browsing = needle.trim().is_empty();
-        self.0
+        let ranks = if browsing {
+            Vec::new()
+        } else {
+            rank::rank_rows(&self.ranker, needle, &self.fields)
+        };
+        self.specs
             .iter()
             .enumerate()
             .filter_map(|(at, command)| {
@@ -235,16 +272,7 @@ impl Source for Commands {
                     let at = i32::try_from(at).unwrap_or(MAX_PROVIDER_SCORE);
                     MAX_PROVIDER_SCORE.saturating_sub(at)
                 } else {
-                    rank_fields(
-                        needle,
-                        &[
-                            (&command.title, ui::search::FieldWeight::TITLE),
-                            (
-                                command.subtitle.as_deref().unwrap_or_default(),
-                                ui::search::FieldWeight::SUBTITLE,
-                            ),
-                        ],
-                    )?
+                    ranks.get(at).copied().flatten()?
                 };
                 Some(Hit {
                     row: None,
@@ -1319,7 +1347,7 @@ pub const RECENT_KIND: &str = "Recent";
 
 /// What this palette opened lately, newest first, offered while the query
 /// is empty.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Recents(pub Vec<Hit>);
 
 /// How many recent choices a palette remembers.
@@ -1390,6 +1418,11 @@ pub struct Switches {
     /// The switchable sources, as `(id, name)`, in search's own order.
     sources: Vec<(String, String)>,
     preferences: crate::preferences::SearchPreferences,
+    /// Each switch's row, as `(title, detail)`, in the order of `sources`:
+    /// what it says, worded once when the switches are built.
+    rows: Vec<(String, String)>,
+    /// What each switch is found by, in the order of `sources`.
+    fields: Vec<Vec<(String, ui::search::FieldWeight)>>,
 }
 
 impl Switches {
@@ -1399,9 +1432,37 @@ impl Switches {
         sources: Vec<(String, String)>,
         preferences: &crate::preferences::SearchPreferences,
     ) -> Self {
+        let keywords = crate::i18n::t("search-source-keywords");
+        let rows: Vec<(String, String)> = sources
+            .iter()
+            .map(|(id, name)| {
+                let (title, detail) = if preferences.enabled(id) {
+                    ("search-source-disable", "search-source-disable-detail")
+                } else {
+                    ("search-source-enable", "search-source-enable-detail")
+                };
+                let source = [("source", name.as_str().into())];
+                (
+                    crate::i18n::t_args(title, &source),
+                    crate::i18n::t_args(detail, &source),
+                )
+            })
+            .collect();
+        let fields = rows
+            .iter()
+            .map(|(title, detail)| {
+                vec![
+                    (title.clone(), ui::search::FieldWeight::TITLE),
+                    (detail.clone(), ui::search::FieldWeight::SUBTITLE),
+                    (keywords.clone(), ui::search::FieldWeight::KEYWORD),
+                ]
+            })
+            .collect();
         Self {
             sources,
             preferences: preferences.clone(),
+            rows,
+            fields,
         }
     }
 }
@@ -1421,42 +1482,16 @@ impl Source for Switches {
         if needle.trim().is_empty() {
             return Vec::new();
         }
-        let keywords = crate::i18n::t("search-source-keywords");
+        // One index over every switch, built where the search asks them.
+        let ranks = rank::rank_rows(&ui::search::ListIndex::default(), needle, &self.fields);
         self.sources
             .iter()
-            .filter_map(|(id, name)| {
+            .zip(&self.rows)
+            .zip(ranks)
+            .filter_map(|(((id, _), (title, detail)), score)| {
                 let enabled = self.preferences.enabled(id);
-                let (title, detail) = if enabled {
-                    (
-                        crate::i18n::t_args(
-                            "search-source-disable",
-                            &[("source", name.as_str().into())],
-                        ),
-                        crate::i18n::t_args(
-                            "search-source-disable-detail",
-                            &[("source", name.as_str().into())],
-                        ),
-                    )
-                } else {
-                    (
-                        crate::i18n::t_args(
-                            "search-source-enable",
-                            &[("source", name.as_str().into())],
-                        ),
-                        crate::i18n::t_args(
-                            "search-source-enable-detail",
-                            &[("source", name.as_str().into())],
-                        ),
-                    )
-                };
-                let score = rank_fields(
-                    needle,
-                    &[
-                        (&title, ui::search::FieldWeight::TITLE),
-                        (&detail, ui::search::FieldWeight::SUBTITLE),
-                        (&keywords, ui::search::FieldWeight::KEYWORD),
-                    ],
-                )?;
+                let score = score?;
+                let (title, detail) = (title.clone(), detail.clone());
                 Some(Hit {
                     row: None,
                     preview: None,
@@ -1771,7 +1806,7 @@ mod tests {
                 app: None,
                 place: vec!["Workspace".into()],
             }]);
-            let commands = Commands(vec![
+            let commands = Commands::new(vec![
                 verb(
                     "session-host-new-workspace",
                     "New workspace",
@@ -1851,7 +1886,7 @@ mod tests {
         // Nothing typed offers the workspace's own verbs in the order the desk
         // gives them; one the person chose before rises above the rest.
         {
-            let commands = Commands(vec![
+            let commands = Commands::new(vec![
                 verb(
                     "session-host-new-workspace",
                     "New workspace",
@@ -1906,7 +1941,7 @@ mod tests {
 
         phase commands_match_their_title;
         {
-            let commands = Commands(vec![verb(
+            let commands = Commands::new(vec![verb(
                 "desktop.close-window",
                 "Close window",
                 ui::icons::Icon::X,

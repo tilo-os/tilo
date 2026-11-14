@@ -6,7 +6,9 @@ use tilo_actions::FlatAction;
 use ui::CommandEntry;
 use ui::search::system::{KindGroup, ResourceKind};
 
-use super::{ALL_APPS_ID, ALL_RESULTS_ID, MORE_PREFIX, Recents, Sources, Switches, switches};
+use std::sync::Arc;
+
+use super::{ALL_APPS_ID, ALL_RESULTS_ID, MORE_PREFIX, Recents, Sources, Switches};
 use crate::model::{Hit, Source, Target};
 
 /// The facet the kinds are picked by: one chip per kind this search found.
@@ -277,15 +279,54 @@ fn app_artwork(target: &Target) -> Option<ui::icons::AppImage> {
     }
 }
 
+/// The sources one search asks, in the order it asks them: a window's search
+/// asks what the window holds and what its host adds for it (the app's
+/// entries in the session's index, beside the app's own publication); any
+/// other asks [`everywhere`]. The same list every frame of the search,
+/// so a source stands at the place the search was begun with.
+pub(super) fn asked_sources<'a>(
+    sources: &'a Sources,
+    recents: &'a Arc<Recents>,
+    switches: Option<&'a Arc<Switches>>,
+) -> Vec<&'a dyn Source> {
+    match &sources.window {
+        Some(window) => std::iter::once(window as &dyn Source)
+            .chain(sources.host.iter().map(|source| source as &dyn Source))
+            .filter(|source| sources.preferences.enabled(source.id()))
+            .collect(),
+        None => everywhere(sources, recents, switches),
+    }
+}
+
 /// The sources a search over everything asks, in the order it asks them:
 /// the desktop's own, the ones the host adds, and the row that switches
-/// each of them off and on again.
+/// each of them off and on again — `switches`, which the search builds once
+/// from these sources ([`switches`](super::switches)) and keeps for its later frames.
+///
+/// Each source is asked through the handle it is held by: `Arc<S>` is a
+/// `Source` that can move to a worker, where the bare `S` is not. Only the
+/// apps' own providers stay on the frame (they hold the frame's state), so
+/// they are the one source the frame that typed asks, and every other
+/// source answers on a worker.
 pub(super) fn everywhere<'a>(
     sources: &'a Sources,
-    recents: &'a Recents,
-) -> (Vec<&'a dyn Source>, Option<Switches>) {
-    // Each source is asked through the handle it is held by: `Arc<S>` is a
-    // `Source` that can move to a worker, where the bare `S` is not.
+    recents: &'a Arc<Recents>,
+    switches: Option<&'a Arc<Switches>>,
+) -> Vec<&'a dyn Source> {
+    let mut all = switchable(sources, recents);
+    all.retain(|source| sources.preferences.enabled(source.id()));
+    if let Some(switches) = switches {
+        all.push(switches);
+    }
+    all
+}
+
+/// Every source a search over everything can ask, switched off or not: what
+/// [`everywhere`] narrows to the person's choice, and what the switches name.
+pub(super) fn switchable<'a>(
+    sources: &'a Sources,
+    recents: &'a Arc<Recents>,
+) -> Vec<&'a dyn Source> {
     let mut all: Vec<&dyn Source> = vec![
         recents as &dyn Source,
         &sources.applications,
@@ -300,9 +341,7 @@ pub(super) fn everywhere<'a>(
         all.extend([answers as &dyn Source, web]);
     }
     all.extend(sources.host.iter().map(|source| source as &dyn Source));
-    let switches = switches(sources, &all);
-    all.retain(|source| sources.preferences.enabled(source.id()));
-    (all, switches)
+    all
 }
 
 /// What a row says under its title: its subtitle and its facts, each

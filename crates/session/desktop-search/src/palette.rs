@@ -32,11 +32,13 @@ mod pressed_row_tests;
 #[cfg(test)]
 mod ready_rows_tests;
 #[cfg(test)]
+mod source_timing_tests;
+#[cfg(test)]
 mod windowed_host_tests;
 
 use rows::{
-    all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed,
-    nothing_matched, pressed_hit, stands_tall, take_the_press,
+    all_results_entry, always_shown, entries_for, kind_facets, narrowed, nothing_matched,
+    pressed_hit, stands_tall, take_the_press,
 };
 
 /// The row `id` names when it is a group's "more" row: an id this palette
@@ -135,7 +137,7 @@ impl Sources {
             return Self {
                 applications: Arc::new(Applications::new(data.applications)),
                 windows: Arc::new(Windows(data.windows)),
-                commands: Arc::new(Commands(data.commands)),
+                commands: Arc::new(Commands::new(data.commands)),
                 content: Content::new(Vec::new(), Vec::new()),
                 actions: Arc::new(Actions(Vec::new())),
                 // What the app publishes through the host runs by address there: an app in a
@@ -155,7 +157,7 @@ impl Sources {
         Self {
             applications: Arc::new(Applications::new(data.applications)),
             windows: Arc::new(Windows(data.windows)),
-            commands: Arc::new(Commands(data.commands)),
+            commands: Arc::new(Commands::new(data.commands)),
             content: Content::new(data.providers, data.resources.clone()).within(anchor),
             actions: Arc::new(Actions(data.resources)),
             published: Arc::new(Published(data.published.clone())),
@@ -233,7 +235,13 @@ pub const ANSWER_POLL: ui::time::Duration = ui::time::Duration::from_millis(50);
 pub struct DesktopSearch {
     palette: ActionPalette,
     sources: Option<Sources>,
-    recents: Recents,
+    /// What this palette opened lately: a source a worker asks, so it never
+    /// holds the frame that typed.
+    recents: Arc<Recents>,
+    /// The rows that switch this search's sources off and on again, built
+    /// once when the query's search began: a worker asks them, as any other
+    /// source over plain data.
+    switches: Option<Arc<Switches>>,
     /// What the person chose before, which orders equal matches.
     usage: crate::usage::Usage,
     /// The hits the palette shows; entry `hit:{i}` is `rows[i]`.
@@ -318,7 +326,8 @@ impl DesktopSearch {
         Self {
             palette,
             sources: None,
-            recents: Recents::default(),
+            recents: Arc::default(),
+            switches: None,
             usage: crate::usage::Usage::default(),
             rows: Vec::new(),
             more_rows: Vec::new(),
@@ -643,23 +652,14 @@ impl DesktopSearch {
     fn begin(&mut self, query: &str) -> Option<crate::model::SearchStream> {
         let sources = self.sources.as_ref()?;
         let windowed = sources.window.is_some();
-        let (mut all, switches): (Vec<&dyn Source>, Option<Switches>) = match &sources.window {
-            // A window's search asks what the window holds and what its host adds for it: the
-            // app's entries in the session's index, beside the app's own publication.
-            Some(window) => (
-                std::iter::once(window as &dyn Source)
-                    .chain(sources.host.iter().map(|source| source as &dyn Source))
-                    .collect(),
-                None,
-            ),
-            None => everywhere(sources, &self.recents),
+        // The switches name every source this search could ask, so they are
+        // built once, as the query's search begins, and kept for its frames.
+        self.switches = if windowed {
+            None
+        } else {
+            switches(sources, &rows::switchable(sources, &self.recents)).map(Arc::new)
         };
-        if windowed {
-            all.retain(|source| sources.preferences.enabled(source.id()));
-        }
-        if let Some(switches) = &switches {
-            all.push(switches);
-        }
+        let all = rows::asked_sources(sources, &self.recents, self.switches.as_ref());
         let order: Vec<(String, (u8, usize))> = if windowed {
             Vec::new()
         } else {
@@ -675,7 +675,6 @@ impl DesktopSearch {
             usage.strength(query, hit, now)
         });
         drop(all);
-        drop(switches);
         self.order = order;
         Some(stream)
     }
@@ -689,28 +688,13 @@ impl DesktopSearch {
         let Some(sources) = self.sources.as_ref() else {
             return false;
         };
-        let (mut all, switches): (Vec<&dyn Source>, Option<Switches>) = match &sources.window {
-            Some(window) => (
-                std::iter::once(window as &dyn Source)
-                    .chain(sources.host.iter().map(|source| source as &dyn Source))
-                    .collect(),
-                None,
-            ),
-            None => everywhere(sources, &self.recents),
-        };
-        if sources.window.is_some() {
-            all.retain(|source| sources.preferences.enabled(source.id()));
-        }
-        if let Some(switches) = &switches {
-            all.push(switches);
-        }
+        let all = rows::asked_sources(sources, &self.recents, self.switches.as_ref());
         let query = self.palette.query().to_owned();
         let now = sources.now;
         let usage = &self.usage;
         let workers = &self.workers;
         let asked = stream.resume(&all, workers, &|hit: &Hit| usage.strength(&query, hit, now));
         drop(all);
-        drop(switches);
         self.stream = Some(stream);
         asked
     }
@@ -1090,7 +1074,7 @@ impl DesktopSearch {
     }
 
     fn remember(&mut self, hit: &Hit) {
-        self.recents.record(hit);
+        Arc::make_mut(&mut self.recents).record(hit);
         let now = self.sources.as_ref().map_or(0, |sources| sources.now);
         let query = self.palette.query().to_owned();
         self.usage.record(&query, hit, now);
@@ -1310,7 +1294,7 @@ mod tests {
                 .find(|hit| hit.title == "Sheets")
                 .cloned()
                 .expect("the app is listed");
-            search.recents.record(&sheets);
+            Arc::make_mut(&mut search.recents).record(&sheets);
             search.restart("", ui::search::engine_generation());
             settled(&mut search);
 
@@ -2600,10 +2584,12 @@ mod tests {
 
             arrived.set(true);
             assert!(search.refresh(), "the answer re-ranks the rows");
-            assert_eq!(
-                search.results().len(),
-                shown,
-                "the rows the card shows stay for the frame the query is re-ranked in"
+            // The frame asks the app's content itself, so its answer may already stand beside
+            // them; none of the rows the card showed is gone.
+            assert!(
+                search.results().len() >= shown,
+                "the rows the card shows stay for the frame the query is re-ranked in: {:?}",
+                search.results()
             );
             assert_eq!(
                 search.palette().selected_id(),

@@ -2407,7 +2407,12 @@ impl Widget for DesktopSurface {
 
     fn needs_animation_frame(&self) -> bool {
         let shown = self.shown;
-        self.activity_loading
+        // A search with a source still to ask on the frame, or rows still to cut to the card, is
+        // finished by the frames it asks for. A host that draws only for animation frames and
+        // wakes (the page) otherwise left the last source unasked, and the card saying
+        // "Searching…", until the clock's next minute drew one.
+        self.search.borrow().filling_in()
+            || self.activity_loading
             || self.slides.borrow().is_moving(ui::motion::frame_now())
             || self.embeds_animate()
             || self.unbuilt.iter().any(|&(strip, _)| Some(strip) == shown)
