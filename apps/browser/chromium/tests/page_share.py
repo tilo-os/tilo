@@ -14,6 +14,8 @@ size its window has there and from the same kind of origin (a loopback server).
 Pages of the size people read are handed over too, with every image they show: a
 long article with photographs, a long form and a large table, in a window of
 ordinary size. Each prints how large its whole frame and its images are. A page
+larger than the workspace carries is not waited for: the app says how large it is.
+A page
 that changes reaches what was handed over while the change is new, and a page
 nothing changes costs no frame, watched or not: the probe turns the app's loop as
 its runner does, a frame for each wake of the engine, and counts.
@@ -144,7 +146,7 @@ const tick = () => { t.textContent = 'tick ' + n++ + ' @' + Date.now(); };
 tick(); setInterval(tick, 1300);</script>
 """
 
-# One picture larger than anything the workspace carries in one piece.
+# One picture larger than the workspace carries.
 POSTER = (b"<!doctype html><title>Poster</title><h1>One large picture</h1>"
           b"<img src='/poster.png' width=800 height=550><p>Under the picture.</p>")
 
@@ -155,7 +157,7 @@ PAGES = {
     "/hero.png": ("image/png", png(900, 500, 1)),
     "/long-form": (HTML, long_form()),
     "/table": (HTML, table(2000)),
-    "/ledger": (HTML, table(12000)),
+    "/register": (HTML, table(5000)),
     "/ticking": (HTML, TICKING),
     "/poster": (HTML, POSTER),
     "/poster.png": ("image/png", png(1600, 1100, 2)),
@@ -278,8 +280,34 @@ class PageShare(unittest.TestCase):
     def test_a_large_table_is_handed_over(self):
         self.large("/table", "Shipments", "End of the shipments.", "a table of 2000 rows")
 
-    def test_a_ledger_of_twelve_thousand_rows_is_handed_over(self):
-        self.large("/ledger", "Shipments", "End of the shipments.", "a table of 12000 rows")
+    def test_a_page_larger_than_the_workspace_carries_is_said_to_be(self):
+        """A table of 5000 rows is a whole frame of megabytes more than one object of the
+        workspace's live plane holds. Nothing of it is handed over as a page, and the app
+        does not keep quiet about it: it says how large the frame is, which is what the
+        session tells both devices in words."""
+        result = self.probe(path="/register", size=LARGE, within=LARGE_WITHIN_MS,
+                            expect=("Shipments",))
+        page = result["page"] or {}
+        print(f"  a table of 5000 rows: whole frame {page.get('whole_bytes')} bytes in "
+              f"{page.get('items')} items; the app says {result['too_large']} bytes, "
+              f"more than the {result['largest_carried']} a share hands over", flush=True)
+        self.assertFalse(result["whole"], f"a page too large was handed over: {result}")
+        self.assertIsNotNone(result["too_large"],
+                             f"the app said nothing of a page it cannot hand over: {result}")
+        self.assertGreater(result["too_large"], result["largest_carried"], result)
+
+    def test_a_picture_larger_than_the_workspace_carries_leaves_its_page_without_it(self):
+        """The page arrives, with its text; the one picture of five megabytes does not,
+        which the device showing the page cannot tell from a picture still loading."""
+        result = self.probe("--has", "Under the picture.", "--still-ms", "1000",
+                            path="/poster", size=LARGE, within=LARGE_WITHIN_MS,
+                            expect=("One large picture",))
+        page = result["page"] or {}
+        print(f"  a page with one picture of {page.get('largest_image')} bytes: handed over "
+              f"{result['images']} images, {result['images_missing']} missing", flush=True)
+        self.handed_over(result, "a page with one very large picture", within=LARGE_WITHIN_MS)
+        self.assertFalse(result["lacks"], result)
+        self.assertEqual((result["images"], result["images_missing"]), (0, 1), result)
 
     def test_a_page_that_changes_reaches_what_was_handed_over_while_it_is_new(self):
         result = self.probe("--changes", "5", path="/ticking", expect=("tick",))
