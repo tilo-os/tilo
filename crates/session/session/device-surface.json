@@ -1989,7 +1989,7 @@
       "types": [
         {
           "name": "App",
-          "doc": "An application installed on this device: its package id, which `open-app` names, its name in the person's language, its glyph, and its category and description when it named them.",
+          "doc": "An application installed on this device: its package id, which `open-app` names, its name in the person's language, its glyph, and its category when it named one.",
           "fields": [
             {
               "name": "key",
@@ -2005,10 +2005,6 @@
             },
             {
               "name": "category",
-              "type": "text"
-            },
-            {
-              "name": "description",
               "type": "text"
             }
           ]
@@ -2181,7 +2177,7 @@
         {
           "id": "stop-agent",
           "label": "Stop",
-          "description": "End the agent `agent`'s work here: the connection the person admitted closes and its presence leaves the bar",
+          "description": "End one agent session: its connection closes and its presence leaves the bar.",
           "kind": "outside",
           "params": [
             {
@@ -2207,7 +2203,7 @@
       "types": [
         {
           "name": "Agent",
-          "doc": "An agent here for the person.",
+          "doc": "One agent session.",
           "fields": [
             {
               "name": "key",

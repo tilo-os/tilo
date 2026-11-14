@@ -1504,34 +1504,15 @@ action a_query_place(a: Arrangement, strip: Text, text: Text) -> Text {
 /// shots and its layouts show.
 fn installed_apps() -> List<device.App> {
     return [
-        device.App(
-            key: "so.tilo.lang.notes",
-            name: "Notes",
-            icon: "file-text",
-            category: "work",
-            description: "The workspace's notebooks and their pages.",
-        ),
+        device.App(key: "so.tilo.lang.notes", name: "Notes", icon: "file-text", category: "work"),
         device.App(
             key: "so.tilo.lang.chat",
             name: "Chat",
             icon: "message-square",
             category: "work",
-            description: "The workspace's conversations.",
         ),
-        device.App(
-            key: "so.tilo.lang.tasks",
-            name: "Tasks",
-            icon: "list-checks",
-            category: "work",
-            description: "The workspace's tasks and projects.",
-        ),
-        device.App(
-            key: "so.tilo.settings",
-            name: "Settings",
-            icon: "settings",
-            category: "system",
-            description: "This device and this person.",
-        ),
+        device.App(key: "so.tilo.lang.tasks", name: "Tasks", icon: "list-checks", category: "work"),
+        device.App(key: "so.tilo.settings", name: "Settings", icon: "settings", category: "system"),
     ]
 }
 
