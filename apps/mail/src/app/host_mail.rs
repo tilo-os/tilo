@@ -92,6 +92,7 @@ impl HostMail {
     /// Ask the host to keep `config`'s account, with the sign-in it carries:
     /// the host proves it and seals it in the workspace's vault, and the
     /// next reading shows the account.
+    #[cfg(any(target_arch = "wasm32", test))]
     pub(super) fn add_account(&mut self, config: &crate::model::AccountConfig) {
         let adding = person_accounts::AddMailAccount {
             address: config.email.clone(),
