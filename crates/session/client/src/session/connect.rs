@@ -25,6 +25,15 @@ use super::{DeviceSigner, LinkError, PeerConfig, RelayClient, Task};
 #[cfg(not(target_arch = "wasm32"))]
 const DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
+/// The endpoint a session beside its device's own dials from
+/// ([`Dial::of`]): the one the device already runs. A page runs none.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) type Beside = tilo_relay_client::link::DeviceEndpoint;
+/// The endpoint a session beside its device's own dials from: a page runs
+/// none, so no page's session is one.
+#[cfg(target_arch = "wasm32")]
+pub(super) type Beside = std::convert::Infallible;
+
 /// The dialer a session reaches its host through, and this device's
 /// statement that its endpoint speaks for it, kept for reconnects.
 #[derive(Default)]
@@ -37,6 +46,11 @@ pub(super) struct Dial {
     key: [u8; 32],
     /// This device's signed statement that the endpoint speaks for it.
     delegation: Option<Vec<u8>>,
+    /// The endpoint the device already runs under its key, when this session
+    /// is one beside the device's own ([`Self::of`]): it dials from there and
+    /// binds no endpoint.
+    #[cfg(not(target_arch = "wasm32"))]
+    device: Option<Beside>,
 }
 
 impl Dial {
@@ -53,6 +67,40 @@ impl Dial {
             key: blake3::derive_key("tilo page endpoint v1", vault),
             ..Self::default()
         }
+    }
+
+    /// The dial of a session whose store's channel vault is `vault`: from the
+    /// endpoint `beside` names when the session runs beside its device's own,
+    /// and otherwise from an endpoint of its own, as a page's does.
+    pub(super) fn of(vault: &[u8; 32], beside: Option<Beside>) -> Self {
+        match beside {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(endpoint) => Self {
+                device: Some(endpoint),
+                ..Self::default()
+            },
+            #[cfg(target_arch = "wasm32")]
+            Some(never) => match never {},
+            None => Self::for_page(vault),
+        }
+    }
+
+    /// A dialer to `host` for the device `signer` signs as.
+    ///
+    /// A device that holds its key and already runs an endpoint under it
+    /// dials from that endpoint. Bound a second time, the key would name two
+    /// endpoints at the device's relay, which hands what is sent to an
+    /// endpoint id to whichever registered last: the device's own endpoint
+    /// then heard nothing more through the relay, and a device that reached
+    /// it there (one that started later, or came back) reached an endpoint
+    /// that answers nothing of the device's.
+    fn dialer_to(&self, host: &tilo_relay_client::Host, signer: &dyn DeviceSigner) -> Dialer {
+        let secret = signer.endpoint_secret();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(device), Some(_)) = (&self.device, secret) {
+            return Dialer::from_device(host.clone(), Arc::clone(device));
+        }
+        Dialer::new(host.clone(), Some(secret.unwrap_or(self.key)))
     }
 
     /// Let go of the host, waiting for it to hear: a session that ends for
@@ -127,15 +175,14 @@ async fn connect_entering(
     dial: &mut Dial,
 ) -> Result<RelayClient, LinkError> {
     let host = &config.host;
-    let dialer = dial
-        .dialer
-        .get_or_insert_with(|| {
-            Arc::new(Dialer::new(
-                host.clone(),
-                Some(signer.endpoint_secret().unwrap_or(dial.key)),
-            ))
-        })
-        .clone();
+    let dialer = match &dial.dialer {
+        Some(dialer) => Arc::clone(dialer),
+        None => {
+            let dialer = Arc::new(dial.dialer_to(host, signer));
+            dial.dialer = Some(Arc::clone(&dialer));
+            dialer
+        }
+    };
     // Over iroh a custody-held device's endpoint speaks for it by its signed
     // statement, which every plane grant carries; over WebTransport the
     // device proves itself on each link instead.

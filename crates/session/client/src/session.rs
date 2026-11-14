@@ -214,17 +214,41 @@ pub fn start_session(
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
 ) -> Link {
-    let (task, link, receiver) = session_task(config, signer, store);
+    let (task, link, receiver) = session_task(config, signer, store, None);
+    n0_future::task::spawn(task.run(receiver));
+    link
+}
+
+/// [`start_session`] for a device whose own engine already takes part in its workspaces, and
+/// which asks a host for what only the host answers: a session beside the device's own.
+///
+/// The device is one endpoint and one member of each of its workspaces' key groups, and both are
+/// its engine's. So this session dials from `endpoint`, the endpoint the device runs under its
+/// key, once that is bound, and holds no keys: it asks for none and is in no group. A session
+/// that bound the device's key again took the device's place at its relay, so nothing reached the
+/// device there any more; one that asked for keys as the device had the workspace's participants
+/// commit its member key in and the engine's out, and the engine's back in, for as long as both
+/// ran.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn start_session_beside(
+    config: PeerConfig,
+    signer: Arc<dyn DeviceSigner>,
+    store: Arc<dyn PeerStore>,
+    endpoint: tilo_relay_client::link::DeviceEndpoint,
+) -> Link {
+    let (task, link, receiver) = session_task(config, signer, store, Some(endpoint));
     n0_future::task::spawn(task.run(receiver));
     link
 }
 
 /// The session [`start_session`] runs, the link to it and its command queue,
-/// before it runs.
+/// before it runs: the device's own, or one `beside` it
+/// ([`start_session_beside`]).
 fn session_task(
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
+    beside: Option<connect::Beside>,
 ) -> (Task, Link, mpsc::UnboundedReceiver<Command>) {
     let (commands, receiver) = mpsc::unbounded_channel();
     let reports = Reports::connecting(config.cert.device_public_key);
@@ -233,13 +257,11 @@ fn session_task(
     let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
     let channel_state = crate::custody::StoredChannels::load(store.as_ref());
     let gates = Arc::new(tilo_channels::Gates::default());
-    let channels = tilo_channels::ChannelKeyAccess::new(open_channels(
-        &replicas,
-        &channel_state,
-        vault,
-        &signer,
-        &gates,
-    ));
+    let channels = tilo_channels::ChannelKeyAccess::new(if beside.is_some() {
+        keyless_channels(&replicas, &gates)
+    } else {
+        open_channels(&replicas, &channel_state, vault, &signer, &gates)
+    });
     let engine = Arc::new(crate::engine::Engine::holding(
         replicas.owner(),
         Arc::default(),
@@ -257,7 +279,7 @@ fn session_task(
         config,
         signer,
         store,
-        dial: Dial::for_page(&vault),
+        dial: Dial::of(&vault, beside),
         reports: Arc::clone(&reports),
         workspaces: BTreeSet::new(),
         emptied: false,
@@ -2157,6 +2179,20 @@ fn open_channels(
     .unwrap_or_else(|_| {
         tilo_channels::ChannelEncryption::without_store(directory(), Arc::clone(gates) as _)
     })
+}
+
+/// The channel service of a session beside its device's own
+/// ([`start_session_beside`]): it holds no keys and asks for none, as a
+/// device with no secret store does, since the device's member key in each
+/// workspace's group is its engine's.
+fn keyless_channels(
+    replicas: &crate::replica::Replicas,
+    gates: &Arc<tilo_channels::Gates>,
+) -> tilo_channels::ChannelEncryption {
+    tilo_channels::ChannelEncryption::without_store(
+        Box::new(crate::channels::OwnerDirectory::reader(replicas.owner())),
+        Arc::clone(gates) as Arc<dyn tilo_channels::ChannelGates>,
+    )
 }
 
 /// Where the keys of a route this session opened stand: the engine holds them

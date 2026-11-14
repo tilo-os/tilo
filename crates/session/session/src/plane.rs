@@ -354,6 +354,10 @@ pub struct Hosted {
     /// the person's store, so a write of theirs reaches an app here on the
     /// same route this device's own writes do.
     pub fanout: std::sync::Arc<FanoutState>,
+    /// Where this session's own endpoint lands once it bound: what the hosts
+    /// of the workspaces placed away from this device are reached from. `None`
+    /// on a session that binds none.
+    pub endpoint: Option<tilo_relay_client::link::DeviceEndpoint>,
 }
 
 /// Where a session keeping its state at `state` keeps what its broker admits.
@@ -965,6 +969,7 @@ fn seams(
         file_clipboard,
         personal,
         fanout: _,
+        endpoint,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     // What each window this session runs shows, kept with its launches: read
@@ -1026,6 +1031,7 @@ fn seams(
         crate::hosted_workspaces::HostedWorkspaces::service(
             Some(engine),
             tilo_rt::app().handle().clone(),
+            endpoint,
         )
     });
     Seams {
@@ -1618,6 +1624,7 @@ mod tests {
             )),
             personal: None,
             fanout: std::sync::Arc::new(FanoutState::new()),
+            endpoint: None,
         }
     }
 

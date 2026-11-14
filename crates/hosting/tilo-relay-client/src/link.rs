@@ -73,12 +73,19 @@ impl Purpose {
     }
 }
 
+/// Where a device's own iroh endpoint lands once the device bound it: what a
+/// dialer that speaks from that endpoint ([`Dialer::from_device`]) reads it
+/// from, since a link to a host may be asked for before the endpoint is up.
+#[cfg(not(target_arch = "wasm32"))]
+pub type DeviceEndpoint = std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>;
+
 /// Opens links to one host, over its carrier.
 ///
 /// Over iroh it keeps the device's endpoint, bound on the first link and
 /// reused for every link after (and by the live plane, [`Self::endpoint`]):
-/// a device speaks to its host as one endpoint. Over WebTransport each link
-/// is a session of its own.
+/// a device speaks to its host as one endpoint. A device that already runs an
+/// endpoint under its key links from that one ([`Self::from_device`]). Over
+/// WebTransport each link is a session of its own.
 pub struct Dialer {
     host: Host,
     /// The key the iroh endpoint speaks as; a fresh one when `None`.
@@ -89,6 +96,10 @@ pub struct Dialer {
     key: Option<[u8; 32]>,
     #[cfg(not(target_arch = "wasm32"))]
     endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
+    /// The endpoint the device already runs, when this dialer speaks from it
+    /// and binds none of its own ([`Self::from_device`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    device: Option<DeviceEndpoint>,
 }
 
 impl Dialer {
@@ -100,6 +111,30 @@ impl Dialer {
             key,
             #[cfg(not(target_arch = "wasm32"))]
             endpoint: tokio::sync::OnceCell::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            device: None,
+        }
+    }
+
+    /// Links to `host` from `endpoint`, the endpoint the device already runs
+    /// under its own key, once that is bound; until then a link is
+    /// [`LinkError::Unavailable`], and whoever asked for it dials again.
+    ///
+    /// A device has one endpoint of its key. A relay hands what is sent to an
+    /// endpoint id to the connection that registered under it last, and tells
+    /// the one before that it hears nothing more: a second endpoint bound
+    /// under the device's key took the device's place at its relay, and
+    /// whatever dialled the device through the relay from then on reached an
+    /// endpoint that answers none of it. The endpoint stays the device's:
+    /// [`Self::close`] leaves it open.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn from_device(host: Host, endpoint: DeviceEndpoint) -> Self {
+        Self {
+            host,
+            key: None,
+            endpoint: tokio::sync::OnceCell::new(),
+            device: Some(endpoint),
         }
     }
 
@@ -174,6 +209,11 @@ impl Dialer {
     /// As [`Host::bind`].
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn endpoint(&self) -> Result<iroh::Endpoint, LinkError> {
+        if let Some(device) = &self.device {
+            return device.get().cloned().ok_or_else(|| {
+                LinkError::Unavailable("this device's endpoint is not bound yet".into())
+            });
+        }
         self.endpoint
             .get_or_try_init(|| self.host.bind(self.key))
             .await
@@ -184,11 +224,16 @@ impl Dialer {
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn bound(&self) -> Option<iroh::Endpoint> {
-        self.endpoint.get().cloned()
+        match &self.device {
+            Some(device) => device.get().cloned(),
+            None => self.endpoint.get().cloned(),
+        }
     }
 
-    /// Let go of the host: close the endpoint, waiting for the host to hear
-    /// it. Links over WebTransport close on their own.
+    /// Let go of the host: close the endpoint this dialer bound, waiting for
+    /// the host to hear it. The device's own endpoint ([`Self::from_device`])
+    /// is not this dialer's to close: the links opened on it close with their
+    /// sessions. Links over WebTransport close on their own.
     #[cfg_attr(
         target_arch = "wasm32",
         expect(

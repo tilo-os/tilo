@@ -128,3 +128,130 @@ fn every_client_error_has_a_deliberate_link_class() {
         LinkError::Refused("io: unexpected end of file".into()),
     );
 }
+
+/// A session beside its device's own dials its host from the endpoint the device already runs
+/// and binds none of its own: the device's key names one endpoint, at its relay and everywhere.
+#[tokio::test]
+async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let device = SigningKey::from_bytes(&[2; 32]);
+    let host = SigningKey::from_bytes(&[3; 32]);
+    let server = endpoint(b"dummy-alpn/1").await.unwrap();
+    let config = PeerConfig {
+        host: Host::at(server.addr()),
+        cert: cert(&root, &device).unwrap(),
+        host_cert: cert(&root, &host).unwrap(),
+        revocations: RevocationList::new(),
+        entering: None,
+    };
+    let own = Arc::new(std::sync::OnceLock::new());
+    let mut dial = Dial::of(&[0; 32], Some(Arc::clone(&own)));
+
+    // Before the device's endpoint is bound the host is not reached, and nothing is bound in the
+    // endpoint's place.
+    let early = connect(&config, &device, &mut dial).await;
+    assert!(
+        matches!(early, Err(LinkError::Unavailable(_))),
+        "a dial before the device's endpoint is bound is one to make again"
+    );
+    assert!(
+        dial.plane()
+            .is_some_and(|(dialer, _)| dialer.bound().is_none()),
+        "no endpoint is bound in place of the device's"
+    );
+
+    let bound = Endpoint::builder(Minimal)
+        .relay_mode(iroh::RelayMode::Disabled)
+        .secret_key(iroh::SecretKey::from_bytes(&device.to_bytes()))
+        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+    let sockets = bound.bound_sockets();
+    assert!(own.set(bound.clone()).is_ok());
+    let hearing = async {
+        let incoming = server.accept().await.unwrap();
+        let from = incoming.remote_addr();
+        assert!(
+            incoming.await.is_err(),
+            "the dummy ALPN must reject the dial"
+        );
+        from
+    };
+    let (from, dialled) = tokio::join!(
+        tilo_test_env::within("the host hearing the dial", hearing),
+        tilo_test_env::within(
+            "the dial from the device's endpoint",
+            connect(&config, &device, &mut dial)
+        ),
+    );
+    assert!(
+        dialled.is_err(),
+        "a host that speaks another protocol is no session"
+    );
+    let from = match from {
+        iroh::endpoint::IncomingAddr::Ip(from) => from,
+        _ => panic!("a dial on loopback arrives from an address of its own"),
+    };
+    assert!(
+        sockets.iter().any(|socket| socket.port() == from.port()),
+        "the host hears the dial from the device's own endpoint: {from} is none of {sockets:?}"
+    );
+    let (_, delegation) = dial.plane().expect("the dialer is kept");
+    assert!(
+        delegation.is_empty(),
+        "an endpoint of the device's key speaks for itself"
+    );
+
+    // The session ending leaves the device's endpoint open: it is the device's.
+    dial.shutdown().await;
+    assert!(
+        !bound.is_closed(),
+        "the device's endpoint outlives a session beside its own"
+    );
+    bound.close().await;
+    server.close().await;
+}
+
+/// A session beside its device's own holds no keys and asks for none. The device's member key in
+/// each workspace's group is its engine's: a second one, asked for as the same device, had the
+/// group's participants commit one in and the other out for as long as both sessions ran.
+#[tokio::test]
+async fn a_session_beside_the_devices_own_holds_no_keys() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let device = SigningKey::from_bytes(&[2; 32]);
+    let host = SigningKey::from_bytes(&[3; 32]);
+    let config = PeerConfig {
+        host: Host::at(iroh::EndpointAddr::new(
+            iroh::SecretKey::from_bytes(&host.to_bytes()).public(),
+        )),
+        cert: cert(&root, &device).unwrap(),
+        host_cert: cert(&root, &host).unwrap(),
+        revocations: RevocationList::new(),
+        entering: None,
+    };
+    let session = |beside| {
+        let signer: Arc<dyn DeviceSigner> = Arc::new(device.clone());
+        let store: Arc<dyn PeerStore> = Arc::new(crate::MemoryPeerStore::default());
+        session_task(config.clone(), signer, store, beside).0
+    };
+    let workspace = tilo_desktop_model::WorkspaceId::new();
+    let beside = session(Some(Arc::new(std::sync::OnceLock::new())));
+    assert!(
+        matches!(
+            beside.engine.seal_keys(workspace),
+            Ok(crate::engine::SealKeys::NoSecretStore)
+        ),
+        "a session beside its device's own keeps no key service of the device's"
+    );
+    // The device's own session is the one that asks for its workspaces' keys.
+    let own = session(None);
+    assert!(
+        !matches!(
+            own.engine.seal_keys(workspace),
+            Ok(crate::engine::SealKeys::NoSecretStore)
+        ),
+        "a device's own session keeps the device's key service"
+    );
+}

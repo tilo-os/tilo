@@ -9,6 +9,9 @@
 //! session opened with its own certificate and key, the way the person's
 //! other devices enter a workspace on its host; the session is kept and
 //! reused for every workspace on that host, and opened again once it ended.
+//! It is a session beside the one this device's engine keeps with the same
+//! host: it runs on this session's own endpoint and holds no keys, since the
+//! device is one endpoint and one member of each workspace's key group.
 //!
 //! A workspace this device hosts itself, or one founded on its own desk
 //! (whose host is a desktop, which runs no workers), is decided here.
@@ -25,6 +28,7 @@ use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::device_admin;
 use tilo_lock::MutexRecover as _;
+use tilo_relay_client::link::DeviceEndpoint;
 use tilo_relay_session::workspaces::PersonalList;
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
@@ -40,6 +44,9 @@ pub(crate) struct HostedWorkspaces(Arc<Inner>);
 struct Inner {
     engine: Arc<Engine>,
     runtime: tokio::runtime::Handle,
+    /// This session's own endpoint, once it bound: where the sessions with the hosts are dialled
+    /// from. `None` for a session that binds none.
+    endpoint: Option<DeviceEndpoint>,
     /// Each host's session, by the host's device key.
     hosts: Mutex<HashMap<[u8; 32], Arc<Host>>>,
 }
@@ -64,13 +71,20 @@ impl HostedWorkspaces {
     /// The hosts of `engine`'s workspaces, reached on `runtime`; `None` for a session that holds
     /// no workspaces. The session's own runtime reaches them: this is built where the session
     /// starts, which is no task of any runtime's.
+    ///
+    /// `endpoint` is where this session's own endpoint lands once it bound. A host is reached from
+    /// there: this device's key names one endpoint, and one bound beside it for a host's session
+    /// took this device's place at its relay, so the person's other devices reached nothing of it
+    /// there once they started, or came back, after it.
     pub(crate) fn service(
         engine: Option<&Arc<Engine>>,
         runtime: tokio::runtime::Handle,
+        endpoint: Option<DeviceEndpoint>,
     ) -> Option<Self> {
         Some(Self(Arc::new(Inner {
             engine: Arc::clone(engine?),
             runtime,
+            endpoint,
             hosts: Mutex::default(),
         })))
     }
@@ -103,17 +117,24 @@ impl HostedWorkspaces {
             return Arc::clone(host);
         }
         let identity = self.0.engine.identity();
-        let device = Device::over(
-            PeerConfig {
-                host: tilo_relay_client::Host::at(placed.host.endpoint_addr.clone()),
-                cert: identity.device_cert.clone(),
-                host_cert: placed.host.device_certificate.clone(),
-                revocations: tilo_user_identity::RevocationList::new(),
-                entering: None,
-            },
+        let config = PeerConfig {
+            host: tilo_relay_client::Host::at(placed.host.endpoint_addr.clone()),
+            cert: identity.device_cert.clone(),
+            host_cert: placed.host.device_certificate.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+            entering: None,
+        };
+        let (signer, label) = (
             Arc::clone(&identity.signer),
             &identity.device_cert.device_label,
         );
+        // This device is in the workspace through its engine, which holds its endpoint and its
+        // member key there: the session asking the host is one beside it, and neither binds the
+        // device's key again nor asks for keys as the device.
+        let device = match &self.0.endpoint {
+            Some(endpoint) => Device::beside(config, signer, label, Arc::clone(endpoint)),
+            None => Device::over(config, signer, label),
+        };
         let host = Arc::new(Host {
             device,
             entered: Mutex::default(),

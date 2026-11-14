@@ -363,6 +363,9 @@ pub(crate) fn start_action_plane(
             file_clipboard: std::sync::Arc::clone(&file_clipboard),
             personal,
             fanout: std::sync::Arc::clone(&fanout),
+            // The hosts of the workspaces placed away from this device are reached from the
+            // endpoint the collaboration plane binds: this device has no other.
+            endpoint: sync.map(|sync| sync.endpoint_handle()),
         },
     )?;
     // The store's link is answered by this session's own endpoint, in `sync` : the door takes it

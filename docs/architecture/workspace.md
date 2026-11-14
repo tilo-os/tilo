@@ -172,6 +172,17 @@ that hold a workspace, directly or through any device that stores it;
 store-and-forward is what a store does. There is no separate relay protocol,
 no second send path, and no gossip lane beside it.
 
+A device is one iroh endpoint, under its device key, and one member of each
+workspace's key group; both are its engine's. Whatever else its session asks a
+host (the actions of a workspace placed there, the person's list kept there)
+runs on that endpoint, in a session that holds no keys. A relay hands what is
+sent to an endpoint id to the connection that registered under it last, so a
+second endpoint of the device's key takes the device's place there: a device
+that starts later, or comes back, then dials it through the relay and reaches
+an endpoint that answers nothing. And a second member key asked for as the same
+device has the group's participants commit one in and the other out, turn
+about, for as long as both sessions run.
+
 ## State
 
 **All state is a CRDT-backed resource.** That includes settings and

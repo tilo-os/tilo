@@ -76,6 +76,32 @@ impl Device {
         }
     }
 
+    /// A session for the device `config` certifies, in no workspace yet, beside the one the
+    /// device's own engine keeps: a desktop asking a host of its workspaces for what only the
+    /// host answers. It dials from `endpoint`, the endpoint the device runs under its key, and
+    /// holds no keys ([`crate::session::start_session_beside`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn beside(
+        config: PeerConfig,
+        signer: Arc<dyn DeviceSigner>,
+        label: &str,
+        endpoint: tilo_relay_client::link::DeviceEndpoint,
+    ) -> Self {
+        Self {
+            peer: crate::session::start_session_beside(
+                config.clone(),
+                signer,
+                Arc::new(MemoryPeerStore::default()) as Arc<dyn PeerStore>,
+                endpoint,
+            ),
+            cert: config.cert,
+            host_cert: config.host_cert,
+            workspace_id: WorkspaceId::from_u128(0),
+            label: label.to_owned(),
+        }
+    }
+
     /// The device whose session `peer` already is: a page's, which started its session itself.
     /// `cert` must be the one `peer` was started with.
     #[must_use]
