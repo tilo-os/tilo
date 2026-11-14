@@ -113,10 +113,20 @@ impl Desktop {
     /// Ask the session to open `target` as this person, and draw the frame that shows what it
     /// opened. A refused open is the session's to report.
     fn open(&self, target: tilo_actions::remote::RemoteActionTarget) {
+        // An app's `open` shows the item its anchor names: the resource the
+        // desktop asked for is that anchor (a Settings page, say), as the
+        // desk's own open passes it.
+        let argument = if target.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+            && !target.address.resource.is_empty()
+        {
+            tilo_session_core::notice::open_arguments(&target.address.resource)
+        } else {
+            InvokeArgument::None
+        };
         let request = InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
             target,
-            argument: InvokeArgument::None,
+            argument,
             context: None,
             confirmation: None,
             revision: None,

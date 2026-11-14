@@ -22,6 +22,20 @@ pub use ui::mentions::{Place, SCHEME};
 /// The name a notice that opens something offers that choice under.
 pub const OPEN_ACTION: &str = "open";
 
+/// The argument an app's `open` takes: the anchor of the item to show. A
+/// host that asks a window to show the resource it named passes that resource
+/// as the anchor, as a search hit passes the anchor it found; without it the
+/// app has nothing to show and the window opens empty.
+#[must_use]
+pub fn open_arguments(resource: &str) -> tilo_actions::remote::InvokeArgument {
+    let mut anchor = serde_json::Map::new();
+    anchor.insert(
+        "anchor".to_owned(),
+        serde_json::Value::String(resource.to_owned()),
+    );
+    tilo_actions::remote::InvokeArgument::Json(anchor)
+}
+
 /// Where choosing `place` lands in `workspace`: the app's `open` of the item on the record it is
 /// in.
 #[must_use]
@@ -234,5 +248,23 @@ pub trait Notices {
     /// The notices that closed since this was last taken, each with why.
     fn take_closed(&self) -> Vec<(String, Closed)> {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Showing a resource is the app's `open` of that resource as its anchor:
+    /// the argument a window's `open` reads, never an empty one.
+    #[test]
+    fn opening_a_resource_passes_it_as_the_anchor() {
+        let slot = open_arguments("settings.section:devices_access")
+            .to_slot()
+            .expect("an anchor reaches the window");
+        assert!(
+            slot.ends_with(r#"{"anchor":"settings.section:devices_access"}"#),
+            "{slot}"
+        );
     }
 }
