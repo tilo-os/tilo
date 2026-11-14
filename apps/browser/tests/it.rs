@@ -1,8 +1,9 @@
 // One test binary instead of four: each tests/*.rs linked the whole app
-// separately. #[path] keeps the files where they are, and nextest runs each
-// test in its own process, so the isolation separate binaries gave them stays:
-// the first window `perf_budget` times is still its process's first, and the
-// environment it scopes is still its own.
+// separately. #[path] keeps the files where they are. Nextest runs each test
+// in its own process; under `cargo test` the files' tests are threads of one,
+// so `perf_budget`, which needs the process to itself (the first window it
+// times is its process's first, and it scopes the process's environment),
+// takes one through `tilo_test_env::in_own_process`.
 
 #[path = "chrome_alignment.rs"]
 mod chrome_alignment;

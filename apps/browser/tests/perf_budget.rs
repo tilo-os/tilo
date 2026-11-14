@@ -76,6 +76,20 @@ fn budget(label: &str, value: u64, limit: u64) {
 #[test]
 #[cfg(unix)]
 fn a_new_window_and_a_new_tab_open_while_the_engine_starts() {
+    // The first window it times is its process's first live window, and it
+    // points the process's environment at a stand-in engine host. Nextest
+    // gives it a process; `cargo test` would run it as a thread beside the
+    // other files' tests, which open windows of their own, so there it
+    // starts one for itself, as its own test binary used to be.
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "a_new_window_and_a_new_tab_open_while_the_engine_starts",
+        the_first_window_and_new_tabs_beside_a_starting_host,
+    );
+}
+
+#[cfg(unix)]
+fn the_first_window_and_new_tabs_beside_a_starting_host() {
     let dir = tempfile::tempdir().unwrap();
     let host = starting_host(dir.path());
     let runtime = dir.path().join("run");
