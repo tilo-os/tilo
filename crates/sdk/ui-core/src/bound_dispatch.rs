@@ -1518,6 +1518,7 @@ pub(crate) fn discover_cached_bound_resources(
         resources: &mut Vec<SharedResource>,
         revisions: &mut Vec<Option<String>>,
         declarations: bool,
+        taken: &mut crate::resources::TakenResources,
     ) {
         let boundary = widget.callback_binding();
         if boundary
@@ -1529,11 +1530,19 @@ pub(crate) fn discover_cached_bound_resources(
         if boundary.is_none() {
             revisions.push(crate::resources::action_directory_revision(widget, doc));
             if declarations {
-                resources.extend(crate::resources::shared_resources(widget, doc));
+                let found = crate::resources::shared_resources(widget, doc);
+                let fresh: Vec<_> = found
+                    .into_iter()
+                    .filter(|resource| !taken.holds(resource.id()))
+                    .collect();
+                for resource in &fresh {
+                    taken.take(resource.id());
+                }
+                resources.extend(fresh);
             }
         }
         widget.for_each_child(&mut |child| {
-            owned(child, doc, owner, resources, revisions, declarations);
+            owned(child, doc, owner, resources, revisions, declarations, taken);
         });
     }
     fn visit(
@@ -1574,7 +1583,15 @@ pub(crate) fn discover_cached_bound_resources(
             let revisions = binding
                 .read_document(doc, |doc, _| {
                     let mut revisions = Vec::new();
-                    owned(widget, doc, binding, &mut Vec::new(), &mut revisions, false);
+                    owned(
+                        widget,
+                        doc,
+                        binding,
+                        &mut Vec::new(),
+                        &mut revisions,
+                        false,
+                        &mut crate::resources::TakenResources::default(),
+                    );
                     revisions
                 })
                 .map_err(|error| format!("{error:?}"))?;
@@ -1621,7 +1638,15 @@ pub(crate) fn discover_cached_bound_resources(
                     crate::component_inputs::reading(&binding.lifetime, || {
                         binding.read_document(doc, |doc, _| {
                             let mut resources = Vec::new();
-                            owned(widget, doc, binding, &mut resources, &mut Vec::new(), true);
+                            owned(
+                                widget,
+                                doc,
+                                binding,
+                                &mut resources,
+                                &mut Vec::new(),
+                                true,
+                                &mut crate::resources::TakenResources::default(),
+                            );
                             resources
                                 .iter()
                                 .filter_map(|resource| {
@@ -1843,6 +1868,7 @@ fn discover_bound_resources_with_filter(
         root: bool,
         address: Option<&tilo_actions::ActionAddress>,
         snapshots: &mut Vec<BoundResourceSnapshot>,
+        taken: &mut std::collections::HashMap<usize, crate::resources::TakenResources>,
         filtered: bool,
     ) -> Result<(), BoundDispatchError> {
         let boundary = widget.callback_binding();
@@ -1898,10 +1924,21 @@ fn discover_bound_resources_with_filter(
                         resources
                     }
                 })?;
-                match snapshot.and_then(|index| snapshots.get_mut(index)) {
-                    Some(snapshot) if !resources.is_empty() => snapshot.extend(resources),
-                    Some(_) => {}
-                    None => snapshots.push(BoundResourceSnapshot::new(binding.clone(), resources)),
+                let index = snapshot.unwrap_or(snapshots.len());
+                let read = taken.entry(index).or_default();
+                let resources: Vec<_> = resources
+                    .into_iter()
+                    .filter(|resource| !read.holds(resource.id.as_str()))
+                    .collect();
+                for resource in &resources {
+                    read.take(resource.id.as_str());
+                }
+                if index == snapshots.len() {
+                    snapshots.push(BoundResourceSnapshot::new(binding.clone(), resources));
+                } else if let Some(snapshot) = snapshots.get_mut(index)
+                    && !resources.is_empty()
+                {
+                    snapshot.extend(resources);
                 }
             }
         }
@@ -1909,7 +1946,9 @@ fn discover_bound_resources_with_filter(
         let below = boundary.is_some();
         widget.for_each_child(&mut |child| {
             if result.is_ok() {
-                result = visit(child, doc, binding, below, address, snapshots, filtered);
+                result = visit(
+                    child, doc, binding, below, address, snapshots, taken, filtered,
+                );
             }
         });
         result
@@ -1922,6 +1961,7 @@ fn discover_bound_resources_with_filter(
         true,
         lazy_address,
         &mut snapshots,
+        &mut std::collections::HashMap::new(),
         filtered,
     )?;
     Ok(snapshots)
@@ -3261,11 +3301,19 @@ fn collect_published(
     participant: Option<&tilo_actions::ParticipantId>,
     resources: &mut Vec<ResourceSpec>,
 ) {
+    let mut taken = crate::resources::TakenResources::default();
     for_each_published(widget, walk, &mut |widget, root| {
         let found = match participant {
             Some(participant) => crate::resources::resources_for(widget, Some(participant), doc),
             None => crate::resources::resources(widget, doc),
         };
+        let found: Vec<_> = found
+            .into_iter()
+            .filter(|resource| !taken.holds(resource.id.as_str()))
+            .collect();
+        for resource in &found {
+            taken.take(resource.id.as_str());
+        }
         if root {
             resources.extend(found);
         } else {

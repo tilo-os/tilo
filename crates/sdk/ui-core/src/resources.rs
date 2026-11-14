@@ -194,6 +194,23 @@ pub fn resources(
     capability::<dyn PublishesResources>(widget).map_or_else(Vec::new, |w| w.resources(doc))
 }
 
+/// The resource roots a walk holds: a widget answering for the widget below it and that widget
+/// itself publish the same resource, which belongs in the tree once.
+#[derive(Default)]
+pub(crate) struct TakenResources(std::collections::HashSet<String>);
+
+impl TakenResources {
+    /// Whether this walk holds resource root `id` already.
+    pub(crate) fn holds(&self, id: &str) -> bool {
+        self.0.contains(id)
+    }
+
+    /// Hold `id`. A widget publishing it twice is its own defect, which the tree reports.
+    pub(crate) fn take(&mut self, id: &str) {
+        self.0.insert(id.to_owned());
+    }
+}
+
 /// The resources `widget` has open, as a shared forest ([`PublishesResources::shared_resources_for`]).
 pub fn shared_resources(widget: &(impl Widget + ?Sized), doc: &AutoCommit) -> Vec<SharedResource> {
     let Some(publisher) = capability::<dyn PublishesResources>(widget) else {

@@ -424,3 +424,49 @@ impl crate::widget::controls::ActionControls for FastInventoryPublisher {
         self.enabled.set(self.button.is_enabled());
     }
 }
+
+/// A window showing a live child in its place answers for that child and walks it too: the walk
+/// takes each resource root once, so the child's control is one control.
+#[test]
+fn a_widget_answering_for_a_child_it_walks_publishes_that_childs_resources_once() {
+    struct Displaying(Publisher);
+
+    impl crate::widget::Widget for Displaying {
+        fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+            self.0.provide(request);
+        }
+
+        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn crate::widget::Widget)) {
+            visitor(&self.0);
+        }
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn crate::widget::Widget>,
+        ) -> NodeId {
+            taffy.widget_leaf(taffy::Style::default(), node_map, self)
+        }
+
+        fn name(&self) -> &'static str {
+            "displaying"
+        }
+    }
+
+    let mut resources = Vec::new();
+    crate::widget::collect_widget_resources(
+        &Displaying(Publisher),
+        &AutoCommit::new(),
+        &mut resources,
+    );
+    let ids: Vec<&str> = resources
+        .iter()
+        .map(|resource| resource.id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        ["test.obj:1"],
+        "the displayed child's resource stands once"
+    );
+}

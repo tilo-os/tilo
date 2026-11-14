@@ -602,6 +602,7 @@ pub(crate) fn collect_widget_resources(
         inherited: Option<crate::bound_dispatch::CallbackBinding>,
         root: bool,
         resources: &mut Vec<tilo_actions::ResourceSpec>,
+        taken: &mut crate::resources::TakenResources,
     ) {
         if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
             return;
@@ -623,16 +624,36 @@ pub(crate) fn collect_widget_resources(
             } else {
                 crate::resources::resources(widget, doc)
             };
-            if root || binding.is_none() {
-                resources.extend(found);
+            let found = if root || binding.is_none() {
+                found
             } else {
-                resources.extend(found.into_iter().map(crate::resources::outside_document));
+                found
+                    .into_iter()
+                    .map(crate::resources::outside_document)
+                    .collect()
+            };
+            let fresh: Vec<_> = found
+                .into_iter()
+                .filter(|resource| !taken.holds(resource.id.as_str()))
+                .collect();
+            for resource in &fresh {
+                taken.take(resource.id.as_str());
             }
+            resources.extend(fresh);
         }
         let below = boundary.is_some();
-        widget.for_each_child(&mut |child| visit(child, doc, binding.clone(), below, resources));
+        widget.for_each_child(&mut |child| {
+            visit(child, doc, binding.clone(), below, resources, taken);
+        });
     }
-    visit(widget, doc, None, true, resources);
+    visit(
+        widget,
+        doc,
+        None,
+        true,
+        resources,
+        &mut crate::resources::TakenResources::default(),
+    );
 }
 
 /// The resource `id` in `widget`'s subtree, resolved by the widget that publishes it rather
