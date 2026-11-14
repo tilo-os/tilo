@@ -20,6 +20,7 @@ desktop:chrome desktop (Desktop)
   new-workspace New workspace
   notifications Notification centre
   open-app Open an app
+  open-settings Open Settings
   overview Overview
   pan Pan a strip
   quick-settings Quick Settings
