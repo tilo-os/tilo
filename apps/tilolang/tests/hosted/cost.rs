@@ -1287,6 +1287,7 @@ fn kept_index(
                 None,
             )),
             device: None,
+            wake: None,
         },
         tilolang_tilo::runtime::Principal::new("ada"),
         || None,

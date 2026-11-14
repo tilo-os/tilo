@@ -779,6 +779,7 @@ fn kept_in(dir: &Path, doc: &AutoCommit, lock: &str) -> Host {
             chunks: None,
             index_dir: Some(dir.to_owned()),
             device: None,
+            wake: None,
         },
         Principal::new("ada"),
         || None,
@@ -819,6 +820,10 @@ fn an_index_stamped_with_older_heads_catches_up_with_the_record() {
     // The host's own index and the package's.
     assert_eq!(stats.catch_ups, 2, "caught up from its heads");
     assert_eq!(
+        stats.catch_ups_in_frame, 2,
+        "a store with no frame catches up in its own time"
+    );
+    assert_eq!(
         again.store().index_contents(APP).unwrap(),
         anew(&ada, &lock)
     );
@@ -855,13 +860,13 @@ fn what_the_store_writes_while_its_index_catches_up_reads_back_at_once() {
             chunks: None,
             index_dir: Some(dir.path().to_owned()),
             device: None,
+            // A window with frames: what the record gained is derived off the frame.
+            wake: Some(Arc::new(|| {})),
         },
         Principal::new("ada"),
         || None,
     )
     .unwrap();
-    // A window with frames: what the record gained is derived off the frame.
-    host.set_index_waker(Arc::new(|| {}));
     host.load_builtin(TODO, &lock).unwrap();
     assert!(!host.index_ready(), "the index catches up off the frame");
     let meta = host.packages()[0].meta.clone();
@@ -926,12 +931,12 @@ fn a_write_the_record_takes_while_its_index_catches_up_never_goes_missing() {
             chunks: None,
             index_dir: Some(dir.path().to_owned()),
             device: None,
+            wake: Some(Arc::new(|| {})),
         },
         Principal::new("ada"),
         || None,
     )
     .unwrap();
-    host.set_index_waker(Arc::new(|| {}));
     host.load_builtin(TODO, &lock).unwrap();
     assert!(!host.index_ready(), "the index catches up off the frame");
     let meta = host.packages()[0].meta.clone();
@@ -1043,6 +1048,7 @@ fn a_store_without_the_record_opens_over_the_index_and_takes_the_record_later() 
             chunks: None,
             index_dir: Some(dir.path().to_owned()),
             device: None,
+            wake: None,
         },
         Principal::new("ada"),
         || None,
@@ -1090,6 +1096,7 @@ fn a_window_opens_over_the_index_an_earlier_window_kept() {
             chunks: None,
             index_dir: Some(dir.path().to_owned()),
             device: None,
+            wake: None,
         },
         Principal::new("ada"),
         || None,
@@ -1198,6 +1205,7 @@ fn a_window_over_the_record_alone_is_whole_when_the_run_chunk_holds_no_rows_it_r
                 chunks: None,
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
+                wake: None,
             },
             Principal::new("ada"),
             || None,
@@ -1251,6 +1259,7 @@ fn a_window_over_the_record_alone_reads_the_run_chunk_that_holds_its_rows() {
             chunks: None,
             index_dir: None,
             device: None,
+            wake: None,
         },
         Principal::new("ada"),
         || None,
@@ -1271,6 +1280,7 @@ fn a_window_over_the_record_alone_reads_the_run_chunk_that_holds_its_rows() {
             chunks: Some(&chunks),
             index_dir: None,
             device: None,
+            wake: None,
         },
         Principal::new("ada"),
         || None,
@@ -1301,13 +1311,13 @@ fn a_window_whose_index_is_not_kept_builds_it_off_the_frame() {
             chunks: None,
             index_dir: None,
             device: None,
+            // What a window has before the app's package loads.
+            wake: Some(Arc::new(|| {})),
         },
         Principal::new("ada"),
         || None,
     )
     .unwrap();
-    // What an instance does before the app's package loads.
-    host.set_index_waker(Arc::new(|| {}));
     host.load_builtin(TODO, &lock).unwrap();
     assert!(!host.index_ready(), "the open does not wait for the index");
     assert!(
@@ -1316,6 +1326,46 @@ fn a_window_whose_index_is_not_kept_builds_it_off_the_frame() {
     );
     host.wait_index();
     assert!(host.index_ready(), "the window's frame takes it in");
+    assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+    let _ = root;
+}
+
+/// A window opened with a waker derives nothing of the workspace on the thread that opens it: the
+/// index is built on a worker, which wakes a frame to take it in.
+#[test]
+fn a_window_opened_with_a_waker_reads_its_index_off_the_frame() {
+    let (ada, root, lock) = workspace();
+    let woken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let wake = {
+        let woken = Arc::clone(&woken);
+        Arc::new(move || woken.store(true, std::sync::atomic::Ordering::Release))
+    };
+    let host = Host::open(
+        Opening {
+            record: Some(&ada.doc),
+            chunks: None,
+            index_dir: None,
+            device: None,
+            wake: Some(wake),
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    assert_eq!(
+        host.store().stats().builds,
+        0,
+        "nothing of the workspace is derived on the frame that opens it"
+    );
+    host.wait_index();
+    assert_eq!(host.store().stats().builds, 1, "the worker built the index");
+    assert!(
+        woken.load(std::sync::atomic::Ordering::Acquire),
+        "the frame was woken to take the index in"
+    );
+    assert!(host.index_ready());
+    host.load_builtin(TODO, &lock).unwrap();
+    host.wait_index();
     assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
     let _ = root;
 }
@@ -1416,6 +1466,7 @@ fn a_window_opened_over_its_index_publishes_every_hit_and_each_commit_at_once() 
             chunks: None,
             index_dir: Some(dir.path().to_owned()),
             device: None,
+            wake: None,
         },
         Principal::new("ada"),
         || None,

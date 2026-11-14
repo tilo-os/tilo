@@ -194,3 +194,57 @@ fn tasks_that_span_two_chunks_are_listed_whole_with_both_here_and_when_one_arriv
     a_list_whose_tasks_span_two_chunks_shows_every_task_in_order(n, &whole);
     a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again(n, &whole);
 }
+
+/// A window the live `App` runs: the chunk that arrives after it opened is caught up on a
+/// worker, which wakes the window's frame, and the list shows the tasks the chunk holds once it
+/// lands. No part of the catch-up is derived on the window's own frame.
+#[test]
+fn a_chunk_that_arrives_after_the_live_window_opened_is_caught_up_off_its_frame() {
+    let _motion = ui::motion::testing::settled();
+    let n = spanning();
+    let whole = seeded_tasks(n);
+    let [first, away] = task_chunks(&whole)[..] else {
+        panic!("the tasks span two chunks");
+    };
+    let mut here = Chunks::of(whole.first().expect("the record").clone());
+    here.insert(first, whole.mirror(first).expect("the first chunk").clone());
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::brokered(&route, TASKS, "ada", "en-US", here, None, Window::live);
+    session.settle();
+    let chunk_route = RouteSpec::record(
+        route.app_id.clone(),
+        route.cluster_id,
+        chunk::record_id(route.record.as_deref().unwrap_or(""), away),
+    );
+    let snapshot = DocumentMutation::Snapshot(
+        whole
+            .mirror(away)
+            .expect("the peer's chunk")
+            .committed_document()
+            .save(),
+    );
+    session
+        .inbox()
+        .borrow_mut()
+        .push_back(delivered(&chunk_route, "bea", &snapshot));
+    session.settle();
+    assert!(
+        session.catch_ups() > 0,
+        "the chunk that arrived was caught up into the window's index"
+    );
+    assert_eq!(
+        session.catch_ups_in_frame(),
+        0,
+        "on a worker, which wakes the window's frame, not on the frame itself"
+    );
+    assert!(
+        session.index_whole(),
+        "the window reads the whole workspace"
+    );
+    // The frame the worker woke ran the views that read the new rows, and the window draws the
+    // tasks the caught-up index answers.
+    assert!(
+        !session.titles().is_empty(),
+        "the window draws the tasks once the catch-up landed"
+    );
+}

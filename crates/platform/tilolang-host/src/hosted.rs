@@ -2460,6 +2460,7 @@ impl Applier {
                 chunks: None,
                 index_dir: None,
                 device: None,
+                wake: None,
             },
             tilolang_tilo::runtime::Principal::new(spec.person.clone()),
             || None,

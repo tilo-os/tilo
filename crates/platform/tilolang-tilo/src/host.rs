@@ -225,6 +225,9 @@ pub struct Opening<'a> {
     pub index_dir: Option<std::path::PathBuf>,
     /// The device that carries out the outside effects this host queues.
     pub device: Option<&'a str>,
+    /// How a frame is woken when an index read off it is ready to be taken in. `None` for a host
+    /// without frames (a capture, an origin applying a change), which derives in its own time.
+    pub wake: Option<crate::background::Waker>,
 }
 
 /// What the door's closures hold in place of the host: see the module docs.
@@ -941,6 +944,7 @@ impl Host {
                 chunks: None,
                 index_dir: None,
                 device,
+                wake: None,
             },
             viewer,
             standing,
@@ -972,6 +976,11 @@ impl Host {
         };
         if let Some(device) = opening.device {
             store.set_device(device);
+        }
+        // The waker is the store's before anything of the record is derived: no derivation runs
+        // in the frame that opens the host, and the one that lands it wakes a frame.
+        if let Some(wake) = opening.wake {
+            store.set_waker(wake);
         }
         // The chunks of the record the caller holds: the store reads them as it reaches into
         // them, and an index over a record whose manifest names chunks it does not hold yet
@@ -1051,11 +1060,6 @@ impl Host {
     /// Wait for the indexes being built and take them in: for a host without frames.
     pub fn wait_index(&self) -> bool {
         self.inner.store.wait_index()
-    }
-
-    /// Have `wake` called when an index built off the frame is ready to be taken in.
-    pub fn set_index_waker(&self, wake: crate::background::Waker) {
-        self.inner.store.set_waker(wake);
     }
 
     /// Wait for what the indexes hold to reach the disk: when the window closes.

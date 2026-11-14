@@ -994,6 +994,7 @@ impl Inner {
                     }
                 }
                 self.stats.catch_ups = self.stats.catch_ups.saturating_add(1);
+                self.stats.catch_ups_in_frame = self.stats.catch_ups_in_frame.saturating_add(1);
                 self.count(reads);
             }
             Err(_) => self.rebuild(app),

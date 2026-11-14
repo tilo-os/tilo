@@ -321,6 +321,9 @@ pub struct StoreStats {
     pub builds: u64,
     /// Indexes brought up to date from the heads they were stamped with.
     pub catch_ups: u64,
+    /// Of those, the ones a store no frame wakes derived on the frame that asked, in its own
+    /// time ([`Inner::catch_up`]).
+    pub catch_ups_in_frame: u64,
     /// Indexes written: one commit of the rows a change derived, per package the change reached.
     /// A change one package made writes that package's index alone, whatever else a workspace
     /// holds.

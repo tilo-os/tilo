@@ -865,6 +865,9 @@ impl Instance {
             chunks: None,
             index_dir,
             device: self.device.as_deref(),
+            // A window's index is derived off its frames, which the waker brings back. A past
+            // version is drawn from its index in the frame that opens it: no later frame wakes.
+            wake: (self.mode != Mode::Past).then(|| self.platform.waker()),
         };
         let standing = Rc::clone(&self.standing);
         let built = Host::open(opening, Principal::new(self.me.clone()), move || {
@@ -907,11 +910,6 @@ impl Instance {
                 origins: Rc::clone(&self.origins),
                 rest: sink,
             });
-        }
-        if self.mode != Mode::Past {
-            // The app's index is owed a frame as soon as it is built: the window shows what it
-            // can until the package's load has it, which builds it off the frame.
-            host.set_index_waker(self.platform.waker());
         }
         self.generation = self.platform.load(&host);
         if self.platform.follows_updates() && self.mode != Mode::Past && !self.follows {

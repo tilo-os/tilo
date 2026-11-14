@@ -99,6 +99,7 @@ pub(crate) fn built_over(ada: &Replica) -> Host {
             chunks: None,
             index_dir: Some(dir),
             device: None,
+            wake: None,
         },
         Principal::new("phone"),
         || None,

@@ -1015,6 +1015,7 @@ fn opened(docs: &mut Docs, dir: &Path, ids: &str, sent: bool) -> (Host, Rc<RefCe
             chunks: None,
             index_dir: Some(dir.to_owned()),
             device: None,
+            wake: None,
         },
         Principal::new("ada"),
         || None,

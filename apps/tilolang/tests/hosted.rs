@@ -764,6 +764,14 @@ impl Session {
         host.store().stats().catch_ups
     }
 
+    /// How many of those the window's store derived on its own frames: none, for a window whose
+    /// catch-up a worker does and whose frame is woken to take it in.
+    fn catch_ups_in_frame(&self) -> u64 {
+        let hosted = self.host.instances().next().expect("the window's instance");
+        let host = hosted.instance().host().expect("the instance's store");
+        host.store().stats().catch_ups_in_frame
+    }
+
     /// Hand the window's store every chunk of `chunks`, as a replica that joined each chunk's
     /// route holds them: what a window that reads only the chunks it shows is compared with.
     fn held_every_chunk(&self, chunks: &tilolang_tilo::chunk::Chunks) {

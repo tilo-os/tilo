@@ -75,6 +75,7 @@ fn keep_index(
             chunks: None,
             index_dir: Some(tilolang_tilo::index::workspace_dir(&base, "personal")),
             device: None,
+            wake: None,
         },
         tilolang_tilo::runtime::Principal::new("seed"),
         tilolang_tilo::authority::holding_nothing("seed"),
