@@ -29,7 +29,10 @@ mod appended;
 #[cfg(feature = "agents")]
 mod applications;
 mod authority;
+mod bootstrap;
 mod channel_governance;
+mod index;
+pub(crate) use bootstrap::member_bootstrap;
 mod collaboration;
 mod content;
 mod creating;
@@ -950,6 +953,8 @@ struct WorkspacesInner {
     link_heard_capacity: std::sync::atomic::AtomicUsize,
     dir: PathBuf,
     workspaces: Arc<device_plane::WorkspacesMap>,
+    /// Where each workspace governed here is held, by its id (see [`index`]).
+    ids: index::IdIndex,
     /// The plane the workspaces answer their members' devices on, as this
     /// host's own device ([`device_plane`]).
     plane: tilo_peer_state::actions::ActionPlane,
@@ -1252,6 +1257,7 @@ impl Workspaces {
                 plane,
                 jobs,
                 workspaces,
+                ids: index::IdIndex::default(),
                 calls: Arc::default(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
@@ -1299,6 +1305,7 @@ impl Workspaces {
             );
         }
         *this.inner.workspaces.lock().await = workspaces;
+        this.inner.ids.reset(&this.inner.workspaces).await;
         let workspaces = this
             .inner
             .workspaces
@@ -1496,6 +1503,9 @@ impl Workspaces {
             .lock()
             .await
             .insert(summary.workspace.clone(), Arc::clone(&workspace));
+        self.inner
+            .ids
+            .note(summary.workspace_id, &summary.workspace);
         let mut governed = workspace.lock().await;
         self.settle(&mut governed).await?;
         self.name_own_host(&mut governed).await?;
@@ -1534,6 +1544,7 @@ impl Workspaces {
                 .map_err(|error| error.to_string())?;
         }
         self.inner.workspaces.lock().await.remove(workspace);
+        self.inner.ids.forget(governed.workspace_id());
         self.inner.direct.release(governed.workspace_id());
         self.inner
             .host
@@ -2925,63 +2936,6 @@ fn system_time(now_ns: u64) -> SystemTime {
         .checked_add(Duration::from_nanos(now_ns))
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
-
-/// The workspace-join contract's membership answer for `device`, a device
-/// the workspace `peer` replicates just admitted to subscribe, postcard encoded:
-/// what it builds its replica of the workspace from before the workspace's replay
-/// ([`tilo_relay_protocol::Envelope::WorkspaceBootstrap`]). A device of the
-/// workspace's owner gets the owner's answer, any other member's device its
-/// role's. The governance messages and
-/// records stay out: the replay that follows carries them.
-pub(crate) fn member_bootstrap(
-    peer: &StatePeer,
-    host: &DeviceCert,
-    workspace_id: WorkspaceId,
-    generation: u64,
-    device: &DeviceCert,
-) -> Option<(Vec<u8>, crate::peer::GovernanceCertificates)> {
-    use tilo_peer_state::join::{JoinBootstrap, JoinTransportResponse, OwnerBootstrapV1};
-    let now = tilo_clock::wall();
-    let role = peer
-        .role(&device.device_public_key, now)
-        .unwrap_or(collab_types::Role::Viewer);
-    // The replay after the bootstrap carries the workspace's governance, and
-    // with it every member's certificate: the roster names only what the
-    // device holds before that governance, or could not take from it.
-    let certified_roster =
-        peer.roster_beside_governance(&[device.device_public_key, host.device_public_key], now);
-    let certified = crate::peer::GovernanceCertificates::new(&certified_roster, peer.revocations());
-    let answer = match role {
-        collab_types::Role::Owner => {
-            JoinTransportResponse::OwnerMembershipComplete(OwnerBootstrapV1 {
-                version: 1,
-                device_cert: device.clone(),
-                workspace_id,
-                host: host.clone(),
-                certified_roster,
-                revocations: peer.revocations(),
-                records: Vec::new(),
-                governance_messages: Vec::new(),
-                generation,
-            })
-        }
-        role => JoinTransportResponse::MembershipComplete(JoinBootstrap {
-            version: 1,
-            invite_id: [0; 32],
-            device_cert: device.clone(),
-            role,
-            workspace_id,
-            host: host.clone(),
-            certified_roster,
-            revocations: peer.revocations(),
-            records: Vec::new(),
-            governance_messages: Vec::new(),
-            generation,
-        }),
-    };
-    Some((postcard::to_stdvec(&answer).ok()?, certified))
-}
-
 /// How a member's write reached the governor, which decides whether the host
 /// still has to keep what it carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

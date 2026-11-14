@@ -18,6 +18,7 @@ pub(crate) mod admission_cost;
 pub(crate) mod bots;
 mod host_address;
 pub(crate) mod large_record;
+mod lookup;
 
 #[tokio::test]
 async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {

@@ -12,14 +12,14 @@
 //! A member in the same process connects through [`WorkspaceHost::connect_local`]: the same
 //! handshake and session as a remote member, over an in-process stream.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler};
 use tilo_clock::unix_now_ns;
-use tilo_lock::RwLockRecover as _;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -771,6 +771,11 @@ impl GovernedAccessWriter {
         &self.state_root
     }
 
+    /// A workspace this host deleted admits nobody at the handshake either.
+    pub(crate) fn forget_workspace(&self, workspace_id: WorkspaceId) {
+        self.handshake_trust.forget(workspace_id);
+    }
+
     /// The adapter the relay opens workspaces with.
     pub(crate) const fn shell_payloads(&self) -> &Arc<dyn crate::payloads::ShellPayloads> {
         &self.shell_payloads
@@ -848,6 +853,7 @@ impl GovernedAccessWriter {
         let mut member_user_roots = access.member_user_roots;
         member_user_roots.sort_unstable();
         member_user_roots.dedup();
+        let roots: HashSet<[u8; 32]> = member_user_roots.iter().copied().collect();
         let result = crate::workspace_io::replace_governed_access(
             &workspace,
             crate::store::GovernedAccessRecord {
@@ -857,10 +863,15 @@ impl GovernedAccessWriter {
             },
         )
         .await;
-        // Also run after an I/O error: replace_governed_access keeps every
-        // requested removal narrowed in memory, and the handshake union must
-        // reflect that fail-closed ceiling.
-        self.handshake_trust.refresh(&self.workspaces).await;
+        // Also after an I/O error the handshake union must reflect the
+        // fail-closed ceiling. A successful write leaves the workspace
+        // holding exactly the roots it was asked for, so only its own
+        // contribution changes; an error leaves an intersection that only a
+        // full read of the workspace tells.
+        match &result {
+            Ok(_) => self.handshake_trust.settled(workspace_id, roots),
+            Err(_) => self.handshake_trust.refresh(&self.workspaces).await,
+        }
         Ok(result?)
     }
 }
@@ -870,6 +881,13 @@ pub(crate) struct HandshakeTrust {
     base_roots: Arc<HashSet<[u8; 32]>>,
     pub(crate) live_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     pub(crate) allow_any: bool,
+    /// The user roots each governed workspace admits, by workspace: the
+    /// allow list is the operator's own together with all of them. One entry
+    /// is replaced after that workspace's access settles, so an admission
+    /// decision does not walk and lock every workspace the host governs —
+    /// which, at hundreds of workspaces, is most of the cost of admitting one
+    /// more.
+    contributions: Arc<std::sync::Mutex<HashMap<WorkspaceId, HashSet<[u8; 32]>>>>,
 }
 
 impl HandshakeTrust {
@@ -883,22 +901,68 @@ impl HandshakeTrust {
                 TrustPolicy::AllowList { users: Vec::new() }
             })),
             allow_any,
+            contributions: Arc::new(std::sync::Mutex::default()),
         }
     }
 
+    /// Rebuild every workspace's contribution by reading them, for a host
+    /// starting (or a write whose effect in memory only a read tells).
     pub(crate) async fn refresh(&self, workspaces: &WorkspaceRegistry) {
         if self.allow_any {
             return;
         }
+        let mut contributions = HashMap::new();
+        let held = workspaces.lock().await;
+        for runtime in held.values() {
+            let runtime = runtime.lock().await;
+            contributions.insert(
+                runtime.store.workspace_id(),
+                runtime.governed_user_roots.clone(),
+            );
+        }
+        drop(held);
+        *self.contributions.lock_recover() = contributions;
+        self.apply();
+    }
+
+    /// `workspace_id`'s access settled: what it admits is `roots` now.
+    pub(crate) fn settled(&self, workspace_id: WorkspaceId, roots: HashSet<[u8; 32]>) {
+        if self.allow_any {
+            return;
+        }
+        self.contributions
+            .lock_recover()
+            .insert(workspace_id, roots);
+        self.apply();
+    }
+
+    /// `workspace_id` is gone: it admits nobody here any more.
+    pub(crate) fn forget(&self, workspace_id: WorkspaceId) {
+        if self.allow_any {
+            return;
+        }
+        if self
+            .contributions
+            .lock_recover()
+            .remove(&workspace_id)
+            .is_some()
+        {
+            self.apply();
+        }
+    }
+
+    /// The live allow list: the operator's own roots and every workspace's.
+    /// Held together with the contributions it reads, so a union computed
+    /// from an older map never lands after a newer one.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the contributions lock is held until the allow list is written, so a union read from an older map cannot land after a newer one"
+    )]
+    fn apply(&self) {
+        let contributions = self.contributions.lock_recover();
         let mut roots = self.base_roots.as_ref().clone();
-        let runtimes = workspaces
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for runtime in runtimes {
-            roots.extend(runtime.lock().await.governed_user_roots.iter().copied());
+        for admitted in contributions.values() {
+            roots.extend(admitted.iter().copied());
         }
         let mut users = roots.into_iter().map(hex::encode).collect::<Vec<_>>();
         users.sort_unstable();
@@ -1318,6 +1382,52 @@ mod tests {
             TrustPolicy::AllowList {
                 users: vec![hex::encode(own_user), hex::encode(operator_pin)]
             }
+        );
+    }
+
+    /// What one workspace settles joins the handshake's allow list, and a
+    /// workspace forgotten leaves it, without reading any other workspace:
+    /// the cost of admitting one more workspace does not grow with how many
+    /// the host governs.
+    #[test]
+    fn a_settled_workspace_joins_the_allow_list_and_a_forgotten_one_leaves_it() {
+        let own_user = [1; 32];
+        let trust = HandshakeTrust::new(&TrustPolicy::AllowList { users: Vec::new() }, own_user);
+        let first = WorkspaceId::from_u128(7);
+        let second = WorkspaceId::from_u128(8);
+        let listed = |trust: &HandshakeTrust| -> Vec<String> {
+            let policy = trust.live_policy.read_recover().clone();
+            match policy {
+                TrustPolicy::AllowList { users } => users,
+                // A host that lists nobody, or trusts anyone, reads as an
+                // empty list; the assertions below are what notice.
+                TrustPolicy::AllowMatchingUser | TrustPolicy::AllowAny => Vec::new(),
+            }
+        };
+
+        trust.settled(first, HashSet::from([[9; 32]]));
+        assert_eq!(
+            listed(&trust),
+            vec![hex::encode(own_user), hex::encode([9; 32])],
+            "the settled workspace's reader is trusted with the operator"
+        );
+
+        trust.settled(second, HashSet::from([[8; 32]]));
+        assert_eq!(
+            listed(&trust),
+            vec![
+                hex::encode(own_user),
+                hex::encode([8; 32]),
+                hex::encode([9; 32])
+            ],
+            "a second workspace adds its reader and keeps the first's"
+        );
+
+        trust.forget(first);
+        assert_eq!(
+            listed(&trust),
+            vec![hex::encode(own_user), hex::encode([8; 32])],
+            "a forgotten workspace's reader is trusted no more"
         );
     }
 }

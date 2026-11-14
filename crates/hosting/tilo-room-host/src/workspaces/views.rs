@@ -84,21 +84,46 @@ impl Workspaces {
         workspace: WorkspaceId,
         answer: impl FnOnce(&GovernedWorkspace) -> T,
     ) -> Option<T> {
-        let workspaces = self
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for governed in workspaces {
-            let runtime = governed.lock().await;
-            if runtime.workspace_id() == workspace {
-                return Some(answer(&runtime));
+        // The index answers where the workspace was noted when it was opened,
+        // made or first asked for; only a workspace it does not hold costs a
+        // walk, and that walk notes it.
+        let held = match self.inner.ids.get(workspace) {
+            Some(cluster) => {
+                let governed = self.inner.workspaces.lock().await.get(&cluster).cloned();
+                if governed.is_none() {
+                    self.inner.ids.forget(workspace);
+                }
+                governed.into_iter().collect::<Vec<_>>()
             }
+            None => self
+                .inner
+                .workspaces
+                .lock()
+                .await
+                .values()
+                .cloned()
+                .collect::<Vec<_>>(),
+        };
+        let mut answer = Some(answer);
+        let mut found = None;
+        for governed in held {
+            let runtime = governed.lock().await;
+            if runtime.workspace_id() != workspace {
+                continue;
+            }
+            if let Some(answer) = answer.take() {
+                found = Some((runtime.workspace().to_owned(), answer(&runtime)));
+            }
+            drop(runtime);
+            break;
         }
-        None
+        match found {
+            Some((cluster, value)) => {
+                self.inner.ids.note(workspace, &cluster);
+                Some(value)
+            }
+            None => None,
+        }
     }
 
     /// [`bot_shows_personas`] in the workspace of `workspace` governed here;
