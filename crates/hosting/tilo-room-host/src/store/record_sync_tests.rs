@@ -38,6 +38,7 @@ fn retained(store: &WorkspaceStore, key: &ed25519_dalek::SigningKey, record: &st
         WorkspaceId::from_u128(7),
         &route(record),
         record.as_bytes(),
+        0,
     )
     .expect("the frames of a first publication");
     let lineage = store.root.join(RETAINED_DIR).join("v2").join(format!(

@@ -40,6 +40,9 @@ mod api_invites;
 #[cfg(test)]
 #[path = "workspace_actions/api_links.rs"]
 mod api_links;
+#[cfg(test)]
+#[path = "workspace_actions/api_notebook.rs"]
+mod api_notebook;
 #[path = "workspace_actions/api_on_relay.rs"]
 pub mod api_on_relay;
 #[cfg(test)]

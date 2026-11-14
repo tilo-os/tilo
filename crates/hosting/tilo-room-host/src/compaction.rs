@@ -474,15 +474,25 @@ impl Compactor {
         let (signatures, planned) = tokio::task::spawn_blocking(move || {
             let planned = on_cpu(|| {
                 let entries = store.channel_entries(&channel)?;
-                Ok::<_, crate::store::StoreError>(plan(
-                    &entries,
-                    &mut signatures,
-                    &known,
-                    min_tail,
-                    |route, snapshot| {
-                        document_frames(&*payloads, &key, workspace_id, route, snapshot).ok()
-                    },
-                ))
+                let author = key.verifying_key().to_bytes();
+                // Signed once the fold is known: numbered under the writes it removes.
+                let (sealed, folded) = plan(&entries, &mut signatures, &known, min_tail, |_, _| {
+                    Some(Vec::new())
+                });
+                let folded = folded.and_then(|(folded, _)| {
+                    let last = fold_sequence(&*payloads, &entries, &folded, author)?;
+                    let frames = document_frames(
+                        &*payloads,
+                        &key,
+                        workspace_id,
+                        &folded.route,
+                        &folded.snapshot,
+                        last,
+                    )
+                    .ok()?;
+                    Some((folded, frames))
+                });
+                Ok::<_, crate::store::StoreError>((sealed, folded))
             });
             (signatures, planned)
         })
@@ -651,12 +661,14 @@ impl Compactor {
                         &folded,
                     )
                     .or_else(|| {
+                        let author = key.verifying_key().to_bytes();
                         sealed_document_frames(
                             &*payloads,
                             (&key, &keys),
                             workspace_id,
                             &folded.route,
                             &folded.snapshot,
+                            fold_sequence(&*payloads, &entries, &folded, author)?,
                         )
                         .ok()
                     })?;
@@ -1504,18 +1516,57 @@ fn fold_leaving_out(
     })
 }
 
+/// The sequence the writes of a fold this host signs as `author` end at: the last of the
+/// host's own writes it removes, 0 when it removes none of them. `None` when a write of the
+/// host's it keeps is numbered below that: no number then keeps both.
+///
+/// The host device is a writer of the workspace's records as well (what its agents and API
+/// callers do is written as it), and numbers each write it makes after its last one of the
+/// record. A reader refuses a write numbered at or below one of its writer's it took (a
+/// replay), so a fold numbered past the host's writes, which a page opening the record takes
+/// first, would make it refuse every write the host makes after the fold: the page would show
+/// the record as it stood then, however long the host went on writing.
+fn fold_sequence(
+    payloads: &dyn ShellPayloads,
+    entries: &[ChannelEntry],
+    folded: &Folded,
+    author: [u8; 32],
+) -> Option<u64> {
+    let removed: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
+    let (mut last, mut kept) = (0, u64::MAX);
+    for entry in entries {
+        let Some((_, op)) = payloads.open_document(&entry.body) else {
+            continue;
+        };
+        if *op.author.as_bytes() != author {
+            continue;
+        }
+        if removed.contains(&entry.digest) {
+            last = last.max(op.seq);
+        } else {
+            kept = kept.min(op.seq);
+        }
+    }
+    (kept > last).then_some(last)
+}
+
 /// Sign `snapshot` for `route` as the host and frame it the way a device
 /// publishes it (`payloads` frames each body): one retained envelope per
-/// document frame, the first as the checkpoint. The publisher is the host's own handle, which a native shell
+/// document frame, the first as the checkpoint, numbered up to `last`
+/// ([`fold_sequence`]). The publisher is the host's own handle, which a native shell
 /// requires of every document it accepts.
+///
+/// # Errors
+/// The snapshot does not encode, or takes more frames than `last` leaves numbers for.
 pub(crate) fn document_frames(
     payloads: &dyn ShellPayloads,
     key: &ed25519_dalek::SigningKey,
     workspace_id: WorkspaceId,
     route: &Route,
     snapshot: &[u8],
+    last: u64,
 ) -> Result<Vec<Vec<u8>>, String> {
-    frames_of(payloads, (key, None), workspace_id, route, snapshot)
+    frames_of(payloads, (key, None), workspace_id, (route, snapshot), last)
 }
 
 /// [`document_frames`] for a sealed channel this host takes part in: each frame
@@ -1528,8 +1579,15 @@ fn sealed_document_frames(
     workspace_id: WorkspaceId,
     route: &Route,
     snapshot: &[u8],
+    last: u64,
 ) -> Result<Vec<Vec<u8>>, String> {
-    frames_of(payloads, (key, Some(keys)), workspace_id, route, snapshot)
+    frames_of(
+        payloads,
+        (key, Some(keys)),
+        workspace_id,
+        (route, snapshot),
+        last,
+    )
 }
 
 /// `folded`, a fold of a sealed channel's `entries` as one of its participants, as one sealed
@@ -1540,8 +1598,8 @@ fn sealed_document_frames(
 /// each one over beside it), and the device admits and opens one write instead of hundreds. A
 /// device that holds the writes already takes it in place of exactly those. `None` where it
 /// cannot name them so: an entry it does not read, a write in the clear, a write it keeps whose
-/// author's later one it removes, or a snapshot larger than one frame; the snapshot is then
-/// written as the fold's own writes ([`sealed_document_frames`]).
+/// author's later one it removes; the snapshot is then written as the fold's own writes
+/// ([`sealed_document_frames`]).
 fn sealed_compaction_frames(
     payloads: &dyn ShellPayloads,
     (key, keys): (&ed25519_dalek::SigningKey, &key_group::ContentKeys),
@@ -1578,63 +1636,123 @@ fn sealed_compaction_frames(
     {
         return None;
     }
-    let payload = DocumentMutation::Snapshot(folded.snapshot.clone())
-        .encode()
-        .ok()?;
-    if payload.len() > collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES {
-        return None;
-    }
     let route = &folded.route;
     let artifact =
         collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
-    let (metadata, ciphertext) = keys
-        .seal_content(
-            artifact,
-            collab_types::ContentRetention::Checkpoint,
-            &payload,
-        )
-        .ok()?;
-    let compaction = collab_types::SealedCompaction::new(&superseded, ciphertext)
-        .ok()?
-        .encode()
-        .ok()?;
+    let (metadata, compaction, segments) =
+        sealed_compaction_payloads(keys, artifact, &superseded, &folded.snapshot)?;
     let author = key.verifying_key().to_bytes();
+    // Numbered as the last of this host's own writes it folds, never past them: the host
+    // device writes the workspace's records too (what its agents and API callers do), each
+    // write numbered after its last one of the record, and a reader refuses a write numbered
+    // at or below one it took as a replay.
+    let seq = floors
+        .get(&collab_types::Ed25519PublicKey::from_bytes(author))
+        .copied()
+        .unwrap_or(0);
     let now_ns = tilo_clock::unix_now_ns();
     let timestamp = std::time::UNIX_EPOCH
         .checked_add(Duration::from_nanos(now_ns))
         .unwrap_or(std::time::UNIX_EPOCH);
-    let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
-        compaction,
-        artifact,
-        collab_types::Ed25519PublicKey::from_bytes(author),
-        collab_types::document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
-        collab_types::OpKind::Compaction,
-        timestamp,
-        now_ns,
-        metadata,
-    );
-    let signing = op.signing_bytes().ok()?;
-    op.signature = collab_types::Signature::from_bytes(key.sign(&signing).to_bytes());
-    let body = payloads.document_body(&author, route, op).ok()?;
     let channel =
         *blake3::hash(format!("app\0{}\0{}", route.app_id, route.record_id).as_bytes()).as_bytes();
-    let frame = crate::transport::encode(&Envelope::Delta {
-        workspace_id,
-        author_device_public_key: author,
-        authored_at_ns: now_ns,
-        delta: CoeditPayload::Checkpoint { channel, body }.encode().ok()?,
-        signature: [0; 64],
-    })
-    .ok()?;
-    Some(vec![frame])
+    std::iter::once((metadata, compaction))
+        .chain(segments)
+        .enumerate()
+        .map(|(index, (metadata, payload))| {
+            let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
+                payload,
+                artifact,
+                collab_types::Ed25519PublicKey::from_bytes(author),
+                collab_types::document_attestation_id(
+                    &route.app_id,
+                    &route.cluster_id,
+                    &route.record_id,
+                ),
+                collab_types::OpKind::Compaction,
+                timestamp,
+                seq,
+                metadata,
+            );
+            let signing = op.signing_bytes().ok()?;
+            op.signature = collab_types::Signature::from_bytes(key.sign(&signing).to_bytes());
+            let body = payloads.document_body(&author, route, op).ok()?;
+            let delta = if index == 0 {
+                CoeditPayload::Checkpoint { channel, body }
+            } else {
+                CoeditPayload::RetainedDelta { channel, body }
+            };
+            crate::transport::encode(&Envelope::Delta {
+                workspace_id,
+                author_device_public_key: author,
+                authored_at_ns: now_ns,
+                delta: delta.encode().ok()?,
+                signature: [0; 64],
+            })
+            .ok()
+        })
+        .collect()
+}
+
+/// A sealed op's payload with its seal.
+type SealedPayload = (collab_types::EncryptionMetadata, Vec<u8>);
+
+/// The payloads of a sealed compaction of `superseded` into `snapshot`, sealed for `artifact`
+/// with `keys`: the compaction's, then each segment's, with their seals. A snapshot larger than
+/// one op goes as a segmented compaction: the compaction carries its first frame and names the
+/// segments that carry the rest, all under its one sequence.
+fn sealed_compaction_payloads(
+    keys: &key_group::ContentKeys,
+    artifact: collab_types::ArtifactId,
+    superseded: &[collab_types::SignedOp],
+    snapshot: &[u8],
+) -> Option<(
+    collab_types::EncryptionMetadata,
+    Vec<u8>,
+    Vec<SealedPayload>,
+)> {
+    let mut sealed = Vec::new();
+    for (index, frame) in DocumentMutation::Snapshot(snapshot.to_vec())
+        .encode_frames()
+        .ok()?
+        .iter()
+        .enumerate()
+    {
+        let retention = if index == 0 {
+            collab_types::ContentRetention::Checkpoint
+        } else {
+            collab_types::ContentRetention::Delta
+        };
+        sealed.push(keys.seal_content(artifact, retention, frame).ok()?);
+    }
+    let mut sealed = sealed.into_iter();
+    let (metadata, first) = sealed.next()?;
+    let segments = sealed
+        .map(|(metadata, ciphertext)| {
+            collab_types::SealedCompactionSegment::new(ciphertext)
+                .encode()
+                .ok()
+                .map(|payload| (metadata, payload))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let named: Vec<Vec<u8>> = segments
+        .iter()
+        .map(|(_, payload)| payload.clone())
+        .collect();
+    let compaction = collab_types::SealedCompaction::new(superseded, first)
+        .ok()?
+        .segmented(&named)
+        .encode()
+        .ok()?;
+    Some((metadata, compaction, segments))
 }
 
 fn frames_of(
     payloads: &dyn ShellPayloads,
     (key, keys): (&ed25519_dalek::SigningKey, Option<&key_group::ContentKeys>),
     workspace_id: WorkspaceId,
-    route: &Route,
-    snapshot: &[u8],
+    (route, snapshot): (&Route, &[u8]),
+    last: u64,
 ) -> Result<Vec<Vec<u8>>, String> {
     use ed25519_dalek::Signer as _;
     let author = key.verifying_key().to_bytes();
@@ -1648,15 +1766,16 @@ fn frames_of(
         .unwrap_or(std::time::UNIX_EPOCH);
     let channel =
         *blake3::hash(format!("app\0{}\0{}", route.app_id, route.record_id).as_bytes()).as_bytes();
-    let mut frames = Vec::new();
-    for (index, payload) in DocumentMutation::Snapshot(snapshot.to_vec())
+    let encoded = DocumentMutation::Snapshot(snapshot.to_vec())
         .encode_frames()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .enumerate()
-    {
+        .map_err(|error| error.to_string())?;
+    let first = u64::try_from(encoded.len().saturating_sub(1))
+        .ok()
+        .and_then(|more| last.checked_sub(more))
+        .ok_or("the snapshot takes more writes than the host's own it folds")?;
+    let mut frames = Vec::new();
+    for ((index, payload), seq) in encoded.into_iter().enumerate().zip(first..) {
         let author_key = collab_types::Ed25519PublicKey::from_bytes(author);
-        let seq = now_ns.saturating_add(index as u64);
         let mut op = match keys {
             None => collab_types::SignedOp::new_unsigned(
                 payload,

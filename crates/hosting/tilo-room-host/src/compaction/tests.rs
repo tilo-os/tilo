@@ -219,6 +219,7 @@ fn compact(store: &WorkspaceStore, entries: &[ChannelEntry]) -> Replaced {
         ws(),
         &folded.route,
         &folded.snapshot,
+        0,
     )
     .unwrap();
     let remove: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
@@ -276,6 +277,67 @@ fn the_host_folds_a_long_tail_and_a_late_joiner_converges_from_its_snapshot() {
         &store.channel_entries(&channel()).unwrap(),
         COMPACT_TAIL_ENTRIES
     ));
+}
+
+/// The host device writes records too (its agents' and API callers' writes), numbering each
+/// after its last: a fold it signs is numbered as the last of its writes it removes, so a page
+/// that takes the fold first still takes the host's next write.
+#[test]
+fn a_host_fold_is_numbered_as_the_last_host_write_it_removes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), ws(), false).unwrap();
+    let mut seq = 0;
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "base").unwrap();
+    doc.commit();
+    retain(
+        &store,
+        device_frames(1, &DocumentMutation::Snapshot(doc.save()), false, 1),
+        &mut seq,
+    );
+    for edit in 2..60_u64 {
+        let before = doc.get_heads();
+        doc.put(ROOT, "k", i64::try_from(edit).unwrap()).unwrap();
+        doc.commit();
+        let author = if edit % 2 == 0 { 1 } else { 2 };
+        append(
+            &store,
+            device_frames(
+                author,
+                &DocumentMutation::Incremental(doc.save_after(&before)),
+                false,
+                edit,
+            ),
+            &mut seq,
+        );
+    }
+    let entries = store.channel_entries(&channel()).unwrap();
+    let folded = fold_all(&entries).expect("something to fold");
+    let payloads = crate::payloads::NeighbourPayloads;
+    let host = key(1).verifying_key().to_bytes();
+    let last = fold_sequence(&payloads, &entries, &folded, host);
+    assert_eq!(last, Some(58), "the host's last write it folds");
+    let other = key(3).verifying_key().to_bytes();
+    assert_eq!(fold_sequence(&payloads, &entries, &folded, other), Some(0));
+    let frames = document_frames(&payloads, &key(1), ws(), &route(), &doc.save(), 58).unwrap();
+    for frame in &frames {
+        let Some((
+            _,
+            CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. },
+        )) = crate::store::retained::payload(frame, ws())
+        else {
+            panic!("a document frame");
+        };
+        let NeighbourMsg::AppDocument { envelope, .. } = postcard::from_bytes(&body).unwrap()
+        else {
+            panic!("not a document");
+        };
+        assert!(
+            envelope.seq <= 58,
+            "numbered past the host's writes: {}",
+            envelope.seq
+        );
+    }
 }
 
 /// Ported from the old relay's `checkpoint_race`: a change retained while
@@ -435,6 +497,7 @@ fn host_frames_name_their_signer_as_publisher() {
         ws(),
         &route(),
         &doc.save(),
+        0,
     )
     .unwrap();
     let host = key(7).verifying_key().to_bytes();
@@ -523,6 +586,7 @@ fn a_large_snapshot_is_framed_in_segments_the_fold_reads_back() {
         ws(),
         &route(),
         &doc.save(),
+        u64::from(u8::MAX),
     )
     .unwrap();
     assert!(frames.len() > 1, "a snapshot above one frame is segmented");
@@ -1425,6 +1489,7 @@ fn keyed_round(
                 ws(),
                 route,
                 snapshot,
+                0,
             )
             .ok()
         },
