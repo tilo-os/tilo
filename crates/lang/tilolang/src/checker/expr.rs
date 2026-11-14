@@ -513,6 +513,29 @@ impl Checker<'_> {
                 ),
                 Ty::Text,
             ),
+            // A host's value (a `Version`, an `Action`) is no resource and has no id: it is shown
+            // by its fields, which the error names.
+            Ty::Record(key) if crate::host::is_value(key) => {
+                let fields: Vec<String> = crate::host::value_type(&key.name)
+                    .map(|value| {
+                        value
+                            .fields
+                            .iter()
+                            .map(|(name, ..)| format!("`.{name}`"))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.err(
+                    "E020",
+                    span,
+                    format!(
+                        "a {} is no resource and has no text of its own; interpolate its fields: {}",
+                        key.name,
+                        fields.join(", ")
+                    ),
+                );
+                Ex::error()
+            }
             Ty::Record(_) | Ty::Union(_) => Ex::host(Imp::RefId, vec![v], Ty::Text),
             Ty::Principal => Ex::host(Imp::PrincipalName, vec![v], Ty::Text),
             // Its value as that shows, or `none`: what `print` shows of an Option.

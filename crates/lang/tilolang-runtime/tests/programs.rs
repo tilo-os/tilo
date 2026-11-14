@@ -340,6 +340,18 @@ mod cases {
             ),
         ));
         assert!(ordered.contains("through the type's filter"), "{ordered}");
+        // Who changed a note last is a value of the host, no resource: text names its fields,
+        // and the program is refused rather than stopping halfway when it runs.
+        let note = format!("@notes.Note:{}", w.notes[0].id_string());
+        let version =
+            rejected(&session.run(&w.rt, &agent(), &format!("print(\"{{updated({note})}}\")")));
+        assert!(version.contains("interpolate its fields"), "{version}");
+        assert!(version.contains("`.at`"), "{version}");
+        done(&session.run(
+            &w.rt,
+            &agent(),
+            &format!("print(\"changed {{updated({note})?.at}}\")"),
+        ));
     }
 
     #[test]

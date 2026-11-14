@@ -55,7 +55,8 @@ pub fn definition() -> ToolDefinition {
              and `find(tasks.Task, due: ..today - 1d, done: false)` what is overdue; a filter \
              reads `today`, an expression cannot. \
              `grep(/launch/i, in: notes)` searches text; `read(n2)` is a resource's text; \
-             `n2.title` a field; `updated(n2)` who changed it last and when; \
+             `n2.title` a field; `updated(n2)` who changed it last and when \
+             (`print(n.title, updated(n))`, or in text its fields: `\"{updated(n)?.at}\"`); \
              `describe(notes)` an app's types, fields, filters and actions. Lists chain: \
              `.filter(n -> n.pinned)`, `.sort_by(.title)`, `.map(.title)`, `.take(5)`, \
              `.len()`; conditions combine with `not`, `and`, `or`. A program answers with what it `print`s and the value of its last line; \
