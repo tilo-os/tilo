@@ -74,8 +74,8 @@ use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use admin::handle_workspaces;
 use agent_run::handle_agent_run;
 use commit::{
-    change_standing, commit_run_key, handle_commit, handle_commit_run, over_change_limit,
-    over_storage,
+    change_standing, commit_run_key, handle_commit, handle_commit_run, of_backend,
+    over_change_limit, over_storage,
 };
 use compaction::handle_compaction;
 #[cfg(test)]

@@ -276,6 +276,20 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         3,
         "a server key's action runs past a guest's budget"
     );
+    // So does a key that server key minted for one workspace (its
+    // certificate names the server key as its issuer): a backend's agent for
+    // one of its customers, whose changes are the backend's.
+    let mut minted = a.clone();
+    minted.cert.issuer = Some(Box::new(server_key.cert.clone()));
+    assert_eq!(
+        handle_remote_action(&minted, &session, &[id], route(), invoke()).await,
+        None
+    );
+    assert_eq!(
+        served(),
+        4,
+        "a key a server key minted runs past a guest's budget"
+    );
     let catalogue = encode(
         tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
             correlation: 1,
@@ -286,7 +300,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         handle_remote_action(&a, &session, &[id], route(), catalogue).await,
         None
     );
-    assert_eq!(served(), 4, "reading spends no change budget");
+    assert_eq!(served(), 5, "reading spends no change budget");
 }
 
 /// A plane that leaves every request unanswered (`None`), or answers each

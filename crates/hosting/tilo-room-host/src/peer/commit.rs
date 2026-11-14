@@ -27,15 +27,28 @@ pub(super) fn over_change_limit(
         .err()
 }
 
+/// Whether `cert` is its person's backend: their server key, or a key that
+/// server key minted for one of their workspaces (its certificate names the
+/// server key as its issuer). Its changes are its person's own, and spend
+/// the owner's budget: a backend runs an agent per customer, each with a key
+/// minted for that customer's workspace, and their changes together are the
+/// backend's, never a guest's.
+pub(super) fn of_backend(cert: &tilo_user_identity::DeviceCert) -> bool {
+    cert.capabilities.server_key
+        || cert
+            .issuer
+            .as_ref()
+            .is_some_and(|issuer| issuer.capabilities.server_key)
+}
+
 /// How the change budget sees `peer` in `runtime`'s workspace: as an owner
-/// when it is their person's server key (its certificate says so, signed by
-/// their root), or when the workspace is their person's own; as a guest
+/// when it is their person's backend ([`of_backend`]), or when the workspace is their person's own; as a guest
 /// everywhere else.
 pub(super) fn change_standing(
     peer: &AuthenticatedPeer,
     runtime: &crate::workspace::WorkspaceRuntime,
 ) -> Standing {
-    let own = peer.cert.capabilities.server_key
+    let own = of_backend(&peer.cert)
         || runtime
             .workspace_authority
             .as_ref()

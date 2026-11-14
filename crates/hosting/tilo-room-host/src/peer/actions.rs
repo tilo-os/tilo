@@ -335,8 +335,9 @@ pub(super) fn handle_host_action(
     // theirs: it spends their change budget, as a change in one of their
     // workspaces does, and is refused before it runs, saying when the budget
     // admits the next one. Only a person's own devices and keys are answered
-    // here, so a server key spends the owner budget its certificate names and
-    // any other device the guest's, as a workspace's change standing sees them.
+    // here, so their backend (a server key, or a key it minted) spends the
+    // owner budget and any other device the guest's, as a workspace's change
+    // standing sees them.
     if matches!(
         request.message,
         tilo_actions::remote::RemoteActionMessage::Invoke(_)
@@ -344,7 +345,7 @@ pub(super) fn handle_host_action(
         super::over_change_limit(
             peer,
             session,
-            if peer.cert.capabilities.server_key {
+            if super::of_backend(&peer.cert) {
                 crate::member_limits::Standing::Owner
             } else {
                 crate::member_limits::Standing::Guest
