@@ -903,7 +903,6 @@ impl Session {
             activities: Rc::clone(&activities),
             surfaces,
             sync: sync.clone(),
-            notes: std::sync::Arc::clone(&notes),
             tray: tray.clone(),
             engine: engine.clone(),
             // The invite sheet is the session's own surface: the desk asks for it here.
@@ -2205,6 +2204,12 @@ impl Session {
     #[must_use]
     pub fn arrangement(&self) -> &Rc<RefCell<crate::arrangement::Arrangement>> {
         &self.shared.arrangement
+    }
+
+    /// The person's arrangement as the shell reads it, with who else is here.
+    #[must_use]
+    pub fn arrangement_reading(&self) -> tilo_session_core::shell::ArrangementReading {
+        self.shared.arrangement_reading()
     }
 
     /// The broker this session's apps and agents reach its actions through, while it serves

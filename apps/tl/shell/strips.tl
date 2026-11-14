@@ -49,7 +49,7 @@ fn maximized_strips(a: Arrangement) -> List<ArrangementStrip> {
 /// picks. Each is listed by its own doc line, in its author's words. Switching keeps every
 /// place where it was, drawn the other way. The desk carries it in its own bar (`style_menu`);
 /// this is the page Settings shows.
-view style_switch(v: Viewing, d: Desk) {
+view style_switch(v: Viewing) {
     row(gap: .tight, align: .center, wrap: true) {
         for style in device.styles.offered {
             if style_listed(style) {
@@ -81,7 +81,7 @@ fn style_listed(style: device.DeskStyle) -> Bool {
 /// The style the desk shows, named in the bar's menu by the same name it is listed under
 /// (`style_label`): one name for a style in the bar and in Settings, never a different one in the
 /// seat from the one in the list.
-fn style_title(v: Viewing, d: Desk) -> Text {
+fn style_title(v: Viewing) -> Text {
     if let chosen = device.styles.offered.find(s -> s.style == style_of(v)) {
         return style_label(chosen)
     }
@@ -92,9 +92,9 @@ fn style_title(v: Viewing, d: Desk) -> Text {
 /// offers, where the person passes it on the desk, so the desk's windows start at the bar's edge
 /// and no second row stands between them and it. The menu names the style the desk shows, so the
 /// bar says what a person is looking at; its items list every style by its own doc line.
-view style_menu(v: Viewing, d: Desk) {
+view style_menu(v: Viewing) {
     ui.MenuButton(
-        "Showing {style_title(v, d)}",
+        "Showing {style_title(v)}",
         icon: .layout_grid,
         role: .bar,
         icon_only: space.compact,
@@ -110,7 +110,7 @@ view style_menu(v: Viewing, d: Desk) {
         // ways to change a desk"): the menu opens them where the style was picked, so a person
         // changes the desk they look at without hunting for an app. The entry says which
         // style's settings it opens, by the same name the menu lists the style under.
-        ui.MenuItem("Settings for {style_title(v, d)}", icon: .settings) {
+        ui.MenuItem("Settings for {style_title(v)}", icon: .settings) {
             on choose: open_style_settings(shell)
         }
     }

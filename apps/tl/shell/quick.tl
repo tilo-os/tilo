@@ -9,7 +9,7 @@ use so.tilo.settings as settings
 ///
 /// It is a floating panel at the desk's trailing edge, over what it covers, beside the
 /// notification centre and on the same material; the bar's status opens it.
-view quick_settings(d: Desk) {
+view quick_settings() {
     row(fill, distribute: .end, padding: .related) {
         ui.FloatingPanel(
             width: if not space.compact { 360.0 },

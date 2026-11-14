@@ -12,9 +12,9 @@
 /// edge: edge to edge and square on the `full` fit, a rounded body inset from the edges on the
 /// floating one, over what is under it. A dock on the top or bottom edge runs along that edge;
 /// one on the leading or trailing edge stands up it.
-view dock(s: Shell, d: Desk) {
-    if dock_shows(s, d) {
-        dock_run(s, d)
+view dock(s: Shell) {
+    if dock_shows(s) {
+        dock_run(s)
     }
 }
 
@@ -29,10 +29,10 @@ view dock(s: Shell, d: Desk) {
 /// The run holds the items the shell's record keeps, which a drag rearranges. The apps running
 /// now stand beside it (`dock_running_tiles`): a running app the person never pinned names no
 /// record, so a drop could carry nothing of it — it is drawn, and pressed, and not dragged.
-view dock_run(s: Shell, d: Desk) {
+view dock_run(s: Shell) {
     let standing = s.dock_edge == .left or s.dock_edge == .right
     let across = s.dock_fit == .full
-    let running = unfiled_running(s, d)
+    let running = unfiled_running(s)
     if standing {
         stack(gap: .tight, align: .center) {
             ui.DragRun(axis: .vertical, distribute: .center) {
@@ -41,19 +41,19 @@ view dock_run(s: Shell, d: Desk) {
                     if item.pinned or s.dock_running {
                         ui.DragItem(item, title: item.title) {
                             on activate: open_item(s, item.key)
-                            dock_tile(s, d, item)
+                            dock_tile(s, item)
                         }
                     }
                 }
             }
-            dock_running_tiles(s, d, running)
+            dock_running_tiles(s, running)
         }
     } else if across {
         scroll(axis: .horizontal) {
             row(gap: .tight, align: .center) {
                 ui.DragRun(axis: .horizontal) {
                     trailing: {
-                        clock(d)
+                        clock()
                         bell()
                     }
                     on drop(moved: DockItem, at: Int): place_item(s, moved, at)
@@ -61,12 +61,12 @@ view dock_run(s: Shell, d: Desk) {
                         if item.pinned or s.dock_running {
                             ui.DragItem(item, title: item.title) {
                                 on activate: open_item(s, item.key)
-                                dock_tile(s, d, item)
+                                dock_tile(s, item)
                             }
                         }
                     }
                 }
-                dock_running_tiles(s, d, running)
+                dock_running_tiles(s, running)
             }
         }
     } else {
@@ -78,12 +78,12 @@ view dock_run(s: Shell, d: Desk) {
                         if item.pinned or s.dock_running {
                             ui.DragItem(item, title: item.title) {
                                 on activate: open_item(s, item.key)
-                                dock_tile(s, d, item)
+                                dock_tile(s, item)
                             }
                         }
                     }
                 }
-                dock_running_tiles(s, d, running)
+                dock_running_tiles(s, running)
             }
         }
     }
@@ -93,7 +93,7 @@ view dock_run(s: Shell, d: Desk) {
 /// window of it the person was in last, named and drawn as that window is. A window of another
 /// of the person's devices is not a window of this desk's dock, and an app the record already
 /// holds (pinned, or pinned and running) stands in the run, once.
-fn unfiled_running(s: Shell, d: Desk) -> List<DockItem> {
+fn unfiled_running(s: Shell) -> List<DockItem> {
     let windows = device.windows.all.filter(w -> w.local).sort_by(w -> w.recency)
     return windows
         .filter(w -> front_of_its_app(windows, w))
@@ -128,11 +128,11 @@ fn running_item(w: device.Window) -> DockItem {
 /// opens or focuses its window, and it keeps its badge. It is not a `ui.DragItem`, which names
 /// the record an item stands for: a running app the person never pinned has one only here, not
 /// in the shell's record. Pinning the app puts it in the run, where it is rearranged.
-view dock_running_tiles(s: Shell, d: Desk, running: List<DockItem>) {
+view dock_running_tiles(s: Shell, running: List<DockItem>) {
     if not running.is_empty() {
         row(gap: .tight, align: .center) {
             for item in running {
-                dock_tile(s, d, item)
+                dock_tile(s, item)
             }
         }
     }
@@ -159,7 +159,7 @@ action open_item(s: Shell, key: Text (label: "App")) {
 /// is new, or the mark that it wants the person), as a dock has always badged an app. The count is
 /// the button's own (`count:`), so it stands on the glyph and never on the tile beside it, and the
 /// name read out says it.
-view dock_tile(s: Shell, d: Desk, item: DockItem) {
+view dock_tile(s: Shell, item: DockItem) {
     let name = if item.badge == 0 { item.title } else { "{item.title}, {item.badge} new" }
     ui.Button(
         name,

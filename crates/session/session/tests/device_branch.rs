@@ -543,7 +543,7 @@ fn show_held(device: &Device, workspace: &str) {
     });
     let shown = device.act(
         "so.tilo.session",
-        "session:desk\u{1f}switch-workspace",
+        "desktop:chrome\u{1f}switch-workspace",
         &json!({"workspace": key().expect("held").to_string()}),
     );
     assert!(

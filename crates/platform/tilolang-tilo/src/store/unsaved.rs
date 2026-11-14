@@ -1,7 +1,7 @@
 //! The store's **unsaved layer**: what an origin derives, which the workspace record never holds,
 //! and the writes the store replays when it puts the mirror back (rollback, rewind).
 //!
-//! A type whose origin kind is derived (`type Desk (origin: session.desk)`,
+//! A type whose origin kind is derived (`type Desk (origin: session.arrangement)`,
 //! [`crate::schema::TypeSchema::derived`]) is written into the same mirror open transaction as
 //! any write — so reads see it at once — but committing it queues nothing ([`commit_derived`]).
 //! It stays in the mirror's open transaction and the overlay, which is what reads answer from.

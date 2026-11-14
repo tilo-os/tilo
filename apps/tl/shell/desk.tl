@@ -12,11 +12,7 @@
 /// over them, so the bar stays reachable and a press outside a surface closes it, as the
 /// session's chrome decides. Nothing here draws a window: the desk's windows are the
 /// compositor's, behind this view.
-view desk(d: Desk) {
-    desk_around(d, .none, false) {
-    }
-}
-
+///
 /// The desk, with the arrangement `front` filling the room between its bar and its foot, as the
 /// style the person chose shows it (`screen`): the dock stands over that room on its own edge,
 /// as the chrome's does, so a window is as tall as the desk rather than stopping short of the
@@ -32,10 +28,10 @@ view desk(d: Desk) {
 ///
 /// `traditional` makes this the traditional desktop's chrome: its bar lists the window in
 /// front's actions, and its own bar is drawn (`top_bar`). The desktop style passes it.
-template view desk_around(d: Desk, front: Option<Arrangement>, traditional: Bool, content: View) {
+template view desk_around(front: Option<Arrangement>, traditional: Bool, content: View) {
     let s = shell
     let dock_takes_room = front != .none
-        and dock_shows(s, d)
+        and dock_shows(s)
         and s.dock_edge == .bottom
         and space.compact
     let resting = device.overlays.here == ""
@@ -44,8 +40,8 @@ template view desk_around(d: Desk, front: Option<Arrangement>, traditional: Bool
         or device.overlays.here == "switcher" and not device.overlays.switcher_revealed
     layers {
         stack(gap: .tight, fill) {
-            if bar_shows(s, d) {
-                bar_on_edge(s, d, traditional)
+            if bar_shows(s) {
+                bar_on_edge(s, traditional)
             }
             if resting {
                 stack(gap: .tight, fill) {
@@ -53,37 +49,37 @@ template view desk_around(d: Desk, front: Option<Arrangement>, traditional: Bool
                     content
                 }
             } else if device.overlays.here == "switcher" {
-                surface(d, fill)
+                surface(fill)
             } else {
                 scroll(fill) {
-                    surface(d)
+                    surface()
                 }
             }
             if dock_takes_room {
                 row(align: .center, distribute: .center) {
-                    dock_ground(s, d, .bottom)
+                    dock_ground(s, .bottom)
                 }
             }
         }
-        if dock_shows(s, d) and not dock_takes_room {
+        if dock_shows(s) and not dock_takes_room {
             if s.dock_edge == .bottom {
                 row(at: .bottom, fill, align: .center, distribute: .center) {
-                    dock_ground(s, d, .bottom)
+                    dock_ground(s, .bottom)
                 }
             } else if s.dock_edge == .top {
                 row(at: .top, fill, align: .center, distribute: .center) {
-                    dock_ground(s, d, .top)
+                    dock_ground(s, .top)
                 }
             } else if s.dock_edge == .left {
                 // A dock standing up a leading or trailing edge hugs its own width: the layer
                 // sits at that edge (`at: .leading`), centred up it, and a `fill` here would
                 // span the whole desk and centre the dock on it instead.
                 stack(at: .leading, align: .center) {
-                    dock_ground(s, d, .left)
+                    dock_ground(s, .left)
                 }
             } else {
                 stack(at: .trailing, align: .center) {
-                    dock_ground(s, d, .right)
+                    dock_ground(s, .right)
                 }
             }
         }
@@ -93,14 +89,14 @@ template view desk_around(d: Desk, front: Option<Arrangement>, traditional: Bool
 /// The room the room between the bar and the foot gives the arrangement: how wide the desk's
 /// bar lists actions decides whether each frame's own bar gives way to it (`bar_lists_actions`).
 fn desk_lists(traditional: Bool, roomy: Bool) -> Bool {
-    bar_lists_actions_for(shell, root Desk, roomy, traditional)
+    bar_lists_actions_for(shell, roomy, traditional)
 }
 
 /// The desk the person's style draws its places through, with `traditional` for the desktop
 /// style's chrome and `body` the places: every style that shows the arrangement beside the
 /// desk's bar and dock draws through this, so no style repeats the chrome.
 template view desk_style(a: Arrangement, traditional: Bool, body: View) {
-    desk_around(root Desk, a, traditional, body)
+    desk_around(a, traditional, body)
 }
 
 /// Strips
@@ -146,7 +142,7 @@ view desktop(a: Arrangement) {
             // front's commands and offers no style switch of its own: the style the person
             // switches by is the bar's of every other style, and the desktop's own bar is this
             // style's.
-            desk_around(root Desk, .none, true) {
+            desk_around(.none, true) {
             }
         }
     } else {
@@ -165,7 +161,7 @@ fn style_of(v: Viewing) -> Text {
 /// The dock's ground on `edge`: the theme's material for the style the person picked, edge to
 /// edge along a top or a foot and inset with rounded corners on a floating dock, which `edge`
 /// as `ui.Chrome` names it. What stands on it is the dock's own run (`dock`).
-view dock_ground(s: Shell, d: Desk, edge: Edge) {
+view dock_ground(s: Shell, edge: Edge) {
     if edge == .top or edge == .bottom {
         ui.Chrome(
             name: "Dock",
@@ -174,7 +170,7 @@ view dock_ground(s: Shell, d: Desk, edge: Edge) {
             material: if s.dock_finish == .translucent { .glass } else { .calm },
             fill: if s.dock_fit == .full { 1 } else { 0 },
         ) {
-            dock(s, d)
+            dock(s)
         }
     } else {
         ui.Chrome(
@@ -183,7 +179,7 @@ view dock_ground(s: Shell, d: Desk, edge: Edge) {
             edge: if edge == .left { .leading } else { .trailing },
             material: if s.dock_finish == .translucent { .glass } else { .calm },
         ) {
-            dock(s, d)
+            dock(s)
         }
     }
 }
@@ -193,7 +189,7 @@ view dock_ground(s: Shell, d: Desk, edge: Edge) {
 /// under it. Its ground is the theme's material for the bar's style either way; how much of the
 /// output it spans is what its fit says. `traditional` draws the desktop style's bar, which lists
 /// the window in front's commands (`top_bar`).
-view bar_on_edge(s: Shell, d: Desk, traditional: Bool) {
+view bar_on_edge(s: Shell, traditional: Bool) {
     let on_top = s.bar_edge == .top
     // The stack holds the bar at its own height: the bar fills the desk's width, and takes no
     // share of its height, so the desk's windows get the room the bar leaves.
@@ -207,7 +203,7 @@ view bar_on_edge(s: Shell, d: Desk, traditional: Bool) {
                     material: if s.bar_finish == .translucent { .glass } else { .calm },
                     fill,
                 ) {
-                    top_bar(d, traditional)
+                    top_bar(traditional)
                 }
             }
         } else if s.bar_fit == .full {
@@ -219,7 +215,7 @@ view bar_on_edge(s: Shell, d: Desk, traditional: Bool) {
                     material: if s.bar_finish == .translucent { .glass } else { .calm },
                     fill,
                 ) {
-                    top_bar(d, traditional)
+                    top_bar(traditional)
                 }
             }
         } else if on_top {
@@ -230,7 +226,7 @@ view bar_on_edge(s: Shell, d: Desk, traditional: Bool) {
                     edge: .top,
                     material: if s.bar_finish == .translucent { .glass } else { .calm },
                 ) {
-                    top_bar(d, traditional)
+                    top_bar(traditional)
                 }
             }
         } else {
@@ -241,7 +237,7 @@ view bar_on_edge(s: Shell, d: Desk, traditional: Bool) {
                     edge: .bottom,
                     material: if s.bar_finish == .translucent { .glass } else { .calm },
                 ) {
-                    top_bar(d, traditional)
+                    top_bar(traditional)
                 }
             }
         }
@@ -255,11 +251,11 @@ view bar_on_edge(s: Shell, d: Desk, traditional: Bool) {
 ///
 /// `traditional` is the desktop style's chrome: its bar lists the focused window's commands
 /// whatever the chrome's own preset, so `top_bar` draws `traditional_bar`.
-view top_bar(d: Desk, traditional: Bool) {
+view top_bar(traditional: Bool) {
     if traditional or bar_is_traditional(shell) {
-        traditional_bar(d)
+        traditional_bar()
     } else {
-        bar(d)
+        bar()
     }
 }
 
@@ -281,20 +277,20 @@ view at_rest() {
 /// trailing edge. Every one of them stands the desk's gutter in from the
 /// window's edge, where that window is narrow enough to have no page gutter of its own: a
 /// surface is a panel over the desk, not a band of the window.
-view surface(d: Desk) {
+view surface() {
     stack(fill, padding: if space.compact { .section } else { .none }) {
         if device.overlays.here == "overview" {
-            overview(d, fill)
+            overview(fill)
         } else if device.overlays.here == "switcher" {
-            switcher(d, fill)
+            switcher(fill)
         } else if device.overlays.here == "launcher" {
-            launcher(d, fill)
+            launcher(fill)
         } else if device.overlays.here == "centre" {
             notices(fill)
         } else if device.overlays.here == "quick-settings" {
-            quick_settings(d, fill)
+            quick_settings(fill)
         } else if device.overlays.here == "workspaces" {
-            workspaces(d, fill)
+            workspaces(fill)
         }
     }
 }

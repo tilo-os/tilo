@@ -21,11 +21,6 @@
 /// publishes them as, so a catalogue that names a session action names it here too.
 pub const PROVIDER: &str = "so.tilo.session";
 
-/// The resource the session publishes its desk as: the actions the person at this device takes
-/// on the workspace itself — the invitation into it, the surface up, the agents working here —
-/// rather than on a record of an app's.
-pub const DESK_RESOURCE: &str = "session:desk";
-
 /// The resource the session publishes inviting on: the links into a workspace, the invite sheet,
 /// and adding another device or an agent of the person's.
 pub const INVITE_RESOURCE: &str = "session:invite";

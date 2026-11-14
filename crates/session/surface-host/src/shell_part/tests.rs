@@ -8,24 +8,29 @@
 use super::*;
 use tilo_session_core::door::Published;
 
-fn reading() -> DeskReading {
-    DeskReading {
+fn reading() -> ArrangementReading {
+    ArrangementReading {
         person: "Pat".to_owned(),
-        workspace: "Desk".to_owned(),
-        strip: "Main".to_owned(),
+        rows: vec![ArrangementRowReading {
+            key: "r1".to_owned(),
+            workspace: "1".to_owned(),
+            name: "Main".to_owned(),
+            current: true,
+            ..ArrangementRowReading::default()
+        }],
         workspaces: vec![
-            WorkspaceReading {
+            ArrangementWorkspaceReading {
                 key: "1".to_owned(),
                 name: "Desk".to_owned(),
                 current: true,
             },
-            WorkspaceReading {
+            ArrangementWorkspaceReading {
                 key: "2".to_owned(),
                 name: "Studio".to_owned(),
                 current: false,
             },
         ],
-        ..DeskReading::default()
+        ..ArrangementReading::default()
     }
 }
 
@@ -339,13 +344,13 @@ fn the_bars_status_reads_the_devices_published_resources() {
 #[test]
 fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
     let _settled = ui::motion::testing::settled();
-    let (mut part, link) = part_with(DeskReading {
+    let (mut part, link) = part_with(ArrangementReading {
         people: vec![
-            PersonReading {
+            ArrangementPersonReading {
                 key: "mia".to_owned(),
                 name: "Mia Clayton".to_owned(),
             },
-            PersonReading {
+            ArrangementPersonReading {
                 key: "sam".to_owned(),
                 name: "Sam Okafor".to_owned(),
             },
@@ -379,7 +384,7 @@ fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
 /// of its frame budget; each must land in one turn.
 #[test]
 fn each_change_is_one_turn() {
-    type Change = (&'static str, fn(&mut DeskReading, &SessionLink));
+    type Change = (&'static str, fn(&mut ArrangementReading, &SessionLink));
     let (mut part, link) = part();
     for _ in 0..4 {
         part.prepare_frame();
@@ -402,7 +407,6 @@ fn each_change_is_one_turn() {
             );
         }),
         ("workspace switch", |r, _| {
-            r.workspace = "Studio".to_owned();
             // The reading lists the strip the bar shows first, so the switch moves the
             // mark on to the workspace after it.
             let [desk, studio, ..] = r.workspaces.as_mut_slice() else {
@@ -414,7 +418,7 @@ fn each_change_is_one_turn() {
     ];
     for (name, change) in changes {
         change(&mut now, &link);
-        link.publish(now.clone());
+        link.publish_arrangement(now.clone());
         let before = part.work();
         part.prepare_frame();
         part.prepare_frame();
@@ -717,6 +721,8 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
 /// record), keyed `p1`.
 fn one_window_arrangement() -> ArrangementReading {
     ArrangementReading {
+        person: "Pat".to_owned(),
+        people: Vec::new(),
         queries: Vec::new(),
         workspaces: vec![ArrangementWorkspaceReading {
             key: "w1".to_owned(),
@@ -728,6 +734,7 @@ fn one_window_arrangement() -> ArrangementReading {
             workspace: "w1".to_owned(),
             name: "Main".to_owned(),
             shell: String::new(),
+            current: true,
         }],
         strips: vec![ArrangementStripReading {
             key: "s1".to_owned(),
@@ -1115,7 +1122,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
     let app = packages.last().unwrap().meta.app.clone();
     let link = Rc::new(SessionLink::default());
     crate::shell_part::tests_support::publish_platform_roots(&link);
-    link.publish(reading());
+    link.publish_arrangement(reading());
     let mut part = ShellPart::new(
         ShellIdentity {
             app: &app,
@@ -1234,7 +1241,7 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
     }
     super::tests_support::publish_windows(&link, &reading.windows);
     super::tests_support::publish_overlays(&link, "switcher", true);
-    link.publish(reading.desk);
+    link.publish_arrangement(reading.desk);
     for _ in 0..6 {
         part.prepare_frame();
         part.draw();
@@ -1285,12 +1292,12 @@ fn the_bars_people_stay_who_is_here_across_a_commit() {
     let mut now = reading();
     for count in [0_usize, 1, 4, 1] {
         now.people = (0..count)
-            .map(|at| PersonReading {
+            .map(|at| ArrangementPersonReading {
                 key: format!("p{at}"),
                 name: HERE[at].to_owned(),
             })
             .collect();
-        link.publish(now.clone());
+        link.publish_arrangement(now.clone());
         for _ in 0..4 {
             part.prepare_frame();
         }

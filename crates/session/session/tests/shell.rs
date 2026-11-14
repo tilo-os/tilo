@@ -28,8 +28,7 @@ use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::quick_settings;
 use tilo_session::{Options, Service as _, Session};
-use tilo_session_core::shell::DeskReading;
-use tilo_surface_host::shell_part::DESK_RESOURCE;
+use tilo_session_core::shell::{ArrangementPersonReading, ArrangementWorkspaceReading};
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -82,14 +81,38 @@ fn centre(session: &Session) -> tilo_quick_settings::hosted::NotificationCentre 
     .expect("the notifications read as the centre")
 }
 
-/// The desk as the session publishes it on its door: what an agent reads.
-fn desk(session: &Session) -> DeskReading {
-    serde_json::from_value(
-        session
-            .read(DESK_RESOURCE)
-            .expect("the session publishes its desk"),
-    )
-    .expect("the desk reads as the shell's desk")
+/// What the bar names of the person's arrangement: who they are, the workspace and the row in
+/// front, every workspace and who else is here.
+#[derive(Debug)]
+struct Desk {
+    person: String,
+    workspace: String,
+    strip: String,
+    workspaces: Vec<ArrangementWorkspaceReading>,
+    people: Vec<ArrangementPersonReading>,
+}
+
+/// The person's arrangement as the session publishes it to the shell.
+fn desk(session: &Session) -> Desk {
+    let reading = session.arrangement_reading();
+    let front = reading
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.current);
+    Desk {
+        person: reading.person.clone(),
+        workspace: front
+            .map(|workspace| workspace.name.clone())
+            .unwrap_or_default(),
+        strip: reading
+            .rows
+            .iter()
+            .find(|row| row.current && front.is_some_and(|front| front.key == row.workspace))
+            .map(|row| row.name.clone())
+            .unwrap_or_default(),
+        workspaces: reading.workspaces.clone(),
+        people: reading.people,
+    }
 }
 
 /// How many notices the desk names the person has not seen: the count the shell's bell shows of
@@ -2156,7 +2179,7 @@ fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
         .clone();
     session
         .invoke(
-            DESK_RESOURCE,
+            tilo_surface_host::shell_part::CHROME_RESOURCE,
             "switch-workspace",
             &serde_json::Map::from_iter([(
                 "workspace".to_owned(),

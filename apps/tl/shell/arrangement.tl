@@ -14,6 +14,10 @@
 /// the shell's own view of it (`viewing`), this package's record, so a shell is picked per
 /// person and device without changing what the arrangement holds.
 type Arrangement (origin: session.arrangement) {
+    /// The person at this device, by their name.
+    person: Text merge register
+    /// The others here in the workspace in front.
+    people: Collection<ArrangementPerson>
     workspaces: Collection<ArrangementWorkspace>
     rows: Collection<ArrangementRow>
     strips: Collection<ArrangementStrip>
@@ -63,11 +67,19 @@ type ArrangementWorkspace (origin: session.arrangement_workspace) {
     current: Bool
 }
 
+/// Someone else here in the workspace in front: a person or an agent.
+type ArrangementPerson (origin: session.arrangement_person) {
+    key: Text merge register
+    name: Text merge register
+}
+
 /// A row of the desk: a strip across a workspace's width, holding columns.
 type ArrangementRow (origin: session.arrangement_row) {
     key: Text merge register
     workspace: Text merge register
     name: Text merge register
+    /// Whether it is the row in front in its workspace.
+    current: Bool
     /// The shell that made it; empty reads as this shell's.
     shell: Text merge register
 }
@@ -203,11 +215,10 @@ default view viewing_settings for Viewing
 /// styles every installed package offers are listed by their own words; picking one
 /// switches the desk, and the style's own settings stand under the list, from its own record.
 view viewing_settings(v: Viewing) {
-    let d = root Desk
     page {
         section("Desk") {
             ui.Text("Switching a style keeps every window where it is.")
-            style_switch(v, d)
+            style_switch(v)
         }
     }
 }

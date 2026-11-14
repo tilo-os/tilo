@@ -70,7 +70,6 @@ pub fn device_surfaces() -> Vec<tilo_actions::surface::Surface> {
         crate::desk_resource::tray_surface(),
         crate::desk_resource::agents_surface(),
         crate::desk_resource::styles_surface(),
-        crate::desk_resource::surface(),
         crate::shell::state::overlays_surface(),
     ]
 }
@@ -93,8 +92,6 @@ pub(crate) struct Shell {
     /// The due timer ids announced already, so an unchanged one is announced once.
     announced: std::cell::RefCell<std::collections::BTreeSet<String>>,
     link: Rc<SessionLink>,
-    /// What the desk's reading was last made from.
-    seen: Option<crate::desk_resource::DeskKey>,
     /// The services' revision and the arrangement the places' readings were last followed at.
     followed: Option<(u64, ArrangementReading)>,
     /// The resources whose readings the shell holds for its places, by id, each with its type as
@@ -161,7 +158,6 @@ impl Shell {
             desk,
             announced: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             link,
-            seen: None,
             followed: None,
             reading: std::collections::BTreeMap::new(),
             reads: std::collections::BTreeMap::new(),
@@ -184,7 +180,7 @@ impl Shell {
         // The desk styles every installed package offers, before the first frame draws the
         // switch: a shell that starts already knows what its person may pick (shell.md §6).
         shell.refresh_styles();
-        shell.publish();
+        shell.follow_deadline();
         Ok(shell)
     }
 
@@ -280,23 +276,13 @@ impl Shell {
         self.parts.push((output.to_owned(), part));
     }
 
-    /// Hand the shell the desk when what it is made from changed, and what the screen says of its
-    /// edges either way: a bar or dock that hides until reached for follows the pointer and the
-    /// windows, which move without the desk changing. Whether anything was published.
-    pub(crate) fn publish(&mut self) -> bool {
-        let key = self.desk.key();
-        let was = self.seen.replace(key.clone());
-        let desk_changed = was.as_ref() != Some(&key);
-        if desk_changed && !self.link.publish(self.desk.reading()) {
-            return false;
-        }
-        // What the desk has to draw at an instant of its own (the switcher's panel coming up while
-        // Alt is held) wakes every part then, so nothing draws or polls in between.
+    /// Wake every part at the instant the desk has something to draw of its own (the switcher's
+    /// panel coming up while Alt is held), so nothing draws or polls in between.
+    pub(crate) fn follow_deadline(&self) {
         let deadline = self.desk.next_deadline();
         for (_, part) in &self.parts {
             part.borrow_mut().set_deadline(deadline);
         }
-        desk_changed
     }
 
     /// Tell the displays what the screen says of its edges: the pointer at the top or bottom edge,
@@ -1427,8 +1413,8 @@ impl crate::Session {
         let recoveries = shell.take_view_recoveries();
         let notices = Rc::clone(&self.shared.notifications);
         Self::follow_view_failures(&notices, shell, failures, recoveries);
-        shell.publish();
-        let arrangement = self.shared.arrangement.borrow().reading();
+        shell.follow_deadline();
+        let arrangement = self.shared.arrangement_reading();
         shell.publish_readings(&self.shared.services.borrow());
         shell.follow_places(&arrangement, &mut self.shared.services.borrow_mut());
         shell.publish_arrangement(arrangement);
@@ -1504,7 +1490,7 @@ impl crate::Session {
         // What ran may have asked the session in turn (a menu, a sheet).
         self.settle()?;
         if let Some(shell) = self.shell.as_mut() {
-            shell.publish();
+            shell.follow_deadline();
         }
         // The desk's places are what the outside services keeping its records in step are due
         // for: each workspace with a place of an app's records has that app's connector, and one

@@ -9,7 +9,7 @@
 //!
 //! The list is read when the session starts and again when its package store moved, so a style
 //! a person installs (their own, an agent's) is offered without a restart. It is published as
-//! the desk's `styles` (`session.desk_style`), which the person's switch and the Desk page of
+//! the device's styles (`device.styles`), which the person's switch and the Desk page of
 //! Settings list.
 
 use std::collections::BTreeSet;

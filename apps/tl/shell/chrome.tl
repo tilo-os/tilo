@@ -546,7 +546,7 @@ fn shows(when: Showing, reached: Bool, covered: Bool) -> Bool {
 
 /// Whether the top bar shows now: the person's settings, and what the screen says of its edge
 /// (the desk's reading, which the session writes).
-fn bar_shows(s: Shell, d: Desk) -> Bool {
+fn bar_shows(s: Shell) -> Bool {
     s.bar_shown and shows(s.bar_showing, device.displays.bar_reached, device.displays.bar_covered)
 }
 
@@ -560,14 +560,14 @@ fn bar_shows(s: Shell, d: Desk) -> Bool {
 /// The desktop desk style's chrome (`traditional`), and a desk whose chrome is the traditional
 /// desktop's (`bar_is_traditional`), count as one: that bar lists them, so its frames let their
 /// bar's actions give way to it.
-fn bar_lists_actions(s: Shell, d: Desk, roomy: Bool) -> Bool {
-    bar_lists_actions_for(s, d, roomy, false)
+fn bar_lists_actions(s: Shell, roomy: Bool) -> Bool {
+    bar_lists_actions_for(s, roomy, false)
 }
 
 /// [`bar_lists_actions`] with `traditional`: the desktop style passes it, so its frames give way
 /// to the desk's bar whatever the chrome's own preset.
-fn bar_lists_actions_for(s: Shell, d: Desk, roomy: Bool, traditional: Bool) -> Bool {
-    if not bar_shows(s, d) {
+fn bar_lists_actions_for(s: Shell, roomy: Bool, traditional: Bool) -> Bool {
+    if not bar_shows(s) {
         return false
     }
     if traditional or bar_is_traditional(s) {
@@ -583,7 +583,7 @@ fn bar_is_traditional(s: Shell) -> Bool {
 }
 
 /// Whether the dock shows now.
-fn dock_shows(s: Shell, d: Desk) -> Bool {
+fn dock_shows(s: Shell) -> Bool {
     s.dock_shown
         and shows(s.dock_showing, device.displays.dock_reached, device.displays.dock_covered)
 }

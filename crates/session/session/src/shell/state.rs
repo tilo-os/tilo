@@ -234,6 +234,12 @@ pub enum OverlayEffect {
     },
     /// Go to the window the switcher's walk reached, and close the switcher.
     CommitSwitcher,
+    /// Answer the question waiting on the person's avatar
+    #[effect(row, label = "session-desk-answer-ask")]
+    AnswerAsk,
+    /// Put the question waiting on the person's avatar off for now
+    #[effect(row, label = "session-desk-ask-later")]
+    PutOffAsk,
 }
 
 /// The surface stack as a view of another language reads it: the surface the shell shows over
@@ -257,6 +263,16 @@ struct OverlaysSurface {
     /// Which windows the switcher's walk crosses: `workspace` for every window, `app` for the
     /// windows of the app in front.
     switcher_scope: String,
+    /// What the person last typed in the shell's search: the launcher opens where they left it.
+    spotlight: String,
+    /// The question the session puts to the person about themselves; empty when none waits.
+    ask: String,
+    /// What answering the question brings.
+    ask_detail: String,
+    /// The question's answer, as its button says it.
+    ask_answer: String,
+    /// Whether the question stands open on the person's avatar, rather than as its dot.
+    ask_open: bool,
 }
 
 /// The window menu as it reads: the window it is for, where it stands, and what that window offers
@@ -318,6 +334,11 @@ struct StackReading {
     here: String,
     switcher_revealed: bool,
     switcher_scope: &'static str,
+    spotlight: String,
+    ask: String,
+    ask_detail: String,
+    ask_answer: String,
+    ask_open: bool,
 }
 
 /// One open surface.
@@ -379,7 +400,7 @@ pub struct ShellService {
     surfaces: Surfaces,
     /// What the stack's reading was last published from: the shell's surface, whether the
     /// switcher's panel shows, and the stack's own revision.
-    seen: Option<(u64, String, bool)>,
+    seen: Option<(u64, String, bool, u64)>,
     /// The desktop's one shortcut table, so a menu row shows the chord a press doing the same thing
     /// would be, as the person binds it now.
     shortcuts: crate::panels::mount::Shortcuts,
@@ -416,12 +437,13 @@ impl ShellService {
     }
 
     /// What the stack's reading is made from beside the stack itself.
-    fn key(&self) -> (u64, String, bool) {
+    fn key(&self) -> (u64, String, bool, u64) {
         let shell = &self.surfaces.overlays;
         (
             shell.revision(),
             shell.here(),
             shell.revealed(std::time::Instant::now()),
+            self.handle.personal_ask_revision(),
         )
     }
 
@@ -600,31 +622,7 @@ impl Service for ShellService {
     fn read(&self, resource: &str) -> Option<Value> {
         match resource {
             WINDOW_MENU => Some(reading(&self.window_menu())),
-            OVERLAYS => Some(reading(&StackReading {
-                stack: self
-                    .overlays
-                    .entries()
-                    .into_iter()
-                    .map(|entry| Surface {
-                        slot: entry.slot.as_str(),
-                        role: entry.role.as_str(),
-                        anchor: entry.anchor.as_str(),
-                        size: Extent {
-                            width: entry.size.width,
-                            height: entry.size.height,
-                        },
-                        place: entry.place.map(|standing| Area {
-                            x: standing.room.x0,
-                            y: standing.room.y0,
-                            w: standing.room.width(),
-                            h: standing.room.height(),
-                        }),
-                    })
-                    .collect(),
-                here: self.surfaces.overlays.here(),
-                switcher_revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
-                switcher_scope: self.surfaces.overlays.scope().name(),
-            })),
+            OVERLAYS => Some(reading(&self.stack())),
             FOCUS => {
                 let target = crate::chrome::keyboard_target(&self.handle, &self.overlays);
                 Some(reading(&Focus {
@@ -710,6 +708,8 @@ impl Service for ShellService {
                     OverlayEffect::CommitSwitcher => {
                         crate::desk_windows::commit_switcher(&self.handle, &self.surfaces.overlays);
                     }
+                    OverlayEffect::AnswerAsk => self.handle.answer_personal_ask(),
+                    OverlayEffect::PutOffAsk => self.handle.put_off_personal_ask(),
                 }
             }
             _ => return Err(DoorError::Unknown(ActionAddress::new(resource, action))),
@@ -719,6 +719,44 @@ impl Service for ShellService {
 }
 
 impl ShellService {
+    /// The surface stack as it reads now, with the question waiting on the person's avatar.
+    fn stack(&self) -> StackReading {
+        let ask = self.handle.personal_ask();
+        StackReading {
+            stack: self
+                .overlays
+                .entries()
+                .into_iter()
+                .map(|entry| Surface {
+                    slot: entry.slot.as_str(),
+                    role: entry.role.as_str(),
+                    anchor: entry.anchor.as_str(),
+                    size: Extent {
+                        width: entry.size.width,
+                        height: entry.size.height,
+                    },
+                    place: entry.place.map(|standing| Area {
+                        x: standing.room.x0,
+                        y: standing.room.y0,
+                        w: standing.room.width(),
+                        h: standing.room.height(),
+                    }),
+                })
+                .collect(),
+            here: self.surfaces.overlays.here(),
+            switcher_revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
+            switcher_scope: self.surfaces.overlays.scope().name(),
+            spotlight: self.surfaces.overlays.spotlight(),
+            ask_open: ask.as_ref().is_some_and(|ask| ask.open),
+            ask: ask
+                .as_ref()
+                .map(|ask| ask.title.clone())
+                .unwrap_or_default(),
+            ask_detail: ask.as_ref().map(|ask| ask.body.clone()).unwrap_or_default(),
+            ask_answer: ask.map(|ask| ask.action.title).unwrap_or_default(),
+        }
+    }
+
     /// The window menu as the desk offers it now.
     fn window_menu(&self) -> Reading {
         let Some(open) = &self.state.menu else {

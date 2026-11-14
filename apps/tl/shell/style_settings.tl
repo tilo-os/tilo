@@ -49,7 +49,7 @@ action set_frames_snap(s: Shell, on: Bool) (label: "Snap places to a grid", grou
 /// The chosen style's settings, in a panel over the desk: the settings the style the person
 /// shows declares, and nothing else, so a style's own settings are its own view and the system
 /// keeps no per-style list (`shell.md` §6: "Nothing in Settings is per style").
-view style_panel(d: Desk) {
+view style_panel() {
     let s = shell
     // A panel over the desk, standing in from its edges as a surface does: what it sets down never
     // sits on the window's own text under it, and a phone's desk keeps a section's gutter.
@@ -62,7 +62,7 @@ view style_panel(d: Desk) {
         ui.FloatingPanel(width: if not space.compact { 360.0 }) {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
-                    ui.Text("Settings for {style_title(viewing, d)}", role: .heading)
+                    ui.Text("Settings for {style_title(viewing)}", role: .heading)
                     spacer
                     ui.Button("Close", icon: .x, icon_only: true, role: .plain) {
                         on press: close_style_settings(s)
@@ -74,7 +74,7 @@ view style_panel(d: Desk) {
                 // is shorter than that: a panel over the desk never stands past it, and never
                 // takes room it has nothing to put in.
                 scroll {
-                    style_settings_body(d)
+                    style_settings_body()
                 }
             }
         }
@@ -83,25 +83,25 @@ view style_panel(d: Desk) {
 
 /// The chosen style's settings, taking a phone's desk: a phone's desk has no room beside a panel, so
 /// the settings take the desk and close back to it.
-view style_sheet(d: Desk) {
+view style_sheet() {
     let s = shell
     stack(fill, padding: .section) {
         row(gap: .related, align: .center, wrap: true) {
-            ui.Text("Settings for {style_title(viewing, d)}", role: .heading)
+            ui.Text("Settings for {style_title(viewing)}", role: .heading)
             spacer
             ui.Button("Close", icon: .x, icon_only: true, role: .plain) {
                 on press: close_style_settings(s)
             }
         }
         scroll(fill) {
-            style_settings_body(d)
+            style_settings_body()
         }
     }
 }
 
 /// What a style sets, in the order its own view writes it: the style it shows now, and nothing
 /// of another style's.
-view style_settings_body(d: Desk) {
+view style_settings_body() {
     let s = shell
     let chosen = style_of(viewing)
     if chosen == "so.tilo.shell:desktop" {

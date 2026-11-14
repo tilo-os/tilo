@@ -420,15 +420,10 @@ impl SessionSearch {
                 && address.action == "search";
             !searching && !opening
         });
-        // The desk's own resources are named after the person and the desktop, not after the thing
-        // an action acts on: matched as a word, that name would list every one of the desk's
-        // actions for a query that names the person.
+        // The chrome's resource is named after the desktop, not after the thing an action acts on:
+        // matched as a word, that name would list every one of its actions.
         for action in &mut published {
-            if matches!(
-                action.address.resource.as_str(),
-                tilo_actions::remote::session_actions::DESK_RESOURCE
-                    | tilo_desktop_search::CHROME_RESOURCE
-            ) {
+            if action.address.resource == tilo_desktop_search::CHROME_RESOURCE {
                 action.resource_label.clear();
             }
         }

@@ -42,10 +42,28 @@ action query_retry(place: Text) {
 }
 
 /// The id of the workspace in front: the one whose windows the switcher walks and the overview
-/// shows as the desk's, as the desk's own fields name it.
-fn front_workspace(d: Desk) -> Text {
-    if let w = d.workspaces.filter(w -> w.current).first() {
+/// shows as the desk's.
+fn front_workspace() -> Text {
+    if let w = arrangement.workspaces.find(w -> w.current) {
         return w.key
+    }
+    return ""
+}
+
+/// The name of the workspace in front, as the bar names it.
+fn front_workspace_name() -> Text {
+    if let w = arrangement.workspaces.find(w -> w.current) {
+        return w.name
+    }
+    return ""
+}
+
+/// The name of the row in front in the workspace in front: the strip the bar names after the
+/// workspace.
+fn front_strip_name() -> Text {
+    let w = front_workspace()
+    if let r = arrangement.rows.find(r -> r.workspace == w and r.current) {
+        return r.name
     }
     return ""
 }

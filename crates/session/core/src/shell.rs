@@ -1,13 +1,8 @@
-//! What a shell reads of the session and asks it: the desk's reading, the resources the session
-//! publishes it through, and the screen's edges — the same on every host, so a shell written once
-//! runs on each.
-//!
-//! The session publishes the desk as [`DESK_RESOURCE`]'s reading ([`DeskReading`]); a shell's views
-//! read it, and ask the session for the rest through [`Ask`]s on the door.
+//! What a shell reads of the session and asks it: the resources the session publishes, and the
+//! screen's edges — the same on every host, so a shell written once runs on each. A shell's views
+//! read the session's readings and ask it for the rest through [`Ask`]s on the door.
 
 use std::collections::BTreeMap;
-
-use serde::{Deserialize, Serialize};
 
 /// The origin the session's resources come from: the first part of their kinds.
 pub const ORIGIN: &str = "session";
@@ -16,9 +11,6 @@ pub const ORIGIN: &str = "session";
 pub use crate::arrangement::RESOURCE as ARRANGEMENT_RESOURCE;
 /// The resource the session's chrome actions are published on.
 pub use tilo_desktop_search::CHROME_RESOURCE;
-/// The resource the session publishes its desk as, whose reading a shell's origin writes: the
-/// door's own name for it, so the session, its broker and its views name one desk.
-pub use ui::tilo_actions::remote::session_actions::DESK_RESOURCE;
 
 /// What stands over the windows, and in what order, in the session's catalogue: the surface stack.
 pub const OVERLAYS: &str = "desktop:overlays";
@@ -32,59 +24,12 @@ pub const SHELL_RECORD: &str = "shell";
 /// The package id of the shell a device installs, and the one this build's fallback copy is.
 pub const SHELL_APP: &str = "so.tilo.shell";
 
-/// A workspace as the desk's reading names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceReading {
-    pub key: String,
-    pub name: String,
-    pub current: bool,
-}
-
-/// Someone else here, as the desk's reading names them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersonReading {
-    pub key: String,
-    pub name: String,
-}
-
-/// The reading of [`DESK_RESOURCE`]: the fields of the `session.desk` kind
-/// (`tilolang::origin::KINDS`), as JSON on the door.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeskReading {
-    pub person: String,
-    /// The question the session puts to the person about themselves, waiting on their own
-    /// avatar until they answer it or put it off.
-    #[serde(default)]
-    pub ask: Option<AskReading>,
-    pub workspace: String,
-    pub strip: String,
-    pub workspaces: Vec<WorkspaceReading>,
-    /// What the person last typed in the shell's search.
-    #[serde(default)]
-    pub spotlight: String,
-    /// The others here in the workspace in front: its collaborators.
-    #[serde(default)]
-    pub people: Vec<PersonReading>,
-}
-
-/// The arrangement's readings, which a shell reads beside the desk's: what the person arranged.
+/// The arrangement's readings: what the person arranged.
 pub use crate::arrangement::{
-    ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading, ArrangementRefReading,
-    ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading,
+    ArrangementPersonReading, ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading,
+    ArrangementRefReading, ArrangementRowReading, ArrangementStripReading,
+    ArrangementWorkspaceReading,
 };
-
-/// A question the session puts to the person about themselves, waiting on their own avatar.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AskReading {
-    /// The question ("Keep your name and work?").
-    pub question: String,
-    /// What answering brings.
-    pub detail: String,
-    /// The answer's label ("Keep with passkey").
-    pub answer: String,
-    /// Shown as the popover; `false` while it waits as the avatar's dot.
-    pub open: bool,
-}
 
 /// What a shell asked of the session: an invocation on the door, its arguments as any caller's
 /// reach it (a list as a list, a map as an object).

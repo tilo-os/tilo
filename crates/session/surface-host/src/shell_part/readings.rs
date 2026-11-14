@@ -12,9 +12,9 @@ use tilolang_tilo::records_service::{app_of, placed_records};
 use tilolang_tilo::runtime::{ResourceRef, Value};
 
 use super::{
-    ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading, ArrangementRefReading,
-    ArrangementRowReading, ArrangementStripReading, ArrangementWorkspaceReading, Ask, SessionLink,
-    SessionOrigin,
+    ArrangementPersonReading, ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading,
+    ArrangementRefReading, ArrangementRowReading, ArrangementStripReading,
+    ArrangementWorkspaceReading, Ask, SessionLink, SessionOrigin,
 };
 
 impl SessionLink {
@@ -529,7 +529,13 @@ pub(super) fn row_fields(r: &ArrangementRowReading) -> Vec<(&'static str, Value)
         ("workspace", text(&r.workspace)),
         ("name", text(&r.name)),
         ("shell", text(&r.shell)),
+        ("current", Value::Bool(r.current)),
     ]
+}
+
+/// The fields of someone here, as they are written into the shell's record.
+pub(super) fn person_fields(p: &ArrangementPersonReading) -> Vec<(&'static str, Value)> {
+    vec![("key", text(&p.key)), ("name", text(&p.name))]
 }
 
 /// The fields of a strip, as it is written into the shell's record.

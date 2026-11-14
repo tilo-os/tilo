@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use serde_json::{Map, json};
 use tilo_session::{Options, Session};
-use tilo_surface_host::shell_part::DESK_RESOURCE;
+use tilo_surface_host::shell_part::OVERLAYS;
 
 use crate::common::{
     CANVAS_ENTRY, HEIGHT, MAIL, PERSON, Repl, SUBJECT, WIDTH, on_screen, placed_resources,
@@ -365,7 +365,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
     press(&mut session, "Launcher");
     until(&mut session, "the launcher the dock opened", |session| {
         session
-            .read(DESK_RESOURCE)
+            .read(OVERLAYS)
             .is_some_and(|desk| desk["here"] == json!("launcher"))
     });
 

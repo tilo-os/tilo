@@ -25,6 +25,8 @@ pub struct ArrangementRowReading {
     pub workspace: String,
     pub name: String,
     pub shell: String,
+    /// Whether it is the row in front in its workspace.
+    pub current: bool,
 }
 
 /// A strip of the desk, as the person's arrangement names it.
@@ -87,6 +89,10 @@ pub struct ArrangementPlaceReading {
 /// window group and every window, each as the desk has it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrangementReading {
+    /// The person at this device, by their name.
+    pub person: String,
+    /// The others here in the workspace in front.
+    pub people: Vec<ArrangementPersonReading>,
     pub workspaces: Vec<ArrangementWorkspaceReading>,
     pub rows: Vec<ArrangementRowReading>,
     pub strips: Vec<ArrangementStripReading>,
@@ -95,6 +101,13 @@ pub struct ArrangementReading {
     /// what it found, or why nothing did (`session.arrangement_query`, shell.md §8).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queries: Vec<ArrangementQueryReading>,
+}
+
+/// Someone else here in the workspace in front: a person or an agent, by their presence's key.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArrangementPersonReading {
+    pub key: String,
+    pub name: String,
 }
 
 /// A query typed on the canvas, as its place shows it: what the person looked for, in which app,
@@ -216,17 +229,23 @@ pub(super) fn reading_of(
     for workspace in &tree.workspaces {
         reading.workspaces.push(WorkspaceReading {
             key: workspace.id().to_string(),
-            name: workspace.name.clone(),
+            name: tilo_desktop_surface::names::workspace(&workspace.name),
             // A desk holds every workspace the person is in and shows one: the shell draws the
             // rows of the one in front, so the reading says which that is.
             current: workspace.id() == tree.active,
         });
-        for row in &workspace.strips {
+        let front = tree
+            .active_strip
+            .get(&workspace.id())
+            .and_then(|id| workspace.strips.iter().position(|row| row.id == *id))
+            .unwrap_or(0);
+        for (at, row) in workspace.strips.iter().enumerate() {
             reading.rows.push(RowReading {
                 key: row.id.0.to_string(),
                 workspace: workspace.id().to_string(),
-                name: row.name.clone(),
+                name: tilo_desktop_surface::names::strip_named(&row.name, at),
                 shell: SHELL.to_owned(),
+                current: at == front,
             });
             for group in &row.window_groups {
                 let canvas = workspace.arrangement.place_of(group.id);

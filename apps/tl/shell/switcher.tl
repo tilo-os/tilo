@@ -19,9 +19,9 @@
 ///
 /// Every choice it offers is the session's action: going to a window is `session.focus`, the
 /// same as a press on its strip.
-view switcher(d: Desk) {
+view switcher() {
     let desk = device.windows.all
-        .filter(w -> w.workspace_key == front_workspace(d))
+        .filter(w -> w.workspace_key == front_workspace())
         .sort_by(w -> w.recency)
     let pick = desk.find(w -> w.focused)
     let front_app = if let p = pick { p.app_key } else { "" }

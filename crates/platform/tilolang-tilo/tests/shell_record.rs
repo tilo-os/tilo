@@ -316,14 +316,14 @@ fn shell_ref(r: &Replica) -> Value {
     Value::resource(&r.host.root_record(APP, &ty).unwrap())
 }
 
-/// The chrome the session shows (the desk's default view, `desk`), laid out as the person
-/// sees it: the bar and the dock over the desk and the person's shell record.
+/// The screen the session shows (the arrangement's default view, `desk_view`), laid out as the
+/// person sees it: the bar and the dock over the desk and the person's shell record.
 fn desk_view(r: &Replica) -> tilolang_runtime::ViewInstance {
     r.host
         .open_layer(
             APP,
             &tilolang_tilo::host::RootView {
-                root: Some("Desk".to_owned()),
+                root: Some("arrangement".to_owned()),
                 view: None,
             },
         )

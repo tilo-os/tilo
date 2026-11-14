@@ -4,7 +4,7 @@
 ///
 /// It reads the desk's workspaces (`session.workspace`) and, for the one in front, the people
 /// here. Switching, joining and making one are the session's actions.
-view workspaces(d: Desk) {
+view workspaces() {
     state name: Text = ""
     // The cards stand in the desk's page, as the overview's do: their corners round, and a card
     // on the window's edge has them cut by it.
@@ -12,8 +12,8 @@ view workspaces(d: Desk) {
         stack(gap: .section) {
             ui.Text("Workspaces", role: .title)
             grid(min: 18rem) {
-                for w in d.workspaces.sort_by(w -> w.name) {
-                    workspace_card(d, w)
+                for w in arrangement.workspaces.sort_by(w -> w.name) {
+                    workspace_card(w)
                 }
             }
             row(gap: .related, align: .end, wrap: true) {
@@ -33,13 +33,13 @@ view workspaces(d: Desk) {
 
 /// One workspace: its name, and for the one in front, who is here. The one in front is lifted,
 /// and pressing it does nothing; the others switch to it.
-view workspace_card(d: Desk, w: Workspace) {
+view workspace_card(w: ArrangementWorkspace) {
     ui.Card(item: w, title: w.name, selected: w.current) {
-        if w.current and not d.people.is_empty() {
+        if w.current and not arrangement.people.is_empty() {
             ui.Facts {
-                ui.Fact("{d.people.len()} here", icon: .users)
+                ui.Fact("{arrangement.people.len()} here", icon: .users)
             }
         }
-        on activate: device.switch_workspace(device.desk, workspace: w.key)
+        on activate: session.switch_workspace(workspace: w.key)
     }
 }

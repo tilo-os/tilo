@@ -80,7 +80,10 @@ fn the_surviving_surfaces_speak_the_persons_language() {
     // The desk's own rows: what a person answers on their avatar, the tray item of a running
     // application, and stopping an agent. A row stands only while it applies, so this is what is up
     // now.
-    let desk = labelled(&labels, "session:desk/");
+    let desk: Vec<&str> = ["desktop:overlays/", "session:tray/", "session:agents/"]
+        .into_iter()
+        .flat_map(|prefix| labelled(&labels, prefix))
+        .collect();
     assert!(
         desk.contains(&"Stoppen"),
         "the desk stops an agent in German: {desk:?}"

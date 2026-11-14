@@ -2,66 +2,6 @@
 
 d-so-tilo-shell = Shell
 
-d-4jk2lkpt = Schreibtisch
-    .doc = Der Schreibtisch dieses Geräts: die Zeit im Stil der Person, wer sie ist, ihre Benachrichtigungen, die Arbeitsbereiche auf diesem Gerät, die für sie laufenden Aufgaben und die Oberfläche, die der Schreibtisch über seinen Fenstern zeigt.
-    .noun = { $count ->
-        [one] Schreibtisch
-       *[other] Schreibtische
-    }
-
-d-kx4rprro = Person
-
-d-foayl4ai = Suche
-    .doc = Was die Person in die Suche der Shell getippt hat, die den Launcher dort öffnet, wo sie aufgehört hat.
-
-d-zxfieu2y = Frage
-    .doc = Die Frage, die der Person über sie selbst gestellt wird; leer, wenn keine wartet.
-
-d-w2fyvufg = Detail der Frage
-    .doc = Was das Beantworten der Frage bringt.
-
-d-zqu6ku2o = Antwort auf die Frage
-    .doc = Die Antwort auf die Frage, wie ihr Knopf sie sagt.
-
-d-eewsi53q = Frage offen
-    .doc = Ob die Frage auf dem Avatar der Person offen steht.
-
-d-c5k5ua2t = Arbeitsbereich
-
-d-xpcwi5mg = Leiste
-
-d-vbyis266 = Arbeitsbereiche
-
-d-xu2jijql = Personen
-
-d-4jk2lkpt-filter-ask_open = Frage offen
-
-d-bynckgvt = Arbeitsbereich
-    .doc = Ein Arbeitsbereich auf diesem Gerät.
-    .noun = { $count ->
-        [one] Arbeitsbereich
-       *[other] Arbeitsbereiche
-    }
-
-d-pmjwp2sk = Schlüssel
-
-d-nze6cia2 = Name
-
-d-ce523tqy = Aktuell
-
-d-bynckgvt-filter-current = Aktuell
-
-d-bqittbss = Person
-    .doc = Jemand anderes hier im Arbeitsbereich vorn.
-    .noun = { $count ->
-        [one] Person
-       *[other] Personen
-    }
-
-d-vfhh3oax = Schlüssel
-
-d-lmoug2df = Name
-
 d-qhf2pyze = Anordnung
     .doc = Die Anordnung der Person: was offen ist und wo.
     .noun = { $count ->
@@ -766,8 +706,6 @@ d-gkca5uj2 = Eintrag verschieben~present
 
 d-i4odzov3 = Anheften~present
 
-d-gctjtdv7 = Schreibtisch
-
 d-zzd3yipu = Leisten
 
 d-tj4z2obq = Rahmen
@@ -1230,3 +1168,30 @@ d-mnbjennf = Einstellungen des Rahmenstils
 
 d-xwhxaimf = Einstellungen des Raumstils
     .w-spaces-shows-each-place-as-its = Räume zeigt jeden Platz als eigene Ansicht und hat nichts einzustellen.
+
+d-h3u7qt7x = Person
+    .doc = Die Person an diesem Gerät, mit ihrem Namen.
+
+d-qmdr2dmv = Personen
+    .doc = Die anderen, die im vorderen Arbeitsbereich hier sind.
+
+d-f5ctbqkg = Person der Anordnung
+    .doc = Jemand anderes, der im vorderen Arbeitsbereich hier ist: eine Person oder ein Agent.
+    .noun = { $count ->
+        [one] Person der Anordnung
+       *[other] Personen der Anordnung
+    }
+
+d-ai2x4wtg = Schlüssel
+
+d-doi4uxmt = Name
+
+d-vqhjqkhq = Vorne
+    .doc = Ob es die vordere Reihe in ihrem Arbeitsbereich ist.
+
+d-k6bv5cxt-filter-current = Vorne
+
+d-st426t4p = Ein vorderer Arbeitsbereich
+    .doc = Fügt `a` den vorderen Arbeitsbereich mit seiner vorderen Zeile hinzu und gibt den Schlüssel der Zeile zurück.
+
+d-st426t4p-name = Name

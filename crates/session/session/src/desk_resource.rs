@@ -1,8 +1,7 @@
-//! This device's desk as resources of the session's: who the person is, the workspaces on this
-//! device and the strip in front, the surface up over the windows, and the device's lists — its
-//! windows, the tray, the agents at the person's door and the desk styles. A shell's views read
-//! them, and so does a script or an agent, through the door, by the same addresses: one reading
-//! for every reader.
+//! This device's lists as resources of the session's: its windows, the tray, the agents at the
+//! person's door and the desk styles, and inviting into a workspace. A shell's views read them, and
+//! so does a script or an agent, through the door, by the same addresses: one reading for every
+//! reader.
 
 use std::rc::Rc;
 
@@ -18,15 +17,8 @@ use tilo_peer_state::join::Role;
 use tilo_peer_state::join::invitations::PendingInvitation;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
-use tilo_session_core::shell::DESK_RESOURCE;
-use tilo_session_core::shell::{self, DeskReading};
 
 use crate::desk_windows::{reaching, windows};
-
-/// What the desk's reading is made from ([`Desk::key`]): equal when the shell's views need not run
-/// again.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct DeskKey((u64, u64, u64, u64));
 
 /// What the device's lists are made from ([`Desk::lists_key`]), one entry per resource: the
 /// windows, the tray, the agents and the styles. An entry that moved is a reading that moved.
@@ -145,47 +137,9 @@ pub(crate) enum AgentsEffect {
     },
 }
 
-/// The kind of the desk's resource: the origin kind a shell's type holds.
-pub(crate) const DESK_KIND: &str = "session.desk";
-
 /// The scopes a walk of the switcher crosses, as the walk's action names them: the whole workspace
 /// (Alt+Tab), or the app the window in front shows (Alt and the grave key).
 pub const SWITCHER_SCOPES: [&str; 2] = ["workspace", "app"];
-
-/// The desk as a view of another language reaches it: its verbs ([`DeskEffect`]), which the
-/// shell's views run as typed calls (`device.show_surface(device.desk, "quick-settings")`),
-/// each through the desk's door as a script's or an agent's runs. The rest of what the desk
-/// holds reaches the shell as the shell's own record (`root Desk`), so this names only the
-/// surface that is up.
-#[must_use]
-pub fn surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<DeskSurface, DeskEffect>("desk", "Desk")
-}
-
-/// The desk's reading as [`surface`] publishes it: a slice of [`DeskReading`], by its keys.
-#[derive(tilo_resource::JsonSchema)]
-struct DeskSurface {
-    /// The person at this device, by their name.
-    #[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
-    person: String,
-}
-
-/// What the desk offers.
-#[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.session.desk")]
-pub(crate) enum DeskEffect {
-    /// Bring a workspace of this device to the front
-    SwitchWorkspace {
-        #[param("The workspace, by its key")]
-        workspace: String,
-    },
-    /// Answer the question waiting on the person's avatar
-    #[effect(row, label = "session-desk-answer-ask")]
-    AnswerAsk,
-    /// Put the question waiting on the person's avatar off for now
-    #[effect(row, label = "session-desk-ask-later")]
-    PutOffAsk,
-}
 
 /// What inviting offers: the links into a workspace, the invite sheet, and adding another device or
 /// an agent of the person's.
@@ -455,9 +409,6 @@ pub(crate) struct Desk {
     pub(crate) surfaces: Surfaces,
     /// Who is here, when this session takes part in the collaboration plane.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
-    /// What each window of the desk shows, as its app reports it: where a person's record stands,
-    /// so the reading places them in the window they work in.
-    pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the person
     /// putting the floating one away hides it until Clocks shows something new.
     pub(crate) activities: Rc<crate::chrome::Activities>,
@@ -473,7 +424,7 @@ pub(crate) struct Desk {
     /// What the desk asks the session for while it runs: opening the invite sheet, which is the
     /// session's own surface and not a layer the desk draws.
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
-    /// The desk styles every installed package offers, as `session.desk_styles` reads them
+    /// The desk styles every installed package offers, as `device.styles` reads them
     /// (shell.md §6): what the person's switch offers. The session fills it from its package
     /// store, and moves it when a package is installed or taken away.
     pub(crate) styles: std::rc::Rc<std::cell::RefCell<Styles>>,
@@ -490,7 +441,6 @@ pub(crate) struct Shared {
     pub(crate) activities: Rc<crate::chrome::Activities>,
     pub(crate) surfaces: Surfaces,
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
-    pub(crate) notes: std::sync::Arc<crate::continuations::Continuations>,
     pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub(crate) asks: Rc<std::cell::RefCell<Vec<tilo_desktop::desktop_host::DesktopAsk>>>,
@@ -508,7 +458,6 @@ pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
         activities: Rc::clone(&shared.activities),
         surfaces: shared.surfaces.clone(),
         sync: shared.sync.clone(),
-        notes: std::sync::Arc::clone(&shared.notes),
         tray: shared.tray.clone(),
         engine: shared.engine.clone(),
         asks: Rc::clone(&shared.asks),
@@ -518,19 +467,6 @@ pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
 }
 
 impl Desk {
-    /// What the reading is made from, without making it: the tree's revision, the minute,
-    /// what the notifications say and who is here. The reading changes only when this does.
-    pub(crate) fn key(&self) -> DeskKey {
-        DeskKey((
-            self.handle.revision(),
-            self.sync
-                .as_ref()
-                .map_or(0, |sync| sync.here().borrow().revision()),
-            self.handle.personal_ask_revision(),
-            self.surfaces.overlays.revision(),
-        ))
-    }
-
     /// What the lists are made from, without making them.
     fn lists_key(&self) -> ListsKey {
         ListsKey([
@@ -603,47 +539,6 @@ impl Desk {
         windows
     }
 
-    /// The desk now.
-    pub(crate) fn reading(&self) -> DeskReading {
-        let people = self.handle.read(|tree| {
-            self.sync.as_ref().map_or_else(Vec::new, |sync| {
-                sync.people(tree, &self.notes, &|app: &str| {
-                    Some(crate::app_names::app_name(app))
-                })
-                .into_iter()
-                .map(|person| shell::PersonReading {
-                    key: person.id,
-                    name: person.label,
-                })
-                .collect()
-            })
-        });
-        self.handle.read(|tree| DeskReading {
-            person: self.person.clone(),
-            ask: self.handle.personal_ask().map(|ask| shell::AskReading {
-                question: ask.title,
-                detail: ask.body,
-                answer: ask.action.title,
-                open: ask.open,
-            }),
-            // A workspace is named the one way every reading of it names it: the name the person
-            // gave, or the desk's own word for one they have not named yet.
-            workspace: workspace_in_front(tree),
-            strip: strip_in_front(tree),
-            workspaces: tree
-                .workspaces
-                .iter()
-                .map(|workspace| shell::WorkspaceReading {
-                    key: workspace.id().to_string(),
-                    name: tilo_desktop_surface::names::workspace(&workspace.name),
-                    current: workspace.id() == tree.active,
-                })
-                .collect(),
-            spotlight: self.surfaces.overlays.spotlight(),
-            people,
-        })
-    }
-
     /// The due event Clocks wants announced, by its id and in the app's own words when it has them
     /// (the desktop's otherwise): what the bar announces once.
     pub(crate) fn due_timer(&self) -> Option<(String, String, String)> {
@@ -682,30 +577,6 @@ impl Desk {
                 .collect()
         })
     }
-}
-
-/// The name of the workspace in front, as every reading of a workspace names it.
-fn workspace_in_front(tree: &Layout) -> String {
-    tree.active_workspace().map_or_else(
-        || tilo_desktop_surface::names::workspace(""),
-        |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
-    )
-}
-
-/// The name of the strip in front in the workspace in front, as the strip switcher names it: what
-/// the bar names after the workspace.
-fn strip_in_front(tree: &Layout) -> String {
-    let Some(workspace) = tree.active_workspace() else {
-        return String::new();
-    };
-    let at = tree
-        .active_strip
-        .get(&tree.active)
-        .and_then(|id| workspace.strips.iter().position(|strip| strip.id == *id))
-        .unwrap_or(0);
-    workspace.strips.get(at).map_or_else(String::new, |strip| {
-        tilo_desktop_surface::names::strip_named(&strip.name, at)
-    })
 }
 
 impl Desk {
@@ -995,17 +866,10 @@ impl Desk {
     }
 }
 
-/// The desk's resource, named `label`: what it publishes, and what the session's package describes
-/// of it ([`crate::session_package`]).
-pub(crate) fn desk_spec(label: String) -> ResourceSpec {
-    offer::<DeskEffect>(ResourceSpec::new(DESK_RESOURCE, DESK_KIND, label))
-}
-
 impl Service for Desk {
     fn resources(&self) -> Vec<ResourceSpec> {
         let kind = tilo_action_policy::roles::SESSION_KIND;
         vec![
-            desk_spec(self.person.clone()),
             ResourceSpec::new(WINDOWS_RESOURCE, kind, crate::i18n::t("session-windows")),
             offer::<TrayEffect>(ResourceSpec::new(
                 TRAY_RESOURCE,
@@ -1027,9 +891,6 @@ impl Service for Desk {
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
-        if resource == DESK_RESOURCE {
-            return Some(reading(&self.reading()));
-        }
         self.list(resource)
     }
 
@@ -1059,7 +920,7 @@ impl Service for Desk {
             TRAY_RESOURCE => {
                 let TrayEffect::OpenTrayItem { key } =
                     decode::<TrayEffect>(&self.resources(), resource, action, arguments)?;
-                return self.open_tray_item(&key);
+                self.open_tray_item(&key)
             }
             AGENTS_RESOURCE => {
                 let AgentsEffect::StopAgent { agent } =
@@ -1069,45 +930,15 @@ impl Service for Desk {
                         "no agent {agent} works here"
                     )));
                 }
-                return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+                Ok(Started::Done(tilo_actions::ActionOutput::default()))
             }
             INVITE_RESOURCE => {
                 let effect =
                     decode::<InviteEffect>(&self.resources(), resource, action, arguments)?;
-                return self.invite(&effect);
+                self.invite(&effect)
             }
-            DESK_RESOURCE => {}
-            _ => return Err(DoorError::Unknown(ActionAddress::new(resource, action))),
+            _ => Err(DoorError::Unknown(ActionAddress::new(resource, action))),
         }
-        let workspace = match decode(&self.resources(), resource, action, arguments)? {
-            DeskEffect::AnswerAsk => {
-                self.handle.answer_personal_ask();
-                return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-            }
-            DeskEffect::PutOffAsk => {
-                self.handle.put_off_personal_ask();
-                return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-            }
-            DeskEffect::SwitchWorkspace { workspace } => workspace,
-        };
-        // The workspace's key names it; the handle brings it to the front.
-        let known = self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .any(|candidate| candidate.id().to_string() == workspace)
-        });
-        if !known {
-            return Err(DoorError::InvalidArguments(format!(
-                "there is no workspace {workspace} on this device"
-            )));
-        }
-        self.handle
-            .dispatch(ChromeEffect::SwitchWorkspace {
-                workspace: Some(workspace),
-                delta: None,
-            })
-            .map_err(DoorError::Failed)?;
-        Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 }
 

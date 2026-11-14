@@ -6,16 +6,17 @@
 ///
 /// They never touch a person's own record: a real first launch starts empty.
 scenario "the default shell on a desk" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -36,16 +37,17 @@ scenario "the default shell on a desk" {
 /// Thirty items on the dock: the person's apps on a working machine, three of them running,
 /// one wanting them.
 scenario "a full dock" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "a01", title: "Notes", icon: "file-text"))
@@ -84,16 +86,17 @@ scenario "a full dock" {
 
 /// The dock on the leading edge, as a person who works in a wide column sets it.
 scenario "the dock on the left" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     let s = shell
     s.dock_edge = .left
@@ -107,16 +110,17 @@ scenario "the dock on the left" {
 /// The dock on the trailing edge, full width with the bar off: a Windows-like taskbar on a
 /// person's second screen.
 scenario "the dock on the right" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     let s = shell
     s.dock_edge = .right
@@ -129,16 +133,17 @@ scenario "the dock on the right" {
 /// A dock item mid-drag in the edit mode, with the place it would land marked: the person is
 /// moving Chat before Mail.
 scenario "moving an item on the dock" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -150,16 +155,17 @@ scenario "moving an item on the dock" {
 /// The bar with its parts rearranged: the clock first, then the menu, and the tasks after the
 /// status.
 scenario "a rearranged bar" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     let s = shell
     if let clock = s.bar_parts.find(p -> p.slot == Slot.clock) { s.bar_parts.move(clock, to: 0) }
@@ -171,16 +177,17 @@ scenario "a rearranged bar" {
 /// the preset gives them, shown the way it says. A person who picks one sees this, and a shot
 /// of it is what the layout check keeps per theme.
 scenario "the Tilo preset" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -191,16 +198,17 @@ scenario "the Tilo preset" {
 }
 
 scenario "the macos preset" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -211,16 +219,17 @@ scenario "the macos preset" {
 }
 
 scenario "the windows preset" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -231,31 +240,33 @@ scenario "the windows preset" {
 }
 
 scenario "the gnome preset" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     apply(shell, .gnome)
 }
 
 scenario "the minimal preset" {
-    let d = root Desk
+    let d = root Arrangement
     d.person = "Ada Lovelace"
+    d.rows.insert(
+        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+    )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
-    d.workspace = "Studio"
-    d.strip = "Drafts"
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(Workspace(key: "home", name: "Home"))
-    d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
-    d.people.insert(Person(key: "mia", name: "Mia"))
+    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.people.insert(ArrangementPerson(key: "mia", name: "Mia"))
     seed(shell)
     apply(shell, .minimal)
 }

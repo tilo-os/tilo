@@ -11,6 +11,31 @@ use tilo_desktop_search::providers::happening::{CallHere, PersonHere, WindowHere
 use crate::Shared;
 
 impl Shared {
+    /// The person's arrangement, with who else is here in the workspace in front as the plane lists
+    /// them: what the shell's bar shows.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn arrangement_reading(&self) -> tilo_session_core::shell::ArrangementReading {
+        let mut reading = self.arrangement.borrow().reading();
+        if let Some(sync) = &self.sync {
+            reading.people = self
+                .handle
+                .read(|tree| {
+                    sync.people(tree, &self.notes, &|app: &str| {
+                        Some(crate::app_names::app_name(app))
+                    })
+                })
+                .into_iter()
+                .map(
+                    |person| tilo_session_core::shell::ArrangementPersonReading {
+                        key: person.id,
+                        name: person.label,
+                    },
+                )
+                .collect();
+        }
+        reading
+    }
+
     /// Who is in each workspace now, and the calls in progress there, as the desk's member list and
     /// the presence say: what the empty palette lists first, by workspace, the one in front first.
     pub(crate) fn here_now(&self) -> Vec<WorkspaceHere> {

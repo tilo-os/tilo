@@ -241,7 +241,7 @@ view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
 /// person's face stay), so the row never wraps. Its controls stand a cluster gap apart at every
 /// width, a finger's or a mouse's press target being wider than the face it is drawn in: at the
 /// tightest gap a press between two would reach whichever is drawn last.
-view traditional_bar(d: Desk) {
+view traditional_bar() {
     let room = if space.width_class == .wide {
         BarRoom.roomy
     } else if space.compact { BarRoom.one } else { BarRoom.menus }
@@ -251,9 +251,9 @@ view traditional_bar(d: Desk) {
         }
         action_bar(arrangement, room)
         spacer
-        clock(d)
+        clock()
         if room != .one {
-            people_button(d)
+            people_button()
         }
         if not space.compact {
             volume_status()
@@ -261,8 +261,8 @@ view traditional_bar(d: Desk) {
         network_status()
         battery_status()
         bell()
-        if d.person != "" {
-            ui.Avatar(name: d.person)
+        if arrangement.person != "" {
+            ui.Avatar(name: arrangement.person)
         }
     }
 }

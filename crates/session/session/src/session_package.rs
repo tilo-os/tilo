@@ -26,16 +26,10 @@ pub const APP: &str = "so.tilo.session";
 pub const PATH: &str = "apps/tl/session/surface.toml";
 
 /// The actions of a resource the package leaves out, each because another resource's action
-/// of the same name is the one a call of that name means: `desktop:chrome`'s
-/// `switch-workspace` steps by a count, for the keys; the desk's (`so.tilo.device`'s) goes to
-/// the workspace a person picked, by its key. Focus and close are a window's own actions,
+/// of the same name is the one a call of that name means. Focus and close are a window's own actions,
 /// declared once by the window: the desk's `focus` and `close-tab`, which name the window by
 /// its tab, are left out, so `session.focus(window: w)` and a window's close mean the window's.
 const LEFT_OUT: &[(&str, &str)] = &[
-    (
-        tilo_desktop::desk_verbs::CHROME_RESOURCE,
-        "switch-workspace",
-    ),
     (tilo_desktop::desk_verbs::DESK_RESOURCE, "focus"),
     (tilo_desktop::desk_verbs::DESK_RESOURCE, "close-tab"),
     (tilo_desktop::desk_verbs::DESK_RESOURCE, "wait-window"),

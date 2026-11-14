@@ -2292,48 +2292,6 @@
       ]
     },
     {
-      "kind": "desk",
-      "label": "Desk",
-      "version": 1,
-      "verbs": [
-        {
-          "id": "switch-workspace",
-          "label": "Switch to workspace",
-          "description": "Bring a workspace of this device to the front",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "workspace",
-              "required": true,
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "id": "answer-ask",
-          "label": "Answer",
-          "description": "Answer the question waiting on the person's avatar",
-          "kind": "outside",
-          "params": []
-        },
-        {
-          "id": "put-off-ask",
-          "label": "Ask me later",
-          "description": "Put the question waiting on the person's avatar off for now",
-          "kind": "outside",
-          "params": []
-        }
-      ],
-      "fields": [
-        {
-          "path": "person",
-          "stored": "value",
-          "type": "text",
-          "readonly": true
-        }
-      ]
-    },
-    {
       "kind": "overlays",
       "label": "Overlays",
       "version": 1,
@@ -2425,6 +2383,20 @@
           "description": "Go to the window the switcher's walk reached, and close the switcher.",
           "kind": "outside",
           "params": []
+        },
+        {
+          "id": "answer-ask",
+          "label": "Answer",
+          "description": "Answer the question waiting on the person's avatar",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "put-off-ask",
+          "label": "Ask me later",
+          "description": "Put the question waiting on the person's avatar off for now",
+          "kind": "outside",
+          "params": []
         }
       ],
       "fields": [
@@ -2444,6 +2416,36 @@
           "path": "switcher_scope",
           "stored": "value",
           "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "spotlight",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "ask",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "ask_detail",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "ask_answer",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "ask_open",
+          "stored": "value",
+          "type": "bool",
           "readonly": true
         }
       ]

@@ -3,72 +3,18 @@
 
 d-so-tilo-shell = Shell
 
-d-4jk2lkpt = Desk
-    .doc = This device's desk: the time in the person's style, who they are, their notifications, the workspaces on this device, the tasks running for them and the surface the desk shows over its windows.
-    .noun = { $count ->
-        [one] desk
-       *[other] desks
-    }
-
-d-kx4rprro = Person
-
-d-foayl4ai = Spotlight
-    .doc = What the person typed in the shell's search, which opens the launcher where they left off.
-
-d-zxfieu2y = Ask
-    .doc = The question the person is asked about themselves; empty when none waits.
-
-d-w2fyvufg = Ask detail
-    .doc = What answering the question brings.
-
-d-zqu6ku2o = Ask answer
-    .doc = The question's answer, as its button says it.
-
-d-eewsi53q = Ask open
-    .doc = Whether the question stands open on the person's avatar.
-
-d-c5k5ua2t = Workspace
-
-d-xpcwi5mg = Strip
-
-d-vbyis266 = Workspaces
-
-d-xu2jijql = People
-
-d-4jk2lkpt-filter-ask_open = Ask open
-
-d-bynckgvt = Workspace
-    .doc = A workspace on this device.
-    .noun = { $count ->
-        [one] workspace
-       *[other] workspaces
-    }
-
-d-pmjwp2sk = Key
-
-d-nze6cia2 = Name
-
-d-ce523tqy = Current
-
-d-bynckgvt-filter-current = Current
-
-d-bqittbss = Person
-    .doc = Someone else here in the workspace in front.
-    .noun = { $count ->
-        [one] person
-       *[other] people
-    }
-
-d-vfhh3oax = Key
-
-d-lmoug2df = Name
-
 d-qhf2pyze = Arrangement
     .doc = The person's arrangement: what is open where.
     .noun = { $count ->
         [one] arrangement
        *[other] arrangements
     }
+
+d-h3u7qt7x = Person
+    .doc = The person at this device, by their name.
+
+d-qmdr2dmv = People
+    .doc = The others here in the workspace in front.
 
 d-rknsknpw = Workspaces
 
@@ -144,6 +90,17 @@ d-3uxxhan3 = Current
 
 d-wydxt4zu-filter-current = Current
 
+d-f5ctbqkg = Arrangement person
+    .doc = Someone else here in the workspace in front: a person or an agent.
+    .noun = { $count ->
+        [one] arrangement person
+       *[other] arrangement people
+    }
+
+d-ai2x4wtg = Key
+
+d-doi4uxmt = Name
+
 d-k6bv5cxt = Arrangement row
     .doc = A row of the desk: a strip across a workspace's width, holding columns.
     .noun = { $count ->
@@ -157,8 +114,13 @@ d-qassqvic = Workspace
 
 d-yppyohd5 = Name
 
+d-vqhjqkhq = Current
+    .doc = Whether it is the row in front in its workspace.
+
 d-awgwtm6j = Shell
     .doc = The shell that made it; empty reads as this shell's.
+
+d-k6bv5cxt-filter-current = Current
 
 d-vn23musu = Arrangement strip
     .doc = A strip: a column of places, with a width, in a row of a workspace.
@@ -746,6 +708,11 @@ d-zm35wbjg = A workspace
 
 d-zm35wbjg-name = Name
 
+d-st426t4p = A front workspace
+    .doc = Adds the workspace in front, with its row in front, to `a`, and returns the row's key.
+
+d-st426t4p-name = Name
+
 d-ztflhbbf = A strip
     .doc = Adds a strip named `name` to `row`, standing at `width`, and returns its key.
 
@@ -912,8 +879,6 @@ d-vedyud4d = Move part~present
 d-gkca5uj2 = Move item~present
 
 d-i4odzov3 = Pin~present
-
-d-gctjtdv7 = Desk
 
 d-zzd3yipu = Strips
 

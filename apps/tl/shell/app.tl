@@ -2,55 +2,14 @@ app so.tilo.shell "Shell" (icon: .monitor, category: .system, records: .own)
 
 use so.tilo.session as session
 
-/// This device's desk: the time in the person's style, who they are, their notifications, the
-/// workspaces on this device, the tasks running for them and the surface the desk shows over
-/// its windows. The session keeps it in step; the shell's views
-/// read it. Its text is the session's to replace whole, never edited here: each is a register,
-/// not text to merge.
-type Desk (origin: session.desk) {
-    person: Text merge register
-    /// What the person typed in the shell's search, which opens the launcher where they left off.
-    spotlight: Text merge register
-    /// The question the person is asked about themselves; empty when none waits.
-    ask: Text merge register
-    /// What answering the question brings.
-    ask_detail: Text merge register
-    /// The question's answer, as its button says it.
-    ask_answer: Text merge register
-    /// Whether the question stands open on the person's avatar.
-    ask_open: Bool
-    workspace: Text merge register
-    strip: Text merge register
-    workspaces: Collection<Workspace>
-    people: Collection<Person>
-}
-
-/// A workspace on this device.
-type Workspace (origin: session.workspace) {
-    key: Text merge register
-    name: Text merge register
-    current: Bool
-}
-
-/// Someone else here in the workspace in front.
-type Person (origin: session.person) {
-    key: Text merge register
-    name: Text merge register
-}
-
 root arrangement: Arrangement
-
-root Desk
-
-default view desk for Desk
 
 default view desk_view for arrangement
 
 default view shell_settings for Shell
 
 /// The person's desk as a window or a display shows it: the desk style the person picked
-/// (`Viewing.style`), drawing the arrangement. The bar reads `desk`, this package's other root,
-/// as any view reads a root of the package it uses.
+/// (`Viewing.style`), drawing the arrangement.
 ///
 /// This is the arrangement's default view, so it is the one view a style is drawn *through* and
 /// never one of the styles: a desk style is a view of the arrangement any installed package
@@ -66,7 +25,6 @@ default view shell_settings for Shell
 /// (`shell.md` §6, "Nothing can lock a person out"). Fixing the package flips it back, and the
 /// desk shows the chosen style again without a restart.
 view desk_view(a: Arrangement) {
-    let d = root Desk
     let chosen = style_of(viewing)
     layers {
         // The chosen style's own settings, over whatever the style drew: the system's one
@@ -77,15 +35,15 @@ view desk_view(a: Arrangement) {
         // is reached by Settings, which shows the same panel. A phone's desk is narrower than
         // the settings are wide, so there they take the desk rather than a panel over it.
         if shell.settings_open and space.compact {
-            style_sheet(d)
+            style_sheet()
         } else {
-            if loads_style(d, chosen) {
+            if loads_style(chosen) {
                 show(a, view: chosen, fill)
             } else {
                 show(a, view: "so.tilo.shell:strips", fill)
             }
             if shell.settings_open {
-                style_panel(d)
+                style_panel()
             }
         }
     }
@@ -94,7 +52,7 @@ view desk_view(a: Arrangement) {
 /// Whether the style `chosen` loads, as the session publishes it (`DeskStyle.loads`): a style
 /// the session has not listed yet is one it has said nothing against, so it is drawn and, if it
 /// cannot be, the failed state the runtime draws stands in for it.
-fn loads_style(d: Desk, chosen: Text) -> Bool {
+fn loads_style(chosen: Text) -> Bool {
     if let found = device.styles.offered.find(s -> s.style == chosen) {
         return found.loads
     }
@@ -105,7 +63,7 @@ fn loads_style(d: Desk, chosen: Text) -> Bool {
 /// left (a stopwatch: what it has run), paused when the person paused it. The name is a text of
 /// its own, so a reader hears it; the reading is the number beside it, and a paused timer says
 /// so.
-view clock(d: Desk) {
+view clock() {
     row(gap: .tight, align: .center) {
         ui.Text(device.time.clock, role: .subheading, numeric: true)
         if device.time.timer != "" {
@@ -124,10 +82,10 @@ view clock(d: Desk) {
 /// `place_part`. A compact bar keeps the clock, the workspace, the connection, the charge, the
 /// notifications and the person's own face; who is here and the sound give way there, and a
 /// question put to the person always keeps its seat.
-view bar(d: Desk) {
+view bar() {
     let s = shell
     let roomy = space.width_class == .expanded or space.width_class == .wide
-    let nobody = d.ask == "" and space.compact
+    let nobody = device.overlays.ask == "" and space.compact
     ui.DragRun(axis: .horizontal, name: "Top bar") {
         on drop(moved: BarPart, at: Int): place_part(s, moved, at)
         for part in s.bar_parts {
@@ -143,7 +101,7 @@ view bar(d: Desk) {
                         .trailing
                     } else if part.slot == .space { .space } else { .leading },
                 ) {
-                    bar_part(d, part)
+                    bar_part(part)
                 }
             }
         }
@@ -181,11 +139,11 @@ fn bar_is_narrow(width: Float) -> Bool {
 /// and the person's own face at the far end. On a compact bar the tray items and the sound give
 /// way: what a glance needs — the clock, the workspace, the connection, the charge, the
 /// notifications and the person's own face — keeps its room.
-view bar_part(d: Desk, part: BarPart) {
+view bar_part(part: BarPart) {
     if part.slot == .space {
         spacer
     } else if part.slot == .clock {
-        clock(d)
+        clock()
     } else if part.slot == .menu {
         row(gap: .related, align: .center) {
             ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
@@ -198,32 +156,32 @@ view bar_part(d: Desk, part: BarPart) {
             // person picked is never out of reach, and no control is pressed into its neighbour
             // to keep it here.
             if not bar_is_narrow(space.width) {
-                style_menu(viewing, d)
+                style_menu(viewing)
             }
         }
     } else if part.slot == .workspace {
-        workspace_menu(d)
+        workspace_menu()
     } else if part.slot == .app_menu {
         action_bar(arrangement, BarRoom.menus)
     } else if part.slot == .strip {
-        if d.strip != "" {
-            ui.Button(d.strip, icon: .chevron_right, role: .bar)
+        if front_strip_name() != "" {
+            ui.Button(front_strip_name(), icon: .chevron_right, role: .bar)
         }
     } else if part.slot == .people {
         row(gap: .related, align: .center) {
             if not space.compact {
-                people_button(d)
+                people_button()
             }
-            if d.ask != "" {
-                ui.Button(d.ask, role: .bar)
-                if d.ask_answer != "" {
-                    ui.Button(d.ask_answer, role: .bar)
+            if device.overlays.ask != "" {
+                ui.Button(device.overlays.ask, role: .bar)
+                if device.overlays.ask_answer != "" {
+                    ui.Button(device.overlays.ask_answer, role: .bar)
                 }
             }
         }
     } else if part.slot == .agent {
         for a in device.agents.seated {
-            agent_chip(d, a)
+            agent_chip(a)
         }
     } else if part.slot == .status {
         // One cluster, so its controls stand a cluster gap apart and never the tightest: a bar
@@ -249,8 +207,8 @@ view bar_part(d: Desk, part: BarPart) {
             network_status()
             battery_status()
             bell()
-            if d.person != "" {
-                ui.Avatar(name: d.person)
+            if arrangement.person != "" {
+                ui.Avatar(name: arrangement.person)
             }
         }
     }
@@ -260,13 +218,13 @@ view bar_part(d: Desk, part: BarPart) {
 /// device's workspaces. On a bar too narrow for its name beside the clock and the status (a
 /// phone with large text), it is the workspaces' icon, named for the workspace; a desk whose
 /// workspace the session has not published a name for still opens by the workspaces' name.
-view workspace_menu(d: Desk) {
-    let name = if d.workspace != "" { d.workspace } else { "Workspaces" }
+view workspace_menu() {
+    let name = if front_workspace_name() != "" { front_workspace_name() } else { "Workspaces" }
     let icon_only = bar_is_narrow(space.width)
     ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
-        for w in d.workspaces {
+        for w in arrangement.workspaces {
             ui.MenuItem(w.name, checked: w.current) {
-                on choose: device.switch_workspace(device.desk, workspace: w.key)
+                on choose: session.switch_workspace(workspace: w.key)
             }
         }
         ui.MenuItem("New workspace", icon: .plus) {

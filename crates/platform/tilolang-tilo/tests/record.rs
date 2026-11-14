@@ -372,7 +372,7 @@ fn queue_one(window: &Window, root: &tilolang_tilo::runtime::ResourceRef, who: &
 /// open in the same document the counter's changes are written in.
 const DESK: &str = r#"app so.tilo.test.desk "Desk"
 
-type Desk (origin: session.desk) {
+type Desk (origin: session.arrangement) {
   clock: Text merge register
 }
 
@@ -401,7 +401,7 @@ fn an_action_is_written_once_whatever_else_its_document_holds_open() {
     let desk = host.root_of("so.tilo.test.desk").unwrap();
     let clock = tilolang_tilo::origin::origin_types(&desk_package.meta, "session")
         .into_iter()
-        .find(|ty| ty.kind == "session.desk")
+        .find(|ty| ty.kind == "session.arrangement")
         .unwrap()
         .fields
         .into_iter()

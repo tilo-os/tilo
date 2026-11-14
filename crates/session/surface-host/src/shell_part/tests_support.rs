@@ -93,15 +93,15 @@ pub(super) fn publish_windows(link: &SessionLink, windows: &serde_json::Value) {
 
 /// What the session publishes for a part to draw: the desk, and the windows on it.
 pub(super) struct Staged {
-    pub(super) desk: DeskReading,
+    pub(super) desk: ArrangementReading,
     pub(super) windows: serde_json::Value,
     /// The surface up over the windows (`none` at rest), and whether the switcher's panel shows.
     pub(super) here: String,
     pub(super) revealed: bool,
 }
 
-impl From<DeskReading> for Staged {
-    fn from(desk: DeskReading) -> Self {
+impl From<ArrangementReading> for Staged {
+    fn from(desk: ArrangementReading) -> Self {
         Self {
             desk,
             windows: serde_json::json!([]),
@@ -150,16 +150,21 @@ pub(super) fn reading_with_windows() -> Staged {
     let mut release = window("11", "Release planning", "Notes", "Main");
     release["focused"] = serde_json::json!(true);
     Staged {
-        desk: DeskReading {
+        desk: ArrangementReading {
             person: "Pat".to_owned(),
-            workspace: "Desk".to_owned(),
-            strip: "Main".to_owned(),
-            workspaces: vec![WorkspaceReading {
+            rows: vec![ArrangementRowReading {
+                key: "r1".to_owned(),
+                workspace: "1".to_owned(),
+                name: "Main".to_owned(),
+                current: true,
+                ..ArrangementRowReading::default()
+            }],
+            workspaces: vec![ArrangementWorkspaceReading {
                 key: "1".to_owned(),
                 name: "Desk".to_owned(),
                 current: true,
             }],
-            ..DeskReading::default()
+            ..ArrangementReading::default()
         },
         windows: serde_json::json!([release, window("12", "Inbox", "Mail", "Main")]),
         here: "none".to_owned(),
@@ -225,7 +230,7 @@ fn part_at(
     let staged: Staged = reading.into();
     publish_windows(&link, &staged.windows);
     publish_overlays(&link, &staged.here, staged.revealed);
-    link.publish(staged.desk);
+    link.publish_arrangement(staged.desk);
     let mut part = ShellPart::new(
         ShellIdentity {
             app: &app,

@@ -1,8 +1,8 @@
 //! The surface the desk shows over its windows, as the person left it: at rest, or one of the
 //! shell's overlays (`overview`, `switcher`, `launcher`, `centre`, `workspaces`, `composer`,
 //! `quick-settings`, `conversation`).
-//! The session keeps it, so the desk's reading says which one is up (`session.desk.here`) and
-//! the shell's views re-run only when it changes.
+//! The session keeps it, so the surface stack's reading says which one is up (`here`) and the
+//! shell's views re-run only when it changes.
 //!
 //! A press the shell hands the session changes it: `show-surface` puts one up (or closes it,
 //! when it is the one up), `close-surface` takes one down. The overlays themselves are the

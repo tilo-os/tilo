@@ -12,15 +12,15 @@
 /// the strip in front as its tab (shell.md §2, §3), one arranging action of the person's, so
 /// the desk fills with the person's work rather than a second strip for every result.
 /// The launcher, with the person's last query in the field.
-view launcher(d: Desk) {
-    state query: Text = d.spotlight
+view launcher() {
+    state query: Text = device.overlays.spotlight
     let typed = query != ""
     let front = front_strip()
     // The applications installed here, in the person's language, narrowed by what they type: the
     // name or the package id holding the text, so typing "no" finds Notes by its name as well as
     // "so.tilo.notes" by the id the agent names it with. With nothing typed every app is offered,
     // so the launcher is the way in to all of them without a search.
-    let apps = apps_matching(d, query)
+    let apps = apps_matching(query)
     let windows = if typed {
         device.windows.all.matching(query).sort_by(w -> w.recency).take(10)
     } else {
@@ -29,7 +29,7 @@ view launcher(d: Desk) {
     ui.FloatingPanel {
         header: {
             ui.TextInput(bind: query, placeholder: "Search apps, windows, actions and files") {
-                on submit: open_first(d, query)
+                on submit: open_first(query)
             }
         }
         body: {
@@ -60,7 +60,7 @@ view launcher(d: Desk) {
                 }
             }
             if not typed {
-                desk_doors(d)
+                desk_doors()
             }
         }
         footer: {
@@ -96,7 +96,7 @@ view launcher(d: Desk) {
 /// The installed apps whose name or package id holds what the person typed, in name order: the
 /// one list the field filters, so typing narrows the apps as it narrows the windows. A typed
 /// query that matches nothing leaves the list empty, which is what the empty state says.
-fn apps_matching(d: Desk, query: Text) -> List<device.App> {
+fn apps_matching(query: Text) -> List<device.App> {
     let needle = query.trim().lower()
     if needle == "" {
         return device.apps.installed.sort_by(a -> a.name)
@@ -109,8 +109,8 @@ fn apps_matching(d: Desk, query: Text) -> List<device.App> {
 /// Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter
 /// opens Notes; a query that names no app is what search everywhere answers, as Enter has always
 /// done for what the desk's own rows do not hold.
-action open_first(d: Desk, query: Text) {
-    if let a = apps_matching(d, query).first() {
+action open_first(query: Text) {
+    if let a = apps_matching(query).first() {
         session.open_app(app: a.key)
     } else { session.search(query: query) }
 }
@@ -158,7 +158,7 @@ view window_row(w: device.Window) {
 
 /// The desk's own doors, as rows that open them: each surface, and the ways to make and join a
 /// workspace.
-view desk_doors(d: Desk) {
+view desk_doors() {
     ui.Section("The desk") {
         ui.ListRow("Overview", icon: .layout_grid) {
             on activate: device.show_surface(device.overlays, surface: "overview")

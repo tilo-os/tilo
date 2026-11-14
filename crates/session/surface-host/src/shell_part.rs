@@ -6,12 +6,12 @@
 //! out and the CPU rasterizes it, as [`WidgetHost`] does for every widget tree the session
 //! shows; the compositor gets the buffer as a layer. Nothing here renders on its own.
 //!
-//! What the views read of the session comes in as resources whose origin is the session
-//! (`type Desk (origin: session.desk)`): [`SessionOrigin`] writes what the session publishes on
-//! its door (the `session:desk` resource's reading) into them. The views call the session's
-//! actions as an app's (`use so.tilo.session as session`, then `session.show_surface(surface:
-//! "launcher")`), each an invocation on its door ([`PlaceInvoker`]). A shell view never
-//! reaches the session another way.
+//! What the views read of the session comes in as the person's arrangement, whose origin is the
+//! session (`type Arrangement (origin: session.arrangement)`), which [`SessionOrigin`] writes,
+//! and as the readings of the device's resources (`device.overlays`). The views call the
+//! session's actions as an app's (`use so.tilo.session as session`, then `session.overview()`),
+//! each an invocation on its door ([`PlaceInvoker`]). A shell view never reaches the session
+//! another way.
 //!
 //! The part works only when something changed: a press, a reading of the session's that moved,
 //! or a door answer. Otherwise a frame asks nothing of the instance, and the toolkit draws
@@ -42,10 +42,10 @@ use crate::{Placement, WidgetHost};
 /// What a shell reads of the session and the names the session publishes it by: every host's,
 /// so the shell's views and the session name one desk.
 pub use tilo_session_core::shell::{
-    ARRANGEMENT_RESOURCE, ArrangementPlaceReading, ArrangementQueryReading, ArrangementReading,
-    ArrangementRefReading, ArrangementRowReading, ArrangementStripReading,
-    ArrangementWorkspaceReading, Ask, AskReading, CHROME_RESOURCE, DESK_RESOURCE, DeskReading,
-    ORIGIN, OVERLAYS, PersonReading, SHELL_APP, SHELL_RECORD, WorkspaceReading,
+    ARRANGEMENT_RESOURCE, ArrangementPersonReading, ArrangementPlaceReading,
+    ArrangementQueryReading, ArrangementReading, ArrangementRefReading, ArrangementRowReading,
+    ArrangementStripReading, ArrangementWorkspaceReading, Ask, CHROME_RESOURCE, ORIGIN, OVERLAYS,
+    SHELL_APP, SHELL_RECORD,
 };
 
 mod host;
@@ -188,17 +188,6 @@ pub const fn shell_catalogue() -> &'static str {
     include_str!("../../../../apps/tl/shell/locales/en-US.ftl")
 }
 
-/// The desk the session writes its reading into: the `desk` view over the `Desk` root, the
-/// bar and the surface under it. The shell package has two roots (`Desk` and its `Arrangement`),
-/// so each names its own; the instance is never "the first root's default view".
-#[must_use]
-pub fn desk_layer() -> RootView {
-    RootView {
-        root: Some("Desk".to_owned()),
-        view: Some("desk".to_owned()),
-    }
-}
-
 /// The shell's whole screen: the `desk_view` view over the person's arrangement (the package's
 /// `arrangement` root), which stands the desk's bar, dock and surfaces around the places as the
 /// preset the person picked lays them out. Each place an app's window shows in is a well, and
@@ -300,14 +289,11 @@ pub fn compile_shell() -> Result<Vec<Compiled>, String> {
 /// is drawn as it is: a press, the action it ran, the change it committed, the effect settled.
 const EXCHANGES: usize = 8;
 
-/// Between the session and the shell's origin: the desk's reading the session last published,
-/// what the shell asked of the door, and the door's answers. The session serves it every turn
+/// Between the session and the shell's origin: the readings the session last published, what the
+/// shell asked of the door, and the door's answers. The session serves it every turn
 /// of its loop ([`SessionLink::serve`]); the origin reads and writes the rest.
 #[derive(Default)]
 pub struct SessionLink {
-    reading: RefCell<Option<DeskReading>>,
-    /// A reading arrived the origin has not written yet.
-    fresh: Cell<bool>,
     /// The person's arrangement the session last published, and whether the origin has taken
     /// it in.
     arrangement: RefCell<Option<ArrangementReading>>,
@@ -354,17 +340,6 @@ pub struct SessionLink {
 }
 
 impl SessionLink {
-    /// The session published `reading`: the shell writes it on its next frame when it differs
-    /// from the last. Whether it did.
-    pub fn publish(&self, reading: DeskReading) -> bool {
-        if self.reading.borrow().as_ref() == Some(&reading) {
-            return false;
-        }
-        *self.reading.borrow_mut() = Some(reading);
-        self.fresh.set(true);
-        true
-    }
-
     /// The session published `reading`, the person's arrangement as it stands now: the shell
     /// writes it on its next frame when it differs from the last. Whether it did.
     pub fn publish_arrangement(&self, reading: ArrangementReading) -> bool {
@@ -510,66 +485,6 @@ impl SessionOrigin {
             link,
             mirror: Mirror::default(),
         }
-    }
-
-    /// The writes that bring the package's resources from what was written to `reading`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pass over the desk's fields and its two collections"
-    )]
-    fn writes(
-        &mut self,
-        reading: &DeskReading,
-        root: &ResourceRef,
-        types: &[OriginType],
-    ) -> Result<Vec<OriginWrite>, String> {
-        let kind = |name: &str| {
-            types
-                .iter()
-                .find(|ty| ty.kind == format!("{ORIGIN}.{name}"))
-                .ok_or_else(|| format!("the shell declares no type of `{ORIGIN}.{name}`"))
-        };
-        let desk = kind("desk")?;
-        let field = |ty: &OriginType, name: &str| ty.field(name).map(str::to_owned);
-        let ask = reading.ask.clone().unwrap_or_default();
-        let fields = [
-            ("person", text(&reading.person)),
-            ("workspace", text(&reading.workspace)),
-            ("strip", text(&reading.strip)),
-            ("spotlight", text(&reading.spotlight)),
-            // The ask on the person's avatar: its words, and whether it stands open.
-            ("ask", text(&ask.question)),
-            ("ask_detail", text(&ask.detail)),
-            ("ask_answer", text(&ask.answer)),
-            ("ask_open", Value::Bool(ask.open)),
-        ];
-        let named = fields
-            .into_iter()
-            .filter_map(|(name, now)| Some((field(desk, name)?, now)));
-        let mut writes: Vec<OriginWrite> = self.mirror.set(root, named).into_iter().collect();
-        writes.extend(self.mirror.sync(
-            &reading.workspaces,
-            root,
-            field(desk, "workspaces").as_deref(),
-            kind("workspace").ok(),
-            |w| w.key.clone(),
-            |w| {
-                vec![
-                    ("key", text(&w.key)),
-                    ("name", text(&w.name)),
-                    ("current", Value::Bool(w.current)),
-                ]
-            },
-        ));
-        writes.extend(self.mirror.sync(
-            &reading.people,
-            root,
-            field(desk, "people").as_deref(),
-            kind("person").ok(),
-            |p| p.key.clone(),
-            |p| vec![("key", text(&p.key)), ("name", text(&p.name))],
-        ));
-        Ok(writes)
     }
 }
 
@@ -736,10 +651,13 @@ impl SessionOrigin {
                 .iter()
                 .find(|ty| ty.kind == format!("{ORIGIN}.{name}"))
         };
-        let mut writes = Vec::new();
         let Some(ty) = find("arrangement") else {
-            return writes;
+            return Vec::new();
         };
+        let person = ty
+            .field("person")
+            .map(|field| (field.to_owned(), text(&reading.person)));
+        let mut writes: Vec<OriginWrite> = self.mirror.set(root, person).into_iter().collect();
         // Each collection of the root, from the reading's items of its kind.
         macro_rules! sync {
             ($items:expr, $field:literal, $kind:literal, $fields:ident) => {
@@ -758,6 +676,12 @@ impl SessionOrigin {
             "workspaces",
             "arrangement_workspace",
             workspace_fields
+        );
+        sync!(
+            reading.people,
+            "people",
+            "arrangement_person",
+            person_fields
         );
         sync!(reading.rows, "rows", "arrangement_row", row_fields);
         sync!(reading.strips, "strips", "arrangement_strip", strip_fields);
@@ -792,8 +716,7 @@ impl Origin for SessionOrigin {
     }
 
     fn due(&self) -> bool {
-        self.link.fresh.get()
-            || self.link.arrangement_fresh.get()
+        self.link.arrangement_fresh.get()
             || self.link.packages_fresh.get()
             || self.link.published_fresh.get()
             || !self.link.readings_fresh.borrow().is_empty()
@@ -810,48 +733,6 @@ impl Origin for SessionOrigin {
         // package declares it.
         polled.wrote |= self.poll_packages(cx);
         polled.wrote |= self.poll_readings(cx);
-        if !self.link.fresh.replace(false) {
-            return polled;
-        }
-        let Some(reading) = self.link.reading.borrow().clone() else {
-            return polled;
-        };
-        let Some(types) = cx.host.find_in_packages(|package| {
-            (package.meta.app == cx.app).then(|| origin_types(&package.meta, ORIGIN))
-        }) else {
-            tracing::error!(app = cx.app, "the shell's package is not loaded");
-            return polled;
-        };
-        let root = match cx.host.root_of_layer(cx.app, &desk_layer()) {
-            Ok(root) => root,
-            Err(error) => {
-                tracing::error!(%error, "the shell has no desk to write the session into");
-                return polled;
-            }
-        };
-        let writes = match self.writes(&reading, &root, &types) {
-            // The desk's own change is applied below, in the origin's own transaction.
-            Ok(writes) => writes,
-            Err(why) => {
-                tracing::error!(why, "the session's desk does not fit the shell");
-                return polled;
-            }
-        };
-        match cx
-            .host
-            .runtime()
-            .apply_origin(ORIGIN, writes, Some(cx.now.clone()))
-        {
-            Ok(made) => {
-                self.mirror.made(Some(made));
-                polled.wrote = true;
-            }
-            Err(error) => {
-                self.mirror.made(None);
-                // Nothing was written: the next reading tries again from what was.
-                tracing::error!(%error, "the session's desk could not be written");
-            }
-        }
         polled
     }
 

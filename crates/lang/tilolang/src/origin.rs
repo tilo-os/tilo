@@ -96,81 +96,6 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
 
 pub const KINDS: &[OriginKind] = &[
     OriginKind {
-        name: "session.desk",
-        doc: "This device's desk as the session holds it, for the person at it: the time in their \
-              style, who they are, what they were told, the workspaces on this device and the \
-              tasks running for them. A shell's bar reads it; the session writes it.",
-        derived: true,
-        fields: &[
-            field(
-                "person",
-                "Text",
-                "The person at this device, by their name.",
-            ),
-            field(
-                "ask",
-                "Text",
-                "The question the session puts to the person about themselves; empty when none \
-                 waits.",
-            ),
-            field("ask_detail", "Text", "What answering the question brings."),
-            field(
-                "ask_answer",
-                "Text",
-                "The question's answer, as its button says it.",
-            ),
-            field(
-                "ask_open",
-                "Bool",
-                "Whether the question stands open on the person's avatar.",
-            ),
-            field("workspace", "Text", "The name of the workspace in front."),
-            field(
-                "strip",
-                "Text",
-                "The name of the strip in front in that workspace; empty without strips.",
-            ),
-            field(
-                "workspaces",
-                "Collection<session.workspace>",
-                "The workspaces on this device, in the desk's order.",
-            ),
-            field(
-                "tasks",
-                "Collection<session.task>",
-                "The tasks running for the person now (an agent's, a script's).",
-            ),
-            field(
-                "people",
-                "Collection<session.person>",
-                "The others here in the workspace in front.",
-            ),
-            field(
-                "spotlight",
-                "Text",
-                "What the person last typed in the shell's search, so the shell opens where they \
-                 left off.",
-            ),
-            field(
-                "runs",
-                "Collection<session.run>",
-                "The runs of what the person asked the session's agents, oldest first.",
-            ),
-            field(
-                "run_entries",
-                "Collection<session.run_entry>",
-                "Each run's conversation, entry by entry, naming the run it is of, oldest \
-                 first.",
-            ),
-            field(
-                "entry_refs",
-                "Collection<session.entry_ref>",
-                "What each program of a run's conversation printed and changed, naming the \
-                 entry it is of, in the program's order.",
-            ),
-        ],
-    },
-    OriginKind {
         name: "session.run",
         doc: "A run of what the person asked one of the session's agents: the conversation the \
               agent and the person have in it.",
@@ -272,14 +197,14 @@ pub const KINDS: &[OriginKind] = &[
         derived: true,
         fields: &[
             field(
-                "preset",
+                "person",
                 "Text",
-                "Which preset the person shows: `strips`, `frames` or `spaces`.",
+                "The person at this device, by their name.",
             ),
             field(
-                "focused",
-                "Text",
-                "The strip in front, by its id; empty for none.",
+                "people",
+                "Collection<session.arrangement_person>",
+                "The others here in the workspace in front.",
             ),
             field(
                 "workspaces",
@@ -328,6 +253,15 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
+        name: "session.arrangement_person",
+        doc: "Someone else here in the workspace in front: a person or an agent.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Who they are, by their live presence's id."),
+            field("name", "Text", "Their name here."),
+        ],
+    },
+    OriginKind {
         name: "session.arrangement_row",
         doc: "A row of the desk: a strip across a workspace's width, holding columns.",
         derived: true,
@@ -335,6 +269,11 @@ pub const KINDS: &[OriginKind] = &[
             field("key", "Text", "Its id, as the record names it."),
             field("workspace", "Text", "The workspace it is a row of."),
             field("name", "Text", "Its name."),
+            field(
+                "current",
+                "Bool",
+                "Whether it is the row in front in its workspace.",
+            ),
             field(
                 "shell",
                 "Text",
@@ -452,43 +391,6 @@ pub const KINDS: &[OriginKind] = &[
                 "kind",
                 "Text",
                 "Its kind, as its app publishes it (`tube.channel`).",
-            ),
-        ],
-    },
-    OriginKind {
-        name: "session.workspace",
-        doc: "A workspace on this device's desk.",
-        derived: true,
-        fields: &[
-            field(
-                "key",
-                "Text",
-                "The workspace's id, as switching to it names it.",
-            ),
-            field("name", "Text", "Its name."),
-            field("current", "Bool", "Whether it is the one in front."),
-        ],
-    },
-    OriginKind {
-        name: "session.person",
-        doc: "Someone else here in the workspace in front: a person or an agent.",
-        derived: true,
-        fields: &[
-            field("key", "Text", "Who they are, by their live presence's id."),
-            field("name", "Text", "Their name here."),
-        ],
-    },
-    OriginKind {
-        name: "session.task",
-        doc: "A task running for the person: an agent's or a script's.",
-        derived: true,
-        fields: &[
-            field("key", "Text", "The task's id."),
-            field("title", "Text", "What it is doing, in a few words."),
-            field(
-                "state",
-                "Text",
-                "`running`, `waiting` (for the person) or `done`.",
             ),
         ],
     },

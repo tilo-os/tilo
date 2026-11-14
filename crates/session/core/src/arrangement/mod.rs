@@ -1193,6 +1193,7 @@ impl Arrangement {
         let mut reading = self
             .handle
             .read(|tree| reading_of(tree, &records, &catalog, &self.names));
+        reading.person = self.person_name();
         // A query lives while its place does: one whose place has gone (closed, replaced, undone)
         // is no longer the person's to see, and drops here.
         let places: std::collections::BTreeSet<String> = reading
@@ -1210,6 +1211,19 @@ impl Arrangement {
             .queries
             .extend(self.queries.borrow().values().cloned());
         reading
+    }
+
+    /// The person's name as the workspace in front lists them, or their id where it lists no name.
+    fn person_name(&self) -> String {
+        self.handle
+            .read(|tree| {
+                tree.active_workspace()?
+                    .members
+                    .iter()
+                    .find(|member| member.id.key() == self.person && !member.name.is_empty())
+                    .map(|member| member.name.clone())
+            })
+            .unwrap_or_else(|| self.person.clone())
     }
 
     /// The query `place` shows, if it shows one.
@@ -2359,13 +2373,9 @@ pub(super) fn count_of(key: &str) -> u64 {
     )
 }
 
-/// What a row is called where its own actions are listed: its name, or what it is when it has none.
+/// What a row is called where its own actions are listed.
 fn row_label(row: &RowReading) -> String {
-    if row.name.is_empty() {
-        "Row".to_owned()
-    } else {
-        row.name.clone()
-    }
+    row.name.clone()
 }
 
 /// What a strip is called where its own actions are listed: how wide it is.
