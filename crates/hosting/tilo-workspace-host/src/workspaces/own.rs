@@ -387,16 +387,17 @@ fn owners_of(by_person: &BTreeMap<String, Vec<String>>) -> HashMap<String, Strin
 /// `wanted`, by the workspace whose record it belongs to
 /// (`<workspace>.<what>`): the directory is listed once, however many
 /// workspaces are measured, and only theirs are walked, however many other
-/// workspaces the host keeps.
+/// workspaces the host keeps. The directory named for a workspace is its
+/// retained state, which [`stored_state`] counts.
 fn beside_bytes(dir: &Path, wanted: &HashSet<&str>) -> HashMap<String, u64> {
     let mut beside: HashMap<String, u64> = HashMap::new();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        let workspace = name
-            .split_once('.')
-            .map_or(name.as_str(), |(workspace, _)| workspace);
+        let Some((workspace, _)) = name.split_once('.') else {
+            continue;
+        };
         if !wanted.contains(workspace) {
             continue;
         }
