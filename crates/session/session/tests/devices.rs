@@ -454,7 +454,6 @@ fn session_with(
                     id: "so.tilo.settings".into(),
                     title: "Settings".into(),
                     category: None,
-                    description: None,
                 }],
                 ..AppLists::default()
             }),

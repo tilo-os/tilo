@@ -732,13 +732,11 @@ mod tests {
                     id: "so.tilo.notes".to_string(),
                     title: "Notes".to_string(),
                     category: None,
-                    description: None,
                 },
                 tilo_desktop_search::providers::AppEntry {
                     id: "so.tilo.chat".to_string(),
                     title: "Chat".to_string(),
                     category: None,
-                    description: None,
                 },
             ],
             ..AppLists::default()
@@ -770,7 +768,6 @@ mod tests {
                 id: "so.tilo.notes".to_string(),
                 title: "Notes".to_string(),
                 category: None,
-                description: None,
             }],
             ..AppLists::default()
         }));

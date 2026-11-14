@@ -142,7 +142,6 @@ fn chat_lists() -> Lists {
             id: CHAT.to_owned(),
             title: "Chat".to_owned(),
             category: None,
-            description: None,
         }],
         ..AppLists::default()
     })

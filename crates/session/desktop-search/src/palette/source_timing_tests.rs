@@ -149,7 +149,6 @@ fn desk() -> (DesktopSearch, Sender<()>) {
         id: "so.tilo.mail".into(),
         title: "Mail".into(),
         category: Some("Office".into()),
-        description: None,
     });
     data.commands.push(crate::providers::CommandSpec {
         id: "mail-settings".into(),

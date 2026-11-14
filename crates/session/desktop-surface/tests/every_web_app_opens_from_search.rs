@@ -107,7 +107,6 @@ impl TileSource for WebApps {
                 id: offered.id.clone(),
                 title: offered.title.clone(),
                 category: None,
-                description: None,
             })
             .collect()
     }

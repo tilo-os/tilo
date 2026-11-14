@@ -695,7 +695,6 @@ impl TileSource for Source {
                     id: id.into(),
                     title: title.into(),
                     category: Some(category.into()),
-                    description: None,
                 },
             )
             .collect()

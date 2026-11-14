@@ -106,7 +106,6 @@ fn session_over(
                 id: "so.tilo.sheets".into(),
                 title: "Sheets".into(),
                 category: None,
-                description: None,
             }],
             ..AppLists::default()
         }),
@@ -136,7 +135,6 @@ fn session_installing(host: Rc<Host>, apps: &[(&str, &str)]) -> Session {
                     id: (*id).into(),
                     title: (*title).into(),
                     category: None,
-                    description: None,
                 })
                 .collect(),
             ..AppLists::default()
@@ -1588,7 +1586,6 @@ fn host_app_lists() -> AppLists {
             id: NOTES.into(),
             title: "Notes".into(),
             category: None,
-            description: None,
         }],
         host_apps: vec![tilo_desktop_search::providers::host_apps::HostAppEntry {
             desktop_id: "Alacritty.desktop".into(),
@@ -1868,7 +1865,6 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
                 id: "so.tilo.lang.notes".into(),
                 title: "Notebook".into(),
                 category: None,
-                description: None,
             }],
             ..AppLists::default()
         }),

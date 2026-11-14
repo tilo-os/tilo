@@ -295,7 +295,6 @@ impl TileSource for Installed {
             id: "so.tilo.chat".into(),
             title: "Chat".into(),
             category: Some("Talk".into()),
-            description: None,
         }]
     }
 }

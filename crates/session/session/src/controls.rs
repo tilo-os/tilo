@@ -318,7 +318,7 @@ pub(crate) struct Apps {
 }
 
 /// An application installed on this device: its package id, which `open-app` names, its name in
-/// the person's language, its glyph, and its category and description when it named them.
+/// the person's language, its glyph, and its category when it named one.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
@@ -329,7 +329,6 @@ pub(crate) struct App {
     pub icon: String,
     /// `work`, `media`, `play` or `system`; empty when it named none.
     pub category: String,
-    pub description: String,
 }
 
 impl Apps {
@@ -346,7 +345,6 @@ impl Apps {
                             .name()
                             .to_owned(),
                         category: app.category.clone().unwrap_or_default(),
-                        description: app.description.clone().unwrap_or_default(),
                     })
                     .collect()
             })

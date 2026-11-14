@@ -1195,13 +1195,11 @@ mod tests {
                     id: "so.tilo.sheets".into(),
                     title: "Sheets".into(),
                     category: Some("Office".into()),
-                    description: None,
                 },
                 AppEntry {
                     id: "so.tilo.notes".into(),
                     title: "Notes".into(),
                     category: None,
-                    description: None,
                 },
             ],
             windows: vec![WindowEntry {
@@ -1382,7 +1380,6 @@ mod tests {
                 id: format!("so.tilo.app{i}"),
                 title: format!("App {i}"),
                 category: None,
-                description: None,
             }));
             let mut search = DesktopSearch::new();
             search.open(full);
@@ -2756,7 +2753,6 @@ mod tests {
                     id: "so.tilo.notes".into(),
                     title: "Notes".into(),
                     category: None,
-                    description: None,
                 }],
                 windows: vec![WindowEntry {
                     tab: 1,
@@ -2932,7 +2928,6 @@ mod tests {
                 id: app.id.into(),
                 title: app.name.into(),
                 category: None,
-                description: None,
             })
             .collect();
         SearchData {

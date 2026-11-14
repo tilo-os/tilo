@@ -54,7 +54,6 @@ impl TileSource for Catalogue {
                 id: format!("so.tilo.{}", title.to_lowercase()),
                 title: title.into(),
                 category: Some("Applications".into()),
-                description: None,
             })
             .collect()
     }

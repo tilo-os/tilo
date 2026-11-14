@@ -203,7 +203,6 @@ mod tests {
                 id: "so.tilo.editor".into(),
                 title: "Editor".into(),
                 category: Some("Development".into()),
-                description: None,
             }],
             host_apps: vec![HostAppEntry {
                 desktop_id: "org.gnome.TextEditor".into(),

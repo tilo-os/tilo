@@ -39,12 +39,10 @@ pub struct AppEntry {
     pub title: String,
     /// What kind of app it is ("Office"); the registry's when not given.
     pub category: Option<String>,
-    /// Where it runs, when that is not this desktop ("Runs on the node").
-    pub description: Option<String>,
 }
 
 /// Applications, each offered under its own name. A row says what the app
-/// is (its description, else its category), never its package id: the id
+/// is (its category), never its package id: the id
 /// tells builds apart for a developer, a person recognises the name. The id
 /// stays searchable.
 pub struct Applications {
@@ -106,7 +104,7 @@ impl Source for Applications {
                     provider: self.id().into(),
                     id: app.id.clone(),
                     title: app.title.clone(),
-                    subtitle: app.description.clone().or_else(|| app.category.clone()),
+                    subtitle: app.category.clone(),
                     facts: Vec::new(),
                     score: if browsing {
                         ui::search::system::starting_point_rank(&app.id)
@@ -1527,13 +1525,11 @@ mod tests {
                 id: "so.tilo.sheets".into(),
                 title: "Sheets".into(),
                 category: Some("Office".into()),
-                description: None,
             },
             AppEntry {
                 id: "so.tilo.notes".into(),
                 title: "Notes".into(),
                 category: Some("Office".into()),
-                description: None,
             },
         ])
     }
@@ -1548,19 +1544,16 @@ mod tests {
                     id: "so.tilo.calendar".into(),
                     title: "Calendar".into(),
                     category: None,
-                    description: None,
                 },
                 AppEntry {
                     id: "node-app:3".into(),
                     title: "Terminal".into(),
                     category: None,
-                    description: Some("Runs on the node".into()),
                 },
                 AppEntry {
                     id: "com.example.unknown".into(),
                     title: "Unknown".into(),
                     category: None,
-                    description: None,
                 },
             ]);
             for needle in ["", "calendar", "term", "unknown"] {
@@ -1583,10 +1576,6 @@ mod tests {
             assert_eq!(
                 subtitle("cal", "so.tilo.calendar").as_deref(),
                 Some("Office")
-            );
-            assert_eq!(
-                subtitle("", "node-app:3").as_deref(),
-                Some("Runs on the node")
             );
             assert_eq!(subtitle("", "com.example.unknown"), None);
             assert!(!apps.query("so.tilo.calendar").is_empty());
@@ -1626,7 +1615,6 @@ mod tests {
                     id: "node-app:3".into(),
                     title: "Terminal".into(),
                     category: None,
-                    description: Some("Runs on the node".into()),
                 }],
             );
             let term = ranked_ids(&browser, "term");
@@ -1739,7 +1727,6 @@ mod tests {
                     id: app.id.into(),
                     title: app.name.into(),
                     category: None,
-                    description: None,
                 })
                 .chain(extra)
                 .collect(),
@@ -2368,7 +2355,6 @@ mod tests {
                     id: app.id.into(),
                     title: app.name.into(),
                     category: (!app.category.is_empty()).then(|| app.category.into()),
-                    description: None,
                 })
                 .collect(),
         )

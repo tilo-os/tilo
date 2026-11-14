@@ -132,7 +132,6 @@ fn the_send_key_over_an_empty_desk_opens_chat() {
                 id: "so.tilo.chat".into(),
                 title: "Chat".into(),
                 category: None,
-                description: None,
             }],
             ..tilo_session::AppLists::default()
         }),

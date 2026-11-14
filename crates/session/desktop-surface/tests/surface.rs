@@ -62,13 +62,11 @@ impl TileSource for Notices {
                 id: format!("so.tilo.{}", title.to_lowercase()),
                 title: title.into(),
                 category: Some("Office".into()),
-                description: None,
             })
             .chain([tilo_desktop_search::providers::AppEntry {
                 id: format!("{NODE_APP}app.so.tilo.terminal"),
                 title: "Terminal".into(),
                 category: Some("System".into()),
-                description: Some("Runs on the node".into()),
             }])
             .collect()
     }

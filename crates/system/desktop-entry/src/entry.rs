@@ -122,20 +122,14 @@ impl DesktopEntry {
     /// The kind of app its first main category says it is, named the way Tilo's own apps
     /// name theirs ("Network", "Multimedia"): `Categories=GNOME;GTK;Utility;` is a "Utility".
     /// `None` when it lists no main category of the menu spec.
-    pub fn main_category(&self) -> Option<&'static str> {
+    pub fn main_category(&self) -> Option<&str> {
         self.categories
             .iter()
             .find_map(|category| match category.as_str() {
                 "AudioVideo" | "Audio" | "Video" => Some("Multimedia"),
-                "Development" => Some("Development"),
-                "Education" => Some("Education"),
-                "Game" => Some("Game"),
-                "Graphics" => Some("Graphics"),
-                "Network" => Some("Network"),
-                "Office" => Some("Office"),
-                "Science" => Some("Science"),
-                "Settings" | "System" => Some("System"),
-                "Utility" => Some("Utility"),
+                "Settings" => Some("System"),
+                "Development" | "Education" | "Game" | "Graphics" | "Network" | "Office"
+                | "Science" | "System" | "Utility" => Some(category.as_str()),
                 _ => None,
             })
     }

@@ -1330,7 +1330,6 @@ impl SessionSearch {
                     id: format!("{}{}", host_apps::HOST_APP_PREFIX, app.desktop_id),
                     title: app.name.clone(),
                     category: app.kind_of_app(),
-                    description: None,
                 }
             }))
             .collect()
@@ -1677,7 +1676,6 @@ mod tests {
                         id: format!("so.tilo.{}", name.to_lowercase()),
                         title: name.to_owned(),
                         category: None,
-                        description: None,
                     })
                     .collect(),
                 named: Vec::new(),

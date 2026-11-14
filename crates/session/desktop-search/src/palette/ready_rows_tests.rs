@@ -96,7 +96,6 @@ fn with_slow_content() -> (DesktopSearch, Rc<AtomicBool>, Rc<std::cell::Cell<usi
                 id: "so.tilo.calendar".into(),
                 title: "Calendar".into(),
                 category: None,
-                description: None,
             },
         ],
         windows: vec![window_of("notes", "Notes", 7)],

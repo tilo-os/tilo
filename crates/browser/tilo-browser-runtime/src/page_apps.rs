@@ -34,7 +34,6 @@ impl Apps for PageApps {
                 id: id.into(),
                 title: title.into(),
                 category: None,
-                description: None,
             })
             .collect()
     }

@@ -80,7 +80,6 @@ impl AppLists {
                 // here.
                 title: app.name_in(&locales).to_owned(),
                 category: app.category.clone(),
-                description: None,
             })
             .collect();
         let icons = installed
@@ -722,7 +721,6 @@ mod tests {
                     id: "so.tilo.notes".to_owned(),
                     title: "Notes".to_owned(),
                     category: None,
-                    description: None,
                 }],
                 ..AppLists::default()
             },
@@ -756,13 +754,11 @@ mod tests {
                     id: "so.tilo.notes".to_owned(),
                     title: "Notes".to_owned(),
                     category: None,
-                    description: None,
                 };
                 let tasks = AppEntry {
                     id: "so.tilo.tasks".to_owned(),
                     title: "Tasks".to_owned(),
                     category: None,
-                    description: None,
                 };
                 let applications = match store.load(Ordering::Acquire) {
                     1 => vec![notes],

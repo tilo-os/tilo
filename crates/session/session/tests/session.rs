@@ -1395,7 +1395,6 @@ fn the_empty_desks_launchpad_is_published_until_a_window_opens() {
             id: id.into(),
             title: title.into(),
             category: None,
-            description: None,
         })
         .collect(),
         ..tilo_session::AppLists::default()
