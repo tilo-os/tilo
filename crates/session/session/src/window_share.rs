@@ -227,6 +227,9 @@ struct Received {
     /// host, [`crate::page_track`]) rather than its pictures: this device asks the plane for the
     /// page's track instead of the window's.
     page: bool,
+    /// Whether the tile holds the window now, a decoded picture or its page's whole frame: a
+    /// stream of which only the start arrived has a tile and nothing in it.
+    pictured: bool,
 }
 
 /// The state behind the resource: what this session shares, what it watches and what reached it.
@@ -447,10 +450,11 @@ impl WindowShares {
         self.close_left_seats(compositor);
         self.ask_again(compositor, sync, now);
         self.capture(compositor, sync, now);
-        self.follow_streams();
+        self.follow_streams(&pages.borrow());
         // What the members' windows this device shows bring: the pictures and pages the planes
         // sent, and the tracks of a window that left the desk no longer asked for.
         self.follow_windows(desk, sync);
+        self.follow_pictured(desk);
         self.end_gone(compositor, desk, sync, engine);
         // Last, so what the tiles asked for while this pass decoded them reaches the devices
         // hosting the windows.
@@ -1334,6 +1338,8 @@ impl WindowShares {
                         continue;
                     };
                     start.tab = place;
+                    // Whose stream it is is the device its route authenticated.
+                    start.peer = from;
                     // A stream that is already decoded keeps its tile until its sender ends it,
                     // which is how a restarted stream reaches this device.
                     let shown = self
@@ -1350,6 +1356,7 @@ impl WindowShares {
                             shown,
                             start,
                             page,
+                            pictured: false,
                         },
                     );
                     changed = true;
@@ -1414,20 +1421,7 @@ impl WindowShares {
                 continue;
             };
             match heard.track {
-                Track::Page(tab) => {
-                    let Some(stream) = self
-                        .received
-                        .values()
-                        .find(|stream| stream.page && stream.tab == tab && stream.host == from)
-                    else {
-                        continue;
-                    };
-                    desk.peer_surface_page(
-                        neighbour_wire::peer_handle(from.as_bytes()),
-                        stream.start.surface,
-                        &heard.body,
-                    );
-                }
+                Track::Page(tab) => self.page_heard(desk, from, tab, &heard.body),
                 Track::Window(tab, _) => {
                     self.picture_heard(desk, sync, &workspace, from, tab, &heard.body);
                 }
@@ -1502,6 +1496,7 @@ impl WindowShares {
                         shown,
                         start,
                         page: false,
+                        pictured: false,
                     },
                 );
                 self.changed();
@@ -2865,6 +2860,7 @@ fn unwatch_action() -> ActionSpec {
 }
 
 mod menu;
+mod page;
 mod reading;
 mod viewer;
 pub(crate) use menu::{follow_asks, reading_for_menus};
@@ -2913,6 +2909,7 @@ mod window_tracks {
             start: PeerStreamStart::announced(&msg, 11, "Laptop", "Browser", false)
                 .expect("a stream start"),
             page: codec == ui::webview::paint::stream::wire::CODEC,
+            pictured: false,
         }
     }
 

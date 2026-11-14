@@ -58,7 +58,20 @@ impl Tile {
         self.page.clone()
     }
 
-    /// Take one object of the page. Whether the frame the tile shows changed.
+    /// Take one object of the page as the plane hands it over: opened, with its header still on
+    /// it. The page view takes the payload, as the publisher's engine encoded it. Whether the
+    /// frame the tile shows changed.
+    fn take(&mut self, object: &[u8]) -> bool {
+        match tilo_live::page::PageObject::decode(object) {
+            Ok(object) => self.apply(&object.payload),
+            Err(error) => {
+                tracing::warn!(%error, "what a window's page track brought is no page object");
+                false
+            }
+        }
+    }
+
+    /// Take one payload of the page. Whether the frame the tile shows changed.
     fn apply(&mut self, payload: &[u8]) -> bool {
         if let Some(page) = &self.page {
             return page.apply(payload);
@@ -124,7 +137,7 @@ pub(crate) fn heard(id: u32, workspace_id: u64, tab: u64, body: &[u8]) {
                 waiting: Vec::new(),
                 title: String::new(),
             })
-            .apply(body)
+            .take(body)
     });
     if changed {
         crate::browser::presence::page_arrived(id, workspace_id, tab);
@@ -145,4 +158,45 @@ pub(crate) fn tile(tab: u64, title: &str) -> Option<TileHost> {
         Some((entry.open()?, alt))
     })?;
     Some(TileHost::new(TileContent::App(page.tile(alt))))
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_live::page::PageObject;
+    use ui::webview::paint::stream::Frame;
+    use ui::webview::paint::stream::wire::Payload;
+
+    use super::*;
+
+    /// A tile whose page view is in.
+    fn tile() -> Tile {
+        Tile {
+            page: Some(tilo_desktop_surface::page_code::builtin_page().open()),
+            waiting: Vec::new(),
+            title: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_tile_draws_the_payload_of_the_object_its_track_brought() {
+        let payload = Payload::Key(Frame::default())
+            .encode()
+            .expect("a whole frame");
+        let object = PageObject {
+            whole: true,
+            sequence: 0,
+            timestamp_us: 0,
+            payload: payload.clone(),
+        }
+        .encode()
+        .expect("a page object");
+        assert!(
+            tile().take(&object),
+            "the frame the object carries is the one the tile shows"
+        );
+        assert!(
+            !tile().take(&payload),
+            "bytes that are no page object change nothing"
+        );
+    }
 }

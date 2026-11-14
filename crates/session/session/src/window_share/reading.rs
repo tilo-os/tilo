@@ -12,6 +12,13 @@
 //! whether they seal under keys the other lacks. A device in a plane on keys its host lent it
 //! (`lent_keys`) sends what it shares and opens nothing: a window it watches says so.
 //!
+//! An open plane and a stream's start still put nothing on a screen, so the rows say what crossed.
+//! A window this device shows is `pictured` once its tile holds a decoded picture or its page's
+//! whole frame, and until then its row waits for the first one. A window this device shares is
+//! `streaming` while a member's desk asks for it and it goes out: a captured window as soon as it
+//! is asked for, a window whose app draws its page once the app handed a whole page over. One that
+//! a member shows and nothing of which went out says so (`waiting_for`).
+//!
 //! A relay tells the device it turns away nothing but that. So a plane that was refused says which
 //! epoch's keys this device presented (`presented`), and the plane of the device that relays the
 //! workspace lists the endpoints it turned away and has not let in since, each with why
@@ -48,13 +55,17 @@ impl WindowShares {
         self.changed();
     }
 
-    /// Note which shared windows a member's desk is sent pictures of now.
-    pub(super) fn follow_streams(&mut self) {
+    /// Note which shared windows go out to a member's desk now: the ones captured for a desk that
+    /// asks for them, and of the ones whose app draws its page (`pages`) those whose page was
+    /// published since a desk asked for it.
+    pub(super) fn follow_streams(&mut self, pages: &crate::page_track::PageTracks) {
+        let sent = pages.sent();
         let streaming: BTreeSet<TabId> = self
             .hosted
             .iter()
             .filter(|(_, hosted)| hosted.shown)
             .map(|(tab, _)| *tab)
+            .chain(self.pages.keys().copied().filter(|tab| sent.contains(tab)))
             .collect();
         if streaming != self.streaming {
             self.streaming = streaming;
@@ -74,6 +85,25 @@ impl WindowShares {
         match self.live.get(workspace) {
             Some(Standing::Open { lent: true, .. }) => t("session-window-share-live-lent"),
             standing => waiting_for(standing),
+        }
+    }
+
+    /// What the window `stream` brings waits for: what its workspace's plane waits for, and under
+    /// an open plane its first page or picture, until its tile holds one.
+    fn received_waits_for(&self, stream: &super::Received) -> String {
+        let plane = self
+            .watching
+            .iter()
+            .find(|((_, tab), watched)| *tab == stream.tab && watched.host == stream.host)
+            .map(|((workspace, _), _)| self.watching_waits_for(workspace))
+            .unwrap_or_default();
+        if !plane.is_empty() || stream.pictured {
+            return plane;
+        }
+        if stream.page {
+            t("session-window-share-first-page")
+        } else {
+            t("session-window-share-first-picture")
         }
     }
 
@@ -124,6 +154,16 @@ impl WindowShares {
                         })
                     })
                     .collect();
+                // An announcement is no page: the window goes out once its app handed a whole
+                // page over for a desk that asks for it. One a member shows and nothing of which
+                // went out waits for that.
+                let streaming = self.streaming.contains(tab);
+                let plane = self.waiting_for(&page.workspace);
+                let waiting_for = if plane.is_empty() && !streaming && !page.announced.is_empty() {
+                    t("session-window-share-page-unsent")
+                } else {
+                    plane
+                };
                 sharing.push(json!({
                     "tab": tab.to_string(),
                     "window": page.window,
@@ -131,8 +171,8 @@ impl WindowShares {
                     "room": page.workspace,
                     "input_allowed": false,
                     "viewers": viewers,
-                    "streaming": !page.announced.is_empty(),
-                    "waiting_for": self.waiting_for(&page.workspace),
+                    "streaming": streaming,
+                    "waiting_for": waiting_for,
                 }));
             }
             sharing
@@ -182,7 +222,9 @@ impl WindowShares {
                     "width": stream.start.width,
                     "height": stream.start.height,
                     "codec": stream.start.codec,
-                    "pictured": stream.shown,
+                    // Whether the tile holds the window: a start alone pictures nothing.
+                    "pictured": stream.pictured,
+                    "waiting_for": self.received_waits_for(stream),
                 })
             })
             .collect();
@@ -258,9 +300,9 @@ fn waiting_for(standing: Option<&Standing>) -> String {
 /// waits to reach, and what it waits for; and of `plane`, the one open here, the epoch it seals
 /// under, whether it does so on keys its host lent it, how many objects of other devices it
 /// opened, the ones it could not open by reason, and the tabs of this device's windows another
-/// device asks it for. A plane its relay refused says the epoch whose keys this device presented,
-/// and `turned` are the endpoints this device's own relay turned away from the workspace's plane,
-/// each with why.
+/// device asks it for, by their pictures or by their page. A plane its relay refused says the
+/// epoch whose keys this device presented, and `turned` are the endpoints this device's own relay
+/// turned away from the workspace's plane, each with why.
 fn live_row(
     workspace: &str,
     standing: &Standing,
@@ -282,12 +324,16 @@ fn live_row(
         _ => None,
     };
     let turned_away: Vec<Value> = turned.iter().map(turned_row).collect();
-    let asked_for: Vec<String> = plane
-        .map(Plane::wanted_windows)
-        .unwrap_or_default()
-        .iter()
-        .map(ToString::to_string)
-        .collect();
+    let asked_for: BTreeSet<TabId> = plane
+        .map(|plane| {
+            plane
+                .wanted_windows()
+                .into_iter()
+                .chain(plane.wanted_pages())
+                .collect()
+        })
+        .unwrap_or_default();
+    let asked_for: Vec<String> = asked_for.iter().map(ToString::to_string).collect();
     json!({
         "room": workspace,
         "state": state_of(Some(standing)),

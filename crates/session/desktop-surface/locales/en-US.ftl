@@ -1078,6 +1078,9 @@ session-window-share-live-unreached = Waiting to reach { $device }, the device t
 session-window-share-live-refused = { $device } did not let this device into this workspace's calls and shared windows
 session-window-share-live-absent = This computer takes no part in this workspace's calls and shared windows
 session-window-share-live-lent = This device can share its own windows in this workspace and cannot open what others share
+session-window-share-first-page = Waiting for the window's page from the device that runs it
+session-window-share-first-picture = Waiting for the window's first picture
+session-window-share-page-unsent = Waiting for the window's page to go out to the devices showing it
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = On-screen readout

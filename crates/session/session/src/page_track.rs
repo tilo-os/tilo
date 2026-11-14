@@ -58,6 +58,9 @@ struct Offered {
     queue: VecDeque<(bool, Vec<u8>)>,
     /// The number of objects this window's page has published.
     sequence: u64,
+    /// Whether a whole frame of the page was published since someone started showing the
+    /// window: until then nobody was sent anything they can draw.
+    sent: bool,
 }
 
 /// The windows whose pages this session publishes, by the tab that shows them.
@@ -143,12 +146,14 @@ impl PageTracks {
             if shown && !page.watched {
                 page.watched = true;
                 page.awaiting_whole = true;
+                page.sent = false;
                 page.queue.clear();
                 asks.push((*tab, Watch::Whole));
             }
             if !shown && page.watched {
                 page.watched = false;
                 page.awaiting_whole = false;
+                page.sent = false;
                 page.queue.clear();
                 asks.push((*tab, Watch::Stop));
                 continue;
@@ -173,6 +178,7 @@ impl PageTracks {
                 };
                 if plane.send_page(*tab, &object).is_ok() {
                     page.sequence = page.sequence.wrapping_add(1);
+                    page.sent |= object.whole;
                 }
             }
         }
@@ -185,6 +191,17 @@ impl PageTracks {
         self.offered
             .iter()
             .filter(|(_, page)| page.watched)
+            .map(|(tab, _)| *tab)
+            .collect()
+    }
+
+    /// The windows whose page went out to the members showing them: a whole frame of it was
+    /// published since a desk asked for it. A window that is asked for and whose app handed
+    /// nothing over is not among them.
+    pub(crate) fn sent(&self) -> Vec<TabId> {
+        self.offered
+            .iter()
+            .filter(|(_, page)| page.watched && page.sent)
             .map(|(tab, _)| *tab)
             .collect()
     }
@@ -412,6 +429,10 @@ mod over_the_plane {
             publishing.wanted_pages() == [TAB]
         });
         assert_eq!(pages.step(&planes, 0), [(TAB, Watch::Whole)]);
+        assert!(
+            pages.sent().is_empty(),
+            "a page that is asked for and not handed over went to nobody"
+        );
 
         // The app answers with what its engine captured, and the session
         // publishes every object of it.
@@ -425,6 +446,7 @@ mod over_the_plane {
             pages.step(&planes, 1_000).is_empty(),
             "the ask was answered"
         );
+        assert_eq!(pages.sent(), [TAB], "its whole frame went out");
 
         // The viewer draws the page: the objects it opened rebuild the very
         // frame the publisher held.
@@ -460,6 +482,7 @@ mod over_the_plane {
             publishing.wanted_pages().is_empty()
         });
         assert_eq!(pages.step(&planes, 2_000), [(TAB, Watch::Stop)]);
+        assert!(pages.sent().is_empty(), "nobody shows the window any more");
         pages.received(TAB, false, vec![0]);
         assert!(pages.step(&planes, 3_000).is_empty());
         assert!(

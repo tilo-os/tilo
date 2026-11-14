@@ -1094,6 +1094,9 @@ session-window-share-live-unreached = Wartet auf die Verbindung zu { $device }, 
 session-window-share-live-refused = { $device } hat dieses Gerät nicht zu den Anrufen und geteilten Fenstern dieses Arbeitsbereichs zugelassen
 session-window-share-live-absent = Dieser Rechner nimmt an den Anrufen und geteilten Fenstern dieses Arbeitsbereichs nicht teil
 session-window-share-live-lent = Dieses Gerät kann in diesem Arbeitsbereich eigene Fenster teilen und nicht öffnen, was andere teilen
+session-window-share-first-page = Wartet auf die Seite des Fensters von dem Gerät, auf dem es läuft
+session-window-share-first-picture = Wartet auf das erste Bild des Fensters
+session-window-share-page-unsent = Wartet darauf, dass die Seite des Fensters an die Geräte geht, die es zeigen
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = Bildschirmanzeige

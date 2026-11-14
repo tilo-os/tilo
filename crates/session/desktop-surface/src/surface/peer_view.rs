@@ -24,8 +24,9 @@
 //!   [`NeighbourMsg::RemoteInput`] the owner replays.
 //!
 //! The tile ([`PeerView`]) binds that state to widgets the toolkit already has:
-//! the framework's arriving card while no picture is here, and the image
-//! widget once one is. It decides nothing: a person's click and keystroke ask
+//! the framework's arriving card while nothing of the window is here, the
+//! image widget once a picture is, and the page view once a page's whole frame
+//! is. It decides nothing: a person's click and keystroke ask
 //! the same actions anything else driving the tile asks.
 
 use std::cell::RefCell;
@@ -56,7 +57,7 @@ use ui::widget::{
 };
 use ui::{TextRenderer, Theme};
 
-use crate::page_view::PageStream;
+use crate::page_view::{PageStream, PageView};
 use tilo_actions::{
     ActionOutput, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
     ResourcePresentation, ResourceSpec,
@@ -806,22 +807,27 @@ impl PeerSurface {
         std::mem::take(&mut self.outgoing)
     }
 
-    /// What stands in the tile's place: the newest picture as the image widget takes it, or -
-    /// before one is here - the framework's arriving card naming the device the window comes from.
+    /// What stands in the tile's place: the window's page or its newest picture, or - before
+    /// either is here - the framework's arriving card naming the device the window comes from.
     fn content(&self) -> Box<dyn Widget> {
-        if let Some(page) = &self.page {
+        let alt = format!("{} on {}", self.title, self.sharer);
+        if let Some(page) = &self.page
+            && page.borrow().frame().is_some()
+        {
             // The page is drawn here, not decoded: the display list its publisher sends is what
             // this toolkit's own Vello and text stack draws, the same code the page's own window
             // draws it with.
-            return PageStream::view(page, format!("{} on {}", self.title, self.sharer));
+            return Box::new(PageView::new(Rc::clone(page), alt));
         }
         match &self.picture {
             Some(picture) => Box::new(
                 Image::from_rgba(Arc::clone(&picture.rgba), picture.width, picture.height)
                     .filling()
                     .with_fit(ImageFit::Contain)
-                    .with_alt(format!("{} on {}", self.title, self.sharer)),
+                    .with_alt(alt),
             ),
+            // A page of which no whole frame came waits as a picture does: in the shape its
+            // device announced, under that device's name.
             None => Box::new(MediaGrid::arriving(
                 1,
                 self.aspect(),
@@ -1604,6 +1610,14 @@ impl super::DesktopHandle {
     pub fn peer_surface_read(&self, tab: TabId) -> Option<PeerRead> {
         let peers = Rc::clone(&self.shared.borrow().peers);
         peers.borrow().read(tab)
+    }
+
+    /// What the tile showing `peer`'s shared `surface` publishes now, whichever tab it stands in.
+    /// `None` for a stream this desktop shows nowhere.
+    pub fn peer_stream_read(&self, peer: PeerId, surface: SurfaceId) -> Option<PeerRead> {
+        let peers = Rc::clone(&self.shared.borrow().peers);
+        let peers = peers.borrow();
+        peers.read(peers.tab_of(peer, surface)?)
     }
 
     /// Wake `wake` when a pushed picture comes out, so a window that stopped changing still shows
