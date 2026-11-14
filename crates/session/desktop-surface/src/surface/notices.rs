@@ -1440,7 +1440,7 @@ mod tests {
             "nothing left to take away"
         );
         assert!(
-            !notifications.retire_remote("shell", id),
+            !notifications.retire_remote("studio", id),
             "another device's id is not this one's"
         );
     }

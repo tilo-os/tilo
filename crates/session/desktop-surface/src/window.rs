@@ -20,10 +20,10 @@ use tilo_desktop_model::Layout;
 use tilo_desktop_model::layout::TileContent;
 
 /// `look` 's operation type: the window as a picture.
-pub const LOOK: &str = "so.tilo.layouttop.window.look";
+pub const LOOK: &str = "so.tilo.desktop.window.look";
 
 /// `read` 's operation type: what the window says of itself.
-pub const READ: &str = "so.tilo.layouttop.window.read";
+pub const READ: &str = "so.tilo.desktop.window.read";
 
 /// The address of tab `tab` 's resource, which the shell publishes as the window's own:
 /// `desktop:tab:<tab>` .

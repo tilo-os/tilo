@@ -145,8 +145,8 @@ pub enum ArrangementAction {
     },
     /// Resize the strip `strip` to `permille` of its row's width.
     Resize { strip: u64, permille: u32 },
-    /// Maximize the strip `strip` (`maximized`), so it stands alone as the window the layout is,
-    /// or restore it beside its row's other windows.
+    /// Maximize the strip `strip` (`maximized`), so it stands alone and fills the shell, or
+    /// restore it beside its row's other windows.
     Maximize { strip: u64, maximized: bool },
     /// Close the place `place` ; its window goes with it.
     Close { place: u64 },
@@ -2359,11 +2359,11 @@ fn strip_actions(key: &str) -> Vec<ActionSpec> {
         ),
         action(
             "maximize-strip",
-            "Maximize a strip, so it stands alone as the window the layout is",
+            "Maximize a strip, so it stands alone and fills the shell",
             vec![optional(
                 "on",
                 ParamType::Boolean,
-                "Whether it fills the layout",
+                "Whether it fills the shell",
             )],
             move |args| ArrangementAction::Maximize {
                 strip: count_of(&maximized),
