@@ -342,11 +342,11 @@ pub(crate) enum FindAnswer {
     /// under what a place can show ([`found_all`]).
     Door {
         done: FoundSearch,
-        /// What a place can show, read at the ask where the arrangement is: `'static` by holding
+        /// What a place can show, read at the ask where the layout is: `'static` by holding
         /// the catalogue itself, not a borrow of it.
         shows: Rc<dyn Fn(&str) -> bool>,
     },
-    /// Text typed on the canvas: the hits in the ranking's order, which the arrangement places
+    /// Text typed on the canvas: the hits in the ranking's order, which the layout places
     /// through its own catalogue (never a second reading of what a place can show).
     Canvas(tilo_session_core::layout::FindDone),
 }
@@ -735,7 +735,7 @@ impl SessionSearch {
 
     /// What [`Self::find_in`] answers, asked by the session's own door on the loop's thread: the
     /// sources are handed to their workers and the search stays pending (`shows` names what a
-    /// place can show, read here where the arrangement is), and `done` hears what it found on a
+    /// place can show, read here where the layout is), and `done` hears what it found on a
     /// later pass ([`Self::poll_finds`]), as its answers land.
     ///
     /// A source that never answers cuts the find off at `within` with the rows that are in,

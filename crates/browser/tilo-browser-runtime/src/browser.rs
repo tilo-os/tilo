@@ -579,8 +579,8 @@ pub(crate) struct Desktop {
     pub(crate) handle: tilo_desktop_surface::DesktopHandle,
     shared: crate::desktop::Shared,
     persistence: Rc<crate::desktop::Persistence>,
-    /// The person's arrangement of this layout: what the palette, a script and an
-    /// agent arrange the windows with, as a session's arrangement does.
+    /// The person's layout: what the palette, a script and an
+    /// agent change the windows with, as a session's layout does.
     layout: crate::layout::PageLayout,
     /// Navigation commands name the mount generation they were issued for.
     generation: String,
@@ -608,7 +608,7 @@ pub(crate) struct Desktop {
     /// What the session asked of the page for its windows, still open.
     asks: session_asks::Asks,
     /// The session's search, which the shell's palette asks beyond the shell's own windows and
-    /// commands: the bundle's apps and what the arrangement publishes.
+    /// commands: the bundle's apps and what the layout publishes.
     search: crate::page_search::PageSearch,
     /// Mentions of this person in the workspace's records, and what was told.
     mentions: RefCell<tilo_session::mentions::Mentions>,

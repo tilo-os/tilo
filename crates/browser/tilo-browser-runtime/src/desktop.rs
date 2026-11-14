@@ -1440,7 +1440,7 @@ pub(crate) struct Persistence {
     /// history when this page is in no workspace. The rules of the document —
     /// what one change of the layout is, who made it, how a step is taken back —
     /// are the session core's, the same the native session runs. Shared with
-    /// the page's arrangement, which arranges that layout by action.
+    /// the page's layout, which changes that layout by action.
     layout: Rc<LayoutDocument>,
     /// Where the document is kept, and why the last write of it was refused.
     profile: Rc<ProfileStore>,
@@ -1454,7 +1454,7 @@ pub(crate) struct Persistence {
 }
 
 impl Persistence {
-    /// The layout document, as the page's arrangement keeps it too.
+    /// The layout document, as the page's layout keeps it too.
     pub(crate) fn layout(&self) -> Rc<LayoutDocument> {
         Rc::clone(&self.layout)
     }

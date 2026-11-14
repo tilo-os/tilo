@@ -128,10 +128,10 @@ struct Held {
     undo: Option<UndoLog>,
     /// The write of the record under way.
     writing: Option<Going>,
-    /// A step of the person's the arrangement asked for while the layout's write was under way: it
+    /// A step of the person's the layout asked for while its write was under way: it
     /// is taken on the look that finds that write done.
     pending_step: Option<bool>,
-    /// What an arranging action did while the layout's write was under way: the change that names
+    /// What a layout action did while the layout's write was under way: the change that names
     /// it is the look's, once the workspace answered the one before it.
     pending_acted: Option<Acted>,
     /// Whether the record was read here.
@@ -906,7 +906,7 @@ impl Layouts {
     }
 
     /// Write this device's changes to the layout of `workspace` into that workspace's record, as
-    /// one change: `acted`'s if the arrangement just did something, else the person's own edit.
+    /// one change: `acted`'s if the layout just did something, else the person's own edit.
     /// Handing them to the task that writes them is all the loop does: folding the record into this
     /// layout's workspace and writing the two together is what a save costs, and none of it runs here.
     /// Whether this look is done with the workspace: what it could not hand yet is tried again.
@@ -1009,7 +1009,7 @@ impl Layouts {
                 workspace_id,
                 workspace: workspace.clone(),
                 local,
-                // The record is read while the write under way runs — the arrangement's records,
+                // The record is read while the write under way runs — the layout's records,
                 // the pane's history — so the write takes a copy of it and this device keeps its.
                 kept: self.held(&key, |held| held.kept.clone()),
                 reached,
@@ -1354,7 +1354,7 @@ impl Layouts {
         );
     }
 
-    /// A step of a layout the arrangement asked for while that layout's write was under way: the
+    /// A step of a layout the person asked for while that layout's write was under way: the
     /// workspace it belongs to and whether it is a redo. Taken once the write is done.
     pub(crate) fn take_pending_step(&self) -> Option<(WorkspaceId, bool)> {
         let mut pending = None;
@@ -1838,7 +1838,7 @@ fn next_step(
 }
 
 /// What a person arranged of `workspace_id` in the layout `doc`: its strips, the window groups in
-/// each and the windows in each group, and where the arrangement puts them.
+/// each and the windows in each group, and where the layout puts them.
 pub(crate) type Arranged = (
     Vec<(u64, String, Vec<(u64, Vec<u64>)>)>,
     tilo_desktop_model::WorkspaceLayout,
@@ -2131,7 +2131,7 @@ impl crate::activity::History for LayoutHistory {
     }
 }
 
-/// The layout's layout as the arrangement keeps it: the layout of the workspace in front, which every
+/// The layout of the workspace in front, which every
 /// member shows.
 pub(crate) struct Steps {
     layouts: Rc<Layouts>,

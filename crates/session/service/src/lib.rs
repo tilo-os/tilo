@@ -86,7 +86,7 @@ impl PartialEq for Started {
 /// views; it opens nothing"). A service that keeps a resource's record publishes its `open` as the
 /// other actions are published — an agent and a view read the catalogue the same way — and answers
 /// it here: the invocation changed nothing of the record, and the session places the resource
-/// through its arrangement, as [`crate::Service::take_open`] hands it over.
+/// through its layout, as [`crate::Service::take_open`] hands it over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Open {
     /// The resource to place, by its published id.
@@ -193,7 +193,7 @@ pub trait Service {
     /// The places [`Self::invoke`] and [`Self::invoke_as`] were asked to open since this was last
     /// taken, each with the actor that asked: an invocation of a resource's `open` changes nothing
     /// of the record, and opening is the system's ([`Open`], shell.md §8, "The canvas composes
-    /// views; it opens nothing"). The session places each through its arrangement, attributed to
+    /// views; it opens nothing"). The session places each through its layout, attributed to
     /// that actor and admitted as the same step `shell:layout#open` is. A service that
     /// publishes no `open` has nothing to take.
     fn take_open(&mut self) -> Vec<(tilo_actions::ActionInvoker, Open)> {

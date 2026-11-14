@@ -127,8 +127,8 @@ pub fn component_publications(id: u64) -> Result<String, JsValue> {
             // The shell's own layout actions are published beside the
             // windows' applications, so the palette, a script and an agent
             // reach the shell through the same listing as everything else.
-            desktop.arrangement.remember(&resources);
-            resources.extend(desktop.arrangement.resources());
+            desktop.layout.remember(&resources);
+            resources.extend(desktop.layout.resources());
         }
         serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
     })
@@ -267,19 +267,19 @@ pub(super) fn invoke_as(
     by: Invoker,
 ) -> Result<String, JsValue> {
     with_mount(id, |m| {
-        // The shell's own actions name no window: the mount's arrangement
+        // The shell's own actions name no window: the mount's layout
         // carries them, as a native session's door does.
         if let Some(desktop) = &m.desktop
-            && crate::arranging::PageLayout::holds(resource)
+            && crate::layout::PageLayout::holds(resource)
         {
             // What the page publishes now: what a place made from a resource
             // reads its app and views from.
             if let Ok(published) = m.frame.published_bound_resources_of(None) {
-                desktop.arrangement.remember(&published);
+                desktop.layout.remember(&published);
             }
             let address = tilo_actions::ActionAddress::new(resource, action);
             let output = desktop
-                .arrangement
+                .layout
                 .invoke(&address, arguments)
                 .map_err(|e| door_error(&e))?;
             m.pending = true;
