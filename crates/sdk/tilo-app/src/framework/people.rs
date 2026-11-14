@@ -49,6 +49,9 @@ struct Roster {
     own: Option<String>,
     /// Everyone the workspace names, by name, as `@` offers them.
     members: Vec<MentionCandidate>,
+    /// The same participants as a history directory reads them: what a file
+    /// version's person and device keys resolve through.
+    registry: ui_core::history_source::AuthorDirectory,
 }
 
 /// A participant as a view shows them: what the workspace calls the id an
@@ -126,6 +129,13 @@ impl People {
     /// ([`ViewCx::person_picker`]).
     pub fn members(&self) -> Vec<MentionCandidate> {
         self.roster.borrow().members.clone()
+    }
+
+    /// The participants as a history directory reads them: what a file
+    /// version's person and device keys resolve through, and the hover that
+    /// names the computer whose session vouched for the writer.
+    pub fn registry(&self) -> ui_core::history_source::AuthorDirectory {
+        self.roster.borrow().registry.clone()
     }
 
     /// Who the id an action recorded names, however the record spells it: a
@@ -277,6 +287,15 @@ impl People {
                 .collect(),
             own: presence.self_label(),
             members: merged_roster(presence, &[]),
+            registry: {
+                let mut registry =
+                    ui_core::history_source::AuthorDirectory::from_presence(presence);
+                if let Some(id) = presence.self_id() {
+                    let reader = presence.person_of(id).unwrap_or(id).0.clone();
+                    registry.set_reader(reader);
+                }
+                registry
+            },
         };
         if *self.roster.borrow() == next {
             return false;

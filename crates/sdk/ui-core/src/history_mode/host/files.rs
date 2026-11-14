@@ -390,18 +390,6 @@ impl HistoryHost {
         toolbar
     }
 }
-fn version_label(provenance: &fs_protocol::FileProvenance) -> String {
-    I18nManager::lookup_plain(match provenance {
-        fs_protocol::FileProvenance::Create => "history-files-created",
-        fs_protocol::FileProvenance::Edit => "history-files-edited",
-        fs_protocol::FileProvenance::Rename => "history-files-renamed",
-        fs_protocol::FileProvenance::Move => "history-files-moved",
-        fs_protocol::FileProvenance::Delete => "history-files-deleted",
-        fs_protocol::FileProvenance::Restore { .. } => "history-files-restored",
-        fs_protocol::FileProvenance::ConflictResolution => "history-files-conflict-resolved",
-    })
-}
-
 /// The versions of the file coalesced into the changes a person made: one row
 /// per change, so an atomic save and an agent session's run read as one thing.
 fn file_changes(files: &FileController) -> Vec<crate::history_source::file_changes::FileChange> {
@@ -435,20 +423,7 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
                 },
             );
             let author = known.unwrap_or_else(|| {
-                let identity = hex::encode(person.get(..6).unwrap_or(person));
-                let name = if person.iter().all(|b| *b == 0) {
-                    I18nManager::lookup_plain("history-files-unknown-author")
-                } else {
-                    I18nManager::format(
-                        "history-files-author",
-                        &[("identity", identity.as_str().into())],
-                    )
-                };
-                crate::history_source::author_coloured(
-                    name,
-                    identity.clone(),
-                    crate::presence::user_color(&identity),
-                )
+                crate::history_source::file_changes::unknown_file_author(person)
             });
             crate::HistoryEntry {
                 id: crate::HistoryEntryId(*version.id.0.as_bytes()),
@@ -458,13 +433,10 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
                 timestamp: crate::time::UNIX_EPOCH
                     .checked_add(crate::time::Duration::from_millis(version.timestamp_ms))
                     .unwrap_or(crate::time::UNIX_EPOCH),
-                summary: change.sentence(&files.target.label).unwrap_or_else(|| {
-                    format!(
-                        "{} · {}",
-                        version_label(&version.provenance),
-                        files.target.label
-                    )
-                }),
+                summary: crate::history_source::file_changes::change_summary(
+                    &change,
+                    &files.target.label,
+                ),
                 text_delta: None,
                 diff_payload: None,
                 redaction: None,

@@ -384,6 +384,55 @@ impl FileChange {
     }
 }
 
+/// The author a file version reads as when the directory knows neither the
+/// person nor the device: their identity's first characters, in their colour,
+/// as every surface that lists a folder's changes names them.
+#[must_use]
+pub fn unknown_file_author(person: &[u8; 32]) -> crate::widget::history::HistoryAuthor {
+    let identity = hex::encode(person.get(..6).unwrap_or(person));
+    let name = if person.iter().all(|byte| *byte == 0) {
+        crate::i18n::I18nManager::lookup_plain("history-files-unknown-author")
+    } else {
+        crate::i18n::I18nManager::format(
+            "history-files-author",
+            &[("identity", identity.as_str().into())],
+        )
+    };
+    crate::history_source::author_coloured(
+        name,
+        identity.clone(),
+        crate::presence::user_color(&identity),
+    )
+}
+
+/// What one version's provenance is called, in the reading thread's words.
+#[must_use]
+pub fn provenance_label(provenance: FileProvenance) -> String {
+    crate::i18n::I18nManager::lookup_plain(match provenance {
+        FileProvenance::Create => "history-files-created",
+        FileProvenance::Edit => "history-files-edited",
+        FileProvenance::Rename => "history-files-renamed",
+        FileProvenance::Move => "history-files-moved",
+        FileProvenance::Delete => "history-files-deleted",
+        FileProvenance::Restore { .. } => "history-files-restored",
+        FileProvenance::ConflictResolution => "history-files-conflict-resolved",
+    })
+}
+
+/// What `change` did to `file`, in the reading thread's words: the sentence its
+/// facts make when the content was read, else what the change was, naming the
+/// file — "Edited terms.txt". Every surface that lists a folder's changes reads
+/// this one wording.
+#[must_use]
+pub fn change_summary(change: &FileChange, file: &str) -> String {
+    change.sentence(file).unwrap_or_else(|| {
+        format!(
+            "{} · {file}",
+            provenance_label(change.last().provenance.clone())
+        )
+    })
+}
+
 /// Coalesce a file's versions, oldest first, into the changes a history shows:
 /// consecutive versions by one writer, closer than `quiet`, as one change; an
 /// agent session's versions as one run until a turn boundary closes it. A

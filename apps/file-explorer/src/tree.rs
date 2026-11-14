@@ -294,7 +294,18 @@ impl TreeBrowser {
         if is_folder {
             row = row.mark(Icon::Folder);
         }
-        if let Some(author) = node.author.as_deref() {
+        if let Some(author) = self.author_of(node) {
+            // The person, and the agent when one wrote for them: what a
+            // computer's Files says of the same change.
+            let (person, agent) = ui::row_people(&author);
+            let meta = agent.map_or(person.clone(), |agent| format!("{person} · {agent}"));
+            row = row.meta(meta);
+            if let Some(hover) = ui::attribution_hover(&author) {
+                row = row.tooltip(hover);
+            }
+        } else if let Some(author) = node.author.as_deref() {
+            // A tree that records no version here yet: the device that wrote
+            // it, when the workspace names that device.
             row = row.meta(self.people.name(author));
         }
         if is_folder {
@@ -320,6 +331,39 @@ impl TreeBrowser {
                 name: name.clone(),
             });
         }))
+    }
+
+    /// The author of `node`'s newest version, as the folder's versions record
+    /// it: the person whose device signed it, and the agent that wrote for them
+    /// when one did. `None` for a node the tree holds no version of.
+    fn author_of(&self, node: &TreeEntry) -> Option<ui::HistoryAuthor> {
+        let record_id = node.record_id?;
+        let tree = self.tree.as_ref()?;
+        let (version, attribution) =
+            tree.read(|doc| fs_protocol::history::latest(doc, record_id))??;
+        let registry = self.people.registry();
+        let folder = node
+            .parent
+            .as_deref()
+            .filter(|parent| *parent != ROOT_ID)
+            .map(|parent| {
+                let held = self.tree.as_ref().map(WorkspaceRecord::get);
+                let path = match held.as_deref() {
+                    Some(tree) => Self::path_of(tree, parent),
+                    None => String::new(),
+                };
+                format!("/{path}")
+            });
+        registry.resolve_attributed_file_actor_in(
+            version.actor.person.as_bytes(),
+            version.actor.device.as_bytes(),
+            attribution
+                .as_ref()
+                .map(|attributed| &attributed.attribution),
+            ui::history_source::WriterPlace {
+                folder: folder.as_deref(),
+            },
+        )
     }
 
     /// A text document's row (a `.md`, an `.odt`): its content is the tree's

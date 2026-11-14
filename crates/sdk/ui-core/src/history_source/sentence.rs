@@ -105,6 +105,22 @@ pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
     .filter(|badge| !badge.trim().is_empty())
 }
 
+/// The two names a folder row shows for a file's newest change: the person
+/// it is in the name of, and the agent that wrote for them when one did — so a
+/// row reads "Ada · Claude Code" wherever the folder is shown.
+#[must_use]
+pub fn row_people(author: &HistoryAuthor) -> (String, Option<String>) {
+    let person = author
+        .attribution
+        .as_ref()
+        .and_then(|attribution| attribution.on_behalf_of_name.clone())
+        .unwrap_or_else(|| author.name.clone());
+    let agent = writer_badge(author)
+        .or_else(|| (author.relation == AuthorRelation::Software).then(|| author.name.clone()))
+        .filter(|agent| agent.trim() != person.trim());
+    (person, agent)
+}
+
 /// The hover that names what wrote an attributed change, field by field:
 /// "External agent · Claude Code · ‘Prepare the report’ · Kaiserslautern · /Reports".
 /// `None` for a change with no recorded writer, whose row names a person.

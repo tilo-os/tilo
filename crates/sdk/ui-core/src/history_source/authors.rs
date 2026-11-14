@@ -101,6 +101,63 @@ impl AuthorDirectory {
         self.by_actor.insert(actor_hex.to_lowercase(), author);
     }
 
+    /// The directory presence names the workspace's participants through: every
+    /// device by what the workspace calls it, every agent as that agent for the
+    /// person it works for, and every person by the root key they write as. What
+    /// a folder file's version names — the person who signed it and the computer
+    /// that vouched for it — resolves through this, so a row reads "Ada" and
+    /// "Claude Code for Ada" on a page as it does on a computer.
+    #[must_use]
+    pub fn from_presence(presence: &crate::presence::PresenceCtx) -> Self {
+        let mut directory = Self::new();
+        for crate::presence::NamedParticipant {
+            id,
+            name,
+            agent,
+            person,
+        } in presence.named_participants()
+        {
+            if name.trim().is_empty() {
+                continue;
+            }
+            directory.register_device(&id, name.clone());
+            match person {
+                Some(person) if !agent => {
+                    // The id is one of the person's devices: name the person by
+                    // their root, and the device by its own label.
+                    if directory.by_actor.get(&principal_key(&person)).is_none() {
+                        let shown =
+                            presence.display_name(&crate::permissions::UserId(person.clone()));
+                        directory.register_person(&person, author_for_identity(shown, &person));
+                    }
+                }
+                Some(person) => {
+                    if directory.by_actor.get(&principal_key(&person)).is_none() {
+                        let shown =
+                            presence.display_name(&crate::permissions::UserId(person.clone()));
+                        directory.register_person(&person, author_for_identity(shown, &person));
+                    }
+                    let (red, green, blue) = crate::presence::user_color(&id);
+                    directory.register_agent(
+                        &id,
+                        HistoryAgent {
+                            principal: format!("agent:{id}"),
+                            label: name,
+                            rgb: (red, green, blue),
+                            person,
+                        },
+                    );
+                }
+                None => {
+                    // Presence names the participant themselves: a person on a
+                    // host that names people by their root key.
+                    directory.register_person(&id, author_for_identity(name, &id));
+                }
+            }
+        }
+        directory
+    }
+
     /// Bind a person's principal (the hex of their root key, or a handle)
     /// to how they are named, so the changes they make and the changes made
     /// on their behalf both name them.

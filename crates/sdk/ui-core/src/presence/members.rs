@@ -7,7 +7,43 @@ use tilo_sort::CompactSort as _;
 use super::PresenceCtx;
 use crate::permissions::MemberId;
 
+/// A participant presence names, as a history directory reads them: the id they are known by,
+/// what the workspace calls them, whether they are software, and the person they are a device of
+/// or act for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedParticipant {
+    pub id: String,
+    pub name: String,
+    pub agent: bool,
+    pub person: Option<String>,
+}
+
 impl PresenceCtx {
+    /// Every participant presence can name, as a history directory reads them:
+    /// the id they are known by (a device's key on a page, a person's root key
+    /// elsewhere), what the workspace calls them, whether they are software, and
+    /// the person they are a device of or act for.
+    pub fn named_participants(&self) -> Vec<NamedParticipant> {
+        let mut ids: Vec<&UserId> = self.names.keys().collect();
+        if let Some((own, _)) = &self.self_participant
+            && !self.names.contains_key(own)
+        {
+            ids.push(own);
+        }
+        ids.compact_sort_by(|a, b| a.0.cmp(&b.0));
+        ids.into_iter()
+            .map(|id| NamedParticipant {
+                id: id.0.clone(),
+                name: self.display_name(id),
+                agent: self.participant_kind(id) != ParticipantKind::Person,
+                person: self
+                    .person_of(id)
+                    .or_else(|| self.acting_for(id))
+                    .map(|person| person.0.clone()),
+            })
+            .collect()
+    }
+
     /// Everyone the workspace names, this session's own participant included,
     /// as they are shown, in an order every replica shares: who a people
     /// list or a mention picker offers.

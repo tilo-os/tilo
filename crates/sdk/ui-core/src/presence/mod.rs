@@ -16,6 +16,7 @@ mod labels;
 mod layer;
 mod mark;
 mod members;
+pub use members::NamedParticipant;
 mod placed;
 pub(crate) mod render;
 pub use caret_tag::{
