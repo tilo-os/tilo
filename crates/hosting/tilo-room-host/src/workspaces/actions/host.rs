@@ -50,8 +50,6 @@ const LABEL: &str = "Workspaces";
 /// How long the invitation a device entering a workspace, or its person's
 /// own, redeems stays redeemable when it does not say.
 const OWN_INVITATION_SECONDS: u64 = 600;
-/// What a person's own workspace is called when they do not say.
-const OWN_WORKSPACE_NAME: &str = "My workspace";
 
 /// The part a person takes in a workspace of their own, as a listing names
 /// it: they made it and administer it.
@@ -304,7 +302,12 @@ fn create_own_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "name",
             ParamType::Text,
-            "The new workspace's name, 1 to 80 printable characters: \"My workspace\" when omitted. Naming one makes another; omitting it answers the first you made.",
+            "The new workspace's name, 1 to 80 printable characters. Naming one makes another; omitting it answers the first you made.",
+        ),
+        ActionParam::optional(
+            "language",
+            ParamType::Text,
+            "The language a workspace you do not name is named in, as a tag such as `de-DE`; English when omitted.",
         ),
         ActionParam::optional(
             "room",
@@ -634,6 +637,7 @@ impl Workspaces {
     ) -> Result<Value, ActionHostError> {
         let person = device.user_public_key;
         let name = args.text("name")?;
+        let language = args.text("language")?;
         let moving = args.text("room")?;
         let seconds = args
             .integer("expires_in_seconds")?
@@ -699,10 +703,11 @@ impl Workspaces {
             // door: they hear the door's own refusal, with its wait list.
             return Err(refused(&self.not_let_in().await.to_reason()));
         } else {
-            // Another one: there is no bound on how many a person keeps.
-            let name = name.unwrap_or(OWN_WORKSPACE_NAME);
+            // Another one: there is no bound on how many a person keeps, and
+            // one they did not name is named in their language.
+            let name = name.map_or_else(|| crate::i18n::workspace_name(language), str::to_owned);
             let summary = self
-                .create_workspace(name, moving)
+                .create_workspace(&name, moving)
                 .await
                 .map_err(|error| refused(&error))?;
             own.record(&person, &summary.workspace)

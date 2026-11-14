@@ -281,6 +281,20 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     let theirs = create_own(&host, &stranger, json!({})).await.unwrap();
     assert_eq!(theirs.workspace.name, "My workspace");
     assert_ne!(theirs.workspace.workspace, created.workspace.workspace);
+
+    // One who reads German founds theirs in German, and it keeps the name it
+    // was founded under however they ask after that.
+    let (_, german) = guest_device();
+    let_in(workspaces, &home, german.user_public_key).await;
+    let ihr = create_own(&host, &german, json!({"language": "de-DE"}))
+        .await
+        .unwrap();
+    assert_eq!(ihr.workspace.name, "Mein Arbeitsbereich");
+    let wieder = create_own(&host, &german, json!({"language": "en-US"}))
+        .await
+        .unwrap();
+    assert_eq!(wieder.workspace.workspace, ihr.workspace.workspace);
+    assert_eq!(wieder.workspace.name, "Mein Arbeitsbereich");
     relay.shutdown().await;
 }
 

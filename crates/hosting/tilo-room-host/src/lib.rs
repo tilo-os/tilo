@@ -27,6 +27,7 @@ pub mod host;
 #[doc(hidden)]
 pub mod host_authority;
 mod hosted;
+mod i18n;
 pub mod member_limits;
 #[doc(hidden)]
 pub mod membership_watch;

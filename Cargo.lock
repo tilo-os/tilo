@@ -21258,6 +21258,7 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-failure",
  "tilo-files",
+ "tilo-history",
  "tilo-lock",
  "tilo-peer-state",
  "tilo-relay-client",

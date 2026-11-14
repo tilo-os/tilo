@@ -129,8 +129,9 @@ pub const HOST_ROOMS_RESOURCE: &str = "host.rooms";
 pub const CREATE_ROOM: &str = "room.create";
 /// Make the one workspace of the caller's own person on a host that keeps
 /// workspaces of people's own, or answer theirs again: any person's device
-/// may ask. Arguments: `name` (the new workspace's; "My workspace" when
-/// omitted, unused once they have one), `room` (the identity of a workspace
+/// may ask. Arguments: `name` (the new workspace's; unused once they have
+/// one), `language` (the language one they do not name is named in, a tag such
+/// as `de-DE`; English when omitted), `room` (the identity of a workspace
 /// that moves here as theirs; a different one than theirs is refused with a
 /// `tilo_actions::remote::host_account::Refusal`), and `expires_in_seconds`
 /// (how long the invitation stays redeemable; 600 when omitted). Answers a
