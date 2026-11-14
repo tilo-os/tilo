@@ -2119,9 +2119,15 @@ impl Widget for ModalDialog<dyn Widget> {
                     return;
                 }
                 let p = self.last_cursor;
+                // A dialog opened before its first placement has no card to hit yet: the press
+                // lands on the scrim, which dismisses when it may.
                 let hit = self
                     .pointer_inside
-                    .then(|| self.layout.as_ref().and_then(|l| l.hit(p)))
+                    .then(|| match self.layout.as_ref() {
+                        Some(layout) => layout.hit(p),
+                        None if self.dismiss_on_scrim => Some(ModalHit::Scrim),
+                        None => None,
+                    })
                     .flatten();
                 match hit {
                     Some(ModalHit::Close) => self.dismiss(),
