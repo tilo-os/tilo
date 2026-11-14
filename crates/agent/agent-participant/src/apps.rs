@@ -562,26 +562,7 @@ impl Replica {
     /// a time reaches them (a chat's messages below its record).
     #[must_use]
     pub fn survey_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
-        let mut resources = self.view.resources();
-        // The items past each collection's published page, under the
-        // record's resource: a listing reaches every one of them.
-        let past = self.view.resources_past_page();
-        let mut past_root = None;
-        if !past.is_empty()
-            && let Some(root) = resources
-                .iter()
-                .find(|resource| resource.id.as_str() == self.kind.kind())
-        {
-            let mut holder = tilo_actions::ResourceSpec::new(
-                root.id.as_str(),
-                root.kind.clone(),
-                root.label.clone(),
-            );
-            holder.app_id.clone_from(&root.app_id);
-            holder.children = past;
-            past_root = Some((resources.len(), root.id.as_str().to_owned()));
-            resources.push(holder);
-        }
+        let (resources, past_root) = self.survey_resources();
         let in_chains = chain_resources(&resources);
         let mut rows: Vec<_> = tilo_actions::door::survey_placed(&resources)
             .into_iter()
@@ -605,23 +586,133 @@ impl Replica {
             .collect();
         let offering: std::collections::HashSet<String> =
             rows.iter().map(|row| row.resource.id.clone()).collect();
+        self.survey_containers(&resources, past_root.as_ref(), &offering, &mut rows);
+        rows
+    }
+
+    /// The resources [`Self::survey_rows`] lists, and the record's own
+    /// resource under which the items past each collection's published page
+    /// stand (the one the view leaves out past the page, as children of a
+    /// holder pushed last), when there are any.
+    fn survey_resources(&self) -> (Vec<tilo_actions::ResourceSpec>, Option<(usize, String)>) {
+        let mut resources = self.view.resources();
+        // The items past each collection's published page, under the
+        // record's resource: a listing reaches every one of them.
+        let past = self.view.resources_past_page();
+        let mut past_root = None;
+        if !past.is_empty()
+            && let Some(root) = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == self.kind.kind())
+        {
+            let mut holder = tilo_actions::ResourceSpec::new(
+                root.id.as_str(),
+                root.kind.clone(),
+                root.label.clone(),
+            );
+            holder.app_id.clone_from(&root.app_id);
+            holder.children = past;
+            past_root = Some((resources.len(), root.id.as_str().to_owned()));
+            resources.push(holder);
+        }
+        (resources, past_root)
+    }
+
+    /// The rows of `resources`' resources that offer nothing themselves but
+    /// hold what does, so a caller reading a level at a time reaches them:
+    /// [`Self::survey_rows`]'s tail, appended to `rows`.
+    fn survey_containers(
+        &self,
+        resources: &[tilo_actions::ResourceSpec],
+        past_root: Option<&(usize, String)>,
+        offering: &std::collections::HashSet<String>,
+        rows: &mut Vec<tilo_actions::remote::CatalogueRow>,
+    ) {
         let mut containers = Vec::new();
         for (at, resource) in resources.iter().enumerate() {
-            match &past_root {
+            match past_root {
                 // The record's resource stands in its row once: its items
                 // past the page are containers under it.
                 Some((holder, root)) if at == *holder => {
                     for child in &resource.children {
-                        containers_into(child, root, &offering, self.app_id(), &mut containers);
+                        containers_into(child, root, offering, self.app_id(), &mut containers);
                     }
                 }
                 _ => {
-                    containers_into(resource, "", &offering, self.app_id(), &mut containers);
+                    containers_into(resource, "", offering, self.app_id(), &mut containers);
                 }
             }
         }
         rows.extend(containers);
-        rows
+    }
+
+    /// [`Self::survey_rows`] as `query` lists it, made only as far as the page
+    /// reaches: the rows are built up to one past the asked window and the
+    /// walk stops there, so a page of a record publishing thousands of
+    /// actions costs its page and not all of them. Answers how many rows it
+    /// admitted up to there (a lower bound once it stopped early, always at
+    /// least the window's offset) and those from the `offset`th on, at most
+    /// `take`, on a host that `can_render` or not.
+    #[must_use]
+    pub fn survey_page(
+        &self,
+        query: &tilo_actions::remote::CatalogueQuery,
+        (can_render, (offset, take)): (bool, (usize, usize)),
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
+        let (resources, past_root) = self.survey_resources();
+        let in_chains = chain_resources(&resources);
+        let mut walk = SurveyWalk {
+            query,
+            can_render,
+            offset,
+            take,
+            // With no room on the page there is no row to stop at: the count
+            // a caller keeping its place needs is the whole of it.
+            end: if take == 0 {
+                usize::MAX
+            } else {
+                offset.saturating_add(take)
+            },
+            total: 0,
+            rows: Vec::new(),
+            offering: std::collections::HashSet::new(),
+        };
+        let complete = tilo_actions::door::survey_placed_each(&resources, &mut |placed| {
+            let tilo_actions::door::PlacedAction {
+                parent,
+                has_children,
+                action,
+            } = placed;
+            let action = self.offered(action, &in_chains);
+            let Some(action) = action else {
+                return walk.total < walk.end;
+            };
+            walk.offering.insert(action.address.resource.clone());
+            walk.admit(tilo_actions::remote::CatalogueRow::for_placed_action(
+                "",
+                self.app_id(),
+                tilo_actions::door::PlacedAction {
+                    parent,
+                    has_children,
+                    action,
+                },
+            ))
+        });
+        if complete && walk.total < walk.end {
+            let mut containers = Vec::new();
+            self.survey_containers(
+                &resources,
+                past_root.as_ref(),
+                &walk.offering,
+                &mut containers,
+            );
+            for row in containers {
+                if !walk.admit(row) {
+                    break;
+                }
+            }
+        }
+        (walk.total, walk.rows)
     }
 
     /// What `surveyed` ([`Self::survey_rows`]) lists as `query` asks, on a
@@ -1087,6 +1178,38 @@ fn chain_resources(resources: &[tilo_actions::ResourceSpec]) -> std::collections
 /// The rows of the resources at and below `resource` (under `parent`) that
 /// offer nothing of their own but hold resources that do, into `out`; whether
 /// anything at or below it is offered.
+/// The page [`Replica::survey_page`] makes as it walks: the rows it admits up
+/// to `end`, and those of the window among them.
+struct SurveyWalk<'a> {
+    query: &'a tilo_actions::remote::CatalogueQuery,
+    can_render: bool,
+    offset: usize,
+    take: usize,
+    end: usize,
+    total: usize,
+    rows: Vec<tilo_actions::remote::CatalogueRow>,
+    /// The resources a row was admitted for: what the containers after the
+    /// rows are decided by.
+    offering: std::collections::HashSet<String>,
+}
+
+impl SurveyWalk<'_> {
+    /// Take `row` into the page: whether the walk goes on.
+    fn admit(&mut self, row: tilo_actions::remote::CatalogueRow) -> bool {
+        let rendered = row
+            .action
+            .as_ref()
+            .is_some_and(|descriptor| !self.can_render && crate::render::host_rendered(descriptor));
+        if !rendered && self.query.admits(&row) {
+            self.total = self.total.saturating_add(1);
+            if self.total > self.offset && self.rows.len() < self.take {
+                self.rows.push(row);
+            }
+        }
+        self.total < self.end
+    }
+}
+
 fn containers_into(
     resource: &tilo_actions::ResourceSpec,
     parent: &str,

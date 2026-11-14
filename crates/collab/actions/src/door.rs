@@ -502,24 +502,48 @@ pub struct PlacedAction {
 #[must_use]
 pub fn survey_placed(resources: &[ResourceSpec]) -> Vec<PlacedAction> {
     let mut out = Vec::new();
-    for r in resources {
-        placed_into(r, "", &mut out);
-    }
+    let _ = survey_placed_each(resources, &mut |placed| {
+        out.push(placed);
+        true
+    });
     out
 }
 
-fn placed_into(resource: &ResourceSpec, parent: &str, out: &mut Vec<PlacedAction>) {
+/// [`survey_placed`], one row at a time and only as far as `visit` asks:
+/// it answers whether to go on, so a caller listing a page of a record that
+/// publishes thousands of actions builds the rows up to its page and no
+/// more. `false` when it stopped, `true` when it saw every row.
+pub fn survey_placed_each(
+    resources: &[ResourceSpec],
+    visit: &mut dyn FnMut(PlacedAction) -> bool,
+) -> bool {
+    resources
+        .iter()
+        .all(|resource| placed_each(resource, "", visit))
+}
+
+fn placed_each(
+    resource: &ResourceSpec,
+    parent: &str,
+    visit: &mut dyn FnMut(PlacedAction) -> bool,
+) -> bool {
     let has_children = !resource.children.is_empty();
     for action in &resource.actions {
-        out.push(PlacedAction {
+        let go_on = visit(PlacedAction {
             parent: parent.to_owned(),
             has_children,
             action: describe(resource, action),
         });
+        if !go_on {
+            return false;
+        }
     }
     for child in &resource.children {
-        placed_into(child, resource.id.as_str(), out);
+        if !placed_each(child, resource.id.as_str(), visit) {
+            return false;
+        }
     }
+    true
 }
 
 /// `action` of `resource`, as inert data: what a survey hands back.
