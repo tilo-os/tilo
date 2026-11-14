@@ -606,6 +606,10 @@ impl Mail {
             account: bounded_text(&account, MAX_DRAFT_ADDRESS_CHARS, false),
             draft: DraftData::from_draft(&message.to_draft()),
             in_reply_to,
+            // The device pressing Send starts the undo window, and keeps it
+            // in the message: a page that reaches no server still gets its
+            // Undo, and the device delivering it waits for the same moment.
+            not_before: Some(Outgoing::undo_window_from(cx.now_ms())),
         };
         if !outgoing.is_valid() {
             return Err(Refusal::new(

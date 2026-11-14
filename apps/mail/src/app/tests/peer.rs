@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use ui::framework::testing::TestApp;
+use ui::time::testing::SharedWall;
 
 use crate::fake_servers::{FakeImap, FakeSmtp, Layout, accepting_client_config, server_tls_config};
 use crate::resource::{MailShell, read_mail};
@@ -100,9 +101,22 @@ fn until(
     }
 }
 
-#[test]
-#[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
-fn a_page_reads_checks_and_sends_mail_through_a_device_that_holds_the_account() {
+/// A page and a device that holds the account, beside the real IMAP and SMTP
+/// servers they reach, once the device's first sync has ended.
+struct Peers {
+    imap: FakeImap,
+    smtp: FakeSmtp,
+    /// The vault the account's secret lives in: the device releases it from
+    /// here, so it must outlive both windows.
+    _vault: tempfile::TempDir,
+    /// The Settings window that made the account: the person's accounts
+    /// record lives through it, so it outlives both windows too.
+    _settings: TestApp<settings::resource::SettingsShell>,
+    page: Window,
+    device: Window,
+}
+
+fn peers() -> Peers {
     let rt = ui::rt::app();
     let imap = rt
         .block_on(FakeImap::start(Layout::Gmail, server_tls_config()))
@@ -169,10 +183,17 @@ fn a_page_reads_checks_and_sends_mail_through_a_device_that_holds_the_account() 
     }
     page.settle();
 
-    // Mail arrives at the server after the device's first sync.
+    let mut peers = Peers {
+        imap,
+        smtp,
+        _vault: vault,
+        _settings: settings,
+        page,
+        device,
+    };
     until(
-        &mut page,
-        &mut device,
+        &mut peers.page,
+        &mut peers.device,
         "the device's first sync ends",
         |_, device| {
             !mail(device).awaiting_server()
@@ -184,6 +205,81 @@ fn a_page_reads_checks_and_sends_mail_through_a_device_that_holds_the_account() 
                     .is_some()
         },
     );
+    peers
+}
+
+/// The page sends one message, as its Send button does.
+fn send_from_page(page: &mut Window) {
+    page.invoke_confirmed(crate::resource::Mail::SEND_MESSAGE.with(
+        crate::resource::mailbox::SendMessage {
+            account: ME.into(),
+            message: crate::actions::DraftData {
+                to: "grace@navy.example".into(),
+                subject: "Re: Quarterly invoices".into(),
+                body: "Confirmed.".into(),
+                ..Default::default()
+            },
+            in_reply_to: None,
+            draft: None,
+        },
+    ))
+    .expect("the page sends");
+}
+
+/// How many messages wait in a window's outbox, not yet delivered.
+fn pending_outbox(window: &Window) -> usize {
+    window.read_document(|doc| read_mail(doc).map_or(0, |mail| mail.outbox.pending().count()))
+}
+
+/// The messages a window's outbox holds, settled or not.
+fn outbox(window: &Window) -> Vec<crate::actions::Outgoing> {
+    window.read_document(|doc| {
+        read_mail(doc).map_or_else(Vec::new, |mail| {
+            mail.outbox
+                .entries()
+                .map(|(_, entry)| entry.value.clone())
+                .collect()
+        })
+    })
+}
+
+/// Undo on the window that pressed Send: it takes back what it sent, wherever
+/// the account's device is.
+fn undo_here(window: &mut Window) {
+    let sent = outbox(window);
+    mail(window).sent_here = sent;
+    mail(window).unsend = true;
+    window.settle();
+}
+
+/// The undo window is over: the sending window's held message is due, and its
+/// delivering device may carry it out.
+fn window_ends(device: &mut Window) {
+    for held in &mut mail(device).held_sends {
+        held.due = ui::time::now();
+    }
+}
+
+fn sent_with(smtp: &FakeSmtp, subject: &str) -> usize {
+    smtp.sent()
+        .iter()
+        .filter(|raw| String::from_utf8_lossy(raw).contains(subject))
+        .count()
+}
+
+#[test]
+#[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
+fn a_page_reads_checks_and_sends_mail_through_a_device_that_holds_the_account() {
+    let Peers {
+        imap,
+        smtp,
+        _vault,
+        _settings,
+        mut page,
+        mut device,
+    } = peers();
+
+    // Mail arrives at the server after the device's first sync.
     imap.append(
         "INBOX",
         "From: Grace <grace@navy.example>\r\nTo: office@company.example\r\n\
@@ -239,25 +335,24 @@ Date: Thu, 12 Nov 2026 09:30:00 +0000\r\n\r\nPlease confirm by Friday.\r\n",
         "the page never holds the account's secret"
     );
 
-    // The page sends: the message waits in the outbox, and the device that
-    // holds the account delivers it.
-    page.invoke_confirmed(crate::resource::Mail::SEND_MESSAGE.with(
-        crate::resource::mailbox::SendMessage {
-            account: ME.into(),
-            message: crate::actions::DraftData {
-                to: "grace@navy.example".into(),
-                subject: "Re: Quarterly invoices".into(),
-                body: "Confirmed.".into(),
-                ..Default::default()
-            },
-            in_reply_to: None,
-            draft: None,
-        },
-    ))
-    .expect("the page sends");
+    // The page sends: the message waits in the outbox for its undo window,
+    // and the device that holds the account delivers it after that.
+    let start = ui::time::wall();
+    let wall = SharedWall::default();
+    wall.follow();
+    wall.pin(start);
+    send_from_page(&mut page);
     let queued =
         page.read_document(|doc| read_mail(doc).map_or(0, |mail| mail.outbox.entries().len()));
     assert_eq!(queued, 1, "the message waits in the outbox");
+    exchange(&mut page, &mut device);
+    assert_eq!(
+        sent_with(&smtp, "Re: Quarterly invoices"),
+        0,
+        "it waits out the undo window"
+    );
+    wall.pin(start + ui::time::Duration::from_secs(11));
+    window_ends(&mut device);
     until(
         &mut page,
         &mut device,
@@ -280,5 +375,142 @@ Date: Thu, 12 Nov 2026 09:30:00 +0000\r\n\r\nPlease confirm by Friday.\r\n",
             })
         },
     );
+    wall.release();
     drop(imap);
+}
+
+#[test]
+fn a_page_takes_back_a_message_before_the_window_ends_and_nothing_goes_out() {
+    let mut peers = peers();
+    let start = ui::time::wall();
+    let wall = SharedWall::default();
+    wall.follow();
+    wall.pin(start);
+    send_from_page(&mut peers.page);
+    exchange(&mut peers.page, &mut peers.device);
+    assert_eq!(
+        sent_with(&peers.smtp, "Re: Quarterly invoices"),
+        0,
+        "the message waits in the outbox"
+    );
+
+    // Undo, pressed on the page, takes the message back before any device
+    // delivers it: it leaves the outbox, wherever it was pressed.
+    undo_here(&mut peers.page);
+    exchange(&mut peers.page, &mut peers.device);
+    assert_eq!(
+        pending_outbox(&peers.page),
+        0,
+        "taken out of the outbox unsent"
+    );
+    assert!(
+        mail(&mut peers.page).compose.open,
+        "the message is back in the composer"
+    );
+
+    // Even past the window nothing goes out: the outbox no longer holds it.
+    wall.pin(start + ui::time::Duration::from_secs(11));
+    window_ends(&mut peers.device);
+    for _ in 0..3 {
+        exchange(&mut peers.page, &mut peers.device);
+    }
+    assert_eq!(
+        sent_with(&peers.smtp, "Re: Quarterly invoices"),
+        0,
+        "nothing went out"
+    );
+    wall.release();
+}
+
+#[test]
+fn a_page_message_goes_out_only_after_the_undo_window() {
+    let mut peers = peers();
+    let start = ui::time::wall();
+    let wall = SharedWall::default();
+    wall.follow();
+    wall.pin(start);
+    send_from_page(&mut peers.page);
+    assert_eq!(
+        pending_outbox(&peers.page),
+        1,
+        "the message waits in the outbox"
+    );
+    let not_before = outbox(&peers.page)
+        .into_iter()
+        .next()
+        .and_then(|outgoing| outgoing.not_before)
+        .expect("the send carries the moment it may leave");
+    assert_eq!(
+        not_before,
+        ui::time::unix_now_ms_i64() + crate::actions::SEND_UNDO_MS,
+        "the device pressing Send sets the undo window"
+    );
+
+    exchange(&mut peers.page, &mut peers.device);
+    assert_eq!(
+        sent_with(&peers.smtp, "Re: Quarterly invoices"),
+        0,
+        "it waits out the window"
+    );
+
+    // The window closes: now the account's device delivers it.
+    wall.pin(start + ui::time::Duration::from_secs(11));
+    window_ends(&mut peers.device);
+    {
+        let Peers {
+            page, device, smtp, ..
+        } = &mut peers;
+        until(
+            page,
+            device,
+            "the device delivers it once the window is over",
+            |_, _| sent_with(smtp, "Re: Quarterly invoices") == 1,
+        );
+    }
+    wall.release();
+}
+
+#[test]
+fn undo_after_the_message_went_out_says_it_was_already_sent() {
+    let mut peers = peers();
+    let start = ui::time::wall();
+    let wall = SharedWall::default();
+    wall.follow();
+    wall.pin(start);
+    send_from_page(&mut peers.page);
+    exchange(&mut peers.page, &mut peers.device);
+
+    // The device that holds the account runs ahead of the page's clock: it
+    // delivers while the page's own undo window still looks open.
+    wall.pin(start + ui::time::Duration::from_secs(11));
+    window_ends(&mut peers.device);
+    {
+        let Peers {
+            page, device, smtp, ..
+        } = &mut peers;
+        until(page, device, "the device delivers the message", |_, _| {
+            sent_with(smtp, "Re: Quarterly invoices") == 1
+        });
+    }
+    wall.pin(start + ui::time::Duration::from_secs(5));
+    exchange(&mut peers.page, &mut peers.device);
+
+    // Undo reaches the outbox too late: it says so instead of failing
+    // silently.
+    undo_here(&mut peers.page);
+    assert_eq!(
+        mail(&mut peers.page)
+            .nav
+            .toast_text()
+            .map(str::to_owned)
+            .as_deref(),
+        Some("Already sent"),
+        "undo says the message already left"
+    );
+    assert_eq!(
+        sent_with(&peers.smtp, "Re: Quarterly invoices"),
+        1,
+        "only the one message went out"
+    );
+    wall.release();
 }

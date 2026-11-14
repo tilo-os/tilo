@@ -107,11 +107,23 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
 }
 
 impl MailApp {
+    /// Let the held sends' undo window pass: their wall-clock moment is
+    /// behind us and their delivery is due now.
     fn undo_time_is_up(&mut self, doc: &mut AutoCommit) {
-        for held in &mut self.held_sends {
-            held.due = ui::time::now();
-        }
-        self.release_held_sends(&ui::widget::Edits::lend(doc));
+        let after = self
+            .held_sends
+            .iter()
+            .filter_map(|held| held.outgoing.not_before)
+            .max()
+            .and_then(|not_before| u64::try_from(not_before.saturating_add(1)).ok())
+            .and_then(|ms| ui::time::UNIX_EPOCH.checked_add(std::time::Duration::from_millis(ms)))
+            .unwrap_or_else(|| ui::time::wall() + std::time::Duration::from_secs(11));
+        ui::time::testing::with_wall(after, || {
+            for held in &mut self.held_sends {
+                held.due = ui::time::now();
+            }
+            self.release_held_sends(&ui::widget::Edits::lend(doc));
+        });
     }
 }
 

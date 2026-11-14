@@ -335,6 +335,7 @@ mail-status-no-sending-account = Add a sending account before sending this messa
 mail-status-sending-unavailable = Sending isn’t available here; save the draft instead
 mail-status-no-recipient = Add a recipient before sending
 mail-status-sending = Sending…
+mail-status-already-sent = Already sent
 mail-status-sent = Message sent
 mail-status-draft-gone = That draft is gone
 mail-status-invitation-drafted = Invitation drafted

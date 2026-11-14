@@ -332,6 +332,7 @@ mail-status-no-sending-account = Lege ein Sendekonto an, bevor du diese Nachrich
 mail-status-sending-unavailable = Senden ist hier nicht möglich; speichere stattdessen den Entwurf
 mail-status-no-recipient = Trage einen Empfänger ein, bevor du sendest
 mail-status-sending = Wird gesendet…
+mail-status-already-sent = Bereits gesendet
 mail-status-sent = Nachricht gesendet
 mail-status-draft-gone = Dieser Entwurf ist nicht mehr da
 mail-status-invitation-drafted = Einladung entworfen

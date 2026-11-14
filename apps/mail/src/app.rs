@@ -73,7 +73,6 @@ use crate::util::format_absolute;
 const AUTO_REFRESH_MIN: i64 = 5;
 const SERVER_SEARCH_DEBOUNCE_MS: u64 = 500;
 const SERVER_SEARCH_MIN_CHARS: usize = 3;
-const SEND_UNDO_SECS: u64 = 10;
 
 const MAX_ATTACHMENT_SAVE_BYTES: usize = crate::attachment_store::MAX_ATTACHMENT_BYTES;
 
@@ -115,7 +114,8 @@ type ServerUpdateDone = Box<dyn FnOnce(Result<(), String>)>;
 
 type DeliveryDone = Box<dyn FnOnce(Result<ui::tilo_resource::Settled, String>)>;
 
-/// A message sent from this window, held back from the server until `due`
+/// A message this window carries out for the outbox, held back from the
+/// server until `due`
 struct HeldSend {
     outgoing: Outgoing,
     done: DeliveryDone,
@@ -227,8 +227,10 @@ pub struct MailApp {
     checking: Option<ui::framework::Projection>,
     resending: Option<String>,
     held_sends: Vec<HeldSend>,
-    /// Sends pressed whose outbox messages have yet to reach the drain:
-    sends_to_hold: usize,
+    /// The messages this window sent whose undo window is still open, as the
+    /// outbox holds them: what its Undo takes back, wherever the device that
+    /// delivers them is.
+    sent_here: Vec<Outgoing>,
     /// The notice showing (or about to) is the sending one: its "Undo"
     send_notice: bool,
     sending_notice_next: bool,
@@ -595,7 +597,7 @@ impl MailApp {
             checking: None,
             resending: None,
             held_sends: Vec::new(),
-            sends_to_hold: 0,
+            sent_here: Vec::new(),
             send_notice: false,
             sending_notice_next: false,
             unsend: false,
@@ -677,7 +679,7 @@ impl MailApp {
         self.send_notice = false;
         self.sending_notice_next = false;
         self.held_sends.clear();
-        self.sends_to_hold = 0;
+        self.sent_here.clear();
         {
             let mut st = self.shared.borrow_mut();
             st.status = None;
@@ -1916,6 +1918,14 @@ irrelevant"
                 draft.subject.clone(),
             ],
         );
+        let queued_before: HashSet<String> = read_mail(doc.doc())
+            .map(|mail| {
+                mail.outbox
+                    .pending()
+                    .map(|(id, _)| id.as_str().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
         {
             let st = self.shared.borrow();
             if let Some(refused) = self.resending.take() {
@@ -1936,6 +1946,19 @@ irrelevant"
                 }),
             );
         }
+        // The message in the outbox now is this press's: its id is what Undo
+        // takes back, from whichever device holds the account.
+        let queued = read_mail(doc.doc())
+            .map(|mail| {
+                mail.outbox
+                    .pending()
+                    .filter(|(id, _)| !queued_before.contains(id.as_str()))
+                    .map(|(_, outgoing)| outgoing.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let landed = !queued.is_empty();
+        self.sent_here.extend(queued);
         // The message is in the outbox now; the draft it was written in is
         // done with.
         if let Some(draft_id) = self.editing_draft.take() {
@@ -1943,53 +1966,13 @@ irrelevant"
             st.mailbox.purge(draft_id);
         }
         self.compose.close();
-        // It waits out the undo time before it goes; the notice's Undo
-        // takes it back.
-        self.sends_to_hold += 1;
-        self.sending_notice_next = true;
-        self.shared
-            .borrow_mut()
-            .say_undoable(ToastKind::Info, CATALOG.t("mail-status-sending"));
-        self.dirty = true;
-    }
-
-    fn release_held_sends(&mut self, doc: &ui::widget::Edits<'_>) {
-        if self.held_sends.is_empty() {
-            return;
-        }
-        let now = ui::time::now();
-        let waiting: HashSet<String> = read_mail(doc.doc())
-            .map(|mail| {
-                mail.outbox
-                    .pending()
-                    .map(|(id, _)| id.as_str().to_owned())
-                    .collect()
-            })
-            .unwrap_or_default();
-        for held in std::mem::take(&mut self.held_sends) {
-            if !waiting.contains(&held.outgoing.id) {
-                self.reopen_unsent(&held.outgoing);
-            } else if held.due <= now {
-                self.deliver(held.outgoing, held.done);
-            } else {
-                self.held_sends.push(held);
-            }
-        }
-    }
-
-    fn take_back_sends(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        if !std::mem::take(&mut self.unsend) {
-            return;
-        }
-        self.sends_to_hold = 0;
-        for held in std::mem::take(&mut self.held_sends) {
-            self.shared.borrow().submit(
-                doc,
-                Mail::CANCEL_SEND.with(mailbox::CancelSend {
-                    id: held.outgoing.id.clone(),
-                }),
-            );
-            self.reopen_unsent(&held.outgoing);
+        // It waits out the undo time before any device may deliver it; the
+        // notice's Undo takes it back until then.
+        if landed {
+            self.sending_notice_next = true;
+            self.shared
+                .borrow_mut()
+                .say_undoable(ToastKind::Info, CATALOG.t("mail-status-sending"));
         }
         self.dirty = true;
     }
@@ -2258,10 +2241,7 @@ impl MailApp {
         // ten, so anyone reaching for Undo a beat late found nothing and the
         // mail went out (`APP-mail-01`). While a send is held, the notice is
         // put back up whenever it goes.
-        if self.send_notice
-            && (!self.held_sends.is_empty() || self.sends_to_hold > 0)
-            && self.nav.toast_text().is_none()
-        {
+        if self.send_notice && !self.sent_here.is_empty() && self.nav.toast_text().is_none() {
             self.nav.toast_with_action(
                 CATALOG.t("mail-status-sending"),
                 ToastKind::Info,
@@ -3826,6 +3806,7 @@ impl Widget for MailApp {
         self.flush_server_outbox();
         self.ask_devices(state);
         self.release_held_sends(state);
+        self.expire_sent_here(state.doc());
         self.compose.settle(state, path);
         self.keep_compose_headers(state);
         if !self.shared.borrow().seeded {
@@ -4318,7 +4299,7 @@ fn recipient_line(draft: &crate::actions::DraftData) -> String {
 impl ui::undo::UndoControl for MailApp {
     fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
         self.nav.take_toast_action()?;
-        if self.send_notice && (!self.held_sends.is_empty() || self.sends_to_hold > 0) {
+        if self.send_notice && !self.sent_here.is_empty() {
             self.unsend = true;
             self.dirty = true;
             return None;

@@ -1480,6 +1480,38 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A message queued before the outbox kept when it may leave has no moment
+/// to wait for: it goes out as soon as a device holding the account takes it,
+/// exactly as it did before.
+#[test]
+fn an_outbox_message_from_before_the_undo_window_goes_out_at_once() {
+    let (mut app, _doc) = app();
+    let (outgoing, requests) = std::sync::mpsc::channel();
+    let (_events, incoming) = std::sync::mpsc::channel();
+    app.state().engine = Some(EngineHandle {
+        tx: outgoing,
+        rx: incoming,
+    });
+    let message = Outgoing::new(
+        "sam@rivera.example",
+        &Draft {
+            to: "grace@navy.example".into(),
+            subject: "Before the window".into(),
+            body: "No moment was recorded, so it leaves at once.".into(),
+            ..Draft::default()
+        },
+    );
+    assert_eq!(message.not_before, None);
+    app.server_outbox()
+        .borrow_mut()
+        .deliver(message, Box::new(|_| {}));
+    app.flush_server_outbox();
+    assert!(
+        matches!(requests.try_recv(), Ok(EngineRequest::Send { .. })),
+        "it leaves at once"
+    );
+}
+
 /// Whether a window's semantics say `fragment`, in its own node or below it.
 fn window_says(node: &ui::a11y::AccessNode, fragment: &str) -> bool {
     node.name

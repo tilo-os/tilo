@@ -397,9 +397,13 @@ pub fn valid_calendar_invitation(value: &str) -> bool {
     stack.is_empty() && calendars == 1 && method_request && events >= 1
 }
 
+/// How long a message stays in the outbox before any device may deliver it:
+/// the Undo window the sending device's Send starts.
+pub(crate) const SEND_UNDO_MS: i64 = 10_000;
+
 /// A message waiting in the outbox: the account it is sent from (by its
 /// address; the device that delivers it holds the account), what it says,
-/// and the message it answers.
+/// the message it answers, and when it may leave.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Outgoing {
     pub id: String,
@@ -407,6 +411,14 @@ pub struct Outgoing {
     pub draft: DraftData,
     #[serde(default)]
     pub in_reply_to: Option<String>,
+    /// When this may leave, in milliseconds since the Unix epoch: when Send
+    /// was pressed, plus the person's undo delay, by the clock of the device
+    /// that pressed it. Every device that holds the account delivers only
+    /// after it, so a page's Undo reaches the message wherever the account
+    /// is. `None` for a message queued before devices kept it, which leaves
+    /// as soon as a device takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<i64>,
 }
 
 impl Outgoing {
@@ -419,7 +431,20 @@ impl Outgoing {
             account: bounded_text(account, MAX_DRAFT_ADDRESS_CHARS, false),
             draft: DraftData::from_draft(draft),
             in_reply_to: draft.in_reply_to.map(|id| id.to_string()),
+            not_before: None,
         }
+    }
+
+    /// When a message queued at `now_ms` may leave: after the person's undo
+    /// delay, so Undo can reach it wherever it is pressed.
+    pub(crate) fn undo_window_from(now_ms: i64) -> i64 {
+        now_ms.saturating_add(SEND_UNDO_MS)
+    }
+
+    /// Whether the message may leave at `now_ms` already.
+    pub(crate) fn may_leave_by(&self, now_ms: i64) -> bool {
+        self.not_before
+            .is_none_or(|not_before| now_ms >= not_before)
     }
 
     /// The draft the engine sends.

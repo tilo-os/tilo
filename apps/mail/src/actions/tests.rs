@@ -1168,6 +1168,32 @@ fn the_archive_affordance_and_the_palette_edit_alike() {
     assert_eq!(folder(&read(&doc)), folder(&palette.state().unwrap()));
 }
 
+/// The outbox layout before a message said when it may leave keeps reading:
+/// the field is optional, so an entry an older build wrote delivers as it
+/// did, at once.
+#[test]
+fn an_outbox_message_saved_before_the_undo_window_still_reads() {
+    let draft = DraftData::from_draft(&Draft {
+        to: "grace@example.test".into(),
+        subject: "Older".into(),
+        body: "Queued before devices agreed on the window.".into(),
+        ..Draft::default()
+    });
+    let older = serde_json::json!({
+        "id": "7ab0c7f4-1a4e-4b8e-9a4d-0c8c1b7f6a11",
+        "account": "ada@example.test",
+        "draft": serde_json::to_value(&draft).unwrap(),
+        "in_reply_to": null,
+    });
+    let outgoing: Outgoing = serde_json::from_value(older).expect("an older outbox entry reads");
+    assert_eq!(outgoing.draft, draft);
+    assert_eq!(outgoing.not_before, None);
+    assert!(
+        outgoing.may_leave_by(0),
+        "with no moment kept, it leaves as soon as a device takes it"
+    );
+}
+
 #[test]
 fn a_message_is_sent_through_the_outbox_and_undo_takes_it_back_unsent() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
