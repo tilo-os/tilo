@@ -84,3 +84,23 @@ async def test_types_written_for_another_surface_say_to_write_them_again(
     assert raised.value.next_steps == [
         "write the types again: tilo sdk gen -w 11111111-2222-3333-4444-555555555555"
     ]
+
+
+def test_a_listing_describes_each_kinds_actions_once() -> None:
+    from tilo._models import Listing
+
+    rename = {"id": "rename", "label": "Rename note", "kind": "undoable", "params": [{"name": "title"}]}
+    remove = {"id": "delete", "label": "Delete note", "kind": "undoable", "params": []}
+    listing = Listing.of(
+        {
+            "path": "notes/Notebook",
+            "rows": [
+                {"path": "notes/Notebook/a", "name": "a", "kind": "notes.Page", "actions": ["rename", "delete"]},
+                {"path": "notes/Notebook/b", "name": "b", "kind": "notes.Page", "actions": ["rename"]},
+            ],
+            "kinds": {"notes.Page": [rename, remove]},
+        }
+    )
+    assert [action["id"] for action in listing.rows[0].actions] == ["rename", "delete"]
+    assert [action["id"] for action in listing.rows[1].actions] == ["rename"]
+    assert listing.rows[1].actions[0]["params"][0]["name"] == "title"

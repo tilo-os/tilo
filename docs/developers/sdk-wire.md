@@ -87,10 +87,11 @@ them, and no such page exists yet.
  "kind": "notes.Page",
  "rows": [{"path": "notes/Todo/Buy milk", "name": "Buy milk", "label": "Buy milk",
            "kind": "notes.Block", "has_children": false,
-           "actions": [{"id": "toggle-checkbox", "label": "Done",
-                        "params": [{"name": "id", "ty": "Text", "required": true}],
-                        "kind": "undoable"}]}],
- "actions": [ …the same action rows, for the resource listed… ],
+           "actions": ["toggle-checkbox"]}],
+ "kinds": {"notes.Block": [{"id": "toggle-checkbox", "label": "Done",
+                            "params": [{"name": "id", "ty": "Text", "required": true}],
+                            "kind": "undoable"}]},
+ "actions": [ …action rows, for the resource listed… ],
  "next_cursor": "50"}
 ```
 
@@ -98,7 +99,9 @@ A listing of the apps (`path` omitted) answers `path: "apps"` and rows of
 `{"path": "notes", "name": "notes", "label": "Notes", "kind": "app", "state":
 "running"|"service"|"installed", "has_children": true, "actions": []}`.
 
-`next_cursor` is passed back as `arguments.cursor` for the rest. `limit` and `kind` page and
+A row names the actions it offers by id; `kinds` describes each kind's actions once, for
+the kinds of the rows on the page. `next_cursor` is passed back as `arguments.cursor` for the
+rest, and is present exactly while more rows follow. `limit` and `kind` page and
 narrow as they do for agents. `kind` on a row is the app's type, `kind` at the top is the
 type of the resource listed (or the app's id).
 

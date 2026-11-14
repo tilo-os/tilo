@@ -226,8 +226,10 @@ pub struct Row {
     pub kind: String,
     #[serde(default)]
     pub has_children: bool,
+    /// The ids of the actions it offers, each described once in the
+    /// listing's `kinds` under the row's `kind`.
     #[serde(default)]
-    pub actions: Vec<ActionRow>,
+    pub actions: Vec<String>,
     /// For an app: `running`, `service` or `installed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
@@ -243,6 +245,10 @@ pub struct Listing {
     /// The actions of the resource listed.
     #[serde(default)]
     pub actions: Vec<ActionRow>,
+    /// The actions the rows offer, once for each kind of row: a row names
+    /// those it offers by id.
+    #[serde(default)]
+    pub kinds: std::collections::BTreeMap<String, Vec<ActionRow>>,
     /// Passed back as `cursor` for the rest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,

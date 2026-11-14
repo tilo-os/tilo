@@ -92,16 +92,23 @@ same id is one run, one undo step per app (`POST …/runs/{run}/undo` takes it b
 
 | | |
 |---|---|
-| `GET /v1/workspaces/{workspace}/resources?path=&cursor=&limit=&kind=` | what is under `path` (the apps without one): `{"path", "kind", "rows": [...], "actions": [...], "next_cursor", "text"}` |
+| `GET /v1/workspaces/{workspace}/resources?path=&cursor=&limit=&kind=` | what is under `path` (the apps without one): `{"path", "kind", "rows": [...], "actions": [...], "kinds": {...}, "next_cursor", "text"}` |
 | `GET /v1/workspaces/{workspace}/resources/{path}?cursor=` | one resource: `{"path", "kind", "fields": {...}, "children": [...], "cursor", "text"}` |
 | `GET /v1/workspaces/{workspace}/search?q=&limit=` | `{"hits": [{"path", "kind", "label", "action"}], "query"}`, best first |
 | `GET /v1/workspaces/{workspace}/links?path=&mode=` | `{"path", "link"}`: the link a person opens it with (invite them first) |
 
-A row of `rows` is `{"path", "name", "label", "kind", "has_children", "actions"}`; an action row
-is `{"id", "label", "params": [{"name", "ty", "required", "description", "choices", "schema"}],
-"kind": "read"|"undoable"|"outside"}`. `text` is the same listing or read as a person reads it,
-one line per row: what `tilo ls` and `tilo read` print, and what an MCP client's `tilo_ls` and
-`tilo_read` answer.
+A row of `rows` is `{"path", "name", "label", "kind", "has_children", "actions"}`, its `actions`
+the ids of the actions it offers. `kinds` describes them once for each kind of row on the page
+(`{"notes.Page": [...]}`), so a page of a thousand notes does not repeat the same action rows a
+thousand times. An action row is `{"id", "label", "params": [{"name", "ty", "required",
+"description", "choices", "schema"}], "kind": "read"|"undoable"|"outside"}`. `next_cursor` is
+present while more rows follow; passed back as `cursor` it answers the next page. `text` is the
+same listing or read as a person reads it, one line per row: what `tilo ls` and `tilo read` print,
+and what an MCP client's `tilo_ls` and `tilo_read` answer.
+
+A read of a resource answers its lists a page at a time: 25 entries of each list by default,
+`pageSize` up to 200. A page that leaves entries out says how many each list holds (`totals`) and
+answers `cursor` for the next page.
 
 ## Actions
 

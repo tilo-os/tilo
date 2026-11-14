@@ -1967,7 +1967,17 @@ impl Hosted {
                 .instance
                 .host()
                 .ok_or_else(|| "the app has not started yet".to_owned())?;
-            host.read_content(item)?
+            let content = host.read_content(item)?;
+            // A whole resource reads a page at a time, as every app's does.
+            if item.is_none() {
+                tilo_resource::read::page(
+                    content,
+                    args.get("cursor").and_then(serde_json::Value::as_str),
+                    args.get("pageSize").and_then(serde_json::Value::as_i64),
+                )?
+            } else {
+                content
+            }
         };
         Ok(tilo_actions::ActionOutput {
             value: Some(value),

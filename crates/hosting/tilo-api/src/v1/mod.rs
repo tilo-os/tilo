@@ -1528,6 +1528,7 @@ mod export_tests {
                 kind: None,
                 rows: self.listings.get(&path).cloned().unwrap_or_default(),
                 actions: Vec::new(),
+                kinds: std::collections::BTreeMap::new(),
                 next_cursor: None,
                 text: None,
             })

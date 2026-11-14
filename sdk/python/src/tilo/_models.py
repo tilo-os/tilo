@@ -300,15 +300,30 @@ class Row:
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def of(cls, raw: Mapping[str, Any]) -> Row:
+    def of(cls, raw: Mapping[str, Any], kinds: Mapping[str, Any] | None = None) -> Row:
+        """The row `raw`, its actions as the listing describes them: a row
+        names the ones it offers by id, and the listing's `kinds` describes
+        each kind's once."""
+        kind = str(raw.get("kind") or "")
+        described = [
+            action
+            for action in (kinds or {}).get(kind) or ()
+            if isinstance(action, Mapping)
+        ]
+        actions: list[Mapping[str, Any]] = []
+        for entry in raw.get("actions") or ():
+            if isinstance(entry, str):
+                actions.extend(action for action in described if action.get("id") == entry)
+            elif isinstance(entry, Mapping):
+                actions.append(entry)
         return cls(
             path=str(raw.get("path") or ""),
             name=str(raw.get("name") or ""),
             label=str(raw.get("label") or ""),
-            kind=str(raw.get("kind") or ""),
+            kind=kind,
             has_children=bool(raw.get("has_children")),
             state=_text(raw.get("state")),
-            actions=tuple(raw.get("actions") or ()),
+            actions=tuple(actions),
             raw=raw,
         )
 
@@ -335,7 +350,11 @@ class Listing:
         return cls(
             path=str(raw.get("path") or ""),
             kind=str(raw.get("kind") or ""),
-            rows=[Row.of(row) for row in raw.get("rows") or [] if isinstance(row, Mapping)],
+            rows=[
+                Row.of(row, raw.get("kinds") if isinstance(raw.get("kinds"), Mapping) else None)
+                for row in raw.get("rows") or []
+                if isinstance(row, Mapping)
+            ],
             actions=tuple(raw.get("actions") or ()),
             next_cursor=_text(raw.get("next_cursor")),
             _client=client,

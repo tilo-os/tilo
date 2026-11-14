@@ -117,6 +117,13 @@ pub(crate) fn answer(
                 "content": content,
             }))
         }
+        // A whole resource reads a page at a time: its lists are cut to a
+        // page, however many entries they hold.
+        None if item.is_none() => tilo_resource::read::page(
+            current(None)?,
+            args.get("cursor").and_then(serde_json::Value::as_str),
+            args.get("pageSize").and_then(serde_json::Value::as_i64),
+        ),
         None => current(item),
     }
 }

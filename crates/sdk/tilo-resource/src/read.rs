@@ -55,14 +55,28 @@ fn spec_on(record: Option<&str>, item: Option<&str>) -> tilo_actions::ActionSpec
                 "A change id, exact causal frontier, or checkpoint name (default: current)",
             )
             .nullable(),
+            tilo_actions::ActionParam::optional(
+                "cursor",
+                tilo_actions::ParamType::Text,
+                "The next_cursor an earlier read answered, for the next page of its lists",
+            )
+            .nullable(),
+            tilo_actions::ActionParam::optional(
+                "pageSize",
+                tilo_actions::ParamType::Integer,
+                "How many entries of each list a page holds (default 25, at most 200)",
+            )
+            .nullable(),
         ]
         .into_iter()
-        .filter(|param| item.is_none() || param.name != "item")
+        .filter(|param| item.is_none() || !matches!(param.name.as_ref(), "item" | "cursor" | "pageSize"))
         .collect(),
         move |args| {
             let mut asked = serde_json::Map::new();
             asked.insert("item".into(), item.as_deref().or_else(|| args.text("item")).into());
             asked.insert("version".into(), args.text("version").into());
+            asked.insert("cursor".into(), args.text("cursor").into());
+            asked.insert("pageSize".into(), args.integer("pageSize").into());
             if let Some(record) = &record {
                 asked.insert("record".into(), record.as_str().into());
             }
@@ -84,6 +98,62 @@ fn spec_on(record: Option<&str>, item: Option<&str>) -> tilo_actions::ActionSpec
         schema: serde_json::json!({"type": "object"}),
     };
     spec.reads_document()
+}
+
+/// Entries of each list a page of a read holds when the caller names none.
+pub const PAGE_SIZE: usize = 25;
+/// Most entries of each list a page of a read holds.
+pub const MAX_PAGE_SIZE: usize = 200;
+
+/// One page of `value`, a read of a whole resource: each list it holds at
+/// its top level cut to the `size` entries from `cursor` on (the cursor a
+/// page before answered), so a read costs a page however much the resource
+/// holds. A page that leaves entries out says how many each list holds
+/// (`totals`) and where the next page starts (`next_cursor`); one that cut
+/// nothing answers `value` as it was.
+///
+/// # Errors
+/// `cursor` is not one a read answered.
+pub fn page(
+    value: serde_json::Value,
+    cursor: Option<&str>,
+    size: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let offset = match cursor.filter(|cursor| !cursor.is_empty()) {
+        None => 0,
+        Some(cursor) => cursor
+            .parse::<usize>()
+            .map_err(|_| format!("`{cursor}` is not a cursor a read answered"))?,
+    };
+    let size = size
+        .and_then(|size| usize::try_from(size).ok())
+        .unwrap_or(PAGE_SIZE)
+        .clamp(1, MAX_PAGE_SIZE);
+    let serde_json::Value::Object(mut fields) = value else {
+        return Ok(value);
+    };
+    let end = offset.saturating_add(size);
+    let mut totals = serde_json::Map::new();
+    let mut more = false;
+    for (name, entries) in &mut fields {
+        let serde_json::Value::Array(entries) = entries else {
+            continue;
+        };
+        if offset == 0 && entries.len() <= size {
+            continue;
+        }
+        totals.insert(name.clone(), entries.len().into());
+        more |= entries.len() > end;
+        let kept: Vec<serde_json::Value> = entries.drain(..).skip(offset).take(size).collect();
+        *entries = kept;
+    }
+    if !totals.is_empty() {
+        fields.insert("totals".into(), serde_json::Value::Object(totals));
+    }
+    if more {
+        fields.insert("next_cursor".into(), end.to_string().into());
+    }
+    Ok(serde_json::Value::Object(fields))
 }
 
 /// What a record holds, as the record's own model's JSON

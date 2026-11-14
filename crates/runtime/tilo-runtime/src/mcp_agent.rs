@@ -50,6 +50,7 @@ pub(super) use undo_run::Undoable;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
 use answer::{action_row, action_rows, answer_of, text_result};
+use level::{LevelPages, LsCursor};
 use render::{
     action_line, action_page, block_line, parse_read_cursor, read_answer, render_value,
     restart_pause, strip_blank,
@@ -1082,67 +1083,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if let Some(read) = levels.get(parent) {
             return Ok(read.clone());
         }
-        // A level is one snapshot: every page of it at one revision. When the
-        // app's directory moves on between pages (its document changed, or an
-        // invocation refreshed it), what was read belongs to the old revision
-        // and the read starts again from the first page at the new one, for
-        // as long as an action is waited for, pausing longer each time a
-        // directory that keeps changing is read again.
-        let deadline = tokio::time::Instant::now()
-            .checked_add(std::time::Duration::from_millis(DEFAULT_WAIT_MS));
-        let mut rows = Vec::new();
-        let mut reads: u32 = 0;
-        let mut read_at = String::new();
-        'snapshot: loop {
-            let pause = restart_pause(reads);
-            if !pause.is_zero()
-                && let Some(deadline) = deadline
-            {
-                let until = tokio::time::Instant::now()
-                    .checked_add(pause)
-                    .map_or(deadline, |until| until.min(deadline));
-                tokio::time::sleep_until(until).await;
-            }
-            reads = reads.saturating_add(1);
-            rows.clear();
-            let mut cursor = Vec::new();
-            let mut revision = None;
-            for _ in 0..LEVEL_PAGES {
-                let page = self
-                    .ask(CatalogueQuery {
-                        provider: Some(provider.to_owned()),
-                        parent_resource: (!parent.is_empty()).then(|| parent.to_owned()),
-                        cursor: std::mem::take(&mut cursor),
-                        revision: revision.take(),
-                        max_results: PAGE_ROWS,
-                        limits: Some(CatalogueLimits {
-                            max_bytes: Some(65536),
-                            max_work: Some(512),
-                            max_depth: Some(16),
-                        }),
-                        ..CatalogueQuery::default()
-                    })
-                    .await?;
-                if page.stale_cursor {
-                    if deadline.is_some_and(|deadline| tokio::time::Instant::now() < deadline) {
-                        continue 'snapshot;
-                    }
-                    return Err(
-                        "the app's directory kept changing while it was read; try again".into(),
-                    );
-                }
-                rows.extend(page.rows);
-                read_at.clone_from(&page.revision);
-                if page.exhausted || page.next_cursor.is_empty() {
-                    break 'snapshot;
-                }
-                revision = Some(page.revision);
-                cursor = page.next_cursor;
-            }
-            break;
-        }
-        let mut read = level_of(&rows, parent);
-        read.revision = read_at;
+        let read = self
+            .read_level(provider, parent, None)
+            .await?
+            .ok_or("the app's directory kept changing while it was read; try again")?;
         levels.insert(parent.to_owned(), read.clone());
         Ok(read)
     }
@@ -1453,6 +1397,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             own: Vec::new(),
             children: pool,
             revision,
+            pages: std::sync::Arc::default(),
         }))
     }
 
@@ -1924,12 +1869,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         reason = "one listing, its text lines and its typed rows in the order it writes them"
     )]
     async fn agent_ls(&self, args: LsArgs, structured: bool) -> Result<Reply, String> {
-        let offset = match args.cursor.as_deref() {
-            None | Some("") => 0,
-            Some(cursor) => cursor
-                .parse::<usize>()
-                .map_err(|_| "cursor is not one tilo_ls issued".to_owned())?,
+        let cursor = match args.cursor.as_deref() {
+            None | Some("") => LsCursor {
+                offset: 0,
+                resume: None,
+            },
+            Some(cursor) => LsCursor::parse(cursor)
+                .ok_or_else(|| "cursor is not one tilo_ls issued".to_owned())?,
         };
+        let offset = cursor.offset;
         let limit = args.limit.unwrap_or(LS_LINES).clamp(1, 200);
         let (want_resources, want_actions) = match args.kind.as_deref() {
             None | Some("") => (true, true),
@@ -1969,12 +1917,73 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             return Ok(reply);
         }
-        let mut lines: Vec<String> = Vec::new();
-        let mut rows: Vec<Value> = Vec::new();
+        // What the resource holds, read as far as this page reaches: a
+        // directory read stops at its bound, and a listing paging past it
+        // reads on, so every resource is reachable and the cursor says
+        // whether more follow.
+        let end = offset.saturating_add(limit);
+        let mut children = resolved.children.clone();
+        // The index of `children`'s first among everything listed: a page
+        // read on from where the last one ended starts past the start.
+        let mut first = 0usize;
+        let mut read: Option<(Level, usize)> = None;
+        if want_resources
+            && let Some(node) = &resolved.node
+            && let Some(level) = resolved.levels.get(&node.id).cloned()
+        {
+            let resumed = match cursor.resume {
+                Some((mark, skip)) if offset > 0 => self
+                    .level_from(
+                        &resolved.provider,
+                        &node.id,
+                        mark,
+                        skip.saturating_add(limit),
+                    )
+                    .await?
+                    .filter(|level| level.children.len() >= skip)
+                    .map(|level| (level, skip)),
+                _ => None,
+            };
+            let (level, skipped, from_start) = match resumed {
+                Some((level, skip)) => (level, skip, false),
+                None => (
+                    self.level_reaching(&resolved.provider, &node.id, level, end)
+                        .await?,
+                    offset,
+                    true,
+                ),
+            };
+            first = offset.saturating_sub(skipped);
+            let related: Vec<Node> = resolved
+                .children
+                .iter()
+                .filter(|child| !level.children.iter().any(|read| read.id == child.id))
+                .cloned()
+                .collect();
+            children.clone_from(&level.children);
+            // What the resource names beside its directory follows the
+            // directory's last page, once: a page read on from a later page
+            // holds none of the first, which are no more related for that.
+            if !level.unread() && from_start {
+                children.extend(related);
+            }
+            read = Some((level, first));
+        }
+        let unread = read.as_ref().is_some_and(|(level, _)| level.unread());
+        // Each entry is a resource's line, and its row; then the resource's
+        // own actions, a line each. A page is a window of them.
+        let mut entries: Vec<(String, Option<Value>)> = Vec::new();
         if want_resources {
-            let mut named: Vec<Node> = resolved.children.clone();
+            let mut named: Vec<Node> = children.clone();
             named.extend(resolved.node.clone());
-            for child in &resolved.children {
+            entries.resize(first, (String::new(), None));
+            for (index, child) in children.iter().enumerate() {
+                let index = first.saturating_add(index);
+                if index < offset || index >= end {
+                    // Off this page: only counted.
+                    entries.push((String::new(), None));
+                    continue;
+                }
                 // A resource a program passes as a value goes by a reference, as an answer's.
                 let mut line = self
                     .listed_reference(&child.kind, &child.id)
@@ -1993,27 +2002,54 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     let _ = write!(line, "  {}", actions_note(&child.actions, &called));
                 }
                 let name = child.name(&named);
-                rows.push(json!({
+                let row = json!({
                     "path": format!("{}/{name}", resolved.path),
                     "name": name,
                     "label": child.label,
                     "kind": forms.kind(&child.kind).unwrap_or(&child.kind),
                     "has_children": child.container,
-                    "actions": action_rows(&child.actions),
-                }));
-                lines.push(line);
+                    "actions": child
+                        .actions
+                        .iter()
+                        .map(|action| action.address.action.clone())
+                        .collect::<Vec<_>>(),
+                });
+                entries.push((line, Some(row)));
             }
+            let (mut lines, mut rows) = (Vec::new(), Vec::new());
             (self.other_records(&parsed, &resolved, (&mut lines, &mut rows))).await;
+            entries.extend(lines.into_iter().zip(rows.into_iter().map(Some)));
         }
         if want_actions {
-            lines.extend(
+            entries.extend(
                 resolved
                     .actions
                     .iter()
-                    .map(|action| action_line(action, called(action))),
+                    .map(|action| (action_line(action, called(action)), None)),
             );
         }
-        let total = lines.len();
+        let total = entries.len();
+        // The actions of each kind of resource on the page, once: a row names
+        // the ones it offers, by id.
+        let mut kinds = serde_json::Map::new();
+        for child in children
+            .iter()
+            .skip(offset.saturating_sub(first))
+            .take(limit)
+        {
+            let kind = forms.kind(&child.kind).unwrap_or(&child.kind).to_owned();
+            let listed = kinds.entry(kind).or_insert_with(|| json!([]));
+            if let Value::Array(listed) = listed {
+                for action in &child.actions {
+                    if !listed
+                        .iter()
+                        .any(|row| row["id"] == action.address.action.as_str())
+                    {
+                        listed.push(action_row(action));
+                    }
+                }
+            }
+        }
         let mut text = resolved.path.clone();
         // What this is, by the same name its own row here would give it.
         if let Some(node) = &resolved.node {
@@ -2021,18 +2057,35 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         } else {
             let _ = write!(text, "  ({})", resolved.app_id);
         }
-        for line in lines.into_iter().skip(offset).take(limit) {
+        let mut rows: Vec<Value> = Vec::new();
+        for (line, row) in entries.into_iter().skip(offset).take(limit) {
             text.push('\n');
             text.push_str(&line);
+            rows.extend(row);
         }
-        let end = offset.saturating_add(limit);
-        let next = (end < total).then(|| end.to_string());
+        // The next page starts at the directory page its first resource
+        // was read in, when one was.
+        let next = (end < total || unread).then(|| {
+            let resume = read.as_ref().and_then(|(level, first)| {
+                let node = resolved.node.as_ref()?;
+                level.resume_at(&node.id, end.checked_sub(*first)?)
+            });
+            LsCursor {
+                offset: end,
+                resume,
+            }
+            .write()
+        });
         if let Some(next) = &next {
-            let _ = write!(
-                text,
-                "\n… {} more: cursor \"{next}\"",
-                total.saturating_sub(end)
-            );
+            if unread {
+                let _ = write!(text, "\n… more: cursor \"{next}\"");
+            } else {
+                let _ = write!(
+                    text,
+                    "\n… {} more: cursor \"{next}\"",
+                    total.saturating_sub(end)
+                );
+            }
         } else if total == 0 {
             text.push_str("\n(nothing here)");
         }
@@ -2050,6 +2103,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "kind": kind,
                 "actions": action_rows(&resolved.actions),
                 "rows": rows,
+                "kinds": kinds,
             });
             if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
                 fields.insert("next_cursor".into(), json!(next));
@@ -2850,6 +2904,9 @@ fn pinned_window(
         pinned: true,
     })
 }
+
+#[path = "mcp_agent_level.rs"]
+mod level;
 
 #[cfg(test)]
 #[path = "mcp_agent_tests.rs"]

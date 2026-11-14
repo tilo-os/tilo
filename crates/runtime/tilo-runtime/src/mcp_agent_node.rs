@@ -103,6 +103,8 @@ pub(super) struct Level {
     pub(super) children: Vec<Node>,
     /// The directory revision it was read at.
     pub(super) revision: String,
+    /// The pages it was read from ([`super::LevelPages`]).
+    pub(super) pages: std::sync::Arc<super::LevelPages>,
 }
 
 pub(super) fn level_of(rows: &[CatalogueRow], parent: &str) -> Level {

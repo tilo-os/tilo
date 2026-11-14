@@ -317,3 +317,22 @@ describe("files", () => {
     expect(api.last()?.headers.accept).toBe("text/event-stream, application/octet-stream");
   });
 });
+
+describe("a listing's actions", () => {
+  it("describes each kind's actions once and resolves a row's ids against them", async () => {
+    const { Listing } = await import("../src/models.ts");
+    const rename = { id: "rename", label: "Rename note", kind: "undoable", params: [{ name: "title" }] };
+    const remove = { id: "delete", label: "Delete note", kind: "undoable", params: [] };
+    const listing = new Listing({
+      path: "notes/Notebook",
+      rows: [
+        { path: "notes/Notebook/a", name: "a", kind: "notes.Page", actions: ["rename", "delete"] },
+        { path: "notes/Notebook/b", name: "b", kind: "notes.Page", actions: ["rename"] },
+      ],
+      kinds: { "notes.Page": [rename, remove] },
+    });
+    expect(listing.rows[0]?.actions.map((action) => action.id)).toEqual(["rename", "delete"]);
+    expect(listing.rows[1]?.actions.map((action) => action.id)).toEqual(["rename"]);
+    expect(listing.rows[1]?.actions[0]?.params[0]?.name).toBe("title");
+  });
+});

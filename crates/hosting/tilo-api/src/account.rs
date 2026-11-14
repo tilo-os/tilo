@@ -356,6 +356,7 @@ impl Server {
             "" | ROOT => {
                 let mut text = String::from("account: your workspaces and keys");
                 let mut rows = Vec::new();
+                let mut kinds = serde_json::Map::new();
                 for (resource, label) in [
                     ("workspaces", "Your workspaces"),
                     ("keys", "Keys to your workspaces"),
@@ -363,16 +364,22 @@ impl Server {
                 ] {
                     let (actions, lines) = actions_of(resource);
                     let _ = write!(text, "\n{ROOT}/{resource}  {label}{lines}");
+                    let kind = format!("account.{resource}");
+                    // A row names its actions; the listing says each kind's once.
+                    let ids: Vec<Value> =
+                        actions.iter().map(|action| action["id"].clone()).collect();
                     rows.push(json!({
                         "path": format!("{ROOT}/{resource}"), "name": resource, "label": label,
-                        "kind": format!("account.{resource}"), "has_children": resource == "workspaces",
-                        "actions": actions,
+                        "kind": kind, "has_children": resource == "workspaces",
+                        "actions": ids,
                     }));
+                    kinds.insert(kind, Value::Array(actions));
                 }
                 tool_result(
                     structured,
                     &text,
-                    &json!({"path": ROOT, "kind": "account", "rows": rows, "actions": []}),
+                    &json!({"path": ROOT, "kind": "account", "rows": rows, "actions": [],
+                            "kinds": kinds}),
                     false,
                 )
             }

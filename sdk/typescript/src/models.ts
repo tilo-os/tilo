@@ -248,15 +248,35 @@ export interface Row {
   raw: Record<string, unknown>;
 }
 
-export function rowOf(raw: Record<string, unknown>): Row {
+/**
+ * A listing's row, its actions as the listing describes them: a row names
+ * the ones it offers by id, and the listing's `kinds` describes each kind's
+ * once.
+ */
+export function rowOf(
+  raw: Record<string, unknown>,
+  kinds: Record<string, unknown> = {},
+): Row {
+  const kind = String(raw.kind ?? "");
+  const described = arrayOf(kinds[kind]).map(actionOf);
+  const actions = (Array.isArray(raw.actions) ? raw.actions : []).flatMap(
+    (entry: unknown): Action[] => {
+      if (typeof entry === "string") {
+        return described.filter((action) => action.id === entry);
+      }
+      return entry !== null && typeof entry === "object"
+        ? [actionOf(entry as Record<string, unknown>)]
+        : [];
+    },
+  );
   return {
     path: String(raw.path ?? ""),
     name: String(raw.name ?? ""),
     label: String(raw.label ?? ""),
-    kind: String(raw.kind ?? ""),
+    kind,
     hasChildren: raw.has_children === true,
     state: textOf(raw.state),
-    actions: arrayOf(raw.actions).map(actionOf),
+    actions,
     raw,
   };
 }
@@ -276,7 +296,11 @@ export class Listing {
   ) {
     this.path = String(raw.path ?? "");
     this.kind = String(raw.kind ?? "");
-    this.rows = arrayOf(raw.rows).map(rowOf);
+    const kinds =
+      raw.kinds !== null && typeof raw.kinds === "object"
+        ? (raw.kinds as Record<string, unknown>)
+        : {};
+    this.rows = arrayOf(raw.rows).map((row) => rowOf(row, kinds));
     this.actions = arrayOf(raw.actions).map(actionOf);
     this.nextCursor = textOf(raw.next_cursor);
     this.#more = more;
