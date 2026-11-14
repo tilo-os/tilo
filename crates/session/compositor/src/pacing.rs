@@ -261,158 +261,163 @@ mod tests {
         Duration::from_millis(n)
     }
 
-    #[test]
-    fn a_frame_is_built_one_lead_before_the_vblank_that_shows_it() {
-        let mut pacing = Pacing::default();
-        let t0 = Instant::now();
-        // Until a cost is known the frame is built at the vblank.
-        assert_eq!(pacing.shown(t0, INTERVAL, false), t0);
-        pacing.queued(t0, t0 + ms(3), INTERVAL);
-        let vblank = t0 + INTERVAL;
-        let due = pacing.shown(vblank, INTERVAL, false);
-        assert_eq!(due, vblank + INTERVAL - ms(3) - LEAD_MARGIN);
-        // Built on time, shown at the vblank it aimed at.
-        pacing.queued(due, due + ms(2), INTERVAL);
-        let next = vblank + INTERVAL;
-        pacing.shown(next, INTERVAL, false);
-        assert_eq!(pacing.window.missed, 0);
-        assert_eq!(
-            pacing.window.build_to_vblank_us.last(),
-            Some(&micros(ms(5)))
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Frame pacing.
+        fn frames_are_paced_to_the_vblank_grid;
 
-    #[test]
-    fn a_frame_shown_a_vblank_late_counts_as_missed() {
-        let mut pacing = Pacing::default();
-        let t0 = Instant::now();
-        pacing.queued(t0, t0 + ms(2), INTERVAL);
-        let vblank = t0 + INTERVAL;
-        let due = pacing.shown(vblank, INTERVAL, false);
-        pacing.queued(due, due + ms(1), INTERVAL);
-        pacing.shown(vblank + INTERVAL * 2, INTERVAL, false);
-        assert_eq!(pacing.window.missed, 1);
-    }
-
-    #[test]
-    fn frames_that_do_not_fit_a_refresh_or_a_following_display_build_at_once() {
-        let mut pacing = Pacing::default();
-        let t0 = Instant::now();
-        pacing.queued(t0, t0 + ms(16), INTERVAL);
-        assert_eq!(pacing.shown(t0 + INTERVAL, INTERVAL, false), t0 + INTERVAL);
-        let mut light = Pacing::default();
-        light.queued(t0, t0 + ms(1), INTERVAL);
-        assert_eq!(light.shown(t0 + INTERVAL, INTERVAL, true), t0 + INTERVAL);
-    }
-
-    #[test]
-    fn the_frame_after_a_queued_one_is_due_past_its_blank() {
-        let mut pacing = Pacing::default();
-        let t0 = Instant::now();
-        let due = pacing.shown(t0, INTERVAL, false);
-        assert_eq!(
-            pacing.queued_next_frame(INTERVAL, false),
-            None,
-            "nothing queued"
-        );
-        pacing.queued(due, due + ms(1), INTERVAL);
-        // It is shown at the next blank; the one after it is built one lead before the blank after
-        // that.
-        let lead = pacing.lead(INTERVAL);
-        assert_eq!(
-            pacing.queued_next_frame(INTERVAL, false),
-            Some(t0 + INTERVAL * 2 - lead)
-        );
-        assert_eq!(
-            pacing.queued_next_frame(INTERVAL, true),
-            None,
-            "a following display takes it as the last is shown"
-        );
-        pacing.shown(t0 + INTERVAL, INTERVAL, false);
-        assert_eq!(
-            pacing.queued_next_frame(INTERVAL, false),
-            None,
-            "shown, nothing queued"
-        );
-        // A build that began off the grid aimed at no blank.
-        let late = t0 + INTERVAL + ms(2);
-        pacing.queued(late, late + ms(1), INTERVAL);
-        assert_eq!(pacing.queued_next_frame(INTERVAL, false), None);
-        // Frames that do not fit a refresh are built as each is shown.
-        let mut slow = Pacing::default();
-        slow.queued(t0, t0 + ms(20), INTERVAL);
-        assert_eq!(slow.queued_next_frame(INTERVAL, false), None);
-    }
-
-    #[test]
-    fn a_slow_frame_stops_holding_the_lead_up_after_a_second() {
-        let mut pacing = Pacing::default();
-        let t0 = Instant::now();
-        pacing.queued(t0, t0 + ms(10), INTERVAL);
-        assert_eq!(pacing.lead(INTERVAL), ms(10) + LEAD_MARGIN);
-        let later = t0 + ms(1_500);
-        pacing.queued(later, later + ms(1), INTERVAL);
-        assert_eq!(pacing.lead(INTERVAL), ms(1) + LEAD_MARGIN);
-    }
-
-    #[test]
-    fn an_idle_output_wakes_on_the_grid() {
-        let mut pacing = Pacing::default();
-        let t0 = Instant::now();
-        assert_eq!(pacing.idle(t0, INTERVAL, false), t0 + INTERVAL);
-        pacing.queued(t0, t0 + ms(2), INTERVAL);
-        let vblank = t0 + INTERVAL;
-        let due = pacing.shown(vblank, INTERVAL, false);
-        assert_eq!(pacing.idle(vblank, INTERVAL, false), due);
-        // Long after, still in phase with the vblank.
-        let now = due + INTERVAL * 10 + ms(1);
-        let next = pacing.idle(now, INTERVAL, false);
-        assert!(next > now && next <= now + INTERVAL);
-        assert_eq!(next.duration_since(due).as_nanos() % INTERVAL.as_nanos(), 0);
-    }
-
-    #[test]
-    fn a_stalled_output_reports_the_longest_it_showed_nothing() {
-        let mut pacing = Pacing::default();
-        let t0 = Instant::now();
-        let mut vblank = t0;
-        pacing.queued(t0, t0 + ms(2), INTERVAL);
-        pacing.shown(vblank, INTERVAL, false);
-        for _ in 0..3 {
-            vblank += INTERVAL;
-            pacing.queued(vblank - ms(3), vblank - ms(1), INTERVAL);
-            pacing.shown(vblank, INTERVAL, false);
-        }
-        // Held up for three seconds, then a frame again.
-        vblank += ms(3_000);
-        pacing.queued(vblank - ms(2), vblank - ms(1), INTERVAL);
-        pacing.shown(vblank, INTERVAL, false);
-        let summary = pacing.take_summary(vblank, INTERVAL).unwrap();
-        assert_eq!(summary.shown, 5);
-        assert_eq!(summary.gap_max_us, micros(ms(3_000)));
-        assert_eq!(
-            summary.missed, 0,
-            "no frame was built for the vblanks it missed"
-        );
-    }
-
-    #[test]
-    fn a_window_of_frames_is_summarised_once_it_has_passed() {
-        let mut pacing = Pacing::default();
-        let t0 = Instant::now();
-        let mut vblank = t0;
-        pacing.shown(vblank, INTERVAL, false);
-        for _ in 0..200 {
-            let due = pacing.idle(vblank, INTERVAL, false);
+        phase a_frame_is_built_one_lead_before_the_vblank_that_shows_it;
+        {
+            let mut pacing = Pacing::default();
+            let t0 = Instant::now();
+            // Until a cost is known the frame is built at the vblank.
+            assert_eq!(pacing.shown(t0, INTERVAL, false), t0);
+            pacing.queued(t0, t0 + ms(3), INTERVAL);
+            let vblank = t0 + INTERVAL;
+            let due = pacing.shown(vblank, INTERVAL, false);
+            assert_eq!(due, vblank + INTERVAL - ms(3) - LEAD_MARGIN);
+            // Built on time, shown at the vblank it aimed at.
             pacing.queued(due, due + ms(2), INTERVAL);
-            vblank += INTERVAL;
-            pacing.shown(vblank, INTERVAL, false);
+            let next = vblank + INTERVAL;
+            pacing.shown(next, INTERVAL, false);
+            assert_eq!(pacing.window.missed, 0);
+            assert_eq!(
+                pacing.window.build_to_vblank_us.last(),
+                Some(&micros(ms(5)))
+            );
         }
-        let summary = pacing.take_summary(vblank, INTERVAL).unwrap();
-        assert_eq!(summary.shown, 200);
-        assert_eq!(summary.missed, 0);
-        assert_eq!(summary.cost, (2_000, 2_000));
-        assert!(summary.build_to_vblank.1 <= micros(ms(4)) + 1);
-        assert!(pacing.take_summary(vblank, INTERVAL).is_none());
+
+        phase a_frame_shown_a_vblank_late_counts_as_missed;
+        {
+            let mut pacing = Pacing::default();
+            let t0 = Instant::now();
+            pacing.queued(t0, t0 + ms(2), INTERVAL);
+            let vblank = t0 + INTERVAL;
+            let due = pacing.shown(vblank, INTERVAL, false);
+            pacing.queued(due, due + ms(1), INTERVAL);
+            pacing.shown(vblank + INTERVAL * 2, INTERVAL, false);
+            assert_eq!(pacing.window.missed, 1);
+        }
+
+        phase frames_that_do_not_fit_a_refresh_or_a_following_display_build_at_once;
+        {
+            let mut pacing = Pacing::default();
+            let t0 = Instant::now();
+            pacing.queued(t0, t0 + ms(16), INTERVAL);
+            assert_eq!(pacing.shown(t0 + INTERVAL, INTERVAL, false), t0 + INTERVAL);
+            let mut light = Pacing::default();
+            light.queued(t0, t0 + ms(1), INTERVAL);
+            assert_eq!(light.shown(t0 + INTERVAL, INTERVAL, true), t0 + INTERVAL);
+        }
+
+        phase the_frame_after_a_queued_one_is_due_past_its_blank;
+        {
+            let mut pacing = Pacing::default();
+            let t0 = Instant::now();
+            let due = pacing.shown(t0, INTERVAL, false);
+            assert_eq!(
+                pacing.queued_next_frame(INTERVAL, false),
+                None,
+                "nothing queued"
+            );
+            pacing.queued(due, due + ms(1), INTERVAL);
+            // It is shown at the next blank; the one after it is built one lead before the blank after
+            // that.
+            let lead = pacing.lead(INTERVAL);
+            assert_eq!(
+                pacing.queued_next_frame(INTERVAL, false),
+                Some(t0 + INTERVAL * 2 - lead)
+            );
+            assert_eq!(
+                pacing.queued_next_frame(INTERVAL, true),
+                None,
+                "a following display takes it as the last is shown"
+            );
+            pacing.shown(t0 + INTERVAL, INTERVAL, false);
+            assert_eq!(
+                pacing.queued_next_frame(INTERVAL, false),
+                None,
+                "shown, nothing queued"
+            );
+            // A build that began off the grid aimed at no blank.
+            let late = t0 + INTERVAL + ms(2);
+            pacing.queued(late, late + ms(1), INTERVAL);
+            assert_eq!(pacing.queued_next_frame(INTERVAL, false), None);
+            // Frames that do not fit a refresh are built as each is shown.
+            let mut slow = Pacing::default();
+            slow.queued(t0, t0 + ms(20), INTERVAL);
+            assert_eq!(slow.queued_next_frame(INTERVAL, false), None);
+        }
+
+        phase a_slow_frame_stops_holding_the_lead_up_after_a_second;
+        {
+            let mut pacing = Pacing::default();
+            let t0 = Instant::now();
+            pacing.queued(t0, t0 + ms(10), INTERVAL);
+            assert_eq!(pacing.lead(INTERVAL), ms(10) + LEAD_MARGIN);
+            let later = t0 + ms(1_500);
+            pacing.queued(later, later + ms(1), INTERVAL);
+            assert_eq!(pacing.lead(INTERVAL), ms(1) + LEAD_MARGIN);
+        }
+
+        phase an_idle_output_wakes_on_the_grid;
+        {
+            let mut pacing = Pacing::default();
+            let t0 = Instant::now();
+            assert_eq!(pacing.idle(t0, INTERVAL, false), t0 + INTERVAL);
+            pacing.queued(t0, t0 + ms(2), INTERVAL);
+            let vblank = t0 + INTERVAL;
+            let due = pacing.shown(vblank, INTERVAL, false);
+            assert_eq!(pacing.idle(vblank, INTERVAL, false), due);
+            // Long after, still in phase with the vblank.
+            let now = due + INTERVAL * 10 + ms(1);
+            let next = pacing.idle(now, INTERVAL, false);
+            assert!(next > now && next <= now + INTERVAL);
+            assert_eq!(next.duration_since(due).as_nanos() % INTERVAL.as_nanos(), 0);
+        }
+
+        phase a_stalled_output_reports_the_longest_it_showed_nothing;
+        {
+            let mut pacing = Pacing::default();
+            let t0 = Instant::now();
+            let mut vblank = t0;
+            pacing.queued(t0, t0 + ms(2), INTERVAL);
+            pacing.shown(vblank, INTERVAL, false);
+            for _ in 0..3 {
+                vblank += INTERVAL;
+                pacing.queued(vblank - ms(3), vblank - ms(1), INTERVAL);
+                pacing.shown(vblank, INTERVAL, false);
+            }
+            // Held up for three seconds, then a frame again.
+            vblank += ms(3_000);
+            pacing.queued(vblank - ms(2), vblank - ms(1), INTERVAL);
+            pacing.shown(vblank, INTERVAL, false);
+            let summary = pacing.take_summary(vblank, INTERVAL).unwrap();
+            assert_eq!(summary.shown, 5);
+            assert_eq!(summary.gap_max_us, micros(ms(3_000)));
+            assert_eq!(
+                summary.missed, 0,
+                "no frame was built for the vblanks it missed"
+            );
+        }
+
+        phase a_window_of_frames_is_summarised_once_it_has_passed;
+        {
+            let mut pacing = Pacing::default();
+            let t0 = Instant::now();
+            let mut vblank = t0;
+            pacing.shown(vblank, INTERVAL, false);
+            for _ in 0..200 {
+                let due = pacing.idle(vblank, INTERVAL, false);
+                pacing.queued(due, due + ms(2), INTERVAL);
+                vblank += INTERVAL;
+                pacing.shown(vblank, INTERVAL, false);
+            }
+            let summary = pacing.take_summary(vblank, INTERVAL).unwrap();
+            assert_eq!(summary.shown, 200);
+            assert_eq!(summary.missed, 0);
+            assert_eq!(summary.cost, (2_000, 2_000));
+            assert!(summary.build_to_vblank.1 <= micros(ms(4)) + 1);
+            assert!(pacing.take_summary(vblank, INTERVAL).is_none());
+        }
     }
 }

@@ -11,33 +11,92 @@ const KEY_C: u32 = 46;
 const KEY_COMPOSE: u32 = 127;
 const KEY_LEFTCTRL: u32 = 29;
 
-#[test]
-fn the_keyboard_types_in_the_persons_layout() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "typing", (200, 100), [0, 255, 0, 255]);
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.keymap.is_some()
-    });
-    let before = client.seen.keymap.clone().expect("the client has a keymap");
+tilo_test_env::scenario! {
+    /// Typing in a layout.
+    fn the_keyboard_types_what_the_persons_layout_makes_of_its_keys;
 
-    compositor.set_keyboard_layout(&KeyboardLayout {
-        layout: "de".into(),
-        ..KeyboardLayout::default()
-    });
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0]
-            .seen
-            .keymap
-            .as_ref()
-            .is_some_and(|keymap| keymap.contains("German"))
-    });
-    let after = client.seen.keymap.clone().expect("the new keymap");
-    assert_ne!(before, after, "the client's keys type other characters now");
-    assert!(
-        after.contains("German"),
-        "the client's keymap is the German one the person chose"
-    );
-    assert_eq!(compositor.keyboard_layout().as_deref(), Some("German"));
+    phase the_keyboard_types_in_the_persons_layout;
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let mut client = mapped_client(&mut compositor, "typing", (200, 100), [0, 255, 0, 255]);
+        pump(&mut compositor, &mut [&mut client], |_, clients| {
+            clients[0].seen.keymap.is_some()
+        });
+        let before = client.seen.keymap.clone().expect("the client has a keymap");
+
+        compositor.set_keyboard_layout(&KeyboardLayout {
+            layout: "de".into(),
+            ..KeyboardLayout::default()
+        });
+        pump(&mut compositor, &mut [&mut client], |_, clients| {
+            clients[0]
+                .seen
+                .keymap
+                .as_ref()
+                .is_some_and(|keymap| keymap.contains("German"))
+        });
+        let after = client.seen.keymap.clone().expect("the new keymap");
+        assert_ne!(before, after, "the client's keys type other characters now");
+        assert!(
+            after.contains("German"),
+            "the client's keymap is the German one the person chose"
+        );
+        assert_eq!(compositor.keyboard_layout().as_deref(), Some("German"));
+    }
+
+    phase a_chord_on_a_cyrillic_layout_names_the_latin_key;
+    {
+        // Russian types, with US behind it in the same keymap: what a shortcut is named by.
+        let mut compositor = headless(Box::new(StackPolicy));
+        let log = typing_field(
+            &mut compositor,
+            &KeyboardLayout {
+                layout: "ru,us".into(),
+                ..KeyboardLayout::default()
+            },
+        );
+
+        // The key a US keyboard labels C types the Cyrillic letter on its own.
+        tap(&mut compositor, KEY_C);
+        let keys = log.borrow().keys.clone();
+        assert_eq!(
+            keys[0].text.as_deref(),
+            Some("с"),
+            "the person types Russian"
+        );
+        assert_eq!(
+            keys[0].keysym,
+            keysyms::KEY_Cyrillic_es,
+            "the Russian letter's own keysym"
+        );
+
+        // Under Ctrl it is still Ctrl+C: the letter the US arrangement puts on that key names the
+        // chord.
+        compositor
+            .input(InputEvent::Key {
+                keycode: KEY_LEFTCTRL,
+                pressed: true,
+            })
+            .unwrap();
+        tap(&mut compositor, KEY_C);
+        compositor
+            .input(InputEvent::Key {
+                keycode: KEY_LEFTCTRL,
+                pressed: false,
+            })
+            .unwrap();
+        let keys = log.borrow().keys.clone();
+        let copy = keys
+            .iter()
+            .find(|key| key.keycode == KEY_C && key.pressed && key.modifiers.ctrl)
+            .expect("the field heard Ctrl with C");
+        assert_eq!(
+            copy.keysym,
+            keysyms::KEY_Cyrillic_es,
+            "the key still types the Cyrillic letter"
+        );
+        assert_eq!(copy.latin_keysym, u32::from('c'), "XK_c, the chord's name");
+    }
 }
 
 /// A hosted surface with the keyboard on it, in `layout` , recording the keys it types.
@@ -142,58 +201,4 @@ fn a_sequence_of_keys_types_what_the_layout_makes_of_it() {
             .collect();
         assert_eq!(typed, row.types, "{}: what each press typed", row.name);
     }
-}
-
-#[test]
-fn a_chord_on_a_cyrillic_layout_names_the_latin_key() {
-    // Russian types, with US behind it in the same keymap: what a shortcut is named by.
-    let mut compositor = headless(Box::new(StackPolicy));
-    let log = typing_field(
-        &mut compositor,
-        &KeyboardLayout {
-            layout: "ru,us".into(),
-            ..KeyboardLayout::default()
-        },
-    );
-
-    // The key a US keyboard labels C types the Cyrillic letter on its own.
-    tap(&mut compositor, KEY_C);
-    let keys = log.borrow().keys.clone();
-    assert_eq!(
-        keys[0].text.as_deref(),
-        Some("с"),
-        "the person types Russian"
-    );
-    assert_eq!(
-        keys[0].keysym,
-        keysyms::KEY_Cyrillic_es,
-        "the Russian letter's own keysym"
-    );
-
-    // Under Ctrl it is still Ctrl+C: the letter the US arrangement puts on that key names the
-    // chord.
-    compositor
-        .input(InputEvent::Key {
-            keycode: KEY_LEFTCTRL,
-            pressed: true,
-        })
-        .unwrap();
-    tap(&mut compositor, KEY_C);
-    compositor
-        .input(InputEvent::Key {
-            keycode: KEY_LEFTCTRL,
-            pressed: false,
-        })
-        .unwrap();
-    let keys = log.borrow().keys.clone();
-    let copy = keys
-        .iter()
-        .find(|key| key.keycode == KEY_C && key.pressed && key.modifiers.ctrl)
-        .expect("the field heard Ctrl with C");
-    assert_eq!(
-        copy.keysym,
-        keysyms::KEY_Cyrillic_es,
-        "the key still types the Cyrillic letter"
-    );
-    assert_eq!(copy.latin_keysym, u32::from('c'), "XK_c, the chord's name");
 }

@@ -230,27 +230,32 @@ mod tests {
             .expect("in range")
     }
 
-    #[test]
-    fn an_unanswered_ping_turns_hung_after_its_time_and_an_answer_clears_it() {
-        let start = Instant::now();
-        let mut watch = Watch::sent(3, start);
-        assert_eq!(watch.judge(3, at(start, 4_999)), Verdict::Waiting);
-        assert_eq!(watch.deadline(), Some(at(start, 5_000)));
-        assert_eq!(watch.judge(3, at(start, 5_000)), Verdict::Hung);
-        assert!(watch.is_hung());
-        assert_eq!(watch.deadline(), None, "the answer wakes the loop itself");
-        assert_eq!(watch.judge(4, at(start, 9_000)), Verdict::Answered);
-        assert!(!watch.is_hung(), "recovery clears the state by itself");
-    }
+    tilo_test_env::scenario! {
+        /// When an app counts as hung, and what waiting for it does.
+        fn an_app_is_not_responding_only_while_its_ping_goes_unanswered;
 
-    #[test]
-    fn wait_hides_not_responding_for_another_full_period() {
-        let start = Instant::now();
-        let mut watch = Watch::sent(0, start);
-        assert_eq!(watch.judge(0, at(start, 6_000)), Verdict::Hung);
-        watch.wait(at(start, 6_000));
-        assert!(!watch.is_hung());
-        assert_eq!(watch.judge(0, at(start, 10_999)), Verdict::Waiting);
-        assert_eq!(watch.judge(0, at(start, 11_000)), Verdict::Hung);
+        phase an_unanswered_ping_turns_hung_after_its_time_and_an_answer_clears_it;
+        {
+            let start = Instant::now();
+            let mut watch = Watch::sent(3, start);
+            assert_eq!(watch.judge(3, at(start, 4_999)), Verdict::Waiting);
+            assert_eq!(watch.deadline(), Some(at(start, 5_000)));
+            assert_eq!(watch.judge(3, at(start, 5_000)), Verdict::Hung);
+            assert!(watch.is_hung());
+            assert_eq!(watch.deadline(), None, "the answer wakes the loop itself");
+            assert_eq!(watch.judge(4, at(start, 9_000)), Verdict::Answered);
+            assert!(!watch.is_hung(), "recovery clears the state by itself");
+        }
+
+        phase wait_hides_not_responding_for_another_full_period;
+        {
+            let start = Instant::now();
+            let mut watch = Watch::sent(0, start);
+            assert_eq!(watch.judge(0, at(start, 6_000)), Verdict::Hung);
+            watch.wait(at(start, 6_000));
+            assert!(!watch.is_hung());
+            assert_eq!(watch.judge(0, at(start, 10_999)), Verdict::Waiting);
+            assert_eq!(watch.judge(0, at(start, 11_000)), Verdict::Hung);
+        }
     }
 }

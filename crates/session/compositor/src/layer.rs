@@ -1028,147 +1028,152 @@ mod tests {
         Rectangle::new(Point::from((0, 0)), Size::from((1000, 800)))
     }
 
-    /// Where [`placement`] puts a surface on the 1000 by 800 output: what the row shows, the
-    /// surface's anchors, the size it asks for and its margins (top, right, bottom, left), then
-    /// its place as x, y, width and height. Each row is placed on that output at the desktop's
-    /// corner and again on one standing elsewhere, where its place is counted from that output's.
-    #[test]
-    fn a_surface_is_placed_by_its_anchors_its_size_and_its_margins() {
-        let bar = Anchor::TOP | Anchor::LEFT | Anchor::RIGHT;
-        let low_bar = Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
-        let corner = Anchor::TOP | Anchor::LEFT;
-        let none = (0, 0, 0, 0);
-        let rows = [
-            (
-                "a bar anchored to both sides spans the output",
-                bar,
-                (0, 40),
-                none,
-                (0, 0, 1000, 40),
-            ),
-            (
-                "a panel hangs from the edges it is anchored to, at its size and margins",
-                Anchor::TOP | Anchor::RIGHT,
-                (380, 500),
-                (34, 8, 0, 0),
-                (1000 - 380 - 8, 34, 380, 500),
-            ),
-            (
-                "a panel in the corner",
-                corner,
-                (300, 200),
-                none,
-                (0, 0, 300, 200),
-            ),
-            (
-                // Anchored to the bottom, it keeps its bottom edge at the margin.
-                "a panel anchored to the bottom and the right",
-                Anchor::BOTTOM | Anchor::RIGHT,
-                (300, 200),
-                (0, 10, 20, 0),
-                (1000 - 300 - 10, 800 - 200 - 20, 300, 200),
-            ),
-            (
-                "a surface anchored to nothing is centred",
-                Anchor::empty(),
-                (400, 300),
-                none,
-                (300, 250, 400, 300),
-            ),
-            (
-                "a stretched axis keeps the margins",
-                bar,
-                (0, 32),
-                (4, 4, 0, 4),
-                (4, 4, 1000 - 8, 32),
-            ),
-            (
-                "a size larger than its output is kept inside it",
-                corner,
-                (2000, 4000),
-                none,
-                (0, 0, 1000, 800),
-            ),
-            (
-                "a bar anchored to the bottom and both sides",
-                low_bar,
-                (0, 40),
-                none,
-                (0, 800 - 40, 1000, 40),
-            ),
-            (
-                "a surface anchored to every edge fills the output inside its margins",
-                Anchor::all(),
-                (0, 0),
-                (10, 20, 30, 40),
-                (40, 10, 1000 - 40 - 20, 800 - 10 - 30),
-            ),
-            (
-                "an axis with one anchor and no size takes the whole of it",
-                Anchor::LEFT,
-                (0, 0),
-                none,
-                (0, 0, 1000, 800),
-            ),
-            (
-                "margins wider than the output leave one pixel",
-                bar,
-                (0, 40),
-                (0, 600, 0, 600),
-                (600, 0, 1, 40),
-            ),
-        ];
-        for (name, anchor, size, margin, (x, y, width, height)) in rows {
-            // An output standing elsewhere in the desktop places the surface the same way, from
-            // its own corner.
-            for (left, top) in [(0, 0), (1000, -200)] {
-                let mut on = output();
-                on.loc = Point::from((left, top));
-                assert_eq!(
-                    placement(&request(anchor, size, margin), on),
-                    Rectangle::new(
-                        Point::from((left + x, top + y)),
-                        Size::from((width, height))
-                    ),
-                    "{name}, on the output at {left}, {top}"
-                );
+    tilo_test_env::scenario! {
+        /// Where a layer surface stands.
+        fn a_layer_surface_is_placed_inside_its_room;
+
+        phase a_surface_is_placed_by_its_anchors_its_size_and_its_margins;
+        // Where [`placement`] puts a surface on the 1000 by 800 output: what the row shows, the
+        // surface's anchors, the size it asks for and its margins (top, right, bottom, left), then
+        // its place as x, y, width and height. Each row is placed on that output at the desktop's
+        // corner and again on one standing elsewhere, where its place is counted from that output's.
+        {
+            let bar = Anchor::TOP | Anchor::LEFT | Anchor::RIGHT;
+            let low_bar = Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
+            let corner = Anchor::TOP | Anchor::LEFT;
+            let none = (0, 0, 0, 0);
+            let rows = [
+                (
+                    "a bar anchored to both sides spans the output",
+                    bar,
+                    (0, 40),
+                    none,
+                    (0, 0, 1000, 40),
+                ),
+                (
+                    "a panel hangs from the edges it is anchored to, at its size and margins",
+                    Anchor::TOP | Anchor::RIGHT,
+                    (380, 500),
+                    (34, 8, 0, 0),
+                    (1000 - 380 - 8, 34, 380, 500),
+                ),
+                (
+                    "a panel in the corner",
+                    corner,
+                    (300, 200),
+                    none,
+                    (0, 0, 300, 200),
+                ),
+                (
+                    // Anchored to the bottom, it keeps its bottom edge at the margin.
+                    "a panel anchored to the bottom and the right",
+                    Anchor::BOTTOM | Anchor::RIGHT,
+                    (300, 200),
+                    (0, 10, 20, 0),
+                    (1000 - 300 - 10, 800 - 200 - 20, 300, 200),
+                ),
+                (
+                    "a surface anchored to nothing is centred",
+                    Anchor::empty(),
+                    (400, 300),
+                    none,
+                    (300, 250, 400, 300),
+                ),
+                (
+                    "a stretched axis keeps the margins",
+                    bar,
+                    (0, 32),
+                    (4, 4, 0, 4),
+                    (4, 4, 1000 - 8, 32),
+                ),
+                (
+                    "a size larger than its output is kept inside it",
+                    corner,
+                    (2000, 4000),
+                    none,
+                    (0, 0, 1000, 800),
+                ),
+                (
+                    "a bar anchored to the bottom and both sides",
+                    low_bar,
+                    (0, 40),
+                    none,
+                    (0, 800 - 40, 1000, 40),
+                ),
+                (
+                    "a surface anchored to every edge fills the output inside its margins",
+                    Anchor::all(),
+                    (0, 0),
+                    (10, 20, 30, 40),
+                    (40, 10, 1000 - 40 - 20, 800 - 10 - 30),
+                ),
+                (
+                    "an axis with one anchor and no size takes the whole of it",
+                    Anchor::LEFT,
+                    (0, 0),
+                    none,
+                    (0, 0, 1000, 800),
+                ),
+                (
+                    "margins wider than the output leave one pixel",
+                    bar,
+                    (0, 40),
+                    (0, 600, 0, 600),
+                    (600, 0, 1, 40),
+                ),
+            ];
+            for (name, anchor, size, margin, (x, y, width, height)) in rows {
+                // An output standing elsewhere in the desktop places the surface the same way, from
+                // its own corner.
+                for (left, top) in [(0, 0), (1000, -200)] {
+                    let mut on = output();
+                    on.loc = Point::from((left, top));
+                    assert_eq!(
+                        placement(&request(anchor, size, margin), on),
+                        Rectangle::new(
+                            Point::from((left + x, top + y)),
+                            Size::from((width, height))
+                        ),
+                        "{name}, on the output at {left}, {top}"
+                    );
+                }
             }
         }
-    }
 
-    /// A popover the session places stands at its room's corner whatever its anchors say, as tall
-    /// as the page it asks for and never past the room.
-    #[test]
-    fn a_surface_the_session_places_is_as_big_as_it_asks_inside_its_room() {
-        let room = Place {
-            room: Rectangle::new(Point::from((892, 32)), Size::from((380, 640))),
-            rests_at_bottom: false,
-        };
-        let asked = request(Anchor::TOP | Anchor::LEFT, (380, 412), (0, 0, 0, 0));
-        assert_eq!(
-            within(&asked, room),
-            Rectangle::new(Point::from((892, 32)), Size::from((380, 412)))
-        );
-        let tall = request(Anchor::TOP | Anchor::LEFT, (380, 900), (0, 0, 0, 0));
-        assert_eq!(within(&tall, room).size, Size::from((380, 640)));
-        let open = request(Anchor::TOP | Anchor::LEFT, (0, 0), (0, 0, 0, 0));
-        assert_eq!(within(&open, room), room.room);
-    }
+        phase a_surface_the_session_places_is_as_big_as_it_asks_inside_its_room;
+        // A popover the session places stands at its room's corner whatever its anchors say, as tall
+        // as the page it asks for and never past the room.
+        {
+            let room = Place {
+                room: Rectangle::new(Point::from((892, 32)), Size::from((380, 640))),
+                rests_at_bottom: false,
+            };
+            let asked = request(Anchor::TOP | Anchor::LEFT, (380, 412), (0, 0, 0, 0));
+            assert_eq!(
+                within(&asked, room),
+                Rectangle::new(Point::from((892, 32)), Size::from((380, 412)))
+            );
+            let tall = request(Anchor::TOP | Anchor::LEFT, (380, 900), (0, 0, 0, 0));
+            assert_eq!(within(&tall, room).size, Size::from((380, 640)));
+            let open = request(Anchor::TOP | Anchor::LEFT, (0, 0), (0, 0, 0, 0));
+            assert_eq!(within(&open, room), room.room);
+        }
 
-    /// A surface that rests against its room's bottom edge keeps its own bottom there: a page
-    /// shorter than the room stands clear of what it was opened against, not at the room's far end.
-    #[test]
-    fn a_surface_resting_on_its_rooms_bottom_edge_clears_the_top_of_the_room() {
-        let room = Place {
-            room: Rectangle::new(Point::from((892, 32)), Size::from((380, 640))),
-            rests_at_bottom: true,
-        };
-        let asked = request(Anchor::TOP | Anchor::LEFT, (380, 412), (0, 0, 0, 0));
-        assert_eq!(
-            within(&asked, room),
-            Rectangle::new(Point::from((892, 32 + 640 - 412)), Size::from((380, 412)))
-        );
-        let tall = request(Anchor::TOP | Anchor::LEFT, (380, 900), (0, 0, 0, 0));
-        assert_eq!(within(&tall, room), room.room);
+        phase a_surface_resting_on_its_rooms_bottom_edge_clears_the_top_of_the_room;
+        // A surface that rests against its room's bottom edge keeps its own bottom there: a page
+        // shorter than the room stands clear of what it was opened against, not at the room's far end.
+        {
+            let room = Place {
+                room: Rectangle::new(Point::from((892, 32)), Size::from((380, 640))),
+                rests_at_bottom: true,
+            };
+            let asked = request(Anchor::TOP | Anchor::LEFT, (380, 412), (0, 0, 0, 0));
+            assert_eq!(
+                within(&asked, room),
+                Rectangle::new(Point::from((892, 32 + 640 - 412)), Size::from((380, 412)))
+            );
+            let tall = request(Anchor::TOP | Anchor::LEFT, (380, 900), (0, 0, 0, 0));
+            assert_eq!(within(&tall, room), room.room);
+        }
     }
 }

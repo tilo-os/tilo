@@ -201,90 +201,95 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_wake_whose_stages_all_happened_is_lit_and_records_its_first_frame() {
-        let t0 = Instant::now();
-        let mut wake = WakeCheck::new(t0, "resume", None);
-        assert_eq!(wake.judge(lit().failed_stage()), WakeVerdict::Lit);
-        let line = wake.record(
-            43,
-            WakeVerdict::Lit,
-            &lit(),
-            t0 + Duration::from_millis(120),
-        );
-        assert_eq!(
-            line,
-            "tilo compositor: DRM wake check: connector=43 reason=resume outcome=lit stage=none \
+    tilo_test_env::scenario! {
+        /// Whether a display really came back after a wake.
+        fn a_wake_is_judged_by_its_stages_and_redone_once;
+
+        phase a_wake_whose_stages_all_happened_is_lit_and_records_its_first_frame;
+        {
+            let t0 = Instant::now();
+            let mut wake = WakeCheck::new(t0, "resume", None);
+            assert_eq!(wake.judge(lit().failed_stage()), WakeVerdict::Lit);
+            let line = wake.record(
+                43,
+                WakeVerdict::Lit,
+                &lit(),
+                t0 + Duration::from_millis(120),
+            );
+            assert_eq!(
+                line,
+                "tilo compositor: DRM wake check: connector=43 reason=resume outcome=lit stage=none \
              after_ms=120 redone=false crtc=active connector_status=connected \
              backlight=device=panel bl_power=0"
-        );
-        assert!(!wake.settled(), "the first frame is still to come");
-        assert_eq!(
-            wake.first_flip(43, t0 + Duration::from_millis(150))
-                .as_deref(),
-            Some(
-                "tilo compositor: DRM wake check: connector=43 reason=resume first_flip_after_ms=150"
-            )
-        );
-        assert!(wake.settled());
-        assert_eq!(
-            wake.first_flip(43, t0 + Duration::from_millis(170)),
-            None,
-            "only the first"
-        );
-    }
+            );
+            assert!(!wake.settled(), "the first frame is still to come");
+            assert_eq!(
+                wake.first_flip(43, t0 + Duration::from_millis(150))
+                    .as_deref(),
+                Some(
+                    "tilo compositor: DRM wake check: connector=43 reason=resume first_flip_after_ms=150"
+                )
+            );
+            assert!(wake.settled());
+            assert_eq!(
+                wake.first_flip(43, t0 + Duration::from_millis(170)),
+                None,
+                "only the first"
+            );
+        }
 
-    #[test]
-    fn a_failed_stage_redoes_the_modeset_once_and_a_second_failure_is_final() {
-        let mut wake = WakeCheck::new(Instant::now(), "dpms", None);
-        assert_eq!(
-            wake.judge(Some(WakeStage::Link)),
-            WakeVerdict::Redo(WakeStage::Link)
-        );
-        assert!(wake.settled(), "no frame is awaited from a failed wake");
-        assert_eq!(
-            wake.judge(Some(WakeStage::Link)),
-            WakeVerdict::Failed(WakeStage::Link)
-        );
+        phase a_failed_stage_redoes_the_modeset_once_and_a_second_failure_is_final;
+        {
+            let mut wake = WakeCheck::new(Instant::now(), "dpms", None);
+            assert_eq!(
+                wake.judge(Some(WakeStage::Link)),
+                WakeVerdict::Redo(WakeStage::Link)
+            );
+            assert!(wake.settled(), "no frame is awaited from a failed wake");
+            assert_eq!(
+                wake.judge(Some(WakeStage::Link)),
+                WakeVerdict::Failed(WakeStage::Link)
+            );
 
-        let mut recovered = WakeCheck::new(Instant::now(), "dpms", None);
-        assert_eq!(
-            recovered.judge(Some(WakeStage::Backlight)),
-            WakeVerdict::Redo(WakeStage::Backlight)
-        );
-        assert_eq!(recovered.judge(None), WakeVerdict::Lit);
-    }
+            let mut recovered = WakeCheck::new(Instant::now(), "dpms", None);
+            assert_eq!(
+                recovered.judge(Some(WakeStage::Backlight)),
+                WakeVerdict::Redo(WakeStage::Backlight)
+            );
+            assert_eq!(recovered.judge(None), WakeVerdict::Lit);
+        }
 
-    #[test]
-    fn a_forced_fault_fails_the_first_judgement_and_the_redo_recovers() {
-        let mut wake = WakeCheck::new(Instant::now(), "resume", Some(WakeStage::Crtc));
-        assert_eq!(wake.judge(None), WakeVerdict::Redo(WakeStage::Crtc));
-        assert_eq!(wake.judge(None), WakeVerdict::Lit, "the fault applies once");
-    }
+        phase a_forced_fault_fails_the_first_judgement_and_the_redo_recovers;
+        {
+            let mut wake = WakeCheck::new(Instant::now(), "resume", Some(WakeStage::Crtc));
+            assert_eq!(wake.judge(None), WakeVerdict::Redo(WakeStage::Crtc));
+            assert_eq!(wake.judge(None), WakeVerdict::Lit, "the fault applies once");
+        }
 
-    #[test]
-    fn the_read_back_names_the_first_stage_that_did_not_happen() {
-        assert_eq!(lit().failed_stage(), None);
-        let dark_crtc = LitState {
-            crtc_active: Some(false),
-            backlight_powered: Some(false),
-            ..lit()
-        };
-        assert_eq!(dark_crtc.failed_stage(), Some(WakeStage::Crtc));
-        let blanked_backlight = LitState {
-            backlight_powered: Some(false),
-            ..lit()
-        };
-        assert_eq!(blanked_backlight.failed_stage(), Some(WakeStage::Backlight));
-        let unreadable = LitState {
-            crtc_active: None,
-            backlight_powered: None,
-            ..lit()
-        };
-        assert_eq!(
-            unreadable.failed_stage(),
-            None,
-            "what cannot be read is not a failure"
-        );
+        phase the_read_back_names_the_first_stage_that_did_not_happen;
+        {
+            assert_eq!(lit().failed_stage(), None);
+            let dark_crtc = LitState {
+                crtc_active: Some(false),
+                backlight_powered: Some(false),
+                ..lit()
+            };
+            assert_eq!(dark_crtc.failed_stage(), Some(WakeStage::Crtc));
+            let blanked_backlight = LitState {
+                backlight_powered: Some(false),
+                ..lit()
+            };
+            assert_eq!(blanked_backlight.failed_stage(), Some(WakeStage::Backlight));
+            let unreadable = LitState {
+                crtc_active: None,
+                backlight_powered: None,
+                ..lit()
+            };
+            assert_eq!(
+                unreadable.failed_stage(),
+                None,
+                "what cannot be read is not a failure"
+            );
+        }
     }
 }

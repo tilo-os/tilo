@@ -96,21 +96,26 @@ impl Protection {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_password_manager_is_private_and_an_editor_is_not() {
-        assert!(holds_secrets("so.tilo.passwords"));
-        assert!(holds_secrets("Bitwarden"));
-        assert!(!holds_secrets("org.gnome.TextEditor"));
-        assert!(!Protection::default().covers(None));
-    }
+    tilo_test_env::scenario! {
+        /// Which apps a capture shows as a placeholder.
+        fn an_app_that_holds_secrets_is_private_in_captures;
 
-    #[test]
-    fn an_app_the_session_marks_private_stays_private_until_it_says_otherwise() {
-        let mut protection = Protection::default();
-        protection.app("org.example.ledger", true);
-        assert!(protection.covers(Some("org.example.ledger")));
-        assert!(!protection.covers(Some("org.example.notes")));
-        protection.app("org.example.ledger", false);
-        assert!(!protection.covers(Some("org.example.ledger")));
+        phase a_password_manager_is_private_and_an_editor_is_not;
+        {
+            assert!(holds_secrets("so.tilo.passwords"));
+            assert!(holds_secrets("Bitwarden"));
+            assert!(!holds_secrets("org.gnome.TextEditor"));
+            assert!(!Protection::default().covers(None));
+        }
+
+        phase an_app_the_session_marks_private_stays_private_until_it_says_otherwise;
+        {
+            let mut protection = Protection::default();
+            protection.app("org.example.ledger", true);
+            assert!(protection.covers(Some("org.example.ledger")));
+            assert!(!protection.covers(Some("org.example.notes")));
+            protection.app("org.example.ledger", false);
+            assert!(!protection.covers(Some("org.example.ledger")));
+        }
     }
 }

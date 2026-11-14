@@ -97,50 +97,55 @@ fn attach_hdr10_pq(
     color_surface
 }
 
-#[test]
-fn a_shared_windows_stream_reports_the_colour_its_client_commits_and_loses_it_when_unset() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "colour", (200, 100), [255, 0, 0, 255]);
-    let window = compositor.windows().first().expect("the window").0.id;
-    // Shared while its client has said nothing about its colour: the share reports the colour it
-    // was set up with.
-    let session = shared(&mut compositor, window);
-    assert_eq!(announced(&session), (Some(Colorimetry::sdr_bt709()), None));
+tilo_test_env::scenario! {
+    /// The colour a shared window's stream says its frames are in.
+    fn a_shared_windows_stream_announces_the_colour_of_its_client;
 
-    let color_surface = attach_hdr10_pq(&mut compositor, &mut client);
-    pump(&mut compositor, &mut [&mut client], |_, _| {
-        announced(&session).0 == Some(hdr10_pq())
-    });
-    let (color, hdr) = announced(&session);
-    assert_eq!(color, Some(hdr10_pq()), "the client's own description");
-    assert_eq!(
-        hdr,
-        Some(Hdr10Metadata::reference_bt2020()),
-        "PQ content carries the volume it was mastered for"
-    );
+    phase a_shared_windows_stream_reports_the_colour_its_client_commits_and_loses_it_when_unset;
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let mut client = mapped_client(&mut compositor, "colour", (200, 100), [255, 0, 0, 255]);
+        let window = compositor.windows().first().expect("the window").0.id;
+        // Shared while its client has said nothing about its colour: the share reports the colour it
+        // was set up with.
+        let session = shared(&mut compositor, window);
+        assert_eq!(announced(&session), (Some(Colorimetry::sdr_bt709()), None));
 
-    // The client unsets it, as a player does when it stops the film: the configured colour applies
-    // again.
-    color_surface.unset_image_description();
-    client.surface.as_ref().expect("surface").commit();
-    pump(&mut compositor, &mut [&mut client], |_, _| {
-        announced(&session).0 == Some(Colorimetry::sdr_bt709())
-    });
-    assert_eq!(announced(&session), (Some(Colorimetry::sdr_bt709()), None));
-}
+        let color_surface = attach_hdr10_pq(&mut compositor, &mut client);
+        pump(&mut compositor, &mut [&mut client], |_, _| {
+            announced(&session).0 == Some(hdr10_pq())
+        });
+        let (color, hdr) = announced(&session);
+        assert_eq!(color, Some(hdr10_pq()), "the client's own description");
+        assert_eq!(
+            hdr,
+            Some(Hdr10Metadata::reference_bt2020()),
+            "PQ content carries the volume it was mastered for"
+        );
 
-#[test]
-fn a_share_that_starts_after_its_client_said_its_colour_announces_it_at_once() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "colour", (200, 100), [255, 0, 0, 255]);
-    let window = compositor.windows().first().expect("the window").0.id;
-    attach_hdr10_pq(&mut compositor, &mut client);
-    pump(&mut compositor, &mut [&mut client], |compositor, _| {
-        compositor.window_color(window).is_some()
-    });
+        // The client unsets it, as a player does when it stops the film: the configured colour applies
+        // again.
+        color_surface.unset_image_description();
+        client.surface.as_ref().expect("surface").commit();
+        pump(&mut compositor, &mut [&mut client], |_, _| {
+            announced(&session).0 == Some(Colorimetry::sdr_bt709())
+        });
+        assert_eq!(announced(&session), (Some(Colorimetry::sdr_bt709()), None));
+    }
 
-    // The window was playing HDR before anyone shared it: its share must not wait for the next
-    // commit to say so — a still film may not make one.
-    let session = shared(&mut compositor, window);
-    assert_eq!(announced(&session).0, Some(hdr10_pq()));
+    phase a_share_that_starts_after_its_client_said_its_colour_announces_it_at_once;
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let mut client = mapped_client(&mut compositor, "colour", (200, 100), [255, 0, 0, 255]);
+        let window = compositor.windows().first().expect("the window").0.id;
+        attach_hdr10_pq(&mut compositor, &mut client);
+        pump(&mut compositor, &mut [&mut client], |compositor, _| {
+            compositor.window_color(window).is_some()
+        });
+
+        // The window was playing HDR before anyone shared it: its share must not wait for the next
+        // commit to say so — a still film may not make one.
+        let session = shared(&mut compositor, window);
+        assert_eq!(announced(&session).0, Some(hdr10_pq()));
+    }
 }

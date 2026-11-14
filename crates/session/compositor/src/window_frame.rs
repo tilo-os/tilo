@@ -497,232 +497,237 @@ mod tests {
         Rectangle::new((x, y).into(), (w, h).into())
     }
 
-    #[test]
-    fn the_distance_is_negative_inside_and_positive_outside() {
-        // A 100 x 50 rect with 10 px corners.
-        assert!(distance(50.0, 25.0, 100.0, 50.0, 10.0) < -20.0, "inside");
-        assert!(distance(-1.0, 25.0, 100.0, 50.0, 10.0) > 0.0, "left");
-        assert!(distance(101.0, 25.0, 100.0, 50.0, 10.0) > 0.0, "right");
-        // The corner's arc: the diagonal is outside, the middle of the side is not.
-        assert!(distance(0.5, 0.5, 100.0, 50.0, 10.0) > 0.0, "the corner");
-        assert!(distance(0.5, 25.0, 100.0, 50.0, 10.0) < 0.0, "the side");
-        // Square corners: the corner pixel is inside.
-        assert!(distance(0.5, 0.5, 100.0, 50.0, 0.0) < 0.0);
-    }
+    tilo_test_env::scenario! {
+        /// The frame drawn round a window: its corners, its shadow and its edge.
+        fn a_window_frame_is_shaped_and_shaded_as_the_design_language_draws_it;
 
-    #[test]
-    fn the_blur_covers_what_the_rect_covers() {
-        assert!((erfc(-6.0) - 2.0).abs() < 1e-6, "deep inside the shape");
-        assert!(erfc(0.0) - 1.0 < 1e-6, "on the outline, half");
-        assert!(erfc(6.0) < 1e-6, "far outside");
-        assert!(erfc(1.0) > erfc(2.0), "falling");
-    }
-
-    #[test]
-    fn a_rounded_rect_is_cut_into_rows_that_never_leave_it() {
-        let bands = bands(rect(10, 20, 100, 60), 10.0);
-        assert_eq!(bands.len(), 21, "ten rows a corner and the middle");
-        let first = bands.first().expect("a first row");
-        assert_eq!(first.loc.y, 20, "rows start at the window's top");
-        assert!(
-            first.loc.x > 10 && first.size.w < 90,
-            "the top row is cut in on both sides: {first:?}"
-        );
-        let middle = bands.last().expect("a middle row");
-        assert_eq!(middle.size.w, 100, "the middle is whole");
-        assert_eq!(middle.size.h, 40);
-        for band in &bands {
-            assert!(band.size.w > 0 && band.size.h > 0);
-            assert!(band.loc.x >= 10 && band.loc.x + band.size.w <= 110); // allow-breakpoint: a fixed-size fixture window, not a layout width
-            assert!(band.loc.y >= 20 && band.loc.y + band.size.h <= 80);
+        phase the_distance_is_negative_inside_and_positive_outside;
+        {
+            // A 100 x 50 rect with 10 px corners.
+            assert!(distance(50.0, 25.0, 100.0, 50.0, 10.0) < -20.0, "inside");
+            assert!(distance(-1.0, 25.0, 100.0, 50.0, 10.0) > 0.0, "left");
+            assert!(distance(101.0, 25.0, 100.0, 50.0, 10.0) > 0.0, "right");
+            // The corner's arc: the diagonal is outside, the middle of the side is not.
+            assert!(distance(0.5, 0.5, 100.0, 50.0, 10.0) > 0.0, "the corner");
+            assert!(distance(0.5, 25.0, 100.0, 50.0, 10.0) < 0.0, "the side");
+            // Square corners: the corner pixel is inside.
+            assert!(distance(0.5, 0.5, 100.0, 50.0, 0.0) < 0.0);
         }
-        // Rows from the top and from the bottom together cover every row of the window exactly
-        // once.
-        let mut rows: Vec<i32> = bands
-            .iter()
-            .flat_map(|band| (band.loc.y..band.loc.y + band.size.h).collect::<Vec<_>>())
-            .collect();
-        rows.sort_unstable();
-        assert_eq!(rows, (20..80).collect::<Vec<_>>());
-    }
 
-    #[test]
-    fn a_square_window_is_one_row_and_a_small_one_is_clamped() {
-        assert_eq!(bands(rect(0, 0, 40, 40), 0.0), vec![rect(0, 0, 40, 40)]);
-        // A radius larger than half the window is a pill: no row is negative.
-        let bands = bands(rect(0, 0, 20, 10), 40.0);
-        assert!(bands.iter().all(|band| band.size.w > 0));
-        let mut rows: Vec<i32> = bands
-            .iter()
-            .flat_map(|band| (band.loc.y..band.loc.y + band.size.h).collect::<Vec<_>>())
-            .collect();
-        rows.sort_unstable();
-        assert_eq!(rows, (0..10).collect::<Vec<_>>());
-    }
+        phase the_blur_covers_what_the_rect_covers;
+        {
+            assert!((erfc(-6.0) - 2.0).abs() < 1e-6, "deep inside the shape");
+            assert!(erfc(0.0) - 1.0 < 1e-6, "on the outline, half");
+            assert!(erfc(6.0) < 1e-6, "far outside");
+            assert!(erfc(1.0) > erfc(2.0), "falling");
+        }
 
-    #[test]
-    fn a_huge_corner_stays_a_few_dozen_rows() {
-        let bands = bands(rect(0, 0, 4000, 3000), 500.0);
-        assert!(bands.len() <= 2 * MOST_ROWS as usize + 1, "{}", bands.len());
-        let mut rows: Vec<i32> = bands
-            .iter()
-            .flat_map(|band| (band.loc.y..band.loc.y + band.size.h).collect::<Vec<_>>())
-            .collect();
-        rows.sort_unstable();
-        assert_eq!(rows.len(), 3000, "every row is drawn once");
-    }
-
-    #[test]
-    fn the_default_frame_is_the_window_tile_the_design_language_draws() {
-        let frame = WindowFrame::default();
-        assert!((frame.radius - 14.0).abs() < f64::EPSILON);
-        let shadow = frame.shadow.expect("a shadow");
-        assert_eq!(shadow.rgba, [0, 0, 0, 71]);
-        assert!((shadow.offset_y - 2.0).abs() < f64::EPSILON);
-        assert!((shadow.blur - 16.0).abs() < f64::EPSILON);
-        let edge = frame.edge.expect("an edge");
-        assert_eq!(edge.rgba, [255, 255, 255, 36]);
-        assert!((edge.width - 1.0).abs() < f64::EPSILON);
-        assert!(!frame.is_square());
-        assert!(WindowFrame::square().is_square());
-    }
-
-    #[test]
-    fn a_window_its_host_paints_whole_only_has_its_corners_shaped() {
-        let frame = WindowFrame::corners(14.0);
-        assert!((frame.radius - 14.0).abs() < f64::EPSILON, "corners stay");
-        assert!(frame.shadow.is_none(), "the host draws the lift");
-        assert!(frame.edge.is_none(), "and the edge");
-        assert!(
-            !frame.is_square(),
-            "the corners are still the compositor's to cut"
-        );
-    }
-
-    #[test]
-    fn the_shadow_falls_below_the_window_and_the_edge_runs_round_it() {
-        let frame = WindowFrame {
-            radius: 8.0,
-            shadow: Some(Shadow {
-                offset_y: 0.0,
-                blur: 4.0,
-                rgba: [0, 0, 0, 255],
-            }),
-            edge: Some(Edge {
-                width: 1.0,
-                rgba: [255, 255, 255, 255],
-            }),
-        };
-        let size = (100.0, 60.0);
-        let signature = Signature {
-            size: (6400, 3840),
-            radius: sixtyfourths(frame.radius),
-            shadow: Some((0, sixtyfourths(4.0), [0, 0, 0, 255])),
-            edge: Some((sixtyfourths(1.0), [255, 255, 255, 255])),
-        };
-        let image = Raster::of(&signature).expect("an image");
-        let (width, height) = image.texels;
-        let pixel = |x: u32, y: u32| -> [u8; 4] {
-            let at = ((y * width + x) * 4) as usize;
-            let slice = image.rgba.get(at..at + 4).expect("a pixel");
-            [slice[0], slice[1], slice[2], slice[3]]
-        };
-        // The image starts above and left of the window by its blur's reach.
-        assert!(image.origin.0 < 0.0 && image.origin.1 < 0.0);
-        assert!(image.size.0 > size.0 && image.size.1 > size.1);
-        let left = u32_from(-image.origin.0);
-        let top = u32_from(-image.origin.1);
-        let middle = pixel(left + 50, top + 30);
-        assert_eq!(middle[3], 0, "the window's own pixels are not drawn");
-        let above = pixel(left + 50, top - 1);
-        assert!(above[3] > 0, "the edge above the window: {above:?}");
-        assert!(above[0] > 0, "and it is the light one");
-        let below = pixel(left + 50, top + 60 + 3);
-        assert!(below[3] > 0 && below[0] == 0, "the shadow below: {below:?}");
-        assert!(
-            left + 50 < width && top + 60 + 1 < height,
-            "the image reaches below the window"
-        );
-    }
-
-    #[test]
-    fn an_image_is_drawn_once_per_size_and_frame() {
-        let images = FrameImages::default();
-        let frame = WindowFrame::default();
-        let first = images.image(&frame, (200.0, 100.0), 1.0).expect("one");
-        let again = images.image(&frame, (200.0, 100.0), 1.0).expect("the same");
-        assert!(std::rc::Rc::ptr_eq(&first, &again));
-        assert!(
-            images.image(&frame, (200.0, 100.0), 2.0).is_some(),
-            "another output scale is another image"
-        );
-        assert!(
-            images
-                .image(&WindowFrame::square(), (200.0, 100.0), 1.0)
-                .is_none()
-        );
-        assert!(images.image(&frame, (0.0, 100.0), 1.0).is_none());
-    }
-
-    #[test]
-    fn the_default_frame_falls_off_as_a_gaussian_and_strokes_one_pixel_outside() {
-        // A 200 x 100 window with the window tile's frame: the numbers below
-        // are that tile's, worked out by hand from the design tokens — a
-        // shadow of black at 71 / 255 offset 2 down and blurred by 16 (a
-        // Gaussian of 8 as its deviation), and a 1 px white hairline at
-        // 36 / 255 from the outline out.
-        let frame = WindowFrame::default();
-        let signature = Signature {
-            size: (sixtyfourths(200.0), sixtyfourths(100.0)),
-            radius: sixtyfourths(frame.radius),
-            shadow: Some((sixtyfourths(2.0), sixtyfourths(16.0), [0, 0, 0, 71])),
-            edge: Some((sixtyfourths(1.0), [255, 255, 255, 36])),
-        };
-        let image = Raster::of(&signature).expect("an image");
-        let pixel = |image: &Raster, x: u32, y: u32| -> [u8; 4] {
-            let at = ((y * image.texels.0 + x) * 4) as usize;
-            let slice = image.rgba.get(at..at + 4).expect("a pixel");
-            [slice[0], slice[1], slice[2], slice[3]]
-        };
-        let left = u32_from(-image.origin.0);
-        let top = u32_from(-image.origin.1);
-        // The hairline, on its own: full strength on the first pixel outside the window, nothing
-        // one pixel further out, and nothing over the window.
-        let hairline = Raster::of(&Signature {
-            edge: signature.edge,
-            shadow: None,
-            ..signature
-        })
-        .expect("an image");
-        let (edge_left, edge_top) = (u32_from(-hairline.origin.0), u32_from(-hairline.origin.1));
-        let edge = pixel(&hairline, edge_left - 1, edge_top + 50);
-        assert_eq!(edge, [36, 36, 36, 36], "the hairline: {edge:?}");
-        assert_eq!(
-            pixel(&hairline, edge_left - 2, edge_top + 50)[3],
-            0,
-            "one pixel wide"
-        );
-        assert_eq!(
-            pixel(&hairline, edge_left + 50, edge_top + 50)[3],
-            0,
-            "not over the window"
-        );
-        // The shadow below: half its strength where it meets the window's own silhouette (2 px
-        // down), and 0.5 · erfc(d / (8√2)) of it at `d` px below that, times the token's 71.
-        for (below, alpha) in [(0.5, 34), (4.5, 20), (8.5, 10), (12.5, 4), (16.5, 1)] {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a row of this image, counted up from the window's top"
-            )]
-            let row = top + 102 + (below - 0.5) as u32;
-            let shadow = pixel(&image, left + 100, row);
-            assert_eq!(shadow[0], 0, "black: {shadow:?}");
+        phase a_rounded_rect_is_cut_into_rows_that_never_leave_it;
+        {
+            let bands = bands(rect(10, 20, 100, 60), 10.0);
+            assert_eq!(bands.len(), 21, "ten rows a corner and the middle");
+            let first = bands.first().expect("a first row");
+            assert_eq!(first.loc.y, 20, "rows start at the window's top");
             assert!(
-                shadow[3].abs_diff(alpha) <= 1,
-                "{below} px below the silhouette: {} is not {alpha}",
-                shadow[3]
+                first.loc.x > 10 && first.size.w < 90,
+                "the top row is cut in on both sides: {first:?}"
             );
+            let middle = bands.last().expect("a middle row");
+            assert_eq!(middle.size.w, 100, "the middle is whole");
+            assert_eq!(middle.size.h, 40);
+            for band in &bands {
+                assert!(band.size.w > 0 && band.size.h > 0);
+                assert!(band.loc.x >= 10 && band.loc.x + band.size.w <= 110); // allow-breakpoint: a fixed-size fixture window, not a layout width
+                assert!(band.loc.y >= 20 && band.loc.y + band.size.h <= 80);
+            }
+            // Rows from the top and from the bottom together cover every row of the window exactly
+            // once.
+            let mut rows: Vec<i32> = bands
+                .iter()
+                .flat_map(|band| (band.loc.y..band.loc.y + band.size.h).collect::<Vec<_>>())
+                .collect();
+            rows.sort_unstable();
+            assert_eq!(rows, (20..80).collect::<Vec<_>>());
+        }
+
+        phase a_square_window_is_one_row_and_a_small_one_is_clamped;
+        {
+            assert_eq!(bands(rect(0, 0, 40, 40), 0.0), vec![rect(0, 0, 40, 40)]);
+            // A radius larger than half the window is a pill: no row is negative.
+            let bands = bands(rect(0, 0, 20, 10), 40.0);
+            assert!(bands.iter().all(|band| band.size.w > 0));
+            let mut rows: Vec<i32> = bands
+                .iter()
+                .flat_map(|band| (band.loc.y..band.loc.y + band.size.h).collect::<Vec<_>>())
+                .collect();
+            rows.sort_unstable();
+            assert_eq!(rows, (0..10).collect::<Vec<_>>());
+        }
+
+        phase a_huge_corner_stays_a_few_dozen_rows;
+        {
+            let bands = bands(rect(0, 0, 4000, 3000), 500.0);
+            assert!(bands.len() <= 2 * MOST_ROWS as usize + 1, "{}", bands.len());
+            let mut rows: Vec<i32> = bands
+                .iter()
+                .flat_map(|band| (band.loc.y..band.loc.y + band.size.h).collect::<Vec<_>>())
+                .collect();
+            rows.sort_unstable();
+            assert_eq!(rows.len(), 3000, "every row is drawn once");
+        }
+
+        phase the_default_frame_is_the_window_tile_the_design_language_draws;
+        {
+            let frame = WindowFrame::default();
+            assert!((frame.radius - 14.0).abs() < f64::EPSILON);
+            let shadow = frame.shadow.expect("a shadow");
+            assert_eq!(shadow.rgba, [0, 0, 0, 71]);
+            assert!((shadow.offset_y - 2.0).abs() < f64::EPSILON);
+            assert!((shadow.blur - 16.0).abs() < f64::EPSILON);
+            let edge = frame.edge.expect("an edge");
+            assert_eq!(edge.rgba, [255, 255, 255, 36]);
+            assert!((edge.width - 1.0).abs() < f64::EPSILON);
+            assert!(!frame.is_square());
+            assert!(WindowFrame::square().is_square());
+        }
+
+        phase a_window_its_host_paints_whole_only_has_its_corners_shaped;
+        {
+            let frame = WindowFrame::corners(14.0);
+            assert!((frame.radius - 14.0).abs() < f64::EPSILON, "corners stay");
+            assert!(frame.shadow.is_none(), "the host draws the lift");
+            assert!(frame.edge.is_none(), "and the edge");
+            assert!(
+                !frame.is_square(),
+                "the corners are still the compositor's to cut"
+            );
+        }
+
+        phase the_shadow_falls_below_the_window_and_the_edge_runs_round_it;
+        {
+            let frame = WindowFrame {
+                radius: 8.0,
+                shadow: Some(Shadow {
+                    offset_y: 0.0,
+                    blur: 4.0,
+                    rgba: [0, 0, 0, 255],
+                }),
+                edge: Some(Edge {
+                    width: 1.0,
+                    rgba: [255, 255, 255, 255],
+                }),
+            };
+            let size = (100.0, 60.0);
+            let signature = Signature {
+                size: (6400, 3840),
+                radius: sixtyfourths(frame.radius),
+                shadow: Some((0, sixtyfourths(4.0), [0, 0, 0, 255])),
+                edge: Some((sixtyfourths(1.0), [255, 255, 255, 255])),
+            };
+            let image = Raster::of(&signature).expect("an image");
+            let (width, height) = image.texels;
+            let pixel = |x: u32, y: u32| -> [u8; 4] {
+                let at = ((y * width + x) * 4) as usize;
+                let slice = image.rgba.get(at..at + 4).expect("a pixel");
+                [slice[0], slice[1], slice[2], slice[3]]
+            };
+            // The image starts above and left of the window by its blur's reach.
+            assert!(image.origin.0 < 0.0 && image.origin.1 < 0.0);
+            assert!(image.size.0 > size.0 && image.size.1 > size.1);
+            let left = u32_from(-image.origin.0);
+            let top = u32_from(-image.origin.1);
+            let middle = pixel(left + 50, top + 30);
+            assert_eq!(middle[3], 0, "the window's own pixels are not drawn");
+            let above = pixel(left + 50, top - 1);
+            assert!(above[3] > 0, "the edge above the window: {above:?}");
+            assert!(above[0] > 0, "and it is the light one");
+            let below = pixel(left + 50, top + 60 + 3);
+            assert!(below[3] > 0 && below[0] == 0, "the shadow below: {below:?}");
+            assert!(
+                left + 50 < width && top + 60 + 1 < height,
+                "the image reaches below the window"
+            );
+        }
+
+        phase an_image_is_drawn_once_per_size_and_frame;
+        {
+            let images = FrameImages::default();
+            let frame = WindowFrame::default();
+            let first = images.image(&frame, (200.0, 100.0), 1.0).expect("one");
+            let again = images.image(&frame, (200.0, 100.0), 1.0).expect("the same");
+            assert!(std::rc::Rc::ptr_eq(&first, &again));
+            assert!(
+                images.image(&frame, (200.0, 100.0), 2.0).is_some(),
+                "another output scale is another image"
+            );
+            assert!(
+                images
+                    .image(&WindowFrame::square(), (200.0, 100.0), 1.0)
+                    .is_none()
+            );
+            assert!(images.image(&frame, (0.0, 100.0), 1.0).is_none());
+        }
+
+        phase the_default_frame_falls_off_as_a_gaussian_and_strokes_one_pixel_outside;
+        {
+            // A 200 x 100 window with the window tile's frame: the numbers below
+            // are that tile's, worked out by hand from the design tokens — a
+            // shadow of black at 71 / 255 offset 2 down and blurred by 16 (a
+            // Gaussian of 8 as its deviation), and a 1 px white hairline at
+            // 36 / 255 from the outline out.
+            let frame = WindowFrame::default();
+            let signature = Signature {
+                size: (sixtyfourths(200.0), sixtyfourths(100.0)),
+                radius: sixtyfourths(frame.radius),
+                shadow: Some((sixtyfourths(2.0), sixtyfourths(16.0), [0, 0, 0, 71])),
+                edge: Some((sixtyfourths(1.0), [255, 255, 255, 36])),
+            };
+            let image = Raster::of(&signature).expect("an image");
+            let pixel = |image: &Raster, x: u32, y: u32| -> [u8; 4] {
+                let at = ((y * image.texels.0 + x) * 4) as usize;
+                let slice = image.rgba.get(at..at + 4).expect("a pixel");
+                [slice[0], slice[1], slice[2], slice[3]]
+            };
+            let left = u32_from(-image.origin.0);
+            let top = u32_from(-image.origin.1);
+            // The hairline, on its own: full strength on the first pixel outside the window, nothing
+            // one pixel further out, and nothing over the window.
+            let hairline = Raster::of(&Signature {
+                edge: signature.edge,
+                shadow: None,
+                ..signature
+            })
+            .expect("an image");
+            let (edge_left, edge_top) = (u32_from(-hairline.origin.0), u32_from(-hairline.origin.1));
+            let edge = pixel(&hairline, edge_left - 1, edge_top + 50);
+            assert_eq!(edge, [36, 36, 36, 36], "the hairline: {edge:?}");
+            assert_eq!(
+                pixel(&hairline, edge_left - 2, edge_top + 50)[3],
+                0,
+                "one pixel wide"
+            );
+            assert_eq!(
+                pixel(&hairline, edge_left + 50, edge_top + 50)[3],
+                0,
+                "not over the window"
+            );
+            // The shadow below: half its strength where it meets the window's own silhouette (2 px
+            // down), and 0.5 · erfc(d / (8√2)) of it at `d` px below that, times the token's 71.
+            for (below, alpha) in [(0.5, 34), (4.5, 20), (8.5, 10), (12.5, 4), (16.5, 1)] {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a row of this image, counted up from the window's top"
+                )]
+                let row = top + 102 + (below - 0.5) as u32;
+                let shadow = pixel(&image, left + 100, row);
+                assert_eq!(shadow[0], 0, "black: {shadow:?}");
+                assert!(
+                    shadow[3].abs_diff(alpha) <= 1,
+                    "{below} px below the silhouette: {} is not {alpha}",
+                    shadow[3]
+                );
+            }
         }
     }
 }

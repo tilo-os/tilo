@@ -164,64 +164,196 @@ fn a_scaled_output_composites_in_physical_pixels() {
     assert_eq!(frame.pixel(844, 584), Some(BACKGROUND));
 }
 
-#[test]
-fn pointer_and_keys_reach_the_window_under_and_with_focus() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "input", (200, 100), [0, 255, 0, 255]);
-    assert_eq!(
+tilo_test_env::scenario! {
+    /// Windows, input focus and the window policy.
+    fn the_policy_places_focuses_and_closes_windows;
+
+    phase pointer_and_keys_reach_the_window_under_and_with_focus;
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let mut client = mapped_client(&mut compositor, "input", (200, 100), [0, 255, 0, 255]);
+        assert_eq!(
+            compositor
+                .focused_window()
+                .and_then(|info| info.app_id)
+                .as_deref(),
+            Some("input")
+        );
+
         compositor
-            .focused_window()
-            .and_then(|info| info.app_id)
-            .as_deref(),
-        Some("input")
-    );
+            .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+            .unwrap();
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: true,
+            })
+            .unwrap();
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: false,
+            })
+            .unwrap();
+        compositor
+            .input(InputEvent::Key {
+                keycode: KEY_A,
+                pressed: true,
+            })
+            .unwrap();
+        compositor
+            .input(InputEvent::Key {
+                keycode: KEY_A,
+                pressed: false,
+            })
+            .unwrap();
+        pump(&mut compositor, &mut [&mut client], |_, clients| {
+            clients[0].seen.keys.len() == 2
+        });
 
-    compositor
-        .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
-        .unwrap();
-    compositor
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: true,
-        })
-        .unwrap();
-    compositor
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: false,
-        })
-        .unwrap();
-    compositor
-        .input(InputEvent::Key {
-            keycode: KEY_A,
-            pressed: true,
-        })
-        .unwrap();
-    compositor
-        .input(InputEvent::Key {
-            keycode: KEY_A,
-            pressed: false,
-        })
-        .unwrap();
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.keys.len() == 2
-    });
+        assert!(client.seen.pointer_inside);
+        assert_eq!(
+            client.seen.buttons,
+            vec![(BTN_LEFT, true), (BTN_LEFT, false)]
+        );
+        assert!(client.seen.keyboard_focused);
+        assert_eq!(client.seen.keys, vec![(KEY_A, true), (KEY_A, false)]);
 
-    assert!(client.seen.pointer_inside);
-    assert_eq!(
-        client.seen.buttons,
-        vec![(BTN_LEFT, true), (BTN_LEFT, false)]
-    );
-    assert!(client.seen.keyboard_focused);
-    assert_eq!(client.seen.keys, vec![(KEY_A, true), (KEY_A, false)]);
+        // Off the window the client loses the pointer.
+        compositor
+            .input(InputEvent::PointerMotion { x: 5.0, y: 5.0 })
+            .unwrap();
+        pump(&mut compositor, &mut [&mut client], |_, clients| {
+            !clients[0].seen.pointer_inside
+        });
+    }
 
-    // Off the window the client loses the pointer.
-    compositor
-        .input(InputEvent::PointerMotion { x: 5.0, y: 5.0 })
-        .unwrap();
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        !clients[0].seen.pointer_inside
-    });
+    phase the_policy_places_windows_and_a_click_moves_focus;
+    {
+        let mut compositor = headless(Box::<Columns>::default());
+        let mut left = mapped_client(&mut compositor, "left", (250, 200), [255, 0, 0, 255]);
+        let mut right = mapped_client(&mut compositor, "right", (250, 200), [0, 0, 255, 255]);
+        let rects: Vec<_> = compositor
+            .windows()
+            .into_iter()
+            .map(|(info, rect)| (info.app_id.unwrap(), rect))
+            .collect();
+        assert_eq!(
+            rects,
+            vec![
+                ("left".into(), (0, 0, 250, 200)),
+                ("right".into(), (300, 0, 250, 200))
+            ]
+        );
+        assert_eq!(
+            compositor
+                .focused_window()
+                .and_then(|info| info.app_id)
+                .as_deref(),
+            Some("right")
+        );
+
+        compositor
+            .input(InputEvent::PointerMotion { x: 100.0, y: 100.0 })
+            .unwrap();
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: true,
+            })
+            .unwrap();
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: false,
+            })
+            .unwrap();
+        pump(
+            &mut compositor,
+            &mut [&mut left, &mut right],
+            |_, clients| clients[0].seen.keyboard_focused && !clients[1].seen.keyboard_focused,
+        );
+        assert_eq!(
+            compositor
+                .focused_window()
+                .and_then(|info| info.app_id)
+                .as_deref(),
+            Some("left")
+        );
+        assert_eq!(left.seen.buttons, vec![(BTN_LEFT, true), (BTN_LEFT, false)]);
+        assert!(right.seen.buttons.is_empty());
+
+        // Closing the left window lets the policy close the gap.
+        left.toplevel.take().unwrap().destroy();
+        left.surface.take().unwrap().destroy();
+        pump(
+            &mut compositor,
+            &mut [&mut left, &mut right],
+            |compositor, _| compositor.windows().len() == 1,
+        );
+        assert_eq!(compositor.windows()[0].1, (0, 0, 250, 200));
+    }
+
+    phase the_policy_moves_focus_and_closes_windows_through_its_own_controls;
+    {
+        let policy = Steered::default();
+        let (focus, closes) = (Rc::clone(&policy.focus), Rc::clone(&policy.closes));
+        let mut compositor = headless(Box::new(policy));
+        let mut first = mapped_client(&mut compositor, "first", (100, 100), [255, 0, 0, 255]);
+        let mut second = mapped_client(&mut compositor, "second", (100, 100), [0, 255, 0, 255]);
+        let id = |compositor: &Compositor, app: &str| {
+            compositor
+                .windows()
+                .into_iter()
+                .find(|(info, _)| info.app_id.as_deref() == Some(app))
+                .unwrap()
+                .0
+                .id
+        };
+        assert_eq!(
+            compositor.focused_window().and_then(|info| info.app_id),
+            Some("second".into())
+        );
+
+        *focus.borrow_mut() = Some(id(&compositor, "first"));
+        compositor.draw_frame().expect("a frame");
+        assert_eq!(
+            compositor.focused_window().and_then(|info| info.app_id),
+            Some("first".into())
+        );
+
+        closes.borrow_mut().push(id(&compositor, "second"));
+        compositor.draw_frame().expect("a frame");
+        pump(
+            &mut compositor,
+            &mut [&mut first, &mut second],
+            |_, clients| clients[1].seen.closed,
+        );
+        assert!(!first.seen.closed);
+    }
+
+    phase the_policy_knows_each_output_by_the_monitor_on_it;
+    {
+        let told = Rc::new(RefCell::new(Vec::new()));
+        let mut compositor = Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).unwrap();
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-1", 640, 480).at(0, 0))
+            .unwrap();
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-2", 320, 240).at(640, 0))
+            .unwrap();
+        compositor.draw_frame().expect("a frame");
+        // Without an EDID a monitor is known by its connector.
+        let names: Vec<String> = told.borrow().iter().map(|(_, name)| name.clone()).collect();
+        assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"]);
+        assert_eq!(
+            told.borrow()[1].0,
+            Rectangle::new((640, 0).into(), (320, 240).into())
+        );
+        let outputs = compositor.outputs();
+        assert_eq!(outputs[1].monitor, "HEADLESS-2");
+        assert_eq!(outputs[1].label, "HEADLESS-2");
+    }
 }
 
 #[test]
@@ -401,72 +533,6 @@ impl WindowPolicy for Columns {
                 .collect(),
         )
     }
-}
-
-#[test]
-fn the_policy_places_windows_and_a_click_moves_focus() {
-    let mut compositor = headless(Box::<Columns>::default());
-    let mut left = mapped_client(&mut compositor, "left", (250, 200), [255, 0, 0, 255]);
-    let mut right = mapped_client(&mut compositor, "right", (250, 200), [0, 0, 255, 255]);
-    let rects: Vec<_> = compositor
-        .windows()
-        .into_iter()
-        .map(|(info, rect)| (info.app_id.unwrap(), rect))
-        .collect();
-    assert_eq!(
-        rects,
-        vec![
-            ("left".into(), (0, 0, 250, 200)),
-            ("right".into(), (300, 0, 250, 200))
-        ]
-    );
-    assert_eq!(
-        compositor
-            .focused_window()
-            .and_then(|info| info.app_id)
-            .as_deref(),
-        Some("right")
-    );
-
-    compositor
-        .input(InputEvent::PointerMotion { x: 100.0, y: 100.0 })
-        .unwrap();
-    compositor
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: true,
-        })
-        .unwrap();
-    compositor
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: false,
-        })
-        .unwrap();
-    pump(
-        &mut compositor,
-        &mut [&mut left, &mut right],
-        |_, clients| clients[0].seen.keyboard_focused && !clients[1].seen.keyboard_focused,
-    );
-    assert_eq!(
-        compositor
-            .focused_window()
-            .and_then(|info| info.app_id)
-            .as_deref(),
-        Some("left")
-    );
-    assert_eq!(left.seen.buttons, vec![(BTN_LEFT, true), (BTN_LEFT, false)]);
-    assert!(right.seen.buttons.is_empty());
-
-    // Closing the left window lets the policy close the gap.
-    left.toplevel.take().unwrap().destroy();
-    left.surface.take().unwrap().destroy();
-    pump(
-        &mut compositor,
-        &mut [&mut left, &mut right],
-        |compositor, _| compositor.windows().len() == 1,
-    );
-    assert_eq!(compositor.windows()[0].1, (0, 0, 250, 200));
 }
 
 /// An open launcher holds the keyboard; a press into a window that is not the focused one closes
@@ -1122,44 +1188,6 @@ impl WindowPolicy for Steered {
     }
 }
 
-#[test]
-fn the_policy_moves_focus_and_closes_windows_through_its_own_controls() {
-    let policy = Steered::default();
-    let (focus, closes) = (Rc::clone(&policy.focus), Rc::clone(&policy.closes));
-    let mut compositor = headless(Box::new(policy));
-    let mut first = mapped_client(&mut compositor, "first", (100, 100), [255, 0, 0, 255]);
-    let mut second = mapped_client(&mut compositor, "second", (100, 100), [0, 255, 0, 255]);
-    let id = |compositor: &Compositor, app: &str| {
-        compositor
-            .windows()
-            .into_iter()
-            .find(|(info, _)| info.app_id.as_deref() == Some(app))
-            .unwrap()
-            .0
-            .id
-    };
-    assert_eq!(
-        compositor.focused_window().and_then(|info| info.app_id),
-        Some("second".into())
-    );
-
-    *focus.borrow_mut() = Some(id(&compositor, "first"));
-    compositor.draw_frame().expect("a frame");
-    assert_eq!(
-        compositor.focused_window().and_then(|info| info.app_id),
-        Some("first".into())
-    );
-
-    closes.borrow_mut().push(id(&compositor, "second"));
-    compositor.draw_frame().expect("a frame");
-    pump(
-        &mut compositor,
-        &mut [&mut first, &mut second],
-        |_, clients| clients[1].seen.closed,
-    );
-    assert!(!first.seen.closed);
-}
-
 /// How bright a pixel is to the eye, roughly.
 fn luma(pixel: [u8; 4]) -> u32 {
     u32::from(pixel[0]) * 3 + u32::from(pixel[1]) * 6 + u32::from(pixel[2])
@@ -1227,59 +1255,112 @@ fn a_window_keeps_its_corners_and_shadow_when_its_effect_scales_it() {
     );
 }
 
-#[test]
-fn the_desktop_moves_scales_and_fades_a_window_without_moving_it() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
-    let (info, rect) = compositor.windows()[0].clone();
-    assert_eq!(rect, (220, 190, 200, 100));
-    let red = Some([255, 0, 0, 255]);
+tilo_test_env::scenario! {
+    /// What the desktop asks of how windows are drawn.
+    fn the_desktop_draws_windows_with_its_effects_over_a_blurred_backdrop;
 
-    compositor.set_window_effect(
-        info.id,
-        Some(WindowEffect {
-            offset: (-200.0, 0.0),
-            ..WindowEffect::default()
-        }),
-    );
-    assert_eq!(shown(&mut compositor, 30, 200), red, "drawn moved left");
-    assert_eq!(shown(&mut compositor, 400, 200), Some(BACKGROUND));
-    assert_eq!(
-        compositor.windows()[0].1,
-        rect,
-        "it still stands where it was"
-    );
+    phase the_desktop_moves_scales_and_fades_a_window_without_moving_it;
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+        let (info, rect) = compositor.windows()[0].clone();
+        assert_eq!(rect, (220, 190, 200, 100));
+        let red = Some([255, 0, 0, 255]);
 
-    compositor.set_window_effect(
-        info.id,
-        Some(WindowEffect {
-            scale: 0.5,
-            ..WindowEffect::default()
-        }),
-    );
-    assert_eq!(shown(&mut compositor, 320, 240), red, "the centre stays");
-    assert_eq!(
-        shown(&mut compositor, 225, 195),
-        Some(BACKGROUND),
-        "corners shrink in"
-    );
-    assert_eq!(shown(&mut compositor, 275, 220), red);
+        compositor.set_window_effect(
+            info.id,
+            Some(WindowEffect {
+                offset: (-200.0, 0.0),
+                ..WindowEffect::default()
+            }),
+        );
+        assert_eq!(shown(&mut compositor, 30, 200), red, "drawn moved left");
+        assert_eq!(shown(&mut compositor, 400, 200), Some(BACKGROUND));
+        assert_eq!(
+            compositor.windows()[0].1,
+            rect,
+            "it still stands where it was"
+        );
 
-    compositor.set_window_effect(
-        info.id,
-        Some(WindowEffect {
-            opacity: 0.5,
-            ..WindowEffect::default()
-        }),
-    );
-    let faded = shown(&mut compositor, 320, 240).unwrap();
-    assert!(
-        faded[0] > 120 && faded[0] < 160,
-        "half red over the background: {faded:?}"
-    );
+        compositor.set_window_effect(
+            info.id,
+            Some(WindowEffect {
+                scale: 0.5,
+                ..WindowEffect::default()
+            }),
+        );
+        assert_eq!(shown(&mut compositor, 320, 240), red, "the centre stays");
+        assert_eq!(
+            shown(&mut compositor, 225, 195),
+            Some(BACKGROUND),
+            "corners shrink in"
+        );
+        assert_eq!(shown(&mut compositor, 275, 220), red);
 
-    compositor.set_window_effect(info.id, None);
-    assert_eq!(shown(&mut compositor, 320, 240), red);
+        compositor.set_window_effect(
+            info.id,
+            Some(WindowEffect {
+                opacity: 0.5,
+                ..WindowEffect::default()
+            }),
+        );
+        let faded = shown(&mut compositor, 320, 240).unwrap();
+        assert!(
+            faded[0] > 120 && faded[0] < 160,
+            "half red over the background: {faded:?}"
+        );
+
+        compositor.set_window_effect(info.id, None);
+        assert_eq!(shown(&mut compositor, 320, 240), red);
+    }
+
+    phase translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes;
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+        // The window covers 220..420 x 190..290: the region's right and lower part is red, the rest
+        // background.
+        let handed = Rc::new(RefCell::new(Vec::new()));
+        compositor.add_host(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
+        compositor.draw_frame().expect("a frame");
+        let first = handed.borrow_mut().pop().flatten().expect("a backdrop");
+        assert_eq!(first.texels, (40, 20));
+        assert_eq!(first.rgba.len(), 40 * 20 * 4);
+        let at = |image: &BackdropImage, x: usize, y: usize| {
+            let i = (y * 40 + x) * 4;
+            [
+                image.rgba[i],
+                image.rgba[i + 1],
+                image.rgba[i + 2],
+                image.rgba[i + 3],
+            ]
+        };
+        let window_texel = at(&first, 35, 15);
+        let background_corner = at(&first, 0, 0);
+        assert!(
+            window_texel[0] > 200 && window_texel[1] < 60,
+            "{window_texel:?}"
+        );
+        assert!(background_corner[0] < 60, "{background_corner:?}");
+        let edge = at(&first, 10, 15);
+        assert!(
+            edge[0] > background_corner[0] + 20 && edge[0] < window_texel[0] - 20,
+            "the window's edge is blurred: {edge:?}"
+        );
+
+        compositor.draw_frame().expect("a frame");
+        assert!(
+            handed.borrow().iter().all(Option::is_none),
+            "nothing below changed, nothing is drawn again"
+        );
+        handed.borrow_mut().clear();
+
+        client.show(200, 100, [0, 0, 255, 255]);
+        pump(&mut compositor, &mut [&mut client], |_, _| true);
+        compositor.draw_frame().expect("a frame");
+        let again = handed.borrow_mut().pop().flatten().expect("a new backdrop");
+        assert!(at(&again, 35, 15)[2] > 200, "now blue");
+    }
 }
 
 #[test]
@@ -1695,54 +1776,6 @@ impl SurfaceHost for Frosted {
     fn set_backdrops(&mut self, images: Vec<Option<BackdropImage>>) {
         self.0.borrow_mut().extend(images);
     }
-}
-
-#[test]
-fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
-    // The window covers 220..420 x 190..290: the region's right and lower part is red, the rest
-    // background.
-    let handed = Rc::new(RefCell::new(Vec::new()));
-    compositor.add_host(Rc::new(RefCell::new(Frosted(Rc::clone(&handed)))));
-    compositor.draw_frame().expect("a frame");
-    let first = handed.borrow_mut().pop().flatten().expect("a backdrop");
-    assert_eq!(first.texels, (40, 20));
-    assert_eq!(first.rgba.len(), 40 * 20 * 4);
-    let at = |image: &BackdropImage, x: usize, y: usize| {
-        let i = (y * 40 + x) * 4;
-        [
-            image.rgba[i],
-            image.rgba[i + 1],
-            image.rgba[i + 2],
-            image.rgba[i + 3],
-        ]
-    };
-    let window_texel = at(&first, 35, 15);
-    let background_corner = at(&first, 0, 0);
-    assert!(
-        window_texel[0] > 200 && window_texel[1] < 60,
-        "{window_texel:?}"
-    );
-    assert!(background_corner[0] < 60, "{background_corner:?}");
-    let edge = at(&first, 10, 15);
-    assert!(
-        edge[0] > background_corner[0] + 20 && edge[0] < window_texel[0] - 20,
-        "the window's edge is blurred: {edge:?}"
-    );
-
-    compositor.draw_frame().expect("a frame");
-    assert!(
-        handed.borrow().iter().all(Option::is_none),
-        "nothing below changed, nothing is drawn again"
-    );
-    handed.borrow_mut().clear();
-
-    client.show(200, 100, [0, 0, 255, 255]);
-    pump(&mut compositor, &mut [&mut client], |_, _| true);
-    compositor.draw_frame().expect("a frame");
-    let again = handed.borrow_mut().pop().flatten().expect("a new backdrop");
-    assert!(at(&again, 35, 15)[2] > 200, "now blue");
 }
 
 #[test]
@@ -2208,71 +2241,76 @@ fn dictation_keeps_out_of_secret_and_terminal_fields() {
     );
 }
 
-#[test]
-fn dictation_tells_a_multiline_field_from_a_one_line_one() {
-    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
-    client.own_text_field_as(ContentHint::Multiline, ContentPurpose::Normal);
-    pump(
-        &mut compositor,
-        &mut [&mut client, &mut keyboard],
-        |compositor, clients| {
-            clients[0].seen.field_entered
-                && clients[1].seen.ime_activated
-                && compositor.dictation_field().is_ok()
-        },
-    );
-    assert!(
-        compositor
+tilo_test_env::scenario! {
+    /// Dictation into a text field.
+    fn dictation_writes_into_the_field_it_bound;
+
+    phase dictation_tells_a_multiline_field_from_a_one_line_one;
+    {
+        let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+        client.own_text_field_as(ContentHint::Multiline, ContentPurpose::Normal);
+        pump(
+            &mut compositor,
+            &mut [&mut client, &mut keyboard],
+            |compositor, clients| {
+                clients[0].seen.field_entered
+                    && clients[1].seen.ime_activated
+                    && compositor.dictation_field().is_ok()
+            },
+        );
+        assert!(
+            compositor
+                .dictation_field()
+                .expect("a field to dictate into")
+                .multiline,
+            "the field takes more than one line"
+        );
+
+        let done = keyboard.seen.ime_done;
+        client.set_content_type(ContentHint::empty(), ContentPurpose::Normal);
+        committed(&mut compositor, &mut client, &mut keyboard, done);
+        assert!(
+            !compositor
+                .dictation_field()
+                .expect("a field to dictate into")
+                .multiline,
+            "a one-line field is not multiline"
+        );
+    }
+
+    phase dictation_writes_once_into_the_field_it_bound;
+    {
+        let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
+        client.own_text_field();
+        pump(
+            &mut compositor,
+            &mut [&mut client, &mut keyboard],
+            |compositor, clients| {
+                clients[0].seen.field_entered
+                    && clients[1].seen.ime_activated
+                    && compositor.dictation_field().is_ok()
+            },
+        );
+        let field = compositor
             .dictation_field()
-            .expect("a field to dictate into")
-            .multiline,
-        "the field takes more than one line"
-    );
+            .expect("a field to dictate into");
 
-    let done = keyboard.seen.ime_done;
-    client.set_content_type(ContentHint::empty(), ContentPurpose::Normal);
-    committed(&mut compositor, &mut client, &mut keyboard, done);
-    assert!(
-        !compositor
-            .dictation_field()
-            .expect("a field to dictate into")
-            .multiline,
-        "a one-line field is not multiline"
-    );
-}
-
-#[test]
-fn dictation_writes_once_into_the_field_it_bound() {
-    let (mut compositor, mut client, mut keyboard) = window_and_keyboard();
-    client.own_text_field();
-    pump(
-        &mut compositor,
-        &mut [&mut client, &mut keyboard],
-        |compositor, clients| {
-            clients[0].seen.field_entered
-                && clients[1].seen.ime_activated
-                && compositor.dictation_field().is_ok()
-        },
-    );
-    let field = compositor
-        .dictation_field()
-        .expect("a field to dictate into");
-
-    let done = client.seen.field_done;
-    assert_eq!(
-        compositor.insert_dictation(field, "spoken words"),
-        TextInsertion::Inserted
-    );
-    pump(
-        &mut compositor,
-        &mut [&mut client, &mut keyboard],
-        |_, clients| clients[0].seen.field_done > done,
-    );
-    assert_eq!(
-        client.seen.committed,
-        vec!["spoken words".to_owned()],
-        "the field took exactly the committed text"
-    );
+        let done = client.seen.field_done;
+        assert_eq!(
+            compositor.insert_dictation(field, "spoken words"),
+            TextInsertion::Inserted
+        );
+        pump(
+            &mut compositor,
+            &mut [&mut client, &mut keyboard],
+            |_, clients| clients[0].seen.field_done > done,
+        );
+        assert_eq!(
+            client.seen.committed,
+            vec!["spoken words".to_owned()],
+            "the field took exactly the committed text"
+        );
+    }
 }
 
 /// A field reports its caret on a machine with no input method running: the compositor enters it
@@ -2376,29 +2414,6 @@ fn a_pick_opens_at_the_caret_and_reaches_even_a_secret_field() {
     );
 }
 
-#[test]
-fn the_policy_knows_each_output_by_the_monitor_on_it() {
-    let told = Rc::new(RefCell::new(Vec::new()));
-    let mut compositor = Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).unwrap();
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480).at(0, 0))
-        .unwrap();
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-2", 320, 240).at(640, 0))
-        .unwrap();
-    compositor.draw_frame().expect("a frame");
-    // Without an EDID a monitor is known by its connector.
-    let names: Vec<String> = told.borrow().iter().map(|(_, name)| name.clone()).collect();
-    assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"]);
-    assert_eq!(
-        told.borrow()[1].0,
-        Rectangle::new((640, 0).into(), (320, 240).into())
-    );
-    let outputs = compositor.outputs();
-    assert_eq!(outputs[1].monitor, "HEADLESS-2");
-    assert_eq!(outputs[1].label, "HEADLESS-2");
-}
-
 /// Click the left button at `(x, y)` .
 fn click(compositor: &mut Compositor, x: f64, y: f64) {
     compositor
@@ -2470,120 +2485,165 @@ fn count(frame: &tilo_compositor::Screenshot, wanted: [u8; 4]) -> usize {
         .count()
 }
 
-#[test]
-fn slow_keys_wait_for_a_key_to_be_held_long_enough() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "slow", (200, 100), [0, 255, 0, 255]);
-    with_a11y(&mut compositor, |a11y| {
-        a11y.assists.slow_keys = Some(Duration::from_millis(300));
-    });
+tilo_test_env::scenario! {
+    /// Accessibility on a running display.
+    fn accessibility_assists_show_on_the_display;
 
-    compositor
-        .input(InputEvent::Key {
-            keycode: KEY_A,
-            pressed: true,
-        })
-        .expect("input");
-    compositor.dispatch(Duration::ZERO).expect("dispatch");
-    client.exchange();
-    assert!(
-        client.seen.keys.is_empty(),
-        "a brush past a key types nothing"
-    );
+    phase slow_keys_wait_for_a_key_to_be_held_long_enough;
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let mut client = mapped_client(&mut compositor, "slow", (200, 100), [0, 255, 0, 255]);
+        with_a11y(&mut compositor, |a11y| {
+            a11y.assists.slow_keys = Some(Duration::from_millis(300));
+        });
 
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        !clients[0].seen.keys.is_empty()
-    });
-    assert_eq!(client.seen.keys, vec![(KEY_A, true)], "held, so it counts");
-
-    compositor
-        .input(InputEvent::Key {
-            keycode: KEY_A,
-            pressed: false,
-        })
-        .expect("input");
-    pump(&mut compositor, &mut [&mut client], |_, clients| {
-        clients[0].seen.keys.len() == 2
-    });
-    assert_eq!(client.seen.keys, vec![(KEY_A, true), (KEY_A, false)]);
-}
-
-#[test]
-fn the_crosshair_guides_follow_the_pointer() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    compositor
-        .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
-        .expect("input");
-    compositor.draw_frame().expect("a frame");
-    let plain = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    assert_eq!(plain.pixel(10, 240), Some(BACKGROUND));
-
-    with_a11y(&mut compositor, |a11y| a11y.cursor.crosshair = true);
-    compositor.draw_frame().expect("a frame");
-    let guided = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    assert_ne!(
-        guided.pixel(10, 240),
-        Some(BACKGROUND),
-        "a guide runs across at the pointer's height"
-    );
-    assert_ne!(
-        guided.pixel(320, 10),
-        Some(BACKGROUND),
-        "and down at its width"
-    );
-    assert_eq!(
-        guided.pixel(10, 232),
-        Some(BACKGROUND),
-        "the guides are thin"
-    );
-
-    with_a11y(&mut compositor, |a11y| a11y.cursor.crosshair = false);
-    compositor.draw_frame().expect("a frame");
-    let plain_again = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    assert_eq!(plain_again.pixel(10, 240), Some(BACKGROUND));
-}
-
-#[test]
-fn the_visual_alert_lights_the_display_edge_and_fades() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    compositor.draw_frame().expect("a frame");
-    let before = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    assert_eq!(before.pixel(320, 240), Some(BACKGROUND));
-
-    compositor.flash();
-    compositor.draw_frame().expect("a frame");
-    let lit = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    let edge = lit.pixel(320, 1).expect("pixel");
-    assert!(
-        edge[2] > 120 && edge[0] < edge[2],
-        "the display's edge lights up in the accent: {edge:?}"
-    );
-    assert_eq!(
-        lit.pixel(320, 240),
-        Some(BACKGROUND),
-        "the middle of the screen is left as it was"
-    );
-    assert_eq!(
-        lit.pixel(320, 8),
-        Some(BACKGROUND),
-        "the alert is an edge, not a wash over the screen"
-    );
-
-    // It fades out as time passes: once its run is over the frame is the desktop again.
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    let mut faded = false;
-    while std::time::Instant::now() < deadline {
         compositor
-            .dispatch(Duration::from_millis(16))
-            .expect("dispatch");
-        compositor.draw_frame().expect("a frame");
-        let frame = compositor.screenshot("HEADLESS-1").expect("screenshot");
-        if frame.pixel(320, 1) == Some(BACKGROUND) {
-            faded = true;
-            break;
-        }
+            .input(InputEvent::Key {
+                keycode: KEY_A,
+                pressed: true,
+            })
+            .expect("input");
+        compositor.dispatch(Duration::ZERO).expect("dispatch");
+        client.exchange();
+        assert!(
+            client.seen.keys.is_empty(),
+            "a brush past a key types nothing"
+        );
+
+        pump(&mut compositor, &mut [&mut client], |_, clients| {
+            !clients[0].seen.keys.is_empty()
+        });
+        assert_eq!(client.seen.keys, vec![(KEY_A, true)], "held, so it counts");
+
+        compositor
+            .input(InputEvent::Key {
+                keycode: KEY_A,
+                pressed: false,
+            })
+            .expect("input");
+        pump(&mut compositor, &mut [&mut client], |_, clients| {
+            clients[0].seen.keys.len() == 2
+        });
+        assert_eq!(client.seen.keys, vec![(KEY_A, true), (KEY_A, false)]);
     }
-    assert!(faded, "and it fades out");
+
+    phase the_crosshair_guides_follow_the_pointer;
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        compositor
+            .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+            .expect("input");
+        compositor.draw_frame().expect("a frame");
+        let plain = compositor.screenshot("HEADLESS-1").expect("screenshot");
+        assert_eq!(plain.pixel(10, 240), Some(BACKGROUND));
+
+        with_a11y(&mut compositor, |a11y| a11y.cursor.crosshair = true);
+        compositor.draw_frame().expect("a frame");
+        let guided = compositor.screenshot("HEADLESS-1").expect("screenshot");
+        assert_ne!(
+            guided.pixel(10, 240),
+            Some(BACKGROUND),
+            "a guide runs across at the pointer's height"
+        );
+        assert_ne!(
+            guided.pixel(320, 10),
+            Some(BACKGROUND),
+            "and down at its width"
+        );
+        assert_eq!(
+            guided.pixel(10, 232),
+            Some(BACKGROUND),
+            "the guides are thin"
+        );
+
+        with_a11y(&mut compositor, |a11y| a11y.cursor.crosshair = false);
+        compositor.draw_frame().expect("a frame");
+        let plain_again = compositor.screenshot("HEADLESS-1").expect("screenshot");
+        assert_eq!(plain_again.pixel(10, 240), Some(BACKGROUND));
+    }
+
+    phase the_visual_alert_lights_the_display_edge_and_fades;
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        compositor.draw_frame().expect("a frame");
+        let before = compositor.screenshot("HEADLESS-1").expect("screenshot");
+        assert_eq!(before.pixel(320, 240), Some(BACKGROUND));
+
+        compositor.flash();
+        compositor.draw_frame().expect("a frame");
+        let lit = compositor.screenshot("HEADLESS-1").expect("screenshot");
+        let edge = lit.pixel(320, 1).expect("pixel");
+        assert!(
+            edge[2] > 120 && edge[0] < edge[2],
+            "the display's edge lights up in the accent: {edge:?}"
+        );
+        assert_eq!(
+            lit.pixel(320, 240),
+            Some(BACKGROUND),
+            "the middle of the screen is left as it was"
+        );
+        assert_eq!(
+            lit.pixel(320, 8),
+            Some(BACKGROUND),
+            "the alert is an edge, not a wash over the screen"
+        );
+
+        // It fades out as time passes: once its run is over the frame is the desktop again.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut faded = false;
+        while std::time::Instant::now() < deadline {
+            compositor
+                .dispatch(Duration::from_millis(16))
+                .expect("dispatch");
+            compositor.draw_frame().expect("a frame");
+            let frame = compositor.screenshot("HEADLESS-1").expect("screenshot");
+            if frame.pixel(320, 1) == Some(BACKGROUND) {
+                faded = true;
+                break;
+            }
+        }
+        assert!(faded, "and it fades out");
+    }
+
+    phase the_lens_magnifies_the_scene_around_the_pointer;
+    {
+        const GREEN: [u8; 4] = [0, 255, 0, 255];
+        let mut compositor = headless(Box::new(StackPolicy));
+        let _client = mapped_client(&mut compositor, "lens", (300, 200), GREEN);
+        compositor
+            .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+            .expect("input");
+        compositor.draw_frame().expect("a frame");
+        let plain = compositor.screenshot("HEADLESS-1").expect("screenshot");
+        let plain_green = count(&plain, GREEN);
+        assert!(plain_green > 0, "the window is drawn");
+
+        with_a11y(&mut compositor, |a11y| {
+            a11y.magnifier = tilo_compositor::Magnifier {
+                zoom: 2,
+                view: tilo_compositor::MagnifierView::Lens,
+            };
+        });
+        compositor.draw_frame().expect("a frame");
+        let lensed = compositor.screenshot("HEADLESS-1").expect("screenshot");
+        let lensed_green = count(&lensed, GREEN);
+        assert!(
+            lensed_green > plain_green * 3 / 2,
+            "the lens shows the window twice as big: {plain_green} then {lensed_green}"
+        );
+
+        // Full screen magnifies the whole scene instead.
+        with_a11y(&mut compositor, |a11y| {
+            a11y.magnifier.view = tilo_compositor::MagnifierView::FullScreen;
+        });
+        compositor.draw_frame().expect("a frame");
+        let full = compositor.screenshot("HEADLESS-1").expect("screenshot");
+        let full_green = count(&full, GREEN);
+        assert!(
+            full_green > lensed_green,
+            "the whole screen is magnified, past the lens's edges: {lensed_green} then {full_green}"
+        );
+    }
 }
 
 #[test]
@@ -2604,46 +2664,6 @@ fn a_frame_after_the_alerts_run_puts_the_visual_alert_away() {
         frame.pixel(320, 1),
         Some(BACKGROUND),
         "the alert is not left on screen"
-    );
-}
-
-#[test]
-fn the_lens_magnifies_the_scene_around_the_pointer() {
-    const GREEN: [u8; 4] = [0, 255, 0, 255];
-    let mut compositor = headless(Box::new(StackPolicy));
-    let _client = mapped_client(&mut compositor, "lens", (300, 200), GREEN);
-    compositor
-        .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
-        .expect("input");
-    compositor.draw_frame().expect("a frame");
-    let plain = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    let plain_green = count(&plain, GREEN);
-    assert!(plain_green > 0, "the window is drawn");
-
-    with_a11y(&mut compositor, |a11y| {
-        a11y.magnifier = tilo_compositor::Magnifier {
-            zoom: 2,
-            view: tilo_compositor::MagnifierView::Lens,
-        };
-    });
-    compositor.draw_frame().expect("a frame");
-    let lensed = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    let lensed_green = count(&lensed, GREEN);
-    assert!(
-        lensed_green > plain_green * 3 / 2,
-        "the lens shows the window twice as big: {plain_green} then {lensed_green}"
-    );
-
-    // Full screen magnifies the whole scene instead.
-    with_a11y(&mut compositor, |a11y| {
-        a11y.magnifier.view = tilo_compositor::MagnifierView::FullScreen;
-    });
-    compositor.draw_frame().expect("a frame");
-    let full = compositor.screenshot("HEADLESS-1").expect("screenshot");
-    let full_green = count(&full, GREEN);
-    assert!(
-        full_green > lensed_green,
-        "the whole screen is magnified, past the lens's edges: {lensed_green} then {full_green}"
     );
 }
 

@@ -267,327 +267,332 @@ fn layer_client(
     client
 }
 
-#[test]
-fn the_session_trusts_a_client_with_layer_surfaces_and_no_one_else() {
-    let mut compositor = headless();
-    let mut ordinary = Client::connect(&mut compositor, false);
-    pump(&mut compositor, &mut [&mut ordinary], |_, clients| {
-        clients[0].seen.compositor.is_some()
-    });
-    assert!(
-        !ordinary
-            .seen
-            .globals
-            .iter()
-            .any(|global| global == "zwlr_layer_shell_v1"),
-        "an ordinary client cannot place a surface on a layer"
-    );
+tilo_test_env::scenario! {
+    /// Layer-shell surfaces.
+    fn layer_surfaces_are_drawn_and_hit_on_their_layer;
 
-    let mut trusted = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut [&mut trusted], |_, clients| {
-        clients[0].seen.layer_shell.is_some()
-    });
-    assert!(
-        trusted
-            .seen
-            .globals
-            .iter()
-            .any(|global| global == "zwlr_layer_shell_v1")
-    );
-}
-
-#[test]
-fn a_bar_on_the_top_layer_is_drawn_above_the_windows_and_keeps_its_height() {
-    let mut compositor = headless();
-    let mut bar = layer_client(
-        &mut compositor,
-        zwlr_layer_shell_v1::Layer::Top,
-        zwlr_layer_surface_v1::Anchor::Top
-            | zwlr_layer_surface_v1::Anchor::Left
-            | zwlr_layer_surface_v1::Anchor::Right,
-        (0, 32),
-        32,
-        [255, 0, 0, 255],
-    );
-    assert_eq!(bar.seen.configured, Some((640, 32)), "the whole width");
-
-    pump(&mut compositor, &mut [&mut bar], |_, _| true);
-    compositor.draw_frame().expect("a frame");
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    assert_eq!(frame.pixel(320, 10), Some([255, 0, 0, 255]), "the bar");
-    assert_eq!(frame.pixel(320, 200), Some(BACKGROUND), "the desk below it");
-    assert_eq!(
-        compositor.reserved("HEADLESS-1"),
-        vec![(0, 0, 640, 32)],
-        "the desktop keeps windows out of the bar"
-    );
-
-    // A window opened under it is drawn below it.
-    let mut window = Client::connect(&mut compositor, false);
-    pump(&mut compositor, &mut [&mut window], |_, clients| {
-        clients[0].seen.wm_base.is_some()
-    });
-    let surface = window.toplevel("a-window");
-    pump(&mut compositor, &mut [&mut window], |_, clients| {
-        clients[0].seen.configured.is_some()
-    });
-    window.show(&surface, 640, 480, [0, 0, 255, 255]);
-    pump(
-        &mut compositor,
-        &mut [&mut bar, &mut window],
-        |compositor, _| !compositor.windows().is_empty(),
-    );
-    compositor.draw_frame().expect("a frame");
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    assert_eq!(frame.pixel(320, 10), Some([255, 0, 0, 255]), "the bar wins");
-}
-
-#[test]
-fn a_desk_on_the_background_layer_is_drawn_below_the_windows() {
-    let mut compositor = headless();
-    let mut desk = layer_client(
-        &mut compositor,
-        zwlr_layer_shell_v1::Layer::Background,
-        zwlr_layer_surface_v1::Anchor::Top
-            | zwlr_layer_surface_v1::Anchor::Bottom
-            | zwlr_layer_surface_v1::Anchor::Left
-            | zwlr_layer_surface_v1::Anchor::Right,
-        (0, 0),
-        0,
-        [0, 255, 0, 255],
-    );
-    assert_eq!(desk.seen.configured, Some((640, 480)));
-    pump(&mut compositor, &mut [&mut desk], |_, _| true);
-    compositor.draw_frame().expect("a frame");
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    assert_eq!(frame.pixel(320, 240), Some([0, 255, 0, 255]));
-
-    let mut window = Client::connect(&mut compositor, false);
-    pump(&mut compositor, &mut [&mut window], |_, clients| {
-        clients[0].seen.wm_base.is_some()
-    });
-    let surface = window.toplevel("a-window");
-    pump(&mut compositor, &mut [&mut window], |_, clients| {
-        clients[0].seen.configured.is_some()
-    });
-    window.show(&surface, 200, 100, [0, 0, 255, 255]);
-    pump(
-        &mut compositor,
-        &mut [&mut desk, &mut window],
-        |compositor, _| !compositor.windows().is_empty(),
-    );
-    compositor.draw_frame().expect("a frame");
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    let (_, (x, y, w, h)) = compositor.windows()[0].clone();
-    let (x, y) = (u32::try_from(x).unwrap(), u32::try_from(y).unwrap());
-    let (w, h) = (u32::try_from(w).unwrap(), u32::try_from(h).unwrap());
-    assert_eq!(
-        frame.pixel(x + w / 2, y + h / 2),
-        Some([0, 0, 255, 255]),
-        "the window is above the desk"
-    );
-}
-
-#[test]
-fn the_pointer_and_a_press_reach_the_layer_surface_that_is_above() {
-    let mut compositor = headless();
-    let mut bar = layer_client(
-        &mut compositor,
-        zwlr_layer_shell_v1::Layer::Top,
-        zwlr_layer_surface_v1::Anchor::Top
-            | zwlr_layer_surface_v1::Anchor::Left
-            | zwlr_layer_surface_v1::Anchor::Right,
-        (0, 32),
-        32,
-        [255, 0, 0, 255],
-    );
-    pump(&mut compositor, &mut [&mut bar], |_, clients| {
-        clients[0].seen.pointer.is_some()
-    });
-
-    compositor
-        .input(InputEvent::PointerMotion { x: 300.0, y: 16.0 })
-        .unwrap();
-    compositor
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: true,
-        })
-        .unwrap();
-    compositor
-        .input(InputEvent::PointerButton {
-            button: BTN_LEFT,
-            pressed: false,
-        })
-        .unwrap();
-    pump(&mut compositor, &mut [&mut bar], |_, clients| {
-        clients[0].seen.buttons.len() == 2
-    });
-    assert!(bar.seen.pointer_inside);
-    assert_eq!(bar.seen.buttons, vec![(BTN_LEFT, true), (BTN_LEFT, false)]);
-
-    // Off the bar the pointer leaves it, even over the desk.
-
-    compositor
-        .input(InputEvent::PointerMotion { x: 300.0, y: 300.0 })
-        .unwrap();
-    pump(&mut compositor, &mut [&mut bar], |_, clients| {
-        !clients[0].seen.pointer_inside
-    });
-}
-
-#[test]
-fn keys_go_to_the_layer_surface_that_takes_them() {
-    let mut compositor = headless();
-    let mut prompt = Client::connect(&mut compositor, true);
-    pump(&mut compositor, &mut [&mut prompt], |_, clients| {
-        clients[0].seen.layer_shell.is_some() && clients[0].seen.seat.is_some()
-    });
-    let (surface, _) = prompt.layer_surface(
-        zwlr_layer_shell_v1::Layer::Overlay,
-        zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left,
-        (320, 200),
-        0,
-        zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive,
-    );
-    pump(&mut compositor, &mut [&mut prompt], |_, clients| {
-        clients[0].seen.configured.is_some()
-    });
-    prompt.show(&surface, 320, 200, [255, 255, 0, 255]);
-    pump(&mut compositor, &mut [&mut prompt], |_, clients| {
-        clients[0].seen.keyboard_focused
-    });
-
-    compositor
-        .input(InputEvent::Key {
-            keycode: KEY_A,
-            pressed: true,
-        })
-        .unwrap();
-    compositor
-        .input(InputEvent::Key {
-            keycode: KEY_A,
-            pressed: false,
-        })
-        .unwrap();
-    pump(&mut compositor, &mut [&mut prompt], |_, clients| {
-        clients[0].seen.keys.len() == 2
-    });
-    assert_eq!(prompt.seen.keys, vec![(KEY_A, true), (KEY_A, false)]);
-}
-
-/// A panel resting on the bottom edge that grows: until its app draws the new size, the frame on
-/// screen is the one it drew, at its own size, standing on that edge; the pointer reaches it where
-/// it is drawn, one logical pixel for one; then the frame of the new size replaces it. At scale 1
-/// and 2 alike.
-#[test]
-fn a_layer_surface_is_hit_where_it_is_drawn_and_never_shown_at_another_size() {
-    const TOP: [u8; 4] = [255, 0, 0, 255];
-    const BOTTOM: [u8; 4] = [0, 255, 0, 255];
-    for scale in [1, 2] {
-        let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
-        compositor
-            .add_output(&OutputConfig::new("HEADLESS-1", 640, 480).with_scale(f64::from(scale)))
-            .expect("output");
-        let output_h = 480 / scale;
-        let mut panel = Client::connect(&mut compositor, true);
-        pump(&mut compositor, &mut [&mut panel], |_, clients| {
-            clients[0].seen.layer_shell.is_some() && clients[0].seen.seat.is_some()
+    phase the_session_trusts_a_client_with_layer_surfaces_and_no_one_else;
+    {
+        let mut compositor = headless();
+        let mut ordinary = Client::connect(&mut compositor, false);
+        pump(&mut compositor, &mut [&mut ordinary], |_, clients| {
+            clients[0].seen.compositor.is_some()
         });
-        let (surface, layer) = panel.layer_surface(
-            zwlr_layer_shell_v1::Layer::Top,
-            zwlr_layer_surface_v1::Anchor::Bottom | zwlr_layer_surface_v1::Anchor::Left,
-            (100, 40),
-            0,
-            zwlr_layer_surface_v1::KeyboardInteractivity::None,
+        assert!(
+            !ordinary
+                .seen
+                .globals
+                .iter()
+                .any(|global| global == "zwlr_layer_shell_v1"),
+            "an ordinary client cannot place a surface on a layer"
         );
-        pump(&mut compositor, &mut [&mut panel], |_, clients| {
-            clients[0].seen.configured == Some((100, 40))
+
+        let mut trusted = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut [&mut trusted], |_, clients| {
+            clients[0].seen.layer_shell.is_some()
         });
-        panel.show_bands(&surface, (100, 40), scale, TOP, BOTTOM);
-        pump(&mut compositor, &mut [&mut panel], |_, clients| {
+        assert!(
+            trusted
+                .seen
+                .globals
+                .iter()
+                .any(|global| global == "zwlr_layer_shell_v1")
+        );
+    }
+
+    phase a_bar_on_the_top_layer_is_drawn_above_the_windows_and_keeps_its_height;
+    {
+        let mut compositor = headless();
+        let mut bar = layer_client(
+            &mut compositor,
+            zwlr_layer_shell_v1::Layer::Top,
+            zwlr_layer_surface_v1::Anchor::Top
+                | zwlr_layer_surface_v1::Anchor::Left
+                | zwlr_layer_surface_v1::Anchor::Right,
+            (0, 32),
+            32,
+            [255, 0, 0, 255],
+        );
+        assert_eq!(bar.seen.configured, Some((640, 32)), "the whole width");
+
+        pump(&mut compositor, &mut [&mut bar], |_, _| true);
+        compositor.draw_frame().expect("a frame");
+        let frame = compositor.screenshot("HEADLESS-1").unwrap();
+        assert_eq!(frame.pixel(320, 10), Some([255, 0, 0, 255]), "the bar");
+        assert_eq!(frame.pixel(320, 200), Some(BACKGROUND), "the desk below it");
+        assert_eq!(
+            compositor.reserved("HEADLESS-1"),
+            vec![(0, 0, 640, 32)],
+            "the desktop keeps windows out of the bar"
+        );
+
+        // A window opened under it is drawn below it.
+        let mut window = Client::connect(&mut compositor, false);
+        pump(&mut compositor, &mut [&mut window], |_, clients| {
+            clients[0].seen.wm_base.is_some()
+        });
+        let surface = window.toplevel("a-window");
+        pump(&mut compositor, &mut [&mut window], |_, clients| {
+            clients[0].seen.configured.is_some()
+        });
+        window.show(&surface, 640, 480, [0, 0, 255, 255]);
+        pump(
+            &mut compositor,
+            &mut [&mut bar, &mut window],
+            |compositor, _| !compositor.windows().is_empty(),
+        );
+        compositor.draw_frame().expect("a frame");
+        let frame = compositor.screenshot("HEADLESS-1").unwrap();
+        assert_eq!(frame.pixel(320, 10), Some([255, 0, 0, 255]), "the bar wins");
+    }
+
+    phase a_desk_on_the_background_layer_is_drawn_below_the_windows;
+    {
+        let mut compositor = headless();
+        let mut desk = layer_client(
+            &mut compositor,
+            zwlr_layer_shell_v1::Layer::Background,
+            zwlr_layer_surface_v1::Anchor::Top
+                | zwlr_layer_surface_v1::Anchor::Bottom
+                | zwlr_layer_surface_v1::Anchor::Left
+                | zwlr_layer_surface_v1::Anchor::Right,
+            (0, 0),
+            0,
+            [0, 255, 0, 255],
+        );
+        assert_eq!(desk.seen.configured, Some((640, 480)));
+        pump(&mut compositor, &mut [&mut desk], |_, _| true);
+        compositor.draw_frame().expect("a frame");
+        let frame = compositor.screenshot("HEADLESS-1").unwrap();
+        assert_eq!(frame.pixel(320, 240), Some([0, 255, 0, 255]));
+
+        let mut window = Client::connect(&mut compositor, false);
+        pump(&mut compositor, &mut [&mut window], |_, clients| {
+            clients[0].seen.wm_base.is_some()
+        });
+        let surface = window.toplevel("a-window");
+        pump(&mut compositor, &mut [&mut window], |_, clients| {
+            clients[0].seen.configured.is_some()
+        });
+        window.show(&surface, 200, 100, [0, 0, 255, 255]);
+        pump(
+            &mut compositor,
+            &mut [&mut desk, &mut window],
+            |compositor, _| !compositor.windows().is_empty(),
+        );
+        compositor.draw_frame().expect("a frame");
+        let frame = compositor.screenshot("HEADLESS-1").unwrap();
+        let (_, (x, y, w, h)) = compositor.windows()[0].clone();
+        let (x, y) = (u32::try_from(x).unwrap(), u32::try_from(y).unwrap());
+        let (w, h) = (u32::try_from(w).unwrap(), u32::try_from(h).unwrap());
+        assert_eq!(
+            frame.pixel(x + w / 2, y + h / 2),
+            Some([0, 0, 255, 255]),
+            "the window is above the desk"
+        );
+    }
+
+    phase the_pointer_and_a_press_reach_the_layer_surface_that_is_above;
+    {
+        let mut compositor = headless();
+        let mut bar = layer_client(
+            &mut compositor,
+            zwlr_layer_shell_v1::Layer::Top,
+            zwlr_layer_surface_v1::Anchor::Top
+                | zwlr_layer_surface_v1::Anchor::Left
+                | zwlr_layer_surface_v1::Anchor::Right,
+            (0, 32),
+            32,
+            [255, 0, 0, 255],
+        );
+        pump(&mut compositor, &mut [&mut bar], |_, clients| {
             clients[0].seen.pointer.is_some()
         });
 
-        // The device pixel at a logical point, and the colour drawn there.
-        let shown = |compositor: &mut Compositor, x: i32, y: i32| {
-            compositor.draw_frame().expect("a frame");
-            let frame = compositor.screenshot("HEADLESS-1").unwrap();
-            frame.pixel(
-                u32::try_from(x * scale + scale / 2).unwrap(),
-                u32::try_from(y * scale + scale / 2).unwrap(),
-            )
-        };
-        let top = output_h - 40;
-        assert_eq!(
-            shown(&mut compositor, 30, top + 5),
-            Some(TOP),
-            "at {scale}x"
-        );
-        assert_eq!(
-            shown(&mut compositor, 30, top + 35),
-            Some(BOTTOM),
-            "at {scale}x"
-        );
-
-        // It asks to grow, and the compositor configures the new size before its app has drawn it.
-        layer.set_size(100, 80);
-        surface.commit();
-        pump(&mut compositor, &mut [&mut panel], |_, clients| {
-            clients[0].seen.configured == Some((100, 80))
-        });
-        surface.commit();
-        pump(&mut compositor, &mut [&mut panel], |_, _| true);
-        assert_eq!(
-            shown(&mut compositor, 30, top + 5),
-            Some(TOP),
-            "the frame it drew stays at its size on the edge it rests on, at {scale}x"
-        );
-        assert_eq!(
-            shown(&mut compositor, 30, top + 35),
-            Some(BOTTOM),
-            "at {scale}x"
-        );
-        assert_eq!(
-            shown(&mut compositor, 30, top - 20),
-            Some(BACKGROUND),
-            "nothing stands where it has not drawn yet, at {scale}x"
-        );
-        // The pointer on a drawn pixel reaches that pixel of the surface.
         compositor
-            .input(InputEvent::PointerMotion {
-                x: 30.5,
-                y: f64::from(top) + 35.5,
+            .input(InputEvent::PointerMotion { x: 300.0, y: 16.0 })
+            .unwrap();
+        compositor
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: true,
             })
             .unwrap();
-        pump(&mut compositor, &mut [&mut panel], |_, clients| {
-            clients[0].seen.pointer_at.is_some()
-        });
-        assert_eq!(panel.seen.pointer_at, Some((30.5, 35.5)), "at {scale}x");
-
-        // The frame of the new size replaces it, grown up from the same edge.
-        panel.show_bands(&surface, (100, 80), scale, TOP, BOTTOM);
-        pump(&mut compositor, &mut [&mut panel], |_, _| true);
-        let top = output_h - 80;
-        assert_eq!(
-            shown(&mut compositor, 30, top + 5),
-            Some(TOP),
-            "at {scale}x"
-        );
-        assert_eq!(
-            shown(&mut compositor, 30, top + 75),
-            Some(BOTTOM),
-            "at {scale}x"
-        );
         compositor
-            .input(InputEvent::PointerMotion {
-                x: 70.25,
-                y: f64::from(top) + 10.75,
+            .input(InputEvent::PointerButton {
+                button: BTN_LEFT,
+                pressed: false,
             })
             .unwrap();
-        pump(&mut compositor, &mut [&mut panel], |_, clients| {
-            clients[0].seen.pointer_at == Some((70.25, 10.75))
+        pump(&mut compositor, &mut [&mut bar], |_, clients| {
+            clients[0].seen.buttons.len() == 2
         });
+        assert!(bar.seen.pointer_inside);
+        assert_eq!(bar.seen.buttons, vec![(BTN_LEFT, true), (BTN_LEFT, false)]);
+
+        // Off the bar the pointer leaves it, even over the desk.
+
+        compositor
+            .input(InputEvent::PointerMotion { x: 300.0, y: 300.0 })
+            .unwrap();
+        pump(&mut compositor, &mut [&mut bar], |_, clients| {
+            !clients[0].seen.pointer_inside
+        });
+    }
+
+    phase keys_go_to_the_layer_surface_that_takes_them;
+    {
+        let mut compositor = headless();
+        let mut prompt = Client::connect(&mut compositor, true);
+        pump(&mut compositor, &mut [&mut prompt], |_, clients| {
+            clients[0].seen.layer_shell.is_some() && clients[0].seen.seat.is_some()
+        });
+        let (surface, _) = prompt.layer_surface(
+            zwlr_layer_shell_v1::Layer::Overlay,
+            zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left,
+            (320, 200),
+            0,
+            zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive,
+        );
+        pump(&mut compositor, &mut [&mut prompt], |_, clients| {
+            clients[0].seen.configured.is_some()
+        });
+        prompt.show(&surface, 320, 200, [255, 255, 0, 255]);
+        pump(&mut compositor, &mut [&mut prompt], |_, clients| {
+            clients[0].seen.keyboard_focused
+        });
+
+        compositor
+            .input(InputEvent::Key {
+                keycode: KEY_A,
+                pressed: true,
+            })
+            .unwrap();
+        compositor
+            .input(InputEvent::Key {
+                keycode: KEY_A,
+                pressed: false,
+            })
+            .unwrap();
+        pump(&mut compositor, &mut [&mut prompt], |_, clients| {
+            clients[0].seen.keys.len() == 2
+        });
+        assert_eq!(prompt.seen.keys, vec![(KEY_A, true), (KEY_A, false)]);
+    }
+
+    phase a_layer_surface_is_hit_where_it_is_drawn_and_never_shown_at_another_size;
+    // A panel resting on the bottom edge that grows: until its app draws the new size, the frame on
+    // screen is the one it drew, at its own size, standing on that edge; the pointer reaches it where
+    // it is drawn, one logical pixel for one; then the frame of the new size replaces it. At scale 1
+    // and 2 alike.
+    {
+        const TOP: [u8; 4] = [255, 0, 0, 255];
+        const BOTTOM: [u8; 4] = [0, 255, 0, 255];
+        for scale in [1, 2] {
+            let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+            compositor
+                .add_output(&OutputConfig::new("HEADLESS-1", 640, 480).with_scale(f64::from(scale)))
+                .expect("output");
+            let output_h = 480 / scale;
+            let mut panel = Client::connect(&mut compositor, true);
+            pump(&mut compositor, &mut [&mut panel], |_, clients| {
+                clients[0].seen.layer_shell.is_some() && clients[0].seen.seat.is_some()
+            });
+            let (surface, layer) = panel.layer_surface(
+                zwlr_layer_shell_v1::Layer::Top,
+                zwlr_layer_surface_v1::Anchor::Bottom | zwlr_layer_surface_v1::Anchor::Left,
+                (100, 40),
+                0,
+                zwlr_layer_surface_v1::KeyboardInteractivity::None,
+            );
+            pump(&mut compositor, &mut [&mut panel], |_, clients| {
+                clients[0].seen.configured == Some((100, 40))
+            });
+            panel.show_bands(&surface, (100, 40), scale, TOP, BOTTOM);
+            pump(&mut compositor, &mut [&mut panel], |_, clients| {
+                clients[0].seen.pointer.is_some()
+            });
+
+            // The device pixel at a logical point, and the colour drawn there.
+            let shown = |compositor: &mut Compositor, x: i32, y: i32| {
+                compositor.draw_frame().expect("a frame");
+                let frame = compositor.screenshot("HEADLESS-1").unwrap();
+                frame.pixel(
+                    u32::try_from(x * scale + scale / 2).unwrap(),
+                    u32::try_from(y * scale + scale / 2).unwrap(),
+                )
+            };
+            let top = output_h - 40;
+            assert_eq!(
+                shown(&mut compositor, 30, top + 5),
+                Some(TOP),
+                "at {scale}x"
+            );
+            assert_eq!(
+                shown(&mut compositor, 30, top + 35),
+                Some(BOTTOM),
+                "at {scale}x"
+            );
+
+            // It asks to grow, and the compositor configures the new size before its app has drawn it.
+            layer.set_size(100, 80);
+            surface.commit();
+            pump(&mut compositor, &mut [&mut panel], |_, clients| {
+                clients[0].seen.configured == Some((100, 80))
+            });
+            surface.commit();
+            pump(&mut compositor, &mut [&mut panel], |_, _| true);
+            assert_eq!(
+                shown(&mut compositor, 30, top + 5),
+                Some(TOP),
+                "the frame it drew stays at its size on the edge it rests on, at {scale}x"
+            );
+            assert_eq!(
+                shown(&mut compositor, 30, top + 35),
+                Some(BOTTOM),
+                "at {scale}x"
+            );
+            assert_eq!(
+                shown(&mut compositor, 30, top - 20),
+                Some(BACKGROUND),
+                "nothing stands where it has not drawn yet, at {scale}x"
+            );
+            // The pointer on a drawn pixel reaches that pixel of the surface.
+            compositor
+                .input(InputEvent::PointerMotion {
+                    x: 30.5,
+                    y: f64::from(top) + 35.5,
+                })
+                .unwrap();
+            pump(&mut compositor, &mut [&mut panel], |_, clients| {
+                clients[0].seen.pointer_at.is_some()
+            });
+            assert_eq!(panel.seen.pointer_at, Some((30.5, 35.5)), "at {scale}x");
+
+            // The frame of the new size replaces it, grown up from the same edge.
+            panel.show_bands(&surface, (100, 80), scale, TOP, BOTTOM);
+            pump(&mut compositor, &mut [&mut panel], |_, _| true);
+            let top = output_h - 80;
+            assert_eq!(
+                shown(&mut compositor, 30, top + 5),
+                Some(TOP),
+                "at {scale}x"
+            );
+            assert_eq!(
+                shown(&mut compositor, 30, top + 75),
+                Some(BOTTOM),
+                "at {scale}x"
+            );
+            compositor
+                .input(InputEvent::PointerMotion {
+                    x: 70.25,
+                    y: f64::from(top) + 10.75,
+                })
+                .unwrap();
+            pump(&mut compositor, &mut [&mut panel], |_, clients| {
+                clients[0].seen.pointer_at == Some((70.25, 10.75))
+            });
+        }
     }
 }
 

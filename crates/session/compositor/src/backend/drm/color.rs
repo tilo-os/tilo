@@ -742,114 +742,124 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_identity_transform_gives_the_grid_itself() {
-        let atlas = lut_atlas(|_| {});
-        let side = usize::try_from(GRID).unwrap();
-        assert_eq!(atlas.len(), side * side * side * 4);
-        let pixel = |red: usize, green: usize, blue: usize| {
-            let at = (green * side * side + blue * side + red) * 4;
-            [atlas[at], atlas[at + 1], atlas[at + 2], atlas[at + 3]]
-        };
-        assert_eq!(pixel(0, 0, 0), [0, 0, 0, 255]);
-        assert_eq!(pixel(side - 1, side - 1, side - 1), [255, 255, 255, 255]);
-        assert_eq!(pixel(16, 0, 32), [127, 0, 255, 255]);
-    }
+    tilo_test_env::scenario! {
+        /// The colour transform of an output: its grid, its filter and its profile.
+        fn an_outputs_colour_pass_is_built_only_from_what_can_be_read;
 
-    #[test]
-    fn a_colour_filter_asks_for_the_final_pass() {
-        assert!(
-            Wanted::default().plain(),
-            "an untouched output needs no pass"
-        );
-        for filter in [
-            ColorFilter::Grayscale,
-            ColorFilter::Inverted,
-            ColorFilter::GrayscaleInverted,
-        ] {
-            let wanted = Wanted {
-                filter,
-                ..Wanted::default()
+        phase the_identity_transform_gives_the_grid_itself;
+        {
+            let atlas = lut_atlas(|_| {});
+            let side = usize::try_from(GRID).unwrap();
+            assert_eq!(atlas.len(), side * side * side * 4);
+            let pixel = |red: usize, green: usize, blue: usize| {
+                let at = (green * side * side + blue * side + red) * 4;
+                [atlas[at], atlas[at + 1], atlas[at + 2], atlas[at + 3]]
             };
-            assert!(!wanted.plain(), "{filter:?} is drawn by the pass");
+            assert_eq!(pixel(0, 0, 0), [0, 0, 0, 255]);
+            assert_eq!(pixel(side - 1, side - 1, side - 1), [255, 255, 255, 255]);
+            assert_eq!(pixel(16, 0, 32), [127, 0, 255, 255]);
+        }
+
+        phase a_colour_filter_asks_for_the_final_pass;
+        {
+            assert!(
+                Wanted::default().plain(),
+                "an untouched output needs no pass"
+            );
+            for filter in [
+                ColorFilter::Grayscale,
+                ColorFilter::Inverted,
+                ColorFilter::GrayscaleInverted,
+            ] {
+                let wanted = Wanted {
+                    filter,
+                    ..Wanted::default()
+                };
+                assert!(!wanted.plain(), "{filter:?} is drawn by the pass");
+            }
+        }
+
+        phase a_missing_or_unreadable_profile_is_refused;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("panel.icc");
+            assert!(icc_atlas(&path).is_none(), "missing");
+            std::fs::write(&path, b"not an ICC profile").unwrap();
+            assert!(icc_atlas(&path).is_none(), "unreadable");
         }
     }
 
-    #[test]
-    fn a_missing_or_unreadable_profile_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("panel.icc");
-        assert!(icc_atlas(&path).is_none(), "missing");
-        std::fs::write(&path, b"not an ICC profile").unwrap();
-        assert!(icc_atlas(&path).is_none(), "unreadable");
-    }
+    tilo_test_env::scenario! {
+        /// What turning HDR on asks of the display.
+        fn hdr_takes_ten_bits_bt2020_and_the_kernels_metadata_layout;
 
-    #[test]
-    fn hdr_metadata_blob_matches_the_kernel_struct_layout() {
-        let blob = hdr_output_metadata(&sink());
-        assert_eq!(blob.len(), 32, "sizeof(struct hdr_output_metadata)");
-        assert_eq!(&blob[0..4], &[0, 0, 0, 0], "HDMI_STATIC_METADATA_TYPE1");
-        assert_eq!(blob[4], 2, "EOTF SMPTE ST 2084");
-        assert_eq!(blob[5], 0, "static metadata descriptor type 1");
-        assert_eq!(u16_at(&blob, 6), 35_400, "red x 0.708");
-        assert_eq!(u16_at(&blob, 8), 14_600);
-        assert_eq!(u16_at(&blob, 10), 8_500, "green x");
-        assert_eq!(u16_at(&blob, 14), 6_550, "blue x");
-        assert_eq!(u16_at(&blob, 18), 15_635, "white x 0.3127");
-        assert_eq!(u16_at(&blob, 20), 16_450, "white y 0.329");
-        assert_eq!(u16_at(&blob, 22), 1015, "mastering max, cd/m²");
-        assert_eq!(u16_at(&blob, 24), 500, "mastering min, 0.0001 cd/m²");
-        assert_eq!(u16_at(&blob, 26), 1015, "MaxCLL");
-        assert_eq!(u16_at(&blob, 28), 403, "MaxFALL");
-        assert_eq!(&blob[30..32], &[0, 0], "struct padding");
-        let wild = Hdr {
-            white_point: (2_000_000, 2_000_000),
-            ..sink()
-        };
-        assert_eq!(
-            u16_at(&hdr_output_metadata(&wild), 18),
-            50_000,
-            "saturates at 1.0"
-        );
-    }
+        phase hdr_metadata_blob_matches_the_kernel_struct_layout;
+        {
+            let blob = hdr_output_metadata(&sink());
+            assert_eq!(blob.len(), 32, "sizeof(struct hdr_output_metadata)");
+            assert_eq!(&blob[0..4], &[0, 0, 0, 0], "HDMI_STATIC_METADATA_TYPE1");
+            assert_eq!(blob[4], 2, "EOTF SMPTE ST 2084");
+            assert_eq!(blob[5], 0, "static metadata descriptor type 1");
+            assert_eq!(u16_at(&blob, 6), 35_400, "red x 0.708");
+            assert_eq!(u16_at(&blob, 8), 14_600);
+            assert_eq!(u16_at(&blob, 10), 8_500, "green x");
+            assert_eq!(u16_at(&blob, 14), 6_550, "blue x");
+            assert_eq!(u16_at(&blob, 18), 15_635, "white x 0.3127");
+            assert_eq!(u16_at(&blob, 20), 16_450, "white y 0.329");
+            assert_eq!(u16_at(&blob, 22), 1015, "mastering max, cd/m²");
+            assert_eq!(u16_at(&blob, 24), 500, "mastering min, 0.0001 cd/m²");
+            assert_eq!(u16_at(&blob, 26), 1015, "MaxCLL");
+            assert_eq!(u16_at(&blob, 28), 403, "MaxFALL");
+            assert_eq!(&blob[30..32], &[0, 0], "struct padding");
+            let wild = Hdr {
+                white_point: (2_000_000, 2_000_000),
+                ..sink()
+            };
+            assert_eq!(
+                u16_at(&hdr_output_metadata(&wild), 18),
+                50_000,
+                "saturates at 1.0"
+            );
+        }
 
-    #[test]
-    fn hdr_moves_the_swapchain_to_ten_bits_and_back() {
-        let all = |_| true;
-        assert_eq!(
-            depth_formats(true, Fourcc::Argb8888, all),
-            HDR_FORMATS,
-            "opaque 10-bit formats first"
-        );
-        assert_eq!(
-            depth_formats(true, Fourcc::Argb8888, |format| format
-                == Fourcc::Abgr2101010
-                || format == Fourcc::Argb8888),
-            [Fourcc::Abgr2101010],
-            "only formats the GPU draws into"
-        );
-        assert!(
-            depth_formats(true, Fourcc::Argb8888, |format| !HDR_FORMATS
-                .contains(&format))
-            .is_empty(),
-            "no 10-bit format to draw into: stays at 8 bits"
-        );
-        assert!(depth_formats(true, Fourcc::Xbgr2101010, all).is_empty());
-        assert_eq!(depth_formats(false, Fourcc::Xrgb2101010, all), SDR_FORMATS);
-        assert!(depth_formats(false, Fourcc::Xrgb8888, all).is_empty());
-    }
+        phase hdr_moves_the_swapchain_to_ten_bits_and_back;
+        {
+            let all = |_| true;
+            assert_eq!(
+                depth_formats(true, Fourcc::Argb8888, all),
+                HDR_FORMATS,
+                "opaque 10-bit formats first"
+            );
+            assert_eq!(
+                depth_formats(true, Fourcc::Argb8888, |format| format
+                    == Fourcc::Abgr2101010
+                    || format == Fourcc::Argb8888),
+                [Fourcc::Abgr2101010],
+                "only formats the GPU draws into"
+            );
+            assert!(
+                depth_formats(true, Fourcc::Argb8888, |format| !HDR_FORMATS
+                    .contains(&format))
+                .is_empty(),
+                "no 10-bit format to draw into: stays at 8 bits"
+            );
+            assert!(depth_formats(true, Fourcc::Xbgr2101010, all).is_empty());
+            assert_eq!(depth_formats(false, Fourcc::Xrgb2101010, all), SDR_FORMATS);
+            assert!(depth_formats(false, Fourcc::Xrgb8888, all).is_empty());
+        }
 
-    #[test]
-    fn hdr_takes_ten_bits_and_the_bt2020_colorspace() {
-        assert_eq!(hdr_max_bpc(8, 16), Some(10));
-        assert_eq!(hdr_max_bpc(12, 16), Some(12));
-        assert_eq!(hdr_max_bpc(8, 8), None);
-        let values = [
-            (0, &b"Default"[..]),
-            (9, &b"BT2020_RGB"[..]),
-            (5, &b"SMPTE_170M_YCC"[..]),
-        ];
-        assert_eq!(colorspace_values(values), Some((0, 9)));
-        assert_eq!(colorspace_values([(0, &b"Default"[..])]), None);
+        phase hdr_takes_ten_bits_and_the_bt2020_colorspace;
+        {
+            assert_eq!(hdr_max_bpc(8, 16), Some(10));
+            assert_eq!(hdr_max_bpc(12, 16), Some(12));
+            assert_eq!(hdr_max_bpc(8, 8), None);
+            let values = [
+                (0, &b"Default"[..]),
+                (9, &b"BT2020_RGB"[..]),
+                (5, &b"SMPTE_170M_YCC"[..]),
+            ];
+            assert_eq!(colorspace_values(values), Some((0, 9)));
+            assert_eq!(colorspace_values([(0, &b"Default"[..])]), None);
+        }
     }
 }

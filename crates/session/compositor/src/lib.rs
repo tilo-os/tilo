@@ -2651,45 +2651,50 @@ mod display_publication_tests {
             .expect("a runtime directory")
     }
 
-    #[test]
-    fn the_display_lives_in_the_logins_session_directory() {
-        assert_eq!(
-            display_file(Some("/run/user/1000".into())),
-            Some(std::path::PathBuf::from(
-                "/run/user/1000/tilo-session/wayland-display"
-            ))
-        );
-        assert_eq!(display_file(None), None);
-        assert_eq!(display_file(Some("relative/run".into())), None);
-    }
+    tilo_test_env::scenario! {
+        /// The file that tells a login's programs which display is theirs.
+        fn the_session_publishes_its_display_for_the_login;
 
-    #[test]
-    fn the_socket_name_is_published_bare_and_goes_with_the_session() {
-        let runtime = runtime();
-        let path = runtime.path().join("tilo-session/wayland-display");
-        let published = publish_at(&path, "wayland-3").expect("the display is published");
-        // `WAYLAND_DISPLAY=$(cat …)` is exactly the client's environment.
-        assert_eq!(std::fs::read(&path).unwrap(), b"wayland-3");
-        drop(published);
-        assert!(!path.exists(), "the file goes when the session does");
-    }
+        phase the_display_lives_in_the_logins_session_directory;
+        {
+            assert_eq!(
+                display_file(Some("/run/user/1000".into())),
+                Some(std::path::PathBuf::from(
+                    "/run/user/1000/tilo-session/wayland-display"
+                ))
+            );
+            assert_eq!(display_file(None), None);
+            assert_eq!(display_file(Some("relative/run".into())), None);
+        }
 
-    #[test]
-    fn a_stale_file_is_replaced_and_a_running_sessions_is_left_alone() {
-        let runtime = runtime();
-        let path = runtime.path().join("tilo-session/wayland-display");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        // A session that ended left its name behind: nothing answers there.
-        std::fs::write(&path, "wayland-0").unwrap();
-        let published = publish_at(&path, "wayland-4").expect("the stale name is replaced");
-        assert_eq!(std::fs::read(&path).unwrap(), b"wayland-4");
+        phase the_socket_name_is_published_bare_and_goes_with_the_session;
+        {
+            let runtime = runtime();
+            let path = runtime.path().join("tilo-session/wayland-display");
+            let published = publish_at(&path, "wayland-3").expect("the display is published");
+            // `WAYLAND_DISPLAY=$(cat …)` is exactly the client's environment.
+            assert_eq!(std::fs::read(&path).unwrap(), b"wayland-3");
+            drop(published);
+            assert!(!path.exists(), "the file goes when the session does");
+        }
 
-        // A session still running there keeps the file that names it.
-        let _listening = std::os::unix::net::UnixListener::bind(runtime.path().join("wayland-4"))
-            .expect("a socket beside the session's own");
-        assert!(another_live_session_published(&path, "wayland-5"));
-        assert!(publish_at(&path, "wayland-5").is_none());
-        assert_eq!(std::fs::read(&path).unwrap(), b"wayland-4");
-        drop(published);
+        phase a_stale_file_is_replaced_and_a_running_sessions_is_left_alone;
+        {
+            let runtime = runtime();
+            let path = runtime.path().join("tilo-session/wayland-display");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // A session that ended left its name behind: nothing answers there.
+            std::fs::write(&path, "wayland-0").unwrap();
+            let published = publish_at(&path, "wayland-4").expect("the stale name is replaced");
+            assert_eq!(std::fs::read(&path).unwrap(), b"wayland-4");
+
+            // A session still running there keeps the file that names it.
+            let _listening = std::os::unix::net::UnixListener::bind(runtime.path().join("wayland-4"))
+                .expect("a socket beside the session's own");
+            assert!(another_live_session_published(&path, "wayland-5"));
+            assert!(publish_at(&path, "wayland-5").is_none());
+            assert_eq!(std::fs::read(&path).unwrap(), b"wayland-4");
+            drop(published);
+        }
     }
 }

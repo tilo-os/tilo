@@ -279,236 +279,241 @@ mod tests {
         SeatEnvironment::default()
     }
 
-    #[test]
-    fn seat_detection_reads_the_environment_through_the_probe() {
-        {
-            // A shell that exports XDG_SESSION_ID= (empty) is telling us the same thing as not
-            // exporting it. Treating `Some("")` as "we have a session" is exactly how the
-            // misdiagnosis happens.
-            let e = SeatEnvironment::detect_with(
-                |k| match k {
-                    "XDG_SESSION_ID" => Some(String::new()),
-                    "XDG_SEAT" => Some("   ".to_string()),
-                    "XDG_VTNR" => Some("2".to_string()),
-                    _ => None,
-                },
-                |_| false,
-            );
-            assert_eq!(e.session_id, None);
-            assert_eq!(e.seat, None);
-            assert_eq!(e.vtnr.as_deref(), Some("2"));
-        }
-        {
-            let e = SeatEnvironment::detect_with(|_| None, |p| p == SEATD_SOCKET);
-            assert!(e.seatd_socket, "the seatd socket probe must be consulted");
-            assert!(!e.logind_seats);
-        }
-        // Phase `detect_reads_the_real_environment_without_panicking` . `detect` must not panic in
-        // a test environment and must agree with the injected form when handed the same inputs.
-        {
-            let live = SeatEnvironment::detect();
-            let kind = classify(ENOSYS, &live);
-            assert!(matches!(
-                kind,
-                SeatFailureKind::NoLoginSession
-                    | SeatFailureKind::SessionOwnsNoSeat
-                    | SeatFailureKind::SeatAlreadyHeld
-                    | SeatFailureKind::NoSeatBackend
-                    | SeatFailureKind::Unclassified
-            ));
-        }
-    }
+    tilo_test_env::scenario! {
+        /// Why a seat could not be opened, and what the person is told.
+        fn a_missing_seat_is_diagnosed_from_the_environment;
 
-    #[test]
-    fn seat_diagnosis_classifies_each_missing_precondition() {
+        phase seat_detection_reads_the_environment_through_the_probe;
         {
-            // The reported failure: XDG_SESSION_ID empty, no seatd socket.
-            let e = SeatEnvironment {
-                session_id: None,
-                seatd_socket: false,
-                ..env()
-            };
-            assert_eq!(classify(ENOSYS, &e), SeatFailureKind::NoLoginSession);
+            {
+                // A shell that exports XDG_SESSION_ID= (empty) is telling us the same thing as not
+                // exporting it. Treating `Some("")` as "we have a session" is exactly how the
+                // misdiagnosis happens.
+                let e = SeatEnvironment::detect_with(
+                    |k| match k {
+                        "XDG_SESSION_ID" => Some(String::new()),
+                        "XDG_SEAT" => Some("   ".to_string()),
+                        "XDG_VTNR" => Some("2".to_string()),
+                        _ => None,
+                    },
+                    |_| false,
+                );
+                assert_eq!(e.session_id, None);
+                assert_eq!(e.seat, None);
+                assert_eq!(e.vtnr.as_deref(), Some("2"));
+            }
+            {
+                let e = SeatEnvironment::detect_with(|_| None, |p| p == SEATD_SOCKET);
+                assert!(e.seatd_socket, "the seatd socket probe must be consulted");
+                assert!(!e.logind_seats);
+            }
+            // Phase `detect_reads_the_real_environment_without_panicking` . `detect` must not panic in
+            // a test environment and must agree with the injected form when handed the same inputs.
+            {
+                let live = SeatEnvironment::detect();
+                let kind = classify(ENOSYS, &live);
+                assert!(matches!(
+                    kind,
+                    SeatFailureKind::NoLoginSession
+                        | SeatFailureKind::SessionOwnsNoSeat
+                        | SeatFailureKind::SeatAlreadyHeld
+                        | SeatFailureKind::NoSeatBackend
+                        | SeatFailureKind::Unclassified
+                ));
+            }
         }
+
+        phase seat_diagnosis_classifies_each_missing_precondition;
         {
-            // Running Tilo from a terminal emulator inside GNOME *and* outside a logind session (a
-            // container, say). "You are not in a session" is the actionable half; "something else
-            // holds the seat" would send the operator to kill a compositor that is not the problem.
-            let e = SeatEnvironment {
-                session_id: None,
-                wayland_display: Some("wayland-0".into()),
-                ..env()
-            };
-            assert_eq!(classify(ENOSYS, &e), SeatFailureKind::NoLoginSession);
+            {
+                // The reported failure: XDG_SESSION_ID empty, no seatd socket.
+                let e = SeatEnvironment {
+                    session_id: None,
+                    seatd_socket: false,
+                    ..env()
+                };
+                assert_eq!(classify(ENOSYS, &e), SeatFailureKind::NoLoginSession);
+            }
+            {
+                // Running Tilo from a terminal emulator inside GNOME *and* outside a logind session (a
+                // container, say). "You are not in a session" is the actionable half; "something else
+                // holds the seat" would send the operator to kill a compositor that is not the problem.
+                let e = SeatEnvironment {
+                    session_id: None,
+                    wayland_display: Some("wayland-0".into()),
+                    ..env()
+                };
+                assert_eq!(classify(ENOSYS, &e), SeatFailureKind::NoLoginSession);
+            }
+            {
+                // `loginctl` shows this session's seat as `-` — a manager session.
+                let e = SeatEnvironment {
+                    session_id: Some("1".into()),
+                    seat: None,
+                    logind_seats: true,
+                    ..env()
+                };
+                assert_eq!(classify(ENOSYS, &e), SeatFailureKind::SessionOwnsNoSeat);
+            }
+            // Phase `a_literal_dash_seat_counts_as_no_seat` . Some shells export what loginctl prints.
+            // `-` is not a seat name.
+            for name in ["-", "none", "  "] {
+                let e = SeatEnvironment {
+                    session_id: Some("1".into()),
+                    seat: Some(name.into()),
+                    logind_seats: true,
+                    ..env()
+                };
+                assert_eq!(
+                    classify(ENOSYS, &e),
+                    SeatFailureKind::SessionOwnsNoSeat,
+                    "seat name {name:?} must not read as a real seat"
+                );
+            }
+            {
+                let e = SeatEnvironment {
+                    session_id: Some("3".into()),
+                    seat: Some("seat0".into()),
+                    vtnr: Some("2".into()),
+                    logind_seats: true,
+                    wayland_display: Some("wayland-0".into()),
+                    ..env()
+                };
+                assert_eq!(classify(ENOSYS, &e), SeatFailureKind::SeatAlreadyHeld);
+            }
+            {
+                let e = SeatEnvironment {
+                    session_id: Some("3".into()),
+                    seat: Some("seat0".into()),
+                    logind_seats: true,
+                    x_display: Some(":0".into()),
+                    ..env()
+                };
+                assert_eq!(classify(ENOSYS, &e), SeatFailureKind::SeatAlreadyHeld);
+            }
+            {
+                // A seat name in the environment with neither logind managing seats nor seatd
+                // listening: nothing can open it.
+                let e = SeatEnvironment {
+                    session_id: Some("3".into()),
+                    seat: Some("seat0".into()),
+                    vtnr: Some("3".into()),
+                    logind_seats: false,
+                    seatd_socket: false,
+                    ..env()
+                };
+                assert_eq!(classify(ENOSYS, &e), SeatFailureKind::NoSeatBackend);
+            }
+            {
+                let e = SeatEnvironment {
+                    session_id: Some("3".into()),
+                    seat: Some("seat0".into()),
+                    logind_seats: false,
+                    seatd_socket: true,
+                    ..env()
+                };
+                assert_eq!(classify(ENOSYS, &e), SeatFailureKind::Unclassified);
+            }
+            {
+                // A permissions failure (EACCES on the seat) looks like this: the environment is
+                // correct, so the raw error is the only evidence.
+                let e = SeatEnvironment {
+                    session_id: Some("3".into()),
+                    seat: Some("seat0".into()),
+                    vtnr: Some("3".into()),
+                    logind_seats: true,
+                    seatd_socket: true,
+                    ..env()
+                };
+                assert_eq!(
+                    classify("FailedToOpenSession(Os { code: 13, .. })", &e),
+                    SeatFailureKind::Unclassified
+                );
+            }
         }
+
+        phase seat_diagnosis_messages_name_the_environment_and_remedy;
         {
-            // `loginctl` shows this session's seat as `-` — a manager session.
-            let e = SeatEnvironment {
-                session_id: Some("1".into()),
-                seat: None,
-                logind_seats: true,
-                ..env()
-            };
-            assert_eq!(classify(ENOSYS, &e), SeatFailureKind::SessionOwnsNoSeat);
-        }
-        // Phase `a_literal_dash_seat_counts_as_no_seat` . Some shells export what loginctl prints.
-        // `-` is not a seat name.
-        for name in ["-", "none", "  "] {
-            let e = SeatEnvironment {
-                session_id: Some("1".into()),
-                seat: Some(name.into()),
-                logind_seats: true,
-                ..env()
-            };
-            assert_eq!(
-                classify(ENOSYS, &e),
+            {
+                let e = SeatEnvironment {
+                    session_id: None,
+                    seat: None,
+                    vtnr: None,
+                    seatd_socket: false,
+                    logind_seats: true,
+                    wayland_display: Some("wayland-0".into()),
+                    x_display: None,
+                };
+                let failure = SeatFailure::diagnose(ENOSYS, e);
+                let msg = failure.to_string();
+                assert!(
+                    msg.contains("XDG_SESSION_ID=(unset)"),
+                    "the observed session id must appear: {msg}"
+                );
+                assert!(
+                    msg.contains("XDG_VTNR=(unset)"),
+                    "the observed VT number must appear: {msg}"
+                );
+                assert!(
+                    msg.contains("XDG_SEAT=(unset)"),
+                    "the observed seat name must appear: {msg}"
+                );
+                assert!(
+                    msg.contains("seatd-socket=(absent)"),
+                    "whether the seatd socket exists must appear: {msg}"
+                );
+                assert!(
+                    msg.contains("Ctrl+Alt+F3"),
+                    "the VT remedy must be spelled out: {msg}"
+                );
+                assert!(
+                    msg.contains("code: 38"),
+                    "the raw libseat error must survive: {msg}"
+                );
+            }
+            {
+                let e = SeatEnvironment {
+                    session_id: Some("3".into()),
+                    seat: Some("seat0".into()),
+                    vtnr: Some("2".into()),
+                    logind_seats: true,
+                    wayland_display: Some("wayland-1".into()),
+                    ..env()
+                };
+                let msg = SeatFailure::diagnose(ENOSYS, e).to_string();
+                assert!(msg.contains("already running on it"), "{msg}");
+                assert!(msg.contains("XDG_SEAT=seat0"), "{msg}");
+                assert!(msg.contains("WAYLAND_DISPLAY=wayland-1"), "{msg}");
+            }
+            {
+                let e = SeatEnvironment {
+                    session_id: Some("3".into()),
+                    seat: Some("seat0".into()),
+                    logind_seats: false,
+                    seatd_socket: false,
+                    ..env()
+                };
+                let msg = SeatFailure::diagnose(ENOSYS, e).to_string();
+                assert!(msg.contains("seatd"), "{msg}");
+            }
+            // Phase `every_kind_has_a_summary_and_a_remedy` . Every kind must produce a non-empty
+            // summary and remedy — a diagnosis that renders as an empty line is worse than the errno.
+            for kind in [
+                SeatFailureKind::NoLoginSession,
                 SeatFailureKind::SessionOwnsNoSeat,
-                "seat name {name:?} must not read as a real seat"
-            );
-        }
-        {
-            let e = SeatEnvironment {
-                session_id: Some("3".into()),
-                seat: Some("seat0".into()),
-                vtnr: Some("2".into()),
-                logind_seats: true,
-                wayland_display: Some("wayland-0".into()),
-                ..env()
-            };
-            assert_eq!(classify(ENOSYS, &e), SeatFailureKind::SeatAlreadyHeld);
-        }
-        {
-            let e = SeatEnvironment {
-                session_id: Some("3".into()),
-                seat: Some("seat0".into()),
-                logind_seats: true,
-                x_display: Some(":0".into()),
-                ..env()
-            };
-            assert_eq!(classify(ENOSYS, &e), SeatFailureKind::SeatAlreadyHeld);
-        }
-        {
-            // A seat name in the environment with neither logind managing seats nor seatd
-            // listening: nothing can open it.
-            let e = SeatEnvironment {
-                session_id: Some("3".into()),
-                seat: Some("seat0".into()),
-                vtnr: Some("3".into()),
-                logind_seats: false,
-                seatd_socket: false,
-                ..env()
-            };
-            assert_eq!(classify(ENOSYS, &e), SeatFailureKind::NoSeatBackend);
-        }
-        {
-            let e = SeatEnvironment {
-                session_id: Some("3".into()),
-                seat: Some("seat0".into()),
-                logind_seats: false,
-                seatd_socket: true,
-                ..env()
-            };
-            assert_eq!(classify(ENOSYS, &e), SeatFailureKind::Unclassified);
-        }
-        {
-            // A permissions failure (EACCES on the seat) looks like this: the environment is
-            // correct, so the raw error is the only evidence.
-            let e = SeatEnvironment {
-                session_id: Some("3".into()),
-                seat: Some("seat0".into()),
-                vtnr: Some("3".into()),
-                logind_seats: true,
-                seatd_socket: true,
-                ..env()
-            };
-            assert_eq!(
-                classify("FailedToOpenSession(Os { code: 13, .. })", &e),
-                SeatFailureKind::Unclassified
-            );
-        }
-    }
-
-    #[test]
-    fn seat_diagnosis_messages_name_the_environment_and_remedy() {
-        {
-            let e = SeatEnvironment {
-                session_id: None,
-                seat: None,
-                vtnr: None,
-                seatd_socket: false,
-                logind_seats: true,
-                wayland_display: Some("wayland-0".into()),
-                x_display: None,
-            };
-            let failure = SeatFailure::diagnose(ENOSYS, e);
-            let msg = failure.to_string();
-            assert!(
-                msg.contains("XDG_SESSION_ID=(unset)"),
-                "the observed session id must appear: {msg}"
-            );
-            assert!(
-                msg.contains("XDG_VTNR=(unset)"),
-                "the observed VT number must appear: {msg}"
-            );
-            assert!(
-                msg.contains("XDG_SEAT=(unset)"),
-                "the observed seat name must appear: {msg}"
-            );
-            assert!(
-                msg.contains("seatd-socket=(absent)"),
-                "whether the seatd socket exists must appear: {msg}"
-            );
-            assert!(
-                msg.contains("Ctrl+Alt+F3"),
-                "the VT remedy must be spelled out: {msg}"
-            );
-            assert!(
-                msg.contains("code: 38"),
-                "the raw libseat error must survive: {msg}"
-            );
-        }
-        {
-            let e = SeatEnvironment {
-                session_id: Some("3".into()),
-                seat: Some("seat0".into()),
-                vtnr: Some("2".into()),
-                logind_seats: true,
-                wayland_display: Some("wayland-1".into()),
-                ..env()
-            };
-            let msg = SeatFailure::diagnose(ENOSYS, e).to_string();
-            assert!(msg.contains("already running on it"), "{msg}");
-            assert!(msg.contains("XDG_SEAT=seat0"), "{msg}");
-            assert!(msg.contains("WAYLAND_DISPLAY=wayland-1"), "{msg}");
-        }
-        {
-            let e = SeatEnvironment {
-                session_id: Some("3".into()),
-                seat: Some("seat0".into()),
-                logind_seats: false,
-                seatd_socket: false,
-                ..env()
-            };
-            let msg = SeatFailure::diagnose(ENOSYS, e).to_string();
-            assert!(msg.contains("seatd"), "{msg}");
-        }
-        // Phase `every_kind_has_a_summary_and_a_remedy` . Every kind must produce a non-empty
-        // summary and remedy — a diagnosis that renders as an empty line is worse than the errno.
-        for kind in [
-            SeatFailureKind::NoLoginSession,
-            SeatFailureKind::SessionOwnsNoSeat,
-            SeatFailureKind::SeatAlreadyHeld,
-            SeatFailureKind::NoSeatBackend,
-            SeatFailureKind::Unclassified,
-        ] {
-            let f = SeatFailure {
-                kind,
-                env: env(),
-                raw: ENOSYS.to_string(),
-            };
-            assert!(!f.summary().is_empty(), "{kind:?} has no summary");
-            assert!(!f.remedy().is_empty(), "{kind:?} has no remedy");
-            assert!(f.to_string().contains(f.summary()));
+                SeatFailureKind::SeatAlreadyHeld,
+                SeatFailureKind::NoSeatBackend,
+                SeatFailureKind::Unclassified,
+            ] {
+                let f = SeatFailure {
+                    kind,
+                    env: env(),
+                    raw: ENOSYS.to_string(),
+                };
+                assert!(!f.summary().is_empty(), "{kind:?} has no summary");
+                assert!(!f.remedy().is_empty(), "{kind:?} has no remedy");
+                assert!(f.to_string().contains(f.summary()));
+            }
         }
     }
 }

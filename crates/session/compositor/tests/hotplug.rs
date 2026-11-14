@@ -178,187 +178,333 @@ fn told_primary(told: &Rc<RefCell<Told>>) -> Option<String> {
     told.borrow().1.clone()
 }
 
-#[test]
-fn an_output_plugged_in_while_the_desk_runs_is_lit_beside_the_others_and_told_to_the_desk() {
-    let told = Rc::new(RefCell::new(Told::default()));
-    let mut compositor = one_output(&told);
-    let mut client = Client::connect(&mut compositor);
-    pump(&mut compositor, &mut client, |seen| {
-        !seen.globals.is_empty()
-    });
-    assert_eq!(client.outputs(), 1);
-    assert_eq!(
-        rects(&compositor),
-        [("HEADLESS-1".into(), Some((0, 0, 640, 480)))]
-    );
+tilo_test_env::scenario! {
+    /// Displays that come and go while the desk runs.
+    fn displays_plugged_and_unplugged_keep_the_layout_the_primary_and_their_scale;
 
-    // A connector appears mid-run, asking for no place of its own: a second screen shows it beside
-    // the one already there, never over it, where the desk would take it for a mirror of that one
-    // and give it nothing.
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
-        .expect("output");
+    phase an_output_plugged_in_while_the_desk_runs_is_lit_beside_the_others_and_told_to_the_desk;
+    {
+        let told = Rc::new(RefCell::new(Told::default()));
+        let mut compositor = one_output(&told);
+        let mut client = Client::connect(&mut compositor);
+        pump(&mut compositor, &mut client, |seen| {
+            !seen.globals.is_empty()
+        });
+        assert_eq!(client.outputs(), 1);
+        assert_eq!(
+            rects(&compositor),
+            [("HEADLESS-1".into(), Some((0, 0, 640, 480)))]
+        );
 
-    assert!(compositor.output_lit("HEADLESS-2"), "a new output is lit");
-    assert_eq!(
-        rects(&compositor),
-        [
-            ("HEADLESS-1".into(), Some((0, 0, 640, 480))),
-            ("HEADLESS-2".into(), Some((640, 0, 1280, 720))),
-        ],
-        "the new output is placed beside the other, which stays where it is"
-    );
-    let monitors = told_monitors(&told);
-    assert_eq!(
-        monitors,
-        [
-            ((0, 0, 640, 480), "HEADLESS-1".to_owned()),
-            ((640, 0, 1280, 720), "HEADLESS-2".to_owned()),
-        ],
-        "the desk is told the monitors it now has"
-    );
-    pump(&mut compositor, &mut client, |seen| {
-        seen.globals
-            .iter()
-            .filter(|(_, interface)| interface == "wl_output")
-            .count()
-            == 2
-    });
-    assert_eq!(client.outputs(), 2, "clients see the new output");
+        // A connector appears mid-run, asking for no place of its own: a second screen shows it beside
+        // the one already there, never over it, where the desk would take it for a mirror of that one
+        // and give it nothing.
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
+            .expect("output");
 
-    // It draws, rather than sitting dark until something else does.
-    compositor.draw_frame().expect("a frame");
-    let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
-    assert_eq!(shot.pixel(1279, 719), Some(BACKGROUND));
-}
+        assert!(compositor.output_lit("HEADLESS-2"), "a new output is lit");
+        assert_eq!(
+            rects(&compositor),
+            [
+                ("HEADLESS-1".into(), Some((0, 0, 640, 480))),
+                ("HEADLESS-2".into(), Some((640, 0, 1280, 720))),
+            ],
+            "the new output is placed beside the other, which stays where it is"
+        );
+        let monitors = told_monitors(&told);
+        assert_eq!(
+            monitors,
+            [
+                ((0, 0, 640, 480), "HEADLESS-1".to_owned()),
+                ((640, 0, 1280, 720), "HEADLESS-2".to_owned()),
+            ],
+            "the desk is told the monitors it now has"
+        );
+        pump(&mut compositor, &mut client, |seen| {
+            seen.globals
+                .iter()
+                .filter(|(_, interface)| interface == "wl_output")
+                .count()
+                == 2
+        });
+        assert_eq!(client.outputs(), 2, "clients see the new output");
 
-#[test]
-fn an_output_unplugged_while_the_desk_runs_leaves_the_lit_set_and_the_layout() {
-    let told = Rc::new(RefCell::new(Told::default()));
-    let mut compositor = one_output(&told);
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
-        .expect("output");
-    let mut client = Client::connect(&mut compositor);
-    pump(&mut compositor, &mut client, |seen| {
-        seen.globals
-            .iter()
-            .filter(|(_, interface)| interface == "wl_output")
-            .count()
-            == 2
-    });
+        // It draws, rather than sitting dark until something else does.
+        compositor.draw_frame().expect("a frame");
+        let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
+        assert_eq!(shot.pixel(1279, 719), Some(BACKGROUND));
+    }
 
-    // The cable is pulled: the output is gone, not merely dark.
-    compositor.remove_output("HEADLESS-2").expect("unplug");
+    phase an_output_unplugged_while_the_desk_runs_leaves_the_lit_set_and_the_layout;
+    {
+        let told = Rc::new(RefCell::new(Told::default()));
+        let mut compositor = one_output(&told);
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
+            .expect("output");
+        let mut client = Client::connect(&mut compositor);
+        pump(&mut compositor, &mut client, |seen| {
+            seen.globals
+                .iter()
+                .filter(|(_, interface)| interface == "wl_output")
+                .count()
+                == 2
+        });
 
-    assert!(
-        !compositor.output_lit("HEADLESS-2"),
-        "an output that is gone is not lit"
-    );
-    assert!(compositor.output_lit("HEADLESS-1"));
-    assert_eq!(
-        rects(&compositor),
-        [("HEADLESS-1".into(), Some((0, 0, 640, 480)))],
-        "what clients and Settings are shown no longer lists it"
-    );
-    let monitors = told_monitors(&told);
-    assert_eq!(
-        monitors,
-        [((0, 0, 640, 480), "HEADLESS-1".to_owned())],
-        "the desk is told the monitor set it has now"
-    );
-    assert!(
-        compositor.screenshot("HEADLESS-2").is_err(),
-        "nothing draws there any more"
-    );
-    pump(&mut compositor, &mut client, |seen| {
-        seen.globals
-            .iter()
-            .filter(|(_, interface)| interface == "wl_output")
-            .count()
-            == 1
-    });
-    assert_eq!(client.outputs(), 1, "clients are told it is gone");
+        // The cable is pulled: the output is gone, not merely dark.
+        compositor.remove_output("HEADLESS-2").expect("unplug");
 
-    // Pulling the same cable twice fails rather than taking the other one.
-    assert!(compositor.remove_output("HEADLESS-2").is_err());
-    assert_eq!(rects(&compositor).len(), 1);
-}
+        assert!(
+            !compositor.output_lit("HEADLESS-2"),
+            "an output that is gone is not lit"
+        );
+        assert!(compositor.output_lit("HEADLESS-1"));
+        assert_eq!(
+            rects(&compositor),
+            [("HEADLESS-1".into(), Some((0, 0, 640, 480)))],
+            "what clients and Settings are shown no longer lists it"
+        );
+        let monitors = told_monitors(&told);
+        assert_eq!(
+            monitors,
+            [((0, 0, 640, 480), "HEADLESS-1".to_owned())],
+            "the desk is told the monitor set it has now"
+        );
+        assert!(
+            compositor.screenshot("HEADLESS-2").is_err(),
+            "nothing draws there any more"
+        );
+        pump(&mut compositor, &mut client, |seen| {
+            seen.globals
+                .iter()
+                .filter(|(_, interface)| interface == "wl_output")
+                .count()
+                == 1
+        });
+        assert_eq!(client.outputs(), 1, "clients are told it is gone");
 
-#[test]
-fn the_place_an_unplugged_output_left_closes_over() {
-    let told = Rc::new(RefCell::new(Told::default()));
-    let mut compositor = one_output(&told);
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
-        .expect("output");
-    assert_eq!(
-        rects(&compositor)[1].1,
-        Some((640, 0, 1280, 720)),
-        "the second screen is to the right"
-    );
+        // Pulling the same cable twice fails rather than taking the other one.
+        assert!(compositor.remove_output("HEADLESS-2").is_err());
+        assert_eq!(rects(&compositor).len(), 1);
+    }
 
-    // The one on the left goes: the one left sits where the pointer and the desk look, not 640
-    // pixels into an empty layout.
-    compositor.remove_output("HEADLESS-1").expect("unplug");
-    assert_eq!(
-        rects(&compositor),
-        [("HEADLESS-2".into(), Some((0, 0, 1280, 720)))]
-    );
-    let monitors = told_monitors(&told);
-    assert_eq!(
-        monitors,
-        [((0, 0, 1280, 720), "HEADLESS-2".to_owned())],
-        "the desk follows it to where it now is"
-    );
-    assert!(compositor.output_lit("HEADLESS-2"));
+    phase the_place_an_unplugged_output_left_closes_over;
+    {
+        let told = Rc::new(RefCell::new(Told::default()));
+        let mut compositor = one_output(&told);
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
+            .expect("output");
+        assert_eq!(
+            rects(&compositor)[1].1,
+            Some((640, 0, 1280, 720)),
+            "the second screen is to the right"
+        );
 
-    // Plugged back in, it takes its place beside the one that stayed.
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
-        .expect("output");
-    let placed: Vec<Placed> = rects(&compositor);
-    assert_eq!(
-        placed,
-        [
-            ("HEADLESS-2".into(), Some((0, 0, 1280, 720))),
-            ("HEADLESS-1".into(), Some((1280, 0, 640, 480))),
-        ],
-        "an output plugged back in is beside the others, whichever came first"
-    );
-}
+        // The one on the left goes: the one left sits where the pointer and the desk look, not 640
+        // pixels into an empty layout.
+        compositor.remove_output("HEADLESS-1").expect("unplug");
+        assert_eq!(
+            rects(&compositor),
+            [("HEADLESS-2".into(), Some((0, 0, 1280, 720)))]
+        );
+        let monitors = told_monitors(&told);
+        assert_eq!(
+            monitors,
+            [((0, 0, 1280, 720), "HEADLESS-2".to_owned())],
+            "the desk follows it to where it now is"
+        );
+        assert!(compositor.output_lit("HEADLESS-2"));
 
-#[test]
-fn an_output_the_person_turned_off_keeps_no_place_when_another_is_plugged_in() {
-    let told = Rc::new(RefCell::new(Told::default()));
-    let mut compositor = one_output(&told);
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
-        .expect("output");
-    compositor
-        .configure_outputs(&[OutputChange::disable("HEADLESS-1")])
-        .expect("turn off");
-    assert!(!compositor.output_lit("HEADLESS-1"));
+        // Plugged back in, it takes its place beside the one that stayed.
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+            .expect("output");
+        let placed: Vec<Placed> = rects(&compositor);
+        assert_eq!(
+            placed,
+            [
+                ("HEADLESS-2".into(), Some((0, 0, 1280, 720))),
+                ("HEADLESS-1".into(), Some((1280, 0, 640, 480))),
+            ],
+            "an output plugged back in is beside the others, whichever came first"
+        );
+    }
 
-    // Another connector appears while that display is off: it takes the place the layout has, and
-    // the one turned off stays off.
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-3", 800, 600))
-        .expect("output");
-    assert!(
-        !compositor.output_lit("HEADLESS-1"),
-        "a display turned off is not lit by another being plugged in"
-    );
-    assert!(compositor.output_lit("HEADLESS-3"));
-    assert_eq!(
-        rects(&compositor),
-        [
-            ("HEADLESS-2".into(), Some((0, 0, 1280, 720))),
-            ("HEADLESS-3".into(), Some((1280, 0, 800, 600))),
-            ("HEADLESS-1".into(), None),
-        ],
-        "the turned-off display is still known, and takes no place"
-    );
+    phase an_output_the_person_turned_off_keeps_no_place_when_another_is_plugged_in;
+    {
+        let told = Rc::new(RefCell::new(Told::default()));
+        let mut compositor = one_output(&told);
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
+            .expect("output");
+        compositor
+            .configure_outputs(&[OutputChange::disable("HEADLESS-1")])
+            .expect("turn off");
+        assert!(!compositor.output_lit("HEADLESS-1"));
+
+        // Another connector appears while that display is off: it takes the place the layout has, and
+        // the one turned off stays off.
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-3", 800, 600))
+            .expect("output");
+        assert!(
+            !compositor.output_lit("HEADLESS-1"),
+            "a display turned off is not lit by another being plugged in"
+        );
+        assert!(compositor.output_lit("HEADLESS-3"));
+        assert_eq!(
+            rects(&compositor),
+            [
+                ("HEADLESS-2".into(), Some((0, 0, 1280, 720))),
+                ("HEADLESS-3".into(), Some((1280, 0, 800, 600))),
+                ("HEADLESS-1".into(), None),
+            ],
+            "the turned-off display is still known, and takes no place"
+        );
+    }
+
+    phase the_primary_chosen_in_settings_is_told_to_the_desk_and_returns_with_its_display;
+    // The display the person made primary is the one the desk is told is primary, and the choice waits
+    // for the display to come back rather than falling to whichever output is lit.
+    {
+        let told = Rc::new(RefCell::new(Told::default()));
+        let mut compositor = one_output(&told);
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
+            .expect("output");
+        assert_eq!(told_primary(&told), None, "no choice made yet");
+
+        compositor
+            .set_display_config(&choosing("HEADLESS-2", &[]))
+            .expect("a primary");
+        assert_eq!(
+            told_primary(&told).as_deref(),
+            Some("HEADLESS-2"),
+            "the desk is told the display the person chose"
+        );
+
+        // The cable is pulled: the other display stands in, and the choice is kept for the one that
+        // went away.
+        compositor.remove_output("HEADLESS-2").expect("unplug");
+        assert_eq!(
+            told_primary(&told),
+            None,
+            "a display that is gone is not the primary"
+        );
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
+            .expect("plugged back in");
+        assert_eq!(
+            told_primary(&told).as_deref(),
+            Some("HEADLESS-2"),
+            "the display is primary again the moment it comes back"
+        );
+    }
+
+    phase a_display_turned_off_is_never_the_primary_one;
+    // A display turned off is never the primary one: the desk is told of none while the chosen display
+    // is dark.
+    {
+        let told = Rc::new(RefCell::new(Told::default()));
+        let mut compositor = one_output(&told);
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
+            .expect("output");
+        compositor
+            .set_display_config(&choosing("HEADLESS-2", &[]))
+            .expect("a primary");
+        assert_eq!(told_primary(&told).as_deref(), Some("HEADLESS-2"));
+
+        compositor
+            .set_display_config(&choosing("HEADLESS-2", &["HEADLESS-2"]))
+            .expect("the display turned off");
+        assert!(!compositor.output_lit("HEADLESS-2"), "the display is off");
+        assert_eq!(
+            told_primary(&told),
+            None,
+            "a display turned off is not the primary, even when it was chosen"
+        );
+
+        // Turned back on, it is the primary again.
+        compositor
+            .set_display_config(&choosing("HEADLESS-2", &[]))
+            .expect("a primary");
+        assert!(compositor.output_lit("HEADLESS-2"));
+        assert_eq!(told_primary(&told).as_deref(), Some("HEADLESS-2"));
+    }
+
+    phase a_panel_plugged_in_comes_up_at_the_scale_its_density_argues_for;
+    // The scale an output that nobody arranged comes up at follows its panel's density: a 14"
+    // 2880x1800 laptop panel at 2x, a 24" 1080p monitor at 1.
+    {
+        let told = Rc::new(RefCell::new(Told::default()));
+        let mut compositor =
+            Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).expect("headless");
+        // 14" 2880x1800 (16:10): 302 by 189 millimetres.
+        compositor
+            .add_output(&OutputConfig::new("eDP-1", 2880, 1800).panel((302, 189)))
+            .expect("panel");
+
+        assert_eq!(
+            rects(&compositor),
+            [("eDP-1".to_owned(), Some((0, 0, 1440, 900)))],
+            "a dense 4K panel runs at 200%, so the desk gets a 1440x900 desktop \
+         rather than a 2880x1800 one with tiny text"
+        );
+        assert_eq!(
+            told_monitors(&told),
+            [((0, 0, 1440, 900), "eDP-1".to_owned())],
+            "the desk is told the logical size the person works in"
+        );
+
+        // A 24" 1080p monitor beside it: ~92 dpi stays at 100%, so a monitor that was readable before
+        // is not zoomed.
+        compositor
+            .add_output(&OutputConfig::new("HDMI-A-1", 1920, 1080).panel((527, 296)))
+            .expect("monitor");
+        assert_eq!(
+            rects(&compositor),
+            [
+                ("eDP-1".to_owned(), Some((0, 0, 1440, 900))),
+                ("HDMI-A-1".to_owned(), Some((1440, 0, 1920, 1080))),
+            ],
+            "a desktop monitor stays at 100% beside the scaled panel"
+        );
+
+        // A connector that does not say how big it is runs at 100%, not at a guess.
+        compositor
+            .add_output(&OutputConfig::new("DP-2", 1920, 1080))
+            .expect("virtual output");
+        assert_eq!(
+            rects(&compositor).last(),
+            Some(&("DP-2".to_owned(), Some((3360, 0, 1920, 1080)))),
+            "no physical size, no derivation"
+        );
+    }
+
+    phase a_scale_the_person_chose_wins_over_the_panels_density;
+    // A scale the person chose wins over the panel's density.
+    {
+        let told = Rc::new(RefCell::new(Told::default()));
+        let mut compositor =
+            Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).expect("headless");
+        compositor
+            .add_output(&OutputConfig::new("eDP-1", 2880, 1800).panel((302, 189)))
+            .expect("panel");
+        compositor
+            .set_display_config(&tilo_compositor::DisplayConfig {
+                scales: std::collections::HashMap::from([("eDP-1".to_owned(), 1.25)]),
+                ..tilo_compositor::DisplayConfig::default()
+            })
+            .expect("a scale");
+        assert_eq!(
+            rects(&compositor),
+            [("eDP-1".to_owned(), Some((0, 0, 2304, 1440)))],
+            "the person chose 125%, which wins over the 200% the panel argues for"
+        );
+    }
 }
 
 /// A configuration that makes `primary` the display the person chose, and turns `off` off.
@@ -368,145 +514,4 @@ fn choosing(primary: &str, off: &[&str]) -> tilo_compositor::DisplayConfig {
         disabled: off.iter().map(|name| (*name).to_owned()).collect(),
         ..tilo_compositor::DisplayConfig::default()
     }
-}
-
-/// The display the person made primary is the one the desk is told is primary, and the choice waits
-/// for the display to come back rather than falling to whichever output is lit.
-#[test]
-fn the_primary_chosen_in_settings_is_told_to_the_desk_and_returns_with_its_display() {
-    let told = Rc::new(RefCell::new(Told::default()));
-    let mut compositor = one_output(&told);
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
-        .expect("output");
-    assert_eq!(told_primary(&told), None, "no choice made yet");
-
-    compositor
-        .set_display_config(&choosing("HEADLESS-2", &[]))
-        .expect("a primary");
-    assert_eq!(
-        told_primary(&told).as_deref(),
-        Some("HEADLESS-2"),
-        "the desk is told the display the person chose"
-    );
-
-    // The cable is pulled: the other display stands in, and the choice is kept for the one that
-    // went away.
-    compositor.remove_output("HEADLESS-2").expect("unplug");
-    assert_eq!(
-        told_primary(&told),
-        None,
-        "a display that is gone is not the primary"
-    );
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
-        .expect("plugged back in");
-    assert_eq!(
-        told_primary(&told).as_deref(),
-        Some("HEADLESS-2"),
-        "the display is primary again the moment it comes back"
-    );
-}
-
-/// A display turned off is never the primary one: the desk is told of none while the chosen display
-/// is dark.
-#[test]
-fn a_display_turned_off_is_never_the_primary_one() {
-    let told = Rc::new(RefCell::new(Told::default()));
-    let mut compositor = one_output(&told);
-    compositor
-        .add_output(&OutputConfig::new("HEADLESS-2", 1280, 720))
-        .expect("output");
-    compositor
-        .set_display_config(&choosing("HEADLESS-2", &[]))
-        .expect("a primary");
-    assert_eq!(told_primary(&told).as_deref(), Some("HEADLESS-2"));
-
-    compositor
-        .set_display_config(&choosing("HEADLESS-2", &["HEADLESS-2"]))
-        .expect("the display turned off");
-    assert!(!compositor.output_lit("HEADLESS-2"), "the display is off");
-    assert_eq!(
-        told_primary(&told),
-        None,
-        "a display turned off is not the primary, even when it was chosen"
-    );
-
-    // Turned back on, it is the primary again.
-    compositor
-        .set_display_config(&choosing("HEADLESS-2", &[]))
-        .expect("a primary");
-    assert!(compositor.output_lit("HEADLESS-2"));
-    assert_eq!(told_primary(&told).as_deref(), Some("HEADLESS-2"));
-}
-
-/// The scale an output that nobody arranged comes up at follows its panel's density: a 14"
-/// 2880x1800 laptop panel at 2x, a 24" 1080p monitor at 1.
-#[test]
-fn a_panel_plugged_in_comes_up_at_the_scale_its_density_argues_for() {
-    let told = Rc::new(RefCell::new(Told::default()));
-    let mut compositor =
-        Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).expect("headless");
-    // 14" 2880x1800 (16:10): 302 by 189 millimetres.
-    compositor
-        .add_output(&OutputConfig::new("eDP-1", 2880, 1800).panel((302, 189)))
-        .expect("panel");
-
-    assert_eq!(
-        rects(&compositor),
-        [("eDP-1".to_owned(), Some((0, 0, 1440, 900)))],
-        "a dense 4K panel runs at 200%, so the desk gets a 1440x900 desktop \
-         rather than a 2880x1800 one with tiny text"
-    );
-    assert_eq!(
-        told_monitors(&told),
-        [((0, 0, 1440, 900), "eDP-1".to_owned())],
-        "the desk is told the logical size the person works in"
-    );
-
-    // A 24" 1080p monitor beside it: ~92 dpi stays at 100%, so a monitor that was readable before
-    // is not zoomed.
-    compositor
-        .add_output(&OutputConfig::new("HDMI-A-1", 1920, 1080).panel((527, 296)))
-        .expect("monitor");
-    assert_eq!(
-        rects(&compositor),
-        [
-            ("eDP-1".to_owned(), Some((0, 0, 1440, 900))),
-            ("HDMI-A-1".to_owned(), Some((1440, 0, 1920, 1080))),
-        ],
-        "a desktop monitor stays at 100% beside the scaled panel"
-    );
-
-    // A connector that does not say how big it is runs at 100%, not at a guess.
-    compositor
-        .add_output(&OutputConfig::new("DP-2", 1920, 1080))
-        .expect("virtual output");
-    assert_eq!(
-        rects(&compositor).last(),
-        Some(&("DP-2".to_owned(), Some((3360, 0, 1920, 1080)))),
-        "no physical size, no derivation"
-    );
-}
-
-/// A scale the person chose wins over the panel's density.
-#[test]
-fn a_scale_the_person_chose_wins_over_the_panels_density() {
-    let told = Rc::new(RefCell::new(Told::default()));
-    let mut compositor =
-        Compositor::headless(Box::new(Monitors(Rc::clone(&told)))).expect("headless");
-    compositor
-        .add_output(&OutputConfig::new("eDP-1", 2880, 1800).panel((302, 189)))
-        .expect("panel");
-    compositor
-        .set_display_config(&tilo_compositor::DisplayConfig {
-            scales: std::collections::HashMap::from([("eDP-1".to_owned(), 1.25)]),
-            ..tilo_compositor::DisplayConfig::default()
-        })
-        .expect("a scale");
-    assert_eq!(
-        rects(&compositor),
-        [("eDP-1".to_owned(), Some((0, 0, 2304, 1440)))],
-        "the person chose 125%, which wins over the 200% the panel argues for"
-    );
 }

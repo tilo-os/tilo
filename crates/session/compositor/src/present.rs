@@ -196,31 +196,36 @@ impl State {
 mod tests {
     use super::*;
 
-    #[test]
-    fn vblanks_report_the_hardware_time_and_counter() {
-        let now = Time::from(Duration::from_secs(9));
-        let (time, sequence, flags) = Shown::Vblank {
-            time: Duration::from_millis(1500),
-            sequence: 42,
-        }
-        .report(now);
-        assert_eq!(Duration::from(time), Duration::from_millis(1500));
-        assert_eq!(sequence, 42);
-        assert_eq!(flags, Kind::Vsync | Kind::HwClock | Kind::HwCompletion);
-    }
+    tilo_test_env::scenario! {
+        /// The time a presented frame reports.
+        fn a_presented_frame_carries_the_time_it_was_shown;
 
-    #[test]
-    fn host_and_headless_frames_are_timed_now() {
-        let now = Time::from(Duration::from_secs(9));
-        let (time, sequence, flags) = Shown::Host.report(now);
-        assert_eq!(
-            (Duration::from(time), sequence, flags),
-            (Duration::from_secs(9), 0, Kind::Vsync)
-        );
-        let (time, _, flags) = Shown::Immediately.report(now);
-        assert_eq!(
-            (Duration::from(time), flags),
-            (Duration::from_secs(9), Kind::empty())
-        );
+        phase vblanks_report_the_hardware_time_and_counter;
+        {
+            let now = Time::from(Duration::from_secs(9));
+            let (time, sequence, flags) = Shown::Vblank {
+                time: Duration::from_millis(1500),
+                sequence: 42,
+            }
+            .report(now);
+            assert_eq!(Duration::from(time), Duration::from_millis(1500));
+            assert_eq!(sequence, 42);
+            assert_eq!(flags, Kind::Vsync | Kind::HwClock | Kind::HwCompletion);
+        }
+
+        phase host_and_headless_frames_are_timed_now;
+        {
+            let now = Time::from(Duration::from_secs(9));
+            let (time, sequence, flags) = Shown::Host.report(now);
+            assert_eq!(
+                (Duration::from(time), sequence, flags),
+                (Duration::from_secs(9), 0, Kind::Vsync)
+            );
+            let (time, _, flags) = Shown::Immediately.report(now);
+            assert_eq!(
+                (Duration::from(time), flags),
+                (Duration::from_secs(9), Kind::empty())
+            );
+        }
     }
 }

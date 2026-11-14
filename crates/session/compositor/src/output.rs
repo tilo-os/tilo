@@ -361,101 +361,106 @@ mod tests {
         }
     }
 
-    #[test]
-    fn requested_modes_match_size_and_refresh_or_take_the_fastest() {
-        let modes = [
-            mode(1920, 1080, 60_000),
-            mode(1920, 1080, 143_981),
-            mode(1280, 720, 60_000),
-        ];
-        let request = |size, refresh_mhz| ModeRequest { size, refresh_mhz };
-        assert_eq!(
-            find_mode(&modes, request((1920, 1080), None)),
-            Some(modes[1])
-        );
-        assert_eq!(
-            find_mode(&modes, request((1920, 1080), Some(144_000))),
-            Some(modes[1])
-        );
-        assert_eq!(
-            find_mode(&modes, request((1920, 1080), Some(59_940))),
-            Some(modes[0])
-        );
-        assert_eq!(find_mode(&modes, request((1920, 1080), Some(75_000))), None);
-        assert_eq!(find_mode(&modes, request((800, 600), None)), None);
-    }
+    tilo_test_env::scenario! {
+        /// An output's mode, configuration and place.
+        fn outputs_take_real_modes_scales_and_places;
 
-    #[test]
-    fn configurations_name_real_outputs_keep_one_on_and_use_real_scales() {
-        let outputs = vec![("eDP-1".to_owned(), true), ("DP-1".to_owned(), true)];
-        let scaled = OutputChange {
-            scale: Some(1.5),
-            ..OutputChange::enable("DP-1")
-        };
-        assert_eq!(
-            check_changes(&[scaled, OutputChange::disable("eDP-1")], &outputs),
-            Ok(())
-        );
-        assert!(check_changes(&[OutputChange::enable("HDMI-A-9")], &outputs).is_err());
-        let zero = OutputChange {
-            scale: Some(0.0),
-            ..OutputChange::enable("DP-1")
-        };
-        assert!(check_changes(&[zero], &outputs).is_err());
-        assert!(
-            check_changes(
-                &[
-                    OutputChange::disable("eDP-1"),
-                    OutputChange::disable("DP-1")
-                ],
-                &outputs
-            )
-            .is_err()
-        );
-        // An output already off counts as off; turning it back on is fine.
-        let one_off = vec![("eDP-1".to_owned(), true), ("DP-1".to_owned(), false)];
-        assert!(check_changes(&[OutputChange::disable("eDP-1")], &one_off).is_err());
-        assert_eq!(
-            check_changes(
-                &[OutputChange::disable("eDP-1"), OutputChange::enable("DP-1")],
-                &one_off
-            ),
-            Ok(())
-        );
-    }
+        phase requested_modes_match_size_and_refresh_or_take_the_fastest;
+        {
+            let modes = [
+                mode(1920, 1080, 60_000),
+                mode(1920, 1080, 143_981),
+                mode(1280, 720, 60_000),
+            ];
+            let request = |size, refresh_mhz| ModeRequest { size, refresh_mhz };
+            assert_eq!(
+                find_mode(&modes, request((1920, 1080), None)),
+                Some(modes[1])
+            );
+            assert_eq!(
+                find_mode(&modes, request((1920, 1080), Some(144_000))),
+                Some(modes[1])
+            );
+            assert_eq!(
+                find_mode(&modes, request((1920, 1080), Some(59_940))),
+                Some(modes[0])
+            );
+            assert_eq!(find_mode(&modes, request((1920, 1080), Some(75_000))), None);
+            assert_eq!(find_mode(&modes, request((800, 600), None)), None);
+        }
 
-    #[test]
-    fn unplaced_outputs_pack_left_to_right_after_placed_ones() {
-        let outputs = |list: &[(&str, i32)]| -> Vec<(String, i32)> {
-            list.iter()
-                .map(|(name, w)| ((*name).to_owned(), *w))
-                .collect()
-        };
-        let none = std::collections::HashMap::new();
-        // Pulling the middle display closes the hole it left.
-        assert_eq!(
-            arrange(
-                &outputs(&[("eDP-1", 1280), ("DP-1", 1920), ("DP-2", 2560)]),
-                &none
-            ),
-            vec![(0, 0), (1280, 0), (3200, 0)]
-        );
-        assert_eq!(
-            arrange(&outputs(&[("eDP-1", 1280), ("DP-2", 2560)]), &none),
-            vec![(0, 0), (1280, 0)]
-        );
-        let fixed = std::collections::HashMap::from([("DP-1".to_owned(), (0, -1080))]);
-        assert_eq!(
-            arrange(&outputs(&[("eDP-1", 1280), ("DP-1", 1920)]), &fixed),
-            vec![(1920, 0), (0, -1080)]
-        );
-    }
+        phase configurations_name_real_outputs_keep_one_on_and_use_real_scales;
+        {
+            let outputs = vec![("eDP-1".to_owned(), true), ("DP-1".to_owned(), true)];
+            let scaled = OutputChange {
+                scale: Some(1.5),
+                ..OutputChange::enable("DP-1")
+            };
+            assert_eq!(
+                check_changes(&[scaled, OutputChange::disable("eDP-1")], &outputs),
+                Ok(())
+            );
+            assert!(check_changes(&[OutputChange::enable("HDMI-A-9")], &outputs).is_err());
+            let zero = OutputChange {
+                scale: Some(0.0),
+                ..OutputChange::enable("DP-1")
+            };
+            assert!(check_changes(&[zero], &outputs).is_err());
+            assert!(
+                check_changes(
+                    &[
+                        OutputChange::disable("eDP-1"),
+                        OutputChange::disable("DP-1")
+                    ],
+                    &outputs
+                )
+                .is_err()
+            );
+            // An output already off counts as off; turning it back on is fine.
+            let one_off = vec![("eDP-1".to_owned(), true), ("DP-1".to_owned(), false)];
+            assert!(check_changes(&[OutputChange::disable("eDP-1")], &one_off).is_err());
+            assert_eq!(
+                check_changes(
+                    &[OutputChange::disable("eDP-1"), OutputChange::enable("DP-1")],
+                    &one_off
+                ),
+                Ok(())
+            );
+        }
 
-    #[test]
-    fn refresh_intervals_follow_the_mode_and_fall_back_to_60_hz() {
-        assert_eq!(refresh_interval(60_000), Duration::from_nanos(16_666_666));
-        assert_eq!(refresh_interval(120_000), Duration::from_nanos(8_333_333));
-        assert_eq!(refresh_interval(0), FALLBACK_INTERVAL);
-        assert_eq!(refresh_interval(-1), FALLBACK_INTERVAL);
+        phase unplaced_outputs_pack_left_to_right_after_placed_ones;
+        {
+            let outputs = |list: &[(&str, i32)]| -> Vec<(String, i32)> {
+                list.iter()
+                    .map(|(name, w)| ((*name).to_owned(), *w))
+                    .collect()
+            };
+            let none = std::collections::HashMap::new();
+            // Pulling the middle display closes the hole it left.
+            assert_eq!(
+                arrange(
+                    &outputs(&[("eDP-1", 1280), ("DP-1", 1920), ("DP-2", 2560)]),
+                    &none
+                ),
+                vec![(0, 0), (1280, 0), (3200, 0)]
+            );
+            assert_eq!(
+                arrange(&outputs(&[("eDP-1", 1280), ("DP-2", 2560)]), &none),
+                vec![(0, 0), (1280, 0)]
+            );
+            let fixed = std::collections::HashMap::from([("DP-1".to_owned(), (0, -1080))]);
+            assert_eq!(
+                arrange(&outputs(&[("eDP-1", 1280), ("DP-1", 1920)]), &fixed),
+                vec![(1920, 0), (0, -1080)]
+            );
+        }
+
+        phase refresh_intervals_follow_the_mode_and_fall_back_to_60_hz;
+        {
+            assert_eq!(refresh_interval(60_000), Duration::from_nanos(16_666_666));
+            assert_eq!(refresh_interval(120_000), Duration::from_nanos(8_333_333));
+            assert_eq!(refresh_interval(0), FALLBACK_INTERVAL);
+            assert_eq!(refresh_interval(-1), FALLBACK_INTERVAL);
+        }
     }
 }

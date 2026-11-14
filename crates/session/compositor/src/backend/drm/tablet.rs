@@ -370,175 +370,180 @@ mod tests {
         map_tablet_position(shape_normalised(n, mm, target, aspect, left), target)
     }
 
-    #[test]
-    fn left_handed_turns_the_tablet_half_a_turn() {
-        assert_eq!(on(SECOND, (0.0, 0.0), None, false, true), (3840.0, 1080.0));
-        assert_eq!(
-            on(SECOND, (0.25, 0.75), None, false, true),
-            (1920.0 + 0.75 * 1920.0, 0.25 * 1080.0)
-        );
-        assert_eq!(
-            on(SECOND, (f64::NAN, 2.0), None, false, false),
-            (2880.0, 1080.0),
-            "junk clamps"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// A tablet's mapping: where the pen lands, how it presses and what its buttons do.
+        fn a_tablet_maps_its_pen_buttons_and_pad_as_saved;
 
-    #[test]
-    fn keeping_the_aspect_ratio_letterboxes_the_tablet_not_the_screen() {
-        // A 4:3 tablet on a 16:9 display: the top and bottom bands of the tablet go unused so
-        // strokes keep their shape.
-        let tablet = Some((160.0, 120.0));
-        let map = |n| on(SECOND, n, tablet, true, false);
-        let used = (160.0 / 120.0) / (1920.0 / 1080.0);
-        let top = (1.0 - used) / 2.0;
-        assert_eq!(map((0.0, top)), (1920.0, 0.0));
-        assert_eq!(map((1.0, 1.0 - top)), (3840.0, 1080.0));
-        assert_eq!(map((0.5, 0.0)), (2880.0, 0.0), "the unused band clamps");
-        assert!((map((0.5, 0.5)).1 - 540.0).abs() < 1e-9);
-        assert_eq!(on(SECOND, (0.5, 0.0), tablet, false, false).1, 0.0);
-        // A wide tablet on a tall display trims the sides instead.
-        let portrait = (0.0, 0.0, 1080.0, 1920.0);
-        assert!((on(portrait, (0.5, 0.5), tablet, true, false).0 - 540.0).abs() < 1e-9);
-        assert_eq!(on(portrait, (0.0, 0.5), tablet, true, false).0, 0.0);
-    }
-
-    #[test]
-    fn the_pen_maps_to_its_output_or_the_whole_desktop() {
-        let outputs = [
-            ("eDP-1", "eDP-1", (0, 0), (2560_u32, 1600_u32)),
-            ("DP-2", "DP-2", (2560, 0), (1920, 1080)),
-        ];
-        assert_eq!(
-            pen_target(outputs.iter().copied(), Some("DP-2")),
-            Some((2560.0, 0.0, 1920.0, 1080.0))
-        );
-        assert_eq!(
-            pen_target(outputs.iter().copied(), None),
-            Some((0.0, 0.0, 4480.0, 1600.0))
-        );
-        // An unplugged output falls back to the desktop rather than stranding the pen.
-        assert_eq!(
-            pen_target(outputs.iter().copied(), Some("HDMI-A-1")),
-            Some((0.0, 0.0, 4480.0, 1600.0))
-        );
-        assert_eq!(pen_target(std::iter::empty(), None), None);
-    }
-
-    #[test]
-    fn the_pressure_curve_shapes_pressure_and_keeps_its_ends() {
-        let linear = [0.0, 0.0, 1.0, 1.0];
-        for p in [0.0, 0.1, 0.5, 0.9, 1.0] {
-            assert!((apply_pressure_curve(linear, p) - p).abs() < 1e-6);
+        phase left_handed_turns_the_tablet_half_a_turn;
+        {
+            assert_eq!(on(SECOND, (0.0, 0.0), None, false, true), (3840.0, 1080.0));
+            assert_eq!(
+                on(SECOND, (0.25, 0.75), None, false, true),
+                (1920.0 + 0.75 * 1920.0, 0.25 * 1080.0)
+            );
+            assert_eq!(
+                on(SECOND, (f64::NAN, 2.0), None, false, false),
+                (2880.0, 1080.0),
+                "junk clamps"
+            );
         }
-        let soft = [0.0, 0.5, 0.5, 1.0];
-        let firm = [0.5, 0.0, 1.0, 0.5];
-        assert!(apply_pressure_curve(soft, 0.3) > 0.3, "soft draws heavier");
-        assert!(apply_pressure_curve(firm, 0.3) < 0.3, "firm draws lighter");
-        for curve in [soft, firm] {
-            assert!(apply_pressure_curve(curve, 0.0).abs() < 1e-6);
-            assert!((apply_pressure_curve(curve, 1.0) - 1.0).abs() < 1e-6);
+
+        phase keeping_the_aspect_ratio_letterboxes_the_tablet_not_the_screen;
+        {
+            // A 4:3 tablet on a 16:9 display: the top and bottom bands of the tablet go unused so
+            // strokes keep their shape.
+            let tablet = Some((160.0, 120.0));
+            let map = |n| on(SECOND, n, tablet, true, false);
+            let used = (160.0 / 120.0) / (1920.0 / 1080.0);
+            let top = (1.0 - used) / 2.0;
+            assert_eq!(map((0.0, top)), (1920.0, 0.0));
+            assert_eq!(map((1.0, 1.0 - top)), (3840.0, 1080.0));
+            assert_eq!(map((0.5, 0.0)), (2880.0, 0.0), "the unused band clamps");
+            assert!((map((0.5, 0.5)).1 - 540.0).abs() < 1e-9);
+            assert_eq!(on(SECOND, (0.5, 0.0), tablet, false, false).1, 0.0);
+            // A wide tablet on a tall display trims the sides instead.
+            let portrait = (0.0, 0.0, 1080.0, 1920.0);
+            assert!((on(portrait, (0.5, 0.5), tablet, true, false).0 - 540.0).abs() < 1e-9);
+            assert_eq!(on(portrait, (0.0, 0.5), tablet, true, false).0, 0.0);
         }
-        assert_eq!(apply_pressure_curve(soft, f64::NAN), 0.0);
-        assert!(apply_pressure_curve(linear, 7.0) <= 1.0);
-    }
 
-    #[test]
-    fn stylus_buttons_follow_the_saved_mapping() {
-        let config = TabletConfig {
-            lower_button: StylusButtonAction::Right,
-            upper_button: StylusButtonAction::Shortcut(search()),
-            third_button: StylusButtonAction::Disabled,
-            ..TabletConfig::default()
-        };
-        assert_eq!(
-            stylus_button(&config, BTN_STYLUS),
-            ButtonOutcome::Button(BTN_RIGHT)
-        );
-        assert_eq!(
-            stylus_button(&config, BTN_STYLUS2),
-            ButtonOutcome::Shortcut(search())
-        );
-        assert_eq!(stylus_button(&config, BTN_STYLUS3), ButtonOutcome::Ignore);
-        let untouched = TabletConfig::default();
-        assert_eq!(
-            stylus_button(&untouched, BTN_STYLUS),
-            ButtonOutcome::Button(BTN_STYLUS),
-            "an unmapped button reaches tablet-aware apps as itself"
-        );
-    }
+        phase the_pen_maps_to_its_output_or_the_whole_desktop;
+        {
+            let outputs = [
+                ("eDP-1", "eDP-1", (0, 0), (2560_u32, 1600_u32)),
+                ("DP-2", "DP-2", (2560, 0), (1920, 1080)),
+            ];
+            assert_eq!(
+                pen_target(outputs.iter().copied(), Some("DP-2")),
+                Some((2560.0, 0.0, 1920.0, 1080.0))
+            );
+            assert_eq!(
+                pen_target(outputs.iter().copied(), None),
+                Some((0.0, 0.0, 4480.0, 1600.0))
+            );
+            // An unplugged output falls back to the desktop rather than stranding the pen.
+            assert_eq!(
+                pen_target(outputs.iter().copied(), Some("HDMI-A-1")),
+                Some((0.0, 0.0, 4480.0, 1600.0))
+            );
+            assert_eq!(pen_target(std::iter::empty(), None), None);
+        }
 
-    #[test]
-    fn the_eraser_follows_the_saved_mapping() {
-        assert_eq!(
-            eraser_route(&TabletConfig::default()),
-            EraserRoute::Native,
-            "a new tablet erases natively"
-        );
-        for (action, route) in [
-            (EraserAction::Left, EraserRoute::Pointer(BTN_LEFT)),
-            (EraserAction::Middle, EraserRoute::Pointer(BTN_MIDDLE)),
-            (EraserAction::Right, EraserRoute::Pointer(BTN_RIGHT)),
-            (EraserAction::Back, EraserRoute::Pointer(BTN_SIDE)),
-            (EraserAction::Forward, EraserRoute::Pointer(BTN_EXTRA)),
-            (
-                EraserAction::Shortcut(search()),
-                EraserRoute::Shortcut(search()),
-            ),
-        ] {
+        phase the_pressure_curve_shapes_pressure_and_keeps_its_ends;
+        {
+            let linear = [0.0, 0.0, 1.0, 1.0];
+            for p in [0.0, 0.1, 0.5, 0.9, 1.0] {
+                assert!((apply_pressure_curve(linear, p) - p).abs() < 1e-6);
+            }
+            let soft = [0.0, 0.5, 0.5, 1.0];
+            let firm = [0.5, 0.0, 1.0, 0.5];
+            assert!(apply_pressure_curve(soft, 0.3) > 0.3, "soft draws heavier");
+            assert!(apply_pressure_curve(firm, 0.3) < 0.3, "firm draws lighter");
+            for curve in [soft, firm] {
+                assert!(apply_pressure_curve(curve, 0.0).abs() < 1e-6);
+                assert!((apply_pressure_curve(curve, 1.0) - 1.0).abs() < 1e-6);
+            }
+            assert_eq!(apply_pressure_curve(soft, f64::NAN), 0.0);
+            assert!(apply_pressure_curve(linear, 7.0) <= 1.0);
+        }
+
+        phase stylus_buttons_follow_the_saved_mapping;
+        {
             let config = TabletConfig {
-                eraser: action.clone(),
+                lower_button: StylusButtonAction::Right,
+                upper_button: StylusButtonAction::Shortcut(search()),
+                third_button: StylusButtonAction::Disabled,
                 ..TabletConfig::default()
             };
-            assert_eq!(eraser_route(&config), route, "{action:?}");
+            assert_eq!(
+                stylus_button(&config, BTN_STYLUS),
+                ButtonOutcome::Button(BTN_RIGHT)
+            );
+            assert_eq!(
+                stylus_button(&config, BTN_STYLUS2),
+                ButtonOutcome::Shortcut(search())
+            );
+            assert_eq!(stylus_button(&config, BTN_STYLUS3), ButtonOutcome::Ignore);
+            let untouched = TabletConfig::default();
+            assert_eq!(
+                stylus_button(&untouched, BTN_STYLUS),
+                ButtonOutcome::Button(BTN_STYLUS),
+                "an unmapped button reaches tablet-aware apps as itself"
+            );
         }
-    }
 
-    #[test]
-    fn pad_buttons_run_only_mapped_shortcuts() {
-        let mut config = TabletConfig::default();
-        config.pad_buttons.insert(2, search());
-        assert_eq!(pad_button(&config, 2), Some(&search()));
-        assert_eq!(pad_button(&config, 0), None);
-    }
+        phase the_eraser_follows_the_saved_mapping;
+        {
+            assert_eq!(
+                eraser_route(&TabletConfig::default()),
+                EraserRoute::Native,
+                "a new tablet erases natively"
+            );
+            for (action, route) in [
+                (EraserAction::Left, EraserRoute::Pointer(BTN_LEFT)),
+                (EraserAction::Middle, EraserRoute::Pointer(BTN_MIDDLE)),
+                (EraserAction::Right, EraserRoute::Pointer(BTN_RIGHT)),
+                (EraserAction::Back, EraserRoute::Pointer(BTN_SIDE)),
+                (EraserAction::Forward, EraserRoute::Pointer(BTN_EXTRA)),
+                (
+                    EraserAction::Shortcut(search()),
+                    EraserRoute::Shortcut(search()),
+                ),
+            ] {
+                let config = TabletConfig {
+                    eraser: action.clone(),
+                    ..TabletConfig::default()
+                };
+                assert_eq!(eraser_route(&config), route, "{action:?}");
+            }
+        }
 
-    #[test]
-    fn a_chord_becomes_modifiers_then_its_key() {
-        let chord = |mods: &[&str], key: &str| KeyChord {
-            modifiers: mods
-                .iter()
-                .map(|m| (*m).to_string())
-                .collect::<BTreeSet<_>>(),
-            key: key.into(),
-        };
-        let us = |ch: char| match ch {
-            'k' => Some(37),
-            '/' => Some(53),
-            _ => None,
-        };
-        assert_eq!(
-            chord_keycodes(&chord(&["Super"], "k"), us),
-            Some(vec![125, 37])
-        );
-        assert_eq!(
-            chord_keycodes(&chord(&["Shift", "Super"], "/"), us),
-            Some(vec![42, 125, 53])
-        );
-        assert_eq!(
-            chord_keycodes(&chord(&["Super"], "pagedown"), us),
-            Some(vec![125, 109])
-        );
-        assert_eq!(chord_keycodes(&chord(&[], "f1"), us), Some(vec![59]));
-        assert_eq!(chord_keycodes(&chord(&[], "f10"), us), Some(vec![68]));
-        assert_eq!(
-            chord_keycodes(&chord(&["Ctrl"], "f12"), us),
-            Some(vec![29, 88])
-        );
-        assert_eq!(
-            chord_keycodes(&chord(&["Super"], "q"), us),
-            None,
-            "not on the layout"
-        );
-        assert_eq!(chord_keycodes(&chord(&["Hyper"], "k"), us), None);
+        phase pad_buttons_run_only_mapped_shortcuts;
+        {
+            let mut config = TabletConfig::default();
+            config.pad_buttons.insert(2, search());
+            assert_eq!(pad_button(&config, 2), Some(&search()));
+            assert_eq!(pad_button(&config, 0), None);
+        }
+
+        phase a_chord_becomes_modifiers_then_its_key;
+        {
+            let chord = |mods: &[&str], key: &str| KeyChord {
+                modifiers: mods
+                    .iter()
+                    .map(|m| (*m).to_string())
+                    .collect::<BTreeSet<_>>(),
+                key: key.into(),
+            };
+            let us = |ch: char| match ch {
+                'k' => Some(37),
+                '/' => Some(53),
+                _ => None,
+            };
+            assert_eq!(
+                chord_keycodes(&chord(&["Super"], "k"), us),
+                Some(vec![125, 37])
+            );
+            assert_eq!(
+                chord_keycodes(&chord(&["Shift", "Super"], "/"), us),
+                Some(vec![42, 125, 53])
+            );
+            assert_eq!(
+                chord_keycodes(&chord(&["Super"], "pagedown"), us),
+                Some(vec![125, 109])
+            );
+            assert_eq!(chord_keycodes(&chord(&[], "f1"), us), Some(vec![59]));
+            assert_eq!(chord_keycodes(&chord(&[], "f10"), us), Some(vec![68]));
+            assert_eq!(
+                chord_keycodes(&chord(&["Ctrl"], "f12"), us),
+                Some(vec![29, 88])
+            );
+            assert_eq!(
+                chord_keycodes(&chord(&["Super"], "q"), us),
+                None,
+                "not on the layout"
+            );
+            assert_eq!(chord_keycodes(&chord(&["Hyper"], "k"), us), None);
+        }
     }
 }

@@ -234,78 +234,83 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_layer_says_where_its_texels_land_and_what_they_hold() {
-        let surface = described();
-        let drawn = layer(&surface, 1, (40.0, 10.0));
-        let uniforms = uniforms_of(2, &drawn);
-        assert_eq!(
-            value(&uniforms, "layer_bounds[2]"),
-            [40.0, 10.0, 42.0, 12.0]
-        );
-        assert_eq!(value(&uniforms, "layer_size[2]"), [2.0, 2.0]);
-        assert_eq!(value(&uniforms, "layer_channel[2]"), [1.0]);
-        assert_eq!(
-            value(&uniforms, "layer_transfer[2]"),
-            [0.0],
-            "PQ is the shader's code 0"
-        );
-        // A scene pixel maps to the plane texel under it: the layer's top left pixel centre is its
-        // first texel's centre, and so on.
-        let row_x = value(&uniforms, "layer_row_x[2]");
-        let row_y = value(&uniforms, "layer_row_y[2]");
-        let texel = |x: f32, y: f32| {
-            [
-                row_x[0] * x + row_x[1] * y + row_x[2],
-                row_y[0] * x + row_y[1] * y + row_y[2],
-            ]
-        };
-        assert_eq!(texel(40.5, 10.5), [0.5, 0.5]);
-        assert_eq!(texel(41.5, 11.5), [1.5, 1.5]);
-        // The plane's light is already BT.2020, the space the shader adds in.
-        assert_eq!(
-            value(&uniforms, "layer_row_r[2]"),
-            [1.0, 0.0, 0.0],
-            "BT.2020 primaries need no conversion"
-        );
-        assert_eq!(value(&uniforms, "layer_row_g[2]"), [0.0, 1.0, 0.0]);
-        assert_eq!(value(&uniforms, "layer_row_b[2]"), [0.0, 0.0, 1.0]);
-    }
+    tilo_test_env::scenario! {
+        /// What an HDR layer hands the shader that draws it.
+        fn an_hdr_layer_tells_the_shader_where_its_texels_land;
 
-    #[test]
-    fn the_uniform_names_cover_every_slot_the_shader_reads() {
-        let names: Vec<String> = uniform_names()
-            .into_iter()
-            .map(|name| name.name.into_owned())
-            .collect();
-        for expected in [
-            "lit_tex",
-            "plane0",
-            "plane2",
-            "layer_row_x[0]",
-            "layer_bounds[2]",
-            "layer_row_b[2]",
-        ] {
-            assert!(names.iter().any(|name| name == expected), "{expected}");
+        phase a_layer_says_where_its_texels_land_and_what_they_hold;
+        {
+            let surface = described();
+            let drawn = layer(&surface, 1, (40.0, 10.0));
+            let uniforms = uniforms_of(2, &drawn);
+            assert_eq!(
+                value(&uniforms, "layer_bounds[2]"),
+                [40.0, 10.0, 42.0, 12.0]
+            );
+            assert_eq!(value(&uniforms, "layer_size[2]"), [2.0, 2.0]);
+            assert_eq!(value(&uniforms, "layer_channel[2]"), [1.0]);
+            assert_eq!(
+                value(&uniforms, "layer_transfer[2]"),
+                [0.0],
+                "PQ is the shader's code 0"
+            );
+            // A scene pixel maps to the plane texel under it: the layer's top left pixel centre is its
+            // first texel's centre, and so on.
+            let row_x = value(&uniforms, "layer_row_x[2]");
+            let row_y = value(&uniforms, "layer_row_y[2]");
+            let texel = |x: f32, y: f32| {
+                [
+                    row_x[0] * x + row_x[1] * y + row_x[2],
+                    row_y[0] * x + row_y[1] * y + row_y[2],
+                ]
+            };
+            assert_eq!(texel(40.5, 10.5), [0.5, 0.5]);
+            assert_eq!(texel(41.5, 11.5), [1.5, 1.5]);
+            // The plane's light is already BT.2020, the space the shader adds in.
+            assert_eq!(
+                value(&uniforms, "layer_row_r[2]"),
+                [1.0, 0.0, 0.0],
+                "BT.2020 primaries need no conversion"
+            );
+            assert_eq!(value(&uniforms, "layer_row_g[2]"), [0.0, 1.0, 0.0]);
+            assert_eq!(value(&uniforms, "layer_row_b[2]"), [0.0, 0.0, 1.0]);
         }
-        assert_eq!(
-            names
-                .iter()
-                .filter(|name| name.starts_with("layer_"))
-                .count(),
-            LAYERS * 9
-        );
-    }
 
-    #[test]
-    fn a_plane_that_already_holds_half_floats_is_taken_as_it_is() {
-        let surface = described();
-        let plane = surface.plane();
-        assert_eq!(plane.format(), HdrTexelFormat::Rgba16Float);
-        let bytes = signal_bytes(plane);
-        assert_eq!(bytes.len(), 2 * 2 * 8);
-        let first = [0_usize, 2, 4, 6]
-            .map(|at| half_to_f32(u16::from_le_bytes([bytes[at], bytes[at + 1]])));
-        assert_eq!(first, [0.0, 0.5, 1.0, 1.0], "red, green, blue, opaque");
+        phase the_uniform_names_cover_every_slot_the_shader_reads;
+        {
+            let names: Vec<String> = uniform_names()
+                .into_iter()
+                .map(|name| name.name.into_owned())
+                .collect();
+            for expected in [
+                "lit_tex",
+                "plane0",
+                "plane2",
+                "layer_row_x[0]",
+                "layer_bounds[2]",
+                "layer_row_b[2]",
+            ] {
+                assert!(names.iter().any(|name| name == expected), "{expected}");
+            }
+            assert_eq!(
+                names
+                    .iter()
+                    .filter(|name| name.starts_with("layer_"))
+                    .count(),
+                LAYERS * 9
+            );
+        }
+
+        phase a_plane_that_already_holds_half_floats_is_taken_as_it_is;
+        {
+            let surface = described();
+            let plane = surface.plane();
+            assert_eq!(plane.format(), HdrTexelFormat::Rgba16Float);
+            let bytes = signal_bytes(plane);
+            assert_eq!(bytes.len(), 2 * 2 * 8);
+            let first = [0_usize, 2, 4, 6]
+                .map(|at| half_to_f32(u16::from_le_bytes([bytes[at], bytes[at + 1]])));
+            assert_eq!(first, [0.0, 0.5, 1.0, 1.0], "red, green, blue, opaque");
+        }
     }
 }

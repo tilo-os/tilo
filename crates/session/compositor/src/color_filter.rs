@@ -104,67 +104,72 @@ impl Default for ColorMatrix {
 mod tests {
     use super::*;
 
-    #[test]
-    fn off_leaves_every_colour_alone() {
-        for rgb in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.4], [0.25, 0.5, 0.75]] {
-            assert_eq!(ColorFilter::Off.apply(rgb), rgb);
+    tilo_test_env::scenario! {
+        /// The colour filters.
+        fn a_colour_filter_maps_every_colour_and_only_off_leaves_the_scene;
+
+        phase off_leaves_every_colour_alone;
+        {
+            for rgb in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.4], [0.25, 0.5, 0.75]] {
+                assert_eq!(ColorFilter::Off.apply(rgb), rgb);
+            }
+            assert_eq!(ColorFilter::Off.matrix(), ColorMatrix::default());
         }
-        assert_eq!(ColorFilter::Off.matrix(), ColorMatrix::default());
-    }
 
-    #[test]
-    fn grayscale_turns_every_colour_its_brightness() {
-        let grey = ColorFilter::Grayscale.apply([1.0, 0.0, 0.0]);
-        assert!((grey[0] - 0.2126).abs() < 1e-6, "{grey:?}");
-        assert_eq!(grey[0], grey[1]);
-        assert_eq!(grey[1], grey[2]);
-        let white = ColorFilter::Grayscale.apply([1.0, 1.0, 1.0]);
-        assert!(
-            (white[0] - 1.0).abs() < 1e-5,
-            "white stays white: {white:?}"
-        );
-        let black = ColorFilter::Grayscale.apply([0.0, 0.0, 0.0]);
-        assert_eq!(black, [0.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn inverted_is_the_opposite_and_stays_in_range() {
-        assert_eq!(
-            ColorFilter::Inverted.apply([1.0, 0.0, 0.4]),
-            [0.0, 1.0, 0.6]
-        );
-        assert_eq!(
-            ColorFilter::Inverted.apply([0.0, 0.0, 0.0]),
-            [1.0, 1.0, 1.0]
-        );
-    }
-
-    #[test]
-    fn gray_inverted_is_the_opposite_of_the_grey() {
-        let rgb = [0.2, 0.6, 0.9];
-        let grey = ColorFilter::Grayscale.apply(rgb);
-        let both = ColorFilter::GrayscaleInverted.apply(rgb);
-        for channel in 0..3 {
+        phase grayscale_turns_every_colour_its_brightness;
+        {
+            let grey = ColorFilter::Grayscale.apply([1.0, 0.0, 0.0]);
+            assert!((grey[0] - 0.2126).abs() < 1e-6, "{grey:?}");
+            assert_eq!(grey[0], grey[1]);
+            assert_eq!(grey[1], grey[2]);
+            let white = ColorFilter::Grayscale.apply([1.0, 1.0, 1.0]);
             assert!(
-                (both[channel] - (1.0 - grey[channel])).abs() < 1e-5,
-                "{both:?} vs {grey:?}"
+                (white[0] - 1.0).abs() < 1e-5,
+                "white stays white: {white:?}"
+            );
+            let black = ColorFilter::Grayscale.apply([0.0, 0.0, 0.0]);
+            assert_eq!(black, [0.0, 0.0, 0.0]);
+        }
+
+        phase inverted_is_the_opposite_and_stays_in_range;
+        {
+            assert_eq!(
+                ColorFilter::Inverted.apply([1.0, 0.0, 0.4]),
+                [0.0, 1.0, 0.6]
+            );
+            assert_eq!(
+                ColorFilter::Inverted.apply([0.0, 0.0, 0.0]),
+                [1.0, 1.0, 1.0]
             );
         }
-        assert_eq!(both[0], both[1]);
-        assert_eq!(both[1], both[2]);
-    }
 
-    #[test]
-    fn only_off_shows_the_scene_as_it_is() {
-        assert!(ColorFilter::Off.is_off());
-        for filter in [
-            ColorFilter::Grayscale,
-            ColorFilter::Inverted,
-            ColorFilter::GrayscaleInverted,
-        ] {
-            assert!(!filter.is_off(), "{filter:?}");
-            assert_ne!(filter.matrix(), ColorMatrix::default(), "{filter:?}");
+        phase gray_inverted_is_the_opposite_of_the_grey;
+        {
+            let rgb = [0.2, 0.6, 0.9];
+            let grey = ColorFilter::Grayscale.apply(rgb);
+            let both = ColorFilter::GrayscaleInverted.apply(rgb);
+            for channel in 0..3 {
+                assert!(
+                    (both[channel] - (1.0 - grey[channel])).abs() < 1e-5,
+                    "{both:?} vs {grey:?}"
+                );
+            }
+            assert_eq!(both[0], both[1]);
+            assert_eq!(both[1], both[2]);
         }
-        assert_eq!(ColorFilter::ALL.len(), 4);
+
+        phase only_off_shows_the_scene_as_it_is;
+        {
+            assert!(ColorFilter::Off.is_off());
+            for filter in [
+                ColorFilter::Grayscale,
+                ColorFilter::Inverted,
+                ColorFilter::GrayscaleInverted,
+            ] {
+                assert!(!filter.is_off(), "{filter:?}");
+                assert_ne!(filter.matrix(), ColorMatrix::default(), "{filter:?}");
+            }
+            assert_eq!(ColorFilter::ALL.len(), 4);
+        }
     }
 }

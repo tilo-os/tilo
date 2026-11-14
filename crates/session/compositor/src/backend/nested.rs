@@ -511,101 +511,106 @@ impl Backend for NestedBackend {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_window_draws_at_the_scales_its_host_reports() {
-        // The desktop's own scale, fractional included, is the output's: a Tilo desktop at 175%
-        // (which it tells a client 1.75) draws the session at 1.75, not at 1.
-        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
-            assert!(
-                (host_scale(scale, 1.0) - scale).abs() < f64::EPSILON,
-                "a host at {scale} draws the window at {scale}"
-            );
+    tilo_test_env::scenario! {
+        /// The development window as an output.
+        fn the_nested_window_is_an_output_of_its_hosts_size_scale_and_turn;
+
+        phase the_window_draws_at_the_scales_its_host_reports;
+        {
+            // The desktop's own scale, fractional included, is the output's: a Tilo desktop at 175%
+            // (which it tells a client 1.75) draws the session at 1.75, not at 1.
+            for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                assert!(
+                    (host_scale(scale, 1.0) - scale).abs() < f64::EPSILON,
+                    "a host at {scale} draws the window at {scale}"
+                );
+            }
+            // A host that reports no usable scale draws at the configured one (1 when none is given),
+            // so a window on an X11 screen or a host that says nothing still shows a sane size.
+            assert!((host_scale(f64::NAN, 1.5) - 1.5).abs() < f64::EPSILON);
+            assert!((host_scale(0.0, 1.5) - 1.5).abs() < f64::EPSILON);
+            assert!((host_scale(-1.0, 2.0) - 2.0).abs() < f64::EPSILON);
         }
-        // A host that reports no usable scale draws at the configured one (1 when none is given),
-        // so a window on an X11 screen or a host that says nothing still shows a sane size.
-        assert!((host_scale(f64::NAN, 1.5) - 1.5).abs() < f64::EPSILON);
-        assert!((host_scale(0.0, 1.5) - 1.5).abs() < f64::EPSILON);
-        assert!((host_scale(-1.0, 2.0) - 2.0).abs() < f64::EPSILON);
-    }
 
-    #[test]
-    fn a_configured_scale_covers_a_host_that_reports_none() {
-        let config = |scale| NestedConfig {
-            scale,
-            ..NestedConfig::default()
-        };
-        assert!((config(1.5).configured_scale() - 1.5).abs() < f64::EPSILON);
-        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert!((config(bad).configured_scale() - 1.0).abs() < f64::EPSILON);
+        phase a_configured_scale_covers_a_host_that_reports_none;
+        {
+            let config = |scale| NestedConfig {
+                scale,
+                ..NestedConfig::default()
+            };
+            assert!((config(1.5).configured_scale() - 1.5).abs() < f64::EPSILON);
+            for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+                assert!((config(bad).configured_scale() - 1.0).abs() < f64::EPSILON);
+            }
         }
-    }
 
-    #[test]
-    fn a_resized_window_is_a_new_mode_and_an_empty_one_none() {
-        let mode = window_mode((1600, 900).into()).expect("a window with pixels has a mode");
-        assert_eq!(mode.size, (1600, 900).into());
-        assert_eq!(mode.refresh, REFRESH_MHZ);
-        assert!(window_mode((0, 900).into()).is_none());
-        assert!(window_mode((1600, 0).into()).is_none());
-    }
+        phase a_resized_window_is_a_new_mode_and_an_empty_one_none;
+        {
+            let mode = window_mode((1600, 900).into()).expect("a window with pixels has a mode");
+            assert_eq!(mode.size, (1600, 900).into());
+            assert_eq!(mode.refresh, REFRESH_MHZ);
+            assert!(window_mode((0, 900).into()).is_none());
+            assert!(window_mode((1600, 0).into()).is_none());
+        }
 
-    /// A window that was another size before offers only the size it has now: the sizes it had are
-    /// not displays the window can be put into.
-    #[test]
-    fn a_window_offers_the_one_size_it_has() {
-        use smithay::output::{PhysicalProperties, Subpixel};
+        phase a_window_offers_the_one_size_it_has;
+        // A window that was another size before offers only the size it has now: the sizes it had are
+        // not displays the window can be put into.
+        {
+            use smithay::output::{PhysicalProperties, Subpixel};
 
-        let output = Output::new(
-            OUTPUT_NAME.to_owned(),
-            PhysicalProperties {
-                size: (0, 0).into(),
-                subpixel: Subpixel::Unknown,
-                make: "Tilo".into(),
-                model: "test".into(),
-            },
-        );
-        let small = window_mode((640, 800).into()).unwrap();
-        let large = window_mode((1280, 800).into()).unwrap();
-        output.change_current_state(Some(small), None, None, None);
-        output.set_preferred(small);
-        output.change_current_state(Some(large), None, None, None);
-        one_mode(&output, large);
-        output.set_preferred(large);
-        assert_eq!(output.modes(), vec![large]);
-        assert_eq!(output.current_mode(), Some(large));
-        assert_eq!(output.preferred_mode(), Some(large));
-    }
-
-    /// The flip a framebuffer adds to the scene, taken back out for the window, whatever the
-    /// output's own turn: the window shows the scene as the output is turned.
-    #[test]
-    fn the_window_draws_the_scene_as_the_output_is_turned() {
-        const TURNS: [Transform; 8] = [
-            Transform::Normal,
-            Transform::_90,
-            Transform::_180,
-            Transform::_270,
-            Transform::Flipped,
-            Transform::Flipped90,
-            Transform::Flipped180,
-            Transform::Flipped270,
-        ];
-        for turn in TURNS {
-            // What the renderer is given is the tracker's transform, inverted;
-            // on top of that it flips the scene, as it does for any buffer.
-            let drawn =
-                |candidate: Transform| Transform::Flipped180.matrix() * candidate.invert().matrix();
-            assert_eq!(
-                drawn(flip(turn)),
-                turn.invert().matrix(),
-                "the window draws {turn:?}"
+            let output = Output::new(
+                OUTPUT_NAME.to_owned(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "Tilo".into(),
+                    model: "test".into(),
+                },
             );
-            // One transform brings the scene back the way the output turns it.
-            let cancels = TURNS
-                .into_iter()
-                .filter(|candidate| drawn(*candidate) == turn.invert().matrix())
-                .count();
-            assert_eq!(cancels, 1, "{turn:?} is drawn back the way it is turned");
+            let small = window_mode((640, 800).into()).unwrap();
+            let large = window_mode((1280, 800).into()).unwrap();
+            output.change_current_state(Some(small), None, None, None);
+            output.set_preferred(small);
+            output.change_current_state(Some(large), None, None, None);
+            one_mode(&output, large);
+            output.set_preferred(large);
+            assert_eq!(output.modes(), vec![large]);
+            assert_eq!(output.current_mode(), Some(large));
+            assert_eq!(output.preferred_mode(), Some(large));
+        }
+
+        phase the_window_draws_the_scene_as_the_output_is_turned;
+        // The flip a framebuffer adds to the scene, taken back out for the window, whatever the
+        // output's own turn: the window shows the scene as the output is turned.
+        {
+            const TURNS: [Transform; 8] = [
+                Transform::Normal,
+                Transform::_90,
+                Transform::_180,
+                Transform::_270,
+                Transform::Flipped,
+                Transform::Flipped90,
+                Transform::Flipped180,
+                Transform::Flipped270,
+            ];
+            for turn in TURNS {
+                // What the renderer is given is the tracker's transform, inverted;
+                // on top of that it flips the scene, as it does for any buffer.
+                let drawn =
+                    |candidate: Transform| Transform::Flipped180.matrix() * candidate.invert().matrix();
+                assert_eq!(
+                    drawn(flip(turn)),
+                    turn.invert().matrix(),
+                    "the window draws {turn:?}"
+                );
+                // One transform brings the scene back the way the output turns it.
+                let cancels = TURNS
+                    .into_iter()
+                    .filter(|candidate| drawn(*candidate) == turn.invert().matrix())
+                    .count();
+                assert_eq!(cancels, 1, "{turn:?} is drawn back the way it is turned");
+            }
         }
     }
 }

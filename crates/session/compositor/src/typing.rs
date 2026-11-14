@@ -197,97 +197,102 @@ mod tests {
         stroke_for(layout, 0, ch, |code| code < 256).map(|stroke| (stroke.modifiers, stroke.key))
     }
 
-    #[test]
-    fn a_character_is_the_key_its_keymap_puts_it_on() {
-        let us = keymap("us");
-        let de = keymap("de");
-        assert_eq!(stroke(&us, 'y'), Some((vec![], 21)));
-        assert_eq!(stroke(&us, 'z'), Some((vec![], 44)));
-        assert_eq!(stroke(&de, 'y'), Some((vec![], 44)), "German swaps Y and Z");
-        assert_eq!(stroke(&de, 'z'), Some((vec![], 21)));
-        assert_eq!(stroke(&us, 'Y'), Some((vec![SHIFT], 21)));
-        assert_eq!(stroke(&us, '@'), Some((vec![SHIFT], 3)));
-        assert_eq!(stroke(&de, '@'), Some((vec![ALTGR], 16)), "AltGr+Q");
-        assert_eq!(stroke(&de, '€'), Some((vec![ALTGR], 18)), "AltGr+E");
-        assert_eq!(stroke(&de, 'ä'), Some((vec![], 40)));
-        assert_eq!(stroke(&de, 'Ö'), Some((vec![SHIFT], 39)));
-        assert_eq!(stroke(&us, ' '), Some((vec![], 57)));
-    }
+    tilo_test_env::scenario! {
+        /// The key stroke that types a character.
+        fn a_character_is_typed_by_the_stroke_its_keymap_gives;
 
-    #[test]
-    fn a_mark_is_the_key_that_types_it_with_its_levels() {
-        let at = |layout: &str, mark: char| {
-            typed_marks(&keymap(layout), 0, |code| code < 256)
-                .into_iter()
-                .find(|typed| typed.mark == mark)
-                .map(|typed| (typed.key_name, typed.key_text, typed.shift, typed.level3))
-        };
-        let key = |name: &str, text: &str, shift, level3| {
-            Some((name.to_owned(), text.to_owned(), shift, level3))
-        };
-        assert_eq!(at("us", '/'), key("slash", "/", false, false));
-        assert_eq!(at("us", '?'), key("slash", "/", true, false));
-        assert_eq!(at("de", '/'), key("7", "7", true, false));
-        assert_eq!(at("de", '?'), key("ssharp", "ß", true, false));
-        assert_eq!(at("de", '['), key("8", "8", false, true));
-        assert_eq!(at("de", '-'), key("minus", "-", false, false));
-    }
+        phase a_character_is_the_key_its_keymap_puts_it_on;
+        {
+            let us = keymap("us");
+            let de = keymap("de");
+            assert_eq!(stroke(&us, 'y'), Some((vec![], 21)));
+            assert_eq!(stroke(&us, 'z'), Some((vec![], 44)));
+            assert_eq!(stroke(&de, 'y'), Some((vec![], 44)), "German swaps Y and Z");
+            assert_eq!(stroke(&de, 'z'), Some((vec![], 21)));
+            assert_eq!(stroke(&us, 'Y'), Some((vec![SHIFT], 21)));
+            assert_eq!(stroke(&us, '@'), Some((vec![SHIFT], 3)));
+            assert_eq!(stroke(&de, '@'), Some((vec![ALTGR], 16)), "AltGr+Q");
+            assert_eq!(stroke(&de, '€'), Some((vec![ALTGR], 18)), "AltGr+E");
+            assert_eq!(stroke(&de, 'ä'), Some((vec![], 40)));
+            assert_eq!(stroke(&de, 'Ö'), Some((vec![SHIFT], 39)));
+            assert_eq!(stroke(&us, ' '), Some((vec![], 57)));
+        }
 
-    #[test]
-    fn a_character_no_key_types_has_no_stroke() {
-        let us = keymap("us");
-        assert_eq!(stroke(&us, 'ä'), None);
-        assert_eq!(stroke(&us, '€'), None);
-        assert_eq!(stroke(&us, '😀'), None);
-    }
+        phase a_mark_is_the_key_that_types_it_with_its_levels;
+        {
+            let at = |layout: &str, mark: char| {
+                typed_marks(&keymap(layout), 0, |code| code < 256)
+                    .into_iter()
+                    .find(|typed| typed.mark == mark)
+                    .map(|typed| (typed.key_name, typed.key_text, typed.shift, typed.level3))
+            };
+            let key = |name: &str, text: &str, shift, level3| {
+                Some((name.to_owned(), text.to_owned(), shift, level3))
+            };
+            assert_eq!(at("us", '/'), key("slash", "/", false, false));
+            assert_eq!(at("us", '?'), key("slash", "/", true, false));
+            assert_eq!(at("de", '/'), key("7", "7", true, false));
+            assert_eq!(at("de", '?'), key("ssharp", "ß", true, false));
+            assert_eq!(at("de", '['), key("8", "8", false, true));
+            assert_eq!(at("de", '-'), key("minus", "-", false, false));
+        }
 
-    #[test]
-    fn a_stroke_holds_a_modifier_a_person_presses() {
-        // A broadcast keymap also sets the levels from its extra keys, which no keyboard but an old
-        // Japanese one carries; a stroke must hold a modifier key instead.
-        for layout in ["us", "de", "fr", "us,de"] {
-            let keymap = keymap(layout);
-            for ch in ['@', '€', 'Ö', 'Ä', 'ü'] {
-                let Some(stroke) = stroke_for(&keymap, 0, ch, |code| (1..=255).contains(&code))
-                else {
-                    continue;
-                };
-                assert!(
-                    stroke
-                        .modifiers
-                        .iter()
-                        .all(|modifier| crate::sticky_keys::is_modifier(modifier.key)),
-                    "{layout} {ch}: {stroke:?}"
-                );
+        phase a_character_no_key_types_has_no_stroke;
+        {
+            let us = keymap("us");
+            assert_eq!(stroke(&us, 'ä'), None);
+            assert_eq!(stroke(&us, '€'), None);
+            assert_eq!(stroke(&us, '😀'), None);
+        }
+
+        phase a_stroke_holds_a_modifier_a_person_presses;
+        {
+            // A broadcast keymap also sets the levels from its extra keys, which no keyboard but an old
+            // Japanese one carries; a stroke must hold a modifier key instead.
+            for layout in ["us", "de", "fr", "us,de"] {
+                let keymap = keymap(layout);
+                for ch in ['@', '€', 'Ö', 'Ä', 'ü'] {
+                    let Some(stroke) = stroke_for(&keymap, 0, ch, |code| (1..=255).contains(&code))
+                    else {
+                        continue;
+                    };
+                    assert!(
+                        stroke
+                            .modifiers
+                            .iter()
+                            .all(|modifier| crate::sticky_keys::is_modifier(modifier.key)),
+                        "{layout} {ch}: {stroke:?}"
+                    );
+                }
             }
         }
-    }
 
-    #[test]
-    fn a_key_that_cannot_be_delivered_is_not_used() {
-        let de = keymap("de");
-        let stroke = stroke_for(&de, 0, '@', |code| code != 100 && code < 256);
-        assert!(
-            stroke
-                .as_ref()
-                .is_none_or(|stroke| stroke.modifiers.iter().all(|modifier| modifier.key != 100)),
-            "{stroke:?}"
-        );
-        // Without the right alt the keymap's extra level key still holds the level, so `@` stays
-        // typeable rather than becoming text.
-        assert_eq!(stroke.map(|stroke| stroke.key), Some(16), "@");
-    }
+        phase a_key_that_cannot_be_delivered_is_not_used;
+        {
+            let de = keymap("de");
+            let stroke = stroke_for(&de, 0, '@', |code| code != 100 && code < 256);
+            assert!(
+                stroke
+                    .as_ref()
+                    .is_none_or(|stroke| stroke.modifiers.iter().all(|modifier| modifier.key != 100)),
+                "{stroke:?}"
+            );
+            // Without the right alt the keymap's extra level key still holds the level, so `@` stays
+            // typeable rather than becoming text.
+            assert_eq!(stroke.map(|stroke| stroke.key), Some(16), "@");
+        }
 
-    #[test]
-    fn the_active_group_decides() {
-        let both = keymap("us,de");
-        assert_eq!(
-            stroke_for(&both, 1, 'y', |code| code < 256).map(|stroke| stroke.key),
-            Some(44)
-        );
-        assert_eq!(
-            stroke_for(&both, 0, 'y', |code| code < 256).map(|stroke| stroke.key),
-            Some(21)
-        );
+        phase the_active_group_decides;
+        {
+            let both = keymap("us,de");
+            assert_eq!(
+                stroke_for(&both, 1, 'y', |code| code < 256).map(|stroke| stroke.key),
+                Some(44)
+            );
+            assert_eq!(
+                stroke_for(&both, 0, 'y', |code| code < 256).map(|stroke| stroke.key),
+                Some(21)
+            );
+        }
     }
 }

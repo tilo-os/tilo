@@ -292,55 +292,60 @@ fn confinement(
 mod tests {
     use super::*;
 
-    #[test]
-    fn confinement_clips_the_region_to_the_surface() {
-        use smithay::utils::Rectangle;
-        let surface = (100.0, 50.0, 500.0, 350.0);
-        assert_eq!(confinement(None, surface), vec![surface]);
-        let region = smithay::wayland::compositor::RegionAttributes {
-            rects: vec![
-                (
-                    RectangleKind::Add,
-                    Rectangle::new((10, 20).into(), (50, 60).into()),
-                ),
-                (
-                    RectangleKind::Add,
-                    Rectangle::new((350, 250).into(), (500, 500).into()),
-                ),
-                (
-                    RectangleKind::Subtract,
-                    Rectangle::new((0, 0).into(), (5, 5).into()),
-                ),
-            ],
-        };
-        assert_eq!(
-            confinement(Some(&region), surface),
-            vec![(110.0, 70.0, 160.0, 130.0), (450.0, 300.0, 500.0, 350.0)]
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Locked and confined pointers.
+        fn a_pointer_constraint_keeps_the_pointer_in_its_region;
 
-    #[test]
-    fn a_locked_pointer_stays_and_a_confined_one_stops_at_the_edge() {
-        let free = Region::Free;
-        assert_eq!(free.constrain((5.0, 5.0), (90.0, 90.0)), Some((90.0, 90.0)));
-        let locked = Region::Locked;
-        assert_eq!(locked.constrain((5.0, 5.0), (90.0, 90.0)), None);
-        let confined = Region::Confined(vec![(10.0, 10.0, 60.0, 60.0)]);
-        // Inside is untouched, outside slides along the edge.
-        assert_eq!(
-            confined.constrain((30.0, 30.0), (40.0, 50.0)),
-            Some((40.0, 50.0))
-        );
-        assert_eq!(
-            confined.constrain((30.0, 30.0), (200.0, 200.0)),
-            Some((59.0, 59.0))
-        );
-        assert_eq!(
-            confined.constrain((30.0, 30.0), (5.0, 40.0)),
-            Some((10.0, 40.0))
-        );
-        // Between two rects, the pointer slides along the one it is in.
-        let two = Region::Confined(vec![(0.0, 0.0, 10.0, 10.0), (20.0, 20.0, 30.0, 30.0)]);
-        assert_eq!(two.constrain((25.0, 25.0), (0.0, 25.0)), Some((20.0, 25.0)));
+        phase confinement_clips_the_region_to_the_surface;
+        {
+            use smithay::utils::Rectangle;
+            let surface = (100.0, 50.0, 500.0, 350.0);
+            assert_eq!(confinement(None, surface), vec![surface]);
+            let region = smithay::wayland::compositor::RegionAttributes {
+                rects: vec![
+                    (
+                        RectangleKind::Add,
+                        Rectangle::new((10, 20).into(), (50, 60).into()),
+                    ),
+                    (
+                        RectangleKind::Add,
+                        Rectangle::new((350, 250).into(), (500, 500).into()),
+                    ),
+                    (
+                        RectangleKind::Subtract,
+                        Rectangle::new((0, 0).into(), (5, 5).into()),
+                    ),
+                ],
+            };
+            assert_eq!(
+                confinement(Some(&region), surface),
+                vec![(110.0, 70.0, 160.0, 130.0), (450.0, 300.0, 500.0, 350.0)]
+            );
+        }
+
+        phase a_locked_pointer_stays_and_a_confined_one_stops_at_the_edge;
+        {
+            let free = Region::Free;
+            assert_eq!(free.constrain((5.0, 5.0), (90.0, 90.0)), Some((90.0, 90.0)));
+            let locked = Region::Locked;
+            assert_eq!(locked.constrain((5.0, 5.0), (90.0, 90.0)), None);
+            let confined = Region::Confined(vec![(10.0, 10.0, 60.0, 60.0)]);
+            // Inside is untouched, outside slides along the edge.
+            assert_eq!(
+                confined.constrain((30.0, 30.0), (40.0, 50.0)),
+                Some((40.0, 50.0))
+            );
+            assert_eq!(
+                confined.constrain((30.0, 30.0), (200.0, 200.0)),
+                Some((59.0, 59.0))
+            );
+            assert_eq!(
+                confined.constrain((30.0, 30.0), (5.0, 40.0)),
+                Some((10.0, 40.0))
+            );
+            // Between two rects, the pointer slides along the one it is in.
+            let two = Region::Confined(vec![(0.0, 0.0, 10.0, 10.0), (20.0, 20.0, 30.0, 30.0)]);
+            assert_eq!(two.constrain((25.0, 25.0), (0.0, 25.0)), Some((20.0, 25.0)));
+        }
     }
 }

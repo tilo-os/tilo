@@ -63,117 +63,122 @@ fn settle(compositor: &mut Compositor) {
     assert!(!compositor.owes_frame(), "the desk draws what it owes");
 }
 
-/// A window the policy moves is drawn where it moved to: the output draws it
-/// there, with nothing else having damaged the screen.
-#[test]
-fn a_window_the_policy_moves_is_drawn_where_it_moved_to() {
-    let policy = Movable::default();
-    let at = Rc::clone(&policy.at);
-    let mut compositor = headless(Box::new(policy));
-    let _client = mapped_client(&mut compositor, "moved", (200, 100), [255, 0, 0, 255]);
-    settle(&mut compositor);
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    assert_eq!(
-        frame.pixel(320, 240),
-        Some([255, 0, 0, 255]),
-        "the window is drawn where it mapped"
-    );
+tilo_test_env::scenario! {
+    /// When the compositor owes a frame.
+    fn a_frame_is_drawn_for_what_changed_and_counted_for_its_window;
 
-    // Off every output, as a window whose well stands off the strip is left.
-    *at.borrow_mut() = Some(Point::from((-4000, 0)));
-    settle(&mut compositor);
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    assert_ne!(
-        frame.pixel(320, 240),
-        Some([255, 0, 0, 255]),
-        "a window off the output is on no frame"
-    );
+    phase a_window_the_policy_moves_is_drawn_where_it_moved_to;
+    // A window the policy moves is drawn where it moved to: the output draws it
+    // there, with nothing else having damaged the screen.
+    {
+        let policy = Movable::default();
+        let at = Rc::clone(&policy.at);
+        let mut compositor = headless(Box::new(policy));
+        let _client = mapped_client(&mut compositor, "moved", (200, 100), [255, 0, 0, 255]);
+        settle(&mut compositor);
+        let frame = compositor.screenshot("HEADLESS-1").unwrap();
+        assert_eq!(
+            frame.pixel(320, 240),
+            Some([255, 0, 0, 255]),
+            "the window is drawn where it mapped"
+        );
 
-    // Back on it: what the output shows changed, so it owes the frame that shows the move, though
-    // no client drew anything.
-    *at.borrow_mut() = Some(Point::from((20, 20)));
-    settle(&mut compositor);
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    assert_eq!(
-        frame.pixel(100, 60),
-        Some([255, 0, 0, 255]),
-        "the window is drawn where the policy moved it to"
-    );
-}
+        // Off every output, as a window whose well stands off the strip is left.
+        *at.borrow_mut() = Some(Point::from((-4000, 0)));
+        settle(&mut compositor);
+        let frame = compositor.screenshot("HEADLESS-1").unwrap();
+        assert_ne!(
+            frame.pixel(320, 240),
+            Some([255, 0, 0, 255]),
+            "a window off the output is on no frame"
+        );
 
-/// A key the focused client takes changes nothing the compositor draws: the client answers it with
-/// a commit, and only that owes a frame, in the turn the commit arrives in. A key that owed a frame
-/// of its own drew an empty frame first, which then held the answer back to the next refresh.
-#[test]
-fn a_key_for_a_client_owes_no_frame_of_its_own() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut client = mapped_client(&mut compositor, "typed", (200, 100), [0, 0, 255, 255]);
-    settle(&mut compositor);
-    for pressed in [true, false] {
-        compositor
-            .input(InputEvent::Key {
-                keycode: 30,
-                pressed,
-            })
-            .unwrap();
+        // Back on it: what the output shows changed, so it owes the frame that shows the move, though
+        // no client drew anything.
+        *at.borrow_mut() = Some(Point::from((20, 20)));
+        settle(&mut compositor);
+        let frame = compositor.screenshot("HEADLESS-1").unwrap();
+        assert_eq!(
+            frame.pixel(100, 60),
+            Some([255, 0, 0, 255]),
+            "the window is drawn where the policy moved it to"
+        );
     }
-    assert!(!compositor.owes_frame(), "a key alone owes no frame");
-    // The client's answer arrives while the loop works out its frame, and that frame shows it.
-    client.show(200, 100, [255, 0, 0, 255]);
-    client.exchange();
-    assert!(
-        compositor.catch_up().unwrap(),
-        "the commit answering it does"
-    );
-    compositor.draw_frame().expect("a frame");
-    compositor
-        .input(InputEvent::PointerMotion { x: 50.0, y: 50.0 })
-        .unwrap();
-    assert!(compositor.owes_frame(), "the pointer moving does");
-}
 
-/// Each window's client commits are counted against that window: a desk that draws nothing keeps
-/// every count, and an app that draws moves its own and no one else's. What a tool reads to prove a
-/// window is still, or to count an app's frames in a real session.
-#[test]
-fn a_window_counts_the_frames_its_client_draws() {
-    let mut compositor = headless(Box::new(StackPolicy));
-    let mut quiet = mapped_client(&mut compositor, "quiet", (200, 100), [0, 0, 255, 255]);
-    let mut drawing = mapped_client(&mut compositor, "drawing", (200, 100), [255, 0, 0, 255]);
-    settle(&mut compositor);
-    let id_of = |compositor: &Compositor, app_id: &str| {
+    phase a_key_for_a_client_owes_no_frame_of_its_own;
+    // A key the focused client takes changes nothing the compositor draws: the client answers it with
+    // a commit, and only that owes a frame, in the turn the commit arrives in. A key that owed a frame
+    // of its own drew an empty frame first, which then held the answer back to the next refresh.
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let mut client = mapped_client(&mut compositor, "typed", (200, 100), [0, 0, 255, 255]);
+        settle(&mut compositor);
+        for pressed in [true, false] {
+            compositor
+                .input(InputEvent::Key {
+                    keycode: 30,
+                    pressed,
+                })
+                .unwrap();
+        }
+        assert!(!compositor.owes_frame(), "a key alone owes no frame");
+        // The client's answer arrives while the loop works out its frame, and that frame shows it.
+        client.show(200, 100, [255, 0, 0, 255]);
+        client.exchange();
+        assert!(
+            compositor.catch_up().unwrap(),
+            "the commit answering it does"
+        );
+        compositor.draw_frame().expect("a frame");
         compositor
-            .windows()
-            .into_iter()
-            .find(|(info, _)| info.app_id.as_deref() == Some(app_id))
-            .map(|(info, _)| info.id)
-            .expect("the window is mapped")
-    };
-    let quiet_frames = compositor.window_frames(id_of(&compositor, "quiet"));
-    let drawing_id = id_of(&compositor, "drawing");
-    let drawing_frames = compositor.window_frames(drawing_id);
-    assert!(quiet_frames > 0, "its first frame is counted");
+            .input(InputEvent::PointerMotion { x: 50.0, y: 50.0 })
+            .unwrap();
+        assert!(compositor.owes_frame(), "the pointer moving does");
+    }
 
-    // The desk draws again with neither client drawing: no window's count moves.
-    settle(&mut compositor);
-    assert_eq!(
-        compositor.window_frames(id_of(&compositor, "quiet")),
-        quiet_frames
-    );
-    assert_eq!(compositor.window_frames(drawing_id), drawing_frames);
+    phase a_window_counts_the_frames_its_client_draws;
+    // Each window's client commits are counted against that window: a desk that draws nothing keeps
+    // every count, and an app that draws moves its own and no one else's. What a tool reads to prove a
+    // window is still, or to count an app's frames in a real session.
+    {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let mut quiet = mapped_client(&mut compositor, "quiet", (200, 100), [0, 0, 255, 255]);
+        let mut drawing = mapped_client(&mut compositor, "drawing", (200, 100), [255, 0, 0, 255]);
+        settle(&mut compositor);
+        let id_of = |compositor: &Compositor, app_id: &str| {
+            compositor
+                .windows()
+                .into_iter()
+                .find(|(info, _)| info.app_id.as_deref() == Some(app_id))
+                .map(|(info, _)| info.id)
+                .expect("the window is mapped")
+        };
+        let quiet_frames = compositor.window_frames(id_of(&compositor, "quiet"));
+        let drawing_id = id_of(&compositor, "drawing");
+        let drawing_frames = compositor.window_frames(drawing_id);
+        assert!(quiet_frames > 0, "its first frame is counted");
 
-    // One client draws, and only its window's count follows.
-    drawing.show(200, 100, [0, 255, 0, 255]);
-    pump(&mut compositor, &mut [&mut drawing], |compositor, _| {
-        compositor.window_frames(drawing_id) > drawing_frames
-    });
-    assert_eq!(
-        compositor.window_frames(id_of(&compositor, "quiet")),
-        quiet_frames,
-        "the window that drew nothing keeps its count"
-    );
-    quiet.show(200, 100, [0, 0, 255, 255]);
-    pump(&mut compositor, &mut [&mut quiet], |compositor, _| {
-        compositor.window_frames(id_of(compositor, "quiet")) > quiet_frames
-    });
+        // The desk draws again with neither client drawing: no window's count moves.
+        settle(&mut compositor);
+        assert_eq!(
+            compositor.window_frames(id_of(&compositor, "quiet")),
+            quiet_frames
+        );
+        assert_eq!(compositor.window_frames(drawing_id), drawing_frames);
+
+        // One client draws, and only its window's count follows.
+        drawing.show(200, 100, [0, 255, 0, 255]);
+        pump(&mut compositor, &mut [&mut drawing], |compositor, _| {
+            compositor.window_frames(drawing_id) > drawing_frames
+        });
+        assert_eq!(
+            compositor.window_frames(id_of(&compositor, "quiet")),
+            quiet_frames,
+            "the window that drew nothing keeps its count"
+        );
+        quiet.show(200, 100, [0, 0, 255, 255]);
+        pump(&mut compositor, &mut [&mut quiet], |compositor, _| {
+            compositor.window_frames(id_of(compositor, "quiet")) > quiet_frames
+        });
+    }
 }

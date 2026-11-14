@@ -261,157 +261,167 @@ mod tests {
         Duration::from_millis(n)
     }
 
-    #[test]
-    fn modifiers_are_recognised_and_letters_are_not() {
-        for code in [42, 54, 29, 97, 56, 100, 125, 126] {
-            assert!(is_modifier(code), "{code}");
+    tilo_test_env::scenario! {
+        /// Sticky keys.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the window is a few hundred milliseconds"
+        )]
+        fn sticky_keys_latch_and_lock_modifiers;
+
+        phase modifiers_are_recognised_and_letters_are_not;
+        {
+            for code in [42, 54, 29, 97, 56, 100, 125, 126] {
+                assert!(is_modifier(code), "{code}");
+            }
+            for code in [30, 15, 28, 76, 126 + 1] {
+                assert!(!is_modifier(code), "{code}");
+            }
         }
-        for code in [30, 15, 28, 76, 126 + 1] {
-            assert!(!is_modifier(code), "{code}");
+
+        phase a_sticky_modifier_stays_down_for_exactly_one_chord;
+        {
+            let t0 = Instant::now();
+            let mut sticky = StickyKeys::default();
+            assert_eq!(
+                sticky.press(SHIFT, t0),
+                vec![(SHIFT, true)],
+                "pressed at once"
+            );
+            // Its physical release changes nothing.
+            assert_eq!(sticky.release(SHIFT, t0 + ms(50)), Vec::<Edge>::new());
+            assert_eq!(sticky.latched().collect::<Vec<_>>(), vec![SHIFT]);
+            // Typing a key and letting go of it lets the modifier go.
+            assert_eq!(sticky.press(A, t0 + ms(200)), vec![(A, true)]);
+            assert_eq!(
+                sticky.release(A, t0 + ms(300)),
+                vec![(A, false), (SHIFT, false)]
+            );
+            assert_eq!(sticky.latched().count(), 0, "used up");
+        }
+
+        phase a_modifier_pressed_twice_stays_down_until_it_is_pressed_again;
+        {
+            let t0 = Instant::now();
+            let mut sticky = StickyKeys::default();
+            assert_eq!(sticky.press(CTRL, t0), vec![(CTRL, true)]);
+            assert_eq!(sticky.release(CTRL, t0 + ms(40)), Vec::<Edge>::new());
+            assert_eq!(
+                sticky.press(CTRL, t0 + ms(100)),
+                Vec::<Edge>::new(),
+                "locked, already down"
+            );
+            assert_eq!(sticky.release(CTRL, t0 + ms(150)), Vec::<Edge>::new());
+            // Typing and releasing keys does not let a locked modifier go.
+            assert_eq!(sticky.press(A, t0 + ms(200)), vec![(A, true)]);
+            assert_eq!(sticky.release(A, t0 + ms(400)), vec![(A, false)]);
+            // Pressing it again lets it go, and its own release goes nowhere.
+            assert_eq!(sticky.press(CTRL, t0 + ms(900)), vec![(CTRL, false)]);
+            assert!(sticky.release(CTRL, t0 + ms(950)).is_empty());
+            assert_eq!(sticky.latched().count(), 0);
+        }
+
+        phase holding_a_modifier_does_not_lock_it;
+        {
+            let t0 = Instant::now();
+            let mut sticky = StickyKeys::default();
+            assert_eq!(sticky.press(SHIFT, t0), vec![(SHIFT, true)]);
+            // The keyboard's repeat arrives as another press while it is down.
+            assert_eq!(sticky.press(SHIFT, t0 + ms(500)), Vec::<Edge>::new());
+            assert_eq!(sticky.press(A, t0 + ms(600)), vec![(A, true)]);
+            assert_eq!(
+                sticky.release(A, t0 + ms(700)),
+                vec![(A, false), (SHIFT, false)],
+                "still one chord, not locked"
+            );
+        }
+
+        phase a_slow_second_press_latches_once_and_not_twice;
+        {
+            let t0 = Instant::now();
+            let mut sticky = StickyKeys::default();
+            let _ = sticky.press(SHIFT, t0);
+            let _ = sticky.release(SHIFT, t0 + ms(20));
+            // Well past the window: this is a new chord, still a single latch.
+            let _ = sticky.press(SHIFT, t0 + ms(LOCK_WINDOW.as_millis() as u64 + 100));
+            let _ = sticky.press(A, t0 + ms(800));
+            assert_eq!(
+                sticky.release(A, t0 + ms(1_000)),
+                vec![(A, false), (SHIFT, false)],
+                "not locked, so it lets go"
+            );
+        }
+
+        phase two_keys_held_at_once_keep_the_modifier_until_both_are_released;
+        {
+            let t0 = Instant::now();
+            let mut sticky = StickyKeys::default();
+            let _ = sticky.press(SHIFT, t0);
+            let _ = sticky.press(A, t0 + ms(10));
+            let _ = sticky.press(B, t0 + ms(20));
+            assert_eq!(sticky.release(B, t0 + ms(100)), vec![(B, false)]);
+            assert_eq!(sticky.latched().collect::<Vec<_>>(), vec![SHIFT]);
+            assert_eq!(
+                sticky.release(A, t0 + ms(200)),
+                vec![(A, false), (SHIFT, false)]
+            );
+        }
+
+        phase switching_sticky_keys_off_releases_what_it_holds;
+        {
+            let t0 = Instant::now();
+            let mut sticky = StickyKeys::default();
+            let _ = sticky.press(SHIFT, t0);
+            let _ = sticky.press(CTRL, t0 + ms(10));
+            assert_eq!(sticky.reset(), vec![(CTRL, false), (SHIFT, false)]);
+            assert_eq!(sticky.latched().count(), 0);
+            assert_eq!(sticky.release(SHIFT, t0 + ms(20)), Vec::<Edge>::new());
         }
     }
 
-    #[test]
-    fn a_sticky_modifier_stays_down_for_exactly_one_chord() {
-        let t0 = Instant::now();
-        let mut sticky = StickyKeys::default();
-        assert_eq!(
-            sticky.press(SHIFT, t0),
-            vec![(SHIFT, true)],
-            "pressed at once"
-        );
-        // Its physical release changes nothing.
-        assert_eq!(sticky.release(SHIFT, t0 + ms(50)), Vec::<Edge>::new());
-        assert_eq!(sticky.latched().collect::<Vec<_>>(), vec![SHIFT]);
-        // Typing a key and letting go of it lets the modifier go.
-        assert_eq!(sticky.press(A, t0 + ms(200)), vec![(A, true)]);
-        assert_eq!(
-            sticky.release(A, t0 + ms(300)),
-            vec![(A, false), (SHIFT, false)]
-        );
-        assert_eq!(sticky.latched().count(), 0, "used up");
-    }
+    tilo_test_env::scenario! {
+        /// Slow keys.
+        fn slow_keys_deliver_a_key_only_after_its_delay;
 
-    #[test]
-    fn a_modifier_pressed_twice_stays_down_until_it_is_pressed_again() {
-        let t0 = Instant::now();
-        let mut sticky = StickyKeys::default();
-        assert_eq!(sticky.press(CTRL, t0), vec![(CTRL, true)]);
-        assert_eq!(sticky.release(CTRL, t0 + ms(40)), Vec::<Edge>::new());
-        assert_eq!(
-            sticky.press(CTRL, t0 + ms(100)),
-            Vec::<Edge>::new(),
-            "locked, already down"
-        );
-        assert_eq!(sticky.release(CTRL, t0 + ms(150)), Vec::<Edge>::new());
-        // Typing and releasing keys does not let a locked modifier go.
-        assert_eq!(sticky.press(A, t0 + ms(200)), vec![(A, true)]);
-        assert_eq!(sticky.release(A, t0 + ms(400)), vec![(A, false)]);
-        // Pressing it again lets it go, and its own release goes nowhere.
-        assert_eq!(sticky.press(CTRL, t0 + ms(900)), vec![(CTRL, false)]);
-        assert!(sticky.release(CTRL, t0 + ms(950)).is_empty());
-        assert_eq!(sticky.latched().count(), 0);
-    }
+        phase a_held_key_is_delivered_once_its_delay_passes;
+        {
+            let t0 = Instant::now();
+            let mut slow = SlowKeys::default();
+            assert_eq!(slow.press(A, t0, Some(ms(100))), SlowPress::Wait);
+            assert_eq!(slow.due(t0 + ms(99)), Vec::<u32>::new());
+            assert_eq!(slow.next_deadline(), Some(t0 + ms(100)));
+            assert_eq!(slow.due(t0 + ms(100)), vec![A]);
+            assert_eq!(slow.next_deadline(), None);
+            assert_eq!(slow.release(A, t0 + ms(150)), SlowRelease::Deliver);
+        }
 
-    #[test]
-    fn holding_a_modifier_does_not_lock_it() {
-        let t0 = Instant::now();
-        let mut sticky = StickyKeys::default();
-        assert_eq!(sticky.press(SHIFT, t0), vec![(SHIFT, true)]);
-        // The keyboard's repeat arrives as another press while it is down.
-        assert_eq!(sticky.press(SHIFT, t0 + ms(500)), Vec::<Edge>::new());
-        assert_eq!(sticky.press(A, t0 + ms(600)), vec![(A, true)]);
-        assert_eq!(
-            sticky.release(A, t0 + ms(700)),
-            vec![(A, false), (SHIFT, false)],
-            "still one chord, not locked"
-        );
-    }
+        phase a_brush_is_dropped_on_both_edges;
+        {
+            let t0 = Instant::now();
+            let mut slow = SlowKeys::default();
+            assert_eq!(slow.press(A, t0, Some(ms(200))), SlowPress::Wait);
+            assert_eq!(slow.release(A, t0 + ms(60)), SlowRelease::Drop);
+            assert_eq!(slow.due(t0 + ms(500)), Vec::<u32>::new(), "no late press");
+            assert_eq!(slow.next_deadline(), None);
+        }
 
-    #[test]
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the window is a few hundred milliseconds"
-    )]
-    fn a_slow_second_press_latches_once_and_not_twice() {
-        let t0 = Instant::now();
-        let mut sticky = StickyKeys::default();
-        let _ = sticky.press(SHIFT, t0);
-        let _ = sticky.release(SHIFT, t0 + ms(20));
-        // Well past the window: this is a new chord, still a single latch.
-        let _ = sticky.press(SHIFT, t0 + ms(LOCK_WINDOW.as_millis() as u64 + 100));
-        let _ = sticky.press(A, t0 + ms(800));
-        assert_eq!(
-            sticky.release(A, t0 + ms(1_000)),
-            vec![(A, false), (SHIFT, false)],
-            "not locked, so it lets go"
-        );
-    }
+        phase without_a_delay_everything_is_delivered_at_once;
+        {
+            let t0 = Instant::now();
+            let mut slow = SlowKeys::default();
+            assert_eq!(slow.press(A, t0, None), SlowPress::Deliver);
+            assert_eq!(slow.press(A, t0, Some(Duration::ZERO)), SlowPress::Deliver);
+            assert_eq!(slow.next_deadline(), None);
+            assert_eq!(slow.release(A, t0), SlowRelease::Deliver);
+        }
 
-    #[test]
-    fn two_keys_held_at_once_keep_the_modifier_until_both_are_released() {
-        let t0 = Instant::now();
-        let mut sticky = StickyKeys::default();
-        let _ = sticky.press(SHIFT, t0);
-        let _ = sticky.press(A, t0 + ms(10));
-        let _ = sticky.press(B, t0 + ms(20));
-        assert_eq!(sticky.release(B, t0 + ms(100)), vec![(B, false)]);
-        assert_eq!(sticky.latched().collect::<Vec<_>>(), vec![SHIFT]);
-        assert_eq!(
-            sticky.release(A, t0 + ms(200)),
-            vec![(A, false), (SHIFT, false)]
-        );
-    }
-
-    #[test]
-    fn switching_sticky_keys_off_releases_what_it_holds() {
-        let t0 = Instant::now();
-        let mut sticky = StickyKeys::default();
-        let _ = sticky.press(SHIFT, t0);
-        let _ = sticky.press(CTRL, t0 + ms(10));
-        assert_eq!(sticky.reset(), vec![(CTRL, false), (SHIFT, false)]);
-        assert_eq!(sticky.latched().count(), 0);
-        assert_eq!(sticky.release(SHIFT, t0 + ms(20)), Vec::<Edge>::new());
-    }
-
-    #[test]
-    fn a_held_key_is_delivered_once_its_delay_passes() {
-        let t0 = Instant::now();
-        let mut slow = SlowKeys::default();
-        assert_eq!(slow.press(A, t0, Some(ms(100))), SlowPress::Wait);
-        assert_eq!(slow.due(t0 + ms(99)), Vec::<u32>::new());
-        assert_eq!(slow.next_deadline(), Some(t0 + ms(100)));
-        assert_eq!(slow.due(t0 + ms(100)), vec![A]);
-        assert_eq!(slow.next_deadline(), None);
-        assert_eq!(slow.release(A, t0 + ms(150)), SlowRelease::Deliver);
-    }
-
-    #[test]
-    fn a_brush_is_dropped_on_both_edges() {
-        let t0 = Instant::now();
-        let mut slow = SlowKeys::default();
-        assert_eq!(slow.press(A, t0, Some(ms(200))), SlowPress::Wait);
-        assert_eq!(slow.release(A, t0 + ms(60)), SlowRelease::Drop);
-        assert_eq!(slow.due(t0 + ms(500)), Vec::<u32>::new(), "no late press");
-        assert_eq!(slow.next_deadline(), None);
-    }
-
-    #[test]
-    fn without_a_delay_everything_is_delivered_at_once() {
-        let t0 = Instant::now();
-        let mut slow = SlowKeys::default();
-        assert_eq!(slow.press(A, t0, None), SlowPress::Deliver);
-        assert_eq!(slow.press(A, t0, Some(Duration::ZERO)), SlowPress::Deliver);
-        assert_eq!(slow.next_deadline(), None);
-        assert_eq!(slow.release(A, t0), SlowRelease::Deliver);
-    }
-
-    #[test]
-    fn switching_slow_keys_off_forgets_a_waiting_press() {
-        let t0 = Instant::now();
-        let mut slow = SlowKeys::default();
-        assert_eq!(slow.press(A, t0, Some(ms(100))), SlowPress::Wait);
-        slow.reset();
-        assert_eq!(slow.due(t0 + ms(500)), Vec::<u32>::new());
+        phase switching_slow_keys_off_forgets_a_waiting_press;
+        {
+            let t0 = Instant::now();
+            let mut slow = SlowKeys::default();
+            assert_eq!(slow.press(A, t0, Some(ms(100))), SlowPress::Wait);
+            slow.reset();
+            assert_eq!(slow.due(t0 + ms(500)), Vec::<u32>::new());
+        }
     }
 }

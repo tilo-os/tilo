@@ -290,28 +290,33 @@ mod tests {
         PadAction::Ring { ring: 0, degrees }
     }
 
-    #[test]
-    fn a_ring_steps_every_fifteen_degrees_the_short_way_round() {
-        let mut dial = DialSteps::default();
-        assert_eq!(dial.steps(&ring(Some(350.0))), 0, "touching is no movement");
-        assert_eq!(dial.steps(&ring(Some(5.0))), 1, "350° to 5° is +15°");
-        assert_eq!(dial.steps(&ring(Some(12.5))), 0);
-        assert_eq!(dial.steps(&ring(Some(20.0))), 1, "the carried 7.5° counts");
-        assert_eq!(dial.steps(&ring(Some(350.0))), -2);
-        assert_eq!(dial.steps(&ring(None)), 0);
-        assert_eq!(
-            dial.steps(&ring(Some(90.0))),
-            0,
-            "a new touch starts afresh"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// The steps a tablet pad's ring and strip make.
+        fn a_pad_ring_and_strip_step_by_their_travel;
 
-    #[test]
-    fn a_strip_steps_every_tenth_of_its_length() {
-        let mut dial = DialSteps::default();
-        let strip = |position| PadAction::Strip { strip: 1, position };
-        assert_eq!(dial.steps(&strip(Some(0.2))), 0);
-        assert_eq!(dial.steps(&strip(Some(0.55))), 3);
-        assert_eq!(dial.steps(&strip(Some(0.3))), -2);
+        phase a_ring_steps_every_fifteen_degrees_the_short_way_round;
+        {
+            let mut dial = DialSteps::default();
+            assert_eq!(dial.steps(&ring(Some(350.0))), 0, "touching is no movement");
+            assert_eq!(dial.steps(&ring(Some(5.0))), 1, "350° to 5° is +15°");
+            assert_eq!(dial.steps(&ring(Some(12.5))), 0);
+            assert_eq!(dial.steps(&ring(Some(20.0))), 1, "the carried 7.5° counts");
+            assert_eq!(dial.steps(&ring(Some(350.0))), -2);
+            assert_eq!(dial.steps(&ring(None)), 0);
+            assert_eq!(
+                dial.steps(&ring(Some(90.0))),
+                0,
+                "a new touch starts afresh"
+            );
+        }
+
+        phase a_strip_steps_every_tenth_of_its_length;
+        {
+            let mut dial = DialSteps::default();
+            let strip = |position| PadAction::Strip { strip: 1, position };
+            assert_eq!(dial.steps(&strip(Some(0.2))), 0);
+            assert_eq!(dial.steps(&strip(Some(0.55))), 3);
+            assert_eq!(dial.steps(&strip(Some(0.3))), -2);
+        }
     }
 }

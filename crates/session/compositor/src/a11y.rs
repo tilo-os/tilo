@@ -376,21 +376,145 @@ mod tests {
         Point::from((x, y))
     }
 
-    #[test]
-    fn everything_is_off_until_the_person_turns_it_on() {
-        let a11y = A11y::default();
-        assert_eq!(a11y.cursor.size, DEFAULT_CURSOR_SIZE);
-        assert!(!a11y.cursor.crosshair);
-        assert_eq!(
-            a11y.cursor.theme, "",
-            "no stored theme: the environment's pointer is drawn"
-        );
-        assert!(a11y.color_filter.is_off());
-        assert!(!a11y.magnifier.is_on());
-        assert!(!a11y.visual_alerts);
-        assert!(a11y.assists.switch.is_none());
-        assert!(!a11y.assists.sticky_keys);
-        assert!(!a11y.assists.mouse_keys);
+    tilo_test_env::scenario! {
+        /// What the accessibility settings say, and what the magnifier, the lens and the visual
+        /// alert make of them.
+        #[allow(
+            clippy::float_cmp,
+            reason = "the alert is exactly full or exactly gone at its ends"
+        )]
+        fn accessibility_settings_are_read_as_the_person_set_them;
+
+        phase everything_is_off_until_the_person_turns_it_on;
+        {
+            let a11y = A11y::default();
+            assert_eq!(a11y.cursor.size, DEFAULT_CURSOR_SIZE);
+            assert!(!a11y.cursor.crosshair);
+            assert_eq!(
+                a11y.cursor.theme, "",
+                "no stored theme: the environment's pointer is drawn"
+            );
+            assert!(a11y.color_filter.is_off());
+            assert!(!a11y.magnifier.is_on());
+            assert!(!a11y.visual_alerts);
+            assert!(a11y.assists.switch.is_none());
+            assert!(!a11y.assists.sticky_keys);
+            assert!(!a11y.assists.mouse_keys);
+        }
+
+        phase the_magnifier_draws_at_its_step;
+        {
+            assert!((Magnifier::default().factor() - 1.0).abs() < f64::EPSILON);
+            let magnifier = Magnifier {
+                zoom: 3,
+                view: MagnifierView::FullScreen,
+            };
+            assert!(magnifier.is_on());
+            assert!((magnifier.factor() - 3.0).abs() < f64::EPSILON);
+        }
+
+        phase a_visual_alert_opens_at_full_strength_and_fades_out;
+        {
+            let t0 = Instant::now();
+            let mut visual = Visual::default();
+            assert_eq!(visual.flash_alpha(t0), 0.0);
+            assert!(!visual.flashing(t0));
+            visual.flash = Some((t0, FLASH));
+            assert_eq!(visual.flash_alpha(t0), 1.0);
+            // Full strength for the first half, then down to nothing.
+            assert_eq!(visual.flash_alpha(t0 + FLASH / 2), 1.0);
+            assert!(visual.flash_alpha(t0 + FLASH * 3 / 4) < 0.6);
+            assert_eq!(visual.flash_alpha(t0 + FLASH), 0.0);
+            assert!(!visual.flashing(t0 + FLASH + FLASH));
+            assert!(visual.flashing(t0 + ms(100)));
+        }
+
+        phase an_output_carries_what_the_scene_and_the_final_pass_read;
+        {
+            let output = Output::new(
+                "HEADLESS-1".to_owned(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "Tilo".into(),
+                    model: "test".into(),
+                },
+            );
+            seed(&output, &A11y::default());
+            let plain = visual(&output);
+            assert_eq!(plain.color_filter, ColorFilter::Off);
+            assert!(!plain.crosshair);
+
+            let a11y = A11y {
+                color_filter: ColorFilter::GrayscaleInverted,
+                magnifier: Magnifier {
+                    zoom: 2,
+                    view: MagnifierView::FullScreen,
+                },
+                cursor: CursorA11y {
+                    crosshair: true,
+                    ..CursorA11y::default()
+                },
+                ..A11y::default()
+            };
+            seed(&output, &a11y);
+            assert_eq!(
+                visual(&output).color_filter,
+                ColorFilter::GrayscaleInverted,
+                "the filter the output's final pass draws"
+            );
+            assert_eq!(visual(&output).magnifier_view, MagnifierView::FullScreen);
+            assert!(visual(&output).crosshair);
+
+            // And off again.
+            seed(&output, &A11y::default());
+            assert_eq!(visual(&output).color_filter, ColorFilter::Off);
+            assert!(!visual(&output).crosshair);
+        }
+
+        phase the_magnifier_follows_the_window_until_the_pointer_moves;
+        {
+            let t0 = Instant::now();
+            let mut focus = Focus::default();
+            assert_eq!(focus.centre(), None);
+            focus.observe(Some(point(100.0, 100.0)), None, t0);
+            assert_eq!(focus.centre(), Some(point(100.0, 100.0)));
+            // Tab moves the focus while the pointer rests.
+            focus.observe(
+                Some(point(100.0, 100.0)),
+                Some(point(450.0, 320.0)),
+                t0 + ms(10),
+            );
+            assert_eq!(focus.centre(), Some(point(450.0, 320.0)));
+            // The pointer moving hands the view back.
+            focus.observe(
+                Some(point(120.0, 90.0)),
+                Some(point(450.0, 320.0)),
+                t0 + ms(20),
+            );
+            assert_eq!(focus.centre(), Some(point(120.0, 90.0)));
+            // A pointer resting where it was is not movement.
+            focus.observe(
+                Some(point(120.0, 90.0)),
+                Some(point(600.0, 320.0)),
+                t0 + ms(30),
+            );
+            assert_eq!(focus.centre(), Some(point(600.0, 320.0)));
+        }
+
+        phase the_lens_is_centred_and_never_covers_the_whole_output;
+        {
+            let centre = Point::<i32, Physical>::from((960, 540));
+            let lens = lens_rect(centre, Size::from((1920, 1080)));
+            assert_eq!(lens.size, Size::from((LENS_MAX.0, LENS_MAX.1)));
+            assert_eq!(
+                lens.loc,
+                Point::from((960 - LENS_MAX.0 / 2, 540 - LENS_MAX.1 / 2))
+            );
+            // A small output gets a share of it, not a lens larger than it is.
+            let small = lens_rect(centre, Size::from((320, 240)));
+            assert!(small.size.w < 320 && small.size.h < 240); // allow-breakpoint: the fixture output's size, not a layout width
+        }
     }
 
     /// A theme applied while the session runs is the pointer's from the same update: no restart,
@@ -421,110 +545,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_magnifier_draws_at_its_step() {
-        assert!((Magnifier::default().factor() - 1.0).abs() < f64::EPSILON);
-        let magnifier = Magnifier {
-            zoom: 3,
-            view: MagnifierView::FullScreen,
-        };
-        assert!(magnifier.is_on());
-        assert!((magnifier.factor() - 3.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    #[allow(
-        clippy::float_cmp,
-        reason = "the alert is exactly full or exactly gone at its ends"
-    )]
-    fn a_visual_alert_opens_at_full_strength_and_fades_out() {
-        let t0 = Instant::now();
-        let mut visual = Visual::default();
-        assert_eq!(visual.flash_alpha(t0), 0.0);
-        assert!(!visual.flashing(t0));
-        visual.flash = Some((t0, FLASH));
-        assert_eq!(visual.flash_alpha(t0), 1.0);
-        // Full strength for the first half, then down to nothing.
-        assert_eq!(visual.flash_alpha(t0 + FLASH / 2), 1.0);
-        assert!(visual.flash_alpha(t0 + FLASH * 3 / 4) < 0.6);
-        assert_eq!(visual.flash_alpha(t0 + FLASH), 0.0);
-        assert!(!visual.flashing(t0 + FLASH + FLASH));
-        assert!(visual.flashing(t0 + ms(100)));
-    }
-
-    #[test]
-    fn an_output_carries_what_the_scene_and_the_final_pass_read() {
-        let output = Output::new(
-            "HEADLESS-1".to_owned(),
-            PhysicalProperties {
-                size: (0, 0).into(),
-                subpixel: Subpixel::Unknown,
-                make: "Tilo".into(),
-                model: "test".into(),
-            },
-        );
-        seed(&output, &A11y::default());
-        let plain = visual(&output);
-        assert_eq!(plain.color_filter, ColorFilter::Off);
-        assert!(!plain.crosshair);
-
-        let a11y = A11y {
-            color_filter: ColorFilter::GrayscaleInverted,
-            magnifier: Magnifier {
-                zoom: 2,
-                view: MagnifierView::FullScreen,
-            },
-            cursor: CursorA11y {
-                crosshair: true,
-                ..CursorA11y::default()
-            },
-            ..A11y::default()
-        };
-        seed(&output, &a11y);
-        assert_eq!(
-            visual(&output).color_filter,
-            ColorFilter::GrayscaleInverted,
-            "the filter the output's final pass draws"
-        );
-        assert_eq!(visual(&output).magnifier_view, MagnifierView::FullScreen);
-        assert!(visual(&output).crosshair);
-
-        // And off again.
-        seed(&output, &A11y::default());
-        assert_eq!(visual(&output).color_filter, ColorFilter::Off);
-        assert!(!visual(&output).crosshair);
-    }
-
-    #[test]
-    fn the_magnifier_follows_the_window_until_the_pointer_moves() {
-        let t0 = Instant::now();
-        let mut focus = Focus::default();
-        assert_eq!(focus.centre(), None);
-        focus.observe(Some(point(100.0, 100.0)), None, t0);
-        assert_eq!(focus.centre(), Some(point(100.0, 100.0)));
-        // Tab moves the focus while the pointer rests.
-        focus.observe(
-            Some(point(100.0, 100.0)),
-            Some(point(450.0, 320.0)),
-            t0 + ms(10),
-        );
-        assert_eq!(focus.centre(), Some(point(450.0, 320.0)));
-        // The pointer moving hands the view back.
-        focus.observe(
-            Some(point(120.0, 90.0)),
-            Some(point(450.0, 320.0)),
-            t0 + ms(20),
-        );
-        assert_eq!(focus.centre(), Some(point(120.0, 90.0)));
-        // A pointer resting where it was is not movement.
-        focus.observe(
-            Some(point(120.0, 90.0)),
-            Some(point(600.0, 320.0)),
-            t0 + ms(30),
-        );
-        assert_eq!(focus.centre(), Some(point(600.0, 320.0)));
-    }
-
     /// An alert asked for between frames is drawn by the first frame after it,
     /// however late that frame comes: a machine busy enough to draw a frame in
     /// half a second still shows the person what happened.
@@ -547,19 +567,5 @@ mod tests {
         let shot = compositor.screenshot("HEADLESS-1").expect("the frame");
         let edge = shot.pixel(320, 1).expect("a pixel on the display's edge");
         assert!(edge[2] > 120, "the alert is on screen: {edge:?}");
-    }
-
-    #[test]
-    fn the_lens_is_centred_and_never_covers_the_whole_output() {
-        let centre = Point::<i32, Physical>::from((960, 540));
-        let lens = lens_rect(centre, Size::from((1920, 1080)));
-        assert_eq!(lens.size, Size::from((LENS_MAX.0, LENS_MAX.1)));
-        assert_eq!(
-            lens.loc,
-            Point::from((960 - LENS_MAX.0 / 2, 540 - LENS_MAX.1 / 2))
-        );
-        // A small output gets a share of it, not a lens larger than it is.
-        let small = lens_rect(centre, Size::from((320, 240)));
-        assert!(small.size.w < 320 && small.size.h < 240); // allow-breakpoint: the fixture output's size, not a layout width
     }
 }

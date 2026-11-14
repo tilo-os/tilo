@@ -453,96 +453,101 @@ mod tests {
         list.iter().map(|name| (*name).to_owned()).collect()
     }
 
-    #[test]
-    fn night_light_keeps_red_and_lowers_green_then_blue_most() {
-        let ramp = Ramp::night_light(256, 2_000);
-        assert_eq!(ramp.red[255], u16::MAX);
-        assert_eq!(ramp.red[0], 0);
-        assert_eq!(ramp.green[255] >> 8, 203);
-        assert_eq!(ramp.blue[255] >> 8, 123);
-        let neutral = Ramp::night_light(256, 6_500);
-        assert_eq!(neutral.red, neutral.blue, "6500 K changes nothing");
-        assert_eq!(neutral.green[128], 128 * 257);
-        assert_eq!(Ramp::night_light(256, 100), ramp, "clamped to 2000 K");
-    }
+    tilo_test_env::scenario! {
+        /// Gamma ramps: night light's and a tool's.
+        fn night_light_and_a_tools_ramp_are_written_per_output;
 
-    #[test]
-    fn a_table_is_exactly_three_ramps_of_the_size() {
-        let values: Vec<u8> = (0_u16..6).flat_map(u16::to_ne_bytes).collect();
-        let ramp = Ramp::from_table(&values, 2).unwrap();
-        assert_eq!(
-            (ramp.red, ramp.green, ramp.blue),
-            (vec![0, 1], vec![2, 3], vec![4, 5])
-        );
-        assert!(Ramp::from_table(&values, 3).is_none());
-        assert!(Ramp::from_table(&values[..10], 2).is_none());
-        assert!(Ramp::from_table(&[], 0).is_none());
-    }
-
-    #[test]
-    fn pixels_go_through_the_ramp_and_alpha_does_not() {
-        let mut pixels = [255, 255, 255, 200, 0, 0, 0, 255];
-        Ramp::night_light(1024, 2_000).apply(&mut pixels);
-        assert_eq!(pixels, [255, 203, 123, 200, 0, 0, 0, 255]);
-    }
-
-    #[test]
-    fn night_light_is_written_once_per_output_and_taken_off_when_turned_off() {
-        let outputs = names(&["eDP-1", "DP-1"]);
-        let mut gamma = Gamma::default();
-        gamma.set_size("eDP-1", Some(1024));
-        assert_eq!(
-            gamma.changes(&outputs),
-            vec![("eDP-1".to_owned(), None)],
-            "a new output is told it has no ramp, whatever it held before"
-        );
-        gamma.applied("eDP-1", None);
-        gamma.set_night_light(Some(3_700));
-        let on = gamma.changes(&outputs);
-        assert_eq!(on.len(), 1, "only the output that carries a ramp");
-        assert_eq!(on[0].1.as_ref().map(Ramp::size), Some(1024));
-        for (name, ramp) in on {
-            gamma.applied(&name, ramp);
+        phase night_light_keeps_red_and_lowers_green_then_blue_most;
+        {
+            let ramp = Ramp::night_light(256, 2_000);
+            assert_eq!(ramp.red[255], u16::MAX);
+            assert_eq!(ramp.red[0], 0);
+            assert_eq!(ramp.green[255] >> 8, 203);
+            assert_eq!(ramp.blue[255] >> 8, 123);
+            let neutral = Ramp::night_light(256, 6_500);
+            assert_eq!(neutral.red, neutral.blue, "6500 K changes nothing");
+            assert_eq!(neutral.green[128], 128 * 257);
+            assert_eq!(Ramp::night_light(256, 100), ramp, "clamped to 2000 K");
         }
-        assert!(gamma.changes(&outputs).is_empty(), "nothing written twice");
-        gamma.set_night_light(None);
-        assert_eq!(gamma.changes(&outputs), vec![("eDP-1".to_owned(), None)]);
-    }
 
-    #[test]
-    fn a_tools_ramp_replaces_night_light_until_it_lets_go() {
-        let outputs = names(&["eDP-1"]);
-        let mut gamma = Gamma::default();
-        gamma.set_size("eDP-1", Some(4));
-        gamma.set_night_light(Some(2_000));
-        gamma.applied("eDP-1", None);
-        let tool = Ramp {
-            red: vec![0; 4],
-            green: vec![1; 4],
-            blue: vec![2; 4],
-        };
-        gamma.set.insert("eDP-1".into(), tool.clone());
-        assert_eq!(gamma.changes(&outputs), vec![("eDP-1".into(), Some(tool))]);
-        gamma.set.remove("eDP-1");
-        assert_eq!(
-            gamma.changes(&outputs),
-            vec![("eDP-1".into(), Some(Ramp::night_light(4, 2_000)))]
-        );
-    }
+        phase a_table_is_exactly_three_ramps_of_the_size;
+        {
+            let values: Vec<u8> = (0_u16..6).flat_map(u16::to_ne_bytes).collect();
+            let ramp = Ramp::from_table(&values, 2).unwrap();
+            assert_eq!(
+                (ramp.red, ramp.green, ramp.blue),
+                (vec![0, 1], vec![2, 3], vec![4, 5])
+            );
+            assert!(Ramp::from_table(&values, 3).is_none());
+            assert!(Ramp::from_table(&values[..10], 2).is_none());
+            assert!(Ramp::from_table(&[], 0).is_none());
+        }
 
-    #[test]
-    fn unplugged_outputs_are_forgotten_and_a_resume_writes_every_ramp_again() {
-        let mut gamma = Gamma::default();
-        gamma.set_size("eDP-1", Some(4));
-        gamma.set_size("DP-1", Some(4));
-        gamma.applied("eDP-1", None);
-        gamma.applied("DP-1", None);
-        assert!(gamma.changes(&names(&["eDP-1"])).is_empty());
-        assert!(!gamma.sizes.contains_key("DP-1"));
-        gamma.forget_applied();
-        assert_eq!(
-            gamma.changes(&names(&["eDP-1"])),
-            vec![("eDP-1".into(), None)]
-        );
+        phase pixels_go_through_the_ramp_and_alpha_does_not;
+        {
+            let mut pixels = [255, 255, 255, 200, 0, 0, 0, 255];
+            Ramp::night_light(1024, 2_000).apply(&mut pixels);
+            assert_eq!(pixels, [255, 203, 123, 200, 0, 0, 0, 255]);
+        }
+
+        phase night_light_is_written_once_per_output_and_taken_off_when_turned_off;
+        {
+            let outputs = names(&["eDP-1", "DP-1"]);
+            let mut gamma = Gamma::default();
+            gamma.set_size("eDP-1", Some(1024));
+            assert_eq!(
+                gamma.changes(&outputs),
+                vec![("eDP-1".to_owned(), None)],
+                "a new output is told it has no ramp, whatever it held before"
+            );
+            gamma.applied("eDP-1", None);
+            gamma.set_night_light(Some(3_700));
+            let on = gamma.changes(&outputs);
+            assert_eq!(on.len(), 1, "only the output that carries a ramp");
+            assert_eq!(on[0].1.as_ref().map(Ramp::size), Some(1024));
+            for (name, ramp) in on {
+                gamma.applied(&name, ramp);
+            }
+            assert!(gamma.changes(&outputs).is_empty(), "nothing written twice");
+            gamma.set_night_light(None);
+            assert_eq!(gamma.changes(&outputs), vec![("eDP-1".to_owned(), None)]);
+        }
+
+        phase a_tools_ramp_replaces_night_light_until_it_lets_go;
+        {
+            let outputs = names(&["eDP-1"]);
+            let mut gamma = Gamma::default();
+            gamma.set_size("eDP-1", Some(4));
+            gamma.set_night_light(Some(2_000));
+            gamma.applied("eDP-1", None);
+            let tool = Ramp {
+                red: vec![0; 4],
+                green: vec![1; 4],
+                blue: vec![2; 4],
+            };
+            gamma.set.insert("eDP-1".into(), tool.clone());
+            assert_eq!(gamma.changes(&outputs), vec![("eDP-1".into(), Some(tool))]);
+            gamma.set.remove("eDP-1");
+            assert_eq!(
+                gamma.changes(&outputs),
+                vec![("eDP-1".into(), Some(Ramp::night_light(4, 2_000)))]
+            );
+        }
+
+        phase unplugged_outputs_are_forgotten_and_a_resume_writes_every_ramp_again;
+        {
+            let mut gamma = Gamma::default();
+            gamma.set_size("eDP-1", Some(4));
+            gamma.set_size("DP-1", Some(4));
+            gamma.applied("eDP-1", None);
+            gamma.applied("DP-1", None);
+            assert!(gamma.changes(&names(&["eDP-1"])).is_empty());
+            assert!(!gamma.sizes.contains_key("DP-1"));
+            gamma.forget_applied();
+            assert_eq!(
+                gamma.changes(&names(&["eDP-1"])),
+                vec![("eDP-1".into(), None)]
+            );
+        }
     }
 }

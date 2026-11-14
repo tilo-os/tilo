@@ -547,40 +547,45 @@ mod tests {
         Rectangle::new(Point::from((x, y)), Size::from((w, h)))
     }
 
-    #[test]
-    fn dragging_an_edge_moves_it_and_keeps_the_opposite_one() {
-        let start = rect(100, 100, 400, 300);
-        let right_bottom = ResizeEdges {
-            right: true,
-            bottom: true,
-            ..ResizeEdges::default()
-        };
-        assert_eq!(
-            resized(start, right_bottom, Point::from((50, -20)), MIN_SIZE),
-            rect(100, 100, 450, 280)
-        );
-        let top_left = ResizeEdges {
-            top: true,
-            left: true,
-            ..ResizeEdges::default()
-        };
-        assert_eq!(
-            resized(start, top_left, Point::from((50, 20)), MIN_SIZE),
-            rect(150, 120, 350, 280),
-            "the bottom-right corner stays put"
-        );
-    }
+    tilo_test_env::scenario! {
+        /// Resizing a window by an edge.
+        fn a_resize_moves_the_dragged_edge_and_keeps_the_far_one;
 
-    #[test]
-    fn a_resize_never_shrinks_below_the_minimum_and_the_far_edge_stays() {
-        let start = rect(0, 0, 200, 200);
-        let left = ResizeEdges {
-            left: true,
-            ..ResizeEdges::default()
-        };
-        assert_eq!(
-            resized(start, left, Point::from((500, 0)), MIN_SIZE),
-            rect(200 - MIN_SIZE.0, 0, MIN_SIZE.0, 200)
-        );
+        phase dragging_an_edge_moves_it_and_keeps_the_opposite_one;
+        {
+            let start = rect(100, 100, 400, 300);
+            let right_bottom = ResizeEdges {
+                right: true,
+                bottom: true,
+                ..ResizeEdges::default()
+            };
+            assert_eq!(
+                resized(start, right_bottom, Point::from((50, -20)), MIN_SIZE),
+                rect(100, 100, 450, 280)
+            );
+            let top_left = ResizeEdges {
+                top: true,
+                left: true,
+                ..ResizeEdges::default()
+            };
+            assert_eq!(
+                resized(start, top_left, Point::from((50, 20)), MIN_SIZE),
+                rect(150, 120, 350, 280),
+                "the bottom-right corner stays put"
+            );
+        }
+
+        phase a_resize_never_shrinks_below_the_minimum_and_the_far_edge_stays;
+        {
+            let start = rect(0, 0, 200, 200);
+            let left = ResizeEdges {
+                left: true,
+                ..ResizeEdges::default()
+            };
+            assert_eq!(
+                resized(start, left, Point::from((500, 0)), MIN_SIZE),
+                rect(200 - MIN_SIZE.0, 0, MIN_SIZE.0, 200)
+            );
+        }
     }
 }

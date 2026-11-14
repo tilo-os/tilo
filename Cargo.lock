@@ -18338,6 +18338,7 @@ dependencies = [
  "tilo-paths",
  "tilo-session-core",
  "tilo-startup-metrics",
+ "tilo-test-env",
  "tilo-wayland-ext",
  "tilo-window-share",
  "tilo-winit",

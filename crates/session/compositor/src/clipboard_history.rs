@@ -388,132 +388,137 @@ mod tests {
         history.record(&mimes, mime, bytes.to_vec(), created_ms)
     }
 
-    #[test]
-    fn a_copy_of_the_same_bytes_is_one_copy_at_the_front_and_keeps_its_pin() {
-        let mut history = History::default();
-        assert!(keep(&mut history, &[(TEXT_MIME, b"one")], 1));
-        assert!(keep(&mut history, &[(TEXT_MIME, b"two")], 2));
-        let one = history
-            .copies()
-            .find(|copy| copy.text() == Some("one"))
-            .expect("the first copy")
-            .id;
-        assert!(history.pin(one, true));
+    tilo_test_env::scenario! {
+        /// The clipboard history.
+        fn the_clipboard_history_keeps_bounded_copies_and_no_secrets;
 
-        assert!(keep(&mut history, &[(TEXT_MIME, b"one")], 3));
-        let texts: Vec<&str> = history
-            .copies()
-            .map(|copy| std::str::from_utf8(&copy.bytes).expect("text"))
-            .collect();
-        assert_eq!(texts, ["one", "two"], "the copy moved to the front");
-        assert!(
-            history.copies().next().expect("the copy").pinned,
-            "the pin belongs to the copy, so it moves with it"
-        );
-        assert!(
-            !history.copies().nth(1).expect("the copy").pinned,
-            "the other copy was never pinned"
-        );
-        assert!(
-            !keep(&mut history, &[(TEXT_MIME, b"one")], 4),
-            "a copy already at the front changes nothing"
-        );
-    }
-
-    #[test]
-    fn secrets_and_what_has_no_kept_format_never_enter() {
-        let mut history = History::default();
-        assert!(!keep(
-            &mut history,
-            &[(TEXT_MIME, b"hunter2"), (SECRET_MIME, b"secret")],
-            1
-        ));
-        assert!(!keep(
-            &mut history,
-            &[
-                (TEXT_MIME, b"hunter2"),
-                (PASSWORD_MANAGER_HINT_MIME, b"secret")
-            ],
-            1
-        ));
-        assert!(!keep(&mut history, &[("application/x-weird", b"x")], 1));
-        assert!(!keep(&mut history, &[(TEXT_MIME, b"")], 1));
-        assert!(history.is_empty());
-    }
-
-    #[test]
-    fn the_history_is_bounded_and_pins_outlive_clearing() {
-        let mut history = History::default();
-        for index in 0..MAX_COPIES + 5 {
-            assert!(keep(
-                &mut history,
-                &[(TEXT_MIME, format!("copy {index}").as_bytes())],
-                index as u64
-            ));
-        }
-        assert_eq!(history.len(), MAX_COPIES);
-        assert_eq!(
-            history.copies().last().map(|copy| copy.created_ms),
-            Some(5),
-            "the oldest went"
-        );
-        let pinned = history.copies().last().expect("a copy").id;
-        assert!(history.pin(pinned, true));
-        assert_eq!(history.clear(), MAX_COPIES - 1);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history.copies().next().map(|copy| copy.id), Some(pinned));
-        assert!(history.remove(pinned));
-        assert!(history.is_empty());
-    }
-
-    #[test]
-    fn a_text_copy_says_its_first_line_and_a_shared_one_keeps_where_it_came_from() {
-        let mut history = History::default();
-        keep(&mut history, &[(TEXT_MIME, b"hello\nworld")], 1);
-        let text = history.copies().next().expect("a copy").id;
-        assert_eq!(history.text(text), Some("hello\nworld"));
-        assert_eq!(
-            history.copies().next().expect("a copy").text_preview(),
-            Some("hello")
-        );
-
-        let mut image = Copy::new("image/png", vec![0x89, b'P', b'N', b'G'], 2);
-        image.from = Some("phone".into());
-        assert!(history.import(image.clone()));
-        assert!(!history.import(image.clone()), "one copy is one copy");
-        assert_eq!(history.len(), 2);
-        assert_eq!(history.text(image.id), None);
-        assert_eq!(
-            history
+        phase a_copy_of_the_same_bytes_is_one_copy_at_the_front_and_keeps_its_pin;
+        {
+            let mut history = History::default();
+            assert!(keep(&mut history, &[(TEXT_MIME, b"one")], 1));
+            assert!(keep(&mut history, &[(TEXT_MIME, b"two")], 2));
+            let one = history
                 .copies()
-                .find(|copy| copy.id == image.id)
-                .and_then(|copy| copy.from.as_deref()),
-            Some("phone"),
-            "the copy says where it came from"
-        );
-    }
+                .find(|copy| copy.text() == Some("one"))
+                .expect("the first copy")
+                .id;
+            assert!(history.pin(one, true));
 
-    #[test]
-    fn a_read_arrives_as_it_is_written_and_never_blocks() {
-        use std::io::Write as _;
-        let (reader, mut writer) = std::io::pipe().expect("pipe");
-        let mut pull = Pull::new(reader, TEXT_MIME).expect("a non-blocking read");
-        assert_eq!(pull.drain(), Pulled::Pending, "nothing written yet");
-        writer.write_all(b"half").expect("write");
-        writer.write_all(b" and half").expect("write");
-        drop(writer);
-        let mut complete = Vec::new();
-        for _ in 0..100 {
-            match pull.drain() {
-                Pulled::Ready(bytes) => {
-                    complete = bytes;
-                    break;
-                }
-                Pulled::Pending => std::thread::sleep(Duration::from_millis(5)),
-                Pulled::Lost => panic!("the copy was lost"),
-            }
+            assert!(keep(&mut history, &[(TEXT_MIME, b"one")], 3));
+            let texts: Vec<&str> = history
+                .copies()
+                .map(|copy| std::str::from_utf8(&copy.bytes).expect("text"))
+                .collect();
+            assert_eq!(texts, ["one", "two"], "the copy moved to the front");
+            assert!(
+                history.copies().next().expect("the copy").pinned,
+                "the pin belongs to the copy, so it moves with it"
+            );
+            assert!(
+                !history.copies().nth(1).expect("the copy").pinned,
+                "the other copy was never pinned"
+            );
+            assert!(
+                !keep(&mut history, &[(TEXT_MIME, b"one")], 4),
+                "a copy already at the front changes nothing"
+            );
         }
-        assert_eq!(complete, b"half and half");
-        assert_eq!(pull.mime(), TEXT_MIME);
+
+        phase secrets_and_what_has_no_kept_format_never_enter;
+        {
+            let mut history = History::default();
+            assert!(!keep(
+                &mut history,
+                &[(TEXT_MIME, b"hunter2"), (SECRET_MIME, b"secret")],
+                1
+            ));
+            assert!(!keep(
+                &mut history,
+                &[
+                    (TEXT_MIME, b"hunter2"),
+                    (PASSWORD_MANAGER_HINT_MIME, b"secret")
+                ],
+                1
+            ));
+            assert!(!keep(&mut history, &[("application/x-weird", b"x")], 1));
+            assert!(!keep(&mut history, &[(TEXT_MIME, b"")], 1));
+            assert!(history.is_empty());
+        }
+
+        phase the_history_is_bounded_and_pins_outlive_clearing;
+        {
+            let mut history = History::default();
+            for index in 0..MAX_COPIES + 5 {
+                assert!(keep(
+                    &mut history,
+                    &[(TEXT_MIME, format!("copy {index}").as_bytes())],
+                    index as u64
+                ));
+            }
+            assert_eq!(history.len(), MAX_COPIES);
+            assert_eq!(
+                history.copies().last().map(|copy| copy.created_ms),
+                Some(5),
+                "the oldest went"
+            );
+            let pinned = history.copies().last().expect("a copy").id;
+            assert!(history.pin(pinned, true));
+            assert_eq!(history.clear(), MAX_COPIES - 1);
+            assert_eq!(history.len(), 1);
+            assert_eq!(history.copies().next().map(|copy| copy.id), Some(pinned));
+            assert!(history.remove(pinned));
+            assert!(history.is_empty());
+        }
+
+        phase a_text_copy_says_its_first_line_and_a_shared_one_keeps_where_it_came_from;
+        {
+            let mut history = History::default();
+            keep(&mut history, &[(TEXT_MIME, b"hello\nworld")], 1);
+            let text = history.copies().next().expect("a copy").id;
+            assert_eq!(history.text(text), Some("hello\nworld"));
+            assert_eq!(
+                history.copies().next().expect("a copy").text_preview(),
+                Some("hello")
+            );
+
+            let mut image = Copy::new("image/png", vec![0x89, b'P', b'N', b'G'], 2);
+            image.from = Some("phone".into());
+            assert!(history.import(image.clone()));
+            assert!(!history.import(image.clone()), "one copy is one copy");
+            assert_eq!(history.len(), 2);
+            assert_eq!(history.text(image.id), None);
+            assert_eq!(
+                history
+                    .copies()
+                    .find(|copy| copy.id == image.id)
+                    .and_then(|copy| copy.from.as_deref()),
+                Some("phone"),
+                "the copy says where it came from"
+            );
+        }
+
+        phase a_read_arrives_as_it_is_written_and_never_blocks;
+        {
+            use std::io::Write as _;
+            let (reader, mut writer) = std::io::pipe().expect("pipe");
+            let mut pull = Pull::new(reader, TEXT_MIME).expect("a non-blocking read");
+            assert_eq!(pull.drain(), Pulled::Pending, "nothing written yet");
+            writer.write_all(b"half").expect("write");
+            writer.write_all(b" and half").expect("write");
+            drop(writer);
+            let mut complete = Vec::new();
+            for _ in 0..100 {
+                match pull.drain() {
+                    Pulled::Ready(bytes) => {
+                        complete = bytes;
+                        break;
+                    }
+                    Pulled::Pending => std::thread::sleep(Duration::from_millis(5)),
+                    Pulled::Lost => panic!("the copy was lost"),
+                }
+            }
+            assert_eq!(complete, b"half and half");
+            assert_eq!(pull.mime(), TEXT_MIME);
+        }
     }
 }
