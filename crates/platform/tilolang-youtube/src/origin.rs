@@ -5,9 +5,7 @@
 //! The origin is native code the instance runs beside the package: it holds the network, which
 //! package code never sees. Each frame the instance polls it; it asks YouTube what an effect
 //! asked for, writes the answer into the package's records as one change of the origin (through
-//! [`tilolang_runtime::Runtime::write_origin`]), and says what became of the effect. An answer
-//! the workspace cannot keep is kept here and taken in again by the next poll, before anything
-//! newer, the app saying why it stands unwritten.
+//! [`tilolang_runtime::Runtime::write_origin`]), and says what became of the effect.
 //!
 //! **What is kept.** A search's channels, playlists and videos; a channel's videos; the videos
 //! YouTube lists as trending; and where a video's bytes play from. Each is keyed by the
@@ -22,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
 use tilolang_tilo::runtime::RuntimeError;
-use tilolang_tilo::runtime::origin::{OriginWrite, Unwritten};
+use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
 use crate::service::{
@@ -69,15 +67,6 @@ struct Waiting {
     answered: Option<Result<Answered, ServiceError>>,
 }
 
-/// An answer of the service the app's records could not keep, kept to be written again by the
-/// next poll: what YouTube said is not lost with the poll that could not keep it.
-struct Unanswered {
-    pending: Pending,
-    answered: Result<Answered, ServiceError>,
-    /// Why the app could not keep it, which the app says while it waits.
-    trouble: String,
-}
-
 /// The origin. See the module docs.
 pub struct YouTubeOrigin {
     service: Arc<dyn Service>,
@@ -90,8 +79,6 @@ pub struct YouTubeOrigin {
     types: Option<Types>,
     /// Each request the service has not answered yet, oldest first.
     waiting: VecDeque<Waiting>,
-    /// The answers the app's records could not keep, oldest first.
-    unwritten: Unwritten<Unanswered>,
     /// Why YouTube could not be reached the last time it was asked, until it answers.
     unreached: Option<String>,
     /// The instance's frame loop, woken whenever an answer is ready.
@@ -108,7 +95,6 @@ impl YouTubeOrigin {
             answered: Arc::default(),
             types: None,
             waiting: VecDeque::new(),
-            unwritten: Unwritten::new(),
             unreached: None,
             on_answer: None,
         }
@@ -330,7 +316,7 @@ impl Origin for YouTubeOrigin {
     }
 
     fn due(&self) -> bool {
-        self.woken.load(Ordering::Acquire) || !self.unwritten.is_empty()
+        self.woken.load(Ordering::Acquire)
     }
 
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
@@ -342,16 +328,10 @@ impl Origin for YouTubeOrigin {
         else {
             return Polled::default();
         };
-        // What the app could not keep last time, before anything newer: an answer waits until it
-        // is written, never behind one that came after it.
-        let mut polled = Polled {
-            wrote: self.take_again(cx.host, &types),
-            settle: false,
-        };
+        let mut polled = Polled::default();
         if self.woken.swap(false, Ordering::AcqRel) {
-            polled.wrote |= self.take_answers(cx.host, &types);
-            // The effect the service carried out is settled: what became of it is in the record,
-            // or waits to be written by the next poll.
+            polled.wrote = self.take_answers(cx.host, &types);
+            // The effect the service carried out is settled: what became of it is in the record.
             polled.settle = true;
         }
         polled.wrote |= self.say(cx.host, &types);
@@ -419,44 +399,25 @@ impl YouTubeOrigin {
                 self.waiting.push_front(waiting);
                 break;
             };
-            let mut answer = Unanswered {
-                pending: waiting.pending,
-                answered,
-                trouble: String::new(),
-            };
-            let written = Self::write_step(host, t, &mut answer);
-            self.reached(&answer.answered);
-            if written {
-                wrote = true;
-            } else {
-                self.unwritten.keep(answer);
-            }
+            wrote |= Self::write_step(host, t, &waiting.pending, &answered);
+            self.reached(&answered);
         }
         wrote
     }
 
-    /// The answers the app could not keep, taken again: what is written no longer waits, and what
-    /// is not stays for the next poll, the app saying why.
-    fn take_again(&mut self, host: &Host, t: &Types) -> bool {
-        let mut wrote = false;
-        let mut unwritten = std::mem::take(&mut self.unwritten);
-        unwritten.take_again(|answer| {
-            let written = Self::write_step(host, t, answer);
-            wrote |= written;
-            written
-        });
-        self.unwritten = unwritten;
-        wrote
-    }
-
-    /// One answer, written as one change of the origin: `answer` says why it still waits when the
-    /// workspace does not take it.
-    fn write_step(host: &Host, t: &Types, answer: &mut Unanswered) -> bool {
-        match Self::write_answer(host, t, &answer.pending, &answer.answered) {
+    /// One answer, written as one change of the origin: whether anything was written. What
+    /// cannot be written is said once in the log and not kept — no later poll writes it any
+    /// differently.
+    fn write_step(
+        host: &Host,
+        t: &Types,
+        pending: &Pending,
+        answered: &Result<Answered, ServiceError>,
+    ) -> bool {
+        match Self::write_answer(host, t, pending, answered) {
             Ok(wrote) => wrote,
             Err(error) => {
                 tracing::warn!(%error, "what YouTube said could not be written");
-                answer.trouble = format!("What YouTube said could not be saved: {error}");
                 false
             }
         }
@@ -470,15 +431,10 @@ impl YouTubeOrigin {
         };
     }
 
-    /// The app says whether YouTube answers, and why it is not in step: one not reached is said
-    /// before an answer the workspace could not keep, which the next poll writes again. Written
-    /// when it differs from what the record holds.
+    /// The app says whether YouTube answers, and why it is not in step: one not reached says
+    /// why. Written when it differs from what the record holds.
     fn say(&self, host: &Host, t: &Types) -> bool {
-        let trouble = match (&self.unreached, self.unwritten.steps().last()) {
-            (Some(unreached), _) => unreached.as_str(),
-            (None, Some(waiting)) => waiting.trouble.as_str(),
-            (None, None) => "",
-        };
+        let trouble = self.unreached.as_deref().unwrap_or("");
         let online = self.unreached.is_none();
         if read_text(host, &t.root, &t.root_ty, "trouble") == trouble
             && read_bool(host, &t.root, &t.root_ty, "online") == online
@@ -512,7 +468,7 @@ impl YouTubeOrigin {
     ///
     /// # Errors
     ///
-    /// A store that cannot take the change; then none of what YouTube said is kept.
+    /// A store that cannot take the change; then none of what YouTube said is written.
     fn write_answer(
         host: &Host,
         t: &Types,
