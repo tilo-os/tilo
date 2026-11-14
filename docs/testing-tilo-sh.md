@@ -198,7 +198,7 @@ own state (`relay-upgrade`).
    mkdir -p /tmp/lounge-people
    kubectl -n tilo-sh-vm-host exec deploy/tilo-sh-relay -c room-service -- \
      tar -C /run/tilo-rooms -cf - lounge | tar -C /tmp/lounge-people -xf -
-   rcargo --fetch debug/tilo-relay build -p tilo-relay --features agents
+   $CARGO --fetch debug/tilo-relay build -p tilo-relay --features agents
    target/debug/tilo-relay release-people export \
      --state /tmp/lounge-people/lounge --out /tmp/lounge-people/people.json
    ```
