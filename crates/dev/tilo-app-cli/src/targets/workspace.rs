@@ -8,8 +8,8 @@
 //! on their own: every browser that opens the served join page creates a
 //! person of its own, tells the page server's `/join` the name it goes by,
 //! and enters through the host's door on its session with the host. The app
-//! is an author of the workspace
-//! (`--author-app`), so members write through it.
+//! acts as the person whose page runs it and reaches its own records, so a
+//! member at the workspace's default role writes through it.
 //!
 //! It is for development on this machine. Anyone who reaches the page is
 //! let in; the page server and the host listen on loopback.
@@ -138,7 +138,6 @@ impl SharedWorkspace {
             .arg(&owner_root)
             .arg("--workspace-id-file")
             .arg(state.join("workspace-id"))
-            .args(["--author-app", &app_id])
             // Both listeners take a port the kernel picks, which the host
             // announces once it serves: a port chosen here could be held by
             // something else by the time the host binds it.

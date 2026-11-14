@@ -111,7 +111,6 @@ lounge \
   TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
   TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
   TILO_WORKSPACES_SEED_APPS='so.tilo.chat,so.tilo.board' \
-  TILO_WORKSPACES_AUTHOR_APPS='so.tilo.chat' \
   TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop, so.tilo.chat:' \
   TILO_WORKSPACES_BOTS='/usr/local/share/tilo/bots/discord-bridge.json guild=1521251563828416532 server=Tilo mirror-channels=yes;/opt/echo.json a=b' \
   TILO_WORKSPACES_PERSON_STORAGE_GB=10 \
@@ -150,7 +149,6 @@ pair --allowed-origin https://tilo.sh || fail "a site origin did not reach the h
 pair --allowed-origin https://tilo.so || fail "a site origin did not reach the host"
 pair --chat-channel feedback || fail "a chat channel did not reach the host"
 pair --seed-app so.tilo.board || fail "a seeded app did not reach the host"
-pair --author-app so.tilo.chat || fail "an authoring app did not reach the host"
 pair --refound so.tilo.browser-desktop/desktop || fail "a refounded record did not reach the host"
 pair --refound so.tilo.chat/ || fail "a refounded record of the app's primary did not reach the host"
 pair --feedback-channel feedback || fail "the feedback channel did not reach the host"
@@ -281,7 +279,6 @@ if [[ -n $relay ]] && "$relay" --version >/dev/null 2>&1; then
     TILO_WORKSPACES_CHAT_CHANNELS='general,feedback' \
     TILO_WORKSPACES_FEEDBACK_CHANNEL=feedback \
     TILO_WORKSPACES_SEED_APPS='so.tilo.chat' \
-    TILO_WORKSPACES_AUTHOR_APPS='so.tilo.chat' \
     TILO_WORKSPACES_REFOUND='so.tilo.browser-desktop:desktop' \
     TILO_WORKSPACES_LAYOUT=shared \
     TILO_WORKSPACES_LIVE=0.0.0.0:9881 \
