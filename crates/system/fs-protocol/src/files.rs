@@ -1096,13 +1096,30 @@ impl FileVersionV1 {
 /// Most bytes an attribution's actor or label carries.
 pub const MAX_ATTRIBUTION_TEXT_BYTES: usize = 128;
 
-/// Who caused a version when it was not the signing person themselves: a
-/// delegated agent that acted for that person through their session. The
-/// person it acted for is always the version's own `actor.person`, so an
-/// attribution can never name anybody else. The signing device's session
-/// took the agent from its authenticated action context, never from an app,
-/// and the device signature covers it ([`FileVersionAttributionV1`]).
-/// Presentation only: it grants nothing.
+/// What wrote a version, as the writing device recorded it beside the version.
+///
+/// The signing device asserts it; the person whose device signed the version
+/// remains the version's `actor.person`. Presentation only: it grants nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttributedWriter {
+    /// A coding agent's session (`agent:claude:<session>`,
+    /// `agent:codex:<thread>`, `agent:pi:<session>`), or a session-leased
+    /// agent acting through Tilo actions (`agent:<id>`).
+    Agent,
+    /// A Tilo app acting as itself (`app:<id>`).
+    App,
+    /// A third-party desktop program (`program:<desktop id>`).
+    Program,
+}
+
+/// Who caused a version when it was not the signing person themselves: an
+/// agent session, a Tilo app, or a third-party program, writing through that
+/// person's mount. The person it acted for is always the version's own
+/// `actor.person`, so an attribution can never name anybody else. The signing
+/// device's session took the writer from the FUSE caller's process, never
+/// from content, and the device signature covers it
+/// ([`FileVersionAttributionV1`]). Presentation only: it grants nothing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileAttributionV1 {
@@ -1112,18 +1129,38 @@ pub struct FileAttributionV1 {
 }
 
 impl FileAttributionV1 {
+    /// The agent this attribution names, when it names one (`agent:<id>` or
+    /// `agent:<kind>:<id>`), as written.
     #[must_use]
     pub fn agent_id(&self) -> Option<&str> {
-        self.actor.strip_prefix("agent:")
+        self.actor
+            .strip_prefix("agent:")
+            .filter(|id| !id.trim().is_empty())
     }
 
-    /// Validate a bounded, presentable agent attribution.
+    /// What wrote the version and its own id: the writer's session, app id or
+    /// desktop id. `None` when the actor names no writer this format has.
+    #[must_use]
+    pub fn writer(&self) -> Option<(AttributedWriter, &str)> {
+        let (kind, id) = if let Some(id) = self.actor.strip_prefix("agent:") {
+            (AttributedWriter::Agent, id)
+        } else if let Some(id) = self.actor.strip_prefix("app:") {
+            (AttributedWriter::App, id)
+        } else if let Some(id) = self.actor.strip_prefix("program:") {
+            (AttributedWriter::Program, id)
+        } else {
+            return None;
+        };
+        (!id.trim().is_empty()).then_some((kind, id))
+    }
+
+    /// Validate a bounded, presentable attribution.
     ///
     /// # Errors
     ///
-    /// Returns [`FileRecordError::InvalidAttribution`] unless the actor is an
-    /// `agent:<id>` principal and both it and the label are non-empty,
-    /// bounded and free of control characters.
+    /// Returns [`FileRecordError::InvalidAttribution`] unless the actor names
+    /// an `agent:`, `app:` or `program:` writer with a non-empty id, and both
+    /// the actor and the label are bounded and free of control characters.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         let presentable = |text: &str| {
             !text.trim().is_empty()
@@ -1131,8 +1168,8 @@ impl FileAttributionV1 {
                 && !text.chars().any(char::is_control)
         };
         if self
-            .agent_id()
-            .is_some_and(|id| presentable(id) && id.trim() == id)
+            .writer()
+            .is_some_and(|(_, id)| presentable(id) && id.trim() == id)
             && presentable(&self.actor)
             && presentable(&self.label)
         {
@@ -2057,6 +2094,60 @@ mod tests {
                 codec: ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
             },
             participants: vec![participant],
+        }
+    }
+
+    /// Every writer the device records beside a version is named and
+    /// validated; a person, an empty id or an unknown namespace is refused.
+    #[test]
+    fn an_attribution_names_its_writer_kind_and_id() {
+        let attribution = |actor: &str, label: &str| FileAttributionV1 {
+            actor: actor.into(),
+            label: label.into(),
+            color: [10, 20, 30],
+        };
+
+        for (actor, kind, id) in [
+            ("agent:scribe", AttributedWriter::Agent, "scribe"),
+            (
+                "agent:claude:3f2a-session",
+                AttributedWriter::Agent,
+                "claude:3f2a-session",
+            ),
+            (
+                "agent:codex:thread-7",
+                AttributedWriter::Agent,
+                "codex:thread-7",
+            ),
+            ("app:so.tilo.notes", AttributedWriter::App, "so.tilo.notes"),
+            (
+                "program:org.gnome.TextEditor.desktop",
+                AttributedWriter::Program,
+                "org.gnome.TextEditor.desktop",
+            ),
+        ] {
+            let attribution = attribution(actor, "A writer");
+            assert_eq!(attribution.writer(), Some((kind, id)), "{actor}");
+            attribution
+                .validate()
+                .unwrap_or_else(|error| panic!("{actor}: {error}"));
+        }
+
+        for (actor, label) in [
+            ("ada", "Ada"),
+            ("agent:", "A writer"),
+            ("agent:   ", "A writer"),
+            ("app: ", "Notes"),
+            ("unknown:thing", "A writer"),
+            ("agent:scribe", ""),
+            ("agent:scribe", "  "),
+            ("agent:scribe", "line\nbreak"),
+        ] {
+            assert_eq!(
+                attribution(actor, label).validate(),
+                Err(FileRecordError::InvalidAttribution),
+                "{actor:?} / {label:?}"
+            );
         }
     }
 }

@@ -2132,31 +2132,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "key-group"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "getrandom 0.2.17",
- "hex",
- "iai-callgrind",
- "openmls",
- "openmls_basic_credential",
- "openmls_rust_crypto",
- "openmls_traits",
- "pollster",
- "postcard",
- "serde",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-files",
- "tilo-seal",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
 name = "chat"
 version = "0.1.0"
 dependencies = [
@@ -2682,7 +2657,6 @@ name = "collaboration"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "key-group",
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -2690,6 +2664,7 @@ dependencies = [
  "fs-protocol",
  "getrandom 0.4.3",
  "hex",
+ "key-group",
  "postcard",
  "rand_core 0.10.0",
  "registry-types",
@@ -8442,6 +8417,31 @@ checksum = "01737161ba802849cfd486b5bd209d38ba4943494c249a8126005170c7621edd"
 dependencies = [
  "crypto-common 0.2.2",
  "rand_core 0.10.0",
+]
+
+[[package]]
+name = "key-group"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.2.17",
+ "hex",
+ "iai-callgrind",
+ "openmls",
+ "openmls_basic_credential",
+ "openmls_rust_crypto",
+ "openmls_traits",
+ "pollster",
+ "postcard",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-files",
+ "tilo-seal",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -17154,7 +17154,6 @@ version = "0.1.0"
 dependencies = [
  "app-cli",
  "blake3",
- "key-group",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "futures",
@@ -17162,6 +17161,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "iroh",
+ "key-group",
  "launcher",
  "libc",
  "neighbour-wire",
@@ -17192,7 +17192,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-broker-core",
- "tilo-workspace-keys",
  "tilo-clock",
  "tilo-content",
  "tilo-desktop-model",
@@ -17209,6 +17208,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-workspace-keys",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -17306,7 +17306,6 @@ dependencies = [
  "calendar",
  "camera",
  "canvas",
- "key-group",
  "chat",
  "chip-design",
  "chrono",
@@ -17327,6 +17326,7 @@ dependencies = [
  "image",
  "iroh",
  "iroh-base",
+ "key-group",
  "libc",
  "mail",
  "maps",
@@ -17960,11 +17960,11 @@ dependencies = [
 name = "tilo-broker-core"
 version = "0.1.0"
 dependencies = [
- "key-group",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
+ "key-group",
  "postcard",
  "runtime-collab",
  "serde",
@@ -17978,7 +17978,6 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
- "tilo-workspace-keys",
  "tilo-clock",
  "tilo-desktop-model",
  "tilo-failure",
@@ -17986,6 +17985,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-workspace-keys",
  "tokio",
  "tracing",
  "uuid",
@@ -18039,7 +18039,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-workspace-keys",
  "tilo-clock",
  "tilo-content",
  "tilo-cpu-raster",
@@ -18072,6 +18071,7 @@ dependencies = [
  "tilo-winit",
  "tilo-workspace-directory",
  "tilo-workspace-join",
+ "tilo-workspace-keys",
  "tokio",
  "tracing",
  "url",
@@ -18166,31 +18166,6 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
-]
-
-[[package]]
-name = "tilo-workspace-keys"
-version = "0.1.0"
-dependencies = [
- "key-group",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "neighbour-wire",
- "pollster",
- "postcard",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-clock",
- "tilo-desktop-model",
- "tilo-files",
- "tilo-identity-client",
- "tilo-identity-host",
- "tilo-test-env",
- "tokio",
- "tracing",
- "workspace-hack",
- "zeroize",
 ]
 
 [[package]]
@@ -19309,7 +19284,6 @@ dependencies = [
  "bao-tree",
  "blake3",
  "bytes",
- "key-group",
  "clap",
  "cloud-source",
  "cloud-source-dav",
@@ -19331,6 +19305,7 @@ dependencies = [
  "iroh-base",
  "iroh-blobs",
  "irpc",
+ "key-group",
  "libc",
  "moka",
  "postcard",
@@ -19752,10 +19727,10 @@ name = "tilo-live"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "key-group",
  "collab-types",
  "hex",
  "iroh",
+ "key-group",
  "moq-net",
  "n0-future",
  "serde",
@@ -20620,7 +20595,6 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
- "key-group",
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -20630,6 +20604,7 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-base",
+ "key-group",
  "neighbour-wire",
  "parking_lot",
  "postcard",
@@ -20915,7 +20890,6 @@ dependencies = [
  "blake3",
  "bounded-command",
  "bytes",
- "key-group",
  "chat",
  "clap",
  "collab-types",
@@ -20934,6 +20908,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-relay",
+ "key-group",
  "launcher",
  "legacy-vm",
  "libc",
@@ -21230,7 +21205,6 @@ name = "tilo-room-host"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "key-group",
  "chat",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -21238,6 +21212,7 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-base",
+ "key-group",
  "libc",
  "n0-future",
  "neighbour-wire",
@@ -21318,7 +21293,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
- "key-group",
  "chrono",
  "collab-types",
  "console-control",
@@ -21330,6 +21304,7 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-blobs",
+ "key-group",
  "launcher",
  "launcher-macos",
  "libc",
@@ -21622,7 +21597,6 @@ dependencies = [
  "block-devices",
  "bounded-command",
  "browser-continuity",
- "key-group",
  "chat",
  "chrono",
  "collab-types",
@@ -21638,6 +21612,7 @@ dependencies = [
  "host-fs",
  "image",
  "iroh",
+ "key-group",
  "launcher",
  "libc",
  "neighbour-wire",
@@ -21681,7 +21656,6 @@ dependencies = [
  "tilo-bluez",
  "tilo-broker-core",
  "tilo-capture-studio",
- "tilo-workspace-keys",
  "tilo-cli-kit",
  "tilo-clock",
  "tilo-color-pipeline",
@@ -21769,6 +21743,7 @@ dependencies = [
  "tilo-window-share",
  "tilo-workspace-directory",
  "tilo-workspace-join",
+ "tilo-workspace-keys",
  "tilolang-cli",
  "tilolang-host",
  "tilolang-mail",
@@ -21800,7 +21775,6 @@ dependencies = [
  "blake3",
  "bounded-command",
  "bytes",
- "key-group",
  "chat",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -21811,6 +21785,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "iroh-base",
+ "key-group",
  "moq-net",
  "n0-future",
  "neighbour-wire",
@@ -21835,7 +21810,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-broker-core",
- "tilo-workspace-keys",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
@@ -21857,6 +21831,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-workspace-keys",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -23073,6 +23048,31 @@ dependencies = [
  "tilo-user-identity",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-workspace-keys"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "key-group",
+ "neighbour-wire",
+ "pollster",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-files",
+ "tilo-identity-client",
+ "tilo-identity-host",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -27499,7 +27499,6 @@ dependencies = [
  "chacha20 0.9.1",
  "chacha20poly1305 0.10.1",
  "chacha20poly1305 0.11.0",
- "key-group",
  "chat",
  "chinese-number",
  "chinese-variant",
@@ -27955,6 +27954,7 @@ dependencies = [
  "kamadak-exif",
  "keccak",
  "kem",
+ "key-group",
  "khronos-egl",
  "khronos_api",
  "kio 0.5.9",
@@ -28595,7 +28595,6 @@ dependencies = [
  "tilo-caps",
  "tilo-capture",
  "tilo-capture-studio",
- "tilo-workspace-keys",
  "tilo-chromium-blocker",
  "tilo-cli-kit",
  "tilo-clipboard",
@@ -28813,6 +28812,7 @@ dependencies = [
  "tilo-workspace-directory",
  "tilo-workspace-emoji",
  "tilo-workspace-join",
+ "tilo-workspace-keys",
  "tilo-zone-globe",
  "tilolang",
  "tilolang-app",
