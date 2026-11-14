@@ -269,15 +269,17 @@ else
   bad 'Rustls platform trust can be redirected or fall back to path probing'
 fi
 
-runtime_hits="$(rg -n 'Command::new\("(openssl|sbsign|sbverify)"\)|run(_capture|_with_input)?\(\s*"(openssl|sbsign|sbverify)"' \
-  "$repo/os/usr" "$repo/crates" "$repo/apps" \
-  -g '*.rs' \
-  -g '!**/tests/**' -g '!**/target/**' -g '!**/data/**' || true)"
-runtime_hits+="$(rg -n '(^|[;&|[:space:]])(openssl|sbsign|sbverify)[[:space:]]' \
-  "$repo/os/usr" "$repo/crates" "$repo/apps" \
-  -g '*.sh' \
-  -g '!**/tests/**' -g '!**/target/**' -g '!**/data/**' \
-  -g '!**/apps/imager/packaging/package-host.sh' || true)"
+runtime_hits="$(
+  rg -n 'Command::new\("(openssl|sbsign|sbverify)"\)|run(_capture|_with_input)?\(\s*"(openssl|sbsign|sbverify)"' \
+    "$repo/os/usr" "$repo/crates" "$repo/apps" \
+    -g '*.rs' \
+    -g '!**/tests/**' -g '!**/target/**' -g '!**/data/**' || true
+  rg -n '(^|[;&|[:space:]])(openssl|sbsign|sbverify)[[:space:]]' \
+    "$repo/os/usr" "$repo/crates" "$repo/apps" \
+    -g '*.sh' \
+    -g '!**/tests/**' -g '!**/target/**' -g '!**/data/**' \
+    -g '!**/apps/imager/packaging/package-host.sh' || true
+)"
 if [ -n "$runtime_hits" ]; then
   printf '%s\n' "$runtime_hits" >&2
   bad 'shipped runtime source still invokes OpenSSL/sbsigntools'
