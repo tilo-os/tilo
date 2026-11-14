@@ -466,10 +466,15 @@ fn a_question_stands_its_turn_at_the_caret() {
         "the turn stands where the person asked: {:?} for {expected:?}",
         (tx, ty)
     );
+    // An answer's own measure, as far as the room to the edge of what the person sees allows (the
+    // canvas is at zoom 1, so a screen pixel is a canvas pixel).
+    #[allow(clippy::cast_possible_truncation, reason = "screen pixels")]
+    let to_edge = (x + w - at.0).round() as i64 - 24;
     assert_eq!(
         (tw, th),
-        (520, 480),
-        "a clicked turn takes an answer's own measure, and hugs its words up to a window's height"
+        (520.min(to_edge), 480),
+        "a clicked turn takes an answer's own measure in the room it has, and hugs its words up \
+         to a window's height"
     );
 }
 
