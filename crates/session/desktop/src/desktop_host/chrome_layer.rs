@@ -84,9 +84,8 @@ pub struct DesktopChrome {
     /// What the overview of the person's Tilo shows below their workspaces, as the embedding
     /// hosts it ([`Self::set_tilo`]).
     tilo: crate::overview_tilo::TiloDesk,
-    /// Whether the overview is open, as the chrome last drew it, for the host whose clock flies its
-    /// windows in and out. The panel speaks only when it moves: where the shell carries the
-    /// overview, the panel stays shut and the shell's own surface is the one that has the flag.
+    /// Whether the overview is open, shared with the host whose clock flies its windows in and
+    /// out and whose surfaces open and close it ([`Self::follow_overview`]).
     overview_open: Option<Rc<Cell<bool>>>,
     /// What the overview's panel last said of itself.
     overview_said: bool,
@@ -797,7 +796,8 @@ impl DesktopChrome {
 
     /// Have the overview's windows drawn by the host through `flight` , their pictures resting
     /// where the panel draws them — flying between the desk and the overview on the clock the host
-    /// keeps there; `open` is set as the chrome draws, for the host that clock belongs to.
+    /// keeps there; `open` is whether it is open, which the host's surfaces set to open or close
+    /// it and the panel sets as it moves itself.
     pub fn set_overview(&mut self, flight: WindowFlight, open: Rc<Cell<bool>>) {
         self.overview.set_flight(flight);
         self.overview_open = Some(open);
@@ -1096,6 +1096,26 @@ impl DesktopChrome {
         Ok(made)
     }
 
+    /// Keep the panel and the host's flag on one answer: the host's surfaces open and close the
+    /// overview through the flag, and the panel opens over the desk as it stands then; what the
+    /// panel does itself (its action, Escape, a pick) is told back. Whether the panel moved.
+    pub(super) fn follow_overview(&mut self) -> bool {
+        let Some(open) = self.overview_open.clone() else {
+            return false;
+        };
+        let asked = open.get();
+        let moved = asked != self.overview_said && asked != self.overview.is_open();
+        if moved {
+            self.toggle_overview();
+        }
+        let said = self.overview.is_open();
+        if said != self.overview_said {
+            open.set(said);
+            self.overview_said = said;
+        }
+        moved
+    }
+
     /// Open or close the overview.
     pub fn toggle_overview(&mut self) {
         let open = !self.overview.is_open();
@@ -1106,7 +1126,7 @@ impl DesktopChrome {
             let desk = self.overview_desk();
             self.overview.open_on(true, desk);
         } else {
-            self.overview.open_on(false, OverviewDesk::of(Vec::new()));
+            self.overview.open_on(false, OverviewDesk::default());
         }
     }
 
@@ -1123,7 +1143,7 @@ impl DesktopChrome {
 
     fn apply_pick(&mut self, pick: &OverviewPick) {
         if pick.closes() {
-            self.overview.set_open(false, Vec::new());
+            self.overview.open_on(false, OverviewDesk::default());
         }
         // The ones with a published verb are that verb; the rest are the desk's own.
         let verb = match pick {
@@ -2265,15 +2285,9 @@ impl Widget for DesktopChrome {
             changed |= notices.update(state, path);
         }
         changed |= self.switcher.needs_redraw();
+        changed |= self.follow_overview();
         self.observe_navigation();
         self.publish_overlays();
-        if let Some(open) = &self.overview_open {
-            let said = self.overview.is_open();
-            if said != self.overview_said {
-                open.set(said);
-                self.overview_said = said;
-            }
-        }
         self.advance_hints(ui::time::now());
         changed | !self.asks.borrow().is_empty()
     }

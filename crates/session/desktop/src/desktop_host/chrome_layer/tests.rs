@@ -224,3 +224,30 @@ fn an_agents_row_opens_the_agents_card() {
         [DesktopAsk::OpenAgent("Claude Code".into())]
     );
 }
+
+/// The host's surfaces open the overview through the flag they share with the chrome: the panel
+/// opens on the workspace the person is in, with its strip and window, and closes the same way.
+/// What the panel does itself is told back on the flag.
+#[test]
+fn the_overview_the_host_opens_shows_the_workspace_in_front() {
+    en();
+    let (mut chrome, _handle) = chrome_over_a_desk();
+    let open = Rc::new(std::cell::Cell::new(false));
+    chrome.set_overview(crate::window_flight::WindowFlight::new(), Rc::clone(&open));
+
+    open.set(true);
+    assert!(chrome.follow_overview());
+    assert!(chrome.overview.is_open());
+    let cards = &chrome.overview.desk().cards;
+    let here = cards.iter().find(|card| card.is_current).unwrap();
+    assert_eq!(here.id, WorkspaceSlot(1));
+    assert_eq!(here.strips[0].groups[0].tabs[0].title, "Notes");
+
+    open.set(false);
+    assert!(chrome.follow_overview());
+    assert!(!chrome.overview.is_open());
+
+    chrome.toggle_overview();
+    assert!(!chrome.follow_overview(), "the panel moved itself");
+    assert!(open.get(), "and says so");
+}

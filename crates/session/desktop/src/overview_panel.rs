@@ -279,12 +279,6 @@ impl OverviewPanel {
         self.open
     }
 
-    /// Open over `cards` (every workspace, as [`crate::overview::workspace_cards`] returns them),
-    /// or close.
-    pub fn set_open(&mut self, open: bool, cards: Vec<WorkspaceCard>) {
-        self.open_on(open, OverviewDesk::of(cards));
-    }
-
     /// Open over `desk` , or close. Each opening starts the keyboard on the workspace you are in.
     pub fn open_on(&mut self, open: bool, desk: OverviewDesk) {
         if open {

@@ -809,7 +809,10 @@ pub(crate) fn host(
     );
     chrome.set_intents(intents);
     chrome.set_asks(asks);
-    chrome.set_overview(overview.flight(), overview.open_flag());
+    // Where a shell covers the desk, the shell's view is the overview and the chrome's stays shut.
+    if !options.shell {
+        chrome.set_overview(overview.flight(), overview.open_flag());
+    }
     chrome.set_emoji(emoji.clone());
     chrome.set_overlays(overlays.clone());
     chrome.set_switcher(switcher.clone());

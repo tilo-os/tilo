@@ -233,6 +233,7 @@ impl Surfaces {
 
     /// Show `surface` (`show-surface`): the one up closes, and any other opens.
     pub(crate) fn toggle(&self, surface: &str) {
+        self.caught_up();
         if self.desk_centre(surface) {
             // One centre: the desk's chrome draws the one the bar's bell counts, and it is asked
             // to open or shut as the bell asks it.
@@ -262,6 +263,7 @@ impl Surfaces {
 
     /// Show the surface `name` names (`show-surface`), whether or not it is up.
     pub(crate) fn open(&self, name: &str) {
+        self.caught_up();
         if self.desk_centre(name) {
             self.notices.ask_centre(true);
             self.panel_closes();
@@ -301,6 +303,7 @@ impl Surfaces {
     /// One surface at a time: the shell's view goes down under the desk's own popover or the
     /// panel's app.
     pub(crate) fn clear_shell(&self) {
+        self.caught_up();
         let here = self.overlays.here();
         if here == crate::overlays::Overlay::Rest.name() {
             return;
@@ -327,6 +330,7 @@ impl Surfaces {
 
     /// Close `surface` (`close-surface`), when it is the one up.
     pub(crate) fn close(&self, surface: &str) {
+        self.caught_up();
         if self.desk_centre(surface) {
             self.notices.ask_centre(false);
             return;
@@ -349,6 +353,18 @@ impl Surfaces {
         {
             self.panel
                 .close(tilo_desktop::overlays::Slot::QuickSettings);
+        }
+    }
+
+    /// Read the overview as the flag has it before a surface turns: the desk's own chrome opens and
+    /// closes it too (its action, its keys, Escape), and a press answers what the person sees.
+    fn caught_up(&self) {
+        let name = crate::overlays::Overlay::Overview.name();
+        let here = self.overlays.here() == name;
+        if self.overview.get() && !here {
+            self.overlays.open(name);
+        } else if !self.overview.get() && here {
+            self.overlays.close(name);
         }
     }
 
@@ -1123,6 +1139,25 @@ mod tests {
         assert!(surfaces.overview.get(), "closing another surface leaves it");
         surfaces.close(Overlay::Overview.name());
         assert!(!surfaces.overview.get());
+    }
+
+    /// The desk's chrome opens and closes the overview itself as well: a press then reads the
+    /// overview as it is, and closing another surface leaves it up.
+    #[test]
+    fn the_surfaces_read_the_overview_the_chrome_opened() {
+        let surfaces = surfaces(false, false);
+        surfaces.overview.set(true);
+        surfaces.close(Overlay::Launcher.name());
+        assert!(surfaces.overview.get(), "closing another surface leaves it");
+        surfaces.toggle(Overlay::Overview.name());
+        assert!(!surfaces.overview.get(), "a press closes the one up");
+        surfaces.toggle(Overlay::Overview.name());
+        surfaces.overview.set(false);
+        surfaces.toggle(Overlay::Overview.name());
+        assert!(
+            surfaces.overview.get(),
+            "a press opens the one Escape closed"
+        );
     }
 
     #[test]
