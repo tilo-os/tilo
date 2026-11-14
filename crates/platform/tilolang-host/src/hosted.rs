@@ -1614,10 +1614,9 @@ impl Hosted {
         let mut moved = false;
         for used in &mut self.used {
             if std::mem::take(&mut used.moved) {
-                used.app.host().sync_chunks(used.record.chunks());
-                if let Some(first) = used.record.chunks().first() {
-                    used.app.host().sync_from(first);
-                }
+                // What the record took in is in the app's store: the lists it reads must hold
+                // every row the record's manifest places.
+                let _ = used.app.host().store().load_short();
                 moved |= used.app.refresh(runtime);
             }
         }
@@ -2284,8 +2283,10 @@ fn used_apps(spec: &Spec, bundle: &Bundle, record: &mut InstanceRecord) -> Vec<U
                 })
                 .ok()?;
             let route = crate::route_under(&import.meta, records, workspace, &spec.person);
+            let mut read = ReadRecord::join(route, record.manager_mut(), &import.meta.record_kind());
+            read.hold_in(app.host());
             Some(Used {
-                record: ReadRecord::join(route, record.manager_mut(), &import.meta.record_kind()),
+                record: read,
                 app,
                 moved: false,
             })
@@ -2554,7 +2555,6 @@ impl Applier {
         let host = Host::open(
             tilolang_tilo::host::Opening {
                 record: None,
-                chunks: None,
                 index_dir: None,
                 device: None,
                 wake: None,

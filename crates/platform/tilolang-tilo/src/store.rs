@@ -372,8 +372,8 @@ use loading::{planned_unheld, unloaded};
 mod reading;
 use index_build::AppIndex;
 use reading::{
-    collections_by_doc, everything, mirror_of, name_version_changes, note_derived, scan,
-    told_differently, version_fields, write_as_a_known_actor,
+    collections_by_doc, everything, name_version_changes, note_derived, scan, told_differently,
+    version_fields, write_as_a_known_actor,
 };
 mod outbox;
 mod plan;
@@ -389,11 +389,6 @@ use versions::{NO_CHUNK_VERSIONS, note_versions};
 /// Gives the store the workspace record when it opened without it: for a write, or a field no index
 /// holds. `None` when the record cannot be had.
 pub type Loader = Box<dyn FnMut() -> Option<Doc>>;
-
-/// Gives the store the chunk [`ChunkNo`] when it was not sent it: when something reads into it (a
-/// row a window shows, or a lookup the index routes to it) or a write is addressed to it. `None`
-/// when the chunk cannot be had.
-pub type ChunkLoader = Box<dyn FnMut(ChunkNo) -> Option<Doc>>;
 
 struct Inner {
     /// The documents the store holds: the workspace record (chunk [`chunk::FIRST`]) and the
@@ -423,9 +418,6 @@ struct Inner {
     /// Where the indexes are kept: `None` keeps them in memory, built when a package loads.
     index_dir: Option<PathBuf>,
     loader: Option<Loader>,
-    /// Where a chunk the store was not sent comes from when something reads into it or a write
-    /// is addressed to it ([`TiloStore::set_chunk_loader`]).
-    chunk_loader: Option<ChunkLoader>,
     /// Whether the store holds the record's chunks as their holder's one copy
     /// ([`TiloStore::adopt`]): the chunks above the record it has not read yet are among them.
     adopted: bool,
@@ -787,7 +779,6 @@ impl TiloStore {
                 overlay: Arc::default(),
                 index_dir,
                 loader: None,
-                chunk_loader: None,
                 adopted: false,
                 author: None,
                 waited: BTreeSet::new(),
@@ -885,12 +876,6 @@ impl TiloStore {
                 )
             })
             .collect()
-    }
-
-    /// Whether the store holds chunk `chunk`.
-    #[must_use]
-    pub(crate) fn holds_chunk(&self, chunk: ChunkNo) -> bool {
-        self.held().chunks.mirror(chunk).is_some()
     }
 
     /// What the store did so far.
@@ -2049,11 +2034,6 @@ impl Inner {
         let reached = write.touched.clone();
         self.local.push(write);
         Ok(reached)
-    }
-
-    /// Whether the store can have a chunk it was not sent: from its holder, or its loader.
-    fn can_load(&self) -> bool {
-        self.adopted || self.chunk_loader.is_some()
     }
 
     /// Drop the open transaction of the chunk `chunk`'s mirror, if it has one.

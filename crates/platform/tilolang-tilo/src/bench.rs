@@ -723,7 +723,6 @@ fn prepare_index(doc: &Doc, packages: &[Compiled]) -> Result<(IndexDir, f64), St
         let host = Host::open(
             Opening {
                 record: Some(doc),
-                chunks: None,
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
                 wake: None,
@@ -862,7 +861,6 @@ impl Workspace {
         let host = Host::open(
             Opening {
                 record: Some(&doc),
-                chunks: None,
                 index_dir: index.as_ref().map(|dir| dir.path().to_owned()),
                 device: None,
                 wake: None,
@@ -1798,7 +1796,6 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
         let host = Host::open(
             Opening {
                 record: None,
-                chunks: None,
                 index_dir: Some(index.path().to_owned()),
                 device: None,
                 wake: None,

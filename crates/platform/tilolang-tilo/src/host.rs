@@ -179,15 +179,6 @@ pub(crate) struct HostInner {
     /// The resource the last action planned returned, whoever invoked it, with the action:
     /// what its invocation answers.
     returned: RefCell<Option<(String, ResourceRef)>>,
-    /// The chunks of the workspace record this replica holds that the store does not, shared
-    /// with the store's chunk loader: a chunk the store was not sent is read from here when a
-    /// read or a write reaches it. A chunk the store holds is left out: a second holder of the
-    /// record's document would make the record's next write copy the whole of it.
-    chunks: Rc<RefCell<crate::chunk::Chunks>>,
-    /// The heads of the record's chunks as the host was last given them.
-    synced: RefCell<crate::chunk::Stamps>,
-    /// Whether the store's chunk loader reads [`Self::chunks`].
-    chunk_loader: Cell<bool>,
     /// When the packages' triggers next have something to run.
     triggers: crate::triggers::Schedule,
     /// Whether the next plan is the run of an invocation the record applies next
@@ -219,11 +210,6 @@ pub struct Host {
 pub struct Opening<'a> {
     /// The workspace record; `None` to open over the indexes alone and take it later.
     pub record: Option<&'a tilo_resource::Doc>,
-    /// The record's chunks the caller holds: the store reads and writes the resources the
-    /// record's manifest places in them, and reads the ones it was not sent as it reaches for
-    /// them ([`Host::sync_chunks`]). `None` when the caller holds none, or brings them as the
-    /// workspace moves.
-    pub chunks: Option<&'a crate::chunk::Chunks>,
     /// Where each package's index is kept; `None` keeps them in memory.
     pub index_dir: Option<std::path::PathBuf>,
     /// The device that carries out the outside effects this host queues.
@@ -951,7 +937,6 @@ impl Host {
         Self::open(
             Opening {
                 record: Some(record),
-                chunks: None,
                 index_dir: None,
                 device,
                 wake: None,
@@ -992,19 +977,6 @@ impl Host {
         if let Some(wake) = opening.wake {
             store.set_waker(wake);
         }
-        // The chunks of the record the caller holds: the store reads them as it reaches into
-        // them, and an index over a record whose manifest names chunks it does not hold yet
-        // waits for them rather than build over the record's own chunk alone.
-        let chunks = opening.chunks.cloned().unwrap_or_default();
-        let synced = RefCell::new(chunks.heads());
-        let chunks = Rc::new(RefCell::new(chunks));
-        if opening.chunks.is_some() {
-            let source = Rc::clone(&chunks);
-            store.set_chunk_loader(Box::new(move |chunk| {
-                source.borrow().mirror(chunk).cloned()
-            }));
-        }
-        let can_load_chunks = opening.chunks.is_some();
         // The host's own record types (`Invocation`) are stored like any other resource.
         let host_meta = tilolang::host_meta();
         let schemas = store.schemas();
@@ -1028,9 +1000,6 @@ impl Host {
             suspended: RefCell::default(),
             produced: RefCell::default(),
             returned: RefCell::default(),
-            synced,
-            chunks,
-            chunk_loader: Cell::new(can_load_chunks),
             triggers,
             carried: Cell::new(false),
         });
@@ -1082,12 +1051,6 @@ impl Host {
     /// no index holds.
     pub fn set_record_loader(&self, loader: crate::store::Loader) {
         self.inner.store.set_loader(loader);
-    }
-
-    /// How the host gets a chunk the store was not sent: when a window shows a row in it, a
-    /// lookup routes to it, or a write is addressed to it.
-    pub fn set_chunk_loader(&self, loader: crate::store::ChunkLoader) {
-        self.inner.store.set_chunk_loader(loader);
     }
 
     /// Replace what `now` reads (the system time until then): tests and captures fix it. The
@@ -1449,36 +1412,6 @@ impl Host {
     /// that was sent them all opens.
     pub fn sync(&self, record: &crate::chunk::Chunks) -> bool {
         self.inner.store.sync(record)
-    }
-
-    /// Bring the runtime's view up to date with the chunks the replica holds of `record`, and
-    /// let it read the rest from `record` when a read or a write reaches them; see
-    /// [`TiloStore::sync_held`]. What a window opens with.
-    pub fn sync_chunks(&self, record: &crate::chunk::Chunks) -> bool {
-        // What the chunk loader reads from: the chunks the replica holds now, so one that
-        // arrives later is read with the changes it has then. A frame that brings no change
-        // keeps the cell as it stands: taking the record in is a copy of its manifest, which
-        // every frame of a large workspace would pay.
-        let heads = record.heads();
-        let moved = *self.inner.synced.borrow() != heads;
-        if moved {
-            *self.inner.chunks.borrow_mut() = record.clone();
-            *self.inner.synced.borrow_mut() = heads;
-        }
-        if !self.inner.chunk_loader.replace(true) {
-            let chunks = Rc::clone(&self.inner.chunks);
-            self.inner.store.set_chunk_loader(Box::new(move |chunk| {
-                chunks.borrow().mirror(chunk).cloned()
-            }));
-        }
-        // The lists a window opens over must hold every row the workspace does, and an index
-        // that reflects fewer chunks than the manifest names cannot say the rows it lacks.
-        let synced = (moved && self.inner.store.sync_held(record)) | self.inner.store.load_short();
-        self.inner
-            .chunks
-            .borrow_mut()
-            .retain(|chunk| !self.inner.store.holds_chunk(chunk));
-        synced
     }
 
     /// Hold the record's chunks from here on, the one copy of each; see [`TiloStore::adopt`].

@@ -69,6 +69,10 @@ mod typing;
 #[path = "hosted/controls.rs"]
 mod controls;
 
+#[path = "hosted/replay.rs"]
+mod replay;
+use replay::replayed;
+
 const NOTES: &str = "so.tilo.lang.notes";
 /// The test's own notebook, whose notes' bodies are rich text.
 const RICHBODY: &str = "so.tilo.lang.richbody";
@@ -800,12 +804,6 @@ impl Session {
         let hosted = self.host.instances().next().expect("the window's instance");
         let host = hosted.instance().host().expect("the instance's store");
         host.store().stats().catch_ups_in_frame
-    }
-
-    /// Hand the window's store every chunk of `chunks`, as a replica that joined each chunk's
-    /// route holds them: what a window that reads only the chunks it shows is compared with.
-    fn held_every_chunk(&self, chunks: &tilolang_tilo::chunk::Chunks) {
-        self.instance_host().sync(chunks);
     }
 
     fn hosted(&mut self) -> &HostedWindow {
@@ -2017,33 +2015,6 @@ fn heads(session: &Session) -> Vec<String> {
 fn changes(session: &Session) -> usize {
     let doc = session.instance().record().doc();
     doc.committed_document().get_changes(&[]).len()
-}
-
-/// Replay the action each change `doc` holds past `from` records, as a peer taking it does:
-/// every change comes out the same, to the byte. How many recorded an action.
-fn replayed(
-    doc: &mut automerge::AutoCommit,
-    from: &[automerge::ChangeHash],
-    host: &tilolang_tilo::host::Host,
-) -> usize {
-    let mut registry = ui::tilo_actions::ActionRegistry::new();
-    tilolang_tilo::history::register(&mut registry);
-    let arrived: Vec<_> = doc
-        .get_changes(from)
-        .iter()
-        .map(automerge::Change::hash)
-        .collect();
-    let mut reproduced = 0;
-    for change in arrived {
-        let verified =
-            host.with_schemas(|| ui::tilo_actions::verify_change(doc, change, &registry));
-        match verified {
-            Ok(ui::tilo_actions::Verified::Reproduced) => reproduced += 1,
-            Ok(ui::tilo_actions::Verified::NothingRecorded) => {}
-            other => panic!("a peer replaying a change gets another one: {other:?}"),
-        }
-    }
-    reproduced
 }
 
 /// The store of the window's instance.

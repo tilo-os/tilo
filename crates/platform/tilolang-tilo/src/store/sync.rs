@@ -13,7 +13,7 @@ use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange};
 
 use super::{
     Chunks, Doc, Ends, Inner, ItemTouches, LocalWrite, TiloStore, changed_by, collections_by_doc,
-    everything, mirror_of, name_version_changes, note_derived, note_versions, record_splices,
+    everything, name_version_changes, note_derived, note_versions, record_splices,
     told_differently, write_as_a_known_actor,
 };
 use crate::action::{DynAction, DynEdit};
@@ -25,58 +25,59 @@ use crate::index::{self as idx};
 use crate::reads::Changed;
 
 impl TiloStore {
-    /// Bring the store up to date with the workspace record: when a chunk's heads moved, the
-    /// store's own writes the record's new changes hold are dropped from the mirror and the
-    /// overlay — every write they do not hold stays, as the record has not taken it — the chunk's
-    /// new changes are applied to the mirror and derived into each index, and each subscriber is
-    /// told which fields of which resources changed. A store without the record takes its own
-    /// chunk from it, and catches each index up from its heads. Returns whether any chunk had
-    /// moved.
-    ///
-    /// Every chunk the record holds is taken in, so a write the store routed to any of them
-    /// settles as one routed to the record's own: the chunk's change is in the set the sync
-    /// applies, and its write leaves the store with it. The chunks above the record go first:
-    /// what they hold is already theirs when the record's own change derives over it.
+    /// Take in what the copies `record` of the workspace record's chunks, which their caller
+    /// holds and writes, gained since the store last read them: each chunk's new changes are
+    /// merged into the store's own document of it and derived as any write of the record's
+    /// holder is ([`Self::write_chunk`]). The chunks above the record go first: what they hold
+    /// is already theirs when the record's own change derives over it. Whether anything moved.
     pub fn sync(&self, record: &Chunks) -> bool {
-        self.stop_waiting(record);
         let mut moved = false;
         for (chunk, doc) in record.docs() {
             if chunk != chunk::FIRST {
-                moved |= self.sync_document(chunk, doc);
+                moved |= self.merge(chunk, doc);
             }
         }
         if let Some(record) = record.first() {
-            moved |= self.sync_document(chunk::FIRST, record);
+            moved |= self.merge(chunk::FIRST, record);
         }
         moved
     }
 
-    /// [`Self::sync`] of the chunks the store already holds of `record`: a chunk it was not
-    /// sent is left out, and is read from the chunk loader when a read or a write reaches it
-    /// ([`TiloStore::set_chunk_loader`]). Returns whether any chunk had moved.
-    pub fn sync_held(&self, record: &Chunks) -> bool {
-        self.stop_waiting(record);
-        let held: Vec<ChunkNo> = self.held().chunks.numbers().collect();
-        let mut moved = false;
-        for chunk in held.into_iter().filter(|chunk| *chunk != chunk::FIRST) {
-            if let Some(doc) = record.mirror(chunk) {
-                moved |= self.sync_document(chunk, doc);
-            }
-        }
-        if self.held().chunks.has_record()
-            && let Some(doc) = record.first()
-        {
-            moved |= self.sync_document(chunk::FIRST, doc);
-        }
-        moved
-    }
-
-    /// [`Self::sync`] of a record the caller hands over as one document: the store takes it as
-    /// chunk [`chunk::FIRST`]. A record whose manifest names chunks above it is synced through
-    /// [`Self::sync`] instead, which takes those chunks in too; a write the store routed to one
-    /// of them stays pending here until its chunk is had. Returns whether it had moved.
+    /// [`Self::sync`] of a record the caller holds as one document, chunk [`chunk::FIRST`].
     pub fn sync_from(&self, record: &Doc) -> bool {
-        self.sync_document(chunk::FIRST, record)
+        self.merge(chunk::FIRST, record)
+    }
+
+    /// Merge what `doc`, a copy of chunk `chunk` its caller writes, holds that the store's
+    /// document of it lacks. Whether anything moved.
+    fn merge(&self, chunk: ChunkNo, doc: &Doc) -> bool {
+        let theirs = doc.committed_document();
+        let arrived = {
+            let inner = self.held();
+            let Some(mine) = inner.chunks.held(chunk) else {
+                drop(inner);
+                return self
+                    .write_chunk(chunk, |mine| take(mine, theirs.get_changes(&[])))
+                    .1;
+            };
+            let mine = mine.committed_document();
+            let have = mine.get_heads();
+            if have == theirs.get_heads() {
+                return false;
+            }
+            if have
+                .iter()
+                .all(|head| theirs.get_change_by_hash(head).is_some())
+            {
+                theirs.get_changes(&have)
+            } else {
+                theirs.get_changes_added(mine)
+            }
+        };
+        if arrived.is_empty() {
+            return false;
+        }
+        self.write_chunk(chunk, |mine| take(mine, arrived)).1
     }
 
     /// Hold the record's chunks `chunks` from here on, the one copy of each: the record's own is
@@ -187,7 +188,7 @@ impl TiloStore {
     }
 
     /// Derive what the store's own document of `chunk` gained since the store last read it:
-    /// [`Self::sync_document`] with the changes already in place.
+    /// with nothing to apply: the document holds the changes.
     fn catch_up(&self, chunk: ChunkNo) -> bool {
         let mut inner = self.mutate();
         if !inner.chunks.is_seen(chunk) {
@@ -230,63 +231,8 @@ impl TiloStore {
             snapshots: inner.answering(),
             overlay: std::mem::take(&mut inner.overlay),
         };
-        let Some(mut applied) = inner.take_in(chunk, &arrived, heads, true) else {
+        let Some(mut applied) = inner.take_in(chunk, &arrived, heads) else {
             inner.reread(chunk);
-            return true;
-        };
-        let derived = inner.derive(&mut applied, &before);
-        inner.tell(applied, derived, &before);
-        true
-    }
-
-    /// A chunk the store asked its source for and the source could not give is waited on
-    /// ([`Inner::waited`]): one the record now holds arrived through the sync, and whatever reads
-    /// the record reads it from here on. Nothing else about the chunk is done here: what reads it
-    /// reads it as any chunk the store was not sent ([`TiloStore::load_short`]).
-    fn stop_waiting(&self, record: &Chunks) {
-        if self
-            .held()
-            .waited
-            .iter()
-            .all(|chunk| record.mirror(*chunk).is_none())
-        {
-            return;
-        }
-        self.changing()
-            .waited
-            .retain(|chunk| record.mirror(*chunk).is_none());
-    }
-
-    fn sync_document(&self, chunk: ChunkNo, doc: &Doc) -> bool {
-        let mut inner = self.mutate();
-        if inner.chunks.mirror(chunk).is_none() {
-            let moved = inner.attach_document(chunk, doc.clone());
-            drop(inner);
-            if moved {
-                self.changing().notify_all();
-            }
-            return moved;
-        }
-        let heads = doc.committed_document().get_heads();
-        if inner.chunks.seen(chunk) == heads.as_slice() {
-            return false;
-        }
-        // What the splices below are measured from is the listing as those who read the mirror
-        // had it before this change: the store's own writes are the mirror's open transaction,
-        // which every read holds, so an item one of them placed was already read at its place
-        // and the change that brings it takes no step for it. A reader that did not read since
-        // is told the collection and reads its items there.
-        let before = Before {
-            from: inner.chunks.heads(),
-            snapshots: inner.answering(),
-            overlay: std::mem::take(&mut inner.overlay),
-        };
-        let arrived = doc
-            .committed_document()
-            .get_changes(inner.chunks.seen(chunk));
-        let Some(mut applied) = inner.take_in(chunk, &arrived, heads, false) else {
-            // The mirror held a change of its own, which only a copy of the record removes.
-            inner.copy_record(chunk, doc);
             return true;
         };
         let derived = inner.derive(&mut applied, &before);
@@ -406,12 +352,6 @@ impl Inner {
         }
     }
 
-    /// Take a copy of the record `doc` as the mirror of `chunk`, and tell every reader.
-    fn copy_record(&mut self, chunk: ChunkNo, doc: &Doc) {
-        self.chunks.insert(chunk, mirror_of(doc.clone()));
-        self.reread(chunk);
-    }
-
     /// Read the store's document of `chunk` again whole, and tell every reader: after it lost
     /// changes the store had derived.
     fn reread(&mut self, chunk: ChunkNo) {
@@ -447,7 +387,6 @@ impl Inner {
         chunk: ChunkNo,
         arrived: &[automerge::Change],
         heads: Vec<automerge::ChangeHash>,
-        held: bool,
     ) -> Option<Applied> {
         // The record's new changes, read once: what the store's writes are the record's by, and
         // what the mirror takes in (`held`: the mirror is the record's own document, and holds
@@ -457,7 +396,7 @@ impl Inner {
         let (committed, every_one_an_action) = committed_edits(arrived);
         let taken = self.drop_committed_local(chunk, &committed);
         self.rollback(chunk);
-        let (changed, ends, placed) = self.apply_new_changes(chunk, arrived, held);
+        let (changed, ends, placed) = self.apply_new_changes(chunk, arrived);
         self.chunks.set_seen(chunk, heads);
         let changed = changed?;
         self.stats.incremental_syncs = self.stats.incremental_syncs.saturating_add(1);
@@ -606,18 +545,11 @@ impl Inner {
         &mut self,
         chunk: ChunkNo,
         changes: &[automerge::Change],
-        held: bool,
     ) -> (Option<Changed>, Ends, idx::reflect::Placed) {
-        let seen = self.chunks.seen(chunk).to_vec();
         let Some(mirror) = self.chunks.mirror_mut(chunk) else {
             return (None, Ends::new(), idx::reflect::Placed::new());
         };
-        let caught_up = held || mirror.committed_document().get_heads() == seen;
-        let applied = caught_up && (held || mirror.apply_incoming(changes.iter().cloned()).is_ok());
         write_as_a_known_actor(mirror);
-        if !applied {
-            return (None, Ends::new(), idx::reflect::Placed::new());
-        }
         // Once the mirror holds them: a change that is no action of a package (an undo) is
         // read for what it wrote, and the versions are the log's, which names the fields each
         // change wrote.
@@ -731,4 +663,16 @@ fn named<'a>(
         fields.dedup();
     }
     docs
+}
+
+/// Apply `changes` to `doc`: the number it gained, as a merge counts them.
+fn take(doc: &mut Doc, changes: Vec<automerge::Change>) -> usize {
+    let count = changes.len();
+    match doc.apply_incoming(changes) {
+        Ok(()) => count,
+        Err(error) => {
+            tracing::error!(%error, "a copy of the record's changes did not apply");
+            0
+        }
+    }
 }

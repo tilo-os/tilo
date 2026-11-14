@@ -1004,39 +1004,35 @@ impl Drop for TempDir {
     }
 }
 
-/// A host opened over the record `docs` holds, its indexes kept in `dir`, with the board loaded
-/// from the package lock `ids`. Every chunk not `sent` comes from its chunk loader, which records
-/// the numbers it was asked for.
-fn opened(docs: &mut Docs, dir: &Path, ids: &str, sent: bool) -> (Host, Rc<RefCell<Vec<ChunkNo>>>) {
-    let record = docs.doc(chunk::FIRST).clone();
+/// A host holding the record `docs` holds, its indexes kept in `dir`, with the board loaded from
+/// the package lock `ids`: the store reads every chunk now when they were all `sent`, else each
+/// chunk above the record as something reaches into it.
+fn opened(docs: &Docs, dir: &Path, ids: &str, sent: bool) -> Host {
     let host = Host::open(
         Opening {
-            record: Some(&record),
-            chunks: None,
             index_dir: Some(dir.to_owned()),
-            device: None,
-            wake: None,
+            ..Opening::default()
         },
         Principal::new("ada"),
         || None,
     )
     .unwrap();
-    let asked: Rc<RefCell<Vec<ChunkNo>>> = Rc::default();
-    let chunks = docs.chunks();
-    let recorder = Rc::clone(&asked);
-    host.set_chunk_loader(Box::new(move |number| {
-        recorder.borrow_mut().push(number);
-        chunks.mirror(number).cloned()
-    }));
+    host.adopt(docs.chunks());
     host.load_builtin(BOARD, ids).unwrap();
     if sent {
-        docs.sync(&host);
-    } else {
-        host.sync_from(&record);
+        host.store().read_every_chunk();
     }
     host.wait_index();
     assert!(host.index_ready(), "the board's index is ready");
-    (host, asked)
+    host
+}
+
+/// The chunks above the record `host` read, in order.
+fn read_above(host: &Host) -> Vec<ChunkNo> {
+    holding(host)
+        .into_iter()
+        .filter(|number| *number != chunk::FIRST)
+        .collect()
 }
 
 /// The chunks `host` holds, in order.
@@ -1082,20 +1078,19 @@ fn a_window_opens_over_the_manifest_and_its_index_and_reads_only_the_chunks_it_s
     let dir = TempDir::new("index-first");
 
     // A load that was sent every chunk, keeping its index where the next open finds it.
-    let (whole, asked_whole) = opened(&mut docs, dir.path(), &ids, true);
+    let whole = opened(&docs, dir.path(), &ids, true);
     let chunks = holding(&whole).len();
     assert!(
         chunks > 4,
         "the cards are spread over their chunks: {chunks}"
     );
     let kept = whole.store().index_contents(BOARD_APP).unwrap();
-    assert!(asked_whole.borrow().is_empty(), "nothing had to be loaded");
     whole.persist_index();
     drop(whole);
 
     // Opened over the manifest and that index: the lists and queries answer as a full load
     // does, and no chunk is read for them.
-    let (lazy, asked) = opened(&mut docs, dir.path(), &ids, false);
+    let lazy = opened(&docs, dir.path(), &ids, false);
     assert_eq!(holding(&lazy), [chunk::FIRST]);
     assert_eq!(
         lazy.store().stats().builds,
@@ -1113,9 +1108,9 @@ fn a_window_opens_over_the_manifest_and_its_index_and_reads_only_the_chunks_it_s
         .unwrap();
     assert_eq!(found.len(), 10_000, "the index counts them all");
     assert!(
-        asked.borrow().is_empty(),
+        read_above(&lazy).is_empty(),
         "the index answered without a chunk: {:?}",
-        asked.borrow()
+        read_above(&lazy)
     );
     assert_eq!(
         lazy.store().index_contents(BOARD_APP).unwrap(),
@@ -1127,18 +1122,18 @@ fn a_window_opens_over_the_manifest_and_its_index_and_reads_only_the_chunks_it_s
     let board = board_schema(&meta).id;
     let (card, number) = card_at(&meta, &root, &board, &inserted[5_000], 5_000);
     assert!(lazy.store().record_at(&card).is_ok());
-    assert_eq!(*asked.borrow(), [number], "one chunk, the row's own");
+    assert_eq!(read_above(&lazy), [number], "one chunk, the row's own");
     let (card, number) = card_at(&meta, &root, &board, &inserted[9_999], 9_999);
     assert!(lazy.store().record_at(&card).is_ok());
     assert_eq!(
-        *asked.borrow(),
+        read_above(&lazy),
         [2, number],
         "one more chunk, the row's own"
     );
 
     // A write addressed to a chunk the store was not sent loads it, and only it.
     let (edited, edited_chunk) = card_at(&meta, &root, &board, &inserted[7_000], 7_000);
-    assert!(!asked.borrow().contains(&edited_chunk));
+    assert!(!read_above(&lazy).contains(&edited_chunk));
     let retitle = meta
         .actions
         .iter()
@@ -1155,9 +1150,9 @@ fn a_window_opens_over_the_manifest_and_its_index_and_reads_only_the_chunks_it_s
             ),
         )
         .unwrap();
-    let after = asked.borrow().clone();
+    let after = read_above(&lazy);
     assert_eq!(after.len(), 3, "the write loaded its own chunk: {after:?}");
-    assert_eq!(after[2], edited_chunk);
+    assert!(after.contains(&edited_chunk), "{after:?}");
     let text = field_id(&meta, "Card", "text");
     assert_eq!(
         lazy.store().record_at(&edited).unwrap().get(&text).cloned(),
@@ -1182,10 +1177,10 @@ fn opens_at(cards: usize) -> (usize, usize, Duration, Duration, Vec<ChunkNo>, Ve
     // derived whole, as a store sent them all would have it, and keeps that index for the next
     // open.
     let first = Instant::now();
-    let (cold, asked) = opened(&mut docs, dir.path(), &ids, false);
+    let cold = opened(&docs, dir.path(), &ids, false);
     let cold_open = first.elapsed();
     let cold_held = holding(&cold);
-    let loaded = asked.borrow().len();
+    let loaded = read_above(&cold).len();
     assert_eq!(cold_held.len(), filled, "every chunk the manifest names");
     assert_eq!(loaded, filled - 1, "the record was opened with");
     cold.persist_index();
@@ -1193,7 +1188,7 @@ fn opens_at(cards: usize) -> (usize, usize, Duration, Duration, Vec<ChunkNo>, Ve
 
     // With one, it opens over the record and the index, reading a chunk as a row shows it.
     let warm = Instant::now();
-    let (lazy, asked) = opened(&mut docs, dir.path(), &ids, false);
+    let lazy = opened(&docs, dir.path(), &ids, false);
     let warm_open = warm.elapsed();
     let held = holding(&lazy);
     assert_eq!(
@@ -1201,7 +1196,7 @@ fn opens_at(cards: usize) -> (usize, usize, Duration, Duration, Vec<ChunkNo>, Ve
         [chunk::FIRST],
         "the window opened over the record alone"
     );
-    assert!(asked.borrow().is_empty(), "no chunk was read");
+    assert!(read_above(&lazy).is_empty(), "no chunk was read");
     assert_eq!(lazy.store().stats().attaches, 1, "the record, once");
     assert_eq!(
         lazy.store().stats().builds,
@@ -1217,7 +1212,7 @@ fn opens_at(cards: usize) -> (usize, usize, Duration, Duration, Vec<ChunkNo>, Ve
     if cards > usize::try_from(chunk::ITEMS).unwrap() {
         let (card, number) = card_at(&meta, &root, &board, &ids_of(cards, cards - 1), cards - 1);
         assert!(lazy.store().record_at(&card).is_ok());
-        assert_eq!(*asked.borrow(), [number], "the row's chunk alone");
+        assert_eq!(read_above(&lazy), [number], "the row's chunk alone");
     }
     (filled, loaded, cold_open, warm_open, cold_held, held)
 }

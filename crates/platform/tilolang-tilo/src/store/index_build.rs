@@ -530,7 +530,7 @@ impl Inner {
     /// A chunk the source could not give is not here to read: it is waited on rather than asked
     /// for again ([`Inner::waited`]), so the store owes no sync for it until it arrives.
     fn chunks_to_read(&self) -> Vec<ChunkNo> {
-        if !self.can_load() || !self.chunks.has_record() {
+        if !self.adopted || !self.chunks.has_record() {
             return Vec::new();
         }
         let reflected: BTreeSet<ChunkNo> = self

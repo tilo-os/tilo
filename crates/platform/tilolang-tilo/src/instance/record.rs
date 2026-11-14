@@ -1898,7 +1898,8 @@ pub struct ReadRecord {
     route: RouteSpec,
     /// The kind of the record, as its app publishes it.
     kind: String,
-    chunks: Chunks,
+    /// Its chunks: held here until the store of the app reading it holds them ([`Self::hold_in`]).
+    chunks: Docs,
     joined: BTreeSet<ChunkNo>,
 }
 
@@ -1909,8 +1910,17 @@ impl ReadRecord {
         Self {
             route,
             kind: kind.to_owned(),
-            chunks: Chunks::of(Doc::new()),
+            chunks: Docs::Own(Chunks::of(Doc::new())),
             joined: BTreeSet::from([FIRST]),
+        }
+    }
+
+    /// Have `host`'s store hold the record's chunks from here on, the one copy of each: what
+    /// the record takes in is written into it, and derived there as it is.
+    pub fn hold_in(&mut self, host: &crate::host::Host) {
+        if let Docs::Own(chunks) = &mut self.chunks {
+            host.adopt(std::mem::take(chunks));
+            self.chunks = Docs::Store(host.store().clone());
         }
     }
 
@@ -1918,12 +1928,6 @@ impl ReadRecord {
     #[must_use]
     pub fn route(&self) -> &RouteSpec {
         &self.route
-    }
-
-    /// The record and the chunks above it held here.
-    #[must_use]
-    pub fn chunks(&self) -> &Chunks {
-        &self.chunks
     }
 
     /// Take in `event` when it is a change of this record or one of its chunks, joining the
@@ -1954,7 +1958,9 @@ impl ReadRecord {
                 let applied = decode_routed_mutation(payload, decrypted_payload.as_deref())
                     .map_err(|error| format!("{error:?}"))
                     .and_then(|mutation| {
-                        load_mutation(self.chunks.open(*chunk), &mutation)
+                        self.chunks
+                            .write_chunk(*chunk, |doc| load_mutation(doc, &mutation))
+                            .0
                             .map_err(|error| error.to_string())
                     })
                     .unwrap_or_else(|error| {
@@ -1965,8 +1971,10 @@ impl ReadRecord {
             })?,
             CollabEvent::CommittedDocument { route, read } => {
                 let &(_, chunk) = routes.iter().find(|(held, _)| held == route)?;
-                let applied = read
-                    .take_into(self.chunks.open(chunk), load_mutation)
+                let applied = self
+                    .chunks
+                    .write_chunk(chunk, |doc| read.take_into(doc, load_mutation))
+                    .0
                     .unwrap_or(0);
                 (chunk, applied)
             }
@@ -1981,7 +1989,7 @@ impl ReadRecord {
 
     /// Join the route of every chunk the record's manifest names that is not joined yet.
     fn join_chunks(&mut self, manager: &mut CollaborationManager) {
-        for chunk in self.chunks.placement().chunks() {
+        for chunk in self.chunks.read(|chunks| chunks.placement().chunks()) {
             if !self.joined.insert(chunk) {
                 continue;
             }

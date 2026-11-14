@@ -946,7 +946,6 @@ tilo_test_env::scenario! {
         let host = Host::open(
             Opening {
                 record: Some(&ada.doc),
-                chunks: None,
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
                 // A window with frames: what the record gained is derived off the frame.
@@ -1017,7 +1016,6 @@ tilo_test_env::scenario! {
         let host = Host::open(
             Opening {
                 record: Some(&ada.doc),
-                chunks: None,
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
                 wake: Some(Arc::new(|| {})),
@@ -1192,7 +1190,6 @@ fn kept_in(dir: &Path, doc: &AutoCommit, lock: &str) -> Host {
     let host = Host::open(
         Opening {
             record: Some(doc),
-            chunks: None,
             index_dir: Some(dir.to_owned()),
             device: None,
             wake: None,
@@ -1242,7 +1239,6 @@ tilo_test_env::scenario! {
         let host = Host::open(
             Opening {
                 record: None,
-                chunks: None,
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
                 wake: None,
@@ -1290,7 +1286,6 @@ tilo_test_env::scenario! {
         let second = Host::open(
             Opening {
                 record: Some(&ada.doc),
-                chunks: None,
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
                 wake: None,
@@ -1326,7 +1321,6 @@ tilo_test_env::scenario! {
             Host::open(
                 Opening {
                     record: chunks.first(),
-                    chunks: None,
                     index_dir: Some(dir.path().to_owned()),
                     device: None,
                     wake: None,
@@ -1380,7 +1374,6 @@ tilo_test_env::scenario! {
         let behind = Host::open(
             Opening {
                 record: chunks.first(),
-                chunks: None,
                 index_dir: None,
                 device: None,
                 wake: None,
@@ -1398,18 +1391,9 @@ tilo_test_env::scenario! {
         );
         drop(behind);
 
-        let host = Host::open(
-            Opening {
-                record: chunks.first(),
-                chunks: Some(&chunks),
-                index_dir: None,
-                device: None,
-                wake: None,
-            },
-            Principal::new("ada"),
-            || None,
-        )
-        .unwrap();
+        // A host holding the record's chunks, the one copy of each.
+        let host = Host::open(Opening::default(), Principal::new("ada"), || None).unwrap();
+        host.adopt(chunks);
         host.load_builtin(TODO, &lock).unwrap();
         host.wait_index();
         assert!(
@@ -1432,7 +1416,6 @@ tilo_test_env::scenario! {
         let host = Host::open(
             Opening {
                 record: Some(&ada.doc),
-                chunks: None,
                 index_dir: None,
                 device: None,
                 // What a window has before the app's package loads.
@@ -1473,7 +1456,6 @@ tilo_test_env::scenario! {
         let host = Host::open(
             Opening {
                 record: Some(&ada.doc),
-                chunks: None,
                 index_dir: Some(dir.path().to_owned()),
                 device: None,
                 wake: None,
@@ -1550,7 +1532,6 @@ fn a_window_opened_with_a_waker_reads_its_index_off_the_frame() {
     let host = Host::open(
         Opening {
             record: Some(&ada.doc),
-            chunks: None,
             index_dir: None,
             device: None,
             wake: Some(wake),

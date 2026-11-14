@@ -862,7 +862,6 @@ impl Instance {
         };
         let opening = Opening {
             record: doc,
-            chunks: None,
             index_dir,
             device: self.device.as_deref(),
             // A window's index is derived off its frames, which the waker brings back. A past

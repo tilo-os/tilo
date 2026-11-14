@@ -1123,8 +1123,9 @@ fn a_window_reads_only_the_chunks_it_shows() {
 
     // The rows, and the places and counts beside them, are what a replica holding every chunk
     // shows: the index answered them without a chunk being read.
-    let mut whole = Session::tasks_over_in(&route, chunks.clone(), None);
-    whole.held_every_chunk(&chunks);
+    let mut whole = Session::tasks_over_in(&route, chunks, None);
+    // A replica that joined each chunk's route reads every chunk its record holds.
+    whole.instance_host().store().read_every_chunk();
     whole.settle();
     assert_eq!(
         shown(&mut session),
@@ -1269,7 +1270,6 @@ fn kept_index(
     let earlier = tilolang_tilo::host::Host::open(
         tilolang_tilo::host::Opening {
             record: chunks.first(),
-            chunks: Some(chunks),
             index_dir: Some(tilolang_tilo::index::record_dir(
                 &indexes,
                 &route.cluster_id.to_string(),

@@ -6,18 +6,17 @@
 use tilolang_runtime::store::StoreError;
 use tilolang_runtime::value::ResourceRef;
 
-use super::{ChunkLoader, Inner, Planned, TiloStore};
+use super::{Inner, Planned, TiloStore};
 use crate::chunk::{self, ChunkNo};
 
 impl TiloStore {
-    /// How the store gets a chunk it was not sent: when something reads into it, or a write is
-    /// addressed to it.
-    pub fn set_chunk_loader(&self, loader: ChunkLoader) {
-        let mut inner = self.mutate();
-        // A new source may hold what the last one could not give: the chunks waited on are asked
-        // for again.
-        inner.waited.clear();
-        inner.chunk_loader = Some(loader);
+    /// Read every chunk the record's holder handed over now, as a store sent them all reads
+    /// them: what a replica that joined every chunk's route holds.
+    pub fn read_every_chunk(&self) {
+        let unread: Vec<ChunkNo> = self.held().chunks.all().map(|(chunk, _)| chunk).collect();
+        for chunk in unread {
+            let _ = self.load_chunk(chunk);
+        }
     }
 
     /// Have the workspace record, if the store opened without it: from the loader.
@@ -50,82 +49,50 @@ impl TiloStore {
         Ok(())
     }
 
-    /// Have the chunk `chunk`, if the store was not sent it: from the chunk loader. A chunk the
-    /// manifest names not at all is one no write has started yet, which there is nothing to
-    /// load for.
+    /// Have the chunk `chunk`, if the store has not read it: from what the record's holder
+    /// handed over ([`TiloStore::adopt`]). A chunk the manifest names not at all is one no write
+    /// has started yet, which there is nothing to load for.
     ///
-    /// A chunk the source cannot give — one this device has not been sent yet, and no peer
-    /// holding it is reachable — is asked for once, and waited on: the sync that brings it reads
-    /// it then ([`Inner::attach_document`]), so the store neither polls for it nor asks its
-    /// source again. What a person reads of it says it is not here yet, and what a window reads
+    /// A chunk the holder does not have — one this device has not been sent yet, and no peer
+    /// holding it is reachable — is waited on: the write that brings it reads it then
+    /// ([`Inner::attach_document`]), so the store does not look for it again. What a person reads of it says it is not here yet, and what a window reads
     /// meanwhile is what the store holds, its counts not yet known
     /// ([`TiloStore::index_whole`]).
     pub(super) fn load_chunk(&self, chunk: ChunkNo) -> Result<(), StoreError> {
         if chunk == chunk::FIRST {
             return self.load_record();
         }
-        let loader = {
-            let mut inner = self.changing();
-            if inner.chunks.mirror(chunk).is_some() {
-                return Ok(());
+        let mut inner = self.changing();
+        if inner.chunks.mirror(chunk).is_some() {
+            return Ok(());
+        }
+        // A chunk its holder handed over and the store has not read yet: read now.
+        if let Some(doc) = inner.chunks.unpark(chunk) {
+            drop(inner);
+            let moved = self.mutate().attach_document(chunk, doc);
+            if moved {
+                self.changing().notify_all();
             }
-            // A chunk its holder handed over and the store has not read yet: read now.
-            if let Some(doc) = inner.chunks.unpark(chunk) {
-                drop(inner);
-                let moved = self.mutate().attach_document(chunk, doc);
-                if moved {
-                    self.changing().notify_all();
-                }
-                return Ok(());
-            }
-            // Which chunks exist is what the record's manifest says: without it there is no
-            // telling a chunk it names from one a write will start.
-            if !inner.chunks.has_record() {
-                return Err(StoreError::Backend(
-                    "the workspace record is not loaded".into(),
-                ));
-            }
-            if !inner.chunks.placement().chunks().contains(&chunk) {
-                return Ok(());
-            }
-            // Asked for once already, and not given: nothing of it is owed until the sync that
-            // brings it ([`TiloStore::sync`]).
-            if inner.waited.contains(&chunk) {
-                return Err(StoreError::Backend(format!(
-                    "the chunk {chunk} is not here yet"
-                )));
-            }
-            let loader = inner.chunk_loader.take();
-            if loader.is_none() && inner.adopted {
-                // The holder handed over every chunk it has: one it did not is not on this
-                // device yet, and is waited on as one a source cannot give.
-                inner.waited.insert(chunk);
-                return Err(StoreError::Backend(format!(
-                    "the chunk {chunk} is not here yet"
-                )));
-            }
-            loader
-        };
-        let Some(mut loader) = loader else {
-            // Nothing to load it with: what reads into the chunk says so where it reads it, and
+            return Ok(());
+        }
+        // Which chunks exist is what the record's manifest says: without it there is no telling
+        // a chunk it names from one a write will start.
+        if !inner.chunks.has_record() {
+            return Err(StoreError::Backend(
+                "the workspace record is not loaded".into(),
+            ));
+        }
+        if !inner.adopted || !inner.chunks.placement().chunks().contains(&chunk) {
+            // Nothing to load it from: what reads into the chunk says so where it reads it, and
             // what writes there is the whole workspace of its own (see [`Inner::write_one`]).
             return Ok(());
-        };
-        let doc = loader(chunk);
-        let mut inner = self.mutate();
-        inner.chunk_loader = Some(loader);
-        let Some(doc) = doc else {
-            inner.waited.insert(chunk);
-            return Err(StoreError::Backend(format!(
-                "the chunk {chunk} cannot be loaded"
-            )));
-        };
-        let moved = inner.attach_document(chunk, doc);
-        drop(inner);
-        if moved {
-            self.changing().notify_all();
         }
-        Ok(())
+        // The holder handed over every chunk it has: one it did not is not on this device yet,
+        // and is waited on until a write of the holder's brings it ([`TiloStore::write_chunk`]).
+        inner.waited.insert(chunk);
+        Err(StoreError::Backend(format!(
+            "the chunk {chunk} is not here yet"
+        )))
     }
 
     /// Have the chunk the resource `doc` is stored in, if the store was not sent it.
@@ -193,7 +160,7 @@ impl TiloStore {
 /// that has no way to load it is the whole workspace of its own, and writes where its manifest
 /// places; one that can is told to load it first, never to write over it.
 pub(super) fn unloaded(inner: &Inner, chunk: ChunkNo) -> bool {
-    inner.can_load()
+    inner.adopted
         && inner.chunks.mirror(chunk).is_none()
         && inner.chunks.placement().chunks().contains(&chunk)
 }

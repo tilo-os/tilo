@@ -509,7 +509,6 @@ tilo_test_env::scenario! {
         let host = Host::open(
             tilolang_tilo::host::Opening {
                 record: None,
-                chunks: None,
                 index_dir: Some(dir.clone()),
                 device: None,
                 wake: None,
@@ -825,7 +824,6 @@ fn kept_index(doc: &AutoCommit, lock: &str, dir: &std::path::Path) -> Host {
     let host = Host::open(
         tilolang_tilo::host::Opening {
             record: Some(doc),
-            chunks: None,
             index_dir: Some(dir.to_owned()),
             device: None,
             wake: None,

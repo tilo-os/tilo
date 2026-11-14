@@ -2,9 +2,7 @@
 //! writes every resource in the chunk the record's manifest places it in, and derives each index
 //! row from the chunk that holds it.
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::rc::Rc;
 
 use automerge::AutoCommit;
 use serde_json::Value as Json;
@@ -827,13 +825,13 @@ fn cards_in(host: &Host, meta: &Meta, root: &str) -> Vec<String> {
     left(host, root, &field_id(meta, "Board", "left"))
 }
 
-/// A chunk that holds cards of the board and that the source cannot give: it is not on this
-/// device yet, or the peer holding it is away. The store asks for it once and waits for the sync
-/// that brings it, a window reads the cards it has meanwhile and says its count is not the
-/// board's, and the frame the chunk arrives in reads it, so the index is whole.
+/// A chunk that holds cards of the board and that this device does not hold: it is not here yet,
+/// or the peer holding it is away. The store waits for the write that brings it, a window reads
+/// the cards it has meanwhile and says its count is not the board's, and the write the chunk
+/// arrives with reads it, so the index is whole.
 #[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
 #[test]
-fn a_chunk_the_source_cannot_give_is_asked_for_once_and_read_when_it_arrives() {
+fn a_chunk_this_device_lacks_is_waited_for_and_read_when_it_arrives() {
     let (earlier, mut docs, meta, root, ids) = board();
     drop(earlier);
     let cards = fill_bulk(&mut docs, &meta, &root, 3_000);
@@ -843,31 +841,11 @@ fn a_chunk_the_source_cannot_give_is_asked_for_once_and_read_when_it_arrives() {
         "the cards fill the record's own run and one above it"
     );
 
-    // This replica's source holds the record alone: the chunk the rest of the cards are in has
-    // not reached this device, and asking for it answers nothing.
+    // This replica holds the record alone: the chunk the rest of the cards are in has not
+    // reached this device.
     let record = docs.doc(chunk::FIRST).clone();
-    let replica: Rc<RefCell<Chunks>> = Rc::new(RefCell::new(Chunks::of(record.clone())));
-    let host = Host::open(
-        Opening {
-            record: Some(&record),
-            chunks: None,
-            index_dir: None,
-            device: None,
-            wake: None,
-        },
-        Principal::new("ada"),
-        || None,
-    )
-    .unwrap();
-    host.sync_chunks(&replica.borrow());
-    let asked: Rc<RefCell<Vec<ChunkNo>>> = Rc::default();
-    {
-        let (source, asked) = (Rc::clone(&replica), Rc::clone(&asked));
-        host.set_chunk_loader(Box::new(move |number| {
-            asked.borrow_mut().push(number);
-            source.borrow().mirror(number).cloned()
-        }));
-    }
+    let host = Host::open(Opening::default(), Principal::new("ada"), || None).unwrap();
+    host.adopt(Chunks::of(record));
     host.load_builtin(BOARD, &ids).unwrap();
     host.wait_index();
 
@@ -878,20 +856,21 @@ fn a_chunk_the_source_cannot_give_is_asked_for_once_and_read_when_it_arrives() {
         !host.store().index_whole(),
         "the chunk above holds cards the store has not read"
     );
-    // It was asked for once, and nothing is owed: a frame rests while the chunk is away.
-    assert_eq!(*asked.borrow(), [1], "the chunk is asked for once");
+    // Nothing is owed: a frame rests while the chunk is away.
     assert!(
         !host.index_pending(),
         "the store waits for the chunk rather than reading it again"
     );
     for _ in 0..3 {
-        host.sync_chunks(&replica.borrow());
+        assert!(
+            !host.store().load_short(),
+            "a frame that brings no chunk reads nothing"
+        );
         host.poll_index();
     }
-    assert_eq!(
-        *asked.borrow(),
-        [1],
-        "frames that bring no chunk ask for it no more"
+    assert!(
+        !host.index_pending(),
+        "frames that bring no chunk owe nothing"
     );
     assert_eq!(held(&host).len(), 1, "the store starts no chunk empty");
 
@@ -957,14 +936,11 @@ fn a_chunk_the_source_cannot_give_is_asked_for_once_and_read_when_it_arrives() {
     );
 
     // The chunk arrives through the sync: it is read once, and the board is whole.
-    let second = docs.doc(1).clone();
-    replica.borrow_mut().insert(1, second);
-    host.sync_chunks(&replica.borrow());
-    assert_eq!(
-        *asked.borrow(),
-        [1, 1],
-        "one ask while it was away, and one the source answers"
-    );
+    let mut second = docs.doc(1).clone();
+    let (_, moved) = host
+        .store()
+        .write_chunk(1, |held| held.merge_incoming(&mut second).unwrap());
+    assert!(moved, "the chunk is read as it arrives");
     assert!(host.store().index_whole(), "the index covers the board");
     assert!(host.index_ready(), "and is read from, not built");
     assert_eq!(cards_in(&host, &meta, &root), cards, "every card in order");
@@ -1130,7 +1106,6 @@ fn a_card_added_past_a_full_run_of_a_record_kept_as_one_document_is_kept() {
         let host = Host::open(
             Opening {
                 record: Some(record),
-                chunks: None,
                 index_dir: None,
                 device: None,
                 wake: None,
