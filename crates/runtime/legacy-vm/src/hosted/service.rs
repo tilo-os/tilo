@@ -44,8 +44,11 @@ const WAITING_FOR_MS: u64 = 15_000;
 /// before it is killed.
 const BROWSER_GRACE: Duration = Duration::from_secs(15);
 
-/// How long after a template was last tried another try waits.
-const TEMPLATE_RETRY_MS: u64 = 10 * 60 * 1000;
+/// How long after a template was last tried another try waits. A node that
+/// could not spare the memory or whose boot failed gets another try while
+/// whoever waited for the template is still waiting: ten minutes is long past
+/// any check or placer that asked for it.
+const TEMPLATE_RETRY_MS: u64 = 60 * 1000;
 
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
@@ -775,11 +778,19 @@ impl Service {
         self.building_mib.fetch_add(counted, Ordering::SeqCst);
         let service = Arc::clone(self);
         std::thread::spawn(move || {
+            let began = std::time::Instant::now();
+            eprintln!("tilo-legacy hosted: making the {size} template");
             let made = service.make_template(size);
             service.building_mib.fetch_sub(counted, Ordering::SeqCst);
+            let took = began.elapsed().as_secs();
             match made {
-                Ok(()) => eprintln!("tilo-legacy hosted: the {size} template is ready"),
-                Err(error) => eprintln!("tilo-legacy hosted: the {size} template: {error}"),
+                Ok(()) => {
+                    eprintln!("tilo-legacy hosted: the {size} template took {took}s");
+                    eprintln!("tilo-legacy hosted: the {size} template is ready");
+                }
+                Err(error) => {
+                    eprintln!("tilo-legacy hosted: the {size} template: {error} (after {took}s)");
+                }
             }
         });
     }

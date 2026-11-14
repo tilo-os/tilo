@@ -172,9 +172,10 @@ pub use tilo_actions::remote::browser::SEND_HELD;
 /// How long a device certified for a session lasts: as long as the session
 /// may run.
 pub const DEVICE_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
-/// How long an environment device whose last session here ended has to come
-/// back before its environment stops. A session in a VM that dies is gone; one
-/// whose connection dropped is back in a moment, and its window lives on.
+/// How long an environment device whose last connection here ended has to
+/// come back before its environment stops. A session in a VM that dies is
+/// gone; one whose connection dropped is back in a moment, and its window
+/// lives on.
 pub const RECONNECT: Duration = Duration::from_secs(30);
 /// How long the person's answer to one page action stays good for running
 /// it: their confirmation of that invocation, not a standing grant.
@@ -1504,13 +1505,13 @@ impl HostedBrowsers {
         }
     }
 
-    /// One of the workspace's environment devices ended its last session here
-    /// and has not come back: its environment stops, and with it the window
-    /// that session held.
+    /// One of the workspace's environment devices ended its last connection
+    /// here and has not come back: its environment stops, and with it the
+    /// window that session held.
     ///
     /// A session whose connection dropped is back in a moment and its window
     /// lives on, so the device is given [`RECONNECT`] first, and what decides
-    /// is whether a session of it is here then.
+    /// is whether a connection of it is here then.
     fn session_ended(self: &Arc<Self>, workspace_id: WorkspaceId, device: [u8; 32]) {
         let (runtime, environments) = {
             let authority = self.authority.lock_recover();

@@ -123,6 +123,44 @@ impl SessionAuthorization for Grant {
     }
 }
 
+/// One live session of an environment's device, as the relay counts it: while
+/// the session lasts, the device is here, and its environment is not stopped
+/// for want of a session ([`crate::environment::EnvironmentRegistry`]). Dropped
+/// when the session ends, whichever way it ended.
+struct Present {
+    grant: Arc<Grant>,
+    environments: crate::environment::EnvironmentRegistry,
+    device: [u8; 32],
+}
+
+impl Drop for Present {
+    fn drop(&mut self) {
+        self.environments.departed(self.device);
+    }
+}
+
+impl SessionAuthorization for Present {
+    fn publication(&self) -> Option<&str> {
+        self.grant.publication()
+    }
+
+    fn subscriptions(&self) -> &[String] {
+        self.grant.subscriptions()
+    }
+
+    fn subscription_prefix(&self) -> Option<&str> {
+        self.grant.subscription_prefix()
+    }
+
+    fn current(&self, direction: Direction, namespace: &str) -> bool {
+        self.grant.current(direction, namespace)
+    }
+
+    fn changed(&self) -> Option<watch::Receiver<u64>> {
+        self.grant.changed()
+    }
+}
+
 /// Who a device's grant is for: the device, in one workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct DeviceKey {
@@ -256,18 +294,30 @@ impl Authority {
             device,
             workspace: id,
         };
+        // An environment's session in a workspace's VM joins the workspace and
+        // then takes part over its own direct link and this plane; it never
+        // opens a state-plane session. So the plane it publishes its window on
+        // is the lasting connection that says it is still here, and a stopped
+        // environment is not mistaken for one whose connection dropped.
+        let environment = crate::environment::environment_of(&self.environments, &device).is_some();
         let admitted = self.members.lock_recover().get(&key).cloned();
         let member = if let Some(member) = admitted {
             member.set(true);
             member
         } else {
-            let environment =
-                crate::environment::environment_of(&self.environments, &device).is_some();
             let member = Arc::new(Grant::new(id, &workspace, peer, environment));
             self.members.lock_recover().insert(key, member.clone());
             member
         };
-        Ok(member)
+        if !environment {
+            return Ok(member);
+        }
+        self.environments.arrived(device);
+        Ok(Arc::new(Present {
+            grant: member,
+            environments: self.environments.clone(),
+            device,
+        }))
     }
 }
 

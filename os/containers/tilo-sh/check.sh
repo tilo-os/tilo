@@ -386,14 +386,18 @@ if [[ $hosted == 1 ]]; then
     step '9b. the host warms the template a workspace VM starts from'
     warmed=$SECONDS
     template=
-    deadline=$((SECONDS + 180))
+    # The host boots a guest, warms its page cache and snapshots it, after the
+    # VM step 9 ran has given its memory back: the host's own patience for a
+    # guest to answer is five minutes, so waiting less than that here would
+    # call a slow warm a failed one. The host logs how long it took.
+    deadline=$((SECONDS + 360))
     while ((SECONDS < deadline)); do
       template=$(sudo -n podman logs tilo-sh-vm-host-0 2>&1 | sed -n 's/.*template is ready$/ready/p' | head -1)
       [[ -z $template ]] || break
       sleep 1
     done
     [[ -n $template ]] \
-      || fail "the VM host made no warm template in 180 s, so every workspace's VM boots cold: what it said is in sudo -n podman logs tilo-sh-vm-host-0 (a template is counted at the size's whole memory, and TILO_SH_VM_HOST_MEMORY_MIB is the room the host may use)"
+      || fail "the VM host made no warm template in 360 s, so every workspace's VM boots cold: what it said is in sudo -n podman logs tilo-sh-vm-host-0 (a template is counted at the size's whole memory, and TILO_SH_VM_HOST_MEMORY_MIB is the room the host may use)"
     echo "ok: the template was ready in $((SECONDS - warmed))s"
   fi
 

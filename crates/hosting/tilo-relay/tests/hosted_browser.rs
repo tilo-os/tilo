@@ -34,7 +34,8 @@ use tilo_user_identity::{
 };
 
 use crate::common::{
-    TestDevice, TestRelay, TestUser, admit_members, client_endpoint, spawn_relay_serving_apps,
+    TestDevice, TestRelay, TestUser, admit_members, client_endpoint, device_endpoint,
+    spawn_relay_serving_apps,
 };
 use tilo_relay::WorkspaceId;
 
@@ -2320,4 +2321,89 @@ async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays(
         1,
         "its own record's write is kept: {retained:?}"
     );
+}
+
+/// The session in a workspace's VM joins the workspace, and the connection it
+/// joins over ends right after: after that the session takes part over its own
+/// lasting link and the live plane it publishes its window on. The live plane
+/// is therefore the relay's only sight of the device being here, and it must
+/// count as such — otherwise the window stops a reconnect-wait after the join
+/// ends, as it did before any plane counted the device.
+#[tokio::test]
+async fn a_live_plane_session_keeps_the_window_running_past_the_reconnect_wait() {
+    // The wait the deployment gives a dropped session is 30 s; the same wait,
+    // short, proves the same answer here without a minute of sleeping.
+    let reconnect = Duration::from_millis(600);
+    let fixture = fixture_with(
+        Arc::new(Counting::default()),
+        reconnect,
+        tilo_relay::hosted_browser::ANSWER_WAIT,
+    )
+    .await;
+    // The workspace lists the window's device, as the relay lists it.
+    fixture.list_environment().await;
+    let material = fixture.environments.material();
+
+    // The join: the session's device enters the workspace, and that
+    // connection ends at once, as the invitation connection in the VM does.
+    let joined = subscribe(
+        &fixture.relay.relay,
+        &fixture.user,
+        &DeviceIdentity::of(&material),
+    )
+    .await;
+    // The lasting connection the session keeps: the live plane it publishes
+    // its window on.
+    let (endpoint, live) = live_plane_session(&fixture.relay.relay, &material).await;
+    // The join connection ends the way the session's own does: its endpoint
+    // closes, having told the relay it is going.
+    joined.close().await;
+
+    tokio::time::sleep(reconnect * 4).await;
+    assert_eq!(
+        fixture.environments.stops(),
+        0,
+        "a device with a live plane session is still here, though its join connection ended"
+    );
+
+    // The session went away for good: its last connection ending stops it,
+    // and with it the window. The connection's teardown reaches the plane a
+    // moment after it is dropped, so the stop is watched for.
+    endpoint.close().await;
+    drop(live);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while fixture.environments.stops() == 0 && Instant::now() < deadline {
+        tokio::time::sleep(reconnect).await;
+    }
+    assert_eq!(
+        fixture.environments.stops(),
+        1,
+        "the window stops once its session's last connection ended"
+    );
+}
+
+/// The environment's device joins the workspace's live plane as the session
+/// in the VM does: over its own endpoint key, admitted by the certificate the
+/// relay issued it. The session stays open while the returned endpoint and
+/// [`Connected`](tilo_live::admit::Connected) are held.
+async fn live_plane_session(
+    relay: &tilo_relay::Relay,
+    material: &Material,
+) -> (iroh::endpoint::Endpoint, tilo_live::admit::Connected) {
+    let endpoint = device_endpoint(&DeviceIdentity::of(material)).await;
+    let scope = tilo_live::scope::Scope::workspace(&material.workspace);
+    let grant = tilo_live::grant::Native::new(
+        *material.workspace_id.as_uuid().as_bytes(),
+        &scope.id(),
+        0,
+        serde_json::to_vec(&material.device).unwrap(),
+        Vec::new(),
+    )
+    .unwrap()
+    .encode();
+    let dial = tilo_live::native::Iroh::new(endpoint.clone(), relay.node_addr());
+    let joined = tilo_live::admit::Dial::dial(&dial, &grant, None, None, Duration::from_secs(20))
+        .await
+        .expect("the live plane admits the environment's device");
+    (endpoint, joined)
 }

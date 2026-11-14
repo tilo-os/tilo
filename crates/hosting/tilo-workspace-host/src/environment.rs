@@ -365,8 +365,11 @@ impl EnvironmentRegistry {
             .collect()
     }
 
-    /// A session of `device` authenticated here: its environment is up, and an
-    /// end that was being waited on is not one.
+    /// A connection of `device` authenticated here: its environment is up, and
+    /// an end that was being waited on is not one. Every plane feeds this — a
+    /// state-plane session, and the live plane a session in a workspace's VM
+    /// publishes its window on — so "still here" is one count of the device's
+    /// open connections, not one per plane.
     pub fn arrived(&self, device: [u8; 32]) {
         if !matches!(
             self.of(&device, tilo_clock::unix_now_ns()),
@@ -380,7 +383,7 @@ impl EnvironmentRegistry {
         drop(connected);
     }
 
-    /// A session of `device` ended: when it was the last one, the relay that
+    /// A connection of `device` ended: when it was the last one, the relay that
     /// placed its environment hears of it ([`Self::when_ended`]).
     pub fn departed(&self, device: [u8; 32]) {
         let last = {
@@ -410,7 +413,7 @@ impl EnvironmentRegistry {
         }
     }
 
-    /// Whether a session of `device` is here now.
+    /// Whether a connection of `device` is here now.
     #[must_use]
     pub fn connected(&self, device: &[u8; 32]) -> bool {
         self.table.connected.read_recover().contains_key(device)
