@@ -38,9 +38,36 @@ pub struct Overlay {
     /// The newest version written of each resource, by resource ([`super::NEWEST`]).
     newest: HashMap<String, super::reflect::Stamp>,
     lists: HashMap<String, ListState>,
+    /// How many derivations it took in since it was empty, in order: the place of the next one
+    /// ([`Self::place`]).
+    derived: usize,
+    /// Whether it was derived again over writes it held, which keeps no order of theirs.
+    rederived: bool,
+    /// The writes derived into it, by their seeds.
+    writes: BTreeSet<Vec<u8>>,
 }
 
 impl Overlay {
+    /// The place of a derivation about to be written into it, among those since it was empty:
+    /// `None` once it was derived again over the writes it held ([`Self::rederive`]).
+    pub fn place(&mut self, write: &[u8]) -> Option<usize> {
+        self.writes.insert(write.to_vec());
+        let at = self.derived;
+        self.derived = at.saturating_add(1);
+        (!self.rederived).then_some(at)
+    }
+
+    /// It holds the write `write` derived again, in no order of the writes'.
+    pub fn rederive(&mut self, write: &[u8]) {
+        self.writes.insert(write.to_vec());
+        self.rederived = true;
+    }
+
+    /// Whether the write `write` (its seed) was derived into it.
+    pub fn holds(&self, write: &[u8]) -> bool {
+        self.writes.contains(write)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
             && self.texts.is_empty()
@@ -197,13 +224,22 @@ impl Overlay {
     }
 }
 
-/// The open writes over the index they are written against: a [`Sink`].
+/// The open writes over the index they are written against: a [`Sink`]. With `written`, it
+/// keeps the columns as the index does and what it was written, for the index to take in as is
+/// ([`Written::replay`]).
 pub struct OverlaySink<'a> {
     pub overlay: &'a mut Overlay,
     pub snapshot: Option<&'a Snapshot>,
+    pub written: Option<Written>,
 }
 
 impl OverlaySink<'_> {
+    fn note(&mut self, op: Op) {
+        if let Some(written) = &mut self.written {
+            written.0.push(op);
+        }
+    }
+
     fn list_resource(list: &str) -> Option<&str> {
         let rest = list.strip_prefix("m\u{1}")?;
         rest.split_once('\u{1}').map(|(resource, _)| resource)
@@ -273,13 +309,20 @@ impl Sink for OverlaySink<'_> {
         resource: &str,
         stamp: &super::reflect::Stamp,
     ) -> Result<(), IndexError> {
+        self.note(Op::Newest(
+            resource.to_owned(),
+            Box::new(stamp.clone()),
+            false,
+        ));
         let newer = self
             .overlay
             .newest
             .get(resource)
             .is_none_or(|held| held.before(stamp));
         if newer {
-            self.set_newest(resource, stamp)?;
+            self.overlay
+                .newest
+                .insert(resource.to_owned(), stamp.clone());
         }
         Ok(())
     }
@@ -289,6 +332,11 @@ impl Sink for OverlaySink<'_> {
         resource: &str,
         stamp: &super::reflect::Stamp,
     ) -> Result<(), IndexError> {
+        self.note(Op::Newest(
+            resource.to_owned(),
+            Box::new(stamp.clone()),
+            true,
+        ));
         self.overlay
             .newest
             .insert(resource.to_owned(), stamp.clone());
@@ -321,6 +369,11 @@ impl Sink for OverlaySink<'_> {
         field: &str,
         value: &FieldValue,
     ) -> Result<(), IndexError> {
+        self.note(Op::Field(
+            resource.to_owned(),
+            field.to_owned(),
+            value.clone(),
+        ));
         self.overlay
             .fields
             .insert((resource.to_owned(), field.to_owned()), value.clone());
@@ -328,6 +381,11 @@ impl Sink for OverlaySink<'_> {
     }
 
     fn put_text(&mut self, resource: &str, key: &str, text: &str) -> Result<(), IndexError> {
+        self.note(Op::Text(
+            resource.to_owned(),
+            key.to_owned(),
+            text.to_owned(),
+        ));
         let at = (resource.to_owned(), key.to_owned());
         self.overlay.dropped.remove(&at);
         self.overlay.texts.insert(at, text.to_owned());
@@ -335,6 +393,7 @@ impl Sink for OverlaySink<'_> {
     }
 
     fn drop_text(&mut self, resource: &str, key: &str) -> Result<(), IndexError> {
+        self.note(Op::DropText(resource.to_owned(), key.to_owned()));
         let at = (resource.to_owned(), key.to_owned());
         self.overlay.texts.remove(&at);
         self.overlay.dropped.insert(at);
@@ -342,21 +401,41 @@ impl Sink for OverlaySink<'_> {
     }
 
     fn remove(&mut self, resource: &str) -> Result<(), IndexError> {
+        self.note(Op::Remove(resource.to_owned()));
+        // What the index does of the removal is its own: what it takes in is the removal.
+        let written = self.written.take();
         // The links it made leave their targets' lists; the ones its items made are dropped
         // with the open writes and read from the index until the record holds the removal.
-        super::derive::unlink(self, resource)?;
-        self.drop_filters(resource)?;
+        let removed =
+            super::derive::unlink(self, resource).and_then(|()| self.drop_filters(resource));
+        self.written = written;
+        removed?;
         self.overlay.drop_within(resource);
         self.overlay.removed.insert(resource.to_owned());
         Ok(())
     }
 
-    fn doc(&mut self, _doc: &str, _ty: Option<&str>, _chunk: ChunkNo) -> Result<(), IndexError> {
+    fn clear(&mut self, resource: &str) -> Result<(), IndexError> {
+        let written = self.written.take();
+        let cleared = self.remove(resource);
+        self.written = written;
+        self.note(Op::Clear(resource.to_owned()));
+        cleared
+    }
+
+    fn prune(&mut self, doc: &str) -> Result<(), IndexError> {
+        self.note(Op::Prune(doc.to_owned()));
+        Ok(())
+    }
+
+    fn doc(&mut self, doc: &str, ty: Option<&str>, chunk: ChunkNo) -> Result<(), IndexError> {
         // The store keeps which records there are.
+        self.note(Op::Doc(doc.to_owned(), ty.map(str::to_owned), chunk));
         Ok(())
     }
 
     fn insert(&mut self, list: &str, entry: Entry) -> Result<(), IndexError> {
+        self.note(Op::Insert(list.to_owned(), entry.clone()));
         match self.state(list) {
             ListState::Whole(entries) => {
                 if let Err(at) = entries.binary_search(&entry) {
@@ -373,6 +452,7 @@ impl Sink for OverlaySink<'_> {
     }
 
     fn remove_entry(&mut self, list: &str, entry: &Entry) -> Result<(), IndexError> {
+        self.note(Op::RemoveEntry(list.to_owned(), entry.clone()));
         match self.state(list) {
             ListState::Whole(entries) => entries.retain(|held| held != entry),
             ListState::Delta { added, removed } => {
@@ -385,6 +465,7 @@ impl Sink for OverlaySink<'_> {
     }
 
     fn replace(&mut self, list: &str, entries: Vec<Entry>) -> Result<(), IndexError> {
+        self.note(Op::Replace(list.to_owned(), entries.clone()));
         self.overlay
             .lists
             .insert(list.to_owned(), ListState::Whole(entries));
@@ -423,16 +504,78 @@ impl Sink for OverlaySink<'_> {
         Ok(self.entries(list)?.len())
     }
 
-    fn count(&mut self, _list: &str, _value: &str, _delta: i64) -> Result<(), IndexError> {
+    fn count(&mut self, list: &str, value: &str, delta: i64) -> Result<(), IndexError> {
+        self.note(Op::Count(list.to_owned(), value.to_owned(), delta));
         Ok(())
     }
 
-    fn drop_lists(&mut self, _prefix: &str) -> Result<(), IndexError> {
+    fn drop_lists(&mut self, prefix: &str) -> Result<(), IndexError> {
         // Filter columns are the index's: the store reads the open writes' items against them.
+        self.note(Op::DropLists(prefix.to_owned()));
         Ok(())
     }
 
     fn keeps_columns(&self) -> bool {
-        false
+        self.written.is_some()
+    }
+
+    fn set_written_at(&mut self, ty: &str, clock: super::Clock) -> Result<(), IndexError> {
+        self.note(Op::WrittenAt(ty.to_owned(), clock));
+        Ok(())
+    }
+}
+
+/// What one derivation wrote into the overlay, in order: what the index takes in of a write the
+/// overlay derived, once the record holds it as written ([`Written::replay`]).
+#[derive(Clone, Debug)]
+enum Op {
+    Newest(String, Box<super::reflect::Stamp>, bool),
+    Field(String, String, FieldValue),
+    Text(String, String, String),
+    DropText(String, String),
+    Remove(String),
+    Clear(String),
+    Prune(String),
+    Doc(String, Option<String>, ChunkNo),
+    Insert(String, Entry),
+    RemoveEntry(String, Entry),
+    Replace(String, Vec<Entry>),
+    Count(String, String, i64),
+    DropLists(String),
+    WrittenAt(String, super::Clock),
+}
+
+/// The writes one derivation into the overlay made, as the index takes them: the same
+/// derivation over the same rows writes the same, so a write the record holds as the store made
+/// it is taken into the index from these rather than derived again.
+#[derive(Clone, Debug, Default)]
+pub struct Written(Vec<Op>);
+
+impl Written {
+    /// Write them into `sink`, which holds what the derivation read.
+    ///
+    /// # Errors
+    /// The sink cannot be written.
+    pub fn replay(&self, sink: &mut impl Sink) -> Result<(), IndexError> {
+        for op in &self.0 {
+            match op {
+                Op::Newest(resource, stamp, true) => sink.set_newest(resource, stamp)?,
+                Op::Newest(resource, stamp, false) => sink.put_newest(resource, stamp)?,
+                Op::Field(resource, field, value) => sink.put_field(resource, field, value)?,
+                Op::Text(resource, key, text) => sink.put_text(resource, key, text)?,
+                Op::DropText(resource, key) => sink.drop_text(resource, key)?,
+                Op::Remove(resource) => sink.remove(resource)?,
+                Op::Clear(resource) => sink.clear(resource)?,
+                Op::Prune(doc) => sink.prune(doc)?,
+                Op::Doc(doc, ty, chunk) => sink.doc(doc, ty.as_deref(), *chunk)?,
+                Op::Insert(list, entry) => sink.insert(list, entry.clone())?,
+                Op::RemoveEntry(list, entry) => sink.remove_entry(list, entry)?,
+                Op::Replace(list, entries) => sink.replace(list, entries.clone())?,
+                Op::Count(list, value, delta) => sink.count(list, value, *delta)?,
+                Op::DropLists(prefix) => sink.drop_lists(prefix)?,
+                Op::WrittenAt(ty, clock) => sink.set_written_at(ty, *clock)?,
+            }
+        }
+        Ok(())
     }
 }

@@ -1929,6 +1929,60 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
     }
 }
 
+/// What the window writes is indexed once: the index takes in what deriving each write into the
+/// store's open writes wrote, with nothing derived a second time, and holds what a peer's index
+/// holds after the peer derives the same changes as they arrive.
+#[test]
+fn the_window_indexes_its_writes_once_as_a_peer_derives_them() {
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(100);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, chunks, None);
+    let held = record(&session);
+    let peer = tilolang_tilo::host::Host::open(
+        tilolang_tilo::host::Opening {
+            record: held.first(),
+            ..tilolang_tilo::host::Opening::default()
+        },
+        tilolang_tilo::runtime::Principal::new("bo"),
+        || None,
+    )
+    .expect("the peer's host");
+    peer.load_bundle(&package(package_of(TASKS)))
+        .expect("the tasks package");
+    peer.sync(&held);
+    peer.wait_index();
+    let derived = store(&session).stats().derived_once;
+
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Buy");
+    session.settle();
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+    assert!(task_in_record(&session, "Buy", false), "Buy added");
+    for _ in 0..2 {
+        let (title, x, y) = first_check(&mut session);
+        session.window.click_at(x, y);
+        session.settle();
+        assert!(checked_off(&mut session, &title), "{title} checked");
+    }
+    assert!(
+        store(&session).stats().derived_once >= derived + 3,
+        "the add and each check are indexed as their writes were derived, not derived again"
+    );
+
+    peer.sync(&record(&session));
+    peer.wait_index();
+    assert_eq!(
+        store(&session).index_contents(TASKS),
+        peer.store().index_contents(TASKS),
+        "the window's index holds what the peer's holds"
+    );
+}
+
 /// A step of the person's reaches the window once: checking a task off runs the window's root
 /// once, on the change the record brought back with what its derivation added, and sends the
 /// tree once. The row then reads its title and its box checked off, in a workspace of a hundred

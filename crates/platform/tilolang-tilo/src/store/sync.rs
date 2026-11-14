@@ -268,6 +268,9 @@ struct Applied {
     /// the store's own write it made.
     told: bool,
     versions: Ends,
+    /// What deriving the store's writes the changes carry into the overlay wrote, when they
+    /// carry nothing else: what the index takes in of them ([`Inner::as_written`]).
+    written: Option<Vec<super::AsWritten>>,
 }
 
 /// What those who read the mirror had before a sync: the heads the record moved on from, each
@@ -385,7 +388,7 @@ impl Inner {
         // and items it holds where they are.
         self.reapply_kept(chunk);
         let reached = everything(&before, &self.index);
-        self.derive_all(&reached, None);
+        self.derive_all(&reached, None, None);
         self.rebuild_overlay();
         self.changed();
         self.notify_all();
@@ -433,6 +436,7 @@ impl Inner {
             items: taken.items,
             told: taken.told && every_one_an_action,
             versions: taken.versions,
+            written: taken.written.filter(|_| every_one_an_action),
         })
     }
 
@@ -454,20 +458,43 @@ impl Inner {
             },
             |held| everything(&held, &self.index),
         );
+        let written = applied
+            .written
+            .as_deref()
+            .map(|written| (written, &applied.items));
         let (moved, wholes, notified) = self.derive_all(
             &reached,
             Some((&before.from, &applied.ends, &applied.placed)),
+            written,
         );
         // A write routed to a chunk above the record whose document this sync does not carry —
         // a record kept as one document that the store also routes by its manifest, or a caller
         // handing over the record alone ([`TiloStore::sync_from`]) — stays in `local`; the
         // change above tells the versions it made, and the index holds them. Keep deriving that
         // write without them ([`Self::settle_versions`]).
-        self.settle_versions(&applied.ends);
-        // The overlay was the old transaction's, and what an origin derives was written onto
-        // the mirror again: derive it over the indexes as the record's changes left them, so a
-        // later write into one of its collections sees the items it holds, at their places.
-        self.rebuild_overlay();
+        let settled = self.settle_versions(&applied.ends);
+        // The overlay stands when nothing it was derived from moved: no index it read, no
+        // write it holds (the record took only writes it never derived, a run's manifest), no
+        // version it holds, no record it knows. Else it was the old transaction's, and what an
+        // origin derives was written onto the mirror again: derive it over the indexes as the
+        // record's changes left them, so a later write into one of its collections sees the
+        // items it holds, at their places.
+        self.overlay = Arc::clone(&before.overlay);
+        let changed = &applied.changed;
+        let read = self.answering();
+        let stands = !(settled || changed.structure || changed.unplaced || changed.layout)
+            && changed.nested.is_empty()
+            && read.len() == before.snapshots.len()
+            && read.iter().all(|(app, snapshot)| {
+                before
+                    .snapshots
+                    .get(app)
+                    .is_some_and(|held| Arc::ptr_eq(held, snapshot))
+            })
+            && !self.drop_reflected();
+        if !stands {
+            self.rebuild_overlay();
+        }
         for (key, ids) in moved {
             applied.items.entry(key).or_default().extend(ids);
         }

@@ -183,11 +183,8 @@ pub trait Sink {
     /// It cannot be written.
     fn put_text(&mut self, resource: &str, key: &str, text: &str) -> Result<(), IndexError>;
 
-    /// Drop the text `key` of `resource`: what the index holds there is no more. A sink that
-    /// holds this pass's writes over the index keeps the empty text, which reads as none.
-    fn drop_text(&mut self, resource: &str, key: &str) -> Result<(), IndexError> {
-        self.put_text(resource, key, "")
-    }
+    /// Drop the text `key` of `resource`: what the index holds there is no more.
+    fn drop_text(&mut self, resource: &str, key: &str) -> Result<(), IndexError>;
 
     /// Keep `stamp`'s version as the newest version of `resource`, unless one it holds comes
     /// after it ([`super::Snapshot::newest`]): what a mark of it, or of the document holding
@@ -205,16 +202,11 @@ pub trait Sink {
 
     /// Drop `resource` and everything inside it to derive it anew: as [`Sink::remove`], but
     /// the versions kept of each ([`reflect`]) stay, as they are not in the record.
-    fn clear(&mut self, resource: &str) -> Result<(), IndexError> {
-        self.remove(resource)
-    }
+    fn clear(&mut self, resource: &str) -> Result<(), IndexError>;
 
     /// Drop what is held of the resources within the record `doc` that hold no type: the
     /// versions [`Sink::clear`] kept of items a derivation anew finds in no collection.
-    fn prune(&mut self, doc: &str) -> Result<(), IndexError> {
-        let _ = doc;
-        Ok(())
-    }
+    fn prune(&mut self, doc: &str) -> Result<(), IndexError>;
 
     /// That the package's record `doc` is of the type `ty` (else `None`) and stored in the chunk
     /// `chunk`.
@@ -253,10 +245,7 @@ pub trait Sink {
     /// ([`super::clock`]), unless the index records one: the first one written is the one every
     /// later one is past. A sink that keeps no columns of its own (`keeps_columns`) records
     /// nothing.
-    fn set_written_at(&mut self, ty: &str, clock: super::Clock) -> Result<(), IndexError> {
-        let _ = (ty, clock);
-        Ok(())
-    }
+    fn set_written_at(&mut self, ty: &str, clock: super::Clock) -> Result<(), IndexError>;
 }
 
 impl Sink for Writer<'_> {

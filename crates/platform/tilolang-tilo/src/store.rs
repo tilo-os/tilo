@@ -225,6 +225,51 @@ struct LocalWrite {
     /// ([`unsaved::tell`]): the record's change that carries it then tells only what the record
     /// says differently ([`TiloStore::sync`]).
     told: bool,
+    /// What deriving it into the overlay wrote, for the index to take in as is once the record
+    /// holds it as written ([`Inner::derive_write`]).
+    indexed: Option<Arc<Indexed>>,
+}
+
+/// A write's app, with what deriving it into the overlay wrote.
+type AsWritten = (AppId, Arc<Indexed>);
+
+/// What deriving the writes `written` holds of `app` into the overlay wrote, in order, with the
+/// items all of them moved ([`Inner::derive_all`]): `None` when it holds none of the app's.
+fn written_of<'w>(
+    written: Option<(&'w [AsWritten], &'w ItemTouches)>,
+    app: &AppId,
+) -> Option<(Vec<&'w Indexed>, &'w ItemTouches)> {
+    let (writes, items) = written?;
+    let mine: Vec<&Indexed> = writes
+        .iter()
+        .filter(|(of, _)| of == app)
+        .map(|(_, indexed)| &**indexed)
+        .collect();
+    (!mine.is_empty()).then_some((mine, items))
+}
+
+/// Take into the index `writer` writes what deriving the writes `taken` holds into the overlay
+/// wrote, rather than deriving them again: the same derivation over the same rows writes the
+/// same. `derive` goes on with the items they moved.
+fn take_written(
+    derive: &mut Derive<'_>,
+    writer: &mut idx::Writer<'_>,
+    (mine, items): &(Vec<&Indexed>, &ItemTouches),
+) -> Result<(), idx::IndexError> {
+    for indexed in mine {
+        indexed.written.replay(writer)?;
+    }
+    derive.moved = (*items).clone();
+    Ok(())
+}
+
+/// What deriving one write into the overlay wrote, with the columns as the index keeps them: its
+/// place among the derivations the overlay took in since it was empty, and the index it read.
+/// The index takes it in as is when nothing came between ([`Inner::as_written`]).
+struct Indexed {
+    at: usize,
+    over: Arc<idx::Snapshot>,
+    written: idx::overlay::Written,
 }
 
 /// A write of the store's the record holds, with the change that carried it: the overlay derives
@@ -324,6 +369,9 @@ pub struct StoreStats {
     /// Actions whose writes the store made became their change as written, with nothing
     /// applied a second time ([`TiloStore::commit_action`]).
     pub written_once: u64,
+    /// Indexes that took in the store's own writes as deriving them into the overlay wrote
+    /// them, with nothing derived a second time ([`Inner::as_written`]).
+    pub derived_once: u64,
     /// Indexes built from the record whole, there being none to read (or none to trust).
     pub builds: u64,
     /// Indexes brought up to date from the heads they were stamped with.
@@ -1771,12 +1819,19 @@ impl Inner {
     /// changes made ([`idx::reflect::ends_of`]): what an index stamped with those heads takes
     /// in. Another one reads its versions from the changes since its own heads.
     ///
+    /// `written` is, when the changes are the store's own writes and nothing else, what
+    /// deriving them into the overlay wrote, with the items they moved: an index that reads
+    /// what those derivations read takes that in rather than deriving them again
+    /// ([`Inner::as_written`]). Their versions are derived here either way, as they name the
+    /// changes.
+    ///
     /// Returns the collections items joined or left, with those items, and the records
     /// derived anew whole.
     fn derive_all(
         &mut self,
         reached: &Reached,
         since: Since<'_>,
+        written: Option<(&[AsWritten], &ItemTouches)>,
     ) -> (ItemTouches, BTreeSet<DocId>, BTreeMap<DocId, Vec<FieldKey>>) {
         let mut moved = ItemTouches::new();
         let mut wholes = BTreeSet::new();
@@ -1838,10 +1893,16 @@ impl Inner {
             }
             let nested = &self.nested;
             self.stats.index_writes = self.stats.index_writes.saturating_add(1);
+            let taken = written_of(written, &app);
+            self.stats.derived_once =
+                (self.stats.derived_once).saturating_add(u64::from(taken.is_some()));
             let written = index.write(|writer| {
                 let mut derive = Derive::new(&self.chunks, docs, nested, self.clock.read());
                 derive.removed_before(writer, &app, ends, placed)?;
-                derive.changes(writer, &app, reached)?;
+                match &taken {
+                    Some(taken) => take_written(&mut derive, writer, taken)?,
+                    None => derive.changes(writer, &app, reached)?,
+                }
                 derive.versions(writer, &app, ends)?;
                 derive.removed(writer, &app, ends)?;
                 writer.set_heads(&seen)?;
@@ -2027,6 +2088,7 @@ impl Inner {
             versions: None,
             derived,
             told: false,
+            indexed: None,
         };
         // Derived either way: a failed edit may have written part of itself. What the manifest
         // change places is derived with the edit that places it.

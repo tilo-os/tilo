@@ -30,11 +30,13 @@ use crate::action::{DynEdit, Made, apply_edits, edit_seed};
 use crate::chunk::{ChunkNo, Chunks, Stamps};
 use crate::index as idx;
 use crate::index::derive::Derive;
-use crate::index::overlay::{Overlay, OverlaySink};
+use crate::index::overlay::{Overlay, OverlaySink, Written};
 use crate::index::reflect::Ends;
 use crate::schema::lookup;
 
-use super::{Accepted, Inner, ItemTouches, LocalWrite, TxnState, scan_of, version_fields};
+use super::{
+    Accepted, AsWritten, Indexed, Inner, ItemTouches, LocalWrite, TxnState, scan_of, version_fields,
+};
 
 /// Whether a write touches only resources its origin derives
 /// ([`crate::schema::TypeSchema::derived`]): it belongs in the unsaved layer. `touched` names
@@ -144,6 +146,9 @@ pub(super) struct Taken {
     pub(super) told: bool,
     /// The versions they told, provisional: per resource, what its action made of it.
     pub(super) versions: super::Ends,
+    /// What deriving them into the overlay wrote, for the index to take in as is, when they are
+    /// every edit the record's new changes carry ([`Inner::as_written`]).
+    pub(super) written: Option<Vec<AsWritten>>,
 }
 
 /// Keep what `write` took out of each collection it moved items of, with the version that
@@ -188,7 +193,9 @@ impl Inner {
     }
 
     /// Derive one write into the overlay, naming what it derived to whoever reads: a field may
-    /// move on a resource the write did not name.
+    /// move on a resource the write did not name. What it wrote is kept with the write, with
+    /// the columns as the index keeps them: the index takes it in from that once the record
+    /// holds the write ([`Self::as_written`]).
     pub(super) fn derive_write(&mut self, write: &mut LocalWrite) {
         if !self.chunks.has_record() {
             return;
@@ -196,20 +203,26 @@ impl Inner {
         let Some(held) = self.apps.get(&write.app).filter(|held| held.answers()) else {
             return;
         };
-        let snapshot = std::sync::Arc::clone(&held.snapshot);
-        let overlay = std::sync::Arc::make_mut(&mut self.overlay);
-        let mut sink = crate::index::overlay::OverlaySink {
+        let snapshot = Arc::clone(&held.snapshot);
+        let overlay = Arc::make_mut(&mut self.overlay);
+        let at = overlay.place(&write.seed);
+        let mut sink = OverlaySink {
             overlay,
             snapshot: Some(&snapshot),
+            written: Some(Written::default()),
         };
-        let mut derive = crate::index::derive::Derive::new(
-            &self.chunks,
-            &self.index,
-            &self.nested,
-            self.clock.read(),
-        );
-        if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
-            tracing::warn!(app = %write.app, %error, "a change was not indexed");
+        let mut derive = Derive::new(&self.chunks, &self.index, &self.nested, self.clock.read());
+        match derive.changes(&mut sink, &write.app, &write.reached()) {
+            Ok(()) => {
+                write.indexed = at.map(|at| {
+                    Arc::new(Indexed {
+                        at,
+                        over: Arc::clone(&snapshot),
+                        written: sink.written.unwrap_or_default(),
+                    })
+                });
+            }
+            Err(error) => tracing::warn!(app = %write.app, %error, "a change was not indexed"),
         }
         for keys in derive.notified.into_values() {
             for key in keys {
@@ -218,6 +231,28 @@ impl Inner {
                 }
             }
         }
+    }
+
+    /// What deriving `taken`, the store's writes the record's new changes carry and nothing
+    /// else, wrote into the overlay, for the index of each app to take in as is: when each was
+    /// derived over the index that app reads now, and the overlay held nothing else when it
+    /// was. `None` when any of them is to be derived again.
+    pub(super) fn as_written(&self, taken: &[&LocalWrite]) -> Option<Vec<AsWritten>> {
+        let mut out = Vec::with_capacity(taken.len());
+        for write in taken {
+            let indexed = write.indexed.as_ref()?;
+            let held = self.apps.get(&write.app)?;
+            if !Arc::ptr_eq(&indexed.over, &held.snapshot) {
+                return None;
+            }
+            out.push((write.app.clone(), Arc::clone(indexed)));
+        }
+        out.sort_by_key(|(_, indexed)| indexed.at);
+        // The derivations the overlay took in before each of them are theirs alone.
+        out.iter()
+            .enumerate()
+            .all(|(place, (_, indexed))| indexed.at == place)
+            .then_some(out)
     }
 
     /// The store's writes the record now holds — the ones in the chunk `chunk` whose edit is one
@@ -246,6 +281,7 @@ impl Inner {
             .map(|(change, edit)| (*change, edit.bare().clone()))
             .collect();
         let mut kept = Vec::with_capacity(self.local.len());
+        let start = self.accepted.len();
         for write in std::mem::take(&mut self.local) {
             let at = if write.derived || write.chunk != chunk {
                 None
@@ -270,6 +306,15 @@ impl Inner {
             self.accepted.push(Accepted { write, change });
         }
         self.local = kept;
+        let written = held.is_empty().then(|| {
+            let taken: Vec<&LocalWrite> = self
+                .accepted
+                .iter()
+                .skip(start)
+                .map(|accepted| &accepted.write)
+                .collect();
+            self.as_written(&taken)
+        });
         // An edit the record holds in this chunk's document that the store routed to another
         // chunk — a record kept as one document, whose manifest places items in chunks above it —
         // stays pending there ([`super::TiloStore::sync`]); it was told all the same.
@@ -291,6 +336,7 @@ impl Inner {
             items,
             told,
             versions,
+            written: written.flatten(),
         }
     }
 
@@ -406,29 +452,38 @@ impl Inner {
 }
 
 impl Inner {
+    /// Let go of the writes the record accepted whose change the index their app reads from
+    /// reflects: the index holds what they wrote. Whether the overlay held any of them.
+    pub(super) fn drop_reflected(&mut self) -> bool {
+        // What each index has yet to take in of each chunk, read once per index and chunk
+        // however many writes wait on it.
+        let mut behind: BTreeMap<(AppId, ChunkNo), Behind> = BTreeMap::new();
+        let mut held_one = false;
+        let accepted = std::mem::take(&mut self.accepted);
+        self.accepted = accepted
+            .into_iter()
+            .filter(|accepted| {
+                let write = &accepted.write;
+                let kept = self.apps.get(&write.app).is_some_and(|held| {
+                    !behind
+                        .entry((write.app.clone(), write.chunk))
+                        .or_insert_with(|| Behind::of(&held.heads, &self.chunks, write.chunk))
+                        .reflects(&accepted.change)
+                });
+                held_one |= !kept && self.overlay.holds(&write.seed);
+                kept
+            })
+            .collect();
+        held_one
+    }
+
     /// Derive the store's writes anew into an empty overlay: after a rollback, once an index
     /// they were written over changed, or once the record took some. What an index reflects is
     /// the index's, not derived here again: a write whose versions the record told
     /// ([`Self::settle_versions`]), and one the record accepted whose change the index its app
     /// reads from has taken in ([`Self::drop_committed_local`]), which leaves the store then.
     pub(super) fn rebuild_overlay(&mut self) {
-        // What each index has yet to take in of each chunk, read once per index and chunk
-        // however many writes wait on it.
-        let mut behind: BTreeMap<(AppId, ChunkNo), Behind> = BTreeMap::new();
-        let accepted = std::mem::take(&mut self.accepted);
-        self.accepted = accepted
-            .into_iter()
-            .filter(|accepted| {
-                let write = &accepted.write;
-                let Some(held) = self.apps.get(&write.app) else {
-                    return false;
-                };
-                !behind
-                    .entry((write.app.clone(), write.chunk))
-                    .or_insert_with(|| Behind::of(&held.heads, &self.chunks, write.chunk))
-                    .reflects(&accepted.change)
-            })
-            .collect();
+        self.drop_reflected();
         let mut overlay = Overlay::default();
         if self.chunks.has_record() {
             let settled = &self.settled;
@@ -440,9 +495,11 @@ impl Inner {
                 let Some(held) = self.apps.get(&write.app).filter(|held| held.answers()) else {
                     continue;
                 };
+                overlay.rederive(&write.seed);
                 let mut sink = OverlaySink {
                     overlay: &mut overlay,
                     snapshot: Some(&held.snapshot),
+                    written: None,
                 };
                 let mut derive =
                     Derive::new(&self.chunks, &self.index, &self.nested, self.clock.read());
@@ -527,9 +584,14 @@ impl Inner {
             self.apps.get(app).filter(|held| held.answers()),
         ) {
             let snapshot = Arc::clone(&held.snapshot);
+            let overlay = Arc::make_mut(&mut self.overlay);
+            // Writes derived after these versions read them: none is taken in as written
+            // before the versions are the record's.
+            overlay.place(&write.seed);
             let mut sink = OverlaySink {
-                overlay: Arc::make_mut(&mut self.overlay),
+                overlay,
                 snapshot: Some(&snapshot),
+                written: None,
             };
             let mut derive =
                 Derive::new(&self.chunks, &self.index, &self.nested, self.clock.read());
@@ -548,18 +610,21 @@ impl Inner {
     /// its resources alone, so a rebuild of the overlay reads no version off the index again for
     /// a change those who read the mirror are told already. A transaction whose every version
     /// `told` holds is the record's, and stays only for the chunk record it goes to
-    /// ([`Self::rebuild_overlay`]).
-    pub(super) fn settle_versions(&mut self, told: &super::Ends) {
+    /// ([`Self::rebuild_overlay`]). Whether any write's versions went.
+    pub(super) fn settle_versions(&mut self, told: &super::Ends) -> bool {
         let mut settled = BTreeSet::new();
+        let mut went = false;
         for write in &mut self.local {
             let Some(versions) = write.versions.as_mut() else {
                 continue;
             };
+            let held = versions.len();
             versions.retain(|resource, end| {
                 !told
                     .get(resource)
                     .is_some_and(|held| held.same_invocation(end))
             });
+            went |= versions.len() != held;
             if versions.is_empty() {
                 write.versions = None;
                 settled.insert(write.seed.clone());
@@ -570,6 +635,7 @@ impl Inner {
         self.settled
             .retain(|seed| self.local.iter().any(|write| write.seed == *seed));
         self.settled.extend(settled);
+        went
     }
 }
 
