@@ -43,11 +43,108 @@ const WEBP: ImageFormat = ImageFormat {
     mime: "image/webp",
 };
 
-/// A PNG, JPEG, GIF or WebP picture's format and intrinsic width and height, read from its
-/// header. `None` when `bytes` is no such picture or its header states no size.
+/// A picture's format and intrinsic width and height, read from its header: PNG, JPEG, GIF and
+/// WebP from their container headers, SVG from the size its root element states or the box its
+/// `viewBox` draws in. `None` when `bytes` is no such picture or its header states no size.
 #[must_use]
 pub fn image_size(bytes: &[u8]) -> Option<(ImageFormat, u32, u32)> {
+    if let Some((w, h)) = svg_size(bytes) {
+        return Some((SVG, w, h));
+    }
     sniff_image(bytes).filter(|&(_, w, h)| w > 0 && h > 0)
+}
+
+const SVG: ImageFormat = ImageFormat {
+    extension: "svg",
+    mime: "image/svg+xml",
+};
+
+/// An SVG's width and height: its root element's `width` and `height` when both state a size,
+/// else the `viewBox` it draws in (its third and fourth numbers), which is the only size a
+/// picture that scales to its container states. `None` when neither does.
+fn svg_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if !is_svg(bytes) {
+        return None;
+    }
+    let tag = svg_root_tag(bytes)?;
+    let stated = attribute(tag, "width")
+        .and_then(pixel_size)
+        .zip(attribute(tag, "height").and_then(pixel_size));
+    if let Some((w, h)) = stated {
+        return Some((pixels(w), pixels(h)));
+    }
+    let view_box = attribute(tag, "viewBox")?;
+    let numbers: Vec<f64> = view_box
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|number| !number.is_empty())
+        .filter_map(|number| number.parse::<f64>().ok())
+        .collect();
+    let [_, _, w, h] = numbers.as_slice() else {
+        return None;
+    };
+    (w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0).then(|| (pixels(*w), pixels(*h)))
+}
+
+/// The `<svg …>` start tag of an SVG document, its attributes as one string.
+fn svg_root_tag(bytes: &[u8]) -> Option<&str> {
+    let text = bytes.trim_ascii_start();
+    let start = text
+        .windows(4)
+        .position(|window| window == b"<svg")?
+        .checked_add(4)?;
+    let tag = text.get(start..)?;
+    let end = tag.iter().position(|byte| *byte == b'>')?;
+    std::str::from_utf8(tag.get(..end)?).ok()
+}
+
+/// The value of the attribute `name` in a start tag's attributes.
+fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let mut rest = tag;
+    loop {
+        let at = rest.find(name)?;
+        let starts_a_word = rest
+            .get(..at)
+            .and_then(|before| before.chars().next_back())
+            .is_none_or(|before| !(before.is_alphanumeric() || matches!(before, '-' | '_' | ':')));
+        let after_name = rest.get(at.checked_add(name.len())?..)?;
+        if starts_a_word
+            && let Some(value) = after_name.trim_start().strip_prefix('=')
+            && let Some(quote) = value.trim_start().chars().next()
+            && matches!(quote, '"' | '\'')
+        {
+            let quoted = &value.trim_start()[1..];
+            return quoted.split(quote).next();
+        }
+        rest = after_name;
+    }
+}
+
+/// A `width`/`height` attribute's size in pixels: a number, or a number with `px`. Any other
+/// unit (a percentage, a physical unit) states no size a renderer reserves.
+fn pixel_size(value: &str) -> Option<f64> {
+    let value = value.trim();
+    let end = value
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(end);
+    let unit = unit.trim();
+    if !(unit.is_empty() || unit.eq_ignore_ascii_case("px")) {
+        return None;
+    }
+    let number: f64 = number.parse().ok()?;
+    (number.is_finite() && number > 0.0).then_some(number)
+}
+
+/// A size in pixels, rounded up so a picture smaller than one pixel still has one.
+fn pixels(size: f64) -> u32 {
+    let rounded = size.ceil().clamp(1.0, f64::from(u32::MAX));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to between one and u32::MAX first"
+    )]
+    let pixels = rounded as u32;
+    pixels
 }
 
 /// The picture format `bytes` start with, from the signature alone: PNG, JPEG, GIF, WebP or SVG.
@@ -63,10 +160,7 @@ pub fn image_format(bytes: &[u8]) -> Option<ImageFormat> {
     } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
         Some(WEBP)
     } else if is_svg(bytes) {
-        Some(ImageFormat {
-            extension: "svg",
-            mime: "image/svg+xml",
-        })
+        Some(SVG)
     } else {
         None
     }
@@ -191,4 +285,54 @@ fn sniff_image(b: &[u8]) -> Option<(ImageFormat, u32, u32)> {
         return Some((JPEG, 0, 0));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What reads the size a file states.
+    fn size(svg: &str) -> Option<(u32, u32)> {
+        image_size(svg.as_bytes()).map(|(_, w, h)| (w, h))
+    }
+
+    #[test]
+    fn an_svg_states_its_size_in_its_width_and_height() {
+        assert_eq!(
+            size(r#"<svg width="256" height="128" xmlns="http://www.w3.org/2000/svg"/>"#),
+            Some((256, 128))
+        );
+        assert_eq!(
+            size(r#"<?xml version="1.0"?><svg height='20px' width='40px'></svg>"#),
+            Some((40, 20))
+        );
+        // One dimension states none of the picture's size.
+        assert_eq!(size(r#"<svg width="256"></svg>"#), None);
+        // A size that is a share of the container reserves nothing.
+        assert_eq!(
+            size(r#"<svg width="100%" height="100%" viewBox="0 0 12 6"/>"#),
+            Some((12, 6))
+        );
+    }
+
+    #[test]
+    fn an_svg_without_a_stated_size_takes_it_from_the_view_box() {
+        assert_eq!(
+            size(r#"<svg viewBox="0 0 64 32" xmlns="http://www.w3.org/2000/svg"/>"#),
+            Some((64, 32))
+        );
+        assert_eq!(size("<svg viewBox='-4,-5, 1.5, 2.25'></svg>"), Some((2, 3)));
+        // A box that draws nothing states no size, and neither does no box.
+        assert_eq!(size(r#"<svg viewBox="0 0 0 0"></svg>"#), None);
+        assert_eq!(size(r#"<svg viewBox="0 0 64"></svg>"#), None);
+        assert_eq!(size(r#"<svg></svg>"#), None);
+    }
+
+    #[test]
+    fn a_page_that_embeds_an_svg_is_not_an_svg() {
+        assert_eq!(
+            image_size(b"<!doctype html><html><body><svg width=\"2\" height=\"2\"/></body></html>"),
+            None
+        );
+    }
 }
