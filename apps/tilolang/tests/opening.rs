@@ -2,6 +2,7 @@
 //! the workspace's index, takes the record in once it is decoded off the frame, and goes on as the
 //! window of the record, with nothing the person sees built again.
 
+use crate::change_marks::settle;
 use serde_json::Map;
 use tilolang_tilo::action::resource_ids;
 use ui::framework::testing::HostedApp;
@@ -34,14 +35,6 @@ fn said(app: &mut HostedApp) -> Vec<String> {
     (app.harness().inspection().root.nodes().into_iter())
         .filter_map(|node| node.semantics.as_ref()?.name.clone())
         .collect()
-}
-
-fn settle(app: &mut HostedApp) {
-    for _ in 0..12 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
-    }
 }
 
 /// A profile in `dir` whose workspace holds a notebook of `n` notes, as an earlier session left it.

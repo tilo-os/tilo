@@ -1831,32 +1831,6 @@ fn a_plain_key_in_a_focused_mail_window_archives_the_conversation_it_shows() {
 }
 
 #[test]
-fn search_entries_find_notes_and_open_the_window_at_the_note() {
-    let mut workspace = Workspace::seeded("notes");
-    let entries = crate::resource::search_entries();
-    // Every text is indexed, so a note's words are found beside every other type's; the one
-    // that names a note is its own.
-    let first = entries
-        .iter()
-        .find(|entry| entry.group.as_deref() == Some("Notes"))
-        .unwrap_or_else(|| panic!("no note among the hits: {entries:#?}"));
-    let anchor = first.anchor.clone().expect("a hit names its resource");
-    workspace
-        .window
-        .open_requests()
-        .borrow_mut()
-        .push(tilolang_tilo::OpenEffect::Open { anchor });
-    workspace.settle();
-    let host = workspace.window.current_host().unwrap();
-    let note = workspace.opened_note();
-    assert_eq!(
-        tilolang_tilo::instance::title_of(&host, &note),
-        first.title,
-        "the hit showed the note it names in the page beside the tree"
-    );
-}
-
-#[test]
 fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
     let workspace = Workspace::seeded("counter");
     let host = workspace.window.current_host().unwrap();

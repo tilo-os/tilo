@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::change_marks::{flattened, settle};
 use serde_json::Map;
 use tilo_automerge::ApplyIncoming as _;
 use tilolang_tilo::action::resource_ids;
@@ -13,14 +14,6 @@ use ui::automerge::{ActorId, AutoCommit, ChangeHash, ReadDoc as _};
 use ui::framework::testing::HostedApp;
 
 const NOTES: &str = "so.tilo.lang.notes";
-
-fn settle(app: &mut HostedApp) {
-    for _ in 0..12 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
-    }
-}
 
 /// Counts the error events logged while it is the thread's subscriber.
 struct Errors(Arc<AtomicUsize>);
@@ -39,14 +32,6 @@ impl tracing::Subscriber for Errors {
     }
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
-}
-
-/// Every resource `resources` publishes, with the ones under them.
-fn flattened(resources: &[ui::tilo_actions::ResourceSpec]) -> Vec<&ui::tilo_actions::ResourceSpec> {
-    resources
-        .iter()
-        .flat_map(|resource| std::iter::once(resource).chain(flattened(&resource.children)))
-        .collect()
 }
 
 #[test]

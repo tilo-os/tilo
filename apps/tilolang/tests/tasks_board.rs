@@ -15,6 +15,7 @@
     reason = "test assertions"
 )]
 
+use crate::change_marks::Driven as _;
 use tilolang_app::app::TlApp;
 use ui::a11y::Role;
 use ui::framework::testing::TestApp;
@@ -880,14 +881,29 @@ fn title_field() -> String {
         .to_owned()
 }
 
-/// Where a window keys the title of `task`: the task, by the id the app publishes it under, and
-/// the field it is bound to.
-fn title_key(task: &str) -> ui::presence::PresenceKey {
-    ui::presence::PresenceKey::Widget {
+/// Bo writing in the title of `task`, his caret `at` bytes into it, as his own window says: where
+/// the window draws his caret.
+fn bo_writing(app: &mut crate::hosted::Session, task: &str, at: usize) -> [f64; 4] {
+    let key = ui::presence::PresenceKey::Widget {
         path: ["tilolang", task, title_field().as_str()]
             .map(|segment| ui::presence::PathSegment::Field(segment.to_owned()))
             .to_vec(),
-    }
+    };
+    app.harness().update_presence(|presence| {
+        let bo = ui::permissions::UserId("bo".into());
+        presence.names.insert(bo.clone(), "Bo".into());
+        presence.set_caret(&key, bo, at);
+        true
+    });
+    crate::change_marks::settle(app);
+    let snapshot = app.harness().inspection();
+    snapshot
+        .root
+        .nodes()
+        .into_iter()
+        .find(|node| node.path == "presence-mark-bo")
+        .map(|node| node.rect)
+        .unwrap_or_else(|| panic!("Bo's caret is drawn in the title"))
 }
 
 /// The window's tasks, opened: Ada's own task in her inbox, and the published tasks list.
@@ -1028,22 +1044,7 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
     // The caret ends what it wrote: where a caret after the title's last letter stands, as Bo's
     // window places his there.
     let words = "Buy oat milk and bread";
-    let key = title_key(&task);
-    app.harness().update_presence(|presence| {
-        let bo = ui::permissions::UserId("bo".into());
-        presence.names.insert(bo.clone(), "Bo".into());
-        presence.set_caret(&key, bo, words.len());
-        true
-    });
-    settle(&mut app);
-    let snapshot = app.harness().inspection();
-    let end = snapshot
-        .root
-        .nodes()
-        .into_iter()
-        .find(|node| node.path == "presence-mark-bo")
-        .map(|node| node.rect)
-        .unwrap_or_else(|| panic!("Bo's caret is drawn in the title"));
+    let end = bo_writing(&mut app, &task, words.len());
     assert!(
         (cx - end[0]).abs() <= 1.0,
         "the caret ends what the agent wrote: {:?}, where the words end: {end:?}",
@@ -1064,26 +1065,12 @@ fn a_person_writing_in_a_title_is_seen_there() {
     app.harness()
         .click_at(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
     settle(&mut app);
-    let key = title_key(&task);
-    app.harness().update_presence(|presence| {
-        let bo = ui::permissions::UserId("bo".into());
-        presence.names.insert(bo.clone(), "Bo".into());
-        presence.set_caret(&key, bo, "Buy oat".len());
-        true
-    });
-    settle(&mut app);
+    let caret = bo_writing(&mut app, &task, "Buy oat".len());
     let field = text_field(&mut app, "Buy oat milk");
-    let snapshot = app.harness().inspection();
-    let all = snapshot.root.nodes();
-    let caret = all
-        .iter()
-        .find(|node| node.path == "presence-mark-bo")
-        .unwrap_or_else(|| panic!("Bo's caret is drawn in the title"));
-    let [cx, cy, _, _] = caret.rect;
+    let [cx, cy, _, _] = caret;
     assert!(
         cx > field[0] && cx < field[0] + field[2] * 0.8 && cy >= field[1] - 1.0,
-        "Bo's caret stands in the title's words: {:?} in {field:?}",
-        caret.rect
+        "Bo's caret stands in the title's words: {caret:?} in {field:?}"
     );
     if let Some(dir) = crate::change_marks::shots_dir() {
         app.harness()

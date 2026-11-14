@@ -9,18 +9,11 @@
     reason = "test assertions"
 )]
 
+use crate::change_marks::settle;
 use tilolang_tilo::action::resource_ids;
 use ui::framework::testing::HostedApp;
 
 const COUNTER: &str = "so.tilo.lang.counter";
-
-fn settle(app: &mut HostedApp) {
-    for _ in 0..12 {
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_millis(300));
-        app.harness().relayout();
-    }
-}
 
 /// The id of the control whose accessible name is `name`.
 fn control_named(app: &mut HostedApp, name: &str) -> String {

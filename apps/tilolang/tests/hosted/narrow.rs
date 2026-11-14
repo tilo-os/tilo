@@ -1,8 +1,6 @@
 //! A window as narrow as a phone's: one column in front at a time, which a person's hand slides in
 //! and an open nobody's hand made puts in front at once.
 
-use collaboration::CollabRequest;
-
 use super::{CHAT, NOTES, Session, shown_at};
 
 /// A person at Chat in a window 320 px wide (a phone's), with a channel `design` holding
@@ -153,27 +151,13 @@ fn a_note_opened_from_search_in_a_narrow_window_lands_in_front_at_once() {
         "the list is in front"
     );
     let anchor = session
-        .sent
-        .borrow()
-        .iter()
-        .filter_map(|request| match request {
-            CollabRequest::PublishSearchIndex { delta_json } => Some(
-                ui::tilo_resource::search_index::IndexDelta::decode(delta_json)
-                    .expect("the session takes every delta")
-                    .upsert,
-            ),
-            _ => None,
-        })
-        .flatten()
+        .index_deltas()
+        .into_iter()
+        .flat_map(|delta| delta.upsert)
         .find(|entry| entry.title.contains("Groceries"))
         .map(|entry| entry.resource)
         .expect("search finds the note");
-    session
-        .host
-        .instances_mut()
-        .next()
-        .expect("the window's instance")
-        .reveal(anchor);
+    session.instance_mut().reveal(anchor);
     // The first frame that shows the note shows it where it rests: Back stands in its place,
     // and the frame after it lays out that last pose and asks for no more.
     let mut frames = 0;

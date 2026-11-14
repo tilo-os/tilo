@@ -42,6 +42,16 @@ impl Driven for HostedApp {
     }
 }
 
+/// Every resource `resources` publishes, with the ones under them.
+pub(crate) fn flattened(
+    resources: &[ui::tilo_actions::ResourceSpec],
+) -> Vec<&ui::tilo_actions::ResourceSpec> {
+    resources
+        .iter()
+        .flat_map(|resource| std::iter::once(resource).chain(flattened(&resource.children)))
+        .collect()
+}
+
 pub(crate) fn settle(app: &mut impl Driven) {
     app.settle();
 }
@@ -116,14 +126,6 @@ pub(crate) fn choose(app: &mut impl Driven, label: &str) {
 /// A reference to the published resource of `app` labelled `label`, as an action's argument
 /// names one.
 pub(crate) fn reference(app_id: &str, app: &mut impl Driven, label: &str) -> serde_json::Value {
-    fn flattened(
-        resources: &[ui::tilo_actions::ResourceSpec],
-    ) -> Vec<&ui::tilo_actions::ResourceSpec> {
-        resources
-            .iter()
-            .flat_map(|r| std::iter::once(r).chain(flattened(&r.children)))
-            .collect()
-    }
     let resources = app.harness().resources();
     let prefix = format!("tl:{app_id}:");
     let found = flattened(&resources)
@@ -157,14 +159,6 @@ pub(crate) fn removed_rows(app: &mut impl Driven) -> Vec<String> {
 
 /// The id of the action labelled `label` the published resource `resource` offers.
 pub(crate) fn action_id(app: &mut impl Driven, resource: &str, label: &str) -> String {
-    fn flattened(
-        resources: &[ui::tilo_actions::ResourceSpec],
-    ) -> Vec<&ui::tilo_actions::ResourceSpec> {
-        resources
-            .iter()
-            .flat_map(|r| std::iter::once(r).chain(flattened(&r.children)))
-            .collect()
-    }
     let resources = app.harness().resources();
     flattened(&resources)
         .into_iter()
@@ -226,14 +220,6 @@ pub(crate) fn shots_dir() -> Option<std::path::PathBuf> {
 
 /// The first resource under `under` that offers the action labelled `label`: an item.
 pub(crate) fn published_with(app: &mut impl Driven, under: &str, label: &str) -> String {
-    fn flattened(
-        resources: &[ui::tilo_actions::ResourceSpec],
-    ) -> Vec<&ui::tilo_actions::ResourceSpec> {
-        resources
-            .iter()
-            .flat_map(|r| std::iter::once(r).chain(flattened(&r.children)))
-            .collect()
-    }
     let resources = app.harness().resources();
     let all = flattened(&resources);
     all.iter()

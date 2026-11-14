@@ -712,20 +712,33 @@ impl Session {
         self.sent.borrow_mut().clear();
     }
 
-    /// The entries the instance published to the session's search index since `from`: what it
-    /// upserted, the keys it dropped, and whether it sent the whole set again.
+    /// What the instance published to the session's search index, delta by delta.
+    fn index_deltas(&self) -> Vec<ui::tilo_resource::search_index::IndexDelta> {
+        self.sent
+            .borrow()
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::PublishSearchIndex { delta_json } => Some(
+                    ui::tilo_resource::search_index::IndexDelta::decode(delta_json)
+                        .expect("the session takes every delta"),
+                ),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The entries the instance published to the session's search index: what it upserted, the
+    /// keys it dropped, and whether it sent the whole set again.
     fn index_published(&self) -> (usize, usize, bool) {
-        let mut published = (0, 0, false);
-        for request in self.sent.borrow().iter() {
-            if let CollabRequest::PublishSearchIndex { delta_json } = request {
-                let delta = ui::tilo_resource::search_index::IndexDelta::decode(delta_json)
-                    .expect("the session takes every delta");
-                published.0 += delta.upsert.len();
-                published.1 += delta.remove.len();
-                published.2 |= delta.reset;
-            }
-        }
-        published
+        self.index_deltas()
+            .into_iter()
+            .fold((0, 0, false), |(upserted, removed, reset), delta| {
+                (
+                    upserted + delta.upsert.len(),
+                    removed + delta.remove.len(),
+                    reset | delta.reset,
+                )
+            })
     }
 
     /// The host's frames and the window's, until the host owes nothing: an instance opening, a
@@ -800,6 +813,13 @@ impl Session {
         self.host.instances().next().expect("the window's instance")
     }
 
+    fn instance_mut(&mut self) -> &mut tilolang_host::hosted::Hosted {
+        self.host
+            .instances_mut()
+            .next()
+            .expect("the window's instance")
+    }
+
     /// The host of the window's instance: its runtime and its store.
     fn instance_host(&self) -> tilolang_tilo::host::Host {
         self.instance()
@@ -823,9 +843,7 @@ impl Session {
     /// How many of those the window's store derived on its own frames: none, for a window whose
     /// catch-up a worker does and whose frame is woken to take it in.
     fn catch_ups_in_frame(&self) -> u64 {
-        let hosted = self.host.instances().next().expect("the window's instance");
-        let host = hosted.instance().host().expect("the instance's store");
-        host.store().stats().catch_ups_in_frame
+        self.instance_host().store().stats().catch_ups_in_frame
     }
 
     fn hosted(&mut self) -> &HostedWindow {

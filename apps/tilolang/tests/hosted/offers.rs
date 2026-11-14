@@ -29,19 +29,13 @@ fn call(
     address: &ui::tilo_actions::ActionAddress,
     argument: Option<String>,
 ) {
-    session
-        .inbox()
-        .borrow_mut()
-        .push_back(CollabEvent::Invocation {
-            id: 1,
-            invocation: ui::tilo_actions::InvocationId::new(),
-            resource: address.resource.clone(),
-            action: address.action.clone(),
-            argument,
-            actor: "ada".to_owned(),
-            context: None,
-        });
-    session.settle();
+    session.deliver(
+        "ada",
+        address.resource.clone(),
+        address.action.clone(),
+        argument,
+        None,
+    );
 }
 
 #[test]

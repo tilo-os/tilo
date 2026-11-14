@@ -232,34 +232,8 @@ impl super::Session {
     ) -> ui::tilo_actions::InvocationUpdate {
         let doing = ui::tilo_actions::ActionAddress::parse(identity)
             .unwrap_or_else(|| panic!("{identity} names a resource and an action"));
-        let id = self.invoked;
-        self.invoked += 1;
-        self.inbox()
-            .borrow_mut()
-            .push_back(CollabEvent::Invocation {
-                id,
-                invocation: ui::tilo_actions::InvocationId::new(),
-                resource: doing.resource,
-                action: doing.action,
-                argument: Some(format!(
-                    "{}{arguments}",
-                    ui::tilo_actions::ARGUMENTS_JSON_PREFIX
-                )),
-                actor: actor.to_owned(),
-                context: None,
-            });
-        self.settle();
-        self.sent
-            .borrow()
-            .iter()
-            .rev()
-            .find_map(|request| match request {
-                CollabRequest::UpdateInvocation {
-                    id: answered,
-                    update,
-                } if *answered == id => Some(update.clone()),
-                _ => None,
-            })
+        let arguments = format!("{}{arguments}", ui::tilo_actions::ARGUMENTS_JSON_PREFIX);
+        self.deliver(actor, doing.resource, doing.action, Some(arguments), None)
             .unwrap_or_else(|| panic!("the door answered nothing of {identity}"))
     }
 
@@ -600,11 +574,6 @@ impl crate::change_marks::Driven for super::Session {
 }
 
 impl super::Session {
-    /// The harness window.
-    pub(crate) fn harness(&mut self) -> &mut ui::headless::FrameHarness {
-        self.window.harness()
-    }
-
     /// Read the instance's record as it is now, after everything the window did was taken in.
     pub(crate) fn read<R>(&mut self, read: impl FnOnce(&mut ui::tilo_resource::Doc) -> R) -> R {
         self.settle();
@@ -623,6 +592,36 @@ impl super::Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
         let actor = invoker.map_or_else(|| self.person.clone(), |invoker| invoker.actor);
+        let arguments = format!(
+            "{}{}",
+            ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(arguments.clone())
+        );
+        let answered = self.deliver(
+            &actor,
+            resource.to_owned(),
+            action.to_owned(),
+            Some(arguments),
+            ambient.cloned(),
+        );
+        match answered {
+            Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+            Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) => Err(error.message),
+            Some(other) => Err(format!("{other:?}")),
+            None => Err(format!("the door answered nothing of `{action}`")),
+        }
+    }
+
+    /// Deliver `action` of `resource` at the door the broker delivers to, run by `actor` within
+    /// `context`, and let the host answer it: what the door last said of it.
+    pub(super) fn deliver(
+        &mut self,
+        actor: &str,
+        resource: String,
+        action: String,
+        arguments: Option<String>,
+        context: Option<ui::tilo_actions::ActionContext>,
+    ) -> Option<ui::tilo_actions::InvocationUpdate> {
         let id = self.invoked;
         self.invoked += 1;
         self.inbox()
@@ -630,19 +629,14 @@ impl super::Session {
             .push_back(CollabEvent::Invocation {
                 id,
                 invocation: ui::tilo_actions::InvocationId::new(),
-                resource: resource.to_owned(),
-                action: action.to_owned(),
-                argument: Some(format!(
-                    "{}{}",
-                    ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
-                    serde_json::Value::Object(arguments.clone())
-                )),
-                actor,
-                context: ambient.cloned().map(Box::new),
+                resource,
+                action,
+                argument: arguments,
+                actor: actor.to_owned(),
+                context: context.map(Box::new),
             });
         self.settle();
-        let answered = self
-            .sent
+        self.sent
             .borrow()
             .iter()
             .rev()
@@ -650,14 +644,8 @@ impl super::Session {
                 CollabRequest::UpdateInvocation {
                     id: answered,
                     update,
-                } if *answered == id && update.is_terminal() => Some(update.clone()),
+                } if *answered == id => Some(update.clone()),
                 _ => None,
-            });
-        match answered {
-            Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
-            Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) => Err(error.message),
-            Some(other) => Err(format!("{other:?}")),
-            None => Err(format!("the door answered nothing of `{action}`")),
-        }
+            })
     }
 }

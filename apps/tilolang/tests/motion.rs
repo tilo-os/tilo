@@ -24,6 +24,7 @@
               comparison itself"
 )]
 
+use crate::change_marks::Driven;
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 use ui::headless::InspectionNode;
@@ -200,7 +201,7 @@ fn list_band(app: &mut TestApp<TlApp>) -> [f64; 4] {
 }
 
 /// Whether the window still has motion to play.
-fn moving(app: &mut TestApp<TlApp>) -> bool {
+fn moving(app: &mut impl Driven) -> bool {
     // Read at the instant the last frame was drawn at: a motion is measured against the clock
     // the test's frames run on, not the machine's, which lags the frames the test drew.
     with_monotonic_time(at_now(), || {
@@ -321,7 +322,7 @@ fn marked(app: &mut TestApp<TlApp>, title: &str) -> bool {
 }
 
 /// The pixels of `rect` in the frame `pixels`, which the harness draws in device pixels.
-fn pixels_in(app: &mut TestApp<TlApp>, pixels: &[u8], rect: [f64; 4]) -> Vec<[u8; 4]> {
+fn pixels_in(app: &mut impl Driven, pixels: &[u8], rect: [f64; 4]) -> Vec<[u8; 4]> {
     let root = app.harness().inspection().root.rect;
     let width_px = app.harness().inspection().viewport[0];
     let scale = f64::from(width_px) / root[2];
@@ -343,7 +344,7 @@ fn pixels_in(app: &mut TestApp<TlApp>, pixels: &[u8], rect: [f64; 4]) -> Vec<[u8
 
 /// How far the pixels of `rect` in `pixels` are from the ones in `settled`: the mean of the
 /// distances between the colours, 0 for the same frame.
-fn difference(app: &mut TestApp<TlApp>, pixels: &[u8], settled: &[[u8; 4]], rect: [f64; 4]) -> f64 {
+fn difference(app: &mut impl Driven, pixels: &[u8], settled: &[[u8; 4]], rect: [f64; 4]) -> f64 {
     let now = pixels_in(app, pixels, rect);
     apart(&now, settled)
 }
@@ -640,17 +641,18 @@ struct FrameWork {
     marked_dirty: usize,
 }
 
-/// Run the frame due at `at` and draw it, timing the frame itself: the rasterisation that
-/// follows is the harness drawing the window off screen, waits on the GPU, and is no work the
-/// window's frame does.
-fn frame_work(app: &mut TestApp<TlApp>, at: ui::time::Instant) -> (FrameWork, Vec<u8>) {
+/// Run the frame due at `at` and draw it, timing the frame itself: what the instance answers
+/// before it is no work of the window's, and the rasterisation that follows is the harness
+/// drawing the window off screen, waits on the GPU, and is no work the window's frame does.
+fn frame_work(app: &mut impl Framed, at: ui::time::Instant) -> (FrameWork, Vec<u8>) {
+    set_at(at);
+    with_monotonic_time(at, || app.answer());
     let (nodes, rebuilt) = {
         let harness = app.harness();
         (harness.layout_nodes_built(), harness.rebuilt_frames())
     };
     let started = ui::rt::thread_cpu_time().expect("a thread's CPU clock");
     let mut cpu = std::time::Duration::ZERO;
-    set_at(at);
     let (drew, pixels) = with_monotonic_time(at, || {
         let drew = app.harness().poll_frame().expect("a frame");
         cpu = ui::rt::thread_cpu_time()
@@ -678,25 +680,28 @@ fn frame_work(app: &mut TestApp<TlApp>, at: ui::time::Instant) -> (FrameWork, Ve
     )
 }
 
-/// The boundaries the window's views have rendered since the window opened: a mark's frames
-/// render none of them again. The visit lays the window out twice, so a test reads it between
-/// frames and never between the frames it costs.
-fn renders(app: &mut TestApp<TlApp>) -> u64 {
-    use tilo_render_protocol::patch::Lane;
-    use ui::framework::testing::with_surface;
-    with_surface::<TlApp, tilolang_app::window::Window, _>(app.harness(), |window| {
-        let instance = window.instance();
-        [Lane::Root, Lane::Detail]
-            .into_iter()
-            .filter_map(|lane| instance.view(lane))
-            .map(|view| view.borrow().stats().renders)
-            .sum()
-    })
-    .expect("the tasks window")
+/// A window whose frames the test draws one at a time, and the instance its views run in.
+pub(crate) trait Framed: Driven {
+    /// Let the instance take in what the window sent it and answer, until it owes nothing: no
+    /// work of the window's own.
+    fn answer(&mut self);
+    /// The boundaries the window's views have rendered since the window opened: a mark's frames
+    /// render none of them again.
+    fn renders(&mut self) -> u64;
+}
+
+impl Driven for TestApp<TlApp> {
+    fn harness(&mut self) -> &mut ui::headless::FrameHarness {
+        TestApp::harness(self)
+    }
+
+    fn settle(&mut self) {
+        settle(self);
+    }
 }
 
 /// The box of the opened task's done toggle: the change mark a person sees fill.
-fn the_mark_box(app: &mut TestApp<TlApp>) -> [f64; 4] {
+fn the_mark_box(app: &mut impl Driven) -> [f64; 4] {
     let snapshot = app.harness().inspection();
     let all = snapshot.root.nodes();
     all.into_iter()
@@ -708,7 +713,7 @@ fn the_mark_box(app: &mut TestApp<TlApp>) -> [f64; 4] {
 /// What a still window costs a frame: what its frames do in work, not how long a machine busy
 /// with other work takes to run them. It lays out nothing: no rebuild, no node built.
 fn still_frames(
-    app: &mut TestApp<TlApp>,
+    app: &mut impl Framed,
     start: ui::time::Instant,
 ) -> (Vec<std::time::Duration>, usize, Vec<u8>) {
     let mut still = Vec::new();
@@ -732,15 +737,15 @@ fn still_frames(
     (still, dirtied, rest)
 }
 
-#[test]
-fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
-    let mut app = staged("a busy week");
-    let mark = the_mark_box(&mut app);
-    assert!(!moving(&mut app), "the window rests before the mark moves");
+/// The window `app` stages a week of tasks in, its task open: ticking it off fills its box over
+/// frames that cost what a still frame costs.
+pub(crate) fn a_mark_costs_a_still_frame(app: &mut impl Framed) {
+    let mark = the_mark_box(app);
+    assert!(!moving(app), "the window rests before the mark moves");
 
     let start = at_now();
-    let (still, still_dirty, rest) = still_frames(&mut app, start);
-    let before = pixels_in(&mut app, &rest, mark);
+    let (still, still_dirty, rest) = still_frames(app, start);
+    let before = pixels_in(app, &rest, mark);
 
     // Tick the opened task off: its box fills over the frames that follow.
     let (x, y) = (mark[0] + mark[2] / 2.0, mark[1] + mark[3] / 2.0);
@@ -752,16 +757,19 @@ fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
     let mut step = 0;
     // Where the press lands: the app has answered it, so the frame rebuilt no layout and the
     // views it answers with rendered nothing new.
-    let mut rendered = with_monotonic_time(pressed, || renders(&mut app));
+    let mut rendered = with_monotonic_time(pressed, || app.renders());
     loop {
         step += 1;
         let at = pressed + ui::time::Duration::from_millis(16 * step);
-        let (work, pixels) = frame_work(&mut app, at);
-        series.push(difference(&mut app, &pixels, &before, mark));
-        playing.push(moving(&mut app));
+        let (work, pixels) = frame_work(app, at);
+        series.push(difference(app, &pixels, &before, mark));
+        playing.push(moving(app));
         let landed = work.rebuilt == 0;
         works.push(work);
-        let now = with_monotonic_time(at, || renders(&mut app));
+        let now = with_monotonic_time(at, || {
+            app.answer();
+            app.renders()
+        });
         let answered = now == rendered;
         rendered = now;
         if landed && answered {
@@ -781,12 +789,15 @@ fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
     while playing.last() == Some(&true) {
         step += 1;
         let at = pressed + ui::time::Duration::from_millis(16 * step);
-        let (work, pixels) = frame_work(&mut app, at);
-        series.push(difference(&mut app, &pixels, &before, mark));
-        playing.push(moving(&mut app));
+        let (work, pixels) = frame_work(app, at);
+        series.push(difference(app, &pixels, &before, mark));
+        playing.push(moving(app));
         works.push(work);
         assert!(
-            with_monotonic_time(at, || renders(&mut app)) == rendered,
+            with_monotonic_time(at, || {
+                app.answer();
+                app.renders()
+            }) == rendered,
             "frame {step} of the mark renders no boundary of the view again"
         );
         assert!(step <= 16, "the mark settles");

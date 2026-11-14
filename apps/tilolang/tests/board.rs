@@ -10,6 +10,7 @@
     reason = "test assertions"
 )]
 
+use crate::change_marks::flattened;
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;
 
@@ -30,14 +31,6 @@ fn settle(app: &mut TestApp<TlApp>) {
             .settle_for_capture(ui::time::Duration::from_millis(300));
         app.harness().relayout();
     }
-}
-
-/// Every resource `resources` publishes, with the ones under them.
-fn flattened(resources: &[ui::tilo_actions::ResourceSpec]) -> Vec<&ui::tilo_actions::ResourceSpec> {
-    resources
-        .iter()
-        .flat_map(|resource| std::iter::once(resource).chain(flattened(&resource.children)))
-        .collect()
 }
 
 /// The controls bound to an action the window does not publish: the live host refuses to

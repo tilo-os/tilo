@@ -1771,19 +1771,10 @@ fn a_task_opened_from_search_shows_its_page(seeded: &Chunks) {
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
         let mut session = Session::tasks_over_in(&route, chunks, None);
         let today = session.titles();
-        let entries: Vec<ui::tilo_resource::search_index::IndexEntry> = session
-            .sent
-            .borrow()
-            .iter()
-            .filter_map(|request| match request {
-                CollabRequest::PublishSearchIndex { delta_json } => Some(
-                    ui::tilo_resource::search_index::IndexDelta::decode(delta_json)
-                        .expect("the session takes every delta")
-                        .upsert,
-                ),
-                _ => None,
-            })
-            .flatten()
+        let entries: Vec<_> = session
+            .index_deltas()
+            .into_iter()
+            .flat_map(|delta| delta.upsert)
             .collect();
         if typed {
             session.window.chord(&["ctrl"], "n");
@@ -1803,12 +1794,7 @@ fn a_task_opened_from_search_shows_its_page(seeded: &Chunks) {
             .expect("a task of the Inbox Today does not show");
         let title = hit.title.clone();
         let anchor = hit.resource.clone();
-        session
-            .host
-            .instances_mut()
-            .next()
-            .expect("the window's instance")
-            .reveal(anchor);
+        session.instance_mut().reveal(anchor);
         session.settle();
         assert!(
             opened_title_field(&mut session).is_some(),
@@ -2747,4 +2733,32 @@ fn a_row_of_a_thousand_tasks_opens_into_its_page_where_it_stands() {
     choosing_another_task_keeps_the_windows_composition(&thousand);
     a_row_opens_where_it_stands_after_tasks_are_checked(&thousand);
     a_task_opened_from_search_shows_its_page(&thousand);
+}
+
+impl crate::motion::Framed for Session {
+    /// The host's turns: it takes in what the window sent and sends back what it answers, as the
+    /// session's loop runs them beside the window's.
+    fn answer(&mut self) {
+        self.settle_host();
+    }
+
+    fn renders(&mut self) -> u64 {
+        use tilo_render_protocol::patch::Lane;
+        let instance = self.instance().instance();
+        [Lane::Root, Lane::Detail]
+            .into_iter()
+            .filter_map(|lane| instance.view(lane))
+            .map(|view| view.borrow().stats().renders)
+            .sum()
+    }
+}
+
+/// A task ticked off in a session's window fills its box over frames that cost what a still frame
+/// costs: the instance answers the press, and the mark's own frames repaint only.
+#[test]
+fn a_frame_of_the_mark_in_a_sessions_window_costs_what_a_still_frame_costs() {
+    let mut session = Session::tasks();
+    session.instance_mut().stage("a busy week");
+    session.settle();
+    crate::motion::a_mark_costs_a_still_frame(&mut session);
 }
