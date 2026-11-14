@@ -40,8 +40,13 @@ impl ResourceApp for ChatApp {
     }
 }
 
-/// Another app of the workspace, drawing the workspace's emoji by name.
+/// Another app of the workspace, drawing the workspace's emoji by name on
+/// [`LINES`] lines, as every line a note lays out reads them.
 struct NotesApp;
+
+thread_local! {
+    static LINES: std::cell::Cell<usize> = const { std::cell::Cell::new(1) };
+}
 
 impl ResourceApp for NotesApp {
     type Resource = Note;
@@ -49,18 +54,21 @@ impl ResourceApp for NotesApp {
     const TITLE: &'static str = "Notes";
 
     fn view(_cx: &mut ViewCx<Note>) -> Element {
-        let shown = Text::dynamic(|| {
-            let names: Vec<String> = tilo_app::workspace_emoji::emoji()
-                .iter()
-                .map(|emoji| format!(":{}:", emoji.name))
-                .collect();
-            if names.is_empty() {
-                "no emoji".to_owned()
-            } else {
-                names.join(" ")
-            }
-        });
-        Box::new(Column::new().push(Box::new(shown)))
+        let shown = || -> Element {
+            Box::new(Text::dynamic(|| {
+                let names: Vec<String> = tilo_app::workspace_emoji::emoji()
+                    .iter()
+                    .map(|emoji| format!(":{}:", emoji.name))
+                    .collect();
+                if names.is_empty() {
+                    "no emoji".to_owned()
+                } else {
+                    names.join(" ")
+                }
+            }))
+        };
+        let lines = LINES.with(std::cell::Cell::get);
+        Box::new((0..lines).fold(Column::new(), |column, _| column.push(shown())))
     }
 }
 
@@ -122,6 +130,10 @@ fn every_app_of_the_workspace_reads_and_adds_to_the_one_record_its_owner_keeps()
         .record()
         .merge_peer_document(kept.record().document().unwrap())
         .unwrap();
+    // The window follows what arrived in its refresh: its lines draw it.
+    notes.harness().woken();
+    let drawn = notes.harness().inspection_json().unwrap();
+    assert!(drawn.contains(":party: :ship_it:"), "{drawn}");
     assert_eq!(names(&in_notes), ["party", "ship_it"]);
 
     // The person takes back their own.
@@ -209,4 +221,32 @@ fn an_action_asked_for_while_the_store_is_in_use_waits_for_it() {
         move |added| settled.borrow_mut().push(("again", added.is_ok()))
     });
     assert_eq!(settled.borrow().last(), Some(&("again", false)));
+}
+
+/// The record is synced in the window's refresh, once a frame: the lines read what it followed.
+#[test]
+fn a_frame_syncs_the_workspaces_emoji_once_however_many_lines_draw_them() {
+    let syncs_in_a_frame_of = |lines: usize| -> usize {
+        LINES.with(|cell| cell.set(lines));
+        let mut notes = TestApp::<NotesApp>::in_workspace(WORKSPACE).unwrap();
+        let record = notes
+            .shared_workspace::<WorkspaceEmoji>(emoji::OWNER)
+            .unwrap();
+        record
+            .invoke(&WorkspaceEmoji::ADD_EMOJI.with(add("party")))
+            .unwrap();
+        notes.harness().relayout();
+        let drawn = notes.harness().inspection_json().unwrap();
+        assert_eq!(drawn.matches(":party:").count(), lines, "{drawn}");
+        let ((), samples) =
+            tilo_app::tilo_resource::profiling::observe(|| notes.harness().relayout());
+        samples
+            .iter()
+            .filter(|sample| sample.phase == "framework.live_sync")
+            .map(|sample| sample.calls)
+            .sum()
+    };
+    let (few, many) = (syncs_in_a_frame_of(10), syncs_in_a_frame_of(200));
+    assert_eq!(few, many, "syncs grow with the lines drawn");
+    assert!(many <= 2, "{many} syncs in one frame");
 }

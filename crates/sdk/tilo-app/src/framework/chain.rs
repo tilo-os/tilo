@@ -1632,14 +1632,6 @@ impl<P: Chained> Chain<P> {
         Self { state, dispatch }
     }
 
-    /// The chain an app holds outside a view, beside one of the workspace's
-    /// records ([`WorkspaceHandle::chain_beside`](super::WorkspaceHandle::chain_beside)):
-    /// its actions are applied as `me` when the app asks for them
-    /// ([`Self::invoke`]), not submitted to a host's door.
-    pub(crate) fn applying(state: &Rc<ChainState<P>>, app_id: &'static str, me: &str) -> Self {
-        Self::new(Rc::clone(state), detached_dispatch(app_id, state, me))
-    }
-
     /// The address the chain is published under: what an agent or a
     /// script invokes its actions on.
     #[must_use]

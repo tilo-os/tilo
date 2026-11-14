@@ -12,6 +12,7 @@ use ui_core::workspace_emoji::{
     Adding, CustomEmoji, EmojiSource, Small, WorkspaceEmoji, make_small,
 };
 
+use super::live::Live;
 use super::workspace::{WorkspaceRecord, WorkspaceState};
 
 // The record checks what the toolkit makes small: one limit for both.
@@ -60,6 +61,12 @@ impl WindowEmoji {
         let record = self.state.open::<Record>(OWNER)?;
         *self.record.borrow_mut() = Some(record.clone());
         Some(record)
+    }
+
+    /// The record as the window follows it: synced by the window's refresh
+    /// and by actions applied here, so reading it syncs nothing.
+    fn live(&self) -> Option<Live<Record>> {
+        self.record().map(|record| record.live())
     }
 
     /// Take up what the chooser answered and add each picture chosen: once
@@ -154,21 +161,20 @@ impl WindowEmoji {
 }
 
 impl EmojiSource for WindowEmoji {
+    /// Read as the window's refresh last followed the record, never synced
+    /// here: every line a frame lays out asks.
     fn emoji(&self) -> Rc<WorkspaceEmoji> {
-        let Some(record) = self.record() else {
+        let Some(live) = self.live() else {
             return Rc::default();
         };
-        // Read as view state first: a view drawing them is built again
-        // when they change.
-        let state = record.get();
-        let revision = record.revision();
+        let revision = live.revision();
         if let Some((read, emoji)) = self.read.borrow().as_ref()
             && *read == revision
         {
             return Rc::clone(emoji);
         }
         let emoji = Rc::new(WorkspaceEmoji::new(
-            state
+            live.get()
                 .emoji
                 .iter()
                 .map(|(name, emoji)| CustomEmoji {
@@ -182,7 +188,7 @@ impl EmojiSource for WindowEmoji {
     }
 
     fn revision(&self) -> u64 {
-        self.record().map_or(0, |record| record.revision())
+        self.live().map_or(0, |live| live.revision())
     }
 
     fn can_manage(&self) -> bool {
@@ -278,44 +284,43 @@ pub(crate) fn register(
 /// A window's source as the registry holds it: none once the window closed.
 struct Held(std::rc::Weak<WindowEmoji>);
 
+impl Held {
+    /// `read` of the window's source, `closed` once the window closed.
+    fn of<T>(&self, closed: T, read: impl FnOnce(&WindowEmoji) -> T) -> T {
+        self.0.upgrade().map_or(closed, |source| read(&source))
+    }
+}
+
 impl EmojiSource for Held {
     fn emoji(&self) -> Rc<WorkspaceEmoji> {
-        self.0
-            .upgrade()
-            .map_or_else(Rc::default, |source| source.emoji())
+        self.of(Rc::default(), WindowEmoji::emoji)
     }
 
     fn revision(&self) -> u64 {
-        self.0.upgrade().map_or(0, |source| source.revision())
+        self.of(0, WindowEmoji::revision)
     }
 
     fn can_manage(&self) -> bool {
-        self.0.upgrade().is_some_and(|source| source.can_manage())
+        self.of(false, WindowEmoji::can_manage)
     }
 
     fn add(&self, name: &str, image: &[u8]) -> Result<(), String> {
-        self.0
-            .upgrade()
-            .ok_or_else(|| "the window closed".to_owned())?
-            .add(name, image)
+        self.of(Err("the window closed".into()), |source| {
+            source.add(name, image)
+        })
     }
 
     fn remove(&self, name: &str) -> Result<(), String> {
-        self.0
-            .upgrade()
-            .ok_or_else(|| "the window closed".to_owned())?
-            .remove(name)
+        self.of(Err("the window closed".into()), |source| {
+            source.remove(name)
+        })
     }
 
     fn choose_and_add(&self) {
-        if let Some(source) = self.0.upgrade() {
-            source.choose_and_add();
-        }
+        self.of((), WindowEmoji::choose_and_add);
     }
 
     fn last_added(&self) -> (u64, Option<Adding>) {
-        self.0
-            .upgrade()
-            .map_or((0, None), |source| source.last_added())
+        self.of((0, None), WindowEmoji::last_added)
     }
 }
