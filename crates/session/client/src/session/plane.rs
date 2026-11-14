@@ -428,7 +428,11 @@ async fn proven_plane_link(join: &PlaneJoin) -> Result<tilo_net::webtransport::S
         return Err(Failed::Refused);
     }
     send.finish();
-    link.web_session().ok_or(Failed::Unavailable)
+    // The plane's path speaks `moq-lite` alone: a browser that negotiates no
+    // subprotocol still carries it there.
+    link.web_session()
+        .map(|session| session.speaking(tilo_live::preface::PROTOCOL))
+        .ok_or(Failed::Unavailable)
 }
 
 // Where a plane waits for the session's command, on the target whose carrier

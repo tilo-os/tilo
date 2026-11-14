@@ -264,6 +264,95 @@ async fn a_webtransport_session_carries_streams_and_datagrams() {
     echo.await.unwrap();
 }
 
+/// A path that speaks one protocol carries it whether or not the browser
+/// negotiated it: Chrome before `WebTransport.protocol` shipped offers no
+/// subprotocols at all, so a session opened there negotiates none, and both
+/// ends take the path's protocol ([`tilo_net::webtransport::Session::speaking`]).
+#[tokio::test]
+async fn a_session_at_a_one_protocol_path_speaks_it_whether_or_not_it_was_negotiated() {
+    use sha2::Digest as _;
+    use tilo_net::webtransport::{self, Answer, Listener, Options};
+
+    let params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
+    let key = rcgen::KeyPair::generate().unwrap();
+    let certificate = params.self_signed(&key).unwrap();
+    let der = certificate.der().clone();
+    let hash: [u8; 32] = sha2::Sha256::digest(der.as_ref()).into();
+    let resolver = rustls::sign::SingleCertAndKey::from(
+        rustls::sign::CertifiedKey::from_der(
+            vec![der],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
+            &rustls::crypto::ring::default_provider(),
+        )
+        .unwrap(),
+    );
+    let socket = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    let listener = Listener::bind(socket, std::sync::Arc::new(resolver)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (heard, mut hearing) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(listener.serve(
+        |_path: &str, offered: &[String]| {
+            if offered.iter().any(|protocol| protocol == "one-03") {
+                Answer::AcceptAs("one-03".to_owned())
+            } else {
+                Answer::Accept
+            }
+        },
+        move |_path, session| {
+            let heard = heard.clone();
+            async move {
+                let _ = heard.send((
+                    session.protocol().map(str::to_owned),
+                    session
+                        .clone()
+                        .speaking("one-03")
+                        .protocol()
+                        .map(str::to_owned),
+                ));
+                // Kept open until the client has read what it negotiated.
+                let _ = session.accept_bi().await;
+            }
+        },
+    ));
+    let url = format!("https://127.0.0.1:{port}/one");
+
+    // As Chrome 140 dials: no subprotocols offered.
+    let unnegotiated = webtransport::connect(&url, Options::pinned(vec![hash]))
+        .await
+        .unwrap();
+    assert_eq!(unnegotiated.protocol(), None);
+    assert_eq!(
+        unnegotiated.clone().speaking("one-03").protocol(),
+        Some("one-03"),
+        "the client takes the protocol from the path"
+    );
+    assert_eq!(
+        hearing.recv().await.unwrap(),
+        (None, Some("one-03".to_owned())),
+        "so does the server"
+    );
+    unnegotiated.close(0, "done");
+
+    // A browser that negotiates keeps what it negotiated.
+    let negotiated = webtransport::connect(
+        &url,
+        Options::pinned(vec![hash]).with_protocols(vec!["one-03".to_owned()]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(negotiated.protocol(), Some("one-03"));
+    assert_eq!(
+        negotiated.clone().speaking("other-01").protocol(),
+        Some("one-03"),
+        "a negotiated protocol stands"
+    );
+    assert_eq!(
+        hearing.recv().await.unwrap(),
+        (Some("one-03".to_owned()), Some("one-03".to_owned()))
+    );
+    negotiated.close(0, "done");
+}
+
 #[tokio::test]
 async fn an_unpinned_self_signed_webtransport_server_is_refused() {
     let params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();

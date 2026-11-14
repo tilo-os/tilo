@@ -57,6 +57,7 @@ pub fn connect(
     async move {
         Ok(Session {
             inner: backend::connect(url?, options).await?,
+            implied: None,
         })
     }
 }
@@ -66,6 +67,9 @@ pub fn connect(
 #[derive(Clone)]
 pub struct Session {
     inner: backend::Session,
+    /// The subprotocol the session carries when its handshake negotiated
+    /// none ([`Session::speaking`]).
+    implied: Option<&'static str>,
 }
 
 impl std::fmt::Debug for Session {
@@ -77,7 +81,24 @@ impl std::fmt::Debug for Session {
 impl Session {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn from_backend(inner: backend::Session) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            implied: None,
+        }
+    }
+
+    /// This session, carrying `protocol` when its handshake negotiated no
+    /// subprotocol: for a URL whose path names the one protocol spoken there.
+    /// Not every browser negotiates subprotocols (Chrome before it shipped
+    /// `WebTransport.protocol` sends none of those it is given), so both ends
+    /// of such a path take its protocol from the path. A protocol the
+    /// handshake did negotiate stands.
+    #[must_use]
+    pub fn speaking(self, protocol: &'static str) -> Self {
+        Self {
+            implied: Some(protocol),
+            ..self
+        }
     }
 
     #[allow(
@@ -137,9 +158,11 @@ impl Session {
         self.inner.close(code, reason);
     }
 
+    /// The subprotocol the session carries: the one its handshake
+    /// negotiated, else the one its path implies ([`Self::speaking`]).
     #[must_use]
     pub fn protocol(&self) -> Option<&str> {
-        self.inner.protocol()
+        self.inner.protocol().or(self.implied)
     }
 
     #[must_use]
@@ -209,7 +232,7 @@ impl web_transport_trait::poll::Session for Session {
     }
 
     fn protocol(&self) -> Option<&str> {
-        self.inner.protocol()
+        self.inner.protocol().or(self.implied)
     }
 
     fn close(&mut self, code: u32, reason: &str) {

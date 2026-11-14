@@ -30,6 +30,11 @@ pub(crate) struct Serving {
 
 /// Which paths are served, and the subprotocol each answers: the plane's
 /// session is `moq-lite`, as its ALPN says over iroh.
+///
+/// A browser that negotiates no subprotocols offers none at all (Chrome
+/// before it shipped `WebTransport.protocol`), and is still answered at the
+/// plane's path, which speaks that one protocol whatever was negotiated
+/// ([`plane_session`]). One that offers only others is refused.
 fn answer(path: &str, offered: &[String]) -> Answer {
     match path {
         LINK_SESSION_PATH | LINK_CERTIFY_PATH => Answer::Accept,
@@ -40,8 +45,15 @@ fn answer(path: &str, offered: &[String]) -> Answer {
         {
             Answer::AcceptAs(tilo_live::preface::PROTOCOL.to_owned())
         }
+        LINK_PLANE_PATH if offered.is_empty() => Answer::Accept,
         _ => Answer::Refuse,
     }
+}
+
+/// A session accepted at the plane's path, as the protocol that path speaks:
+/// the one negotiated, else the one the path names.
+fn plane_session(session: tilo_net::webtransport::Session) -> tilo_net::webtransport::Session {
+    session.speaking(tilo_live::preface::PROTOCOL)
 }
 
 /// Serve `listener` until it is dropped.
@@ -58,11 +70,43 @@ pub(crate) async fn serve(listener: tilo_net::webtransport::Listener, serving: S
                         }
                     }
                     LINK_PLANE_PATH => {
-                        super::plane::serve_web(&serving.plane, &serving.relay, session).await;
+                        super::plane::serve_web(
+                            &serving.plane,
+                            &serving.relay,
+                            plane_session(session),
+                        )
+                        .await;
                     }
                     _ => {}
                 }
             }
         })
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_plane_path_answers_a_browser_that_negotiates_no_subprotocol() {
+        let moq = vec![tilo_live::preface::PROTOCOL.to_owned()];
+        assert_eq!(
+            answer(LINK_PLANE_PATH, &moq),
+            Answer::AcceptAs(tilo_live::preface::PROTOCOL.to_owned()),
+            "an offered moq-lite is negotiated"
+        );
+        assert_eq!(
+            answer(LINK_PLANE_PATH, &[]),
+            Answer::Accept,
+            "a browser that offers no subprotocols (Chrome before WebTransport.protocol) is still answered"
+        );
+        assert_eq!(
+            answer(LINK_PLANE_PATH, &["moq-lite-01".to_owned()]),
+            Answer::Refuse,
+            "one that offers only other protocols speaks none the plane does"
+        );
+        assert_eq!(answer(LINK_SESSION_PATH, &[]), Answer::Accept);
+        assert_eq!(answer("/elsewhere", &[]), Answer::Refuse);
+    }
 }
