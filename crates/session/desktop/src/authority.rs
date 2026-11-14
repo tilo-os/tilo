@@ -119,7 +119,7 @@ mod tests {
     //! member has no role, and who may not govern neither grants nor revokes.
 
     use super::*;
-    use collab_types::caps::{Scope, Subject};
+    use collab_types::caps::Scope;
     use tilo_action_policy::Grantee;
     use tilo_desktop_model::WorkspaceSlot;
 
@@ -138,7 +138,7 @@ mod tests {
     /// Write access to the workspace's files, for the member.
     fn files_for_the_member() -> CapOverride {
         CapOverride::grant(
-            Subject::person(PEER),
+            Grantee::person(PEER),
             Scope::FsPath("/var/workspace".into()),
             Access::Write,
         )
