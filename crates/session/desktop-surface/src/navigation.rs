@@ -290,6 +290,16 @@ pub enum ChromeEffect {
         app: String,
     },
 
+    /// Open Settings
+    /// At the page a link names (`settings://network`): what an app with no workspace of its own
+    /// asks to send the person there.
+    #[effect(own_device, idempotent)]
+    OpenSettings {
+        /// The page.
+        #[param("A Settings link, such as `settings://network`; empty for Settings itself")]
+        link: String,
+    },
+
     /// Move a tab elsewhere
     /// Its window onto another strip of the workspace (or another place in its own), the tab alone
     /// into another workspace as a window of its own, its window onto another display, or the tab
@@ -1216,6 +1226,7 @@ fn admit_chrome(
         | ChromeEffect::QuickSettings
         | ChromeEffect::WorkspaceMenu
         | ChromeEffect::About { .. }
+        | ChromeEffect::OpenSettings { .. }
         | ChromeEffect::SwitchWorkspace {
             workspace: None, ..
         } => Err("The surfaces carry this out themselves".into()),

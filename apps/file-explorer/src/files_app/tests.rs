@@ -4059,7 +4059,7 @@ mod command_path_tests {
             })
             .expect("the sheet is asked of the desk");
         assert_eq!(request.target.provider, "so.tilo.session");
-        assert_eq!(request.target.address.resource, "session:desk");
+        assert_eq!(request.target.address.resource, "session:invite");
         assert_eq!(request.target.address.action, "show-invite");
         assert_eq!(
             request.argument,

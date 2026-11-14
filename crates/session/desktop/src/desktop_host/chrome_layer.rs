@@ -2147,6 +2147,10 @@ impl DesktopChrome {
                 self.ask(DesktopAsk::HostAction(JOIN_WORKSPACE.to_owned()));
                 Some(true)
             }
+            ChromeEffect::OpenSettings { link } => {
+                self.ask(DesktopAsk::OpenSettings(link.clone()));
+                Some(true)
+            }
             ChromeEffect::LeaveWorkspace { workspace } => {
                 let left = workspace
                     .as_deref()

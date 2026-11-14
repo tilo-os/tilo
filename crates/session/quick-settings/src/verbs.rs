@@ -16,8 +16,8 @@ use ui::serde_json::{self, Map, Value};
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
 use crate::session::{
-    BLUETOOTH, CLIPBOARD, DESK, DEVICES, DISPLAY_SETTINGS, DISPLAYS, MEDIA, NETWORK, NIGHT_LIGHT,
-    NOTIFICATIONS, QUICK_SETTINGS, SCREEN, SLEEP, SOUND, VPN,
+    BLUETOOTH, CHROME, CLIPBOARD, DESK, DEVICES, DISPLAY_SETTINGS, DISPLAYS, MEDIA, NETWORK,
+    NIGHT_LIGHT, NOTIFICATIONS, QUICK_SETTINGS, SCREEN, SLEEP, SOUND, VPN,
 };
 
 /// What an effect asks of the session: the resource, its action and the
@@ -144,7 +144,7 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
         }
         QsEffect::OpenPlaying { app } => {
             put(&mut arguments, "app", app);
-            (DESK, "show-app")
+            (CHROME, "show-app")
         }
         QsEffect::SetInputVolume { level } => {
             put(&mut arguments, "level", level);
@@ -263,11 +263,10 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
             (SLEEP, "set-profile")
         }
         QsEffect::OpenSettings { link } => {
-            // Settings opens at the page the link names: the desk owns that
-            // search, and the panel's app has no workspace of its own to
-            // search in.
+            // Settings opens at the page the link names: the chrome opens it,
+            // and the panel's app has no workspace of its own to search in.
             put(&mut arguments, "link", link);
-            (DESK, "open-settings")
+            (CHROME, "open-settings")
         }
         // What the panel shows, which is this device's own setting: the
         // session keeps it, so it is the same arrangement whether the panel
@@ -456,8 +455,8 @@ mod tests {
                     link: "settings://devices_sync".into(),
                 })
                 .as_deref(),
-                Some("session:desk open-settings link=settings://devices_sync"),
-                "the desk opens Settings at the page, as its own search does"
+                Some("desktop:chrome open-settings link=settings://devices_sync"),
+                "the chrome opens Settings at the page"
             );
         }
 
@@ -468,8 +467,8 @@ mod tests {
                     app: "so.tilo.music".into(),
                 })
                 .as_deref(),
-                Some("session:desk show-app app=so.tilo.music"),
-                "the desk shows the app the music comes from"
+                Some("desktop:chrome show-app app=so.tilo.music"),
+                "the chrome shows the app the music comes from"
             );
         }
 

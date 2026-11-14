@@ -209,6 +209,7 @@ session-notifications = Notification centre
 session-time = Time
 session-windows = Windows
 session-tray = Tray
+session-invite = Invite
 session-agents = Agents
 session-styles = Styles
 session-notifications-dismiss = Dismiss the notification
@@ -421,18 +422,17 @@ session-resource-keyboard-focus = Keyboard focus
 ## Actions
 
 so-tilo-session-desk-switch-workspace = Switch to workspace
-so-tilo-session-desk-invitations = List invitations
-so-tilo-session-desk-issue-invitation = Make an invitation link
-so-tilo-session-desk-show-invite = Invite people
-so-tilo-session-desk-show-connect = Connect an agent or computer
-so-tilo-session-desk-show-pair-device = Add a device
-so-tilo-session-desk-cancel-invitation = Cancel invitation
+so-tilo-session-invite-invitations = List invitations
+so-tilo-session-invite-issue-invitation = Make an invitation link
+so-tilo-session-invite-show-invite = Invite people
+so-tilo-session-invite-show-connect = Connect an agent or computer
+so-tilo-session-invite-show-pair-device = Add a device
+so-tilo-session-invite-cancel-invitation = Cancel invitation
 so-tilo-session-desk-show-surface = Show or hide a panel
 so-tilo-session-desk-close-surface = Close panel
 so-tilo-session-desk-walk-switcher = Switch windows
 so-tilo-session-desk-select-switcher = Choose window in switcher
 so-tilo-session-desk-commit-switcher = Go to chosen window
-so-tilo-session-desk-open-settings = Open Settings
 
 ## Actions
 

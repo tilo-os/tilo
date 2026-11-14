@@ -2324,113 +2324,6 @@
           "params": []
         },
         {
-          "id": "invitations",
-          "label": "List invitations",
-          "description": "The invitations this device's person made into a workspace that can still be redeemed, in the words the workspace's host lists them by",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "workspace",
-              "required": false,
-              "type": {
-                "option": "text"
-              }
-            }
-          ]
-        },
-        {
-          "id": "issue-invitation",
-          "label": "Make an invitation link",
-          "description": "Make an invitation into a workspace from this device: the link to hand to whoever is being invited, which their device joins with",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "role",
-              "required": false,
-              "type": {
-                "option": "text"
-              }
-            },
-            {
-              "name": "invitee_name",
-              "required": false,
-              "type": {
-                "option": "text"
-              }
-            },
-            {
-              "name": "recipient",
-              "required": false,
-              "type": {
-                "option": "text"
-              }
-            },
-            {
-              "name": "expires_in_seconds",
-              "required": false,
-              "type": {
-                "option": "int"
-              }
-            },
-            {
-              "name": "workspace",
-              "required": false,
-              "type": {
-                "option": "text"
-              }
-            }
-          ]
-        },
-        {
-          "id": "show-invite",
-          "label": "Invite people",
-          "description": "Open the invite sheet on a workspace: where a link into it is made, the part it brings someone in at picked and the links that still work taken back. An app shares what it shows by asking this, so it offers the one sheet the bar's invite button opens.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "workspace",
-              "required": false,
-              "type": {
-                "option": "text"
-              }
-            }
-          ]
-        },
-        {
-          "id": "show-connect",
-          "label": "Connect an agent or computer",
-          "description": "Show how an agent or another computer connects as the person: the setup their own card's \"Connect an agent or computer\" opens. An app that lists what acts as them offers adding to it this way.",
-          "kind": "outside",
-          "params": []
-        },
-        {
-          "id": "show-pair-device",
-          "label": "Add a device",
-          "description": "Open the Add a device sheet: the link a new device of the person's becomes one of theirs, shown as a code its camera reads. An app that lists what acts as the person offers adding to it this way.",
-          "kind": "outside",
-          "params": []
-        },
-        {
-          "id": "cancel-invitation",
-          "label": "Cancel invitation",
-          "description": "Cancel the invitation `invite` of a workspace: its link admits nobody from now on",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "invite",
-              "required": true,
-              "type": "text"
-            },
-            {
-              "name": "workspace",
-              "required": false,
-              "type": {
-                "option": "text"
-              }
-            }
-          ]
-        },
-        {
           "id": "show-surface",
           "label": "Show or hide a panel",
           "description": "Show the surface `surface` over the desk's windows, or close it when it is up.",
@@ -2497,19 +2390,6 @@
           "description": "Go to the window the switcher's walk reached, and close the switcher.",
           "kind": "outside",
           "params": []
-        },
-        {
-          "id": "open-settings",
-          "label": "Open Settings",
-          "description": "Open Settings at the page `link` names (`settings://network`), through the desk's own search: what an app with no workspace of its own asks to send the person there.",
-          "kind": "outside",
-          "params": [
-            {
-              "name": "link",
-              "required": true,
-              "type": "text"
-            }
-          ]
         }
       ],
       "fields": [

@@ -1571,7 +1571,7 @@ fn listed_invitations(session: &mut crate::Session, workspace: &str) -> Vec<serd
     arguments.insert("workspace".into(), workspace.into());
     let listed = session
         .invoke(
-            tilo_session_core::shell::DESK_RESOURCE,
+            tilo_actions::remote::session_actions::INVITE_RESOURCE,
             "invitations",
             &arguments,
         )
@@ -1590,7 +1590,7 @@ fn cancelled_at_the_desk(session: &mut crate::Session, workspace: &str, invite: 
     arguments.insert("invite".into(), invite.into());
     let answer = session
         .invoke(
-            tilo_session_core::shell::DESK_RESOURCE,
+            tilo_actions::remote::session_actions::INVITE_RESOURCE,
             "cancel-invitation",
             &arguments,
         )

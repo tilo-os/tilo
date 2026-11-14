@@ -141,7 +141,7 @@ impl ShareLinks {
                 RemoteActionTarget {
                     provider: session_actions::PROVIDER.into(),
                     address: tilo_actions::ActionAddress::new(
-                        session_actions::DESK_RESOURCE,
+                        session_actions::INVITE_RESOURCE,
                         session_actions::ISSUE_INVITATION,
                     ),
                 },
@@ -694,7 +694,7 @@ mod tests {
             assert_eq!(
                 asked[0].target.address,
                 tilo_actions::ActionAddress::new(
-                    session_actions::DESK_RESOURCE,
+                    session_actions::INVITE_RESOURCE,
                     session_actions::ISSUE_INVITATION
                 )
             );

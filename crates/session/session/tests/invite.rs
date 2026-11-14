@@ -257,7 +257,7 @@ fn capture(app: &mut HeadlessApp<InviteApp>, name: &str) {
 fn invitations_at_the_desk(session: &mut Session) -> Vec<serde_json::Value> {
     let listed = session
         .invoke(
-            tilo_surface_host::shell_part::DESK_RESOURCE,
+            tilo_actions::remote::session_actions::INVITE_RESOURCE,
             "invitations",
             &serde_json::Map::new(),
         )

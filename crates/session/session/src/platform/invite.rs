@@ -1,19 +1,18 @@
 //! The Linux desk's side of inviting: the workspace in front as this device holds it, its links
-//! made and cancelled through the desk's own published actions.
+//! made and cancelled through the session's own published actions.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::SystemTime;
 
-use tilo_actions::remote::session_actions::ISSUE_INVITATION;
+use tilo_actions::remote::session_actions::{INVITE_RESOURCE, ISSUE_INVITATION};
 use tilo_desktop::workspace_settings as domain;
-use tilo_session_core::shell::DESK_RESOURCE;
 use tilo_sheets::invite as sheet;
 
 use crate::invite::{Answer, Issued, Refused, Workspace};
 
 /// The workspace in front of this desk, as this device holds it: its governance says who may
-/// invite whom, and the desk's own published actions make and cancel the links.
+/// invite whom, and the session's own published actions make and cancel the links.
 pub(crate) struct DeskWorkspace {
     /// Where a link the device's signer signs is answered once it landed.
     pub(crate) landings: Rc<crate::landing::Landings>,
@@ -35,7 +34,7 @@ impl DeskWorkspace {
         })
     }
 
-    /// Ask the desk's own action `action` with `arguments`, and hand what it answered to
+    /// Ask the session's own action `action` with `arguments`, and hand what it answered to
     /// `answer`: at once, or on the pass after a link the device's signer signs landed.
     fn invoke(
         &self,
@@ -44,13 +43,13 @@ impl DeskWorkspace {
         answer: impl FnOnce(Result<Option<serde_json::Value>, Refused>) + 'static,
     ) {
         let refused = move |error: tilo_actions::DoorError| {
-            tracing::warn!(%error, "the desk refused");
+            tracing::warn!(%error, "the session refused");
             Refused::Because(error.to_string())
         };
         match self
             .services
             .borrow_mut()
-            .invoke(DESK_RESOURCE, action, arguments)
+            .invoke(INVITE_RESOURCE, action, arguments)
         {
             Some(Ok(tilo_service::Started::Done(output))) => answer(Ok(output.value)),
             Some(Ok(tilo_service::Started::Later(later))) => {

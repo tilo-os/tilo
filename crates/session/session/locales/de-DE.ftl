@@ -213,6 +213,7 @@ session-notifications = Benachrichtigungszentrum
 session-time = Uhrzeit
 session-windows = Fenster
 session-tray = Statusleiste
+session-invite = Einladen
 session-agents = Agenten
 session-styles = Stile
 session-notifications-dismiss = Die Benachrichtigung verwerfen
@@ -425,18 +426,17 @@ session-resource-keyboard-focus = Tastaturfokus
 ## Actions
 
 so-tilo-session-desk-switch-workspace = Zum Arbeitsbereich wechseln
-so-tilo-session-desk-invitations = Einladungen auflisten
-so-tilo-session-desk-issue-invitation = Einladungslink erstellen
-so-tilo-session-desk-show-invite = Personen einladen
-so-tilo-session-desk-show-connect = Agent oder Computer verbinden
-so-tilo-session-desk-show-pair-device = Gerät hinzufügen
-so-tilo-session-desk-cancel-invitation = Einladung zurückziehen
+so-tilo-session-invite-invitations = Einladungen auflisten
+so-tilo-session-invite-issue-invitation = Einladungslink erstellen
+so-tilo-session-invite-show-invite = Personen einladen
+so-tilo-session-invite-show-connect = Agent oder Computer verbinden
+so-tilo-session-invite-show-pair-device = Gerät hinzufügen
+so-tilo-session-invite-cancel-invitation = Einladung zurückziehen
 so-tilo-session-desk-show-surface = Bereich ein- oder ausblenden
 so-tilo-session-desk-close-surface = Bereich schließen
 so-tilo-session-desk-walk-switcher = Fenster wechseln
 so-tilo-session-desk-select-switcher = Fenster im Umschalter wählen
 so-tilo-session-desk-commit-switcher = Zum gewählten Fenster wechseln
-so-tilo-session-desk-open-settings = Einstellungen öffnen
 
 ## Actions
 

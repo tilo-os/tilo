@@ -1228,6 +1228,7 @@ so-tilo-chrome-scroll = Ein Fenster scrollen
 so-tilo-chrome-set-width = Die Breite setzen
 so-tilo-chrome-share-window = Ein Fenster teilen
 so-tilo-chrome-shortcut = Ein Tastenkürzel ausführen
+so-tilo-chrome-open-settings = Einstellungen öffnen
 so-tilo-chrome-show-app = Eine App zeigen
 so-tilo-chrome-show-person = Eine Person zeigen
 so-tilo-chrome-show-strip = Eine Leiste zeigen

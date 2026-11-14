@@ -625,7 +625,7 @@ pub fn desk_answer(device: &Device, args: &serde_json::Value) -> serde_json::Val
         tilo_actions::remote::session_actions::PROVIDER,
         &format!(
             "{}\u{1f}{}",
-            tilo_actions::remote::session_actions::DESK_RESOURCE,
+            tilo_actions::remote::session_actions::INVITE_RESOURCE,
             tilo_actions::remote::session_actions::ISSUE_INVITATION
         ),
         args,

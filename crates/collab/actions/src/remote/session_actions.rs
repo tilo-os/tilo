@@ -26,18 +26,22 @@ pub const PROVIDER: &str = "so.tilo.session";
 /// rather than on a record of an app's.
 pub const DESK_RESOURCE: &str = "session:desk";
 
-/// The desk's action making an invitation into a workspace: the link to hand to whoever is
+/// The resource the session publishes inviting on: the links into a workspace, the invite sheet,
+/// and adding another device or an agent of the person's.
+pub const INVITE_RESOURCE: &str = "session:invite";
+
+/// The action making an invitation into a workspace: the link to hand to whoever is
 /// being invited, which their device joins with. An app offers inviting what it shows by asking
 /// this, and gets the invitation the invite sheet makes.
 pub const ISSUE_INVITATION: &str = "issue-invitation";
 
-/// The desk's action opening its invite sheet on a workspace: where a link into it is made, the
+/// The action opening the invite sheet on a workspace: where a link into it is made, the
 /// part it brings someone in at picked and the people the directory knows offered. An app offers
 /// sharing what it shows by asking this, so a folder's share and the bar's invite button are one
 /// sheet.
 pub const SHOW_INVITE: &str = "show-invite";
 
-/// The desk's action opening its Add a device sheet: the link a new device of the person's becomes
+/// The action opening the Add a device sheet: the link a new device of the person's becomes
 /// one of theirs, shown as a code its camera reads. An app that lists what acts as the person
 /// (Settings' Devices) offers adding to it this way.
 pub const SHOW_PAIR_DEVICE: &str = "show-pair-device";
@@ -53,7 +57,7 @@ pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
 /// `open`, an app's `open` for an app this session serves, and this step are one act.
 pub const OPEN: &str = "open";
 
-/// The desk's action showing how an agent or another computer of the person's connects as them:
+/// The action showing how an agent or another computer of the person's connects as them:
 /// the same setup their own card's "Connect an agent or computer" opens ([`CONNECT_AGENT`]). An app
 /// that lists what acts as the person (Settings' Devices and access) offers adding to it this way.
 pub const SHOW_CONNECT: &str = "show-connect";
@@ -64,13 +68,13 @@ pub const SHOW_CONNECT: &str = "show-connect";
 /// and [`SHOW_CONNECT`] both choose it.
 pub const CONNECT_AGENT: &str = "connect-agent";
 
-/// The target the desk's action `action` is invoked at: the session's own provider, on the
-/// resource it publishes the desk as. An app invokes one of these as the person using it, through
-/// the action broker.
+/// The target the inviting action `action` is invoked at: the session's own provider, on
+/// [`INVITE_RESOURCE`]. An app invokes one of these as the person using it, through the action
+/// broker.
 #[must_use]
 pub fn target(action: &str) -> super::RemoteActionTarget {
     super::RemoteActionTarget {
         provider: PROVIDER.to_owned(),
-        address: super::ActionAddress::new(DESK_RESOURCE, action),
+        address: super::ActionAddress::new(INVITE_RESOURCE, action),
     }
 }

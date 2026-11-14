@@ -7,6 +7,7 @@
 use std::rc::Rc;
 
 use serde_json::{Map, Value};
+use tilo_actions::remote::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
@@ -190,6 +191,46 @@ pub(crate) enum DeskEffect {
     /// Put the question waiting on the person's avatar off for now
     #[effect(row, label = "session-desk-ask-later")]
     PutOffAsk,
+    /// Show the surface `surface` over the desk's windows, or close it when it is up.
+    ShowSurface {
+        #[param(
+            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
+        )]
+        surface: String,
+    },
+    /// Close the surface `surface`, when it is the one up.
+    CloseSurface {
+        #[param("The surface")]
+        surface: String,
+    },
+    /// Open the window switcher, or walk it `steps` windows on.
+    /// Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in front
+    /// shows.
+    WalkSwitcher {
+        #[param("How far to walk; 1 the next window, -1 the one before")]
+        steps: Option<i64>,
+        #[param(
+            "Which windows the walk crosses: `workspace` for every window of the workspace, `app` for the ones the app in front shows",
+            choices = SWITCHER_SCOPES
+        )]
+        scope: Option<String>,
+    },
+    /// Choose the window the walk reached, without crossing the ones between: `at` is its place
+    /// among the windows the walk crosses, `0` the first of them and `-1` the last. Home, End and a
+    /// card under the pointer choose by place.
+    SelectSwitcher {
+        #[param("The window's place among the ones the walk crosses; -1 for the last")]
+        at: i64,
+    },
+    /// Go to the window the switcher's walk reached, and close the switcher.
+    CommitSwitcher,
+}
+
+/// What inviting offers: the links into a workspace, the invite sheet, and adding another device or
+/// an agent of the person's.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.invite")]
+pub(crate) enum InviteEffect {
     /// The invitations this device's person made into a workspace that can still be
     /// redeemed, in the words the workspace's host lists them by
     Invitations {
@@ -246,46 +287,6 @@ pub(crate) enum DeskEffect {
         /// The workspace, by its key; the one in front when absent
         #[param("The workspace, by its key; the one in front when absent")]
         workspace: Option<String>,
-    },
-    /// Show the surface `surface` over the desk's windows, or close it when it is up.
-    ShowSurface {
-        #[param(
-            "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
-        )]
-        surface: String,
-    },
-    /// Close the surface `surface`, when it is the one up.
-    CloseSurface {
-        #[param("The surface")]
-        surface: String,
-    },
-    /// Open the window switcher, or walk it `steps` windows on.
-    /// Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in front
-    /// shows.
-    WalkSwitcher {
-        #[param("How far to walk; 1 the next window, -1 the one before")]
-        steps: Option<i64>,
-        #[param(
-            "Which windows the walk crosses: `workspace` for every window of the workspace, `app` for the ones the app in front shows",
-            choices = SWITCHER_SCOPES
-        )]
-        scope: Option<String>,
-    },
-    /// Choose the window the walk reached, without crossing the ones between: `at` is its place
-    /// among the windows the walk crosses, `0` the first of them and `-1` the last. Home, End and a
-    /// card under the pointer choose by place.
-    SelectSwitcher {
-        #[param("The window's place among the ones the walk crosses; -1 for the last")]
-        at: i64,
-    },
-    /// Go to the window the switcher's walk reached, and close the switcher.
-    CommitSwitcher,
-    /// Open Settings at the page `link` names (`settings://network`), through
-    /// the desk's own search: what an app with no workspace of its own asks
-    /// to send the person there.
-    OpenSettings {
-        #[param("A Settings link, such as `settings://network`; empty for Settings itself")]
-        link: String,
     },
 }
 
@@ -889,10 +890,10 @@ impl Desk {
 
     /// What an invitation verb answers, when `effect` is one of them: the links that still work,
     /// one made, or one taken back.
-    fn invitation(&self, effect: &DeskEffect) -> Option<Result<Started, DoorError>> {
+    fn invitation(&self, effect: &InviteEffect) -> Option<Result<Started, DoorError>> {
         match effect {
-            DeskEffect::Invitations { workspace } => Some(self.invitations(workspace.as_deref())),
-            DeskEffect::IssueInvitation {
+            InviteEffect::Invitations { workspace } => Some(self.invitations(workspace.as_deref())),
+            InviteEffect::IssueInvitation {
                 role,
                 invitee_name,
                 recipient,
@@ -905,7 +906,7 @@ impl Desk {
                 *expires_in_seconds,
                 workspace.as_deref(),
             )),
-            DeskEffect::CancelInvitation { invite, workspace } => {
+            InviteEffect::CancelInvitation { invite, workspace } => {
                 Some(self.cancel_invitation(invite, workspace.as_deref()))
             }
             _ => None,
@@ -1002,21 +1003,28 @@ impl Desk {
             .map_err(DoorError::Failed)?;
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
+}
 
-    /// What the desk carries out by handing it to what shows it: the surface over the windows,
-    /// and opening Settings at the page a link names, which only the session's loop can search
-    /// for. Whether `effect` was one of these.
-    fn show(&self, effect: &DeskEffect) -> bool {
-        match effect {
-            DeskEffect::ShowSurface { surface } => self.surfaces.toggle(surface),
-            DeskEffect::OpenSettings { link } => {
-                self.asks
-                    .borrow_mut()
-                    .push(DesktopAsk::OpenSettings(link.clone()));
-            }
-            _ => return false,
+impl Desk {
+    /// Carry out `effect` of the inviting resource.
+    fn invite(&self, effect: &InviteEffect) -> Result<Started, DoorError> {
+        if let Some(answer) = self.invitation(effect) {
+            return answer;
         }
-        true
+        match effect {
+            InviteEffect::ShowInvite { workspace } => {
+                return self.show_invite(workspace.as_deref());
+            }
+            InviteEffect::ShowPairDevice => self
+                .asks
+                .borrow_mut()
+                .push(DesktopAsk::Intent(ChromeIntent::PairDevice)),
+            InviteEffect::ShowConnect => self
+                .handle
+                .choose_host_action(tilo_actions::remote::session_actions::CONNECT_AGENT),
+            _ => {}
+        }
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 }
 
@@ -1041,6 +1049,11 @@ impl Service for Desk {
                 AGENTS_RESOURCE,
                 kind,
                 crate::i18n::t("session-agents"),
+            )),
+            offer::<InviteEffect>(ResourceSpec::new(
+                INVITE_RESOURCE,
+                kind,
+                crate::i18n::t("session-invite"),
             )),
             ResourceSpec::new(STYLES_RESOURCE, kind, crate::i18n::t("session-styles")),
         ]
@@ -1091,6 +1104,11 @@ impl Service for Desk {
                 }
                 return Ok(Started::Done(tilo_actions::ActionOutput::default()));
             }
+            INVITE_RESOURCE => {
+                let effect =
+                    decode::<InviteEffect>(&self.resources(), resource, action, arguments)?;
+                return self.invite(&effect);
+            }
             DESK_RESOURCE => {}
             _ => return Err(DoorError::Unknown(ActionAddress::new(resource, action))),
         }
@@ -1106,24 +1124,8 @@ impl Service for Desk {
             }
             _ => {}
         }
-        if let Some(answer) = self.invitation(&effect) {
-            return answer;
-        }
-        if let DeskEffect::ShowInvite { workspace } = &effect {
-            return self.show_invite(workspace.as_deref());
-        }
-        if matches!(effect, DeskEffect::ShowPairDevice) {
-            self.asks
-                .borrow_mut()
-                .push(DesktopAsk::Intent(ChromeIntent::PairDevice));
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if matches!(effect, DeskEffect::ShowConnect) {
-            self.handle
-                .choose_host_action(tilo_actions::remote::session_actions::CONNECT_AGENT);
-            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
-        }
-        if self.show(&effect) {
+        if let DeskEffect::ShowSurface { surface } = &effect {
+            self.surfaces.toggle(surface);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::CloseSurface { surface } = &effect {

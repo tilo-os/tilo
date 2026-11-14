@@ -48,7 +48,7 @@ pub(super) fn invitation_request(request: &tilo_actions::remote::InvokeRequest) 
     use tilo_actions::remote::session_actions;
     let action = request.target.address.action.as_str();
     request.target.provider == tilo_actions::remote::SESSION_ACTIONS_PROVIDER
-        && request.target.address.resource == session_actions::DESK_RESOURCE
+        && request.target.address.resource == session_actions::INVITE_RESOURCE
         && (action == session_actions::ISSUE_INVITATION || action == session_actions::SHOW_INVITE)
 }
 
@@ -61,7 +61,7 @@ pub(super) fn connect_request(request: &tilo_actions::remote::InvokeRequest) -> 
     use tilo_actions::remote::session_actions;
     let action = request.target.address.action.as_str();
     request.target.provider == tilo_actions::remote::SESSION_ACTIONS_PROVIDER
-        && request.target.address.resource == session_actions::DESK_RESOURCE
+        && request.target.address.resource == session_actions::INVITE_RESOURCE
         && (action == session_actions::SHOW_CONNECT || action == session_actions::SHOW_PAIR_DEVICE)
 }
 
@@ -166,11 +166,11 @@ mod invitation_request_tests {
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: tilo_actions::ActionAddress::new(
-                    session_actions::DESK_RESOURCE,
+                    session_actions::INVITE_RESOURCE,
                     session_actions::ISSUE_INVITATION,
                 ),
-                resource_kind: "session.desk".into(),
-                resource_label: "Desk".into(),
+                resource_kind: "session".into(),
+                resource_label: "Invite".into(),
                 action_label: "Make an invitation".into(),
                 keywords: Vec::new(),
                 icon: None,
@@ -227,7 +227,7 @@ mod invitation_request_tests {
     fn invitation() -> tilo_actions::remote::InvokeRequest {
         request(
             session_actions::PROVIDER,
-            session_actions::DESK_RESOURCE,
+            session_actions::INVITE_RESOURCE,
             session_actions::ISSUE_INVITATION,
         )
     }
@@ -240,7 +240,7 @@ mod invitation_request_tests {
             let desk = |action: &str| {
                 request(
                     tilo_actions::remote::SESSION_ACTIONS_PROVIDER,
-                    session_actions::DESK_RESOURCE,
+                    session_actions::INVITE_RESOURCE,
                     action,
                 )
             };
@@ -273,7 +273,7 @@ mod invitation_request_tests {
             assert!(
                 !super::invitation_request(&request(
                     "record:so.tilo.notes:",
-                    session_actions::DESK_RESOURCE,
+                    session_actions::INVITE_RESOURCE,
                     session_actions::ISSUE_INVITATION,
                 )),
                 "an invitation is the desk's, not a resource's"
