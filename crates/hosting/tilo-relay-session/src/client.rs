@@ -713,32 +713,6 @@ impl RelayClient {
         .await
     }
 
-    /// Connect to an enrolled home peer, pinning both the user's root
-    /// certificate and the exact enrolled device certificate.  The relay
-    /// service endpoint is intentionally a separate Iroh key, so endpoint
-    /// pinning alone cannot establish the identity behind it.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn connect_to_enrolled_home_peer(
-        endpoint: Endpoint,
-        relay_addr: EndpointAddr,
-        expected_server_user: [u8; 32],
-        expected_server_device: [u8; 32],
-        own_cert: DeviceCert,
-        own_sk: impl DeviceSigner,
-        revocations: RevocationList,
-    ) -> Result<Self, ClientError> {
-        Self::connect_with_server_trust(
-            endpoint,
-            relay_addr,
-            Some(expected_server_user),
-            Some(expected_server_device),
-            own_cert,
-            own_sk,
-            revocations,
-        )
-        .await
-    }
-
     /// Connect with a device key held by `credentials`' signer, for devices
     /// that cannot hand over the key bytes (a browser's non-extractable
     /// `WebCrypto` key).

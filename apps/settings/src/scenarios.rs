@@ -203,7 +203,6 @@ pub struct CaptureScene {
     pub linked_account: Option<ui::linked_accounts::LinkState>,
     #[cfg(feature = "tilo-os")]
     pub personal_devices: Vec<crate::panes::device_mesh::PersonalDevice>,
-    pub home_relay: Option<ui::tilo_actions::remote::home_relay_hosting::HomeRelayHosting>,
     pub billing: Option<ui::tilo_actions::remote::host_account::HostAccount>,
     pub network: Option<NetworkSample>,
     pub mobile: Option<MobileSample>,
@@ -338,8 +337,6 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         },
         access: access_fixture(fixture.scenario()),
         linked_account: capture_link_state(fixture.scenario()),
-        home_relay: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
-            .then(home_relay_fixture),
         billing: billing_fixture(fixture.scenario()),
         #[cfg(feature = "tilo-os")]
         personal_devices: if matches!(
@@ -399,23 +396,6 @@ fn personal_devices_fixture() -> Vec<crate::panes::device_mesh::PersonalDevice> 
         device("Ada's iPhone", "b81d03e6", false, true),
         device("Home server", "6c47f2a0", false, false),
     ]
-}
-
-fn home_relay_fixture() -> ui::tilo_actions::remote::home_relay_hosting::HomeRelayHosting {
-    use ui::tilo_actions::remote::home_relay_hosting::{HomeRelayHosting, HostedWorkspace};
-    let workspace = |room: &str, name: &str, on_relay| HostedWorkspace {
-        workspace: room.into(),
-        name: name.into(),
-        on_relay,
-    };
-    HomeRelayHosting {
-        relay: Some("Home server".into()),
-        workspaces: vec![
-            workspace("4d6f1a2c-0000-4000-8000-000000000001", "Personal", true),
-            workspace("4d6f1a2c-0000-4000-8000-000000000002", "Studio", false),
-            workspace("4d6f1a2c-0000-4000-8000-000000000003", "Taxes", false),
-        ],
-    }
 }
 
 pub(crate) fn access_fixture(

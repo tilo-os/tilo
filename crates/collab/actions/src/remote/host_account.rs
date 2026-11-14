@@ -42,9 +42,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{ActionAddress, RemoteActionTarget};
 
-/// The provider a host answers its accounts under, the one it answers its
-/// other hosting steps under.
-pub const PROVIDER: &str = super::home_relay_hosting::PROVIDER;
+/// The provider a host answers its accounts under.
+pub const PROVIDER: &str = "tilo.hosting";
 /// The resource the account's actions are actions of.
 pub const RESOURCE: &str = "host.account";
 /// Live: the calling person's account with this host, as a [`HostAccount`].

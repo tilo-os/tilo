@@ -2,7 +2,7 @@
 //! carried over this session's own iroh endpoint, and the relay role the device serving the
 //! workspace takes for the others.
 //! Which device relays is durable workspace state, not presence and not the plane itself, so every
-//! device names the same one without asking anyone ([`relays_of`]): the device whose signed
+//! device names the same one without asking anyone ([`relay_of`]): the device whose signed
 //! address the workspace's governance holds, while it is a member. Two people's own devices
 //! sharing a workspace one of them serves have a live plane without a server. Every session
 //! serves [`tilo_live::relay::Relay`] on its endpoint, and its ALPN handler admits a connection
@@ -26,7 +26,7 @@ use tilo_live::frame::PlaneKeys;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace};
 use tilo_live::native;
-use tilo_live::plane::{Heard, Join, Plane, PlaneError};
+use tilo_live::plane::{Heard, Join, Plane};
 use tilo_live::relay::{
     Admission, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
 };
@@ -43,22 +43,22 @@ fn scope_of(workspace: WorkspaceId) -> Scope {
     Scope::workspace(workspace.to_string())
 }
 
-/// The workspace's relays, as its state names them: `host`, the device serving the workspace,
-/// while it is a current member. Empty otherwise, which is a workspace with no live plane.
-pub(crate) fn relays_of(devices: &[Device], host: Option<[u8; 32]>, now_ns: u64) -> Vec<[u8; 32]> {
+/// The workspace's relay, as its state names it: `host`, the device serving the workspace, while
+/// it is a current member. `None` otherwise, which is a workspace with no live plane.
+pub(crate) fn relay_of(
+    devices: &[Device],
+    host: Option<[u8; 32]>,
+    now_ns: u64,
+) -> Option<[u8; 32]> {
     devices
         .iter()
         .filter(|device| !device.cert.is_expired_at(now_ns))
         .map(|device| device.device)
-        .filter(|device| Some(*device) == host)
-        .take(1)
-        .collect()
+        .find(|device| Some(*device) == host)
 }
 
-/// Join budget of a bridge: a relay this device cannot reach is not one to wait on, since the plane
-/// itself does not go through it.
-const BRIDGE_JOINT: Duration = Duration::from_secs(3);
-/// How long one relay of a workspace has to carry the plane before the next one is tried.
+/// How long the workspace's relay has to open its plane before this device gives up on this
+/// attempt.
 const ATTEMPT: Duration = Duration::from_secs(4);
 
 /// Now, in Unix nanoseconds.
@@ -87,7 +87,7 @@ struct Request {
 ///   key, or one the device signed an [`EndpointDelegation`] for, live now,
 ///   which is how a page whose device key cannot leave `WebCrypto` dials;
 /// * the certificate has not expired, and the workspace is one this device
-///   relays now, by the same rule every member applies ([`relays_of`]).
+///   relays now, by the same rule every member applies ([`relay_of`]).
 fn bind(
     peer: Peer,
     grant: &grant::Native,
@@ -103,7 +103,7 @@ fn bind(
         return Err(Denied);
     }
     // Only the device the workspace's state names relays.
-    if !relays_of(devices, host, now_ns).contains(&own) {
+    if relay_of(devices, host, now_ns) != Some(own) {
         return Err(Denied);
     }
     let certificate: DeviceCert = serde_json::from_slice(&grant.certificate).map_err(|_| Denied)?;
@@ -188,12 +188,6 @@ struct Joined {
     plane: Arc<Plane>,
 }
 
-/// Another relay of a workspace this device relays, kept in this device's relay as one subscriber
-/// session: the member joined the other relay, and everything it serves crosses here.
-struct Bridged {
-    _copy: tilo_live::bridge::Bridge,
-}
-
 /// What the relay role and the planes share: this session's engine, its own device, the epochs it
 /// saw, what it joined, and the change signal an open session re-observes on.
 struct Shared {
@@ -209,10 +203,7 @@ struct Shared {
     /// Told when a workspace's membership or keys moved.
     changed: tokio::sync::watch::Sender<u64>,
     planes: Mutex<BTreeMap<WorkspaceId, Joined>>,
-    /// The other relays of each workspace this device relays, by device.
-    bridged: Mutex<BTreeMap<(WorkspaceId, [u8; 32]), Bridged>>,
-    /// Told when a plane ended, so the workspace is settled again through whichever relay it
-    /// reaches next.
+    /// Told when a plane ended, so the workspace is settled again through its relay.
     rejoin: tokio::sync::mpsc::UnboundedSender<WorkspaceId>,
     wake: Arc<dyn Fn() + Send + Sync>,
     /// The runtime the planes run on, once the plane's thread started it: what a plane's readers
@@ -281,38 +272,10 @@ impl Shared {
     }
 }
 
-/// The first relay of `candidates` whose plane `open` returned, trying them in the order the
-/// workspace names them: the relay that is offline costs one attempt and the plane opens on the one
-/// below it.
-async fn reach<'a, T>(
-    candidates: &[[u8; 32]],
-    mut open: impl FnMut(
-        [u8; 32],
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<T, PlaneError>> + Send + 'a>,
-    >,
-) -> Option<([u8; 32], T)>
-where
-    T: 'a,
-{
-    for candidate in candidates.iter().copied() {
-        match open(candidate).await {
-            Ok(opened) => return Some((candidate, opened)),
-            Err(error) => tilo_failure::ignored!(
-                "an unreachable relay is skipped, and the next is tried",
-                tracing::debug!(relay = %hex::encode(candidate), %error,
-                    "this relay of the workspace was not reached")
-            ),
-        }
-    }
-    None
-}
-
 impl Shared {
-    /// This workspace's devices, and the ones among them that may relay its live plane, in the
-    /// order every device tries them; `None` — after withdrawing the plane — when the membership is
-    /// unknown or names no relay.
-    fn relay_candidates(&self, workspace: WorkspaceId) -> Option<(Vec<Device>, Vec<[u8; 32]>)> {
+    /// This workspace's devices, and the one among them that may relay its live plane; `None` —
+    /// after withdrawing the plane — when the membership is unknown or names no relay.
+    fn relay_for(&self, workspace: WorkspaceId) -> Option<(Vec<Device>, [u8; 32])> {
         let devices = match channels::devices_of(&self.engine, workspace) {
             Ok(devices) => devices,
             Err(error) => {
@@ -321,16 +284,15 @@ impl Shared {
                 return None;
             }
         };
-        let candidates = relays_of(&devices, self.engine.host_of(workspace), now_ns());
-        if candidates.is_empty() {
+        let Some(relay) = relay_of(&devices, self.engine.host_of(workspace), now_ns()) else {
             // No member may relay it: the workspace has no live plane.
             if self.planes.lock_recover().contains_key(&workspace) {
                 tracing::info!(%workspace, "no member relays this workspace's live plane any more");
             }
             self.withdraw(workspace);
             return None;
-        }
-        Some((devices, candidates))
+        };
+        Some((devices, relay))
     }
 
     /// The keys of this device's own streams in `workspace`, lent by its host, when this session
@@ -348,11 +310,10 @@ impl Shared {
         }
     }
 
-    /// Read `workspace` as it is now and join through the first of its relays
-    /// this device reaches, move the plane's keys and roster when they changed,
-    /// or leave when the workspace names no relay any more.
+    /// Read `workspace` as it is now and join its relay, move the plane's keys and roster when
+    /// they changed, or leave when the workspace names no relay any more.
     async fn settle(self: &Arc<Self>, workspace: WorkspaceId, endpoint: &Endpoint, relay: &Relay) {
-        let Some((devices, candidates)) = self.relay_candidates(workspace) else {
+        let Some((devices, serving)) = self.relay_for(workspace) else {
             return;
         };
         // The plane's tracks are sealed under the workspace's media channel: taking part in it asks
@@ -384,7 +345,7 @@ impl Shared {
             let planes = self.planes.lock_recover();
             planes
                 .get(&workspace)
-                .filter(|joined| candidates.contains(&joined.relay) && !joined.plane.ended())
+                .filter(|joined| joined.relay == serving && !joined.plane.ended())
                 .map(|joined| (joined.relay, Arc::clone(&joined.plane)))
         };
         if let Some((at, plane)) = kept {
@@ -392,11 +353,8 @@ impl Shared {
             // and seals under the keys and roster it now has.
             tracing::debug!(%workspace, relay = %hex::encode(at),
                 epoch = keys.epoch(), "the live plane keeps its relay");
-            let epoch = keys.epoch();
             plane.set_keys(keys);
             plane.set_roster(roster);
-            self.bridge(workspace, endpoint, relay, &scope, epoch, &candidates)
-                .await;
             return;
         }
         // A plane whose relay the workspace no longer names, or one that ended, is closed before
@@ -410,54 +368,79 @@ impl Shared {
             roster,
             publish: true,
         };
-        let host = self.engine.workspace_host(workspace);
-        let reached = reach(&candidates, |chosen| {
-            let join = join.clone();
-            let endpoint = endpoint.clone();
-            let scope = scope.clone();
-            let host = host.clone();
-            Box::pin(async move {
-                if chosen == self.device {
-                    return Plane::local(relay, &join);
-                }
-                let relay_id =
-                    EndpointId::from_bytes(&chosen).map_err(|_| PlaneError::Unavailable)?;
-                let grant = self
-                    .grant(workspace, &scope, epoch)
-                    .map_err(|_| PlaneError::Unavailable)?;
-                // The member this enrollment pinned is reached at the address its host signed,
-                // which is its endpoint's, not its device key's.
-                let addr = host
-                    .as_ref()
-                    .filter(|(pinned, _)| *pinned == chosen)
-                    .map_or_else(|| EndpointAddr::new(relay_id), |(_, addr)| addr.clone());
-                let carrier = native::Iroh::new(endpoint, addr);
-                Plane::join_within(Arc::new(carrier), &grant, join, ATTEMPT).await
-            })
-        })
-        .await;
-        let Some((chosen, plane)) = reached else {
-            tracing::debug!(%workspace, "no relay of this workspace was reached");
+        let opened = if serving == self.device {
+            Plane::local(relay, &join)
+        } else {
+            let Some((addr, grant)) = self.dial_target(workspace, &scope, epoch, serving) else {
+                return;
+            };
+            let carrier = native::Iroh::new(endpoint.clone(), addr);
+            Plane::join_within(Arc::new(carrier), &grant, join, ATTEMPT).await
+        };
+        let Ok(plane) = opened else {
+            tracing::debug!(%workspace, relay = %hex::encode(serving),
+                "this workspace's relay was not reached");
             return;
         };
         plane.set_wake(Arc::clone(&self.wake));
         let ended = Arc::clone(self);
         plane.set_ended(Arc::new(move || ended.ended(workspace)));
-        tracing::debug!(%workspace, relay = %hex::encode(chosen),
-            local = chosen == self.device, epoch,
+        tracing::debug!(%workspace, relay = %hex::encode(serving),
+            local = serving == self.device, epoch,
             "the live plane opened");
         let replaced = self.planes.lock_recover().insert(
             workspace,
             Joined {
-                relay: chosen,
+                relay: serving,
                 plane: Arc::new(plane),
             },
         );
         drop(replaced);
         self.bump();
-        let scope = scope_of(workspace);
-        self.bridge(workspace, endpoint, relay, &scope, epoch, &candidates)
-            .await;
+    }
+
+    /// Where the workspace's serving device `serving` is reached and the grant that admits this
+    /// device there, or `None` when either is not here yet.
+    fn dial_target(
+        &self,
+        workspace: WorkspaceId,
+        scope: &Scope,
+        epoch: u64,
+        serving: [u8; 32],
+    ) -> Option<(EndpointAddr, Vec<u8>)> {
+        let relay_id = match EndpointId::from_bytes(&serving) {
+            Ok(relay_id) => relay_id,
+            Err(error) => {
+                tilo_failure::ignored!(
+                    "a device key that names no endpoint cannot be dialed, and the workspace's \
+                     next settle reads its state again",
+                    tracing::debug!(%workspace, %error,
+                        "the workspace's serving device key is no endpoint")
+                );
+                return None;
+            }
+        };
+        let grant = match self.grant(workspace, scope, epoch) {
+            Ok(grant) => grant,
+            Err(error) => {
+                tilo_failure::ignored!(
+                    "the plane opens when the workspace's keys and certificate are here, and the \
+                     next settle asks again",
+                    tracing::debug!(%workspace, %error,
+                        "this device has no grant for the workspace's live plane")
+                );
+                return None;
+            }
+        };
+        // The member this enrollment pinned is reached at the address its host signed, which is
+        // its endpoint's, not its device key's.
+        let addr = self
+            .engine
+            .workspace_host(workspace)
+            .as_ref()
+            .filter(|(pinned, _)| *pinned == serving)
+            .map_or_else(|| EndpointAddr::new(relay_id), |(_, addr)| addr.clone());
+        Some((addr, grant))
     }
 
     /// The grant this device presents to be admitted into `workspace` 's scope: its certificate,
@@ -506,9 +489,6 @@ impl Shared {
     /// Stop carrying `workspace` : the plane is closed and its sessions cut.
     fn withdraw(&self, workspace: WorkspaceId) {
         self.rosters.lock_recover().remove(&workspace);
-        self.bridged
-            .lock_recover()
-            .retain(|(held, _), _| *held != workspace);
         let gone = self.planes.lock_recover().remove(&workspace);
         if gone.is_some() {
             self.bump();
@@ -520,67 +500,6 @@ impl Shared {
     fn ended(&self, workspace: WorkspaceId) {
         self.planes.lock_recover().remove(&workspace);
         let _ = self.rejoin.send(workspace);
-    }
-
-    /// Keep every other relay of `workspace` bridged into this device's own,
-    /// when this device relays it: a member that reached another relay is
-    /// heard here, and a member here is heard there through that relay's own
-    /// bridge.
-    async fn bridge(
-        &self,
-        workspace: WorkspaceId,
-        endpoint: &Endpoint,
-        relay: &Relay,
-        scope: &Scope,
-        epoch: u64,
-        candidates: &[[u8; 32]],
-    ) {
-        let relays_here = candidates.contains(&self.device);
-        let others: Vec<[u8; 32]> = candidates
-            .iter()
-            .copied()
-            .filter(|device| relays_here && *device != self.device)
-            .collect();
-        self.bridged
-            .lock_recover()
-            .retain(|(held, device), _| *held != workspace || others.contains(device));
-        let host = self.engine.workspace_host(workspace);
-        for other in others {
-            if self
-                .bridged
-                .lock_recover()
-                .contains_key(&(workspace, other))
-            {
-                continue;
-            }
-            let Ok(relay_id) = EndpointId::from_bytes(&other) else {
-                continue;
-            };
-            let Ok(grant) = self.grant(workspace, scope, epoch) else {
-                continue;
-            };
-            let addr = host
-                .as_ref()
-                .filter(|(pinned, _)| *pinned == other)
-                .map_or_else(|| EndpointAddr::new(relay_id), |(_, addr)| addr.clone());
-            let carrier = native::Iroh::new(endpoint.clone(), addr);
-            match tilo_live::bridge::Bridge::join(&carrier, &grant, scope, relay, BRIDGE_JOINT)
-                .await
-            {
-                Ok(bridge) => {
-                    tracing::debug!(%workspace, relay = %hex::encode(other),
-                        "the other relay of this workspace is bridged here");
-                    self.bridged
-                        .lock_recover()
-                        .insert((workspace, other), Bridged { _copy: bridge });
-                }
-                Err(error) => tilo_failure::ignored!(
-                    "an unreachable relay is skipped, and the next is tried",
-                    tracing::debug!(%workspace, relay = %hex::encode(other), %error,
-                        "the other relay of this workspace was not reached")
-                ),
-            }
-        }
     }
 
     fn bump(&self) {
@@ -633,7 +552,6 @@ impl Live {
             rosters: Mutex::new(BTreeMap::new()),
             changed,
             planes: Mutex::new(BTreeMap::new()),
-            bridged: Mutex::new(BTreeMap::new()),
             rejoin,
             wake,
             runtime: std::sync::OnceLock::new(),
@@ -903,49 +821,20 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn the_first_reachable_relay_carries_the_plane() {
-        let candidates = [[1; 32], [2; 32], [3; 32]];
-        let reached = reach(&candidates, |relay| {
-            Box::pin(async move {
-                if relay == [1; 32] {
-                    return Err(PlaneError::Unavailable);
-                }
-                Ok(relay)
-            })
-        })
-        .await;
-        assert_eq!(
-            reached,
-            Some(([2; 32], [2; 32])),
-            "the plane opens on the next relay"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_workspace_whose_relays_are_all_away_opens_no_plane() {
-        let candidates = [[1; 32], [2; 32]];
-        let reached = reach(&candidates, |_| {
-            Box::pin(async move { Err::<(), _>(PlaneError::Unavailable) })
-        })
-        .await;
-        assert_eq!(reached, None);
-    }
-
     #[test]
     fn the_device_serving_the_workspace_relays() {
         let devices = vec![device([1; 32], None), device([2; 32], None)];
-        assert_eq!(relays_of(&devices, Some([2; 32]), 10), vec![[2; 32]]);
+        assert_eq!(relay_of(&devices, Some([2; 32]), 10), Some([2; 32]));
         assert!(
-            relays_of(&devices, None, 10).is_empty(),
-            "a workspace nobody hosts here and nobody may relay has no live plane"
+            relay_of(&devices, None, 10).is_none(),
+            "a workspace nobody serves has no live plane"
         );
         assert!(
-            relays_of(&devices, Some([7; 32]), 10).is_empty(),
-            "a host that is no member relays nothing"
+            relay_of(&devices, Some([7; 32]), 10).is_none(),
+            "a device that is no member relays nothing"
         );
         let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
-        assert!(relays_of(&devices, Some([1; 32]), 10).is_empty());
+        assert!(relay_of(&devices, Some([1; 32]), 10).is_none());
     }
 
     #[test]
@@ -977,10 +866,12 @@ mod tests {
     #[test]
     fn an_expired_certificate_relays_nothing() {
         let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
-        assert_eq!(relays_of(&devices, None, 10), vec![[2; 32]]);
-        assert_eq!(relays_of(&devices, None, 11), vec![[2; 32]]);
-        let devices = vec![device([1; 32], Some(10))];
-        assert!(relays_of(&devices, None, 10).is_empty());
+        assert_eq!(relay_of(&devices, Some([2; 32]), 10), Some([2; 32]));
+        let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
+        assert!(
+            relay_of(&devices, Some([1; 32]), 10).is_none(),
+            "a serving device whose certificate expired relays nothing"
+        );
     }
 
     /// Whether a relay that is `own`, in a workspace nobody hosts here, admits `grant` from the

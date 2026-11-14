@@ -149,7 +149,6 @@ pub mod host {
         /// What the app reaches of the document.
         reach: Reach,
         display: Option<DisplayControl>,
-        dictionary_owner: Option<[u8; 32]>,
         source: Arc<dyn SettingsSource>,
         revalidate: Revalidate,
         /// The view last answered and the revision it was answered as, so
@@ -176,7 +175,6 @@ pub mod host {
                 app_id: app_id.into(),
                 reach: Reach::App,
                 display: None,
-                dictionary_owner: None,
                 source,
                 revalidate,
                 answered: RefCell::new((0, Map::new())),
@@ -201,24 +199,10 @@ pub mod host {
             self
         }
 
-        /// Host-certified local descriptor owner. Remote collaborators and
-        /// delegated agents are never given this projection authority.
-        #[must_use]
-        pub fn with_dictionary_owner(mut self, owner: Option<[u8; 32]>) -> Self {
-            self.dictionary_owner = owner;
-            self
-        }
-
         /// The current view, with a revision that changes exactly when the
         /// view does.
         fn current(&self) -> (u64, Map<String, Value>) {
-            let mut view = view_at(&self.source.load(), &self.app_id, self.reach);
-            settings_store::personal_dictionary::host::project(
-                self.source.as_ref(),
-                &self.app_id,
-                self.dictionary_owner,
-                &mut view,
-            );
+            let view = view_at(&self.source.load(), &self.app_id, self.reach);
             let mut answered = self.answered.borrow_mut();
             if answered.0 == 0 || answered.1 != view {
                 answered.0 = answered.0.wrapping_add(1).max(1);
@@ -304,25 +288,15 @@ pub mod host {
                 principal: None,
                 invoked_by: None,
             };
-            if !settings_store::personal_dictionary::host::command(
+            update_at(
                 self.source.as_ref(),
                 &self.app_id,
-                self.dictionary_owner,
+                self.reach,
                 section,
-                &values,
+                values,
+                &origin,
             )
-            .map_err(|e| e.to_string())?
-            {
-                update_at(
-                    self.source.as_ref(),
-                    &self.app_id,
-                    self.reach,
-                    section,
-                    values,
-                    &origin,
-                )
-                .map_err(|e| e.to_string())?;
-            }
+            .map_err(|e| e.to_string())?;
             let (revision, view) = self.current();
             Ok((revision, encode(&view)?))
         }

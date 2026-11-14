@@ -179,12 +179,10 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         .bind()
         .await
         .unwrap();
-    let outsider_client = RelayClient::connect_to_enrolled_home_peer(
+    let outsider_client = RelayClient::connect_to_pinned_host(
         outsider_endpoint,
         EndpointAddr::new(relay.node_addr().id)
             .with_relay_url(relay.node_addr().relay_urls().next().unwrap().clone()),
-        user.user_pk,
-        host.cert.device_public_key,
         outsider.cert,
         outsider.sk,
         RevocationList::new(),

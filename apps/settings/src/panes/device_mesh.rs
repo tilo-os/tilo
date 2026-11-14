@@ -29,9 +29,6 @@ use provider_settings_ui::widgets::{
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
 mod devices;
-mod home_relay;
-#[cfg(test)]
-mod home_relay_tests;
 
 crate::effects::effect_family!(DeviceMeshEffect => answer);
 
@@ -391,15 +388,6 @@ pub enum DeviceMeshEffect {
         #[param("The home server's node id")]
         device: String,
     },
-    /// Have the person's home relay host a workspace this device hosts as
-    /// well, or no longer.
-    #[effect(row, idempotent)]
-    SetHomeRelayHosting {
-        // The workspace travels under the key the host's step already reads.
-        #[param("The workspace's id", name = "room")]
-        workspace: String,
-        on: bool,
-    },
     /// Ask, under a device's row, whether to remove it.
     #[effect(view, row)]
     ReviewRemoval {
@@ -428,17 +416,12 @@ const SERVICES: [&str; 5] = [
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: DeviceMeshEffect,
-    cx: &mut EffectCx<Settings>,
+    _cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::device_mesh::area(app)
         .ok_or_else(crate::area::missing)?
         .model();
     let mut model = model.borrow_mut();
-    if let DeviceMeshEffect::SetHomeRelayHosting { workspace, on } = &effect {
-        model.choose_home_relay(workspace, *on, Some(cx.reply()))?;
-        model.changed = true;
-        return Ok(Effected::Pending);
-    }
     model.apply(&effect).map(|()| Effected::done())
 }
 
@@ -492,9 +475,7 @@ impl DeviceMeshArea {
             model.remote = self.remote.clone();
             if self.devices {
                 model.follow_personal_devices();
-                model.refresh_home_relay();
             } else if let Some(scene) = self.scene.as_deref() {
-                model.home_relay.hosting.clone_from(&scene.home_relay);
                 model.personal_devices = Some(scene.personal_devices.clone());
             } else {
                 model.personal_devices = Some(Vec::new());
@@ -546,12 +527,7 @@ impl DeviceMeshArea {
 
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
-        model
-            .home_peers
-            .iter()
-            .map(home_server_row)
-            .chain(model.home_relay_rows())
-            .collect()
+        model.home_peers.iter().map(home_server_row).collect()
     }
 }
 
@@ -700,7 +676,6 @@ pub struct DeviceMeshModel {
     following: std::rc::Weak<MeshFollow>,
     pages: std::rc::Weak<()>,
     health_round: usize,
-    home_relay: home_relay::HomeRelay,
     removals_pending: bool,
 }
 
@@ -1067,7 +1042,6 @@ impl DeviceMeshModel {
             management_child: None,
             management_device: None,
             management_call: None,
-            home_relay: home_relay::HomeRelay::default(),
             next_peer_health: 0,
             apply_child: None,
             apply_queued: false,
@@ -1154,10 +1128,6 @@ impl DeviceMeshModel {
                 self.start_home_peer_removal(&peer);
                 false
             }
-            DeviceMeshEffect::SetHomeRelayHosting { workspace, on } => {
-                self.choose_home_relay(workspace, *on, None)?;
-                false
-            }
             DeviceMeshEffect::ReviewRemoval { .. } | DeviceMeshEffect::CancelRemoval => false,
         };
         if configured {
@@ -1224,10 +1194,9 @@ impl DeviceMeshModel {
     }
 
     fn poll_host_calls(&mut self) {
-        if self.management_call.is_some() || self.home_relay.waiting() {
+        if self.management_call.is_some() {
             self.remote.poll();
         }
-        self.poll_home_relay();
         if let Some(answer) = self
             .management_call
             .as_ref()
@@ -1407,26 +1376,6 @@ impl Page<'_> {
         crate::on_row::bind_invocation(&self.dispatcher, row, control, effect)
     }
 
-    pub(super) fn switch_on_row(
-        &self,
-        label: String,
-        description: String,
-        id: &str,
-        on: bool,
-        row: &ui::tilo_actions::ResourceSpec,
-        set: impl tilo_resource::Binds<SettingsEffect, bool>,
-    ) -> provider_settings_ui::widgets::Item {
-        let toggle = self.bind_on_row(
-            row,
-            ui::widget::Toggle::from_state(&LocalState::new(on)).with_id(id),
-            set,
-        );
-        self.cx
-            .setting(label)
-            .described(description)
-            .control(Box::new(toggle))
-    }
-
     pub(super) fn switch(
         &self,
         label: String,
@@ -1481,7 +1430,6 @@ impl Page<'_> {
         roaming_rows.push(note(&t("mesh-roaming-caption")));
 
         let mut groups = vec![self.devices_section().into_element()];
-        groups.extend(self.home_relay_section().map(SettingsSection::into_element));
         groups.push(section(&t("mesh-continue-title"), rows(continuation_rows)).into_element());
         groups.extend(
             self.continuity_group(move |cx, continuity| {
@@ -2885,23 +2833,9 @@ mod tests {
                 ui::tilo_actions::remote::ActionHostError,
             >,
         > {
-            use ui::tilo_actions::remote::{device_pairing, home_relay_hosting, identity_admin};
+            use ui::tilo_actions::remote::{device_pairing, identity_admin};
             let invocation = request.invocation;
-            let value = if request.target.provider == home_relay_hosting::PROVIDER {
-                let studio_on = self
-                    .asked
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|asked| asked.target.address.action == home_relay_hosting::SET);
-                serde_json::json!({
-                    "relay": "Home server",
-                    "workspaces": [
-                        { "workspace": super::home_relay_tests::PERSONAL_WORKSPACE, "name": "Personal", "on_relay": true },
-                        { "workspace": super::home_relay_tests::STUDIO_WORKSPACE, "name": "Studio", "on_relay": studio_on },
-                    ],
-                })
-            } else if request.target.provider == identity_admin::PROVIDER {
+            let value = if request.target.provider == identity_admin::PROVIDER {
                 match request.target.address.action.as_str() {
                     identity_admin::HOME_PEER_REMOVE => {
                         serde_json::json!({"decommissioned": true, "files_ready": false})
@@ -3189,28 +3123,5 @@ mod tests {
         assert_eq!(here.status, there.status);
         assert_eq!(here.config.work, there.config.work);
         assert_eq!(here.runtime_status, there.runtime_status);
-    }
-
-    #[test]
-    fn a_home_relay_switch_is_named_by_its_workspace_row() {
-        use ui::tilo_actions::remote::Caller;
-
-        let dir = tempfile::tempdir().unwrap();
-        let mut model = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        model.remote = ui::RemoteActions::with_host(
-            Arc::new(PairingHost::default()),
-            Caller::local_person("owner"),
-        );
-        let mut app = window_on(model);
-        change_model(&mut app, |model| {
-            model.refresh_home_relay();
-            model.poll_background_tasks();
-        });
-        let switch = crate::testing::switch_named(&mut app, "Personal");
-        assert_eq!(
-            switch.toggled(),
-            Some(ui::accesskit::Toggled::True),
-            "the workspace is hosted on the relay"
-        );
     }
 }
