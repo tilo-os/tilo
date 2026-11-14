@@ -274,6 +274,7 @@ impl AccountsModel {
                     outgoing_host: self.form_outgoing.get(),
                     outgoing_port: port(&self.form_outgoing_port.get(), 465),
                     password: self.form_password.get(),
+                    identities: Vec::new(),
                 };
                 self.adding = Some(self.remote.invoke(
                     person_accounts::target(person_accounts::ADD_MAIL),
