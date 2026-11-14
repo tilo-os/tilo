@@ -101,8 +101,8 @@ echo "the letter is $(wc -c < letter.docx) bytes, a Word file: $([[ $(head -c 2 
 ## From a shell
 
 `tilo files put` uploads the bytes and lands each file in the app that opens them: a PDF in PDF Viewer,
-a Word document in Writer, a workbook in Sheets, a picture in Photos, and any text file — a note, but
-also JSON, TOML or a shell script that no app owns — in Notes. Each line it prints is the record the
+a Word document in Writer, a workbook in Sheets, a picture in Photos, and a markdown or plain-text
+file in Notes. Each line it prints is the record the
 file landed in, or, for bytes no app opens, the reference they are kept under:
 
 ```sh
