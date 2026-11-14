@@ -149,7 +149,7 @@ fn plans_answer_what_the_program_loops_over() {
             }),
             chat: json!({}),
             context: None,
-            room: None,
+            workspace: None,
             emoji: None,
         })
         .unwrap()

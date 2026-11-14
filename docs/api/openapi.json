@@ -2537,6 +2537,17 @@
             "description": "The actions of the resource listed.",
             "default": []
           },
+          "kinds": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ActionRow"
+              }
+            },
+            "description": "The actions the rows offer, once for each kind of row: a row names\nthose it offers by id.",
+            "default": {}
+          },
           "next_cursor": {
             "type": [
               "string",
@@ -2580,8 +2591,9 @@
           "actions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ActionRow"
+              "type": "string"
             },
+            "description": "The ids of the actions it offers, each described once in the\nlisting's `kinds` under the row's `kind`.",
             "default": []
           },
           "state": {

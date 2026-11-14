@@ -422,7 +422,7 @@ params = [
   { name = "event", required = true },
   { name = "chat", required = true },
   { name = "context", type = { option = { named = "Context" } }, required = false },
-  { name = "room", type = { option = "any" }, required = false },
+  { name = "workspace", type = { option = "any" }, required = false },
   { name = "emoji", type = { option = "any" }, required = false },
 ]
 

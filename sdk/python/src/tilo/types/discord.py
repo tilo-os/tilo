@@ -287,7 +287,7 @@ class Links(TypedDict):
 
 class Guild(Resource):
     """Discord server — `discord.guild`."""
-    __surface__ = "so.tilo.discord@529a5753a01e3592"
+    __surface__ = "so.tilo.discord@3d8469c4024dfffb"
     @property
     def guild_id(self) -> str:
         """Read only."""
@@ -599,7 +599,7 @@ class Guild(Resource):
         event: Any,
         chat: Any,
         context: Context | None = None,
-        room: Any | None = None,
+        workspace: Any | None = None,
         emoji: Any | None = None,
     ) -> None:
         """Runs the app's action."""
@@ -608,8 +608,8 @@ class Guild(Resource):
         args["chat"] = chat
         if context is not None:
             args["context"] = context
-        if room is not None:
-            args["room"] = room
+        if workspace is not None:
+            args["workspace"] = workspace
         if emoji is not None:
             args["emoji"] = emoji
         return self.action("plan-event", **args)

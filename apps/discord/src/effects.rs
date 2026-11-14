@@ -111,10 +111,10 @@ pub enum DiscordEffect {
         chat: Value,
         #[param("Where avatars and Tilo links point; an install may give none")]
         context: Option<Context>,
-        // The host binds this one as `room`; its value is the workspace's
-        // members and their roles.
+        // The host binds this one on each firing; its value is the
+        // workspace's members and their roles.
         #[param("The workspace's members with their roles")]
-        room: Option<Value>,
+        workspace: Option<Value>,
         #[param("The workspace's emoji: emoji [{name, picture}]")]
         emoji: Option<Value>,
     },
@@ -137,14 +137,14 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
             event,
             chat,
             context,
-            room,
+            workspace,
             emoji,
         } => serde_json::to_value(bridge::plan(
             bridge::Reading {
                 guild,
                 chat: &crate::tilo::ChatRead::of(chat),
                 context: &context.clone().unwrap_or_default(),
-                workspace: room.as_ref().unwrap_or(&Value::Null),
+                workspace: workspace.as_ref().unwrap_or(&Value::Null),
                 emoji: emoji.as_ref(),
             },
             event,

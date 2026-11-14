@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.discord@529a5753a01e3592";
+export const SURFACE = "so.tilo.discord@3d8469c4024dfffb";
 
 export interface AnswerInteractionOp {
   interaction: string;
@@ -460,7 +460,7 @@ export interface Guild extends tilo.Resource {
     event: unknown;
     chat: unknown;
     context?: Context;
-    room?: unknown;
+    workspace?: unknown;
     emoji?: unknown;
   }): Promise<void>;
 }

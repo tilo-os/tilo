@@ -275,7 +275,7 @@ fn pass() -> Vec<Step> {
                 ("context", input("context")),
                 // The host tells a program the workspace's members and
                 // their roles under this input's name.
-                ("room", input("room")),
+                ("workspace", input("workspace")),
                 ("emoji", input("emoji")),
             ],
         ),
@@ -807,7 +807,7 @@ fn program() -> Shortcut {
             // The host binds it on each firing, so a Discord-side delete is
             // judged by the deleter's role in Tilo now.
             ActionParam::optional(
-                "room",
+                "workspace",
                 ParamType::Object,
                 "The workspace's members with their roles: members [{person, role}]",
             ),
@@ -1016,7 +1016,7 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
         .pop()
         .unwrap();
     let change = version.hash.to_string();
-    let record = event_of("room", "guild", KIND, &change, &version.context.unwrap());
+    let record = event_of("w", "guild", KIND, &change, &version.context.unwrap());
     let shortcut = program();
     let armed = [Armed {
         firer: Firer::Bot { installation: "b1" },
