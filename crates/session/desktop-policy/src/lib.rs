@@ -104,11 +104,12 @@ pub struct LaunchAsk {
     /// The tab the window takes when it maps. It is the window's instance:
     /// what the app's own continuation reports are addressed by.
     pub tab: Option<TabId>,
-    /// Whether the tab was made for a window of the app's own, beside one it
-    /// shows: the launch opens a window of its own there, as the app's own ask
-    /// for another window does, rather than coming forward in the one the app
-    /// has. A launch in a place of its own opens the window the desk named and
-    /// raises the app's window where it already shows one.
+    /// Whether the tab was made for a window of its own — beside one the app
+    /// shows, or put back after it was closed: the launch opens a new window
+    /// there, as the app's own ask for another window does, rather than coming
+    /// forward in the one the app has. A launch in a place of its own opens the
+    /// window the desk named and raises the app's window where it already shows
+    /// one.
     pub beside: bool,
 }
 
@@ -331,8 +332,10 @@ impl TileSource for Windows {
 
     /// The window was closed for good and the person asked for it back: the
     /// tab keeps its place for the next window of the app it holds, and the
-    /// app is asked for by the name its windows announce — the session's
-    /// launch record knows which of this machine's apps that is.
+    /// app is asked for a window of its own by the name its windows announce —
+    /// the session's launch record knows which of this machine's apps that is.
+    /// An app that still shows another window opens a new one there, rather
+    /// than raising that one and leaving the restored tab empty.
     fn reopened(&mut self, _: &Workspace, tab: &Tab) {
         let TileContent::LocalApp { app_id, note, .. } = &tab.tile else {
             return;
@@ -351,7 +354,7 @@ impl TileSource for Windows {
         self.launches.borrow_mut().push(LaunchAsk {
             app: app_id.clone(),
             tab: Some(tab.id),
-            beside: false,
+            beside: true,
         });
     }
 

@@ -1567,6 +1567,8 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
 /// so the app is only found through the entry that claims it.
 const X11_CLASS: &str = "tilo.test.class";
 
+/// A closed window comes back: the app is asked for a window of its own in the restored tab, even
+/// while it shows another window, rather than raising that one and leaving the tab empty.
 #[test]
 fn reopening_a_closed_window_starts_its_app_again() {
     let _settled = ui::motion::testing::settled();
@@ -1575,24 +1577,27 @@ fn reopening_a_closed_window_starts_its_app_again() {
     host_app_declaring(
         &home,
         "org.example.Probe.desktop",
-        &format!("StartupWMClass={X11_CLASS}\n"),
+        &format!("StartupWMClass={X11_CLASS}\nSingleMainWindow=true\n"),
         "#!/bin/sh\nexit 0\n",
     );
     let launcher = recording_host_launcher(&home, &records);
 
     let (mut session, _apps, _launches) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
-    // The client's window: its class is the app, its title the tab's.
+    // The client's two windows: their class is the app, their title the tabs'.
     session.desktop().with_policy(|policy| {
-        policy
-            .map(titled_window(11, X11_CLASS, PROBE_NAME))
-            .unwrap();
+        for id in [11, 13] {
+            policy
+                .map(titled_window(id, X11_CLASS, PROBE_NAME))
+                .unwrap();
+        }
     });
-    until(&mut session, "the window is a tab", |session| {
-        groups(session) == vec![vec![PROBE_NAME.to_owned()]]
+    let tabs = |session: &Session| groups(session).concat().len();
+    until(&mut session, "the windows are tabs", |session| {
+        tabs(session) == 2
     });
 
-    // The person closes the tab, and the window goes with it.
+    // The person closes one tab, and its window goes with it.
     assert!(
         session
             .desktop()
@@ -1600,43 +1605,35 @@ fn reopening_a_closed_window_starts_its_app_again() {
         "the tab's close is taken"
     );
     until(&mut session, "the tab is closed", |session| {
-        groups(session).is_empty()
+        tabs(session) == 1
     });
     assert!(!records.exists(), "nothing had started the app yet");
 
-    // Reopen puts the tab back and starts the app that opens it again: the class alone names that
-    // app through the entry claiming it.
+    // Reopen puts the tab back and asks the app for its window: the class alone names that app
+    // through the entry claiming it.
     assert!(
         session.desktop().with_policy(DesktopPolicy::reopen_closed),
         "the reopen is taken"
     );
-    until(&mut session, "the app runs again", |_| records.exists());
-    assert_eq!(
-        groups(&session),
-        vec![vec![PROBE_NAME.to_owned()]],
-        "the tab is back where it was, waiting for the app"
-    );
+    until(&mut session, "the app is asked again", |_| records.exists());
+    assert_eq!(tabs(&session), 2, "the tab is back, waiting for the app");
 
     // The window the app opens takes the restored tab.
     session.desktop().with_policy(|policy| {
         policy
-            .map(titled_window(12, X11_CLASS, PROBE_NAME))
+            .map(titled_window(14, X11_CLASS, PROBE_NAME))
             .unwrap();
     });
     until(
         &mut session,
         "the app's window is in the restored tab",
-        |session| shown_windows(session) == vec![Some(12)],
+        |session| shown_windows(session).contains(&Some(14)),
     );
-    assert_eq!(
-        groups(&session),
-        vec![vec![PROBE_NAME.to_owned()]],
-        "one tab, not two"
-    );
+    assert_eq!(tabs(&session), 2, "two tabs, not three");
     assert_eq!(
         fs::read_to_string(&records).unwrap().lines().count(),
         1,
-        "the app started once"
+        "the app was asked once"
     );
 }
 
