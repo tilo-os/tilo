@@ -202,8 +202,9 @@ own state (`relay-upgrade`).
      --state /tmp/lounge-people/lounge --out /tmp/lounge-people/people.json
    ```
 
-2. **Dispatch the release**: `t test release-tilo-sh`, and keep the three image
-   digests it prints.
+2. **Dispatch the release**: `t dispatch release-tilo-sh --ref main --repo tilo
+   --publish`, and keep the three image digests it prints (the signing steps are
+   skipped here; they run on a trusted release run).
 3. **Push infra**: the branch that reads `TILO_WORKSPACES_*` and starts the host
    on `TILO_WORKSPACES_STATE=/run/tilo-rooms/v0.2.0`, with the new digests.
 4. **Import**, in the new pod: each person comes back as an invitation, and the
