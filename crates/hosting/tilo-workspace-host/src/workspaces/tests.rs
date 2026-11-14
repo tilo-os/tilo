@@ -1791,7 +1791,6 @@ fn write_windows(
         &tilo_desktop_model::shared_record::device::Writer {
             person: Some(&person),
             mine: &mine,
-            retained: &|_| false,
             records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
         },
     )
