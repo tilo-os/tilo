@@ -78,6 +78,8 @@ mod history;
 mod history_undo;
 #[path = "hosted/later_builds.rs"]
 mod later_builds;
+#[path = "hosted/mail.rs"]
+mod mail;
 #[path = "hosted/marks.rs"]
 mod marks;
 #[path = "hosted/members.rs"]

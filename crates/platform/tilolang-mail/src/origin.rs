@@ -157,6 +157,22 @@ impl Taken {
     }
 }
 
+/// The origin polling, until dropped.
+struct Polling(Rc<std::cell::Cell<bool>>);
+
+impl Polling {
+    fn start(polling: &Rc<std::cell::Cell<bool>>) -> Self {
+        polling.set(true);
+        Self(Rc::clone(polling))
+    }
+}
+
+impl Drop for Polling {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
 /// The origin. See the module docs.
 pub struct ImapOrigin {
     connector: Box<dyn MailConnector>,
@@ -174,6 +190,8 @@ pub struct ImapOrigin {
     /// Whether what changes in the workspace is being watched: the store is asked once, however
     /// many times the workspace is read.
     subscribed: bool,
+    /// Set while the origin polls: what the store tells then is its own writing.
+    polling: Rc<std::cell::Cell<bool>>,
     pending: BTreeMap<Request, Pending>,
     sends: HashMap<String, Sending>,
     /// Why each account's server could not be reached, until it can.
@@ -201,6 +219,7 @@ impl ImapOrigin {
             woken,
             state: None,
             reload: false,
+            polling: Rc::default(),
             accounts_waiting: false,
             changed: Rc::default(),
             subscribed: false,
@@ -1384,18 +1403,22 @@ impl Origin for ImapOrigin {
         matches!(capability, "smtp.send" | "imap.check")
     }
 
+    /// A step the workspace would not take is not a reason to poll: it is taken again with the
+    /// next poll something else asks for (the server's next answer, the person checking now, a
+    /// change in the workspace), never on every frame while the workspace refuses it.
     fn due(&self) -> bool {
         self.state.is_none()
-            || self.reload
             || self.accounts_waiting
             || self.woken.load(Ordering::Acquire)
             || self.reconnected.load(Ordering::Acquire)
             || !self.due.is_empty()
-            || !self.unwritten.is_empty()
             || !self.changed.borrow().is_empty()
     }
 
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
+        // What the store tells while the origin writes is its own writing (and its taking back
+        // what the workspace would not take), never a change of a person's to hand on.
+        let _polling = Polling::start(&self.polling);
         self.woken.store(false, Ordering::Release);
         let mut polled = Polled::default();
         // The workspace, read whole or not at all: the first time, and again once a step it
@@ -1431,18 +1454,23 @@ impl Origin for ImapOrigin {
             };
             if !self.subscribed {
                 let changed = Rc::clone(&self.changed);
+                let polling = Rc::clone(&self.polling);
                 let mut store = cx.host.store().clone();
                 store.subscribe(
                     &root.doc,
                     Box::new(move |summary| {
-                        changed.borrow_mut().extend(summary.fields.iter().cloned());
+                        if !polling.get() {
+                            changed.borrow_mut().extend(summary.fields.iter().cloned());
+                        }
                     }),
                 );
                 self.subscribed = true;
             }
+            // Reading the workspace writes nothing into it: a poll that only read it again
+            // (after a step the workspace would not take) has nothing for the door, and the
+            // window does not turn again for it until something wakes it.
             self.state = Some(state);
             self.reload = false;
-            polled.wrote = true;
         }
         // What the workspace could not take last time, before anything newer: a step waits
         // until it is written, never behind newer mail.

@@ -223,6 +223,12 @@ d-ejo2352x = Signatur
 
 d-ejo2352x-signature = Signatur
 
+d-546ahgq6 = Zeit zum Zurückholen
+    .doc = Legt fest, wie viele Sekunden eine gesendete Nachricht wartet, bevor sie rausgeht, damit sie zurückgeholt werden kann: bei null wartet sie gar nicht.
+    .w-a-message-cannot-wait-less-than = Eine Nachricht kann nicht kürzer als gar nicht warten
+
+d-546ahgq6-seconds = Sekunden
+
 d-arnkrvgw = Jetzt abrufen
     .doc = Fragt jetzt den Server des Kontos nach seiner Mail: was eine Person drückt, wenn das Fenster sagt, der Server sei nicht erreichbar gewesen oder was es geholt hat, habe sich nicht sichern lassen.
 
@@ -387,6 +393,8 @@ d-k2js7gyd = Zustellung sagt
     .w-sending-in-a-moment = Geht gleich raus
     .w-waiting-to-send = Wartet darauf, gesendet zu werden
     .w-waiting-to-go-online = Wartet auf eine Verbindung: { $reason }
+
+d-2zkppx6r = Zeit zum Zurückholen~present
 
 d-gcixhwyt = Neuer Entwurf~present
 

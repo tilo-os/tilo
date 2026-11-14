@@ -171,6 +171,13 @@ action set_signature(a: Account, signature: Text) (icon: .pen_tool, label: "Sign
     a.signature = signature
 }
 
+/// Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait
+/// at all at zero.
+action set_hold(m: Mail, seconds: Int) (icon: .clock, label: "Undo send time") {
+    require seconds >= 0 "A message cannot wait less than no time"
+    m.hold = seconds
+}
+
 /// Asks the account's server for its mail now: what a person presses when the window says the
 /// server could not be reached, or that what it fetched could not be saved. The account says
 /// how it stands once it answers.

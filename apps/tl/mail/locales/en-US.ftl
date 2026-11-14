@@ -224,6 +224,12 @@ d-ejo2352x = Signature
 
 d-ejo2352x-signature = Signature
 
+d-546ahgq6 = Undo send time
+    .doc = Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait at all at zero.
+    .w-a-message-cannot-wait-less-than = A message cannot wait less than no time
+
+d-546ahgq6-seconds = Seconds
+
 d-arnkrvgw = Check now
     .doc = Asks the account's server for its mail now: what a person presses when the window says the server could not be reached, or that what it fetched could not be saved.
 
@@ -388,6 +394,8 @@ d-k2js7gyd = Delivery says
     .w-sending-in-a-moment = Sending in a moment
     .w-waiting-to-send = Waiting to send
     .w-waiting-to-go-online = Waiting to go online: { $reason }
+
+d-2zkppx6r = Set hold~present
 
 d-gcixhwyt = New draft~present
 

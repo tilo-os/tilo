@@ -285,15 +285,25 @@ pub fn read(
         }
     }
 
-    // The title: the words no parameter took. An entry that is only parts names nothing: there is
-    // nothing to make of it.
-    let title = words
-        .iter()
-        .zip(&used)
-        .filter(|(_, used)| !**used)
-        .map(|(w, _)| w.raw.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
+    // The title: the words no parameter took, with what stood between them as it was typed (a line
+    // break stays one), and a space where a part was taken out. An entry that is only parts names
+    // nothing: there is nothing to make of it.
+    let mut title = String::new();
+    let mut kept: Option<usize> = None;
+    for (index, word) in words.iter().enumerate() {
+        if used.get(index).copied().unwrap_or(false) {
+            continue;
+        }
+        if let Some(before) = kept {
+            let between = (before.checked_add(1) == Some(index))
+                .then(|| words.get(before).and_then(|w| text.get(w.end..word.start)))
+                .flatten()
+                .unwrap_or(" ");
+            title.push_str(between);
+        }
+        title.push_str(&word.raw);
+        kept = Some(index);
+    }
     parts.sort_by_key(|(from, _)| *from);
     Parsed {
         title,
@@ -408,6 +418,15 @@ mod tests {
             assert_eq!(story("fri 10am @bo", &tasks(), &look()).parts.len(), 3);
             assert_eq!(story(" @bo ", &tasks(), &look()).title, "");
             assert_eq!(story(" milk @bo ", &tasks(), &look()).title, "milk");
+        }
+
+        phase what_was_typed_between_the_words_stays_as_it_was;
+        {
+            // A signature or a message of several lines keeps its lines.
+            let parsed = story("Sam\nhttps://rivera.example", &tasks(), &look());
+            assert_eq!(parsed.title, "Sam\nhttps://rivera.example");
+            // A part taken out of the middle leaves one space where it stood.
+            assert_eq!(story("milk @bo\neggs", &tasks(), &look()).title, "milk eggs");
         }
 
         phase what_is_not_sure_stays_in_the_title;

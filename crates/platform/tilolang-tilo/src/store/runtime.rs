@@ -710,7 +710,13 @@ impl Store for TiloStore {
                 continue;
             };
             for held in outbox_entries(mirror, app, doc) {
+                // Only a message still waiting for its moment is held: one handed over or waiting
+                // to go online had its moment, and nothing comes due when it passes.
                 if held.settled.is_none()
+                    && matches!(
+                        held.outbox_state(),
+                        tilolang_runtime::store::OutboxState::Queued
+                    )
                     && let Some(at) = held.held_until
                     && earliest.as_ref().is_none_or(|soonest| at < *soonest)
                 {
