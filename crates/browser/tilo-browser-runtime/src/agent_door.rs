@@ -120,6 +120,8 @@ pub(crate) fn serve(
                 Arc::clone(woken),
             )),
         );
+        // The person's accounts and model providers live on the same host.
+        crate::person_settings::serve(session, &door);
         if let Some(own) = crate::peer_sync::device_of(peer) {
             crate::identity_door::serve(session, door, own, &revoked, woken);
         }

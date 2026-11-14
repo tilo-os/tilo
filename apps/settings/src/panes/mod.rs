@@ -5,6 +5,8 @@ pub mod about;
 pub mod accessibility;
 #[cfg(feature = "tilo-os")]
 pub mod accounts;
+// On a page, the same two categories are kept by the host that runs the
+// workspace: no mail connection and no vault of its own exist in a tab.
 #[cfg(feature = "tilo-os")]
 pub mod agent_models;
 #[cfg(feature = "tilo-os")]
@@ -19,6 +21,8 @@ pub mod billing;
 pub mod bluetooth;
 #[cfg(feature = "tilo-os")]
 pub mod device_mesh;
+#[cfg(not(feature = "tilo-os"))]
+pub mod person_settings;
 // The pane waits on a read only the device answers, so a build without the
 // device's own panes shows where it is instead of the pane itself; its model
 // stays compiled for the captures that show it.
@@ -125,6 +129,10 @@ pub(crate) fn view(
         crate::categories::Category::ExternalAccounts => accounts::view(cx, app),
         #[cfg(feature = "tilo-os")]
         crate::categories::Category::AgentModels => agent_models::view(cx, app),
+        #[cfg(not(feature = "tilo-os"))]
+        crate::categories::Category::ExternalAccounts => person_settings::accounts_view(cx, app),
+        #[cfg(not(feature = "tilo-os"))]
+        crate::categories::Category::AgentModels => person_settings::providers_view(cx, app),
         crate::categories::Category::Billing => billing::view(cx, app),
         #[cfg(feature = "tilo-os")]
         crate::categories::Category::DevicesAccess => devices_access::view(cx, app),

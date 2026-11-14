@@ -1,0 +1,38 @@
+[package]
+name = "tilo-account-probe"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Bounded connection probes for the mail, calendar and DAV accounts a person adds: the server really accepts the sign-in, over verified TLS, before anything keeps the credential."
+
+[lib]
+name = "tilo_account_probe"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+# The account and secret shapes the probes read; nothing here keeps either.
+accounts = { path = "../accounts" }
+# The same clients the apps use: async-imap as Mail does, the shared bounded
+# DAV client as Calendar does.
+async-imap.workspace = true
+tilo-dav = { path = "../tilo-dav" }
+# Certificate roots and the TLS client configuration, as every other app's
+# outbound connection makes them.
+tilo-net = { path = "../../platform/tilo-net" }
+rustls.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time"] }
+tokio-rustls.workspace = true
+serde_json.workspace = true
+# A deadline that is the same clock on every host, a page included.
+web-time = "1"
+
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+test-http = { path = "../../dev/test-http" }
+rcgen.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -4,6 +4,8 @@
 use crate::categories::Category;
 use crate::effects::AreaVocabulary as _;
 
+#[cfg(not(feature = "tilo-os"))]
+use crate::panes::person_settings;
 #[cfg(feature = "tilo-os")]
 use crate::panes::{
     about, accounts, agent_models, audio, bluetooth, device_mesh, disk_unlock, display, drives,
@@ -122,6 +124,20 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
             mesh_remote(made),
         ))
     }),
+    #[cfg(not(feature = "tilo-os"))]
+    (200, |context, made| {
+        Box::new(person_settings::AccountsArea::new(
+            context,
+            mesh_remote(made),
+        ))
+    }),
+    #[cfg(not(feature = "tilo-os"))]
+    (210, |context, made| {
+        Box::new(person_settings::ProvidersArea::new(
+            context,
+            mesh_remote(made),
+        ))
+    }),
 ];
 
 pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
@@ -176,6 +192,8 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (230, accounts::AccountsEffect::FAMILY),
     (270, billing::BillingEffect::FAMILY),
     (280, devices_access::DevicesAccessEffect::FAMILY),
+    #[cfg(not(feature = "tilo-os"))]
+    (290, person_settings::PersonSettingsEffect::FAMILY),
 ];
 
 /// One [`crate::effects::LiveArea`]: the area `$module::$area` behind the

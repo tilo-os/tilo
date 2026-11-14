@@ -116,6 +116,11 @@ impl Category {
         Category::KeyboardShortcuts,
         Category::DevicesAccess,
         Category::Billing,
+        // The person's mail accounts and model providers, which the host
+        // that runs their workspace keeps: a page reads and changes them
+        // through it.
+        Category::ExternalAccounts,
+        Category::AgentModels,
     ];
 
     #[cfg(not(feature = "tilo-os"))]

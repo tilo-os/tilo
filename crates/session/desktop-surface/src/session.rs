@@ -35,8 +35,8 @@ use tilo_actions::remote::{
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
     SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, agent_door, application_provider,
-    application_provider_record, identity_admin, pending, provider_workspace, session_actions,
-    workspace_activity as wire,
+    application_provider_record, identity_admin, pending, person_accounts, person_models,
+    provider_workspace, session_actions, workspace_activity as wire,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -160,7 +160,15 @@ fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
 
 /// The providers only the person reaches, each served by a door the
 /// desktop's host hands the session ([`DesktopSession::serve_person_door`]).
-pub const PERSON_PROVIDERS: [&str; 2] = [agent_door::PROVIDER, identity_admin::PROVIDER];
+pub const PERSON_PROVIDERS: [&str; 4] = [
+    agent_door::PROVIDER,
+    identity_admin::PROVIDER,
+    // The person's mail accounts and model providers, which the host that
+    // runs their workspace keeps: a page has no mail connection and no vault
+    // of its own.
+    person_accounts::PROVIDER,
+    person_models::PROVIDER,
+];
 
 /// The session handed to the windows a desktop hosts in process, for the workspace `workspace` . It
 /// serves only what the desktop itself does: opening an app as a window of this desktop.

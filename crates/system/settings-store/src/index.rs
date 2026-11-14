@@ -36,6 +36,10 @@ pub const WEB_PAGES: &[&str] = &[
     "keyboard_shortcuts",
     "devices_access",
     "billing",
+    // The person's own accounts and model providers: the host that runs
+    // their workspace keeps them, and the page reads and changes them there.
+    "external_accounts",
+    "agent_models",
 ];
 
 impl Page {

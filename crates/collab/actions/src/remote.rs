@@ -56,6 +56,8 @@ pub mod host_account;
 mod nodes;
 pub mod own_device;
 mod pending;
+pub mod person_accounts;
+pub mod person_models;
 mod providers;
 mod record_read;
 mod search;

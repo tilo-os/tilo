@@ -70,6 +70,10 @@ mod memberships;
 mod own;
 mod pages;
 mod peer_parts;
+// The person's mail accounts and model providers, kept where their
+// workspace runs: a page has no mail connection and no vault of its own.
+#[cfg(not(target_arch = "wasm32"))]
+mod person_settings;
 mod personal;
 mod publication;
 use publication::{Change, SinceBase, starts_over, withdraws};

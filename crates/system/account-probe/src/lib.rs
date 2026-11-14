@@ -2,9 +2,13 @@
 //! probes speak the protocols through the same clients the apps use:
 //! `async-imap` (as Mail does) for IMAP and the shared `tilo-dav` client for
 //! `CalDAV`/`WebDAV`.
+//!
+//! They run wherever the account's server can be reached: on the device that
+//! keeps the account, and on the host a person's workspace runs on when the
+//! account is added from a page.
 
 use std::sync::Arc;
-use ui::time::Duration;
+use web_time::{Duration, Instant};
 
 use tilo_dav::{Credentials, DavClient, Depth, StatusCode, props};
 use tokio::net::TcpStream;
@@ -45,10 +49,12 @@ impl LiveAccountTester {
         if addresses.is_empty() {
             return Err("server name returned no address".into());
         }
-        let deadline = ui::time::now() + Self::NETWORK_TIMEOUT;
+        let deadline = Instant::now().checked_add(Self::NETWORK_TIMEOUT);
         let mut last_error = None;
         for address in addresses {
-            let Some(remaining) = deadline.checked_duration_since(ui::time::now()) else {
+            let Some(remaining) =
+                deadline.and_then(|deadline| deadline.checked_duration_since(Instant::now()))
+            else {
                 break;
             };
             match timeout(remaining, TcpStream::connect(address)).await {
@@ -276,7 +282,7 @@ impl AccountTester for LiveAccountTester {
 /// only to this machine, named `localhost` or by a loopback address. A
 /// loopback address reaches exactly the listener bound there, where the
 /// name may resolve to `[::1]` first.
-pub(crate) fn local_http_allowed(url: &tilo_dav::Url) -> bool {
+pub fn local_http_allowed(url: &tilo_dav::Url) -> bool {
     let local = url.host_str().is_some_and(|host| {
         host.eq_ignore_ascii_case("localhost")
             || host

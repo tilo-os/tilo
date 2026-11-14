@@ -75,7 +75,11 @@ pub mod watch;
 pub mod window;
 
 #[cfg(feature = "tilo-os")]
-pub mod account_probe;
+pub mod account_probe {
+    //! The bounded account connection probes, which the host that keeps an
+    //! account runs too: one owner for what a sign-in check asks a server.
+    pub use tilo_account_probe::*;
+}
 pub mod device_fleet;
 #[cfg(feature = "tilo-os")]
 pub mod dispatcher;

@@ -58,7 +58,8 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
-    WORKSPACE_GOVERNANCE_PROVIDER, agent_door, host_account, workspace_governance_resource,
+    WORKSPACE_GOVERNANCE_PROVIDER, agent_door, host_account, person_accounts, person_models,
+    workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
@@ -1066,6 +1067,18 @@ impl Workspaces {
                     })
                 }
             }
+            // The person's own mail accounts and model providers, kept here
+            // when their workspace runs here: a page has no connection to a
+            // mail server and no vault of its own.
+            #[cfg(not(target_arch = "wasm32"))]
+            (person_accounts::PROVIDER, _) => {
+                self.person_accounts_invoke(workspace_id, caller, certificate, request)
+                    .await
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            (person_models::PROVIDER, _) => {
+                self.person_models_invoke(workspace_id, caller, certificate, request)
+            }
             (host_account::PROVIDER, _)
                 if request.target == host_account::target(host_account::ACCOUNT) =>
             {
@@ -1917,10 +1930,14 @@ fn door_value(workspaces: &Workspaces) -> Value {
 }
 
 /// The providers a relay that governs workspaces answers itself.
-const PROVIDERS: [&str; 3] = [
+const PROVIDERS: [&str; 5] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
     agent_door::PROVIDER,
+    // The person's own mail accounts and model providers: a page asks here
+    // because it has no mail connection and no vault of its own.
+    person_accounts::PROVIDER,
+    person_models::PROVIDER,
 ];
 
 /// What a relay that governs workspaces answers remote actions addressed to it

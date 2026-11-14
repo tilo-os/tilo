@@ -27,7 +27,7 @@ default = ["tilo-os"]
 # programs, files, sockets and system bus. A browser tab has none of them,
 # so the web build (and the agent host, which has no device to administer)
 # leaves the feature off: those panes are compiled out, not shown broken.
-tilo-os = ["dep:bounded-command", "dep:desktop-entry", "dep:os-actions", "dep:tilo-session-power", "dep:tilo-ntfs-mount", "dep:runtime-fs", "dep:tilo-bluez", "dep:account-custody", "dep:media", "dep:tilo-audio-service", "dep:rustls", "dep:tilo-dav", "dep:async-imap", "dep:tokio", "dep:tokio-rustls", "dep:tilo-capture"]
+tilo-os = ["dep:bounded-command", "dep:desktop-entry", "dep:os-actions", "dep:tilo-session-power", "dep:tilo-ntfs-mount", "dep:runtime-fs", "dep:tilo-bluez", "dep:account-custody", "dep:media", "dep:tilo-audio-service", "dep:tilo-dav", "dep:tilo-account-probe", "dep:tilo-capture"]
 thin = ["dep:runtime-dylib"]
 # Run the app from the Settings engine library in the runtime bundle
 # (libtilo_settings_engine.so, crates/runtime/engines/settings), which carries
@@ -126,14 +126,10 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
-rustls = { workspace = true, features = ["std", "tls12"], optional = true }
-tilo-net = { path = "../../crates/platform/tilo-net" }
-# Account probes speak DAV through the shared bounded client and IMAP through
-# async-imap, the client Mail uses, on a per-probe current-thread runtime.
+# The DAV account panes parse server URLs and name discovered calendars.
 tilo-dav = { path = "../../crates/system/tilo-dav", optional = true }
-async-imap = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["rt", "net", "time"], optional = true }
-tokio-rustls = { workspace = true, optional = true }
+# The sign-in probes both this app and the workspace host run (one owner).
+tilo-account-probe = { path = "../../crates/system/account-probe", optional = true }
 zeroize.workspace = true
 # The shared account + region/format stores Settings owns are plain
 # serde-serialisable JSON documents that other apps (Mail, Calendar,

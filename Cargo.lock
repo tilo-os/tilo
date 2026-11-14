@@ -15347,7 +15347,6 @@ dependencies = [
  "account-custody",
  "accounts",
  "agent-provider-config",
- "async-imap",
  "bounded-command",
  "calendar",
  "chrono",
@@ -15368,7 +15367,6 @@ dependencies = [
  "rcgen",
  "runtime-dylib",
  "runtime-portal",
- "rustls",
  "serde",
  "serde_json",
  "settings-sections",
@@ -15377,6 +15375,7 @@ dependencies = [
  "tempfile",
  "test-http",
  "tilo-accessibility-settings",
+ "tilo-account-probe",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-app",
@@ -15395,7 +15394,6 @@ dependencies = [
  "tilo-keyboard-map",
  "tilo-locale",
  "tilo-media",
- "tilo-net",
  "tilo-ntfs-mount",
  "tilo-oauth",
  "tilo-paths",
@@ -15409,8 +15407,6 @@ dependencies = [
  "tilo-wallpapers",
  "tilo-winit",
  "tilo-zone-globe",
- "tokio",
- "tokio-rustls",
  "tracing",
  "uuid",
  "workspace-hack",
@@ -17175,6 +17171,25 @@ dependencies = [
  "accesskit_windows",
  "raw-window-handle",
  "tilo-winit",
+]
+
+[[package]]
+name = "tilo-account-probe"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "async-imap",
+ "rcgen",
+ "rustls",
+ "serde_json",
+ "tempfile",
+ "test-http",
+ "tilo-dav",
+ "tilo-net",
+ "tilo-test-env",
+ "tokio",
+ "tokio-rustls",
+ "web-time",
 ]
 
 [[package]]
@@ -23054,6 +23069,8 @@ dependencies = [
 name = "tilo-workspace-host"
 version = "0.1.0"
 dependencies = [
+ "accounts",
+ "agent-provider-config",
  "blake3",
  "chat",
  "collab-types",
@@ -23070,9 +23087,11 @@ dependencies = [
  "rand 0.10.3",
  "serde",
  "serde_json",
+ "settings-store",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-account-probe",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-agent-participant",
@@ -28643,6 +28662,7 @@ dependencies = [
  "tiff",
  "tilo-accessibility-settings",
  "tilo-accesskit-winit",
+ "tilo-account-probe",
  "tilo-action-broker",
  "tilo-action-policy",
  "tilo-actions",
