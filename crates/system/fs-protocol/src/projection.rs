@@ -548,6 +548,11 @@ pub struct HistoryProjectionV1 {
     pub versions: Vec<FileVersionV1>,
     pub conflicts_truncated: bool,
     pub conflicts: Vec<FileConflictV1>,
+    /// Who wrote the projected versions that the person did not write
+    /// themselves: an agent session, an app or another program, as the
+    /// signing device recorded it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributions: Vec<crate::FileVersionAttributionV1>,
 }
 
 impl HistoryProjectionV1 {

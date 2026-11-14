@@ -2283,6 +2283,18 @@ async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
         assert_eq!(attributed.attribution.actor, "program:org.gnome.TextEditor");
         assert_eq!(attributed.attribution.label, "TextEditor");
     }
+    // A program reading the folder's own history sees who wrote it too.
+    let read = notes.clone();
+    let history = tokio::task::spawn_blocking(move || {
+        let mut buffer = vec![0_u8; fs_protocol::projection::MAX_HISTORY_PROJECTION_BYTES];
+        let len = rustix::fs::getxattr(&read, fs_protocol::projection::HISTORY_XATTR, &mut buffer)
+            .expect("the history attribute");
+        buffer.truncate(len);
+        fs_protocol::projection::HistoryProjectionV1::parse_xattr(&buffer).expect("a history")
+    })
+    .await
+    .unwrap();
+    assert_eq!(history.attributions.len(), attributions.len());
     fs::fuse_session::unmount_and_join(session, mount_dir.path()).expect("unmount");
     endpoint.close().await;
 }

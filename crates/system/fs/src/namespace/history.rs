@@ -74,6 +74,7 @@ impl RecordHistorySnapshot {
                 .get(conflicts_start..)
                 .unwrap_or_default()
                 .to_vec(),
+            attributions: Vec::new(),
         }
     }
 }
@@ -329,8 +330,20 @@ impl Namespace {
         &self,
         record_id: FileRecordId,
     ) -> Option<HistoryProjectionV1> {
-        self.record_history(record_id)
-            .map(RecordHistorySnapshot::projection)
+        let mut projection = self
+            .record_history(record_id)
+            .map(RecordHistorySnapshot::projection)?;
+        let shown: std::collections::HashSet<FileVersionId> = projection
+            .versions
+            .iter()
+            .map(|version| version.id)
+            .collect();
+        projection.attributions = self
+            .version_attributions(record_id)
+            .into_iter()
+            .filter(|attributed| shown.contains(&attributed.version_id))
+            .collect();
+        Some(projection)
     }
 
     pub fn record_history_heads(&self, record_id: FileRecordId) -> Vec<FileVersionId> {
