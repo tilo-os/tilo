@@ -2,7 +2,8 @@
 // MIT OR Apache-2.0); see ../PROVENANCE.md for what changed.
 
 use crate::analysis::{Analysis, AnalysisCache, Body, STRUCTURE_LEN, hash_body};
-use crate::cache::{EmitCache, Key};
+use crate::cache::{EmitCache, Key, data_section, key_sections, sections_not_keyed};
+use crate::content;
 use crate::data::{Claimant, DataLayout, DataPlan};
 use crate::plan::{Plan, PlanCache};
 use crate::relocations::ModuleWithRelocations;
@@ -73,13 +74,23 @@ pub struct Splitter<'a> {
     /// The main module's symbols that nothing it keeps reaches: read off the
     /// call graph when the plan is made, so an emission needs none.
     planned_unused: Option<HashSet<Node>>,
+    /// What each function index is by content rather than by number: its
+    /// name, or an import's module and name. A module's emission is keyed by
+    /// these, so a function added or renamed elsewhere moves no module's key
+    /// (`Splitter::symbol_content_ids`).
+    symbol_ids: Vec<u64>,
+    /// Each local body's code by content, not by the numbers it holds
+    /// (content.rs): the identity a module's emission is keyed by.
+    content_hashes: Vec<u64>,
+    /// Each data symbol's identity by name (`relocations::data_symbol_ids`),
+    /// by symbol index.
+    data_symbol_ids: Vec<u64>,
 }
 
 /// What every emission's key starts from (`Splitter::emit_key_base`), and
 /// the bound module's function bodies, by defined index.
 struct KeyBase {
     key: Key,
-    bodies: Vec<Range<usize>>,
     imported: usize,
 }
 
@@ -298,6 +309,9 @@ impl<'a> Splitter<'a> {
             bodies_reused: bodies.len(),
             plan_key: String::new(),
             planned_unused: None,
+            symbol_ids: Vec::new(),
+            content_hashes: Vec::new(),
+            data_symbol_ids: Vec::new(),
         };
 
         // The bodies first: everything after this reads their answers, so a
@@ -305,6 +319,13 @@ impl<'a> Splitter<'a> {
         let started = std::time::Instant::now();
         module.walk_bodies(&hashes, bodies)?;
         took("walked the bound functions' bodies", started);
+
+        let started = std::time::Instant::now();
+        module.symbol_ids =
+            content::symbol_ids(&module.source_module, &module._ids_to_fns, module.imported);
+        module.content_hashes = content::body_hashes(module.bindgened, &module.symbol_ids);
+        module.data_symbol_ids = crate::relocations::data_symbol_ids(original)?;
+        took("read the bodies' content", started);
 
         let started = std::time::Instant::now();
         module.plan_key = crate::plan::key(&structure, original, &module.bodies)?;
@@ -631,32 +652,49 @@ impl<'a> Splitter<'a> {
         })
     }
 
-    /// What the start module's emission was made from (cache.rs): the plan,
-    /// and the code of every body the start module keeps, which is every one
-    /// nothing it reaches prunes away.
+    /// What the start module's emission was made from (cache.rs): what it
+    /// reaches and the data it writes, by content, and the code of every body
+    /// it keeps, which is every one nothing it reaches prunes away.
+    ///
+    /// By content, not by index: a function added or removed elsewhere
+    /// renumbers the module but leaves what the start module is made of as it
+    /// was, and its emission is read back rather than made again.
     fn start_key(&self) -> String {
         let mut key = Key::new();
-        key.add(&"start").add(&self.plan_key);
-        let unused: HashSet<usize> = self
-            .planned_unused
+        key.add(&"start");
+        key.add_set(self.main_graph.iter().map(|node| self.node_key(node)));
+        let mut sizes: Vec<((u8, u64), u64)> = self
+            .data_sizes
             .iter()
-            .flatten()
+            .map(|(index, size)| (self.node_key(&Node::DataSymbol(*index)), *size as u64))
+            .collect();
+        sizes.sort_unstable();
+        key.add(&sizes);
+        // The static data itself: what the start module writes into memory is
+        // its content, which a range of the same size does not tell.
+        if let Some(data) = data_section(self.bindgened) {
+            key.add(data);
+        }
+        // The bodies the start module's own code holds: what it reaches,
+        // each by content. An app's body that changed is not one of them,
+        // and a plan that prunes it from the start leaves the start the
+        // module it was.
+        let mut kept: Vec<u64> = self
+            .main_graph
+            .iter()
             .filter_map(|node| match node {
                 Node::Function(id) => self
                     .fns_to_ids
                     .get(id)
                     .copied()
-                    .and_then(|index| index.checked_sub(self.imported)),
+                    .filter(|index| *index >= self.imported)
+                    .and_then(|index| self.content_hashes.get(index - self.imported))
+                    .copied(),
                 Node::DataSymbol(_) => None,
             })
             .collect();
-        let kept: Vec<usize> = (0..self.bodies.len())
-            .filter(|index| !unused.contains(index))
-            .collect();
-        key.add(&kept.len());
-        for index in kept {
-            key.add(&index).add(&self.bodies[index].hash);
-        }
+        kept.sort_unstable();
+        key.add(&kept);
         key.finish()
     }
 
@@ -665,15 +703,16 @@ impl<'a> Splitter<'a> {
     /// the shared functions take, in order.
     fn emit_key_base(&self) -> Result<KeyBase> {
         let mut key = Key::new();
-        let code = code_section(self.bindgened)?;
         // What a module's emission reads that is not the code or the data:
-        // its own bodies are keyed one by one, and the data it writes is the
-        // plan's ranges for it (which its key holds), so a change to the
-        // data section alone leaves every module's key as it was.
-        hash_sections(
+        // its own bodies are keyed by their content, and the data it writes
+        // is the plan's ranges for it (which its key holds). The function,
+        // export and element sections and the name section are left out too:
+        // a function added elsewhere renumbers and rewrites them, while the
+        // module emitted from its own bodies is the same bytes.
+        key_sections(
             &mut key,
             self.bindgened,
-            &sections_not_read(self.bindgened)?,
+            &sections_not_keyed(self.bindgened)?,
         )?;
         key.add(&self.split_points.len()).add(&self.entry_slots);
         let shared: Vec<_> = self
@@ -684,7 +723,6 @@ impl<'a> Splitter<'a> {
         key.add(&shared);
         Ok(KeyBase {
             key,
-            bodies: code.map(|code| code.bodies).unwrap_or_default(),
             imported: imported_functions(self.bindgened)?,
         })
     }
@@ -707,9 +745,19 @@ impl<'a> Splitter<'a> {
         let mut key = base.key.clone();
         key.add(what).add(&idx);
         if let Some(split) = split {
-            key.add(&split.module_name)
-                .add(&format!("{:?}", split.point))
-                .add(&format!("{:?}", split.entries));
+            key.add(&split.module_name);
+            // The point and the entries by what they name, never by their
+            // ids or indices: those move when a function is added elsewhere.
+            if let Some(point) = &split.point {
+                key.add(&point.hash_name)
+                    .add(&point.component_name)
+                    .add(&self.node_key(&Node::Function(point.import_func)));
+            }
+            for entry in &split.entries {
+                key.add(&self.node_key(&Node::Function(entry.func)))
+                    .add(&entry.slot)
+                    .add(&entry.lazy_export.is_some());
+            }
         }
         key.add_set(parts.unique_symbols.iter().map(|node| self.node_key(node)))
             .add_set(
@@ -725,29 +773,50 @@ impl<'a> Splitter<'a> {
                     .map(|node| self.node_key(node)),
             )
             .add_set(parts.relies_on_chunks.iter().copied());
-        // The bodies the parse keeps, each with its code: the parse leaves
-        // every other one `unreachable`.
-        let bodies: BTreeSet<usize> = parts.bodies.iter().copied().collect();
-        key.add(&bodies.len());
-        for index in bodies {
-            key.add(&index);
-            if let Some(body) = index
-                .checked_sub(base.imported)
-                .and_then(|at| base.bodies.get(at))
-            {
-                key.add(&self.bindgened[body.clone()]);
-            }
-        }
+        // The bodies the parse keeps, by content: the parse leaves every
+        // other one `unreachable`, and a body's index moves when a function
+        // is added elsewhere while the module it is emitted into does not.
+        let mut bodies: Vec<Option<u64>> = parts
+            .bodies
+            .iter()
+            .map(|index| {
+                index
+                    .checked_sub(base.imported)
+                    .and_then(|at| self.content_hashes.get(at))
+                    .copied()
+            })
+            .collect();
+        bodies.sort_unstable();
+        key.add(&bodies);
         key.add(&data.moved.get(data_index));
         key
     }
 
-    /// A node as the emission sees it: a function by its index in the bound
-    /// module, a data symbol by its symbol index.
-    fn node_key(&self, node: &Node) -> (u8, usize) {
+    /// A node as the emission sees it: a function by its content (see
+    /// `symbol_ids`), a data symbol by its symbol index.
+    ///
+    /// A function is not keyed by its index in the bound module: a function
+    /// added or removed elsewhere renumbers it, and every module that names
+    /// it would be emitted again for no change of its own. Two functions
+    /// that share a name are told apart by their bodies' hashes, so a set of
+    /// them keeps its key under a renumbering.
+    fn node_key(&self, node: &Node) -> (u8, u64) {
         match node {
-            Node::Function(id) => (0, self.fns_to_ids.get(id).copied().unwrap_or(usize::MAX)),
-            Node::DataSymbol(index) => (1, *index),
+            Node::Function(id) => (
+                0,
+                self.fns_to_ids
+                    .get(id)
+                    .and_then(|index| self.symbol_ids.get(*index))
+                    .copied()
+                    .unwrap_or(u64::MAX),
+            ),
+            Node::DataSymbol(index) => (
+                1,
+                self.data_symbol_ids
+                    .get(*index)
+                    .copied()
+                    .unwrap_or(*index as u64),
+            ),
         }
     }
 
@@ -2240,9 +2309,12 @@ pub(crate) fn sections_not_read(bytes: &[u8]) -> Result<Vec<Range<usize>>> {
 /// desktop bundle's `wasm-split` profiles emit the functions' names alone -
 /// and a key that holds them re-emits every module when one is renamed.
 ///
-/// Everything else is hashed as it is: a function's name among it, since a
-/// change to the set of functions (a closure added, a function renamed)
-/// moves what every module holds.
+/// Everything else is hashed as it is. This is the analysis's structure
+/// (analysis.rs), which decides whose body answers may be read back: a
+/// function added or renamed moves it, so another module's answers are never
+/// read for this one. An emission is keyed otherwise (cache.rs), by content
+/// rather than by these sections, so a renumbering does not re-emit a module
+/// whose own code did not change.
 pub(crate) fn hash_sections(key: &mut Key, bytes: &[u8], skipped: &[Range<usize>]) -> Result<()> {
     let mut at = 0;
     for range in skipped {
@@ -2653,7 +2725,7 @@ fn loaded_with(module_parts: &[SplitParts], chunks: usize) -> Vec<Vec<usize>> {
 /// shared chunk fills when it loads (`hole`, a function that traps): an
 /// empty slot traps the same way when called, and costs no bytes. A run of
 /// holes too short to pay for the segment it splits stays.
-fn leave_holes_empty(out: &mut Module, hole: FunctionId) {
+pub(crate) fn leave_holes_empty(out: &mut Module, hole: FunctionId) {
     /// Holes in a row worth another segment's header (its offset and
     /// count) to leave out: each written entry costs two or three bytes.
     const MIN_HOLES: usize = 4;
@@ -2921,70 +2993,4 @@ fn self_names(module: &Module, id: FunctionId) -> String {
         .chars()
         .take(160)
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::leave_holes_empty;
-    use walrus::{ConstExpr, ElementItems, ElementKind, FunctionBuilder, Module, ir};
-
-    /// Each table slot's function in `module`'s active segments, `None`
-    /// where no segment writes one.
-    fn slots(module: &Module, len: usize) -> Vec<Option<walrus::FunctionId>> {
-        let mut slots = vec![None; len];
-        for element in module.elements.iter() {
-            let (
-                ElementKind::Active {
-                    offset: ConstExpr::Value(ir::Value::I32(offset)),
-                    ..
-                },
-                ElementItems::Functions(items),
-            ) = (&element.kind, &element.items)
-            else {
-                panic!("an unexpected segment");
-            };
-            for (at, item) in items.iter().enumerate() {
-                slots[*offset as usize + at] = Some(*item);
-            }
-        }
-        slots
-    }
-
-    #[test]
-    fn the_start_module_writes_no_slot_a_split_module_fills() {
-        let mut module = Module::default();
-        let table = module
-            .tables
-            .add_local(false, 32, Some(32), walrus::RefType::Funcref);
-        let mut function = |name: &str| {
-            let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
-            builder.name(name.into()).func_body().unreachable();
-            builder.finish(vec![], &mut module.funcs)
-        };
-        let (hole, a, b) = (function("hole"), function("a"), function("b"));
-        // Slot 1 on: a, a hole, a, five holes, b, b, then holes to the end.
-        let items = vec![a, hole, a, hole, hole, hole, hole, hole, b, b, hole, hole];
-        let element = module.elements.add(
-            ElementKind::Active {
-                table,
-                offset: ConstExpr::Value(ir::Value::I32(1)),
-            },
-            ElementItems::Functions(items.clone()),
-        );
-        module.tables.get_mut(table).elem_segments.insert(element);
-
-        leave_holes_empty(&mut module, hole);
-
-        let mut want = vec![None; 32];
-        for (at, item) in items.iter().enumerate() {
-            want[1 + at] = Some(*item);
-        }
-        // The five holes in a row and the trailing ones are left empty; the
-        // single one between two functions is cheaper to write.
-        for at in [4, 5, 6, 7, 8, 11, 12] {
-            want[at] = None;
-        }
-        assert_eq!(slots(&module, 32), want);
-        assert_eq!(module.tables.get(table).elem_segments.len(), 2);
-    }
 }

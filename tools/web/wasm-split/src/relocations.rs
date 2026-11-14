@@ -282,3 +282,47 @@ pub(crate) fn parse_bytes_to_data_segment(bytes: &[u8]) -> Result<RawDataSection
         data_symbols,
     })
 }
+
+/// Each data symbol's identity by content: its name, hashed, by symbol
+/// index. A symbol's index moves when a function is added or removed (the
+/// table lists both), while what it names does not: a module keyed by these
+/// keeps its key under a renumbering (split.rs's `node_key`).
+///
+/// A symbol without a name is its index: the linker names data it cannot
+/// merge, so an unnamed one is rare and changes little with the numbering.
+pub(crate) fn data_symbol_ids(original: &[u8]) -> Result<Vec<u64>> {
+    use std::hash::Hasher as _;
+
+    let mut ids = Vec::new();
+    for payload in wasmparser::Parser::new(0).parse_all(original) {
+        let Payload::CustomSection(section) = payload? else {
+            continue;
+        };
+        if section.name() != "linking" {
+            continue;
+        }
+        let reader = LinkingSectionReader::new(BinaryReader::new(section.data(), 0))?;
+        for subsection in reader.subsections() {
+            let Linking::SymbolTable(map) = subsection? else {
+                continue;
+            };
+            for (index, symbol) in map.into_iter().enumerate() {
+                let symbol = symbol?;
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                match &symbol {
+                    SymbolInfo::Data { name, .. } => {
+                        hasher.write_u8(1);
+                        hasher.write(name.as_bytes());
+                    }
+                    _ => {
+                        hasher.write_u8(0);
+                        hasher.write_usize(index);
+                    }
+                }
+                ids.resize(index + 1, 0);
+                ids[index] = hasher.finish();
+            }
+        }
+    }
+    Ok(ids)
+}

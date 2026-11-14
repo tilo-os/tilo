@@ -31,6 +31,7 @@
 
 mod analysis;
 mod cache;
+mod content;
 mod data;
 mod dedupe;
 mod parts;

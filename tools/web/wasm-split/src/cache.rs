@@ -3,22 +3,30 @@
 //! emits again only the modules that place reaches (`WASM_SPLIT_CACHE`).
 //!
 //! A module's key covers everything its emission reads: the bound module's
-//! sections other than its code, the function bodies the module keeps (the
-//! parse it is emitted from leaves every other body `unreachable`), what it
-//! defines, imports and deletes, the order of the shared functions' table
-//! slots, its entries' slots and the static data it writes. A module whose
-//! key is in the directory is that file, byte for byte what emitting it
-//! again writes; any change outside its kept bodies (static data moved,
-//! a function added, a table slot shifted) is a change of every key.
+//! sections other than the ones a renumbering rewrites, the bodies the module
+//! keeps (the parse it is emitted from leaves every other body `unreachable`),
+//! what it defines, imports and deletes, the order of the shared functions'
+//! table slots, its entries' slots and the static data it writes. A module
+//! whose key is in the directory is that file, byte for byte what emitting it
+//! again writes.
+//!
+//! What it reads, it reads by content: a function by its name, a body by what
+//! it does rather than the indices it holds, a data symbol by its name
+//! (content.rs). A function added or removed elsewhere renumbers the module
+//! without changing any module's own code, so the modules it does not reach
+//! keep their keys and are read back; only the modules holding changed or
+//! renumbered code are emitted again.
 
 use std::collections::{BTreeSet, HashSet};
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 
 use crate::data::DataPlan;
+use crate::split::read_leb;
 
 /// Raised whenever what the emission writes changes, so a directory a
 /// different splitter filled is never read as this one's.
@@ -305,4 +313,72 @@ impl Key {
             self.hashers[1].finish()
         )
     }
+}
+
+/// The module's data section, as bytes, when it has one.
+pub(crate) fn data_section(bytes: &[u8]) -> Option<&[u8]> {
+    section_range(bytes, 11).map(|range| &bytes[range])
+}
+
+/// A section's contents by id, the first with that id.
+fn section_range(bytes: &[u8], wanted: u8) -> Option<Range<usize>> {
+    let mut at = 8;
+    while at < bytes.len() {
+        let id = bytes[at];
+        let mut body = at + 1;
+        let size = read_leb(bytes, &mut body).ok()?;
+        if id == wanted {
+            return Some(body..(body + size).min(bytes.len()));
+        }
+        at = body + size;
+    }
+    None
+}
+
+/// The sections an emission does not read as bytes because a function added
+/// or removed elsewhere rewrites them: the function section (3, whose entries
+/// follow the functions a module keeps, each keyed by content), the export
+/// section (7) and the element section (9), which the emission rebuilds from
+/// the split points and the table it keeps, the code (10), the data (11) and
+/// the data count (12), and every custom section but `target_features`, which
+/// the emission drops (`remove_custom_sections`).
+pub(crate) fn sections_not_keyed(bytes: &[u8]) -> Result<Vec<Range<usize>>> {
+    let mut skipped = Vec::new();
+    let mut at = 8;
+    while at < bytes.len() {
+        let start = at;
+        let id = bytes[at];
+        at += 1;
+        let size = read_leb(bytes, &mut at)?;
+        let contents = at;
+        at = (at + size).min(bytes.len());
+        let custom_kept =
+            id == 0 && custom_section_name(bytes, contents) == Some("target_features");
+        if (3..=12).contains(&id) || (id == 0 && !custom_kept) {
+            skipped.push(start..at);
+        }
+    }
+    Ok(skipped)
+}
+
+/// A custom section's name, which its contents hold first.
+pub(crate) fn custom_section_name(bytes: &[u8], contents: usize) -> Option<&str> {
+    let mut at = contents;
+    let len = read_leb(bytes, &mut at).ok()?;
+    std::str::from_utf8(bytes.get(at..at + len)?).ok()
+}
+
+/// `key` over `bytes` without `skipped`, which must be in order, as it is.
+pub(crate) fn key_sections(key: &mut Key, bytes: &[u8], skipped: &[Range<usize>]) -> Result<()> {
+    let mut at = 0;
+    for range in skipped {
+        if range.start > at {
+            key.add(&bytes[at..range.start]);
+        }
+        at = at.max(range.end);
+    }
+    if at < bytes.len() {
+        key.add(&bytes[at..]);
+    }
+    Ok(())
 }

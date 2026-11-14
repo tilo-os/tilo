@@ -347,8 +347,11 @@ else
   # A few threads each: on a build server of hundreds of cores, wasm-bindgen
   # and the splitter on every core spent minutes of system time contending
   # for memory (wasm-bindgen 203 s on all of them, 32 s on eight), for
-  # byte-identical output.
-  RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-8} \
+  # byte-identical output. Sixteen bind the desktop bundle in about four
+  # seconds fewer than eight (17.9 s against 22.3 s over a 264 MB module);
+  # past that the contention the first line describes comes back (19.4 s on
+  # twenty-four).
+  RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-16} \
     "$bindgen" "$bind_input" --target web --out-dir "$next" --out-name tilo_browser_runtime "${bindgen_flags[@]}"
   [[ $bind_input == "$linked" ]] || rm -f "$bind_input"
   took wasm-bindgen "$began"

@@ -331,6 +331,71 @@ fn a_split_from_the_cache_writes_what_emitting_writes() -> Result<()> {
     result
 }
 
+/// A split whose input gained a function elsewhere writes exactly what one
+/// that emits every module writes, and reads back the modules the function
+/// does not reach: a function added renumbers the module's index spaces, and
+/// a key that held those numbers would emit every module for no change.
+#[test]
+fn a_split_reads_back_the_modules_a_new_function_does_not_reach() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    // A function `later` calls, and `later_mix` with it: one module's code
+    // moves, and the function count with it.
+    let changed = source
+        .replace(
+            "fn later_step(x: u32) -> u32 {",
+            "fn later_offset(x: u32) -> u32 {\n    x.wrapping_mul(0x9e37_79b9)\n}\n\n#[inline(never)]\nfn later_step(x: u32) -> u32 {",
+        )
+        .replace(
+            "later_step(checksum(&START_BLOB[at..(at + 16).min(LEN)]))",
+            "later_step(checksum(&START_BLOB[at..(at + 16).min(LEN)])) ^ later_offset(i)",
+        );
+    assert_ne!(source, changed);
+    let before = build_fixture("added-function")?.linked;
+    let after = build_fixture_from("added-function", &changed)?.linked;
+    let (before_bound, after_bound) = (
+        without_link_sections(&before)?,
+        without_link_sections(&after)?,
+    );
+    let dir = scratch("added-function-cache");
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            Ok(written_modules(
+                Splitter::new(linked, bound)?.emit_with(None)?,
+            ))
+        };
+        let cached = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            let outputs = Splitter::new(linked, bound)?.emit_with(Some(&EmitCache::at(&dir)?))?;
+            let reused = outputs.reused;
+            let count = outputs.modules.len() + outputs.chunks.len() + 1;
+            Ok((written_modules(outputs), reused, count))
+        };
+        let (first, reused, _) = cached(&before, &before_bound)?;
+        assert_eq!(reused, 0, "an empty cache holds no module");
+        assert!(
+            first == fresh(&before, &before_bound)?,
+            "a split filling the cache wrote other modules"
+        );
+        let (changed_output, reused, count) = cached(&after, &after_bound)?;
+        assert!(
+            changed_output == fresh(&after, &after_bound)?,
+            "after a function was added, the cache gave other modules than emitting does"
+        );
+        assert!(
+            changed_output != first,
+            "the new function reached no module"
+        );
+        assert!(
+            reused > 0 && reused < count,
+            "a function added elsewhere emitted {} of {count} modules again",
+            count - reused
+        );
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
 /// A split that reads the per-body analysis back (analysis.rs) writes exactly
 /// what a split that reads every body writes: for the input it was filled
 /// from, and after a change to one module's code.
@@ -918,4 +983,71 @@ fn lazy_exports_answer_once_their_module_is_in() -> Result<()> {
         assert_eq!(call(&mut store, "later_mix", i)?, want, "later_mix({i})");
     }
     Ok(())
+}
+
+/// The start module's holes: a slot a split module fills is never one the
+/// start module writes.
+mod table_holes {
+    use crate::split::leave_holes_empty;
+    use walrus::{ConstExpr, ElementItems, ElementKind, FunctionBuilder, Module, ir};
+
+    /// Each table slot's function in `module`'s active segments, `None`
+    /// where no segment writes one.
+    fn slots(module: &Module, len: usize) -> Vec<Option<walrus::FunctionId>> {
+        let mut slots = vec![None; len];
+        for element in module.elements.iter() {
+            let (
+                ElementKind::Active {
+                    offset: ConstExpr::Value(ir::Value::I32(offset)),
+                    ..
+                },
+                ElementItems::Functions(items),
+            ) = (&element.kind, &element.items)
+            else {
+                panic!("an unexpected segment");
+            };
+            for (at, item) in items.iter().enumerate() {
+                slots[*offset as usize + at] = Some(*item);
+            }
+        }
+        slots
+    }
+
+    #[test]
+    fn the_start_module_writes_no_slot_a_split_module_fills() {
+        let mut module = Module::default();
+        let table = module
+            .tables
+            .add_local(false, 32, Some(32), walrus::RefType::Funcref);
+        let mut function = |name: &str| {
+            let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+            builder.name(name.into()).func_body().unreachable();
+            builder.finish(vec![], &mut module.funcs)
+        };
+        let (hole, a, b) = (function("hole"), function("a"), function("b"));
+        // Slot 1 on: a, a hole, a, five holes, b, b, then holes to the end.
+        let items = vec![a, hole, a, hole, hole, hole, hole, hole, b, b, hole, hole];
+        let element = module.elements.add(
+            ElementKind::Active {
+                table,
+                offset: ConstExpr::Value(ir::Value::I32(1)),
+            },
+            ElementItems::Functions(items.clone()),
+        );
+        module.tables.get_mut(table).elem_segments.insert(element);
+
+        leave_holes_empty(&mut module, hole);
+
+        let mut want = vec![None; 32];
+        for (at, item) in items.iter().enumerate() {
+            want[1 + at] = Some(*item);
+        }
+        // The five holes in a row and the trailing ones are left empty; the
+        // single one between two functions is cheaper to write.
+        for at in [4, 5, 6, 7, 8, 11, 12] {
+            want[at] = None;
+        }
+        assert_eq!(slots(&module, 32), want);
+        assert_eq!(module.tables.get(table).elem_segments.len(), 2);
+    }
 }
