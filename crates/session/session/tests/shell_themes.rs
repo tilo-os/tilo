@@ -44,6 +44,8 @@ use serde_json::{Map, Value, json};
 use tilo_compositor::Screenshot;
 use tilo_session::{Options, Session};
 
+use crate::common::{MAIL, NOTES};
+
 const PERSON: &str = "Pat";
 /// The person's appearance section, as the settings service publishes it: the resource whose
 /// `field-edit` action the theme is chosen through, and whose stored fields say what it holds.
@@ -304,8 +306,13 @@ fn seated_session() -> Session {
         find(&resources, "tl.so.tilo.lang.mail.Mailbox", "Inbox").expect("the seeded inbox");
     place(&mut session, &note, 80, 60, 480, 360);
     place(&mut session, &inbox, 700, 60, 480, 360);
+    // Notes and Mail are made with Discussion, whose record they keep their comments in, so the
+    // shell loads it beside them: what the two places show is what is asked here, not how many.
     assert!(
-        reached(&mut session, |session| session.shell_apps().len() == 2),
+        reached(&mut session, |session| {
+            let apps = session.shell_apps();
+            apps.iter().any(|app| app == NOTES) && apps.iter().any(|app| app == MAIL)
+        }),
         "both places show their app: {:?}",
         session.shell_apps()
     );

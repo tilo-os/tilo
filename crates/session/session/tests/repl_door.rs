@@ -197,7 +197,8 @@ fn the_person_admits_the_repl_on_the_sheet_and_it_works_as_them() {
         .portal()
         .and_then(tilo_sheets::portal::PortalSeat::dialog)
         .expect("the question stands on the portal's sheet");
-    assert_eq!(shown.title, "Act as you in “Desk”", "what it asks");
+    // The desk keeps no name for a workspace nobody named: the question says the word for one.
+    assert_eq!(shown.title, "Act as you in “Workspace”", "what it asks");
     assert!(
         shown.heading.starts_with("tilolang repl ("),
         "who asks: {}",

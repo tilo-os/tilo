@@ -1664,7 +1664,7 @@ fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
     use crate::workspace_nodes::WorkspaceNodes;
     use std::sync::Arc;
     use tilo_action_policy::share::is_of_share;
-    use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath};
+    use tilo_action_policy::{ActionKind, Answer, Authority, Context, Grantee, Role, TreePath};
     use tilo_actions::remote::Pending;
     use tilo_broker_core::services::WorkspaceNodeAsk;
 
@@ -1689,18 +1689,23 @@ fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
         access: "view".into(),
     }))
     .expect("the workspace's owner shares what they hold");
-    assert_eq!(share["grants"], 4, "one grant per role below the owner");
+    assert_eq!(
+        share["grants"], 1,
+        "a share is one grant, to the role every other role reaches"
+    );
     let grants = engine
         .policy(WORKSPACE)
         .expect("the workspace's policy")
         .grants;
+    let of_share: Vec<_> = grants
+        .iter()
+        .filter(|grant| is_of_share(grant, "m1"))
+        .collect();
+    assert_eq!(of_share.len(), 1, "the share is the workspace's own grants");
     assert_eq!(
-        grants
-            .iter()
-            .filter(|grant| is_of_share(grant, "m1"))
-            .count(),
-        4,
-        "the share is the workspace's own grants"
+        of_share[0].grantee,
+        Grantee::role(Role::Viewer),
+        "the grant is the viewer role's, and every role above it reads through it"
     );
     let permits = answered(ask(WorkspaceNodeAsk::Permits)).expect("what they may do there");
     assert_eq!(permits["read"], true);
@@ -1717,8 +1722,8 @@ fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
     let unshared =
         answered(ask(WorkspaceNodeAsk::Unshare { share: "m1".into() })).expect("the share ends");
     assert_eq!(
-        unshared["revoked"], 4,
-        "every grant of the share is taken back"
+        unshared["revoked"], 1,
+        "the share's one grant is taken back"
     );
     assert!(
         engine
@@ -1780,7 +1785,10 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
     // The loop that asked goes on, and its turn is what lets the signer answer.
     gate.open();
     let shared = landed(share).expect("the workspace's owner shares what they hold");
-    assert_eq!(shared["grants"], 4, "one grant per role below the owner");
+    assert_eq!(
+        shared["grants"], 1,
+        "a share is one grant, to the role every other role reaches"
+    );
 }
 
 /// "Allow for this issue" on the sheet a run's question asked is a grant in the workspace's
