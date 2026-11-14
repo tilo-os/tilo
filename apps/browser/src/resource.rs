@@ -844,7 +844,8 @@ mod tests {
         ];
         for case in cases {
             let Case { scenario, row, .. } = case;
-            let mut app = TestApp::<BrowserShell>::capture(Some(scenario)).unwrap();
+            let mut app = TestApp::<BrowserShell>::capture(Some(scenario))
+                .unwrap_or_else(|error| panic!("{scenario}: {error:?}"));
             app.settle();
             let published = app.harness().resources();
             let waiting = find(&published, row)
@@ -872,7 +873,7 @@ mod tests {
             // A person dismisses it in the prompt, and the row goes with it.
             app.harness()
                 .click_named(&format!("{row}.secondary"))
-                .unwrap();
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
             app.settle();
             assert!(
                 find(&app.harness().resources(), row).is_none(),
@@ -897,6 +898,9 @@ mod tests {
         };
         let (longest, too_long) = (padded(LONGEST), padded(LONGEST + 1));
         assert_eq!(longest.len(), LONGEST);
+        // The bound is on bytes: fewer characters than it, one byte more.
+        let wide = format!("https://example.test/{}", "ö".repeat(4086));
+        assert_eq!(wide.len(), LONGEST + 1);
         assert_eq!(
             launch_target(std::slice::from_ref(&longest)).as_ref(),
             Some(&longest),
@@ -913,7 +917,13 @@ mod tests {
             "ftp://example.test/",
             "https://example.test/\u{7}",
             "https://example.test/\n",
+            "https://example.test/\u{7f}",
+            "https://example.test/\u{85}",
+            " https://example.test/",
+            "view-source:https://example.test/",
+            "blob:https://example.test/1",
             too_long.as_str(),
+            wide.as_str(),
         ] {
             assert_eq!(launch_target(&[value.into()]), None, "{value:?}");
         }
@@ -969,6 +979,10 @@ mod tests {
             "cats",
             "",
             "web+search:cats%0Adogs",
+            "web+search:%00",
+            "web+search:+",
+            "web+search",
+            " web+search:cats",
             too_long.as_str(),
         ] {
             assert_eq!(launch_search(&[value.into()]), None, "{value:?}");
