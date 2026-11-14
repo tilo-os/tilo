@@ -407,9 +407,8 @@ is drawn, so a reader who cannot see the page, and a tool that lists what a
 desk shows, read what is on the screen.
 
 The window's pictures travel the workspace's live plane, which the device
-hosting the workspace relays for its members, or the members certified to
-host where there are any. A device is in the plane once it holds the keys of
-the workspace's media channel and reached such a device; while none takes it
+serving the workspace relays for its members. A device is in the plane once
+it holds the workspace's keys and reached that device; while it is not taken
 in, it asks again, waiting longer each time and at most every fifteen
 seconds, since a device that comes back tells nobody. The share's reading
 says how far that came, since a plane that is not open drops nothing and
