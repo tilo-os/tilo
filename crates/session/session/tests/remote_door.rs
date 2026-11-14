@@ -52,6 +52,8 @@ const RUN: &str = "visa-run-1";
 const RUN_TITLE: &str = "Visa agent";
 /// A later run of the same agent, which the person takes back.
 const LATER_RUN: &str = "visa-run-2";
+/// What the shell calls the first connection of the agent its device runs.
+const SHOWN: &str = "Claude Code #1";
 
 /// A device key `n` certified by `root` , called `label` .
 fn device(root: &SigningKey, n: u8, label: &str) -> (SigningKey, DeviceCert) {
@@ -246,16 +248,22 @@ impl ThisBox {
         crate::common::press_sheet(&mut self.session, effect, args);
     }
 
-    /// The agents the shell seats now, by the key its presence names each.
-    fn seated(&self) -> Vec<String> {
-        self.session
-            .read("session:agents")
-            .and_then(|agents| agents.get("seated").and_then(Value::as_array).cloned())
-            .unwrap_or_default()
+    /// The agent sessions the shell shows now, by the name it calls each.
+    fn shown(&self) -> Vec<String> {
+        agent_sessions(&self.session)
             .into_iter()
             .filter(|agent| agent["seat"] == true)
-            .map(|agent| agent["key"].as_str().unwrap_or_default().to_owned())
+            .map(|agent| agent["name"].as_str().unwrap_or_default().to_owned())
             .collect()
+    }
+
+    /// The key of the agent session the shell calls `name`: the session Stop ends.
+    fn session_of(&self, name: &str) -> String {
+        agent_sessions(&self.session)
+            .into_iter()
+            .find(|agent| agent["seat"] == true && agent["name"] == name)
+            .and_then(|agent| agent["key"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| panic!("no agent session called {name} works here"))
     }
 
     /// What the sheet up says: who asks, and what for.
@@ -321,6 +329,14 @@ impl Agent {
     }
 }
 
+/// The agent sessions the shell shows, as `session:agents` lists them.
+fn agent_sessions(session: &Session) -> Vec<Value> {
+    session
+        .read("session:agents")
+        .and_then(|agents| agents.get("seated").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+}
+
 fn initialize() -> Value {
     json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
         "protocolVersion":"2025-06-18","capabilities":{},
@@ -365,12 +381,12 @@ fn an_agent_from_another_device_waits_for_the_person_and_leaving_withdraws_it() 
         agent.answers.try_recv().is_err(),
         "the agent reads nothing before the person answers"
     );
-    assert!(b.seated().is_empty(), "nobody works here");
+    assert!(b.shown().is_empty(), "nobody works here");
 
     // The agent leaves: its question is withdrawn.
     agent.leave();
     b.pump(|b| b.questions.pending().is_empty());
-    assert!(b.seated().is_empty());
+    assert!(b.shown().is_empty());
 }
 
 #[test]
@@ -389,8 +405,7 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
         introduced.pointer("/result/serverInfo").is_some(),
         "{introduced}"
     );
-    let named = format!("{}#1", agent_id("claude-code", &person.laptop.1));
-    b.pump(|b| b.seated() == [named.clone()]);
+    b.pump(|b| b.shown() == [SHOWN.to_owned()]);
 
     // The same tools as a program of this login, and the person's devices.
     agent.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
@@ -428,10 +443,10 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
         .invoke(
             "session:agents",
             "stop-agent",
-            json!({"agent": named}).as_object().unwrap(),
+            json!({"agent": b.session_of(SHOWN)}).as_object().unwrap(),
         )
         .expect("the person stops the agent");
-    b.pump(|b| b.seated().is_empty());
+    b.pump(|b| b.shown().is_empty());
     agent.send(tool(5, "tilo_ls", &json!({})));
     assert_eq!(b.answer(&agent), None, "the agent's connection ended");
 }
@@ -460,8 +475,7 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
         "{introduced}"
     );
     assert!(b.questions.pending().is_empty(), "nobody was asked");
-    let named = format!("{}#1", agent_id("claude-code", &person.laptop.1));
-    b.pump(|b| b.seated() == [named.clone()]);
+    b.pump(|b| b.shown() == [SHOWN.to_owned()]);
 
     // The setting lets in the person's own devices and nothing else: a device of another person,
     // and one the person removed, are refused.
@@ -483,7 +497,7 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
     );
     local.leave();
     b.pump(|b| b.questions.pending().is_empty());
-    assert_eq!(b.seated(), [named]);
+    assert_eq!(b.shown(), [SHOWN.to_owned()]);
 }
 
 /// This computer's own identity, as a desktop has one: a root in the person's record, the device
@@ -1127,27 +1141,23 @@ impl DeskWithNotes {
             .collect()
     }
 
-    /// The run the agent seated as `seated` works in, in this session's workspace.
-    fn run_of(&self, seated: &str) -> tilo_broker_core::services::TrackerRun {
-        let runs = self
-            .session
-            .conversation_runs()
-            .runs(&self.computer.workspace)
-            .unwrap_or_default();
-        runs.iter()
-            .find(|run| run.title == seated)
-            .cloned()
-            .unwrap_or_else(|| panic!("no run of {seated}: {runs:?}"))
+    /// The key of the agent session the shell calls `name`: what its steps are grouped under and
+    /// undo takes back whole.
+    fn session_of(&self, name: &str) -> String {
+        agent_sessions(&self.session)
+            .into_iter()
+            .find(|agent| agent["name"] == name)
+            .and_then(|agent| agent["key"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| panic!("no agent session called {name} works here"))
     }
 }
 
-/// Whether Notes took `taken` as a step of `run`: what the run's history, its activity and its undo
-/// are read from.
-fn a_step_of(
-    taken: &runtime_collab::Invocation,
-    run: &tilo_broker_core::services::TrackerRun,
-) -> bool {
-    taken.context_json.contains(&run.issue)
+/// Whether Notes took `taken` as a step of the agent session `session`: the group the record's
+/// history keeps the session's work under, and undo takes back whole.
+fn a_step_of(taken: &runtime_collab::Invocation, session: &str) -> bool {
+    let context: Value = serde_json::from_str(&taken.context_json).unwrap_or_default();
+    context["group"]["kind"].as_str() == Some(tilo_actions::context::AGENT_RUN_GROUP)
+        && context["group"]["id"].as_str() == Some(session)
 }
 
 /// Notes' side: join the workspace as the app the session launched, publish its notebook with the
@@ -1336,9 +1346,9 @@ fn open_action() -> runtime_collab::ExportedAction {
     }
 }
 
-/// With only agents from their other devices let in unasked, a step such an agent's run asks about
-/// is still put to the person: the agent waits while the sheet is up, and Allow once lets the step
-/// go on as a step of the agent's run.
+/// With only agents from their other devices let in unasked, a step such an agent's session asks
+/// about is still put to the person: the agent waits while the sheet is up, and Allow once lets the
+/// step go on under its session.
 #[test]
 fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person() {
     let _settled = ui::motion::testing::settled();
@@ -1383,20 +1393,19 @@ fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person()
         .recv_timeout(tilo_test_env::hang_bound())
         .expect("Notes took the step");
     assert_eq!(taken.action, "open");
-    let run = shell.run_of("Claude Code #1");
+    let session = shell.session_of(SHOWN);
     assert!(
-        a_step_of(&taken, &run),
-        "the step is the run's: {} in {}",
-        taken.context_json,
-        run.issue
+        a_step_of(&taken, &session),
+        "the step is the session's: {} under {session}",
+        taken.context_json
     );
     assert!(shell.asked().is_empty());
     agent.leave();
 }
 
 /// With their steps let go unasked as well, a step an agent from another of the person's devices
-/// would ask about is allowed by the setting: no sheet goes up, and the step is taken as a step of
-/// the agent's run, as one the person allowed is. A program of this login is still asked about
+/// would ask about is allowed by the setting: no sheet goes up, and the step is taken under the
+/// agent's session, as one the person allowed is. A program of this login is still asked about
 /// its step, and a device of someone else's is still refused at the door.
 #[test]
 fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_question() {
@@ -1429,12 +1438,11 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
         .recv_timeout(tilo_test_env::hang_bound())
         .expect("Notes took the step");
     assert_eq!(taken.action, "open");
-    let run = shell.run_of("Claude Code #1");
+    let session = shell.session_of(SHOWN);
     assert!(
-        a_step_of(&taken, &run),
-        "the step is the run's, as one the person allowed is: {} in {}",
-        taken.context_json,
-        run.issue
+        a_step_of(&taken, &session),
+        "the step is the session's, as one the person allowed is: {} under {session}",
+        taken.context_json
     );
 
     // A program of this login is asked about, at the door and for its step.
