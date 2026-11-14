@@ -776,7 +776,23 @@ impl Session {
         // The keyboard and pointer of the person's other devices that drive this one, on the pass
         // their actions were routed in.
         if let Some(shared_input) = &self.shared.keyboard_and_pointer {
-            let handover = shared_input.follow(&mut self.compositor);
+            // A drag carried between the person's devices keeps its content in the workspace's,
+            // sealed under the secret its members hold, as a record the session keeps itself does.
+            let engine = self.shared.engine.as_deref();
+            let content = &self.content;
+            let store = |workspace: &str| {
+                let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
+                let app = tilo_desktop_model::ownership::DESKTOP_APP;
+                if let Some(engine) = engine {
+                    content.seal_under(workspace, app, secret_of(engine, id, app));
+                }
+                Some(content.store(workspace, app))
+            };
+            let desk = crate::shared_input::Desk {
+                handle: &self.shared.handle,
+                content: &store,
+            };
+            let handover = shared_input.follow(&mut self.compositor, &desk);
             // The clipboard follows them: what was copied last is what pastes where they are.
             self.shared
                 .clipboard
@@ -806,7 +822,7 @@ fn serve_fabric_input(shared: &crate::Shared, compositor: &mut Compositor) {
         return;
     };
     sync.fabric_actions_now(|envelope| shared_input.route(envelope));
-    shared_input.inject(compositor);
+    shared_input.inject(compositor, None);
 }
 
 /// The session as the control socket's answers read it now.

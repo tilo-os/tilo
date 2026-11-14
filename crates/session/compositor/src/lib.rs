@@ -1539,6 +1539,41 @@ impl Compositor {
         Ok(started)
     }
 
+    /// The formats the pointer's drag offers, while it carries one whose bytes can be read here.
+    #[must_use]
+    pub fn dragged_formats(&self) -> Option<Vec<String>> {
+        self.data.state.dragged_formats()
+    }
+
+    /// Read the pointer's drag in `mime` off the loop, as [`Compositor::pull_selection`] reads a
+    /// selection: the source writes its bytes when it gets round to it.
+    pub fn pull_drag(&mut self, mime: &str) -> Result<clipboard_history::Pull, Error> {
+        let (reader, writer) = std::io::pipe()?;
+        self.data
+            .state
+            .receive_drag(mime, writer.into())
+            .map_err(|error| Error::Io(std::io::Error::other(error)))?;
+        self.display.flush_clients()?;
+        clipboard_history::Pull::new(reader, mime).map_err(Error::Io)
+    }
+
+    /// End the pointer's drag without dropping it: the person carried it to another of their
+    /// devices. False when no drag runs.
+    pub fn cancel_drag(&mut self) -> Result<bool, Error> {
+        let cancelled = self.data.state.cancel_drag();
+        self.display.flush_clients()?;
+        Ok(cancelled)
+    }
+
+    /// Go on here with a drag of `offer` (bytes per format) that crossed from another of the
+    /// person's devices: it follows the pointer, and the next release drops it on what is under
+    /// it. False when there is nothing to carry or the pointer is held by something else.
+    pub fn carry_drag_here(&mut self, offer: Vec<(String, Vec<u8>)>) -> Result<bool, Error> {
+        let started = self.data.state.carry_drag_here(offer);
+        self.display.flush_clients()?;
+        Ok(started)
+    }
+
     /// Start the drags hosted apps asked for while handling input ([`SurfaceHost::take_drag`]).
     fn start_asked_drags(&mut self) {
         let asked: Vec<HostDrag> = self

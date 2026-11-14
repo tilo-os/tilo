@@ -4,6 +4,7 @@
 //! applies one policy model to media, clipboard, roaming preferences, secret
 //! references and cross-screen input.
 
+pub mod carried;
 pub mod clock;
 mod i18n {
     ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
@@ -16,6 +17,8 @@ pub mod secrets;
 pub mod speaker_group;
 pub mod unlock;
 pub mod wake;
+
+pub use carried::{CarriedDrag, CarriedOffer, MAX_CARRIED_OFFERS};
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -722,11 +725,9 @@ pub enum PersonalFabricAction {
     RetiredSpatialInputProtocol,
     /// Retired, as [`Self::RetiredSpatialInputProtocol`].
     RetiredSpatialInputSequenced,
-    /// Show this tab of the person's workspaces on the receiving device:
-    /// the person moved its window there from the sending one.
-    ShowTab {
-        tab: u64,
-    },
+    /// Retired: a window shown on the receiving device. No build sent one; a
+    /// window crosses as the drag of its bar ([`Self::DragCarried`]).
+    RetiredShowTab,
     /// Certify a device the sender paired: the devices that can approve it
     /// ask their person (the shell's device certification). The ask,
     /// postcard-encoded.
@@ -741,6 +742,12 @@ pub enum PersonalFabricAction {
     /// receiving device: grant it an [`InputLease`] if this device takes
     /// the person's input from their other devices.
     InputLeaseAsk,
+    /// What the pointer under `lease_nonce` carried across to the
+    /// receiving device in the middle of a drag. The drag goes on there.
+    DragCarried {
+        lease_nonce: [u8; 16],
+        drag: CarriedDrag,
+    },
 }
 
 /// What became of one request to wake a device.
@@ -1061,8 +1068,8 @@ impl PersonalFabricActionEnvelope {
                 }
             }
             PersonalFabricAction::InputLeaseAsk => {}
-            PersonalFabricAction::ShowTab { tab } => {
-                if *tab == 0 {
+            PersonalFabricAction::DragCarried { lease_nonce, drag } => {
+                if lease_nonce == &[0; 16] || !drag.valid() {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1232,6 +1239,7 @@ impl PersonalFabricActionEnvelope {
             | PersonalFabricAction::RetiredDeviceHealthProbe
             | PersonalFabricAction::RetiredDeviceHealthReport
             | PersonalFabricAction::RetiredTethering
+            | PersonalFabricAction::RetiredShowTab
             | PersonalFabricAction::RetiredSetDisplayPlacement
             | PersonalFabricAction::RetiredSetDisplayPlacementChecked
             | PersonalFabricAction::RetiredSpatialInputProtocol
@@ -2200,7 +2208,7 @@ impl DeviceFabric {
     }
 }
 
-fn valid_identifier(value: &str, max: usize) -> bool {
+pub(crate) fn valid_identifier(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.len() <= max
         && value
@@ -2208,7 +2216,7 @@ fn valid_identifier(value: &str, max: usize) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '/'))
 }
 
-fn valid_mime(value: &str) -> bool {
+pub(crate) fn valid_mime(value: &str) -> bool {
     value.len() <= 128
         && value.contains('/')
         && value
@@ -2878,25 +2886,6 @@ mod tests {
 
         media_action_locators_reject_host_paths_and_url_credentials();
         media_terminal_actions_require_exact_nonzero_request_and_session();
-    }
-
-    #[test]
-    fn a_window_shown_on_another_device_names_a_tab() {
-        let source = id("laptop");
-        let target = id("board");
-        let ok = |tab| {
-            PersonalFabricActionEnvelope {
-                request_id: [5; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10_000,
-                action: PersonalFabricAction::ShowTab { tab },
-            }
-            .validate_at(&source, &target, 10_000)
-            .is_ok()
-        };
-        assert!(ok(7));
-        assert!(!ok(0), "a tab id is never zero");
     }
 
     #[test]

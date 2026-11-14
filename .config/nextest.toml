@@ -144,7 +144,7 @@ command = [
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))"
+filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::) or test(shared_input::a_window_lifted))"
 setup = "chat-siblings"
 
 [[profile.ci.scripts]]
@@ -175,7 +175,7 @@ setup = "headless-audio"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::))"
+filter = "package(tilo-session) and binary(it) and (test(chat_2x2::) or test(device_branch::) or test(shared_input::a_window_lifted))"
 setup = "chat-siblings"
 
 # Tasks' own package, which the closed-app test starts without a window, and the launcher the

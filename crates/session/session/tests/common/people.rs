@@ -666,6 +666,11 @@ pub fn two_devices_of_one_person_with_files() -> (Site, Person, Device, Device) 
     two_devices_of_one_person_carrying(Device::install_files)
 }
 
+/// [`two_devices_of_one_person`] for two devices that carry Chat.
+pub fn two_devices_of_one_person_with_chat() -> (Site, Person, Device, Device) {
+    two_devices_of_one_person_carrying(Device::install_chat)
+}
+
 /// The person's laptop and phone, each carrying what `install` puts in its store: both are made
 /// first, then told of the person's fleet, then started — a session reads the apps and the devices
 /// of the person it has when it starts.

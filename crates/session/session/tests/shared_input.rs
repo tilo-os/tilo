@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::common::people::{Device, two_devices_of_one_person};
+use crate::common::people::{
+    Device, show, two_devices_of_one_person, two_devices_of_one_person_with_chat, wait_shown,
+};
 
 /// What `device` says of the person's one keyboard and pointer.
 fn shared(device: &Device) -> Value {
@@ -163,60 +165,92 @@ fn picture(device: &Device, name: &str) {
     );
 }
 
+/// The laptop's screen and the phone's beside it, as the laptop's arrangement lays them out: the
+/// phone's id, the way across the edge between them, and the laptop's own screen.
+struct Beside {
+    phone: String,
+    toward: (f64, f64),
+    local: [f64; 4],
+}
+
+impl Beside {
+    /// Wait for each device to place the other's screen beside its own.
+    fn arranged(laptop: &Device, phone: &Device) -> Self {
+        waited(
+            "the laptop and the phone seeing each other's screen",
+            &[laptop, phone],
+            || {
+                [laptop, phone]
+                    .iter()
+                    .all(|device| screens(device).iter().any(|screen| !screen.local))
+            },
+        );
+        let arranged = screens(laptop);
+        let here = arranged
+            .iter()
+            .find(|screen| screen.local)
+            .expect("the laptop's screen");
+        let there = arranged
+            .iter()
+            .find(|screen| !screen.local)
+            .expect("the phone's screen");
+        let [x, y, width, height] = here.rect;
+        let toward: (f64, f64) = if there.rect[0] >= x + width {
+            (1.0, 0.0)
+        } else if there.rect[0] + there.rect[2] <= x {
+            (-1.0, 0.0)
+        } else if there.rect[1] >= y + height {
+            (0.0, 1.0)
+        } else {
+            (0.0, -1.0)
+        };
+        Self {
+            phone: there.device.clone(),
+            toward,
+            local: here.local_rect,
+        }
+    }
+
+    /// The middle of the laptop's screen.
+    fn middle(&self) -> (f64, f64) {
+        let [lx, ly, lw, lh] = self.local;
+        (lx + lw / 2.0, ly + lh / 2.0)
+    }
+
+    /// The laptop's own point just inside the edge toward the phone, `by` pixels past it, level
+    /// with `along` .
+    fn edge_at(&self, along: (f64, f64), by: f64) -> (f64, f64) {
+        let [lx, ly, lw, lh] = self.local;
+        let x = if self.toward.0 > 0.0 {
+            lx + lw - 1.0 + by
+        } else if self.toward.0 < 0.0 {
+            lx - by
+        } else {
+            along.0
+        };
+        let y = if self.toward.1 > 0.0 {
+            ly + lh - 1.0 + by
+        } else if self.toward.1 < 0.0 {
+            ly - by
+        } else {
+            along.1
+        };
+        (x, y)
+    }
+
+    fn edge(&self, by: f64) -> (f64, f64) {
+        self.edge_at(self.middle(), by)
+    }
+}
+
 #[test]
 fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_back() {
     let (_site, _ada, laptop, phone) = two_devices_of_one_person();
-    // Each device places the other's screen beside its own in the arrangement.
-    waited(
-        "the laptop and the phone seeing each other's screen",
-        &[&laptop, &phone],
-        || {
-            [&laptop, &phone]
-                .iter()
-                .all(|device| screens(device).iter().any(|screen| !screen.local))
-        },
-    );
-    let arranged = screens(&laptop);
-    let here = arranged
-        .iter()
-        .find(|screen| screen.local)
-        .expect("the laptop's screen");
-    let there = arranged
-        .iter()
-        .find(|screen| !screen.local)
-        .expect("the phone's screen");
-    let phone_id = there.device.clone();
-    // Which edge of the laptop's screen leads to the phone's, and the way across it.
-    let [x, y, width, height] = here.rect;
-    let toward: (f64, f64) = if there.rect[0] >= x + width {
-        (1.0, 0.0)
-    } else if there.rect[0] + there.rect[2] <= x {
-        (-1.0, 0.0)
-    } else if there.rect[1] >= y + height {
-        (0.0, 1.0)
-    } else {
-        (0.0, -1.0)
-    };
-    let [lx, ly, lw, lh] = here.local_rect;
-    let middle = (lx + lw / 2.0, ly + lh / 2.0);
-    // The laptop's own point just inside that edge, and `by` pixels past it.
-    let edge = |by: f64| {
-        let x = if toward.0 > 0.0 {
-            lx + lw - 1.0 + by
-        } else if toward.0 < 0.0 {
-            lx - by
-        } else {
-            middle.0
-        };
-        let y = if toward.1 > 0.0 {
-            ly + lh - 1.0 + by
-        } else if toward.1 < 0.0 {
-            ly - by
-        } else {
-            middle.1
-        };
-        (x, y)
-    };
+    let beside = Beside::arranged(&laptop, &phone);
+    let phone_id = beside.phone.clone();
+    let toward = beside.toward;
+    let middle = beside.middle();
+    let edge = |by: f64| beside.edge(by);
     // Something copied on the laptop before the pointer leaves it.
     let from_laptop = "copied on the laptop";
     copy(&laptop, from_laptop);
@@ -374,4 +408,118 @@ fn the_pointer_and_the_keyboard_cross_to_the_device_beside_this_one_and_come_bac
     assert_eq!(pointer(&phone), phone_now, "and no longer on the phone");
     picture(&laptop, "3-laptop-back");
     picture(&phone, "3-phone-after");
+}
+
+/// A point on the bar of the window titled `title` on `device`'s screen: just above what the
+/// window draws, toward its start, clear of its controls.
+fn bar(device: &Device, title: &str) -> Option<(f64, f64)> {
+    let windows = device.ask(&json!({"op": "windows"}));
+    let rect: Vec<f64> = windows["answer"]["windows"]
+        .as_array()?
+        .iter()
+        .find(|window| window["title"] == title || window["app_id"] == title)?["rect"]
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_f64)
+        .collect();
+    let [x, y, _, _] = rect[..] else {
+        return None;
+    };
+    Some((x + 48.0, y - 20.0))
+}
+
+/// Whether the window titled `title` is the one in front on `device`.
+fn in_front(device: &Device, title: &str) -> bool {
+    let windows = device.ask(&json!({"op": "windows"}));
+    windows["answer"]["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|window| {
+            (window["title"] == title || window["app_id"] == title)
+                && window["active"] == json!(true)
+        })
+}
+
+fn button(device: &Device, pressed: bool) {
+    ok(
+        device,
+        &json!({"op": "pointer_button", "button": "left", "pressed": pressed}),
+    );
+}
+
+const CHAT: &str = "so.tilo.chat";
+
+#[test]
+fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() {
+    let (site, _ada, laptop, phone) = two_devices_of_one_person_with_chat();
+    let beside = Beside::arranged(&laptop, &phone);
+    show(&laptop, &site);
+    show(&phone, &site);
+    laptop.open(CHAT);
+    laptop.wait_for_window(CHAT);
+    let _other = laptop.window("so.tilo.notes", "Stays behind");
+    wait_shown(&site, &[&laptop, &phone], "Stays behind");
+    waited("the phone fronting the newer window", &[&phone], || {
+        in_front(&phone, "Stays behind")
+    });
+    picture(&laptop, "drag-1-laptop-before");
+    picture(&phone, "drag-1-phone-before");
+
+    // The laptop's pointer takes Chat's window by its bar and carries it to the edge toward the
+    // phone, a step at a time, as a hand does.
+    let from = bar(&laptop, CHAT).unwrap_or_else(|| {
+        panic!(
+            "Chat's window stands on the laptop: {}",
+            laptop.ask(&json!({"op": "windows"}))
+        )
+    });
+    move_to(&laptop, from);
+    button(&laptop, true);
+    let to = beside.edge_at(from, 0.0);
+    for step in 1..=12 {
+        let at = f64::from(step) / 12.0;
+        move_to(
+            &laptop,
+            (from.0 + (to.0 - from.0) * at, from.1 + (to.1 - from.1) * at),
+        );
+    }
+    waited("the laptop carrying the window", &[&laptop], || {
+        shared(&laptop)["carrying"]["resource"].is_string()
+    });
+    picture(&laptop, "drag-2-laptop-carrying");
+    // Pushing on past the edge asks the phone for its input, then goes through with the window.
+    waited(
+        "the window crossing to the phone",
+        &[&laptop, &phone],
+        || {
+            move_to(&laptop, beside.edge_at(to, 10.0));
+            driving(&laptop).as_deref() == Some(beside.phone.as_str())
+        },
+    );
+    waited("the drag going on on the phone", &[&laptop, &phone], || {
+        shared(&phone)["landed"].as_u64().unwrap_or(0) > 0
+    });
+    assert!(
+        shared(&laptop)["carrying"].is_null(),
+        "the laptop carries nothing any more"
+    );
+    // Over the phone's other window the button comes up: that window takes Chat as a tab, and
+    // shows it, as a drop of one window's bar on another's does on one device.
+    let parked = pointer(&laptop);
+    let over = 300.0;
+    move_to(
+        &laptop,
+        (
+            parked.0 + beside.toward.0 * over,
+            parked.1 + beside.toward.1 * over,
+        ),
+    );
+    picture(&phone, "drag-3-phone-carrying");
+    button(&laptop, false);
+    waited("the phone fronting Chat", &[&laptop, &phone], || {
+        in_front(&phone, CHAT)
+    });
+    picture(&laptop, "drag-4-laptop-after");
+    picture(&phone, "drag-4-phone-after");
 }

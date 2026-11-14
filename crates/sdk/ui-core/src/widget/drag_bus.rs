@@ -25,6 +25,7 @@ pub struct Landed {
 thread_local! {
     static IN_FLIGHT: RefCell<Option<InFlight>> = const { RefCell::new(None) };
     static LANDED: RefCell<Option<Landed>> = const { RefCell::new(None) };
+    static CARRIED_AWAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `run` lifted an item: everything else in the window may take it now.
@@ -53,10 +54,19 @@ pub fn current() -> Option<InFlight> {
 }
 
 /// The drag ended: `None` for a cancel, or where it was let go for a drop another run
-/// takes.
+/// takes. A drag carried away lands nowhere here, wherever it is let go.
 pub fn end(landed: Option<Landed>) {
+    let landed = landed.filter(|_| !CARRIED_AWAY.with(std::cell::Cell::take));
     IN_FLIGHT.with(|slot| *slot.borrow_mut() = None);
     LANDED.with(|slot| *slot.borrow_mut() = landed);
+}
+
+/// What is in flight went on somewhere else (to another of the person's devices): nothing here
+/// shows it any more, and the release that ends it here drops nothing.
+pub fn carry_away() {
+    if IN_FLIGHT.with(|slot| slot.borrow_mut().take()).is_some() {
+        CARRIED_AWAY.with(|carried| carried.set(true));
+    }
 }
 
 /// Take the drop `run` takes, if the last drag ended inside its `extent` and came from

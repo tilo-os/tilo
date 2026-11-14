@@ -571,6 +571,7 @@ impl crate::Session {
             | PersonalFabricAction::InputLeaseGranted { .. }
             | PersonalFabricAction::InputLeaseRevoked { .. }
             | PersonalFabricAction::Input { .. }
+            | PersonalFabricAction::DragCarried { .. }
             | PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
             // A Nearby Send reaches no session here: the client that carries one hands its offer,
@@ -621,7 +622,7 @@ impl crate::Session {
             | PersonalFabricAction::WakeProbe { .. }
             | PersonalFabricAction::WakeProbeReply { .. }
             | PersonalFabricAction::WindowViews { .. }
-            | PersonalFabricAction::ShowTab { .. }
+            | PersonalFabricAction::RetiredShowTab
             // The device-certification exchange answered above, for the other door's preconditions.
             | PersonalFabricAction::CertifyAsk { .. }
             | PersonalFabricAction::CertifyAnswer { .. }
