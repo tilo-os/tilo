@@ -59,14 +59,16 @@ mod tests {
         }
         pixels
     }
-    #[test]
-    fn scroll_markers_decode_signed_acknowledgements_and_reject_corruption() {
-        // phase: decodes_signed_scroll_acknowledgement_from_pixels
+    tilo_test_env::scenario! {
+        fn scroll_markers_decode_signed_acknowledgements_and_reject_corruption;
+
+        phase decodes_signed_scroll_acknowledgement_from_pixels;
         {
             assert_eq!(decode(&frame([0xb3, 0, 65, 0xf2]), 128, 4), Some(65));
             assert_eq!(decode(&frame([0xb3, 255, 191, 0xf3]), 128, 4), Some(-65));
         }
-        // phase: rejects_baseline_corruption_transparency_and_truncated_frames
+
+        phase rejects_baseline_corruption_transparency_and_truncated_frames;
         {
             for bytes in [[0xb3, 0, 0, 0xb3], [0xb2, 0, 65, 0xf3], [0xb3, 0, 65, 0]] {
                 assert_eq!(decode(&frame(bytes), 128, 4), None);

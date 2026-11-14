@@ -3,94 +3,95 @@
 
 use super::*;
 
-#[test]
-fn a_request_says_what_it_did_in_the_words_its_answer_repeats() {
-    let element = || "d1e5".to_string();
-    let described = |request: PageRequest| request.described();
-    assert_eq!(
-        described(PageRequest::Click {
-            element: element(),
-            frame: None,
-        }),
-        "Clicked element d1e5"
-    );
-    assert_eq!(
-        described(PageRequest::Fill {
-            element: element(),
-            text: "Maria".into(),
-            secret: false,
-            frame: None,
-        }),
-        "Filled element d1e5"
-    );
-    assert_eq!(
-        described(PageRequest::Submit {
-            element: element(),
-            cross_origin: false,
-            frame: None,
-        }),
-        "Submitted form d1e5"
-    );
-    assert_eq!(
-        described(PageRequest::Select {
-            element: element(),
-            values: vec!["a".into(), "b".into()],
-            frame: None,
-        }),
-        "Chose a, b on element d1e5"
-    );
-    let enter = PageKey::parse("Enter").unwrap();
-    assert_eq!(
-        described(PageRequest::Press {
-            element: None,
-            key: enter.clone(),
-            frame: None,
-        }),
-        "Pressed Enter"
-    );
-    assert_eq!(
-        described(PageRequest::Press {
-            element: Some(element()),
-            key: enter,
-            frame: None,
-        }),
-        "Pressed Enter on element d1e5"
-    );
-    assert_eq!(
-        described(PageRequest::Scroll {
-            element: None,
-            to: Some(ScrollTarget::Bottom),
-            by: None,
-            into_view: None,
-            frame: None,
-        }),
-        "Scrolled to the bottom"
-    );
-    assert_eq!(
-        described(PageRequest::Scroll {
-            element: None,
-            to: None,
-            by: Some(-400),
-            into_view: None,
-            frame: None,
-        }),
-        "Scrolled by -400 pixels"
-    );
-    assert_eq!(
-        described(PageRequest::Scroll {
-            element: None,
-            to: None,
-            by: None,
-            into_view: Some(element()),
-            frame: None,
-        }),
-        "Scrolled element d1e5 into view"
-    );
-}
+tilo_test_env::scenario! {
+    fn page_requests_are_named_bounded_and_round_trip_to_the_wire;
 
-#[test]
-fn requests_are_bounded_and_round_trip_to_the_wire() {
-    // phase: element_refs_accept_only_document_and_element_numbers
+    phase a_request_says_what_it_did_in_the_words_its_answer_repeats;
+    {
+        let element = || "d1e5".to_string();
+        let described = |request: PageRequest| request.described();
+        assert_eq!(
+            described(PageRequest::Click {
+                element: element(),
+                frame: None,
+            }),
+            "Clicked element d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Fill {
+                element: element(),
+                text: "Maria".into(),
+                secret: false,
+                frame: None,
+            }),
+            "Filled element d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Submit {
+                element: element(),
+                cross_origin: false,
+                frame: None,
+            }),
+            "Submitted form d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Select {
+                element: element(),
+                values: vec!["a".into(), "b".into()],
+                frame: None,
+            }),
+            "Chose a, b on element d1e5"
+        );
+        let enter = PageKey::parse("Enter").unwrap();
+        assert_eq!(
+            described(PageRequest::Press {
+                element: None,
+                key: enter.clone(),
+                frame: None,
+            }),
+            "Pressed Enter"
+        );
+        assert_eq!(
+            described(PageRequest::Press {
+                element: Some(element()),
+                key: enter,
+                frame: None,
+            }),
+            "Pressed Enter on element d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Scroll {
+                element: None,
+                to: Some(ScrollTarget::Bottom),
+                by: None,
+                into_view: None,
+                frame: None,
+            }),
+            "Scrolled to the bottom"
+        );
+        assert_eq!(
+            described(PageRequest::Scroll {
+                element: None,
+                to: None,
+                by: Some(-400),
+                into_view: None,
+                frame: None,
+            }),
+            "Scrolled by -400 pixels"
+        );
+        assert_eq!(
+            described(PageRequest::Scroll {
+                element: None,
+                to: None,
+                by: None,
+                into_view: Some(element()),
+                frame: None,
+            }),
+            "Scrolled element d1e5 into view"
+        );
+    }
+
+    phase element_refs_accept_only_document_and_element_numbers;
     {
         assert!(is_element_ref("d1e2"));
         assert!(is_element_ref("d12e345"));
@@ -108,7 +109,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         }
         assert!(!is_element_ref(&format!("d1e{}", "9".repeat(40))));
     }
-    // phase: key_chords_parse_to_canonical_form
+
+    phase key_chords_parse_to_canonical_form;
     {
         let key = PageKey::parse("Ctrl+Shift+a").unwrap();
         assert_eq!(key.key, "a");
@@ -121,7 +123,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             assert!(PageKey::parse(bad).is_none(), "{bad}");
         }
     }
-    // phase: key_names_are_read_in_any_letter_case
+
+    phase key_names_are_read_in_any_letter_case;
     {
         for (written, canonical) in [
             ("END", "End"),
@@ -141,7 +144,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         assert_eq!(PageKey::parse("A").unwrap().key, "A");
         assert_eq!(PageKey::parse("a").unwrap().key, "a");
     }
-    // phase: a_bad_key_says_what_a_key_is
+
+    phase a_bad_key_says_what_a_key_is;
     {
         let unknown = PageKey::parse_detailed("Homee").unwrap_err();
         assert!(unknown.contains("\"Homee\" is not a key name"), "{unknown}");
@@ -163,7 +167,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         let twice = PageKey::parse_detailed("Shift+Shift+a").unwrap_err();
         assert!(twice.contains("held twice"), "{twice}");
     }
-    // phase: invalid_requests_are_refused_before_the_engine
+
+    phase invalid_requests_are_refused_before_the_engine;
     {
         let element = "d1e2".to_string();
         assert!(
@@ -235,7 +240,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             );
         }
     }
-    // phase: pointer_gestures_are_bounded_and_round_trip_to_the_wire
+
+    phase pointer_gestures_are_bounded_and_round_trip_to_the_wire;
     {
         let inside = |kind, element: Option<&str>, x, y| PointerStep {
             kind,
@@ -329,7 +335,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             "an unknown button is the one a hand uses"
         );
     }
-    // phase: a_scroll_says_one_place_and_one_way_there
+
+    phase a_scroll_says_one_place_and_one_way_there;
     {
         let scroll = |element: Option<&str>, to, by, into_view: Option<&str>| PageRequest::Scroll {
             element: element.map(str::to_owned),
@@ -402,7 +409,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             serde_json::json!("1.2")
         );
     }
-    // phase: wire_encoding_names_every_field
+
+    phase wire_encoding_names_every_field;
     {
         let command = encode_request(
             7,
@@ -429,7 +437,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         );
         assert_eq!(command["values"], serde_json::json!(["NL"]));
     }
-    // phase: a_frame_is_named_only_as_the_outline_prints_it
+
+    phase a_frame_is_named_only_as_the_outline_prints_it;
     {
         for good in ["1", "2", "12", "1.2", "3.10.4"] {
             assert_eq!(FrameId::parse(good).unwrap().as_str(), good);
@@ -491,7 +500,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         assert!(!invented.valid());
         assert!(invented.main_frame().valid());
     }
-    // phase: agent_requests_name_their_arguments_and_bounds
+
+    phase agent_requests_name_their_arguments_and_bounds;
     {
         let at = encode_request(
             9,
@@ -616,7 +626,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         }
         assert!(PageRequest::Changes { frame: None }.element().is_none());
     }
-    // phase: a_find_names_an_element_by_what_a_page_says_it_is
+
+    phase a_find_names_an_element_by_what_a_page_says_it_is;
     {
         let by_name = PageRequest::Find {
             role: None,
@@ -707,7 +718,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             assert!(!bad.valid(), "{bad:?}");
         }
     }
-    // phase: pointer_gestures_are_bounded_and_name_their_two_ends
+
+    phase pointer_gestures_are_bounded_and_name_their_two_ends;
     {
         let hover = PageRequest::Hover {
             element: Some("d1e4".into()),
@@ -848,7 +860,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             assert!(!bad.valid(), "{bad:?}");
         }
     }
-    // phase: findings_decode_as_data_within_their_bound
+
+    phase findings_decode_as_data_within_their_bound;
     {
         let reply = |data: serde_json::Value| {
             serde_json::json!({"request_id":3,"ok":true,"message":"2 requests","url":"https://a.test/",
@@ -866,7 +879,8 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
         let huge = "x".repeat(MAX_DATA_BYTES);
         assert!(decode_result(&reply(serde_json::json!({"text": huge}))).is_none());
     }
-    // phase: results_decode_within_bounds
+
+    phase results_decode_within_bounds;
     {
         let ok = serde_json::json!({"event":"page_result","request_id":3,"ok":true,
             "url":"https://a.test/","message":"Read","outline":"- button \"Go\" [ref=d1e1]","navigated":false,"loading":false});
@@ -897,14 +911,11 @@ fn requests_are_bounded_and_round_trip_to_the_wire() {
             "code":"busy","message":""});
         assert!(decode_result(&anonymous).is_none());
     }
-}
 
-/// Several actors work in one tab: a request says who asks, the tab's
-/// record and its fields are requests like any other, and an answer says
-/// where its action stands and what the others did.
-#[test]
-fn several_actors_in_one_tab_are_named_recorded_and_told_of_each_other() {
-    // phase: an_actor_is_the_admitted_principal_within_the_engines_bound
+    phase an_actor_is_the_admitted_principal_within_the_engines_bound;
+    // Several actors work in one tab: a request says who asks, the tab's
+    // record and its fields are requests like any other, and an answer says
+    // where its action stands and what the others did.
     {
         assert_eq!(PageActor::named(""), None, "nobody is the unnamed actor");
         assert_eq!(PageActor::named("agent:ada").unwrap().as_str(), "agent:ada");
@@ -930,7 +941,8 @@ fn several_actors_in_one_tab_are_named_recorded_and_told_of_each_other() {
         assert!(name.as_str().encode_utf16().count() <= MAX_ACTOR_UNITS);
         assert!(name.as_str().starts_with(&"\u{1F600}".repeat(15)));
     }
-    // phase: the_actor_travels_with_the_request_and_is_absent_without_one
+
+    phase the_actor_travels_with_the_request_and_is_absent_without_one;
     {
         let read = PageRequest::Changes { frame: None };
         let ada = PageActor::named("agent:ada");
@@ -941,7 +953,8 @@ fn several_actors_in_one_tab_are_named_recorded_and_told_of_each_other() {
         );
         assert!(encode_request(3, None, &read).get("actor").is_none());
     }
-    // phase: the_record_and_the_fields_are_reads_of_their_own
+
+    phase the_record_and_the_fields_are_reads_of_their_own;
     {
         let record = PageRequest::Ledger { since: 12 };
         assert!(record.valid() && record.only_observes());
@@ -974,7 +987,8 @@ fn several_actors_in_one_tab_are_named_recorded_and_told_of_each_other() {
         };
         assert!(!invented.valid() && !invented.frame_valid());
     }
-    // phase: an_answer_says_its_place_and_what_the_others_did
+
+    phase an_answer_says_its_place_and_what_the_others_did;
     {
         let answer = |extra: serde_json::Value| {
             let mut answer = serde_json::json!({"event":"page_result","request_id":7,
@@ -1055,698 +1069,702 @@ fn several_actors_in_one_tab_are_named_recorded_and_told_of_each_other() {
             assert!(decode_result(&answer(bad)).is_none(), "{label}");
         }
     }
-}
 
-/// A long page is read on from a line, its words are found by searching,
-/// and a form is answered by the names it asks under: each a request
-/// within the bounds an engine accepts, and nothing outside them.
-#[test]
-fn a_page_is_read_on_searched_and_its_forms_answered_by_name() {
-    let answers = |value: serde_json::Value| value.as_object().unwrap().clone();
-    // phase: reading_on_names_the_line_to_start_at
+    phase a_page_is_read_on_searched_and_its_forms_answered_by_name;
+    // A long page is read on from a line, its words are found by searching,
+    // and a form is answered by the names it asks under: each a request
+    // within the bounds an engine accepts, and nothing outside them.
     {
-        let on = PageRequest::Outline {
-            from: Some(1240),
-            frame: None,
-        };
-        assert!(on.valid() && on.only_observes());
-        assert_eq!(
-            encode_request(3, None, &on),
-            serde_json::json!({"op":"page","request_id":3,"action":"outline","from":1240})
-        );
-        let top = PageRequest::Outline {
-            from: None,
-            frame: None,
-        };
-        assert!(
-            encode_request(3, None, &top).get("from").is_none(),
-            "a read from the top names no line"
-        );
-        let framed = PageRequest::Outline {
-            from: Some(2),
-            frame: FrameId::parse("1.2"),
-        };
-        assert_eq!(
-            encode_request(4, None, &framed),
-            serde_json::json!({"op":"page","request_id":4,"action":"outline","from":2,
-                "frame":"1.2"})
-        );
-        assert_eq!(
-            framed.main_frame(),
-            PageRequest::Outline {
-                from: Some(2),
+        let answers = |value: serde_json::Value| value.as_object().unwrap().clone();
+        // phase: reading_on_names_the_line_to_start_at
+        {
+            let on = PageRequest::Outline {
+                from: Some(1240),
                 frame: None,
-            },
-            "the line is kept when the frame is not"
-        );
-        for from in [1, MAX_OUTLINE_FROM] {
+            };
+            assert!(on.valid() && on.only_observes());
+            assert_eq!(
+                encode_request(3, None, &on),
+                serde_json::json!({"op":"page","request_id":3,"action":"outline","from":1240})
+            );
+            let top = PageRequest::Outline {
+                from: None,
+                frame: None,
+            };
             assert!(
+                encode_request(3, None, &top).get("from").is_none(),
+                "a read from the top names no line"
+            );
+            let framed = PageRequest::Outline {
+                from: Some(2),
+                frame: FrameId::parse("1.2"),
+            };
+            assert_eq!(
+                encode_request(4, None, &framed),
+                serde_json::json!({"op":"page","request_id":4,"action":"outline","from":2,
+                    "frame":"1.2"})
+            );
+            assert_eq!(
+                framed.main_frame(),
                 PageRequest::Outline {
-                    from: Some(from),
+                    from: Some(2),
                     frame: None,
-                }
-                .valid(),
-                "{from}"
+                },
+                "the line is kept when the frame is not"
             );
-        }
-        for from in [0, MAX_OUTLINE_FROM + 1, u32::MAX] {
-            assert!(
-                !PageRequest::Outline {
-                    from: Some(from),
-                    frame: None,
-                }
-                .valid(),
-                "{from}"
-            );
-        }
-    }
-    // phase: words_are_found_by_searching_for_them
-    {
-        let search = |text: &str| PageRequest::Search {
-            text: text.into(),
-            frame: None,
-            frames: false,
-        };
-        let words = search("within 30 days");
-        assert!(words.valid() && words.only_observes());
-        assert_eq!(words.action(), "search");
-        assert_eq!(words.element(), None);
-        assert_eq!(
-            words.described(),
-            "Searched the page for \"within 30 days\""
-        );
-        assert_eq!(
-            encode_request(5, None, &words),
-            serde_json::json!({"op":"page","request_id":5,"action":"search",
-                "text":"within 30 days"})
-        );
-        let framed = PageRequest::Search {
-            text: "Total".into(),
-            frame: FrameId::parse("2"),
-            frames: false,
-        };
-        assert_eq!(
-            encode_request(6, PageActor::named("agent:ada").as_ref(), &framed),
-            serde_json::json!({"op":"page","request_id":6,"action":"search","text":"Total",
-                "frame":"2","actor":"agent:ada"})
-        );
-        assert_eq!(framed.main_frame(), search("Total"));
-        // The words are counted as an engine counts them, in UTF-16
-        // units: a page in any script is searched within the same bound.
-        for good in [
-            "x".to_string(),
-            "x".repeat(MAX_SEARCH_UNITS),
-            "é".repeat(MAX_SEARCH_UNITS),
-            "\u{1F600}".repeat(MAX_SEARCH_UNITS / 2),
-        ] {
-            assert!(search(&good).valid(), "{} units", units(&good));
-        }
-        for bad in [
-            String::new(),
-            "x".repeat(MAX_SEARCH_UNITS + 1),
-            "\u{1F600}".repeat(MAX_SEARCH_UNITS / 2 + 1),
-        ] {
-            assert!(!search(&bad).valid(), "{} units", units(&bad));
-        }
-        assert!(
-            !PageRequest::Search {
-                text: "Total".into(),
-                frame: Some(FrameId::malformed()),
-                frames: false,
+            for from in [1, MAX_OUTLINE_FROM] {
+                assert!(
+                    PageRequest::Outline {
+                        from: Some(from),
+                        frame: None,
+                    }
+                    .valid(),
+                    "{from}"
+                );
             }
-            .valid()
-        );
-    }
-    // phase: a_form_is_read_as_what_it_asks
-    {
-        let forms = PageRequest::Forms { frame: None };
-        assert!(forms.valid() && forms.only_observes());
-        assert_eq!(forms.described(), "Read the page's forms");
-        assert_eq!(
-            encode_request(7, None, &forms),
-            serde_json::json!({"op":"page","request_id":7,"action":"forms"})
-        );
-        let framed = PageRequest::Forms {
-            frame: FrameId::parse("1"),
-        };
-        assert_eq!(encode_request(8, None, &framed)["frame"], "1");
-        assert_eq!(framed.main_frame(), forms);
-    }
-    // phase: a_form_is_answered_by_name_and_sent_one_way
-    {
-        let given = serde_json::json!({
-            "Arrival": "2027-02-03",
-            "Date of birth: Month": 11,
-            "Share of costs": 0.5,
-            "Refused before?": false,
-            "Languages": ["English", "German"],
-        });
-        let fill = |submit: FormSubmit, cross_origin: bool| PageRequest::FillForm {
-            form: "form1".into(),
-            answers: answers(given.clone()),
-            submit,
-            cross_origin,
-            frame: None,
-        };
-        let answered = fill(FormSubmit::No, false);
-        assert!(answered.valid());
-        assert!(
-            !answered.only_observes() && !answered.enters_text(),
-            "answering a form acts on the page, and never types a secret into it"
-        );
-        assert_eq!(answered.action(), "fill_form");
-        assert_eq!((answered.element(), answered.frame()), (None, None));
-        assert_eq!(answered.described(), "Answered form form1");
-        // The answers travel as the object they are, each value as it
-        // was given, and a form that is only answered says nothing of
-        // sending.
-        assert_eq!(
-            encode_request(9, None, &answered),
-            serde_json::json!({"op":"page","request_id":9,"action":"fill_form",
-                "form":"form1","answers":given,"cross_origin":false})
-        );
-        // Sent with the first submit button, or with the one a label
-        // names: a boolean or a text, as the engine reads it.
-        let first = encode_request(10, None, &fill(FormSubmit::First, false));
-        assert_eq!(first["submit"], serde_json::json!(true));
-        let named = encode_request(
-            11,
-            PageActor::named("agent:ada").as_ref(),
-            &fill(FormSubmit::Button("Send application".into()), true),
-        );
-        assert_eq!(named["submit"], serde_json::json!("Send application"));
-        assert_eq!(named["cross_origin"], serde_json::json!(true));
-        assert_eq!(named["actor"], "agent:ada");
-        assert!(named["answers"].is_object());
-        // A form named by its signature, with nothing but the sending.
-        let by_signature = PageRequest::FillForm {
-            form: "5f1c2a9be0".into(),
-            answers: serde_json::Map::new(),
-            submit: FormSubmit::First,
-            cross_origin: false,
-            frame: None,
-        };
-        assert!(by_signature.valid());
-        // The bounds an engine accepts, each met and each passed.
-        let with =
-            |form: &str, answers: serde_json::Value, submit: FormSubmit| PageRequest::FillForm {
-                form: form.into(),
-                answers: answers.as_object().unwrap().clone(),
+            for from in [0, MAX_OUTLINE_FROM + 1, u32::MAX] {
+                assert!(
+                    !PageRequest::Outline {
+                        from: Some(from),
+                        frame: None,
+                    }
+                    .valid(),
+                    "{from}"
+                );
+            }
+        }
+        // phase: words_are_found_by_searching_for_them
+        {
+            let search = |text: &str| PageRequest::Search {
+                text: text.into(),
+                frame: None,
+                frames: false,
+            };
+            let words = search("within 30 days");
+            assert!(words.valid() && words.only_observes());
+            assert_eq!(words.action(), "search");
+            assert_eq!(words.element(), None);
+            assert_eq!(
+                words.described(),
+                "Searched the page for \"within 30 days\""
+            );
+            assert_eq!(
+                encode_request(5, None, &words),
+                serde_json::json!({"op":"page","request_id":5,"action":"search",
+                    "text":"within 30 days"})
+            );
+            let framed = PageRequest::Search {
+                text: "Total".into(),
+                frame: FrameId::parse("2"),
+                frames: false,
+            };
+            assert_eq!(
+                encode_request(6, PageActor::named("agent:ada").as_ref(), &framed),
+                serde_json::json!({"op":"page","request_id":6,"action":"search","text":"Total",
+                    "frame":"2","actor":"agent:ada"})
+            );
+            assert_eq!(framed.main_frame(), search("Total"));
+            // The words are counted as an engine counts them, in UTF-16
+            // units: a page in any script is searched within the same bound.
+            for good in [
+                "x".to_string(),
+                "x".repeat(MAX_SEARCH_UNITS),
+                "é".repeat(MAX_SEARCH_UNITS),
+                "\u{1F600}".repeat(MAX_SEARCH_UNITS / 2),
+            ] {
+                assert!(search(&good).valid(), "{} units", units(&good));
+            }
+            for bad in [
+                String::new(),
+                "x".repeat(MAX_SEARCH_UNITS + 1),
+                "\u{1F600}".repeat(MAX_SEARCH_UNITS / 2 + 1),
+            ] {
+                assert!(!search(&bad).valid(), "{} units", units(&bad));
+            }
+            assert!(
+                !PageRequest::Search {
+                    text: "Total".into(),
+                    frame: Some(FrameId::malformed()),
+                    frames: false,
+                }
+                .valid()
+            );
+        }
+        // phase: a_form_is_read_as_what_it_asks
+        {
+            let forms = PageRequest::Forms { frame: None };
+            assert!(forms.valid() && forms.only_observes());
+            assert_eq!(forms.described(), "Read the page's forms");
+            assert_eq!(
+                encode_request(7, None, &forms),
+                serde_json::json!({"op":"page","request_id":7,"action":"forms"})
+            );
+            let framed = PageRequest::Forms {
+                frame: FrameId::parse("1"),
+            };
+            assert_eq!(encode_request(8, None, &framed)["frame"], "1");
+            assert_eq!(framed.main_frame(), forms);
+        }
+        // phase: a_form_is_answered_by_name_and_sent_one_way
+        {
+            let given = serde_json::json!({
+                "Arrival": "2027-02-03",
+                "Date of birth: Month": 11,
+                "Share of costs": 0.5,
+                "Refused before?": false,
+                "Languages": ["English", "German"],
+            });
+            let fill = |submit: FormSubmit, cross_origin: bool| PageRequest::FillForm {
+                form: "form1".into(),
+                answers: answers(given.clone()),
                 submit,
+                cross_origin,
+                frame: None,
+            };
+            let answered = fill(FormSubmit::No, false);
+            assert!(answered.valid());
+            assert!(
+                !answered.only_observes() && !answered.enters_text(),
+                "answering a form acts on the page, and never types a secret into it"
+            );
+            assert_eq!(answered.action(), "fill_form");
+            assert_eq!((answered.element(), answered.frame()), (None, None));
+            assert_eq!(answered.described(), "Answered form form1");
+            // The answers travel as the object they are, each value as it
+            // was given, and a form that is only answered says nothing of
+            // sending.
+            assert_eq!(
+                encode_request(9, None, &answered),
+                serde_json::json!({"op":"page","request_id":9,"action":"fill_form",
+                    "form":"form1","answers":given,"cross_origin":false})
+            );
+            // Sent with the first submit button, or with the one a label
+            // names: a boolean or a text, as the engine reads it.
+            let first = encode_request(10, None, &fill(FormSubmit::First, false));
+            assert_eq!(first["submit"], serde_json::json!(true));
+            let named = encode_request(
+                11,
+                PageActor::named("agent:ada").as_ref(),
+                &fill(FormSubmit::Button("Send application".into()), true),
+            );
+            assert_eq!(named["submit"], serde_json::json!("Send application"));
+            assert_eq!(named["cross_origin"], serde_json::json!(true));
+            assert_eq!(named["actor"], "agent:ada");
+            assert!(named["answers"].is_object());
+            // A form named by its signature, with nothing but the sending.
+            let by_signature = PageRequest::FillForm {
+                form: "5f1c2a9be0".into(),
+                answers: serde_json::Map::new(),
+                submit: FormSubmit::First,
                 cross_origin: false,
                 frame: None,
             };
-        let most: serde_json::Map<String, serde_json::Value> = (0..MAX_FORM_ANSWERS)
-            .map(|number| (format!("Question {number}"), serde_json::json!("x")))
-            .collect();
-        let mut one_more = most.clone();
-        one_more.insert("One more".into(), serde_json::json!("x"));
-        for good in [
-            with(
-                &"f".repeat(MAX_FORM_UNITS),
-                serde_json::json!({}),
-                FormSubmit::No,
-            ),
-            with("form1", most.into(), FormSubmit::No),
-            with(
-                "form1",
-                serde_json::json!({"é".repeat(MAX_FORM_NAME_UNITS): "x"}),
-                FormSubmit::No,
-            ),
-            with(
-                "form1",
-                serde_json::json!({"Notes": "x".repeat(MAX_FORM_TEXT_UNITS)}),
-                FormSubmit::No,
-            ),
-            with(
-                "form1",
-                serde_json::json!({"Languages": vec!["x".repeat(MAX_FORM_CHOICE_UNITS); MAX_FORM_CHOICES]}),
-                FormSubmit::No,
-            ),
-            with(
-                "form1",
-                serde_json::json!({"Languages": []}),
-                FormSubmit::Button("x".repeat(MAX_FORM_NAME_UNITS)),
-            ),
-        ] {
-            assert!(good.valid(), "{}", good.described());
-        }
-        for (why, bad) in [
-            (
-                "a form of no name",
-                with("", serde_json::json!({"Arrival": "x"}), FormSubmit::No),
-            ),
-            (
-                "a name longer than an id or a signature",
+            assert!(by_signature.valid());
+            // The bounds an engine accepts, each met and each passed.
+            let with =
+                |form: &str, answers: serde_json::Value, submit: FormSubmit| PageRequest::FillForm {
+                    form: form.into(),
+                    answers: answers.as_object().unwrap().clone(),
+                    submit,
+                    cross_origin: false,
+                    frame: None,
+                };
+            let most: serde_json::Map<String, serde_json::Value> = (0..MAX_FORM_ANSWERS)
+                .map(|number| (format!("Question {number}"), serde_json::json!("x")))
+                .collect();
+            let mut one_more = most.clone();
+            one_more.insert("One more".into(), serde_json::json!("x"));
+            for good in [
                 with(
-                    &"f".repeat(MAX_FORM_UNITS + 1),
+                    &"f".repeat(MAX_FORM_UNITS),
                     serde_json::json!({}),
                     FormSubmit::No,
                 ),
-            ),
-            (
-                "more answers than a form takes",
-                with("form1", one_more.into(), FormSubmit::No),
-            ),
-            (
-                "an answer under no name",
-                with("form1", serde_json::json!({"": "x"}), FormSubmit::No),
-            ),
-            (
-                "a name longer than any question's",
+                with("form1", most.into(), FormSubmit::No),
                 with(
                     "form1",
-                    serde_json::json!({"x".repeat(MAX_FORM_NAME_UNITS + 1): "x"}),
+                    serde_json::json!({"é".repeat(MAX_FORM_NAME_UNITS): "x"}),
                     FormSubmit::No,
                 ),
-            ),
-            (
-                "a text longer than a field takes",
                 with(
                     "form1",
-                    serde_json::json!({"Notes": "x".repeat(MAX_FORM_TEXT_UNITS + 1)}),
+                    serde_json::json!({"Notes": "x".repeat(MAX_FORM_TEXT_UNITS)}),
                     FormSubmit::No,
                 ),
-            ),
-            (
-                "an answer that is an object",
                 with(
                     "form1",
-                    serde_json::json!({"Arrival": {"day": 3}}),
+                    serde_json::json!({"Languages": vec!["x".repeat(MAX_FORM_CHOICE_UNITS); MAX_FORM_CHOICES]}),
                     FormSubmit::No,
                 ),
-            ),
-            (
-                "an answer that is nothing",
                 with(
                     "form1",
-                    serde_json::json!({"Arrival": null}),
-                    FormSubmit::No,
+                    serde_json::json!({"Languages": []}),
+                    FormSubmit::Button("x".repeat(MAX_FORM_NAME_UNITS)),
                 ),
-            ),
-            (
-                "a choice that is no text",
-                with(
-                    "form1",
-                    serde_json::json!({"Languages": ["English", 3]}),
-                    FormSubmit::No,
-                ),
-            ),
-            (
-                "more choices than one answer makes",
-                with(
-                    "form1",
-                    serde_json::json!({"Languages": vec!["x"; MAX_FORM_CHOICES + 1]}),
-                    FormSubmit::No,
-                ),
-            ),
-            (
-                "a choice longer than any option",
-                with(
-                    "form1",
-                    serde_json::json!({"Languages": ["x".repeat(MAX_FORM_CHOICE_UNITS + 1)]}),
-                    FormSubmit::No,
-                ),
-            ),
-            (
-                "a button of no name",
-                with(
-                    "form1",
-                    serde_json::json!({}),
-                    FormSubmit::Button(String::new()),
-                ),
-            ),
-            (
-                "a label longer than any button's",
-                with(
-                    "form1",
-                    serde_json::json!({}),
-                    FormSubmit::Button("x".repeat(MAX_FORM_NAME_UNITS + 1)),
-                ),
-            ),
-        ] {
-            assert!(!bad.valid(), "{why}");
-        }
-    }
-}
-
-/// A picture of the page is a request like any other, and its answer's pixels travel
-/// as the reply's own image: a PNG, bounded, and never a finding the caller has to
-/// decode.
-#[test]
-fn a_capture_asks_for_a_bounded_picture_and_answers_with_its_pixels() {
-    use base64::Engine as _;
-    let png: &[u8] = &[
-        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 2,
-        0, 0, 0, 144, 119, 83, 222,
-    ];
-
-    // phase: the_viewport_when_no_element_is_named
-    let page = PageRequest::Capture {
-        element: None,
-        max_width: None,
-        frame: None,
-    };
-    assert!(page.valid());
-    assert_eq!(page.action(), "capture");
-    assert_eq!(page.described(), "Pictured the page");
-    assert_eq!(page.element(), None);
-    assert_eq!(
-        encode_request(7, None, &page),
-        serde_json::json!({
-            "op": "page",
-            "request_id": 7,
-            "action": "capture",
-            "max_width": u32::from(MAX_CAPTURE_WIDTH),
-        })
-    );
-
-    // phase: an_element_is_named_by_the_ref_the_outline_printed
-    let element = PageRequest::Capture {
-        element: Some("d1e5".into()),
-        max_width: Some(400),
-        frame: Some(FrameId::parse("1.2").unwrap()),
-    };
-    assert!(element.valid());
-    assert_eq!(element.described(), "Pictured element d1e5");
-    assert_eq!(
-        encode_request(8, None, &element),
-        serde_json::json!({
-            "op": "page",
-            "request_id": 8,
-            "action": "capture",
-            "element": "d1e5",
-            "frame": "1.2",
-            "max_width": 400,
-        })
-    );
-
-    // phase: a_width_no_engine_paints_or_a_ref_no_outline_printed_is_refused
-    for width in [0, u32::from(MAX_CAPTURE_WIDTH) + 1, 4000] {
-        assert!(
-            !PageRequest::Capture {
-                element: None,
-                max_width: Some(width),
-                frame: None,
+            ] {
+                assert!(good.valid(), "{}", good.described());
             }
-            .valid(),
-            "{width}"
-        );
-    }
-    assert!(
-        PageRequest::Capture {
-            element: None,
-            max_width: Some(u32::from(MAX_CAPTURE_WIDTH)),
-            frame: None,
+            for (why, bad) in [
+                (
+                    "a form of no name",
+                    with("", serde_json::json!({"Arrival": "x"}), FormSubmit::No),
+                ),
+                (
+                    "a name longer than an id or a signature",
+                    with(
+                        &"f".repeat(MAX_FORM_UNITS + 1),
+                        serde_json::json!({}),
+                        FormSubmit::No,
+                    ),
+                ),
+                (
+                    "more answers than a form takes",
+                    with("form1", one_more.into(), FormSubmit::No),
+                ),
+                (
+                    "an answer under no name",
+                    with("form1", serde_json::json!({"": "x"}), FormSubmit::No),
+                ),
+                (
+                    "a name longer than any question's",
+                    with(
+                        "form1",
+                        serde_json::json!({"x".repeat(MAX_FORM_NAME_UNITS + 1): "x"}),
+                        FormSubmit::No,
+                    ),
+                ),
+                (
+                    "a text longer than a field takes",
+                    with(
+                        "form1",
+                        serde_json::json!({"Notes": "x".repeat(MAX_FORM_TEXT_UNITS + 1)}),
+                        FormSubmit::No,
+                    ),
+                ),
+                (
+                    "an answer that is an object",
+                    with(
+                        "form1",
+                        serde_json::json!({"Arrival": {"day": 3}}),
+                        FormSubmit::No,
+                    ),
+                ),
+                (
+                    "an answer that is nothing",
+                    with(
+                        "form1",
+                        serde_json::json!({"Arrival": null}),
+                        FormSubmit::No,
+                    ),
+                ),
+                (
+                    "a choice that is no text",
+                    with(
+                        "form1",
+                        serde_json::json!({"Languages": ["English", 3]}),
+                        FormSubmit::No,
+                    ),
+                ),
+                (
+                    "more choices than one answer makes",
+                    with(
+                        "form1",
+                        serde_json::json!({"Languages": vec!["x"; MAX_FORM_CHOICES + 1]}),
+                        FormSubmit::No,
+                    ),
+                ),
+                (
+                    "a choice longer than any option",
+                    with(
+                        "form1",
+                        serde_json::json!({"Languages": ["x".repeat(MAX_FORM_CHOICE_UNITS + 1)]}),
+                        FormSubmit::No,
+                    ),
+                ),
+                (
+                    "a button of no name",
+                    with(
+                        "form1",
+                        serde_json::json!({}),
+                        FormSubmit::Button(String::new()),
+                    ),
+                ),
+                (
+                    "a label longer than any button's",
+                    with(
+                        "form1",
+                        serde_json::json!({}),
+                        FormSubmit::Button("x".repeat(MAX_FORM_NAME_UNITS + 1)),
+                    ),
+                ),
+            ] {
+                assert!(!bad.valid(), "{why}");
+            }
         }
-        .valid()
-    );
-    assert!(
-        !PageRequest::Capture {
-            element: Some("not-a-ref".into()),
+    }
+
+    phase a_capture_asks_for_a_bounded_picture_and_answers_with_its_pixels;
+    // A picture of the page is a request like any other, and its answer's pixels travel
+    // as the reply's own image: a PNG, bounded, and never a finding the caller has to
+    // decode.
+    {
+        use base64::Engine as _;
+        let png: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 2,
+            0, 0, 0, 144, 119, 83, 222,
+        ];
+
+        // phase: the_viewport_when_no_element_is_named
+        let page = PageRequest::Capture {
+            element: None,
             max_width: None,
             frame: None,
+        };
+        assert!(page.valid());
+        assert_eq!(page.action(), "capture");
+        assert_eq!(page.described(), "Pictured the page");
+        assert_eq!(page.element(), None);
+        assert_eq!(
+            encode_request(7, None, &page),
+            serde_json::json!({
+                "op": "page",
+                "request_id": 7,
+                "action": "capture",
+                "max_width": u32::from(MAX_CAPTURE_WIDTH),
+            })
+        );
+
+        // phase: an_element_is_named_by_the_ref_the_outline_printed
+        let element = PageRequest::Capture {
+            element: Some("d1e5".into()),
+            max_width: Some(400),
+            frame: Some(FrameId::parse("1.2").unwrap()),
+        };
+        assert!(element.valid());
+        assert_eq!(element.described(), "Pictured element d1e5");
+        assert_eq!(
+            encode_request(8, None, &element),
+            serde_json::json!({
+                "op": "page",
+                "request_id": 8,
+                "action": "capture",
+                "element": "d1e5",
+                "frame": "1.2",
+                "max_width": 400,
+            })
+        );
+
+        // phase: a_width_no_engine_paints_or_a_ref_no_outline_printed_is_refused
+        for width in [0, u32::from(MAX_CAPTURE_WIDTH) + 1, 4000] {
+            assert!(
+                !PageRequest::Capture {
+                    element: None,
+                    max_width: Some(width),
+                    frame: None,
+                }
+                .valid(),
+                "{width}"
+            );
         }
-        .valid()
-    );
+        assert!(
+            PageRequest::Capture {
+                element: None,
+                max_width: Some(u32::from(MAX_CAPTURE_WIDTH)),
+                frame: None,
+            }
+            .valid()
+        );
+        assert!(
+            !PageRequest::Capture {
+                element: Some("not-a-ref".into()),
+                max_width: None,
+                frame: None,
+            }
+            .valid()
+        );
 
-    // phase: the_answer_carries_the_picture_as_its_own_pixels
-    let encoded = base64::engine::general_purpose::STANDARD.encode(png);
-    let answer = serde_json::json!({"event":"page_result","request_id":9,"ok":true,
-        "url":"https://letters.test/scan","message":"The view","outline":null,
-        "navigation":"none","navigated":false,"loading":false,
-        "data":{"x":0.0,"y":0.0,"width":800.0,"height":600.0,"format":"png","capture":encoded}});
-    let reply = decode_result(&answer)
-        .expect("a picture is a well-formed answer")
-        .1;
-    let reply = reply.expect("it succeeded");
-    assert_eq!(reply.image.as_deref(), Some(png));
-    assert!(
-        reply.data.unwrap().get("capture").is_none(),
-        "the pixels are the image, never a base64 finding beside it"
-    );
-
-    // phase: what_is_not_a_png_in_named_limits_is_not_a_picture
-    for (label, capture) in [
-        ("not base64", "!!!".to_string()),
-        (
-            "another file",
-            base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.7 ..."),
-        ),
-        (
-            "larger than any engine paints",
-            base64::engine::general_purpose::STANDARD.encode(vec![0u8; MAX_CAPTURE_BYTES + 1]),
-        ),
-    ] {
-        let bad = serde_json::json!({"event":"page_result","request_id":9,"ok":true,
+        // phase: the_answer_carries_the_picture_as_its_own_pixels
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png);
+        let answer = serde_json::json!({"event":"page_result","request_id":9,"ok":true,
             "url":"https://letters.test/scan","message":"The view","outline":null,
             "navigation":"none","navigated":false,"loading":false,
-            "data":{"capture":capture}});
-        assert!(decode_result(&bad).is_none(), "{label}");
-    }
-}
+            "data":{"x":0.0,"y":0.0,"width":800.0,"height":600.0,"format":"png","capture":encoded}});
+        let reply = decode_result(&answer)
+            .expect("a picture is a well-formed answer")
+            .1;
+        let reply = reply.expect("it succeeded");
+        assert_eq!(reply.image.as_deref(), Some(png));
+        assert!(
+            reply.data.unwrap().get("capture").is_none(),
+            "the pixels are the image, never a base64 finding beside it"
+        );
 
-/// A find and a search say when they are to look in the frames the page
-/// shows as well as in the page, and say nothing of it otherwise; a form is
-/// answered in a frame's own document by naming the frame.
-#[test]
-fn a_find_and_a_search_look_in_the_frames_when_asked_and_a_form_is_answered_in_a_frame() {
-    let find = PageRequest::Find {
-        role: Some("button".into()),
-        name: Some("Accept all".into()),
-        nth: None,
-        frame: None,
-        frames: true,
-    };
-    assert!(find.valid() && find.only_observes());
-    assert_eq!(
-        encode_request(3, None, &find),
-        serde_json::json!({"op":"page","request_id":3,"action":"find","role":"button",
-            "name":"Accept all","frames":true})
-    );
-    let search = PageRequest::Search {
-        text: "Total".into(),
-        frame: None,
-        frames: true,
-    };
-    assert!(search.valid() && search.only_observes());
-    assert_eq!(
-        encode_request(4, None, &search),
-        serde_json::json!({"op":"page","request_id":4,"action":"search","text":"Total",
-            "frames":true})
-    );
-    // Looking in the frames is no frame of its own: the request still runs
-    // from the page's document.
-    assert_eq!(find.frame(), None);
-    assert_eq!(search.clone().main_frame(), search);
-
-    let form = |frame: Option<FrameId>| PageRequest::FillForm {
-        form: "form1".into(),
-        answers: serde_json::Map::new(),
-        submit: FormSubmit::No,
-        cross_origin: false,
-        frame,
-    };
-    let framed = form(FrameId::parse("[frame=3]"));
-    assert!(framed.valid() && !framed.only_observes());
-    assert_eq!(framed.frame(), FrameId::parse("3").as_ref());
-    assert_eq!(
-        encode_request(5, None, &framed),
-        serde_json::json!({"op":"page","request_id":5,"action":"fill_form","form":"form1",
-            "answers":{},"cross_origin":false,"frame":"3"})
-    );
-    assert_eq!(framed.main_frame(), form(None));
-    assert!(
-        !form(Some(FrameId::malformed())).valid(),
-        "a frame nobody printed is refused, not answered in the page"
-    );
-}
-
-/// What a person typed straight into the page arrives as the entry the
-/// engine set down and its place, and only as that.
-#[test]
-fn what_a_person_typed_is_decoded_as_the_entry_the_engine_set_down() {
-    let typed = serde_json::json!({"event":"page_record","tab":2,"seq":4.0,"entry":{
-        "seq":4.0,"time_ms":1_700_000_000_004.0_f64,"actor":"","how":"input","ok":true,
-        "target":{"role":"textbox","name":"Email","nth":1},"text":"ada@example.org",
-        "message":"Direct input into textbox \"Email\"","url":"https://shop.test/form"}});
-    let (seq, entry) = decode_record_event(&typed).expect("the event is what the host sends");
-    assert_eq!(seq, 4);
-    assert_eq!(
-        entry["seq"], 4,
-        "the entry names its place as a whole number"
-    );
-    assert_eq!(entry["how"], "input");
-    assert_eq!(entry["text"], "ada@example.org");
-
-    // An entry that leaves its place out is at the place the event names.
-    let mut bare = typed.clone();
-    bare["entry"].as_object_mut().unwrap().remove("seq");
-    assert_eq!(
-        decode_record_event(&bare).map(|(seq, entry)| (seq, entry["seq"].clone())),
-        Some((4, serde_json::json!(4)))
-    );
-
-    for (why, change) in [
-        ("no place", serde_json::json!({"seq": null})),
-        ("the place before the first", serde_json::json!({"seq": 0})),
-        ("half a place", serde_json::json!({"seq": 4.5})),
-        ("no entry", serde_json::json!({"entry": null})),
-        (
-            "an entry that is a text",
-            serde_json::json!({"entry": "typed"}),
-        ),
-        (
-            "an entry of another place",
-            serde_json::json!({"entry": {"seq": 5, "how": "input"}}),
-        ),
-        (
-            "an entry longer than an answer's findings",
-            serde_json::json!({"entry": {"seq": 4, "text": "x".repeat(MAX_DATA_BYTES)}}),
-        ),
-    ] {
-        let mut event = typed.clone();
-        event
-            .as_object_mut()
-            .unwrap()
-            .extend(change.as_object().unwrap().clone());
-        assert!(decode_record_event(&event).is_none(), "{why}");
-    }
-}
-
-/// What the page changed of itself arrives as which document, which forms
-/// and which fields, and never as what a field holds.
-#[test]
-fn what_a_page_changed_of_itself_is_decoded_within_its_bounds() {
-    let told = serde_json::json!({"event":"page_changed","tab":2,"document":7.0,
-        "forms":[
-            {"form":"form1","signature":"0badc0de","offers":"5f1c2a9b"},
-            {"form":"form2","gone":true},
-        ],
-        "fields":[
-            {"element":"d7e4","role":"textbox","name":"Arrival","how":"page",
-                "form":"form1","question":"Arrival"},
-            {"element":"d7e9","role":"searchbox","name":"Search","how":"input"},
-        ],
-        "more":3});
-    assert_eq!(
-        decode_changed_event(&told),
-        Some(PageChange {
-            document: 7,
-            frame: None,
-            forms: vec![
-                PageFormChange {
-                    form: "form1".into(),
-                    signature: Some("0badc0de".into()),
-                    offers: Some("5f1c2a9b".into()),
-                    gone: false,
-                },
-                PageFormChange {
-                    form: "form2".into(),
-                    signature: None,
-                    offers: None,
-                    gone: true,
-                },
-            ],
-            fields: vec![
-                PageFieldChange {
-                    element: "d7e4".into(),
-                    role: "textbox".into(),
-                    name: "Arrival".into(),
-                    typed: false,
-                    form: Some("form1".into()),
-                    question: Some("Arrival".into()),
-                },
-                PageFieldChange {
-                    element: "d7e9".into(),
-                    role: "searchbox".into(),
-                    name: "Search".into(),
-                    typed: true,
-                    form: None,
-                    question: None,
-                },
-            ],
-            more: 3,
-        })
-    );
-
-    // A change in a frame says the frame by the number the tab calls it by.
-    let mut framed = told.clone();
-    framed["frame"] = "3".into();
-    framed["frame_name"] = "Payment".into();
-    framed["frame_url"] = "https://pay.test/card".into();
-    assert_eq!(
-        decode_changed_event(&framed).and_then(|change| change.frame),
-        FrameId::parse("3")
-    );
-    // Forms alone, or fields alone, are a change too.
-    let mut forms_only = told.clone();
-    forms_only.as_object_mut().unwrap().remove("fields");
-    forms_only.as_object_mut().unwrap().remove("more");
-    assert!(
-        decode_changed_event(&forms_only).is_some_and(|change| change.fields.is_empty()
-            && change.more == 0
-            && change.forms.len() == 2)
-    );
-
-    for (why, pointer, value) in [
-        ("no document", "/document", serde_json::json!(null)),
-        ("document 0", "/document", serde_json::json!(0)),
-        (
-            "a frame no outline printed",
-            "/frame",
-            serde_json::json!("main; drop"),
-        ),
-        ("a frame that is no text", "/frame", serde_json::json!(3)),
-        (
-            "forms that are no list",
-            "/forms",
-            serde_json::json!("form1"),
-        ),
-        (
-            "a form without an id",
-            "/forms/0/form",
-            serde_json::json!(""),
-        ),
-        (
-            "a form gone by a word",
-            "/forms/1/gone",
-            serde_json::json!("yes"),
-        ),
-        (
-            "a field whose ref is none",
-            "/fields/0/element",
-            serde_json::json!("#arrival"),
-        ),
-        (
-            "a field changed by nobody known",
-            "/fields/0/how",
-            serde_json::json!("action"),
-        ),
-        (
-            "a field's name that is no text",
-            "/fields/1/name",
-            serde_json::json!(7),
-        ),
-        (
-            "a count that is no number",
-            "/more",
-            serde_json::json!("many"),
-        ),
-    ] {
-        let mut event = told.clone();
-        if pointer == "/frame" {
-            event["frame"] = value;
-        } else {
-            *event.pointer_mut(pointer).expect(pointer) = value;
+        // phase: what_is_not_a_png_in_named_limits_is_not_a_picture
+        for (label, capture) in [
+            ("not base64", "!!!".to_string()),
+            (
+                "another file",
+                base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.7 ..."),
+            ),
+            (
+                "larger than any engine paints",
+                base64::engine::general_purpose::STANDARD.encode(vec![0u8; MAX_CAPTURE_BYTES + 1]),
+            ),
+        ] {
+            let bad = serde_json::json!({"event":"page_result","request_id":9,"ok":true,
+                "url":"https://letters.test/scan","message":"The view","outline":null,
+                "navigation":"none","navigated":false,"loading":false,
+                "data":{"capture":capture}});
+            assert!(decode_result(&bad).is_none(), "{label}");
         }
-        assert!(decode_changed_event(&event).is_none(), "{why}");
     }
-    let mut many = told.clone();
-    many["fields"] =
-        serde_json::Value::Array(vec![told["fields"][0].clone(); MAX_CHANGED_FIELDS + 1]);
-    assert!(
-        decode_changed_event(&many).is_none(),
-        "more fields than one event names"
-    );
+
+    phase a_find_and_a_search_look_in_the_frames_when_asked_and_a_form_is_answered_in_a_frame;
+    // A find and a search say when they are to look in the frames the page
+    // shows as well as in the page, and say nothing of it otherwise; a form is
+    // answered in a frame's own document by naming the frame.
+    {
+        let find = PageRequest::Find {
+            role: Some("button".into()),
+            name: Some("Accept all".into()),
+            nth: None,
+            frame: None,
+            frames: true,
+        };
+        assert!(find.valid() && find.only_observes());
+        assert_eq!(
+            encode_request(3, None, &find),
+            serde_json::json!({"op":"page","request_id":3,"action":"find","role":"button",
+                "name":"Accept all","frames":true})
+        );
+        let search = PageRequest::Search {
+            text: "Total".into(),
+            frame: None,
+            frames: true,
+        };
+        assert!(search.valid() && search.only_observes());
+        assert_eq!(
+            encode_request(4, None, &search),
+            serde_json::json!({"op":"page","request_id":4,"action":"search","text":"Total",
+                "frames":true})
+        );
+        // Looking in the frames is no frame of its own: the request still runs
+        // from the page's document.
+        assert_eq!(find.frame(), None);
+        assert_eq!(search.clone().main_frame(), search);
+
+        let form = |frame: Option<FrameId>| PageRequest::FillForm {
+            form: "form1".into(),
+            answers: serde_json::Map::new(),
+            submit: FormSubmit::No,
+            cross_origin: false,
+            frame,
+        };
+        let framed = form(FrameId::parse("[frame=3]"));
+        assert!(framed.valid() && !framed.only_observes());
+        assert_eq!(framed.frame(), FrameId::parse("3").as_ref());
+        assert_eq!(
+            encode_request(5, None, &framed),
+            serde_json::json!({"op":"page","request_id":5,"action":"fill_form","form":"form1",
+                "answers":{},"cross_origin":false,"frame":"3"})
+        );
+        assert_eq!(framed.main_frame(), form(None));
+        assert!(
+            !form(Some(FrameId::malformed())).valid(),
+            "a frame nobody printed is refused, not answered in the page"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn what_happened_on_a_page_is_decoded_within_its_bounds;
+
+    phase what_a_person_typed_is_decoded_as_the_entry_the_engine_set_down;
+    // What a person typed straight into the page arrives as the entry the
+    // engine set down and its place, and only as that.
+    {
+        let typed = serde_json::json!({"event":"page_record","tab":2,"seq":4.0,"entry":{
+            "seq":4.0,"time_ms":1_700_000_000_004.0_f64,"actor":"","how":"input","ok":true,
+            "target":{"role":"textbox","name":"Email","nth":1},"text":"ada@example.org",
+            "message":"Direct input into textbox \"Email\"","url":"https://shop.test/form"}});
+        let (seq, entry) = decode_record_event(&typed).expect("the event is what the host sends");
+        assert_eq!(seq, 4);
+        assert_eq!(
+            entry["seq"], 4,
+            "the entry names its place as a whole number"
+        );
+        assert_eq!(entry["how"], "input");
+        assert_eq!(entry["text"], "ada@example.org");
+
+        // An entry that leaves its place out is at the place the event names.
+        let mut bare = typed.clone();
+        bare["entry"].as_object_mut().unwrap().remove("seq");
+        assert_eq!(
+            decode_record_event(&bare).map(|(seq, entry)| (seq, entry["seq"].clone())),
+            Some((4, serde_json::json!(4)))
+        );
+
+        for (why, change) in [
+            ("no place", serde_json::json!({"seq": null})),
+            ("the place before the first", serde_json::json!({"seq": 0})),
+            ("half a place", serde_json::json!({"seq": 4.5})),
+            ("no entry", serde_json::json!({"entry": null})),
+            (
+                "an entry that is a text",
+                serde_json::json!({"entry": "typed"}),
+            ),
+            (
+                "an entry of another place",
+                serde_json::json!({"entry": {"seq": 5, "how": "input"}}),
+            ),
+            (
+                "an entry longer than an answer's findings",
+                serde_json::json!({"entry": {"seq": 4, "text": "x".repeat(MAX_DATA_BYTES)}}),
+            ),
+        ] {
+            let mut event = typed.clone();
+            event
+                .as_object_mut()
+                .unwrap()
+                .extend(change.as_object().unwrap().clone());
+            assert!(decode_record_event(&event).is_none(), "{why}");
+        }
+    }
+
+    phase what_a_page_changed_of_itself_is_decoded_within_its_bounds;
+    // What the page changed of itself arrives as which document, which forms
+    // and which fields, and never as what a field holds.
+    {
+        let told = serde_json::json!({"event":"page_changed","tab":2,"document":7.0,
+            "forms":[
+                {"form":"form1","signature":"0badc0de","offers":"5f1c2a9b"},
+                {"form":"form2","gone":true},
+            ],
+            "fields":[
+                {"element":"d7e4","role":"textbox","name":"Arrival","how":"page",
+                    "form":"form1","question":"Arrival"},
+                {"element":"d7e9","role":"searchbox","name":"Search","how":"input"},
+            ],
+            "more":3});
+        assert_eq!(
+            decode_changed_event(&told),
+            Some(PageChange {
+                document: 7,
+                frame: None,
+                forms: vec![
+                    PageFormChange {
+                        form: "form1".into(),
+                        signature: Some("0badc0de".into()),
+                        offers: Some("5f1c2a9b".into()),
+                        gone: false,
+                    },
+                    PageFormChange {
+                        form: "form2".into(),
+                        signature: None,
+                        offers: None,
+                        gone: true,
+                    },
+                ],
+                fields: vec![
+                    PageFieldChange {
+                        element: "d7e4".into(),
+                        role: "textbox".into(),
+                        name: "Arrival".into(),
+                        typed: false,
+                        form: Some("form1".into()),
+                        question: Some("Arrival".into()),
+                    },
+                    PageFieldChange {
+                        element: "d7e9".into(),
+                        role: "searchbox".into(),
+                        name: "Search".into(),
+                        typed: true,
+                        form: None,
+                        question: None,
+                    },
+                ],
+                more: 3,
+            })
+        );
+
+        // A change in a frame says the frame by the number the tab calls it by.
+        let mut framed = told.clone();
+        framed["frame"] = "3".into();
+        framed["frame_name"] = "Payment".into();
+        framed["frame_url"] = "https://pay.test/card".into();
+        assert_eq!(
+            decode_changed_event(&framed).and_then(|change| change.frame),
+            FrameId::parse("3")
+        );
+        // Forms alone, or fields alone, are a change too.
+        let mut forms_only = told.clone();
+        forms_only.as_object_mut().unwrap().remove("fields");
+        forms_only.as_object_mut().unwrap().remove("more");
+        assert!(
+            decode_changed_event(&forms_only).is_some_and(|change| change.fields.is_empty()
+                && change.more == 0
+                && change.forms.len() == 2)
+        );
+
+        for (why, pointer, value) in [
+            ("no document", "/document", serde_json::json!(null)),
+            ("document 0", "/document", serde_json::json!(0)),
+            (
+                "a frame no outline printed",
+                "/frame",
+                serde_json::json!("main; drop"),
+            ),
+            ("a frame that is no text", "/frame", serde_json::json!(3)),
+            (
+                "forms that are no list",
+                "/forms",
+                serde_json::json!("form1"),
+            ),
+            (
+                "a form without an id",
+                "/forms/0/form",
+                serde_json::json!(""),
+            ),
+            (
+                "a form gone by a word",
+                "/forms/1/gone",
+                serde_json::json!("yes"),
+            ),
+            (
+                "a field whose ref is none",
+                "/fields/0/element",
+                serde_json::json!("#arrival"),
+            ),
+            (
+                "a field changed by nobody known",
+                "/fields/0/how",
+                serde_json::json!("action"),
+            ),
+            (
+                "a field's name that is no text",
+                "/fields/1/name",
+                serde_json::json!(7),
+            ),
+            (
+                "a count that is no number",
+                "/more",
+                serde_json::json!("many"),
+            ),
+        ] {
+            let mut event = told.clone();
+            if pointer == "/frame" {
+                event["frame"] = value;
+            } else {
+                *event.pointer_mut(pointer).expect(pointer) = value;
+            }
+            assert!(decode_changed_event(&event).is_none(), "{why}");
+        }
+        let mut many = told.clone();
+        many["fields"] =
+            serde_json::Value::Array(vec![told["fields"][0].clone(); MAX_CHANGED_FIELDS + 1]);
+        assert!(
+            decode_changed_event(&many).is_none(),
+            "more fields than one event names"
+        );
+    }
 }

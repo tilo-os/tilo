@@ -279,9 +279,10 @@ impl Ring {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_ring_wraps_keeps_recent_and_orders_percentiles() {
-        // phase: ring_percentiles_are_ordered
+    tilo_test_env::scenario! {
+        fn the_ring_wraps_keeps_recent_and_orders_percentiles;
+
+        phase ring_percentiles_are_ordered;
         {
             let mut r = Ring::new();
             for i in 0..100 {
@@ -304,7 +305,8 @@ mod tests {
             assert!(pct(0.50) >= 45.0 && pct(0.50) <= 55.0);
             assert!(pct(0.95) >= 90.0);
         }
-        // phase: ring_wraps_and_keeps_recent
+
+        phase ring_wraps_and_keeps_recent;
         {
             let mut r = Ring::new();
             for i in 0..(SAMPLES + 10) {

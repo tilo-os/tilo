@@ -1615,43 +1615,105 @@ mod tests {
         passed
     }
 
-    #[test]
-    fn a_snapshot_becomes_a_frame_and_the_source_keeps_its_own_traffic() {
-        let (test, engine) = paint_engine(TOP);
-        let passed = settle(&engine);
-        let frame = engine
-            .paint_frame()
-            .expect("a frame from the engine's snapshot");
-        assert!(
-            frame.layers.len() >= 5,
-            "root plus header, sidebar, ghost, button"
-        );
-        assert!(
-            passed.iter().all(|e| !matches!(
-                e,
-                WebViewEvent::PaintSnapshot { .. } | WebViewEvent::PaintResource { .. }
-            )),
-            "paint traffic never reaches the app: {passed:?}"
-        );
-        assert!(
-            test.commands()
-                .iter()
-                .any(|c| matches!(c, WebViewCommand::PaintCapture { .. })),
-            "the wrapper asked the engine for its layout"
-        );
-        let hash = frame
-            .blobs()
-            .find_map(|b| match b {
-                BlobRef::Hash(h) => Some(*h),
-                BlobRef::Url(_) => None,
-            })
-            .expect("image resolved");
-        let bytes = engine.paint_blob(&hash).expect("blob kept");
-        assert_eq!(*blake3::hash(&bytes).as_bytes(), hash);
-        assert!(
-            frame.blobs().all(|b| matches!(b, BlobRef::Hash(_))),
-            "no URL leaves the host"
-        );
+    tilo_test_env::scenario! {
+        fn a_page_is_published_from_the_snapshot_its_engine_gives;
+
+        phase a_snapshot_becomes_a_frame_and_the_source_keeps_its_own_traffic;
+        {
+            let (test, engine) = paint_engine(TOP);
+            let passed = settle(&engine);
+            let frame = engine
+                .paint_frame()
+                .expect("a frame from the engine's snapshot");
+            assert!(
+                frame.layers.len() >= 5,
+                "root plus header, sidebar, ghost, button"
+            );
+            assert!(
+                passed.iter().all(|e| !matches!(
+                    e,
+                    WebViewEvent::PaintSnapshot { .. } | WebViewEvent::PaintResource { .. }
+                )),
+                "paint traffic never reaches the app: {passed:?}"
+            );
+            assert!(
+                test.commands()
+                    .iter()
+                    .any(|c| matches!(c, WebViewCommand::PaintCapture { .. })),
+                "the wrapper asked the engine for its layout"
+            );
+            let hash = frame
+                .blobs()
+                .find_map(|b| match b {
+                    BlobRef::Hash(h) => Some(*h),
+                    BlobRef::Url(_) => None,
+                })
+                .expect("image resolved");
+            let bytes = engine.paint_blob(&hash).expect("blob kept");
+            assert_eq!(*blake3::hash(&bytes).as_bytes(), hash);
+            assert!(
+                frame.blobs().all(|b| matches!(b, BlobRef::Hash(_))),
+                "no URL leaves the host"
+            );
+        }
+
+        phase svg_images_reach_clients_as_vectors;
+        {
+            let (_, engine) = paint_engine(TOP);
+            settle(&engine);
+            let frame = engine.paint_frame().expect("frame");
+            let fills: Vec<[u8; 4]> = frame
+                .layers
+                .values()
+                .flat_map(|l| &l.items)
+                .filter_map(|i| match i {
+                    Item::Vector { shapes, .. } => Some(shapes),
+                    _ => None,
+                })
+                .flatten()
+                .filter_map(|s| s.fill.map(|c| c.0))
+                .collect();
+            assert!(
+                fills.contains(&[30, 90, 200, 255]),
+                "the SVG <img> as a vector: {fills:?}"
+            );
+        }
+
+        phase a_consumer_starts_from_a_whole_frame_then_follows_patches;
+        {
+            let (test, engine) = paint_engine(TOP);
+            settle(&engine);
+            let Err(Some(keyframe)) = engine.take_stream() else {
+                panic!("a new consumer starts from a whole frame");
+            };
+            let mut client = (*keyframe).clone();
+            assert_eq!(
+                engine.take_stream().ok().map(|p| p.len()),
+                Some(0),
+                "nothing changed yet"
+            );
+
+            test.set_paint_snapshot(SCROLLED);
+            test.send(WebViewCommand::Navigate("https://example.test/".into()));
+            settle(&engine);
+            let patches = engine.take_stream().expect("following");
+            assert_eq!(patches.len(), 1, "{patches:?}");
+            for patch in &patches {
+                let wire: Patch =
+                    tilo_paint_stream::decode(&tilo_paint_stream::encode(patch).expect("encode"))
+                        .expect("decode");
+                client.apply(&wire).expect("apply");
+            }
+            assert_eq!(&client, &*engine.paint_frame().expect("frame"));
+        }
+
+        phase an_engine_without_layout_capture_falls_back_to_pixels;
+        {
+            let test = TestEngine::new();
+            let engine = PaintEngine::with_interval(test, Duration::ZERO);
+            settle(&engine);
+            assert!(engine.paint_frame().is_none());
+        }
     }
 
     #[cfg(feature = "lazy-image-decode")]
@@ -1680,56 +1742,6 @@ mod tests {
             .image(&blobs, &hash)
             .expect("decoded once it is in");
         assert_eq!((image.width, image.height), (800, 600));
-    }
-
-    #[test]
-    fn svg_images_reach_clients_as_vectors() {
-        let (_, engine) = paint_engine(TOP);
-        settle(&engine);
-        let frame = engine.paint_frame().expect("frame");
-        let fills: Vec<[u8; 4]> = frame
-            .layers
-            .values()
-            .flat_map(|l| &l.items)
-            .filter_map(|i| match i {
-                Item::Vector { shapes, .. } => Some(shapes),
-                _ => None,
-            })
-            .flatten()
-            .filter_map(|s| s.fill.map(|c| c.0))
-            .collect();
-        assert!(
-            fills.contains(&[30, 90, 200, 255]),
-            "the SVG <img> as a vector: {fills:?}"
-        );
-    }
-
-    #[test]
-    fn a_consumer_starts_from_a_whole_frame_then_follows_patches() {
-        let (test, engine) = paint_engine(TOP);
-        settle(&engine);
-        let Err(Some(keyframe)) = engine.take_stream() else {
-            panic!("a new consumer starts from a whole frame");
-        };
-        let mut client = (*keyframe).clone();
-        assert_eq!(
-            engine.take_stream().ok().map(|p| p.len()),
-            Some(0),
-            "nothing changed yet"
-        );
-
-        test.set_paint_snapshot(SCROLLED);
-        test.send(WebViewCommand::Navigate("https://example.test/".into()));
-        settle(&engine);
-        let patches = engine.take_stream().expect("following");
-        assert_eq!(patches.len(), 1, "{patches:?}");
-        for patch in &patches {
-            let wire: Patch =
-                tilo_paint_stream::decode(&tilo_paint_stream::encode(patch).expect("encode"))
-                    .expect("decode");
-            client.apply(&wire).expect("apply");
-        }
-        assert_eq!(&client, &*engine.paint_frame().expect("frame"));
     }
 
     #[test]
@@ -2065,57 +2077,114 @@ mod tests {
         set_share_watched(false);
     }
 
-    #[test]
-    fn an_engine_without_layout_capture_falls_back_to_pixels() {
-        let test = TestEngine::new();
-        let engine = PaintEngine::with_interval(test, Duration::ZERO);
-        settle(&engine);
-        assert!(engine.paint_frame().is_none());
-    }
+    tilo_test_env::scenario! {
+        fn a_pages_text_is_set_in_its_face_and_drawn_inside_its_box;
 
-    /// A page that names no face is set by its engine in the engine's own standard one, a
-    /// serif, and its fields in the engine's sans: a device that has neither face keeps the
-    /// class of each. A face the device has is the face it sets, and one drawn with the same
-    /// measures stands in for the one a page named.
-    #[test]
-    fn a_family_list_is_set_in_the_face_or_at_least_the_class_its_page_asked_for() {
-        let text = TextRenderer::new();
-        let mut renderer = PageRenderer::new();
-        assert_eq!(
-            renderer.family(&text, "\"Times New Roman\""),
-            FontChoice::Serif,
-            "the engine's standard face, where the device has none like it"
-        );
-        assert_eq!(renderer.family(&text, "Arial"), FontChoice::SansSerif);
-        assert_eq!(
-            renderer.family(&text, "\"Courier New\", monospace"),
-            FontChoice::Monospace
-        );
-        let has = crate::text_render::UI_MONOSPACE_FAMILY;
-        assert_eq!(
-            renderer.family(&text, &format!("Harbour, \"{has}\", serif")),
-            FontChoice::Named(has.to_owned()),
-            "the first face of the list the device has"
-        );
+        phase a_family_list_is_set_in_the_face_or_at_least_the_class_its_page_asked_for;
+        // A page that names no face is set by its engine in the engine's own standard one, a
+        // serif, and its fields in the engine's sans: a device that has neither face keeps the
+        // class of each. A face the device has is the face it sets, and one drawn with the same
+        // measures stands in for the one a page named.
+        {
+            let text = TextRenderer::new();
+            let mut renderer = PageRenderer::new();
+            assert_eq!(
+                renderer.family(&text, "\"Times New Roman\""),
+                FontChoice::Serif,
+                "the engine's standard face, where the device has none like it"
+            );
+            assert_eq!(renderer.family(&text, "Arial"), FontChoice::SansSerif);
+            assert_eq!(
+                renderer.family(&text, "\"Courier New\", monospace"),
+                FontChoice::Monospace
+            );
+            let has = crate::text_render::UI_MONOSPACE_FAMILY;
+            assert_eq!(
+                renderer.family(&text, &format!("Harbour, \"{has}\", serif")),
+                FontChoice::Named(has.to_owned()),
+                "the first face of the list the device has"
+            );
 
-        // A device that has the faces the engine itself sets those pages in.
-        let mut renderer = PageRenderer {
-            installed: Some(vec!["Liberation Serif".into(), "Liberation Sans".into()]),
-            ..PageRenderer::default()
-        };
-        assert_eq!(
-            renderer.family(&text, "\"Times New Roman\""),
-            FontChoice::Named("Liberation Serif".into())
-        );
-        assert_eq!(
-            renderer.family(&text, "Helvetica, sans-serif"),
-            FontChoice::Named("Liberation Sans".into())
-        );
-        assert_eq!(
-            renderer.family(&text, "sans-serif, \"Times New Roman\""),
-            FontChoice::SansSerif,
-            "a generic family ends the list: nothing after it is looked at"
-        );
+            // A device that has the faces the engine itself sets those pages in.
+            let mut renderer = PageRenderer {
+                installed: Some(vec!["Liberation Serif".into(), "Liberation Sans".into()]),
+                ..PageRenderer::default()
+            };
+            assert_eq!(
+                renderer.family(&text, "\"Times New Roman\""),
+                FontChoice::Named("Liberation Serif".into())
+            );
+            assert_eq!(
+                renderer.family(&text, "Helvetica, sans-serif"),
+                FontChoice::Named("Liberation Sans".into())
+            );
+            assert_eq!(
+                renderer.family(&text, "sans-serif, \"Times New Roman\""),
+                FontChoice::SansSerif,
+                "a generic family ends the list: nothing after it is looked at"
+            );
+        }
+
+        phase what_a_field_holds_is_drawn_at_its_own_width_in_the_fields_room;
+        // What a field holds is drawn at its own width in the room the field has, from the
+        // side the field aligns it to: it is not stretched to the field as a line the engine
+        // laid out is fitted to its box.
+        {
+            let room = tilo_paint_stream::Rect::new(20.0, 20.0, 360.0, 30.0);
+            let style = TextStyle::new(20.0);
+            let (natural, _) = TextRenderer::new().measure_style("Brazil", None, &style);
+            let (left, right) = inked(ItemKey::SLOT, room, "Brazil");
+            // Ink is a little narrower than the words' advance: the first and the last letter
+            // stand in from their edges.
+            let drawn = (right - left) as f32;
+            assert!(
+                drawn <= natural + 1.0 && drawn >= natural * 0.85,
+                "{drawn} wide where the words are {natural} wide"
+            );
+            assert!((20..=24).contains(&left), "from the field's start: {left}");
+
+            let (fitted_left, fitted_right) = inked(3, room, "Brazil");
+            assert!(
+                (fitted_right - fitted_left) as f32 > drawn * 1.15,
+                "a line box of the engine's is fitted to: {fitted_left}..{fitted_right}"
+            );
+
+            let (_, end) = inked(ItemKey::SLOT | ItemKey::SLOT_END, room, "Brazil");
+            assert!((372..=380).contains(&end), "to the field's end: {end}");
+            let (from, to) = inked(ItemKey::SLOT | ItemKey::SLOT_CENTRE, room, "Brazil");
+            assert!(
+                (from + to).abs_diff(400) <= 6,
+                "centred in the field: {from}..{to}"
+            );
+        }
+
+        phase a_run_wider_than_its_box_is_drawn_narrower_and_ends_inside_it;
+        // A run this device's face sets wider than the engine's did is drawn narrower, so it
+        // ends where the engine's line ended and never runs into what follows it; what a
+        // field holds that is longer than its room stays in the room too. Text written right
+        // to left is drawn in its box like any other.
+        {
+            let words = "The harbour kept its own hours";
+            let style = TextStyle::new(20.0);
+            let (natural, _) = TextRenderer::new().measure_style(words, None, &style);
+            let narrow = tilo_paint_stream::Rect::new(20.0, 20.0, natural * 0.7, 30.0);
+            let end = 20 + (natural * 0.7).ceil() as usize + 1;
+            for part in [16, ItemKey::SLOT] {
+                let (left, right) = inked(part, narrow, words);
+                assert!(
+                    left >= 19 && right <= end,
+                    "part {part}: {left}..{right} in a box that ends at {end}"
+                );
+            }
+            let hebrew = "\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}";
+            let (wide, _) = TextRenderer::new().measure_style(hebrew, None, &style);
+            let boxed = tilo_paint_stream::Rect::new(100.0, 20.0, wide, 30.0);
+            let (left, right) = inked(16, boxed, hebrew);
+            assert!(
+                left >= 98 && right <= 102 + wide.ceil() as usize,
+                "{left}..{right} in a box from 100, {wide} wide"
+            );
+        }
     }
 
     /// The engine suite's form with every common control, as its engine laid it out.
@@ -2188,102 +2257,381 @@ mod tests {
         (test, engine)
     }
 
-    /// A date shows what the engine words it as, not what its field holds, and a page's
-    /// text is set in the class of face the engine set it in on its machine. Only the
-    /// engine can say either: it is asked once, the page is not published in one face to
-    /// be published again in another, and what it did not say stays as the page gives it.
-    #[test]
-    fn the_engine_is_asked_what_a_date_shows_and_what_class_of_face_it_sets() {
-        let (test, engine) = controls_engine();
-        test.set_paint_shown([
-            (control("date"), "03/01/2027".to_owned()),
-            (control("time"), "02:30 PM".to_owned()),
-        ]);
-        // A machine without a Times sets the page's text in its sans.
-        test.set_paint_classes([
-            ("\"Times New Roman\"", "sans-serif"),
-            ("Arial", "sans-serif"),
-        ]);
-        drop(engine.paint_frame());
-        drop(engine.drain_events());
-        assert!(
-            engine.paint_frame().is_none(),
-            "a page waits for the engine to say what face its text is set in"
-        );
-        settle(&engine);
-        let frame = engine
-            .paint_frame()
-            .expect("the page, once the engine said");
-        let drawn = runs(&frame);
-        let family = |text: &str| {
-            drawn
-                .iter()
-                .find(|(said, _)| said == text)
-                .map(|(_, family)| family.as_str())
-        };
-        assert_eq!(family("03/01/2027"), Some("monospace"), "{drawn:?}");
-        assert_eq!(
-            family("2027-03-01"),
-            None,
-            "what the field holds is not shown"
-        );
-        assert!(family("02:30 PM").is_some());
-        assert_eq!(
-            family("1234.5"),
-            Some("Arial"),
-            "what the engine said nothing of is drawn as its field holds it"
-        );
-        assert_eq!(family("Every control"), Some("sans-serif"));
-        assert_eq!(family("Name"), Some("sans-serif"));
+    tilo_test_env::scenario! {
+        fn the_engine_says_once_what_a_capture_shows_and_a_capture_is_never_asked_for_twice;
 
-        let asked = asks(&test);
-        assert_eq!(asked.len(), 1, "asked once: {asked:?}");
-        let (nodes, families) = &asked[0];
-        assert!(nodes.contains(&control("date")) && nodes.contains(&control("number")));
-        assert!(
-            !nodes.contains(&control("password")) && !nodes.contains(&control("card")),
-            "the engine is never asked what a secret field shows"
-        );
-        assert_eq!(families, &["\"Times New Roman\"", "Arial", "monospace"]);
-        settle(&engine);
-        assert_eq!(asks(&test).len(), 1, "and not again while the page stays");
-        assert!(
-            runs(&frame)
-                .iter()
-                .all(|(text, _)| { !text.contains("hunter2") && !text.contains("4111") }),
-            "no secret is in the page"
-        );
-    }
+        phase the_engine_is_asked_what_a_date_shows_and_what_class_of_face_it_sets;
+        // A date shows what the engine words it as, not what its field holds, and a page's
+        // text is set in the class of face the engine set it in on its machine. Only the
+        // engine can say either: it is asked once, the page is not published in one face to
+        // be published again in another, and what it did not say stays as the page gives it.
+        {
+            let (test, engine) = controls_engine();
+            test.set_paint_shown([
+                (control("date"), "03/01/2027".to_owned()),
+                (control("time"), "02:30 PM".to_owned()),
+            ]);
+            // A machine without a Times sets the page's text in its sans.
+            test.set_paint_classes([
+                ("\"Times New Roman\"", "sans-serif"),
+                ("Arial", "sans-serif"),
+            ]);
+            drop(engine.paint_frame());
+            drop(engine.drain_events());
+            assert!(
+                engine.paint_frame().is_none(),
+                "a page waits for the engine to say what face its text is set in"
+            );
+            settle(&engine);
+            let frame = engine
+                .paint_frame()
+                .expect("the page, once the engine said");
+            let drawn = runs(&frame);
+            let family = |text: &str| {
+                drawn
+                    .iter()
+                    .find(|(said, _)| said == text)
+                    .map(|(_, family)| family.as_str())
+            };
+            assert_eq!(family("03/01/2027"), Some("monospace"), "{drawn:?}");
+            assert_eq!(
+                family("2027-03-01"),
+                None,
+                "what the field holds is not shown"
+            );
+            assert!(family("02:30 PM").is_some());
+            assert_eq!(
+                family("1234.5"),
+                Some("Arial"),
+                "what the engine said nothing of is drawn as its field holds it"
+            );
+            assert_eq!(family("Every control"), Some("sans-serif"));
+            assert_eq!(family("Name"), Some("sans-serif"));
 
-    /// An engine that predates the ask reads it as a capture and answers with a snapshot:
-    /// the page is published from that, drawn as it always was, and the engine is not
-    /// asked again.
-    #[test]
-    fn an_engine_that_predates_the_ask_has_its_page_drawn_as_it_gives_it() {
-        let (test, engine) = controls_engine();
-        settle(&engine);
-        let frame = engine.paint_frame().expect("the page");
-        let drawn = runs(&frame);
-        assert!(
-            drawn
-                .iter()
-                .any(|(text, family)| text == "2027-03-01" && family == "monospace"),
-            "{drawn:?}"
-        );
-        assert!(
-            drawn
-                .iter()
-                .any(|(text, family)| text == "Every control" && family == "\"Times New Roman\""),
-            "the list its page computed"
-        );
-        assert_eq!(asks(&test).len(), 1);
-        test.paint_before_page();
-        settle(&engine);
-        assert_eq!(
-            asks(&test).len(),
-            1,
-            "an engine that cannot say is asked once"
-        );
+            let asked = asks(&test);
+            assert_eq!(asked.len(), 1, "asked once: {asked:?}");
+            let (nodes, families) = &asked[0];
+            assert!(nodes.contains(&control("date")) && nodes.contains(&control("number")));
+            assert!(
+                !nodes.contains(&control("password")) && !nodes.contains(&control("card")),
+                "the engine is never asked what a secret field shows"
+            );
+            assert_eq!(families, &["\"Times New Roman\"", "Arial", "monospace"]);
+            settle(&engine);
+            assert_eq!(asks(&test).len(), 1, "and not again while the page stays");
+            assert!(
+                runs(&frame)
+                    .iter()
+                    .all(|(text, _)| { !text.contains("hunter2") && !text.contains("4111") }),
+                "no secret is in the page"
+            );
+        }
+
+        phase an_engine_that_predates_the_ask_has_its_page_drawn_as_it_gives_it;
+        // An engine that predates the ask reads it as a capture and answers with a snapshot:
+        // the page is published from that, drawn as it always was, and the engine is not
+        // asked again.
+        {
+            let (test, engine) = controls_engine();
+            settle(&engine);
+            let frame = engine.paint_frame().expect("the page");
+            let drawn = runs(&frame);
+            assert!(
+                drawn
+                    .iter()
+                    .any(|(text, family)| text == "2027-03-01" && family == "monospace"),
+                "{drawn:?}"
+            );
+            assert!(
+                drawn
+                    .iter()
+                    .any(|(text, family)| text == "Every control" && family == "\"Times New Roman\""),
+                "the list its page computed"
+            );
+            assert_eq!(asks(&test).len(), 1);
+            test.paint_before_page();
+            settle(&engine);
+            assert_eq!(
+                asks(&test).len(),
+                1,
+                "an engine that cannot say is asked once"
+            );
+        }
+
+        phase a_first_publication_takes_one_capture_and_arrives_in_one_class_of_face;
+        // A page's first publication costs its engine one capture: what the engine says of the
+        // capture's fields and faces is put into the snapshot it gave, which is not asked for
+        // again. Nothing is published before the engine said, so the page arrives once, in the
+        // class of face it stays in.
+        {
+            let (test, engine) = controls_engine();
+            test.set_paint_shown([(control("date"), "03/01/2027".to_owned())]);
+            test.set_paint_classes([
+                ("\"Times New Roman\"", "sans-serif"),
+                ("Arial", "sans-serif"),
+            ]);
+            drop(engine.paint_frame());
+            drop(engine.drain_events());
+            assert!(
+                matches!(engine.take_stream(), Err(None)),
+                "nothing is published before the engine said what face the text is set in"
+            );
+            settle(&engine);
+            let Err(Some(first)) = engine.take_stream() else {
+                panic!("a consumer starts from the whole page");
+            };
+            assert_eq!(first.seq, 1, "the first frame published");
+            assert_eq!(
+                family_of(&first, "Every control").as_deref(),
+                Some("sans-serif"),
+                "in the class of face the engine said"
+            );
+            assert!(
+                family_of(&first, "03/01/2027").is_some(),
+                "with what its date shows"
+            );
+            assert_eq!(captures(&test), 1, "of one capture");
+            assert_eq!(asks(&test).len(), 1, "and one ask beside it");
+            settle(&engine);
+            assert_eq!(
+                engine.take_stream().ok().map(|patches| patches.len()),
+                Some(0),
+                "and nothing follows it: the page did not change"
+            );
+            assert_eq!(captures(&test), 1);
+        }
+
+        phase the_engine_is_asked_for_no_capture_while_it_is_still_to_say_of_the_last;
+        // The engine answers what it is asked of a page before it is asked for the next
+        // capture: behind a capture its answer would wait for as long as the capture takes,
+        // and the page with it. The change that asked for the capture is captured as soon as
+        // the engine has said.
+        {
+            let (test, engine) = controls_engine();
+            test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
+            drop(engine.paint_frame());
+            test.hold_paint();
+            drop(engine.drain_events());
+            assert_eq!(
+                (captures(&test), asks(&test).len()),
+                (1, 1),
+                "the page was captured and the engine asked what face it is set in"
+            );
+            // The page paints anew before the engine has said.
+            test.paint_before_page();
+            drop(settle(&engine));
+            assert_eq!(
+                captures(&test),
+                1,
+                "the capture of the change waits for the engine to say"
+            );
+            test.release_paint();
+            drop(engine.drain_events());
+            let first = engine
+                .paint_frame()
+                .expect("the page, once the engine said");
+            assert_eq!(first.seq, 1, "of the first capture");
+            assert_eq!(
+                family_of(&first, "Every control").as_deref(),
+                Some("sans-serif")
+            );
+            drop(settle(&engine));
+            assert_eq!(captures(&test), 2, "and the change is captured then");
+        }
+
+        phase a_capture_slower_than_it_is_waited_for_is_taken_and_never_asked_for_again;
+        // An engine that takes longer over a capture than it is waited for is still at work on
+        // it. The capture is never asked for again, however long it takes: the engine is asked
+        // something small behind it, ever more seldom, and what it answers the capture with,
+        // when it does, is the page.
+        {
+            use crate::time::testing::with_monotonic_time;
+            let (test, engine) = controls_engine();
+            test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
+            test.hold_paint();
+            let start = crate::time::now();
+            let at = |seconds| start + Duration::from_secs(seconds);
+            for seconds in [0, 1, 4, 10, 30, 60, 200, 201] {
+                with_monotonic_time(at(seconds), || {
+                    drop(settle(&engine));
+                    assert!(
+                        engine.paint_frame().is_none(),
+                        "the engine has not answered"
+                    );
+                });
+                assert_eq!(
+                    captures(&test),
+                    1,
+                    "after {seconds} s the capture is still the one asked for"
+                );
+            }
+            assert_eq!(
+                looks(&test),
+                5,
+                "asked whether it still has it after 3 s, and each time after twice as long"
+            );
+            with_monotonic_time(at(202), || {
+                test.release_paint();
+                drop(settle(&engine));
+                let frame = engine
+                    .paint_frame()
+                    .expect("the page the engine was at work on");
+                assert_eq!(
+                    family_of(&frame, "Every control").as_deref(),
+                    Some("sans-serif")
+                );
+                assert_eq!(frame.seq, 1, "published once");
+            });
+            assert_eq!(captures(&test), 1, "of the one capture");
+            assert_eq!(
+                looks(&test),
+                5,
+                "and the engine is asked nothing more of it"
+            );
+        }
+
+        phase a_capture_the_engine_lost_is_asked_for_again;
+        // An engine that lost a capture never answers it. It says so by answering what it is
+        // asked behind the capture: the capture is asked for again at once, and not before.
+        {
+            use crate::time::testing::with_monotonic_time;
+            let (test, engine) = controls_engine();
+            test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
+            test.lose_paint_captures(1);
+            let start = crate::time::now();
+            let at = |seconds| start + Duration::from_secs(seconds);
+            for seconds in [0, 2] {
+                with_monotonic_time(at(seconds), || {
+                    drop(settle(&engine));
+                    assert!(
+                        engine.paint_frame().is_none(),
+                        "the engine lost the capture"
+                    );
+                });
+                assert_eq!((captures(&test), looks(&test)), (1, 0), "after {seconds} s");
+            }
+            with_monotonic_time(at(3), || {
+                drop(settle(&engine));
+                let frame = engine.paint_frame().expect("the page, captured again");
+                assert_eq!(
+                    family_of(&frame, "Every control").as_deref(),
+                    Some("sans-serif")
+                );
+            });
+            assert_eq!(
+                (captures(&test), looks(&test)),
+                (2, 1),
+                "asked whether it has the capture, and for the capture again when it had not"
+            );
+            with_monotonic_time(at(120), || drop(settle(&engine)));
+            assert_eq!(
+                (captures(&test), looks(&test)),
+                (2, 1),
+                "and for nothing more once the page is there"
+            );
+        }
+
+        phase an_engine_that_predates_the_ask_answers_for_a_capture_it_lost_with_the_page;
+        // An engine that predates the ask reads what it is asked behind a capture as a capture:
+        // where it lost the first, what it answers is the page.
+        {
+            use crate::time::testing::with_monotonic_time;
+            let (test, engine) = controls_engine();
+            test.lose_paint_captures(1);
+            let start = crate::time::now();
+            let at = |seconds| start + Duration::from_secs(seconds);
+            with_monotonic_time(at(0), || {
+                drop(settle(&engine));
+                assert!(
+                    engine.paint_frame().is_none(),
+                    "the engine lost the capture"
+                );
+            });
+            with_monotonic_time(at(3), || {
+                drop(settle(&engine));
+                let frame = engine.paint_frame().expect("the page");
+                assert_eq!(
+                    family_of(&frame, "Every control").as_deref(),
+                    Some("\"Times New Roman\""),
+                    "drawn as its page gives it"
+                );
+            });
+            with_monotonic_time(at(120), || drop(settle(&engine)));
+            assert_eq!(captures(&test), 1);
+            assert_eq!(
+                asks(&test).len(),
+                1,
+                "an engine that cannot say is asked once"
+            );
+        }
+
+        phase an_engine_that_never_says_its_classes_has_its_page_published_of_the_same_capture;
+        // An engine that never says what face it sets a page's text in does not keep the page:
+        // once it is given up, the page is published from the capture it gave, its text in the
+        // class of face its lists ask for, and the engine is not asked again.
+        {
+            use crate::time::testing::with_monotonic_time;
+            let (test, engine) = controls_engine();
+            test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
+            test.lose_paint_asks();
+            let start = crate::time::now();
+            let at = |seconds| start + Duration::from_secs(seconds);
+            with_monotonic_time(at(0), || {
+                drop(settle(&engine));
+                assert!(
+                    engine.paint_frame().is_none(),
+                    "a page waits for the engine to say what face its text is set in"
+                );
+            });
+            with_monotonic_time(at(4), || {
+                drop(settle(&engine));
+                let frame = engine.paint_frame().expect("the page, the engine given up");
+                assert_eq!(
+                    family_of(&frame, "Every control").as_deref(),
+                    Some("\"Times New Roman\""),
+                    "set in the class its list asks for"
+                );
+                assert_eq!(frame.seq, 1, "published once");
+            });
+            with_monotonic_time(at(120), || drop(settle(&engine)));
+            assert_eq!(captures(&test), 1, "of the capture the engine gave");
+            assert_eq!(asks(&test).len(), 1, "and it is not asked again");
+        }
+
+        phase an_ask_the_engine_answers_late_leaves_text_in_the_class_it_said;
+        // A page that loads faces of its own is asked again what class its text is set in. An
+        // engine that does not answer that in time has not said its text is set differently:
+        // the page stays in the class the engine said, and is not captured for it.
+        {
+            use crate::time::testing::with_monotonic_time;
+            let (test, engine) = controls_engine();
+            test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
+            test.set_paint_faces_loading();
+            let start = crate::time::now();
+            let at = |seconds| start + Duration::from_secs(seconds);
+            with_monotonic_time(at(0), || {
+                drop(settle(&engine));
+                let frame = engine.paint_frame().expect("the page");
+                assert_eq!(
+                    family_of(&frame, "Every control").as_deref(),
+                    Some("sans-serif")
+                );
+            });
+            let asked = asks(&test).len();
+            test.lose_paint_asks();
+            for seconds in [1, 5, 9] {
+                with_monotonic_time(at(seconds), || drop(settle(&engine)));
+            }
+            assert!(asks(&test).len() > asked, "the engine was asked again");
+            let frame = engine.paint_frame().expect("the page");
+            assert_eq!(
+                family_of(&frame, "Every control").as_deref(),
+                Some("sans-serif"),
+                "text stays in the class of face the engine said"
+            );
+            assert_eq!(frame.seq, 1, "and the page is not published again");
+            assert_eq!(captures(&test), 1, "nor captured again");
+        }
     }
 
     /// How often a test engine was asked whether it still has a capture.
@@ -2300,281 +2648,6 @@ mod tests {
             .into_iter()
             .find(|(said, _)| said == text)
             .map(|(_, family)| family)
-    }
-
-    /// A page's first publication costs its engine one capture: what the engine says of the
-    /// capture's fields and faces is put into the snapshot it gave, which is not asked for
-    /// again. Nothing is published before the engine said, so the page arrives once, in the
-    /// class of face it stays in.
-    #[test]
-    fn a_first_publication_takes_one_capture_and_arrives_in_one_class_of_face() {
-        let (test, engine) = controls_engine();
-        test.set_paint_shown([(control("date"), "03/01/2027".to_owned())]);
-        test.set_paint_classes([
-            ("\"Times New Roman\"", "sans-serif"),
-            ("Arial", "sans-serif"),
-        ]);
-        drop(engine.paint_frame());
-        drop(engine.drain_events());
-        assert!(
-            matches!(engine.take_stream(), Err(None)),
-            "nothing is published before the engine said what face the text is set in"
-        );
-        settle(&engine);
-        let Err(Some(first)) = engine.take_stream() else {
-            panic!("a consumer starts from the whole page");
-        };
-        assert_eq!(first.seq, 1, "the first frame published");
-        assert_eq!(
-            family_of(&first, "Every control").as_deref(),
-            Some("sans-serif"),
-            "in the class of face the engine said"
-        );
-        assert!(
-            family_of(&first, "03/01/2027").is_some(),
-            "with what its date shows"
-        );
-        assert_eq!(captures(&test), 1, "of one capture");
-        assert_eq!(asks(&test).len(), 1, "and one ask beside it");
-        settle(&engine);
-        assert_eq!(
-            engine.take_stream().ok().map(|patches| patches.len()),
-            Some(0),
-            "and nothing follows it: the page did not change"
-        );
-        assert_eq!(captures(&test), 1);
-    }
-
-    /// The engine answers what it is asked of a page before it is asked for the next
-    /// capture: behind a capture its answer would wait for as long as the capture takes,
-    /// and the page with it. The change that asked for the capture is captured as soon as
-    /// the engine has said.
-    #[test]
-    fn the_engine_is_asked_for_no_capture_while_it_is_still_to_say_of_the_last() {
-        let (test, engine) = controls_engine();
-        test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
-        drop(engine.paint_frame());
-        test.hold_paint();
-        drop(engine.drain_events());
-        assert_eq!(
-            (captures(&test), asks(&test).len()),
-            (1, 1),
-            "the page was captured and the engine asked what face it is set in"
-        );
-        // The page paints anew before the engine has said.
-        test.paint_before_page();
-        drop(settle(&engine));
-        assert_eq!(
-            captures(&test),
-            1,
-            "the capture of the change waits for the engine to say"
-        );
-        test.release_paint();
-        drop(engine.drain_events());
-        let first = engine
-            .paint_frame()
-            .expect("the page, once the engine said");
-        assert_eq!(first.seq, 1, "of the first capture");
-        assert_eq!(
-            family_of(&first, "Every control").as_deref(),
-            Some("sans-serif")
-        );
-        drop(settle(&engine));
-        assert_eq!(captures(&test), 2, "and the change is captured then");
-    }
-
-    /// An engine that takes longer over a capture than it is waited for is still at work on
-    /// it. The capture is never asked for again, however long it takes: the engine is asked
-    /// something small behind it, ever more seldom, and what it answers the capture with,
-    /// when it does, is the page.
-    #[test]
-    fn a_capture_slower_than_it_is_waited_for_is_taken_and_never_asked_for_again() {
-        use crate::time::testing::with_monotonic_time;
-        let (test, engine) = controls_engine();
-        test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
-        test.hold_paint();
-        let start = crate::time::now();
-        let at = |seconds| start + Duration::from_secs(seconds);
-        for seconds in [0, 1, 4, 10, 30, 60, 200, 201] {
-            with_monotonic_time(at(seconds), || {
-                drop(settle(&engine));
-                assert!(
-                    engine.paint_frame().is_none(),
-                    "the engine has not answered"
-                );
-            });
-            assert_eq!(
-                captures(&test),
-                1,
-                "after {seconds} s the capture is still the one asked for"
-            );
-        }
-        assert_eq!(
-            looks(&test),
-            5,
-            "asked whether it still has it after 3 s, and each time after twice as long"
-        );
-        with_monotonic_time(at(202), || {
-            test.release_paint();
-            drop(settle(&engine));
-            let frame = engine
-                .paint_frame()
-                .expect("the page the engine was at work on");
-            assert_eq!(
-                family_of(&frame, "Every control").as_deref(),
-                Some("sans-serif")
-            );
-            assert_eq!(frame.seq, 1, "published once");
-        });
-        assert_eq!(captures(&test), 1, "of the one capture");
-        assert_eq!(
-            looks(&test),
-            5,
-            "and the engine is asked nothing more of it"
-        );
-    }
-
-    /// An engine that lost a capture never answers it. It says so by answering what it is
-    /// asked behind the capture: the capture is asked for again at once, and not before.
-    #[test]
-    fn a_capture_the_engine_lost_is_asked_for_again() {
-        use crate::time::testing::with_monotonic_time;
-        let (test, engine) = controls_engine();
-        test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
-        test.lose_paint_captures(1);
-        let start = crate::time::now();
-        let at = |seconds| start + Duration::from_secs(seconds);
-        for seconds in [0, 2] {
-            with_monotonic_time(at(seconds), || {
-                drop(settle(&engine));
-                assert!(
-                    engine.paint_frame().is_none(),
-                    "the engine lost the capture"
-                );
-            });
-            assert_eq!((captures(&test), looks(&test)), (1, 0), "after {seconds} s");
-        }
-        with_monotonic_time(at(3), || {
-            drop(settle(&engine));
-            let frame = engine.paint_frame().expect("the page, captured again");
-            assert_eq!(
-                family_of(&frame, "Every control").as_deref(),
-                Some("sans-serif")
-            );
-        });
-        assert_eq!(
-            (captures(&test), looks(&test)),
-            (2, 1),
-            "asked whether it has the capture, and for the capture again when it had not"
-        );
-        with_monotonic_time(at(120), || drop(settle(&engine)));
-        assert_eq!(
-            (captures(&test), looks(&test)),
-            (2, 1),
-            "and for nothing more once the page is there"
-        );
-    }
-
-    /// An engine that predates the ask reads what it is asked behind a capture as a capture:
-    /// where it lost the first, what it answers is the page.
-    #[test]
-    fn an_engine_that_predates_the_ask_answers_for_a_capture_it_lost_with_the_page() {
-        use crate::time::testing::with_monotonic_time;
-        let (test, engine) = controls_engine();
-        test.lose_paint_captures(1);
-        let start = crate::time::now();
-        let at = |seconds| start + Duration::from_secs(seconds);
-        with_monotonic_time(at(0), || {
-            drop(settle(&engine));
-            assert!(
-                engine.paint_frame().is_none(),
-                "the engine lost the capture"
-            );
-        });
-        with_monotonic_time(at(3), || {
-            drop(settle(&engine));
-            let frame = engine.paint_frame().expect("the page");
-            assert_eq!(
-                family_of(&frame, "Every control").as_deref(),
-                Some("\"Times New Roman\""),
-                "drawn as its page gives it"
-            );
-        });
-        with_monotonic_time(at(120), || drop(settle(&engine)));
-        assert_eq!(captures(&test), 1);
-        assert_eq!(
-            asks(&test).len(),
-            1,
-            "an engine that cannot say is asked once"
-        );
-    }
-
-    /// An engine that never says what face it sets a page's text in does not keep the page:
-    /// once it is given up, the page is published from the capture it gave, its text in the
-    /// class of face its lists ask for, and the engine is not asked again.
-    #[test]
-    fn an_engine_that_never_says_its_classes_has_its_page_published_of_the_same_capture() {
-        use crate::time::testing::with_monotonic_time;
-        let (test, engine) = controls_engine();
-        test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
-        test.lose_paint_asks();
-        let start = crate::time::now();
-        let at = |seconds| start + Duration::from_secs(seconds);
-        with_monotonic_time(at(0), || {
-            drop(settle(&engine));
-            assert!(
-                engine.paint_frame().is_none(),
-                "a page waits for the engine to say what face its text is set in"
-            );
-        });
-        with_monotonic_time(at(4), || {
-            drop(settle(&engine));
-            let frame = engine.paint_frame().expect("the page, the engine given up");
-            assert_eq!(
-                family_of(&frame, "Every control").as_deref(),
-                Some("\"Times New Roman\""),
-                "set in the class its list asks for"
-            );
-            assert_eq!(frame.seq, 1, "published once");
-        });
-        with_monotonic_time(at(120), || drop(settle(&engine)));
-        assert_eq!(captures(&test), 1, "of the capture the engine gave");
-        assert_eq!(asks(&test).len(), 1, "and it is not asked again");
-    }
-
-    /// A page that loads faces of its own is asked again what class its text is set in. An
-    /// engine that does not answer that in time has not said its text is set differently:
-    /// the page stays in the class the engine said, and is not captured for it.
-    #[test]
-    fn an_ask_the_engine_answers_late_leaves_text_in_the_class_it_said() {
-        use crate::time::testing::with_monotonic_time;
-        let (test, engine) = controls_engine();
-        test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
-        test.set_paint_faces_loading();
-        let start = crate::time::now();
-        let at = |seconds| start + Duration::from_secs(seconds);
-        with_monotonic_time(at(0), || {
-            drop(settle(&engine));
-            let frame = engine.paint_frame().expect("the page");
-            assert_eq!(
-                family_of(&frame, "Every control").as_deref(),
-                Some("sans-serif")
-            );
-        });
-        let asked = asks(&test).len();
-        test.lose_paint_asks();
-        for seconds in [1, 5, 9] {
-            with_monotonic_time(at(seconds), || drop(settle(&engine)));
-        }
-        assert!(asks(&test).len() > asked, "the engine was asked again");
-        let frame = engine.paint_frame().expect("the page");
-        assert_eq!(
-            family_of(&frame, "Every control").as_deref(),
-            Some("sans-serif"),
-            "text stays in the class of face the engine said"
-        );
-        assert_eq!(frame.seq, 1, "and the page is not published again");
-        assert_eq!(captures(&test), 1, "nor captured again");
     }
 
     /// One run of text on a white page of 400 by 80, and the columns its ink spans.
@@ -2629,67 +2702,6 @@ mod tests {
             dark.iter().copied().min().expect("the text left ink"),
             dark.iter().copied().max().expect("the text left ink"),
         )
-    }
-
-    /// What a field holds is drawn at its own width in the room the field has, from the
-    /// side the field aligns it to: it is not stretched to the field as a line the engine
-    /// laid out is fitted to its box.
-    #[test]
-    fn what_a_field_holds_is_drawn_at_its_own_width_in_the_fields_room() {
-        let room = tilo_paint_stream::Rect::new(20.0, 20.0, 360.0, 30.0);
-        let style = TextStyle::new(20.0);
-        let (natural, _) = TextRenderer::new().measure_style("Brazil", None, &style);
-        let (left, right) = inked(ItemKey::SLOT, room, "Brazil");
-        // Ink is a little narrower than the words' advance: the first and the last letter
-        // stand in from their edges.
-        let drawn = (right - left) as f32;
-        assert!(
-            drawn <= natural + 1.0 && drawn >= natural * 0.85,
-            "{drawn} wide where the words are {natural} wide"
-        );
-        assert!((20..=24).contains(&left), "from the field's start: {left}");
-
-        let (fitted_left, fitted_right) = inked(3, room, "Brazil");
-        assert!(
-            (fitted_right - fitted_left) as f32 > drawn * 1.15,
-            "a line box of the engine's is fitted to: {fitted_left}..{fitted_right}"
-        );
-
-        let (_, end) = inked(ItemKey::SLOT | ItemKey::SLOT_END, room, "Brazil");
-        assert!((372..=380).contains(&end), "to the field's end: {end}");
-        let (from, to) = inked(ItemKey::SLOT | ItemKey::SLOT_CENTRE, room, "Brazil");
-        assert!(
-            (from + to).abs_diff(400) <= 6,
-            "centred in the field: {from}..{to}"
-        );
-    }
-
-    /// A run this device's face sets wider than the engine's did is drawn narrower, so it
-    /// ends where the engine's line ended and never runs into what follows it; what a
-    /// field holds that is longer than its room stays in the room too. Text written right
-    /// to left is drawn in its box like any other.
-    #[test]
-    fn a_run_wider_than_its_box_is_drawn_narrower_and_ends_inside_it() {
-        let words = "The harbour kept its own hours";
-        let style = TextStyle::new(20.0);
-        let (natural, _) = TextRenderer::new().measure_style(words, None, &style);
-        let narrow = tilo_paint_stream::Rect::new(20.0, 20.0, natural * 0.7, 30.0);
-        let end = 20 + (natural * 0.7).ceil() as usize + 1;
-        for part in [16, ItemKey::SLOT] {
-            let (left, right) = inked(part, narrow, words);
-            assert!(
-                left >= 19 && right <= end,
-                "part {part}: {left}..{right} in a box that ends at {end}"
-            );
-        }
-        let hebrew = "\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}";
-        let (wide, _) = TextRenderer::new().measure_style(hebrew, None, &style);
-        let boxed = tilo_paint_stream::Rect::new(100.0, 20.0, wide, 30.0);
-        let (left, right) = inked(16, boxed, hebrew);
-        assert!(
-            left >= 98 && right <= 102 + wide.ceil() as usize,
-            "{left}..{right} in a box from 100, {wide} wide"
-        );
     }
 
     /// The toolkit draws the recorded page close to the engine's own pixels.

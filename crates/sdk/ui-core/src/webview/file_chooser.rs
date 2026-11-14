@@ -77,35 +77,39 @@ pub fn answers(paths: &[String]) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_answer_names_absolute_paths_within_the_engines_bounds() {
-        assert!(answers(&[]), "no paths cancels");
-        assert!(answers(&["/home/ada/proof.pdf".into()]));
-        for refused in ["proof.pdf", "", "./proof.pdf", "~/proof.pdf"] {
-            assert!(!answers(&[refused.into()]), "{refused}");
-        }
-        assert!(!answers(&[format!(
-            "/{}",
-            "x".repeat(MAX_FILE_CHOOSER_PATH)
-        )]));
-        assert!(answers(&vec!["/a".to_string(); MAX_FILE_CHOOSER_PATHS]));
-        assert!(!answers(&vec![
-            "/a".to_string();
-            MAX_FILE_CHOOSER_PATHS + 1
-        ]));
-    }
+    tilo_test_env::scenario! {
+        fn a_file_chooser_takes_only_what_the_engine_accepts;
 
-    #[test]
-    fn an_accepted_type_is_an_extension_or_a_mime_type() {
-        for taken in [".pdf", ".tar.gz", "image/*", "application/pdf"] {
-            assert!(accepted_type(taken), "{taken}");
+        phase an_answer_names_absolute_paths_within_the_engines_bounds;
+        {
+            assert!(answers(&[]), "no paths cancels");
+            assert!(answers(&["/home/ada/proof.pdf".into()]));
+            for refused in ["proof.pdf", "", "./proof.pdf", "~/proof.pdf"] {
+                assert!(!answers(&[refused.into()]), "{refused}");
+            }
+            assert!(!answers(&[format!(
+                "/{}",
+                "x".repeat(MAX_FILE_CHOOSER_PATH)
+            )]));
+            assert!(answers(&vec!["/a".to_string(); MAX_FILE_CHOOSER_PATHS]));
+            assert!(!answers(&vec![
+                "/a".to_string();
+                MAX_FILE_CHOOSER_PATHS + 1
+            ]));
         }
-        for refused in ["", ".", "pdf", "./x", "image/* ", "im age/png", ".p\u{e9}f"] {
-            assert!(!accepted_type(refused), "{refused}");
+
+        phase an_accepted_type_is_an_extension_or_a_mime_type;
+        {
+            for taken in [".pdf", ".tar.gz", "image/*", "application/pdf"] {
+                assert!(accepted_type(taken), "{taken}");
+            }
+            for refused in ["", ".", "pdf", "./x", "image/* ", "im age/png", ".p\u{e9}f"] {
+                assert!(!accepted_type(refused), "{refused}");
+            }
+            assert!(!accepted_type(&format!(
+                ".{}",
+                "x".repeat(MAX_FILE_CHOOSER_TYPE)
+            )));
         }
-        assert!(!accepted_type(&format!(
-            ".{}",
-            "x".repeat(MAX_FILE_CHOOSER_TYPE)
-        )));
     }
 }

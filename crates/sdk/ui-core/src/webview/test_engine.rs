@@ -1019,9 +1019,10 @@ fn test_png() -> Vec<u8> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_test_engine_navigates_renders_resizes_and_records_input() {
-        // phase: navigate_emits_full_event_sequence_and_renders
+    tilo_test_env::scenario! {
+        fn the_test_engine_stands_in_for_a_page_engine;
+
+        phase navigate_emits_full_event_sequence_and_renders;
         {
             let engine = TestEngine::new();
             engine.send(WebViewCommand::Navigate("https://example.org".into()));
@@ -1054,14 +1055,16 @@ mod tests {
             assert_eq!(&frame.rgba[below..below + 4], &[r, g, b, 0xFF]);
             assert_eq!(&frame.rgba[0..4], &[r / 2, g / 2, b / 2, 0xFF]);
         }
-        // phase: different_urls_render_different_colors
+
+        phase different_urls_render_different_colors;
         {
             assert_ne!(
                 TestEngine::page_color("https://example.org"),
                 TestEngine::page_color("https://example.com"),
             );
         }
-        // phase: resize_rerenders_at_new_dimensions
+
+        phase resize_rerenders_at_new_dimensions;
         {
             let engine = TestEngine::new();
             engine.send(WebViewCommand::Navigate("https://example.org".into()));
@@ -1074,7 +1077,8 @@ mod tests {
             assert_eq!((frame.width, frame.height), (320, 200));
             assert_eq!(frame.rgba.len(), 320 * 200 * 4);
         }
-        // phase: input_commands_are_recorded
+
+        phase input_commands_are_recorded;
         {
             let engine = TestEngine::new();
             engine.send(WebViewCommand::MouseMove { x: 3.0, y: 4.0 });
@@ -1083,11 +1087,8 @@ mod tests {
             assert_eq!(cmds.len(), 2);
             assert_eq!(cmds[0], WebViewCommand::MouseMove { x: 3.0, y: 4.0 });
         }
-    }
 
-    #[test]
-    fn the_test_engine_probes_media_and_guards_downloads() {
-        // phase: media_probe_reports_configured_visible_element
+        phase media_probe_reports_configured_visible_element;
         {
             let engine = TestEngine::new();
             let element = MediaElementInfo {
@@ -1117,7 +1118,8 @@ mod tests {
                 }]
             );
         }
-        // phase: download_lifecycle_requires_web_url_and_absolute_portal_destination
+
+        phase download_lifecycle_requires_web_url_and_absolute_portal_destination;
         {
             #[cfg(windows)]
             let destination = "C:/Temp/guide.pdf";
@@ -1170,11 +1172,8 @@ mod tests {
                     if progress_id == &id && finished_id == &id && path == destination
             ));
         }
-    }
 
-    #[test]
-    fn the_test_engine_walks_and_truncates_history() {
-        // phase: history_back_forward_walks_and_reports_state
+        phase history_back_forward_walks_and_reports_state;
         {
             let engine = TestEngine::new();
             engine.send(WebViewCommand::Navigate("https://a.test".into()));
@@ -1196,7 +1195,8 @@ mod tests {
             engine.send(WebViewCommand::GoForward);
             assert!(engine.drain_events().is_empty());
         }
-        // phase: navigate_after_back_truncates_forward_history
+
+        phase navigate_after_back_truncates_forward_history;
         {
             let engine = TestEngine::new();
             engine.send(WebViewCommand::Navigate("https://a.test".into()));

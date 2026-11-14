@@ -174,48 +174,52 @@ impl HeldRequest {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_held_request_says_what_the_page_is_about_to_do() {
-        let mut held = HeldRequest::new(3, HeldKind::Submit);
-        held.method = "POST".into();
-        held.origin = "https://visa.example".into();
-        assert_eq!(
-            held.describing(),
-            "send the form https://visa.example, POST",
-            "the question names what leaves and where"
-        );
-        assert!(held.valid());
-        assert!(!HeldRequest::new(0, HeldKind::Submit).valid(), "no id");
-        let mut long = held.clone();
-        long.origin = "https://visa.example/".repeat(MAX_HELD_ORIGIN);
-        assert!(!long.valid(), "an over-long origin is not held");
-        assert_eq!(
-            HeldKind::parse(HeldKind::Payment.as_str()),
-            Some(HeldKind::Payment)
-        );
-        assert_eq!(HeldKind::parse("something else"), None);
-    }
+    tilo_test_env::scenario! {
+        fn a_held_request_and_its_answer_say_what_is_asked_and_who_answered;
 
-    #[test]
-    fn an_answer_names_the_actor_it_was_admitted_for_and_nobody_for_the_person() {
-        let rev = PageActor::named("agent:rev").expect("a named actor");
-        let by = AnsweredBy::admitted(Some(rev.clone()));
-        assert_eq!(by, AnsweredBy::Actor(rev.clone()));
-        assert_eq!((by.actor(), by.expired()), (Some(&rev), false));
-        let person = AnsweredBy::admitted(None);
-        assert_eq!(person, AnsweredBy::Person);
-        assert_eq!((person.actor(), person.expired()), (None, false));
-        assert_eq!(
-            (AnsweredBy::Nobody.actor(), AnsweredBy::Nobody.expired()),
-            (None, true),
-            "what nobody answered names nobody"
-        );
-        assert_eq!(
-            (AnsweredBy::Nobody.reason(), AnsweredBy::TooMany.reason()),
-            (Some("expired"), Some("full")),
-            "and says why nobody did"
-        );
-        assert_eq!((person.reason(), by.reason()), (None, None));
-        assert_eq!(AnsweredBy::TooMany.actor(), None);
+        phase a_held_request_says_what_the_page_is_about_to_do;
+        {
+            let mut held = HeldRequest::new(3, HeldKind::Submit);
+            held.method = "POST".into();
+            held.origin = "https://visa.example".into();
+            assert_eq!(
+                held.describing(),
+                "send the form https://visa.example, POST",
+                "the question names what leaves and where"
+            );
+            assert!(held.valid());
+            assert!(!HeldRequest::new(0, HeldKind::Submit).valid(), "no id");
+            let mut long = held.clone();
+            long.origin = "https://visa.example/".repeat(MAX_HELD_ORIGIN);
+            assert!(!long.valid(), "an over-long origin is not held");
+            assert_eq!(
+                HeldKind::parse(HeldKind::Payment.as_str()),
+                Some(HeldKind::Payment)
+            );
+            assert_eq!(HeldKind::parse("something else"), None);
+        }
+
+        phase an_answer_names_the_actor_it_was_admitted_for_and_nobody_for_the_person;
+        {
+            let rev = PageActor::named("agent:rev").expect("a named actor");
+            let by = AnsweredBy::admitted(Some(rev.clone()));
+            assert_eq!(by, AnsweredBy::Actor(rev.clone()));
+            assert_eq!((by.actor(), by.expired()), (Some(&rev), false));
+            let person = AnsweredBy::admitted(None);
+            assert_eq!(person, AnsweredBy::Person);
+            assert_eq!((person.actor(), person.expired()), (None, false));
+            assert_eq!(
+                (AnsweredBy::Nobody.actor(), AnsweredBy::Nobody.expired()),
+                (None, true),
+                "what nobody answered names nobody"
+            );
+            assert_eq!(
+                (AnsweredBy::Nobody.reason(), AnsweredBy::TooMany.reason()),
+                (Some("expired"), Some("full")),
+                "and says why nobody did"
+            );
+            assert_eq!((person.reason(), by.reason()), (None, None));
+            assert_eq!(AnsweredBy::TooMany.actor(), None);
+        }
     }
 }
