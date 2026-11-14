@@ -59,6 +59,7 @@ mod ledger;
 mod link;
 mod listing;
 mod opened;
+mod opened_file;
 mod placed;
 mod publish;
 mod reads;
@@ -2251,9 +2252,7 @@ impl Worker {
             if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
                 return Err(Outcome::Rejected(ActionHostError::StaleRevision));
             }
-            return self
-                .open_asked(workspace_id, caller, named, target)
-                .map(|output| (output, None));
+            return self.open_in_workspace(workspace_id, caller, request, (named, &state));
         }
         let workspace = workspace.ok_or_else(unknown_action)?;
         let route = record_of(&target.provider, &workspace)
@@ -2367,7 +2366,14 @@ impl Worker {
         } else {
             Some(self.bounded(caller).ok_or_else(unknown_action)?)
         };
-        let app = target
+        let app = self.asked_app(target).ok_or_else(unknown_action)?;
+        self.open_new(workspace_id, named, &app, who.as_ref())
+    }
+
+    /// The app a workspace's `app.<app>#open` (or `#start`) names, when this
+    /// host runs it.
+    fn asked_app(&self, target: &tilo_actions::remote::RemoteActionTarget) -> Option<String> {
+        target
             .address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
@@ -2377,9 +2383,7 @@ impl Worker {
                     || target.address.action == APPLICATION_START_ACTION
             })
             .filter(|app| self.catalogue.has(app))
-            .ok_or_else(unknown_action)?
-            .to_owned();
-        self.open_new(workspace_id, named, &app, who.as_ref())
+            .map(str::to_owned)
     }
 
     /// Show the record an application's `open` names (its own record when it names none) as a

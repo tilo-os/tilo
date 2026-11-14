@@ -629,10 +629,12 @@ fn files_under(path: &Path) -> Result<Vec<Uploading>> {
 /// Land `file` in the app that opens its type, and answer the record it
 /// landed in.
 ///
-/// The app is the one the file's own bytes name ([`tilo_content_types::landing`]):
-/// an app that keeps one document per record opens a fresh one first, and
-/// one that keeps many files in its record imports into it. The record it
-/// answers is the one the person opens, and the one search finds.
+/// The app is the one the file's own bytes name ([`tilo_content_types::landing`]),
+/// and the file is opened in it as the workspace opens any file
+/// (`<app>#open content=…`): an app that keeps one document per record
+/// opens a record of its own for it, and one that keeps many files in a
+/// record takes it into the one it keeps. The record it answers is the one
+/// the person opens, and the one search finds, as `<app>@<record>`.
 async fn land(
     client: &Client,
     workspace: &str,
@@ -644,39 +646,15 @@ async fn land(
         return Ok(None);
     };
     let title = format!("Upload {}", file.name);
-    let args = match landing.action {
-        // A note is words: the file goes in as the note's text.
-        "import-markdown-content" => {
-            let body = std::fs::read(&file.path)
-                .with_context(|| format!("reading {}", file.path.display()))?;
-            let body = String::from_utf8(body)
-                .with_context(|| format!("{} is not text", file.path.display()))?;
-            json!({"title": file.name, "body": body})
-        }
-        // A photograph keeps the size its own header states.
-        "import-photo" => {
-            let Some((_, width, height)) = tilo_content_types::image_size(&head) else {
-                return Ok(None);
-            };
-            json!({"image": {"name": file.name, "width": width, "height": height, "content": content}})
-        }
-        _ => json!({"content": content, "name": file.name}),
-    };
-    if landing.own_record {
-        // A record of its own: the app opens one, and the import fills it. An
-        // app that needs no fresh record refuses `open`, which is no reason
-        // to fail the upload.
-        let _ = client
-            .act(workspace, landing.app, "open", &json!({}), &title)
-            .await;
-    }
+    let args = json!({"content": content, "name": file.name});
     let answer = client
-        .act(workspace, landing.app, landing.action, &args, &title)
+        .act(workspace, landing.app, "open", &args, &title)
         .await?;
-    let record = text(&answer, "path")
-        .split_once('#')
-        .map(|(record, _)| record.to_owned());
-    Ok(record)
+    let provider = answer
+        .pointer("/result/provider")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("{} opened no record: {answer}", landing.app))?;
+    Ok(Some(format!("{}@{provider}", landing.app)))
 }
 
 /// The first bytes of the file at `path`: what it takes to tell what it is.

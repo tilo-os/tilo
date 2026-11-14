@@ -158,10 +158,13 @@ Check the signature and that `t` is recent; deduplicate by `Tilo-Delivery`.
 
 A file goes up in one request, and a file larger than one request should carry goes up in as
 many as it takes. Both end in the same place: `tilo.content:<hash>`, which an action takes the
-file by. Nothing names an app yet — a file's **bytes** say which app opens it, and
-`pdf-viewer#import-pdf-content`, `word-processor#import-docx-content`,
-`sheets#import-xlsx-content`, `slides#import-pptx-content`, `notes#import-markdown-content` and
-`photos#import-photo` put it in a record, where a person opens it and search finds it.
+file by. Nothing names an app yet — a file's **bytes** say which app opens it. Opening the
+file there is that app's `open` with the file: `POST …/resources/pdf-viewer/actions/open`
+`{"content": "tilo.content:<hash>", "name": "forms/visa.pdf"}`. PDF Viewer, Writer, Sheets and
+Slides open each file in a record of its own, so a folder of PDFs is a PDF each; Notes and
+Photos take it into the notebook or library the workspace keeps. The answer's
+`result.provider` names the record, where a person opens it and search finds it. An app that
+does not open the file's type refuses it and makes no record.
 
 | | |
 |---|---|

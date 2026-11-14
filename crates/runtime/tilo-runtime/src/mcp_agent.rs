@@ -2624,10 +2624,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let AppRef::Installed { app_id, .. } = self.app_ref(&parsed.app).await? else {
                 return Err(format!("{} started while it was asked to", parsed.app));
             };
-            let (value, reply) = self
-                .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
-                .await?;
-            return Ok(Done::Launched { value, reply });
+            return (self.launched((&parsed, &app_id, &action), arguments, invocation, wait_ms))
+                .await;
         };
         // A path names a type the way a listing does (`tasks.Task`), so an action is found on
         // the resource a listing showed: such a segment is read by the program form first, and
@@ -2697,6 +2695,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Ok(found) => found,
                 Err(_) if opens && starts_app(&action) => {
                     return Ok(self.running(&resolved.app_id).await);
+                }
+                Err(_) if parsed.segments.is_empty() && starts_app(&action) => {
+                    let opening = (&parsed, resolved.app_id.as_str(), action.as_str());
+                    return self.launched(opening, arguments, invocation, wait_ms).await;
                 }
                 Err(error) => return Err(format!("{error}; tilo_ls {} lists them", resolved.path)),
             }
@@ -2832,6 +2834,19 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok((value, reply))
     }
 
+    /// [`Self::launch`] as a call's answer: `pdf-viewer#open content=…` opens a file, running or not.
+    async fn launched(
+        &self,
+        (parsed, app_id, action): (&ParsedPath, &str, &str),
+        arguments: serde_json::Map<String, Value>,
+        invocation: Option<String>,
+        wait_ms: Option<u64>,
+    ) -> Result<Done, String> {
+        let (value, reply) =
+            Box::pin(self.launch(parsed, app_id, action, arguments, invocation, wait_ms)).await?;
+        Ok(Done::Launched { value, reply })
+    }
+
     /// `open` of `app_id`, which runs already: it is there, and what is in it.
     async fn running(&self, app_id: &str) -> Done {
         let value = json!({"update": {"state": "succeeded", "output": {}}});
@@ -2845,6 +2860,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut reply = outcome(value);
         let name = app_names(&[app_id.to_owned()]).join("");
         reply.text = format!("ok: {name} is running");
+        // A file opened in it: the record it is in, as a path addresses it.
+        let opened =
+            (value.pointer("/update/output/value")).filter(|it| it.get("action").is_some());
+        if let Some(provider) = opened.and_then(|opened| opened["provider"].as_str()) {
+            reply.text = format!("ok: opened in {name}@{provider}");
+        }
         if let Some(error) = value.pointer("/opened/error").and_then(Value::as_str) {
             let _ = write!(reply.text, "\nnot opened: {error}");
         }

@@ -38,6 +38,15 @@ pub const RUN_LABEL: &str = "Visa agent";
 /// with a widget on its one page.
 #[must_use]
 pub fn application_pdf() -> Vec<u8> {
+    form_pdf("Application for Schengen Visa")
+}
+
+/// A one-page form headed `title`, with the applicant's fields.
+#[must_use]
+pub fn form_pdf(title: &str) -> Vec<u8> {
+    let labels = format!(
+        "BT /Helv 12 Tf 40 800 Td ({title}) Tj 0 -36 Td (Surname) Tj 0 -40 Td (Given names) Tj 0 -40 Td (Passport number) Tj 0 -40 Td (Purpose of journey) Tj 0 -40 Td (I declare the above is true) Tj ET"
+    );
     let objects: Vec<String> = vec![
         // 1: catalog, with the form
         "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R 5 0 R 6 0 R 7 0 R 8 0 R] /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 11 0 R >> >> >> >>".into(),
@@ -59,10 +68,7 @@ pub fn application_pdf() -> Vec<u8> {
         // 11: font
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".into(),
         // 12: the page's labels
-        stream(
-            "<< >>",
-            "BT /Helv 12 Tf 40 800 Td (Application for Schengen Visa) Tj 0 -36 Td (Surname) Tj 0 -40 Td (Given names) Tj 0 -40 Td (Passport number) Tj 0 -40 Td (Purpose of journey) Tj 0 -40 Td (I declare the above is true) Tj ET",
-        ),
+        stream("<< >>", &labels),
     ];
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offsets = Vec::new();
@@ -98,8 +104,14 @@ fn stream(dict: &str, content: &str) -> String {
 /// An applicant's bank statement, as a Word file.
 #[must_use]
 pub fn statement_docx() -> Vec<u8> {
-    let markdown =
-        "# Bank statement\n\nAccount holder: Amara Okafor\n\nClosing balance: EUR 12,480.00\n";
+    word_docx(
+        "# Bank statement\n\nAccount holder: Amara Okafor\n\nClosing balance: EUR 12,480.00\n",
+    )
+}
+
+/// `markdown`, written as a Word file.
+#[must_use]
+pub fn word_docx(markdown: &str) -> Vec<u8> {
     let (document, inputs) =
         tilo_doc_codecs::convert::import("md", markdown.as_bytes()).expect("markdown reads");
     tilo_doc_codecs::convert::export(&document, &inputs, "docx").expect("a Word file")
