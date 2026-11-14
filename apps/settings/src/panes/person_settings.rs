@@ -377,7 +377,7 @@ impl AccountsModel {
         ));
     }
 
-    fn page(&self, cx: &ViewCx<Settings>) -> Element {
+    fn account_list(&self, cx: &ViewCx<Settings>) -> Element {
         let mut items = Vec::new();
         for account in &self.accounts {
             let status = if account.has_secret {
@@ -417,7 +417,11 @@ impl AccountsModel {
         if let Some(line) = self.error.as_ref().or(self.notice.as_ref()) {
             items.push(note(line));
         }
-        let list = section(&t("settings-web-accounts-list"), rows(items));
+        section(&t("settings-web-accounts-list"), rows(items))
+    }
+
+    fn page(&self, cx: &ViewCx<Settings>) -> Element {
+        let list = self.account_list(cx);
 
         let add = cx.actions().bind_effect_invocation(
             Button::new("settings.web.accounts.add", &t("settings-web-accounts-add"))
