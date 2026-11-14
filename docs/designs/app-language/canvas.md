@@ -50,6 +50,10 @@ A place on the canvas is a resource's view, drawn as itself:
 - What the agent shows is content too: the views it answers with fill the rectangle the person
   dragged, or stand beside the reply when they only clicked. A view the agent generates
   (tilolang it writes) is placed the same way and stays live.
+- Beside means adjacent: what an answer shows takes the free spot touching its turn (trailing
+  side, then below, then leading side, then above), the one most inside what the person sees,
+  made smaller when only a smaller room is free there, and goes elsewhere only when no spot
+  adjacent to the turn is free.
 - Following up is pointing again: click under a reply to continue that turn, right-click an
   answer to refine it in place.
 - Nothing modal: an answer in progress shows where it will land and never blocks the rest of
@@ -85,7 +89,7 @@ sharp at the screen's real size.
   agent's `place` steps fill it (`beside`/`within` from the turn, as `open` takes `beside`
   today). The map reports what the person sees as they point (`seen`), and the caret passes it
   on (`seen_x`, `seen_y`, `seen_width`, `seen_height`): the turn's steps that stand beside it
-  take free room inside it (`free_place_within`).
+  take the free spot adjacent to it, judged against what the person sees (`free_place_within`).
 - **Places** are `ui.MapPin`s holding the resource's view with no `ui.WindowFrame`; the handle
   is a shell view shown on hover and selection.
 - **The arrangement** records each place's resource, view, point and size (`ArrangementPlace`);
@@ -122,8 +126,9 @@ is shown to anyone.
   canvas pans (never zooms) so the newest turn and its answer are in view together, and keeps the
   turn in view as its words grow. The person's turn wins over the agent's later placement: the
   camera never chases a place the agent puts off-screen at the cost of the turn. The agent's views
-  beside a turn take free room inside what the person saw when they asked (`seen`), smaller when
-  only a smaller room is free. A card hugs what it holds up to the visible area and no further:
+  stand adjacent to their turn (§3), sized so the turn and they fit on the screen together where
+  they can, and the camera pans (never zooms) to show both; when both cannot fit, the turn wins.
+  A card hugs what it holds up to the visible area and no further:
   its text wraps and the card scrolls.
 - **Captions name the thing.** A place's caption is what it shows, by the name of the view it
   stands through ("All inboxes", "Notes"), never the first record or account of its app's root.

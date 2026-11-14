@@ -30,11 +30,12 @@ fn canvas_place(rect: CanvasRect) -> CanvasPlace {
 }
 
 impl Arrangement {
-    /// The free room inside `seen` (the part of the canvas the person saw when they asked) next to
-    /// `subject`, for a window of the default size or the largest part of it that fits
-    /// (`free_place_within`): where an answer's view stands so the person sees it without the
-    /// canvas moving away from their turn (canvas.md §7, "Everything stays in view"). `None` when
-    /// no room inside `seen` is free, or `subject` stands on no canvas.
+    /// The free spot adjacent to `subject` (trailing, then below, then leading, then above) for a
+    /// window of the default size, or the part of it that stands on the screen with `subject` or
+    /// is free beside it (`free_place_within`), judged against `seen` (the part of the canvas the
+    /// person saw when they asked): where an answer's view stands beside its turn, so the camera
+    /// pans to show both (canvas.md §3, §7). `None` when no spot adjacent to `subject` is free,
+    /// or `subject` stands on no canvas.
     pub(super) fn room_in_view(&self, subject: Beside, seen: CanvasRect) -> Option<CanvasPlace> {
         let seen = canvas_place(seen);
         let size = (clamp_side(DEFAULT_WIDTH), clamp_side(DEFAULT_HEIGHT));

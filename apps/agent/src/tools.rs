@@ -475,6 +475,31 @@ pub const MAX_PLAN_REPLY_CHARS: usize = 4000;
 /// never refused for its length.
 pub const MAX_REPLY_BYTES: usize = 6 * 1024;
 
+/// Words a model writes where its answer should go when it has none: a stand-in, not an answer.
+const STAND_IN_REPLIES: &[&str] = &["placeholder", "todo", "tbd", "null", "undefined"];
+
+/// Whether `reply` says nothing to the person: empty, only punctuation and symbols ("…", "..."),
+/// a stand-in word ("placeholder"), or a template's slot echoed back ("<at most eight words>").
+/// Such a reply never passes as an answer.
+#[must_use]
+pub fn says_nothing(reply: &str) -> bool {
+    let reply = reply.trim();
+    let slot = reply
+        .strip_prefix('<')
+        .and_then(|inner| inner.strip_suffix('>'))
+        .is_some_and(|inner| !inner.contains(['<', '>']));
+    slot || !reply.chars().any(char::is_alphanumeric)
+        || STAND_IN_REPLIES
+            .iter()
+            .any(|stand_in| reply.eq_ignore_ascii_case(stand_in))
+}
+
+/// `reply` as it is kept ([`bound_reply`]), or `None` when it says nothing ([`says_nothing`]).
+#[must_use]
+pub fn spoken_reply(reply: &str) -> Option<String> {
+    (!says_nothing(reply)).then(|| bound_reply(reply))
+}
+
 /// `reply` as it is kept: trimmed, at most [`MAX_PLAN_REPLY_CHARS`]
 /// characters and [`MAX_REPLY_BYTES`] bytes, cut at a character boundary.
 pub fn bound_reply(reply: &str) -> String {
@@ -945,15 +970,13 @@ fn read_view(input: &Value) -> Option<ViewAnswer> {
 }
 
 /// Read the loop's terminal [`PLAN`] call. Lenient by design: a missing
-/// `done` is read as done, a blank reply as none.
+/// `done` is read as done, a reply that says nothing ([`says_nothing`]) as none.
 pub fn read_finish(input: &Value) -> Finish {
     Finish {
         reply: input
             .get("reply")
             .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|reply| !reply.is_empty())
-            .map(bound_reply),
+            .and_then(spoken_reply),
         done: input.get("done").and_then(Value::as_bool).unwrap_or(true),
         view: read_view(input),
     }
@@ -992,9 +1015,7 @@ pub fn read_invoke(input: &Value, revealed: &Revealed) -> Result<Invocation, Str
         reply: input
             .get(INVOKE_REPLY)
             .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|reply| !reply.is_empty())
-            .map(bound_reply),
+            .and_then(spoken_reply),
     })
 }
 

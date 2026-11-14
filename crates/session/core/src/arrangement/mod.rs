@@ -1243,10 +1243,10 @@ impl Arrangement {
             .trim()
             .rsplit_once("/messages/")
             .map_or(beside, |(conversation, _)| conversation);
-        // Beside a turn asked on the canvas, the free room inside what the person saw when they
-        // asked comes first, so the answer's views stand where they look (canvas.md §7,
-        // "Everything stays in view"); a room too small for a window's size takes the largest part
-        // of it that fits.
+        // Beside a turn asked on the canvas, the answer's views take the free spot adjacent to
+        // the turn, sized so the two stand on the screen together where they can, and the camera
+        // pans to both (canvas.md §3, §7); with no spot adjacent free, the free space further
+        // along the turn's columns.
         let in_view = match room {
             Some(TurnRoom::BesideAsked(turn, Some(seen))) => {
                 self.room_in_view(Beside::Asked(turn), seen)
