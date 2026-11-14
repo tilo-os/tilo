@@ -415,7 +415,7 @@ impl Writer<'_, '_> {
                 place,
                 (live, want),
                 (&gap, &added),
-                (previous(live, live_at), Some(live_index)),
+                (previous(live, live_index), Some(live_index)),
             );
             let Some(have) = live.get(live_index) else {
                 continue;
