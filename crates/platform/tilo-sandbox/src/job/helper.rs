@@ -55,9 +55,9 @@ pub fn spawn(h: Helper<'_>) -> Result<libc::pid_t, SpawnError> {
     spec.landlock = Landlock::Off;
     spec.cgroup_view = false;
     let mut plan = Plan::new(&spec)?;
-    plan.helper = true;
-    plan.own_net = false;
-    plan.nofile_max = h.nofile_max;
+    plan.init.helper = true;
+    plan.init.own_net = false;
+    plan.init.nofile_max = h.nofile_max;
     let fds = runner::Fds {
         stdin: None,
         stdout: h.stdout,

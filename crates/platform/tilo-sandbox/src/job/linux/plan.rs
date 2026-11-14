@@ -99,21 +99,29 @@ pub struct Rule {
     pub access: u64,
 }
 
-/// What the init does, all of it prepared. The worker's descriptors and its own notes stay with the
-/// worker: the init finds the descriptors at the numbers its `Control` names.
-#[derive(Debug, Serialize, Deserialize)]
+/// A job, all of it prepared: what the init does, and the descriptors and notes that stay with the
+/// worker.
+#[derive(Debug)]
 pub struct Plan {
+    /// What the init is sent.
+    pub init: Init,
+    /// Detached idmapped mounts for [`Op::Attach`], made by the worker.
+    pub trees: Vec<OwnedFd>,
+    /// Writable host paths bound without an idmap (their filesystem can't take one): the job, as a
+    /// user of its own, may not be able to write their owner's files.
+    pub unmapped: Vec<PathBuf>,
+    /// The Landlock ruleset, when the job runs under Landlock.
+    pub landlock: Option<OwnedFd>,
+}
+
+/// What the init does, as the worker sends it every field of it. The worker's descriptors stay
+/// with the worker ([`Plan`]): the init finds them at the numbers its `Control` names.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Init {
     pub stage: CString,
     pub stage_old: CString,
     pub stage_new: CString,
     pub ops: Vec<Op>,
-    /// Detached idmapped mounts for [`Op::Attach`], made by the worker.
-    #[serde(skip)]
-    pub trees: Vec<OwnedFd>,
-    /// Writable host paths bound without an idmap (their filesystem can't take one): the job, as a
-    /// user of its own, may not be able to write their owner's files.
-    #[serde(skip)]
-    pub unmapped: Vec<PathBuf>,
     /// The job's ids in its own namespace, which the init takes on before it builds the root: with
     /// a block of host ids, the init starts as the worker's uid, which the job's namespace doesn't
     /// map.
@@ -125,9 +133,6 @@ pub struct Plan {
     pub candidates: Vec<CString>,
     pub argv: Vec<CString>,
     pub envp: Vec<CString>,
-    /// The Landlock ruleset, when the job runs under Landlock.
-    #[serde(skip)]
-    pub landlock: Option<OwnedFd>,
     pub rules: Vec<Rule>,
     /// BPF programs (`struct sock_filter` arrays, as bytes), installed in order.
     pub seccomp: Vec<Vec<u8>>,
@@ -1067,13 +1072,11 @@ impl Plan {
             .ok()
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(63);
-        Ok(Self {
+        let init = Init {
             stage: cstr(stage.as_bytes(), stage)?,
             stage_old: cstr(OLD.trim_start_matches('/').as_bytes(), OLD)?,
             stage_new: cstr(NEW.trim_start_matches('/').as_bytes(), NEW)?,
             ops,
-            trees,
-            unmapped,
             become_ids,
             new_root: cstr(NEW.as_bytes(), NEW)?,
             hostname: cstr(spec.hostname.as_bytes(), "the hostname")?,
@@ -1094,13 +1097,18 @@ impl Plan {
                     cstr(&kv, "an environment variable")
                 })
                 .collect::<Result<_, _>>()?,
-            landlock,
             rules: rules.unwrap_or_default(),
             seccomp: seccomp_filters(spec.seccomp)?,
             cap_last,
             own_net: true,
             helper: false,
             nofile_max: false,
+        };
+        Ok(Self {
+            init,
+            trees,
+            unmapped,
+            landlock,
         })
     }
 }

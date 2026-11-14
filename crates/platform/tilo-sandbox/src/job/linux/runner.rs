@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::plan::{Op, Plan};
+use super::plan::{Init, Op, Plan};
 use super::sys;
 use crate::job::{ExitStatus, SpawnError, Started};
 
@@ -251,7 +251,7 @@ struct Control {
 }
 
 struct Child<'a> {
-    plan: &'a Plan,
+    plan: &'a Init,
     argv: &'a [*const libc::c_char],
     envp: &'a [*const libc::c_char],
     control: &'a Control,
@@ -789,7 +789,7 @@ fn init(plan_fd: RawFd, report: RawFd) -> ! {
         report_and_exit(report, Step::Init, 2, errno.unwrap_or(0));
     }
     drop(file);
-    let Ok((control, plan)) = postcard::from_bytes::<(Control, Plan)>(&bytes) else {
+    let Ok((control, plan)) = postcard::from_bytes::<(Control, Init)>(&bytes) else {
         report_and_exit(report, Step::Init, 2, libc::EINVAL.unsigned_abs());
     };
     drop(bytes);
@@ -1221,6 +1221,7 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
     let index = usize::try_from(index).unwrap_or(usize::MAX);
     let what = match Step::from_u32(step) {
         Some(Step::Op) => plan
+            .init
             .ops
             .get(index)
             .map_or_else(|| "building the root".to_owned(), Op::describe),
@@ -1229,10 +1230,10 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
         Some(Step::Pivot) => "entering the new root".into(),
         Some(Step::Hostname) => "setting the hostname".into(),
         Some(Step::Loopback) => "bringing up lo".into(),
-        Some(Step::Cwd) => format!("entering {}", plan.cwd.to_string_lossy()),
+        Some(Step::Cwd) => format!("entering {}", plan.init.cwd.to_string_lossy()),
         Some(Step::Caps) => "dropping capabilities".into(),
         Some(Step::NoNewPrivs) => "setting no_new_privs".into(),
-        Some(Step::LandlockRule) => plan.rules.get(index).map_or_else(
+        Some(Step::LandlockRule) => plan.init.rules.get(index).map_or_else(
             || "adding a Landlock rule".to_owned(),
             |r| format!("adding the Landlock rule for {}", r.path.to_string_lossy()),
         ),
@@ -1249,6 +1250,7 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
         },
         Some(Step::Exec) => {
             let program = plan
+                .init
                 .argv
                 .first()
                 .map(|a| a.to_string_lossy().into_owned())
@@ -1378,7 +1380,7 @@ fn clone_args(
     detached: bool,
 ) -> sys::CloneArgs {
     let bits = |f: libc::c_int| u64::from(f.unsigned_abs());
-    let mut flags = if plan.helper {
+    let mut flags = if plan.init.helper {
         // A mount namespace of its own and nothing else: the helper acts in the caller's user
         // namespace, with the caller's capabilities.
         bits(libc::CLONE_VM | libc::CLONE_VFORK | libc::CLONE_NEWNS | libc::CLONE_PIDFD)
@@ -1395,7 +1397,7 @@ fn clone_args(
                 | libc::CLONE_PIDFD,
         )
     };
-    if plan.own_net && !plan.helper {
+    if plan.init.own_net && !plan.init.helper {
         flags |= bits(libc::CLONE_NEWNET);
     }
     // The kernel refuses an exit signal with CLONE_PARENT: the child's parent is the caller's, and
@@ -1465,7 +1467,7 @@ fn release(
     setup: Option<SetupFn<'_>>,
 ) -> Result<(), SpawnError> {
     let pid = job.pid();
-    if plan.helper {
+    if plan.init.helper {
         // No user namespace of its own: nothing to map.
     } else if let Some(block) = ids.block {
         // The worker may map any ids (it holds CAP_SETUID and CAP_SETGID), so `setgroups` stays
@@ -1588,7 +1590,7 @@ pub fn spawn(
         keep_below: layout.keep_below,
         report: layout.report,
         exe: layout.exe,
-        cap_last: plan.cap_last,
+        cap_last: plan.init.cap_last,
         argv: &argv,
     };
     #[cfg(target_env = "gnu")]
@@ -1719,7 +1721,7 @@ fn write_plan(
             .collect(),
         detached,
     };
-    let encoded = postcard::to_allocvec(&(&control, plan))
+    let encoded = postcard::to_allocvec(&(&control, &plan.init))
         .map_err(|e| SpawnError::Setup(format!("encoding the job's plan: {e}")))?;
     let mut file = file;
     file.write_all(&encoded)

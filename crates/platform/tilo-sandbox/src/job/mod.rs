@@ -173,7 +173,7 @@ impl<'a> Launch<'a> {
     #[cfg(target_os = "linux")]
     pub fn spawn(mut self) -> Result<Job, SpawnError> {
         let mut plan = linux::plan::Plan::new(self.spec)?;
-        plan.own_net = self.netns.is_none();
+        plan.init.own_net = self.netns.is_none();
         let fds = linux::runner::Fds {
             stdin: self.stdin,
             stdout: self.stdout,
