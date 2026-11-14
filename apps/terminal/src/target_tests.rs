@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
         assert!(widget.is_disconnected());
     }
 
-    phase an_agent_is_told_why_and_never_offered_the_device_shell;
+    phase an_agent_gets_one_sentence_and_never_the_device_shell;
     {
         let (mut widget, opened) = tab(RecentTarget::none(), |target| {
             if target.is_host() {

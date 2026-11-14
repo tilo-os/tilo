@@ -5907,8 +5907,9 @@ impl TerminalWidget {
         widget
     }
 
-    /// A live hosted tab whose supervisor is unavailable: the cause stays visible and input refused,
-    /// rather than a capture-only terminal.
+    /// A live hosted tab whose supervisor is unavailable: the pane says no
+    /// environment can start and input stays refused, rather than a
+    /// capture-only terminal. The service's own words go to the log.
     pub(crate) fn without_hosted_runtime(reason: &str) -> Self {
         tracing::warn!(%reason, "terminal: the process service did not reach this surface");
         let mut widget = Self::without_process(ContentStore::memory());
