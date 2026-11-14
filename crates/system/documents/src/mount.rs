@@ -1062,36 +1062,6 @@ mod tests {
             );
         }
 
-        phase the_mount_serves_on_more_than_one_thread;
-        {
-            let documents = Documents::new();
-            let Some((_dir, _mounted)) = mounted(&documents) else {
-                return;
-            };
-            // The serving threads are named `fuser-0`, `fuser-1`, …; a second
-            // one is there only when the mount serves on more than one. They
-            // start beside the mount, not before it returns.
-            let second = || {
-                std::fs::read_dir("/proc/self/task")
-                    .unwrap()
-                    .flatten()
-                    .filter_map(|task| std::fs::read_to_string(task.path().join("comm")).ok())
-                    .any(|name| name.trim_end() == "fuser-1")
-            };
-            let mut serving = second();
-            for _ in 0..100 {
-                if serving {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                serving = second();
-            }
-            assert!(
-                serving,
-                "one slow read must not hold up every app's documents"
-            );
-        }
-
         phase a_folder_choice_gives_its_subtree_and_nothing_above_it;
         {
             let documents = Documents::new();
@@ -1124,6 +1094,40 @@ mod tests {
                 "the chosen folder stays"
             );
         }
+    }
+
+    // A test of its own, not a phase of the scenario above: it looks for a second serving thread
+    // among all the threads of this process, and a mount an earlier phase dropped is unmounted at
+    // once but its `fuser-N` threads end on their own time, so one of those could be the thread
+    // this finds.
+    #[test]
+    fn the_mount_serves_on_more_than_one_thread() {
+        let documents = Documents::new();
+        let Some((_dir, _mounted)) = mounted(&documents) else {
+            return;
+        };
+        // The serving threads are named `fuser-0`, `fuser-1`, …; a second
+        // one is there only when the mount serves on more than one. They
+        // start beside the mount, not before it returns.
+        let second = || {
+            std::fs::read_dir("/proc/self/task")
+                .unwrap()
+                .flatten()
+                .filter_map(|task| std::fs::read_to_string(task.path().join("comm")).ok())
+                .any(|name| name.trim_end() == "fuser-1")
+        };
+        let mut serving = second();
+        for _ in 0..100 {
+            if serving {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            serving = second();
+        }
+        assert!(
+            serving,
+            "one slow read must not hold up every app's documents"
+        );
     }
 
     fn mounted_at(at: &Path) -> bool {
