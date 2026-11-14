@@ -860,14 +860,37 @@ struct Endpoint<H> {
 /// served: a forward to another device, or the first request of any other.
 const FIRST_LINE: u64 = 64 * 1024;
 
+/// Connections the native endpoint serves at once.
+const MAX_CONNECTIONS: usize = 64;
+/// What a connection past [`MAX_CONNECTIONS`] is told before it is closed.
+const NO_ROOM: &str = "this runtime is serving 64 connections, as many as it serves at once, so \
+     this one is closed and nothing it asked ran; connect again once one of them has closed";
+const _: () = assert!(MAX_CONNECTIONS == 64, "NO_ROOM names the bound");
+
+/// Tell a client the endpoint has no room for why it is not served, then
+/// close: a JSON-RPC error that names no request, since none of its requests
+/// is read. The line is written without waiting on the client, so one that
+/// reads nothing cannot keep the endpoint from the next connection.
+fn refuse_busy(mut stream: UnixStream) {
+    let refusal = json!({"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":NO_ROOM}});
+    let told = stream
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .and_then(|()| writeln!(stream, "{refusal}"));
+    if let Err(error) = told {
+        tracing::debug!(%error, "a native client past the bound was not told why it is closed");
+    }
+}
+
 impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
-    /// Serve each connection to `listener` on its own thread, at most 64 at once.
+    /// Serve each connection to `listener` on its own thread, at most
+    /// [`MAX_CONNECTIONS`] at once. One more is told there is no room and
+    /// closed ([`refuse_busy`]).
     fn accept(self, listener: &UnixListener) -> io::Result<()> {
         let active = Arc::new(AtomicUsize::new(0));
         for stream in listener.incoming() {
             let stream = stream?;
-            if active.load(Ordering::Relaxed) >= 64 {
-                drop(stream);
+            if active.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+                refuse_busy(stream);
                 continue;
             }
             let factory = Arc::clone(&self.session_factory);
@@ -1400,3 +1423,7 @@ fn default_launch_guard(
 #[cfg(test)]
 #[path = "daemon_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "daemon_limits_tests.rs"]
+mod limits_tests;

@@ -17,6 +17,8 @@ mod put;
 mod schema;
 #[path = "mcp_step.rs"]
 mod step;
+#[path = "mcp_turns.rs"]
+mod turns;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use step::{STEP, STEP_TITLE, SURFACE_STRUCTURED};
@@ -25,6 +27,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 use tilo_lock::MutexRecover as _;
+pub(crate) use turns::{MAX_ADMITTED, MAX_WORKING};
 
 /// Host-configured per-session construction. It receives no client identity,
 /// label, requested workspace or execution UUID.
@@ -156,14 +159,6 @@ const AGENT_INSTRUCTIONS: &str = "These tools act in the person's Tilo workspace
      shell in the workspace's files, and every later call runs in that same shell, so a cd or an \
      export carries over. If a command answers with a refusal, tell the person what it says, then \
      run the command again once they did it.";
-
-/// A session's requests that work at once; more wait for a turn. One agent
-/// cannot occupy the host with every call it can send.
-pub(crate) const MAX_WORKING: usize = 16;
-/// A session's requests that work or wait for a turn; more are refused at
-/// once, so a flood of calls neither queues without end nor makes the one
-/// that cancels wait behind it.
-pub(crate) const MAX_ADMITTED: usize = 64;
 
 /// One action's kind, as what ran could tell it: [`Self::Unsaid`] falls
 /// back on asking the host.
@@ -1497,7 +1492,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let admitted = self
             .admitted
             .try_acquire()
-            .map_err(|_| "too many requests in flight for this session")?;
+            .map_err(|_| turns::TOO_MANY_IN_FLIGHT)?;
         let working = self.working.acquire().await.map_err(|_| "session closed")?;
         Ok(Some([admitted, working]))
     }
