@@ -105,13 +105,7 @@ impl Whose {
     /// root `own`, outside any workspace.
     #[must_use]
     pub fn of_roots(asker: [u8; 32], own: [u8; 32]) -> Self {
-        let person = |root| {
-            collab_types::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(
-                root,
-            ))
-            .id()
-            .to_owned()
-        };
+        let person = |root| hex::encode(root);
         Self {
             asker: person(asker),
             own: person(own),

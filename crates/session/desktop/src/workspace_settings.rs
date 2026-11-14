@@ -11,7 +11,7 @@
 //! [`Workspace::govern_as_at`], which refuse callers failing [`Workspace::may_administer`].
 
 use crate::i18n::{t, t_args};
-use tilo_action_policy::{Grantee, MemberId, Refusal};
+use tilo_action_policy::{Grantee, Refusal};
 use tilo_sort::CompactSort as _;
 
 use collab_types::caps::{Access, CapOverride, Effect, Expiry, Scope};
