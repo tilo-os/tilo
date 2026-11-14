@@ -22,8 +22,8 @@ pub struct PushArgs {
     /// current directory.
     path: Option<PathBuf>,
     /// The workspace to push to, by its host's link:
-    /// `tilo-room:<relay>[@<ip:port>]/<workspace>/<room>`.
-    #[arg(long = "room")]
+    /// `tilo-workspace:<relay>[@<ip:port>]/<workspace>/<id>`.
+    #[arg(long = "workspace")]
     workspace: String,
     /// This machine's Tilo identity: a device of yours, enrolled for the
     /// person the workspace knows (`tilo-enroll certify`). Defaults to
@@ -121,7 +121,7 @@ pub fn run_push(args: PushArgs) -> Result<Value> {
         describe(&push),
         started.elapsed().as_millis()
     );
-    Ok(json!({ "room": link.to_string(), "action": push.action, "answer": answer }))
+    Ok(json!({ "workspace": link.to_string(), "action": push.action, "answer": answer }))
 }
 
 fn describe(push: &Push) -> String {

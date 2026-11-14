@@ -22,21 +22,21 @@ export function createCrashQuarantine({storage=globalThis.localStorage,now=Date.
     try{const list=JSON.parse(storage?.getItem(KEY)??'[]');return Array.isArray(list)?list:[];}
     catch{return [];}
   };
-  const current=()=>read().filter(entry=>typeof entry?.room==='string'&&typeof entry.tab==='string'&&now()-entry.at<TTL_MS);
+  const current=()=>read().filter(entry=>typeof entry?.workspace==='string'&&typeof entry.tab==='string'&&now()-entry.at<TTL_MS);
   const write=list=>{try{storage?.setItem(KEY,JSON.stringify(list.slice(-LIMIT)));}catch{}};
   return {
     /** `[{tab, message}]` for `workspace`, as `quarantine_windows` takes them. */
-    entries(room){return current().filter(entry=>entry.room===room).map(({tab,message})=>({tab,message}));},
+    entries(workspace){return current().filter(entry=>entry.workspace===workspace).map(({tab,message})=>({tab,message}));},
     /** Keep `tab` out of `workspace`'s next load. False when it already was: its
      * application ran anyway, and starting over would crash again. */
-    record(room,{tab,message}){
+    record(workspace,{tab,message}){
       const list=current(),id=String(tab);
-      if(list.some(entry=>entry.room===room&&entry.tab===id))return false;
-      list.push({room,tab:id,message:String(message??'').slice(0,MESSAGE_LIMIT),at:now()});
+      if(list.some(entry=>entry.workspace===workspace&&entry.tab===id))return false;
+      list.push({workspace,tab:id,message:String(message??'').slice(0,MESSAGE_LIMIT),at:now()});
       write(list);
       return true;
     },
-    forget(room,tab){write(current().filter(entry=>!(entry.room===room&&entry.tab===String(tab))));},
+    forget(workspace,tab){write(current().filter(entry=>!(entry.workspace===workspace&&entry.tab===String(tab))));},
   };
 }
 

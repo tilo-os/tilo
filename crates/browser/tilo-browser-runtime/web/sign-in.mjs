@@ -203,10 +203,10 @@ export function requestWords(request, {locale = undefined, local = globalThis.lo
 export function rememberedWorkspaces({local = globalThis.localStorage} = {}) {
   const seen = new Set();
   const workspaces = [];
-  for (const {room, origin, name} of enteredWorkspaces(local)) {
-    if (seen.has(room)) continue;
-    seen.add(room);
-    workspaces.push({scope: room, name: name ?? new URL(origin).host});
+  for (const {workspace, origin, name} of enteredWorkspaces(local)) {
+    if (seen.has(workspace)) continue;
+    seen.add(workspace);
+    workspaces.push({scope: workspace, name: name ?? new URL(origin).host});
   }
   return workspaces;
 }

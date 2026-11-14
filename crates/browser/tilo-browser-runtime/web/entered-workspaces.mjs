@@ -29,9 +29,9 @@ export const originOf = value => new URL(value).origin;
 const readJson = (store, key, fallback) => {
   try { return JSON.parse(store?.getItem(key) ?? 'null') ?? fallback; } catch { return fallback; }
 };
-export const sameEntry = (a, b) => originOf(a.origin) === originOf(b.origin) && a.room === b.room;
+export const sameEntry = (a, b) => originOf(a.origin) === originOf(b.origin) && a.workspace === b.workspace;
 const validEntry = entry => {
-  try { return typeof entry?.room === 'string' && entry.room && Boolean(originOf(entry.origin)); } catch { return false; }
+  try { return typeof entry?.workspace === 'string' && entry.workspace && Boolean(originOf(entry.origin)); } catch { return false; }
 };
 /** A remembered workspace names the host that held it: one that does not is not
  * offered, as nothing could ever tell whether it still exists. */
@@ -53,14 +53,14 @@ export function hostDeviceOf(hostCert) {
 /**
  * The workspaces this browser entered as a member (an invitation it redeemed, an
  * account it holds, a device it paired), most recently opened first:
- * `{origin, room, hostDevice, name, unavailable}`. `hostDevice` is the host
+ * `{origin, workspace, hostDevice, name, unavailable}`. `hostDevice` is the host
  * that held the workspace when it was entered; `unavailable` says the last
  * attempt to open it failed without the host saying it is gone: the host
  * refused this browser, or could not be reached.
  */
 export function enteredWorkspaces(store = globalThis.localStorage) {
-  return readEntered(store).map(({origin, room, hostDevice, name = null, unavailable = false}) => ({
-    origin: originOf(origin), room, hostDevice, name: typeof name === 'string' && name ? name : null, unavailable: unavailable === true,
+  return readEntered(store).map(({origin, workspace, hostDevice, name = null, unavailable = false}) => ({
+    origin: originOf(origin), workspace, hostDevice, name: typeof name === 'string' && name ? name : null, unavailable: unavailable === true,
   }));
 }
 
@@ -86,49 +86,49 @@ function keep(store, text) {
   return answer;
 }
 
-/** Remember that this browser opened the workspace `{origin, room}`, held by
+/** Remember that this browser opened the workspace `{origin, workspace}`, held by
  * the host `hostDevice`, as a member, under `name` when one is known, by the
  * rules every device keeps the list by (`rememberEntered` in `runtime`):
  * first in the list, an earlier name staying, the workspaces remembered at
  * the origin under another host forgotten with it. */
-export function rememberEntered(runtime, {origin, room, hostDevice, name = null}, store = globalThis.localStorage) {
+export function rememberEntered(runtime, {origin, workspace, hostDevice, name = null}, store = globalThis.localStorage) {
   let at;
   try { at = originOf(origin); } catch { return; }
-  if (typeof room !== 'string' || typeof hostDevice !== 'string') return;
-  keep(store, runtime.rememberEntered(stored(store), JSON.stringify({origin: at, room, hostDevice, ...(name ? {name} : {})})));
+  if (typeof workspace !== 'string' || typeof hostDevice !== 'string') return;
+  keep(store, runtime.rememberEntered(stored(store), JSON.stringify({origin: at, workspace, hostDevice, ...(name ? {name} : {})})));
 }
 
 /** Name a remembered workspace after the workspace it showed, if it has no name yet. */
-export function nameEntered(runtime, {origin, room, name}, store = globalThis.localStorage) {
+export function nameEntered(runtime, {origin, workspace, name}, store = globalThis.localStorage) {
   if (typeof name !== 'string' || !name) return;
   let at;
   try { at = originOf(origin); } catch { return; }
-  keep(store, runtime.nameEntered(stored(store), JSON.stringify({origin: at, room}), name));
+  keep(store, runtime.nameEntered(stored(store), JSON.stringify({origin: at, workspace}), name));
 }
 
-/** The last attempt to open the remembered workspace `{origin, room}` failed: say
+/** The last attempt to open the remembered workspace `{origin, workspace}` failed: say
  * so where it is offered, and stop reopening it on a bare entry. */
-export function markUnavailable(runtime, {origin, room}, store = globalThis.localStorage) {
+export function markUnavailable(runtime, {origin, workspace}, store = globalThis.localStorage) {
   let at;
   try { at = originOf(origin); } catch { return; }
-  keep(store, runtime.markEnteredUnavailable(stored(store), JSON.stringify({origin: at, room})));
+  keep(store, runtime.markEnteredUnavailable(stored(store), JSON.stringify({origin: at, workspace})));
 }
 
-/** The host of the remembered workspace `{origin, room}` said its owner deleted
+/** The host of the remembered workspace `{origin, workspace}` said its owner deleted
  * it: forget it, and stop reopening it on a bare entry (`forgetDeletedWorkspace`
  * in `runtime`). */
-export function forgetDeletedWorkspace(runtime, {origin, room}, store = globalThis.localStorage) {
+export function forgetDeletedWorkspace(runtime, {origin, workspace}, store = globalThis.localStorage) {
   let at;
   try { at = originOf(origin); } catch { return; }
-  if (typeof room !== 'string') return;
-  keep(store, runtime.forgetDeletedWorkspace(stored(store), JSON.stringify({origin: at, room})));
+  if (typeof workspace !== 'string') return;
+  keep(store, runtime.forgetDeletedWorkspace(stored(store), JSON.stringify({origin: at, workspace})));
 }
 
 /**
  * The host at `origin` answered as `hostDevice` (its device key, hex): the
  * workspaces remembered there under another host are gone with that host's
  * state, so they are forgotten, and a bare entry reopens none of them.
- * Returns the workspaces forgotten, `[{origin, room}]`. Only an answer from the
+ * Returns the workspaces forgotten, `[{origin, workspace}]`. Only an answer from the
  * origin itself is passed here, never a failure to reach it.
  */
 export function forgetGoneWorkspaces(runtime, {origin, hostDevice}, store = globalThis.localStorage) {
@@ -139,32 +139,32 @@ export function forgetGoneWorkspaces(runtime, {origin, hostDevice}, store = glob
 }
 
 /**
- * Opening the remembered workspace `{origin, room}` failed: ask its origin which
+ * Opening the remembered workspace `{origin, workspace}` failed: ask its origin which
  * host answers there now (`hostInfo(origin)`, resolving to that host's
- * certificate) and whether its owner deleted it (`deleted(origin, room)`,
+ * certificate) and whether its owner deleted it (`deleted(origin, workspace)`,
  * resolving to a boolean), and settle it by the shared rules
  * (`settleFailedWorkspace` in `runtime`): `'deleted'` when the origin says so
  * and `'gone'` when another host answers there now (both forgotten),
  * `'unavailable'` otherwise (it stays, marked as not opening last time), and
  * `null` for a workspace this browser does not remember.
  */
-export async function settleFailedWorkspace(runtime, {origin, room}, {hostInfo, deleted, store = globalThis.localStorage} = {}) {
+export async function settleFailedWorkspace(runtime, {origin, workspace}, {hostInfo, deleted, store = globalThis.localStorage} = {}) {
   let at;
   try { at = originOf(origin); } catch { return null; }
-  if (!enteredWorkspaces(store).some(kept => sameEntry(kept, {origin: at, room}))) return null;
+  if (!enteredWorkspaces(store).some(kept => sameEntry(kept, {origin: at, workspace}))) return null;
   // Not reached, or not answered: nothing the host said.
   const [answering, gone] = await Promise.all([
     Promise.resolve().then(() => hostInfo?.(at)).then(hostDeviceOf, () => null),
-    Promise.resolve().then(() => deleted?.(at, room)).then(said => said === true, () => false),
+    Promise.resolve().then(() => deleted?.(at, workspace)).then(said => said === true, () => false),
   ]);
-  const {settled} = keep(store, runtime.settleFailedWorkspace(stored(store), JSON.stringify({origin: at, room}), answering ?? undefined, gone));
+  const {settled} = keep(store, runtime.settleFailedWorkspace(stored(store), JSON.stringify({origin: at, workspace}), answering ?? undefined, gone));
   return settled === 'unknown' ? null : settled;
 }
 
-/** Keep `{origin, room}` as the workspace a bare entry reopens; `null` goes
+/** Keep `{origin, workspace}` as the workspace a bare entry reopens; `null` goes
  * back to the web host's home workspace. */
 export function chooseWorkspace(choice, store = globalThis.localStorage) {
-  if (choice && validEntry(choice)) store?.setItem(CHOSEN, JSON.stringify({origin: originOf(choice.origin), room: choice.room}));
+  if (choice && validEntry(choice)) store?.setItem(CHOSEN, JSON.stringify({origin: originOf(choice.origin), workspace: choice.workspace}));
   else store?.removeItem(CHOSEN);
 }
 
@@ -174,5 +174,5 @@ export function chosenWorkspace(store = globalThis.localStorage) {
   const chosen = readJson(store, CHOSEN, null);
   if (!chosen || !validEntry(chosen)) return null;
   const entry = enteredWorkspaces(store).find(kept => sameEntry(kept, chosen));
-  return entry && !entry.unavailable ? {origin: entry.origin, room: entry.room} : null;
+  return entry && !entry.unavailable ? {origin: entry.origin, workspace: entry.workspace} : null;
 }

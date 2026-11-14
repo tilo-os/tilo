@@ -604,7 +604,7 @@ fn join_reply_json(reply: tilo_relay_protocol::workspaces::JoinReply) -> serde_j
             inviter,
             members,
         } => serde_json::json!({
-            "kind": "invitation", "room": workspace, "workspaceId": workspace_id.to_string(),
+            "kind": "invitation", "workspace": workspace, "workspaceId": workspace_id.to_string(),
             "name": name, "role": role, "expiresAtNs": expires_at_ns.to_string(),
             "members": members,
             "inviter": inviter.map(|inviter| serde_json::json!({
@@ -617,7 +617,7 @@ fn join_reply_json(reply: tilo_relay_protocol::workspaces::JoinReply) -> serde_j
             name,
             role,
         } => serde_json::json!({
-            "kind": "admitted", "room": workspace, "workspaceId": workspace_id.to_string(),
+            "kind": "admitted", "workspace": workspace, "workspaceId": workspace_id.to_string(),
             "name": name, "role": role,
         }),
         JoinReply::Refused(reason) => serde_json::json!({"kind": "refused", "reason": reason}),
@@ -694,7 +694,7 @@ pub async fn redeem_invitation(site: String, secret: String) -> Result<String, J
 }
 
 /// What `invitation` (the signed invitation's bytes) offers at the host
-/// `post` reaches: `{kind: 'invitation', room, workspaceId, name, role,
+/// `post` reaches: `{kind: 'invitation', workspace, workspaceId, name, role,
 /// administrator, expiresAtNs}`, or `{kind: 'refused', reason}`. Resolves
 /// to JSON. `administrator` says the invitation also makes its holder an
 /// administrator, read from its own signed layout: the host it admits into
@@ -1347,29 +1347,29 @@ fn call_state(state: &tilo_relay_protocol::voice::CallState) -> serde_json::Valu
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum JsVoiceEvent {
     Calls {
-        room: String,
+        workspace: String,
         calls: Option<Vec<JsCall>>,
         error: Option<String>,
     },
     CallResult {
-        room: String,
+        workspace: String,
         request: String,
         call: Option<serde_json::Value>,
         error: Option<String>,
     },
     Granted {
-        room: String,
+        workspace: String,
         grant: JsVoiceGrant,
     },
     Ended {
-        room: String,
+        workspace: String,
         call: String,
         reason: String,
     },
     /// One frame of a call's voice, as the device `from` published it on the
     /// workspace's plane: the page's app plays it.
     Heard {
-        room: String,
+        workspace: String,
         from: String,
         sequence: u64,
         timestamp48k: u64,
@@ -1379,7 +1379,7 @@ enum JsVoiceEvent {
     /// object of `from`'s camera or screen, in hex, as the app's decoder
     /// draws it.
     Picture {
-        room: String,
+        workspace: String,
         from: String,
         source: &'static str,
         keyframe: bool,
@@ -1388,7 +1388,7 @@ enum JsVoiceEvent {
     /// What the call now shows of this page's pictures: the layers to encode
     /// of each source, and the sources to start over at a keyframe.
     Demand {
-        room: String,
+        workspace: String,
         wanted: Vec<JsWanted>,
         keyframes: Vec<&'static str>,
     },
@@ -1480,7 +1480,7 @@ fn voice_event(
                 Err(error) => (None, Some(error)),
             };
             JsVoiceEvent::Calls {
-                room: workspace_of(workspace_id, workspaces),
+                workspace: workspace_of(workspace_id, workspaces),
                 calls,
                 error,
             }
@@ -1495,7 +1495,7 @@ fn voice_event(
                 Err(error) => (None, Some(error)),
             };
             JsVoiceEvent::CallResult {
-                room: workspace_of(workspace_id, workspaces),
+                workspace: workspace_of(workspace_id, workspaces),
                 request: hex::encode(request),
                 call,
                 error,
@@ -1507,7 +1507,7 @@ fn voice_event(
         } => {
             let grant = *grant;
             JsVoiceEvent::Granted {
-                room: workspace_of(workspace_id, workspaces),
+                workspace: workspace_of(workspace_id, workspaces),
                 grant: JsVoiceGrant {
                     call: hex::encode(grant.call),
                     epoch: grant.epoch,
@@ -1521,7 +1521,7 @@ fn voice_event(
             call,
             reason,
         } => JsVoiceEvent::Ended {
-            room: workspace_of(workspace_id, workspaces),
+            workspace: workspace_of(workspace_id, workspaces),
             call: hex::encode(call),
             reason,
         },
@@ -2246,9 +2246,9 @@ impl WasmPeer {
     }
 
     /// Call events since the last call, as a JSON array of `{kind: 'calls',
-    /// room, calls | error}`, `{kind: 'callResult', room, request, call |
-    /// error}`, `{kind: 'granted', room, grant}`, `{kind: 'ended', room,
-    /// call, reason}` and `{kind: 'heard', room, from, sequence,
+    /// workspace, calls | error}`, `{kind: 'callResult', workspace, request, call |
+    /// error}`, `{kind: 'granted', workspace, grant}`, `{kind: 'ended', workspace,
+    /// call, reason}` and `{kind: 'heard', workspace, from, sequence,
     /// timestamp48k, opus}` (`opus` in hex), which the app plays.
     #[wasm_bindgen(js_name = takeVoiceEvents)]
     pub fn take_voice_events(&self) -> String {
@@ -2265,7 +2265,7 @@ impl WasmPeer {
                     timestamp_48k,
                     opus,
                 } => Some(JsVoiceEvent::Heard {
-                    room: workspace_of(workspace_id, &self.voice_workspaces),
+                    workspace: workspace_of(workspace_id, &self.voice_workspaces),
                     from: hex::encode(from),
                     sequence,
                     timestamp48k: timestamp_48k,
@@ -2278,7 +2278,7 @@ impl WasmPeer {
                     keyframe,
                     object,
                 } => Some(JsVoiceEvent::Picture {
-                    room: workspace_of(workspace_id, &self.voice_workspaces),
+                    workspace: workspace_of(workspace_id, &self.voice_workspaces),
                     from: hex::encode(from),
                     source: js_source(source),
                     keyframe,
@@ -2301,7 +2301,7 @@ impl WasmPeer {
                         }
                     }
                     Some(JsVoiceEvent::Demand {
-                        room: workspace_of(workspace_id, &self.voice_workspaces),
+                        workspace: workspace_of(workspace_id, &self.voice_workspaces),
                         wanted: by_source,
                         keyframes: keyframes.into_iter().map(js_source).collect(),
                     })
@@ -2616,7 +2616,7 @@ impl WasmPeer {
 
     /// Have this page's device in the person's own workspace on the host, asked on the session it
     /// holds there: made the first time, answered again after, another for each `name`, the one
-    /// called `room` (a UUID) when it is named ([`Device::enter_own_workspace`]). This very device
+    /// called `workspace` (a UUID) when it is named ([`Device::enter_own_workspace`]). This very device
     /// redeems the invitation on that session, shown to the workspace's people as `shownAs`,
     /// unless `entered(workspace)` says it is in already. Resolves to the workspace's listing,
     /// `{workspace, workspace_id, name, generation}` JSON.
@@ -2630,13 +2630,13 @@ impl WasmPeer {
     pub async fn enter_own_workspace(
         &self,
         name: Option<String>,
-        room: Option<String>,
+        workspace: Option<String>,
         shown_as: String,
         entered: Function,
     ) -> Result<String, JsValue> {
         let listing = self
             .device
-            .enter_own_workspace(name.as_deref(), room.as_deref(), &shown_as, |id| {
+            .enter_own_workspace(name.as_deref(), workspace.as_deref(), &shown_as, |id| {
                 entered
                     .call1(&JsValue::NULL, &JsValue::from_str(id))
                     .is_ok_and(|answer| answer.is_truthy())

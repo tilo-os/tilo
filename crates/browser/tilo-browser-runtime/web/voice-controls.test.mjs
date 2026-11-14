@@ -13,8 +13,8 @@ function fixture() {
   const opened = [];
   const voice = {call, calls: [], list: async () => [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true}],
     async open({channel}) { opened.push(channel); if (channel !== 'standup') throw new Error('invalid media binding'); return {call: CALL, epoch: 1, active: true}; }};
-  const controls = createVoiceControls({voice, workspace: 'room-1', gesture: () => true});
-  const request = command => ({app: 'so.tilo.chat', workspace: 'room-1', record: '', command: {version: 1, intent: 0, command}});
+  const controls = createVoiceControls({voice, workspace: 'workspace-1', gesture: () => true});
+  const request = command => ({app: 'so.tilo.chat', workspace: 'workspace-1', record: '', command: {version: 1, intent: 0, command}});
   return {voice, controls, request, operations, opened, state};
 }
 test('shared Chat commands join listening, mute, select an input and leave the governed call', async () => {
@@ -44,7 +44,7 @@ test('foreign routes, absent calls and unmute without activation fail closed', a
   const refused = await f.controls.execute(f.request({op: 'join', channel_id: 'absent'}));
   assert.equal(refused.state, 'ended');
   assert.equal(refused.issue, 'transport_failed');
-  const controls = createVoiceControls({voice: f.voice, workspace: 'room-1', gesture: () => false});
+  const controls = createVoiceControls({voice: f.voice, workspace: 'workspace-1', gesture: () => false});
   await assert.rejects(controls.execute(f.request({op: 'set_muted', muted: false})), /gesture/);
   assert.equal(f.state.muted, true);
 });
@@ -57,7 +57,7 @@ test('a call the host cannot open, or never grants, ends with why; joining again
   assert.equal(refused.issue, 'transport_failed');
   assert.equal(refused.capture_active, false);
   assert.equal((await f.controls.execute(f.request({op: 'status'}))).issue, 'transport_failed', 'the reason stays until the person acts');
-  f.voice.open = async () => { throw new Error('not a member of the room'); };
+  f.voice.open = async () => { throw new Error('not a member of the workspace'); };
   assert.equal((await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}))).issue, 'denied');
   f.voice.open = async () => ({call: CALL, epoch: 1, active: true});
   const joining = await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
@@ -69,9 +69,9 @@ test('a call the host cannot open, or never grants, ends with why; joining again
 });
 test('an ended call says whether it was refused or just ended', () => {
   assert.equal(endedIssue({admitted: true, reason: 'the call has ended'}), 'session_ended');
-  assert.equal(endedIssue({admitted: false, reason: 'not a member of the room'}), 'denied');
+  assert.equal(endedIssue({admitted: false, reason: 'not a member of the workspace'}), 'denied');
   // No host answer says the workspace lacks voice: every workspace has calls.
-  assert.equal(endedIssue({admitted: false, reason: 'calls require a subscription to the room'}), 'transport_failed');
+  assert.equal(endedIssue({admitted: false, reason: 'calls require a subscription to the workspace'}), 'transport_failed');
   // Only this device failing to start the call's audio is `unavailable`.
   assert.equal(endedIssue({admitted: false, audioFailed: true, reason: 'no audio output'}), 'unavailable');
 });
@@ -85,7 +85,7 @@ test('an active call polls the retained controls even when the canvas stops redr
   let cleared = false;
   let polls = 0;
   const clock = {setTimeout: next => {scheduled = next; return 1;}, clearTimeout: () => {cleared = true;}};
-  const pump = createMediaPump({voice: f.voice, workspace: 'room-1', id: 1n, active: () => true, clock,
+  const pump = createMediaPump({voice: f.voice, workspace: 'workspace-1', id: 1n, active: () => true, clock,
     runtime: runtimeFake({take_media_requests: () => {polls++; return '[]';}})});
   pump.pump();
   assert.equal(polls, 1);
@@ -106,7 +106,7 @@ test('a page with no call still has its lane served: Chat watches the rosters th
   const clock = {setTimeout: next => {scheduled = next; schedules++; return 1;}, clearTimeout: () => {cleared = true;}};
   let looks = 0;
   f.voice.call.subscribe = () => () => {};
-  const pump = createMediaPump({voice: f.voice, workspace: 'room-1', id: 1n, active: () => true, clock,
+  const pump = createMediaPump({voice: f.voice, workspace: 'workspace-1', id: 1n, active: () => true, clock,
     runtime: runtimeFake({take_media_requests: () => {looks++; return '[]';}})});
   pump.pump();
   assert.equal(looks, 1);
@@ -166,7 +166,7 @@ test('the mounted pump releases a retired component inside a still-open desktop'
   let batch = [request];
   const clock = {setTimeout: () => 1, clearTimeout() {}};
   const runtime = runtimeFake({take_media_requests() {const result = batch; batch = []; return JSON.stringify(result);}, complete_media_request() {return true;}});
-  const pump = createMediaPump({voice: f.voice, workspace: 'room-1', id: 1n, active: () => true, clock, runtime});
+  const pump = createMediaPump({voice: f.voice, workspace: 'workspace-1', id: 1n, active: () => true, clock, runtime});
   pump.pump();
   for (let i = 0; i < 10; i++) await Promise.resolve();
   assert.equal(f.state.phase, 'joining');
@@ -232,12 +232,12 @@ test('a watch answers when someone joins the workspace\'s call, and holds while 
   const ana = 'a'.repeat(64);
   const voice = {call: {state: {phase: 'idle', participants: []}, stats: () => ({})}, calls: [], list: async () => []};
   let looks = 0;
-  const controls = createVoiceControls({voice, workspace: 'room-1', wait: async () => {
+  const controls = createVoiceControls({voice, workspace: 'workspace-1', wait: async () => {
     looks++;
     // Ana joins the standup while the watch is held.
     if (looks === 3) voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true, participants: [{user: ana}]}];
   }});
-  const request = command => ({app: 'so.tilo.chat', workspace: 'room-1', record: '', command: {version: 1, intent: 0, command}});
+  const request = command => ({app: 'so.tilo.chat', workspace: 'workspace-1', record: '', command: {version: 1, intent: 0, command}});
   const seen = await controls.execute(request({op: 'status'}));
   assert.equal(seen.revision, revisionOf(seen));
   const answered = await controls.execute(request({op: 'watch', revision: seen.revision}));
@@ -264,7 +264,7 @@ test('the camera and a shared screen turn on in a live call from a gesture, and 
   await f.controls.execute(f.request({op: 'set_screen', on: true}));
   await f.controls.execute(f.request({op: 'set_camera', on: false}));
   assert.deepEqual(video.slice(1), [['screen', true], ['camera', false]]);
-  const controls = createVoiceControls({voice: f.voice, workspace: 'room-1', gesture: () => false});
+  const controls = createVoiceControls({voice: f.voice, workspace: 'workspace-1', gesture: () => false});
   await assert.rejects(controls.execute(f.request({op: 'set_screen', on: true})), /gesture/);
 
   const ana = 'a'.repeat(64);
@@ -293,7 +293,7 @@ test('deafening is a command of the call: it needs one, and undeafening unmutes 
   assert.deepEqual([deafened.deafened, deafened.muted], [true, true]);
   const heard = await f.controls.execute(f.request({op: 'set_deafened', deafened: false}));
   assert.equal(heard.deafened, undefined, 'written only when set');
-  const quiet = createVoiceControls({voice: f.voice, workspace: 'room-1', gesture: () => false});
+  const quiet = createVoiceControls({voice: f.voice, workspace: 'workspace-1', gesture: () => false});
   await quiet.execute(f.request({op: 'set_deafened', deafened: false}));
   assert.deepEqual(deafens.map(([value, {unmute}]) => [value, unmute]), [[true, true], [false, true], [false, false]]);
 });

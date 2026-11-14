@@ -116,16 +116,16 @@ console.error('ok: on the desk');
 
 // Open Files by its link, as following a link to an app opens it: the
 // workspace the page joined, and the app in it.
-const room = await until(`(() => {
+const workspace = await until(`(() => {
   const kept = JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(new URL(relay).origin)}];
-  return kept?.room ?? '';
+  return kept?.workspace ?? '';
 })()`, 'joining the workspace');
-report.room = room;
+report.workspace = workspace;
 await sleep(1500);
 // The address names the workspace the way the page wrote it (its host, its
 // name); the app goes after it.
 const shown = await tab.evaluate('location.href');
-const base = shown.includes('#') ? shown.replace(/[?].*$/, '').replace(/\/so\.tilo\.[^/]*.*$/, '') : `${shown}#/w/${room}`;
+const base = shown.includes('#') ? shown.replace(/[?].*$/, '').replace(/\/so\.tilo\.[^/]*.*$/, '') : `${shown}#/w/${workspace}`;
 console.error(`ok: the page shows ${shown}`);
 await tab.evaluate(`(() => { location.href = ${JSON.stringify(`${base}/so.tilo.file-explorer`)}; return true; })()`);
 // The rows that carry files out are the mirror's draggable elements, named by the file.

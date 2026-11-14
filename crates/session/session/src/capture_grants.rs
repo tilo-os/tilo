@@ -18,7 +18,7 @@ pub(crate) fn device_scope(kind: CaptureKind) -> Option<&'static str> {
     }
 }
 
-/// Whether app `app_id` , running in workspace `workspace` (named by its room id, as the portal
+/// Whether app `app_id` , running in workspace `workspace` (named by its id, as the portal
 /// names it), may still capture `kind` at `now` .
 #[must_use]
 pub(crate) fn still_allowed(
@@ -72,26 +72,32 @@ mod tests {
     #[test]
     fn taking_the_camera_away_stops_the_next_ask_but_not_any_other_device() {
         let mut tree = shell(camera("so.tilo.meet"));
-        let room = tree.workspaces[0].id().to_string();
+        let workspace = tree.workspaces[0].id().to_string();
         assert!(still_allowed(
             &tree,
             "so.tilo.meet",
-            &room,
+            &workspace,
             CaptureKind::Camera,
             10
         ));
         assert!(
-            !still_allowed(&tree, "so.tilo.meet", &room, CaptureKind::Microphone, 10),
+            !still_allowed(
+                &tree,
+                "so.tilo.meet",
+                &workspace,
+                CaptureKind::Microphone,
+                10
+            ),
             "the camera grant is not a microphone grant"
         );
         let id = tree.workspaces[0].sandbox[0].id.clone();
         assert!(tree.workspaces[0].revoke_sandbox(&id));
         assert!(
-            !still_allowed(&tree, "so.tilo.meet", &room, CaptureKind::Camera, 10),
+            !still_allowed(&tree, "so.tilo.meet", &workspace, CaptureKind::Camera, 10),
             "the revoked camera is refused at once"
         );
         assert!(
-            still_allowed(&tree, "so.tilo.meet", &room, CaptureKind::Screen, 10),
+            still_allowed(&tree, "so.tilo.meet", &workspace, CaptureKind::Screen, 10),
             "a screen share is the person's answer, not a workspace grant"
         );
     }
@@ -99,23 +105,23 @@ mod tests {
     #[test]
     fn an_expired_grant_stops_capturing_and_another_workspace_does_not_count() {
         let tree = shell(camera("so.tilo.meet").expiring(collab_types::caps::Expiry::AtUnix(20)));
-        let room = tree.workspaces[0].id().to_string();
+        let workspace = tree.workspaces[0].id().to_string();
         assert!(still_allowed(
             &tree,
             "so.tilo.meet",
-            &room,
+            &workspace,
             CaptureKind::Camera,
             19
         ));
         assert!(
-            !still_allowed(&tree, "so.tilo.meet", &room, CaptureKind::Camera, 21),
+            !still_allowed(&tree, "so.tilo.meet", &workspace, CaptureKind::Camera, 21),
             "a lapsed grant stops capturing without anyone revoking it"
         );
         assert!(
             !still_allowed(
                 &tree,
                 "so.tilo.meet",
-                "another-room",
+                "another-workspace",
                 CaptureKind::Camera,
                 19
             ),

@@ -765,7 +765,7 @@ fn workspace_packages(store: &dyn DurableStore, workspace: &str) -> Vec<(String,
     match store.workspace_indexes() {
         Ok(indexes) => indexes
             .into_iter()
-            .filter(|(_, room)| room == workspace)
+            .filter(|(_, held)| held == workspace)
             .collect(),
         Err(error) => {
             tracing::warn!(%error, "the workspace indexes of this device are not listed");

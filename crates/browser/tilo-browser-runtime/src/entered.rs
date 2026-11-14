@@ -25,7 +25,7 @@ fn answer(value: &impl serde::Serialize) -> Result<String, JsError> {
     serde_json::to_string(value).map_err(js_error)
 }
 
-/// Remember that this browser opened `entry` (`{origin, room, hostDevice, name?}`) as a member
+/// Remember that this browser opened `entry` (`{origin, workspace, hostDevice, name?}`) as a member
 /// ([`entered::remember`]).
 ///
 /// # Errors
@@ -37,7 +37,7 @@ pub fn remember_entered(stored: &str, entry: &str) -> Result<String, JsError> {
     answer(&entered::remember(list(stored), entry))
 }
 
-/// Name the remembered `place` (`{origin, room}`) `name`, if it has none yet. Answers the list.
+/// Name the remembered `place` (`{origin, workspace}`) `name`, if it has none yet. Answers the list.
 ///
 /// # Errors
 ///

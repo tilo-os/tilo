@@ -181,7 +181,7 @@ export function grammar(runtime, entry) {
 export function homeRoute({location, mode, home = null}) {
   const bare = location.hash === '' || location.hash === '#';
   if (!bare || !home) return null;
-  const scope = {kind: 'workspace', host: new URL(home.host.origin).origin, workspace: home.room ?? null};
+  const scope = {kind: 'workspace', host: new URL(home.host.origin).origin, workspace: home.workspace ?? null};
   // `home.app` is the app in front: on the desktop among the workspace's
   // other apps, or full tab under an app entry. Without one, the desktop.
   const target = home.app ? {scope, app: home.app} : {scope};
@@ -193,8 +193,8 @@ export function homeRoute({location, mode, home = null}) {
  * that workspace's route; `null` otherwise, and always in an embed. */
 export function chosenRoute({location, mode, home = null, chosen = null}) {
   const bare = location.hash === '' || location.hash === '#';
-  if (!bare || !home || mode !== 'desktop' || !chosen?.room) return null;
-  return {mode, target: {scope: {kind: 'workspace', host: new URL(chosen.origin).origin, workspace: chosen.room}}};
+  if (!bare || !home || mode !== 'desktop' || !chosen?.workspace) return null;
+  return {mode, target: {scope: {kind: 'workspace', host: new URL(chosen.origin).origin, workspace: chosen.workspace}}};
 }
 
 /** Whether `a` and `b` name the same workspace (or both the person's own desktop). */

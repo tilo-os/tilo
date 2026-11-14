@@ -36,7 +36,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct SharedWorkspace {
     pub origin: String,
-    pub relay_room: String,
+    pub relay_workspace: String,
     pub app_id: String,
     pub name: String,
     child: Mutex<Child>,
@@ -112,7 +112,7 @@ impl SharedWorkspace {
             .target_dir
             .join("tilo-app/web")
             .join(&project.package)
-            .join("room");
+            .join("workspace");
         if fresh && state.exists() {
             std::fs::remove_dir_all(&state)
                 .with_context(|| format!("removing {}", state.display()))?;
@@ -125,7 +125,7 @@ impl SharedWorkspace {
         let app_id = project.manifest.package.id.clone();
         let name = project.display_name();
         let mut child = ProcessCommand::new(&relay)
-            .arg("room")
+            .arg("workspace")
             .arg("--state")
             .arg(state.join("relay"))
             .args(["--persistent", &project.package])
@@ -160,10 +160,10 @@ impl SharedWorkspace {
             let _ = child.kill();
             anyhow::anyhow!("the host did not start in two minutes")
         })?;
-        let relay_room = started
-            .get("room")
+        let relay_workspace = started
+            .get("workspace")
             .and_then(Value::as_str)
-            .context("the host named no room")?
+            .context("the host named no workspace")?
             .to_owned();
         let origin = started
             .get("plain_origin")
@@ -182,7 +182,7 @@ impl SharedWorkspace {
             .unwrap_or_default();
         Ok(Self {
             origin,
-            relay_room,
+            relay_workspace,
             app_id,
             name,
             child: Mutex::new(child),
@@ -240,7 +240,7 @@ impl SharedWorkspace {
         let door = web_origin(&format!(
             "{}{API_PREFIX}/{}",
             self.origin,
-            door_path(&self.relay_room)
+            door_path(&self.relay_workspace)
         ))
         .map_err(anyhow::Error::msg)?;
         let people = {

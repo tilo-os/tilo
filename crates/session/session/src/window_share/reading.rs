@@ -170,7 +170,7 @@ impl WindowShares {
                     "window": hosted.window,
                     "app_id": hosted.app_id,
                     // Kept as it is: the views that read this know the key.
-                    "room": hosted.workspace,
+                    "workspace": hosted.workspace,
                     "input_allowed": viewers.iter().any(|viewer| {
                         viewer["can_control"].as_bool().unwrap_or(false)
                     }),
@@ -214,7 +214,7 @@ impl WindowShares {
                     "tab": tab.to_string(),
                     "window": page.window,
                     "app_id": page.app_id,
-                    "room": page.workspace,
+                    "workspace": page.workspace,
                     "input_allowed": false,
                     "viewers": viewers,
                     "streaming": streaming,
@@ -236,7 +236,7 @@ impl WindowShares {
                     "tab": start.tab.to_string(),
                     "window": start.window,
                     "app_id": start.app_id,
-                    "room": start.workspace,
+                    "workspace": start.workspace,
                     "waiting_for": start.waiting_for,
                 })
             })
@@ -247,7 +247,7 @@ impl WindowShares {
             .map(|((workspace, tab), watched)| {
                 json!({
                     "tab": tab.to_string(),
-                    "room": workspace,
+                    "workspace": workspace,
                     "host": watched.host.to_string(),
                     // The tab of this session that pictures it, which is the sharer's own where this
                     // shell holds no view of its own of the window.
@@ -408,7 +408,7 @@ fn live_row(
         .unwrap_or_default();
     let asked_for: Vec<String> = asked_for.iter().map(ToString::to_string).collect();
     json!({
-        "room": workspace,
+        "workspace": workspace,
         "state": state_of(Some(standing)),
         "relay": relay.map(|relay| hex::encode(relay.device)).unwrap_or_default(),
         "relay_name": relay.map(|relay| relay.name.clone()).unwrap_or_default(),
@@ -477,7 +477,7 @@ mod tests {
         assert_eq!(row["lent_keys"], json!(false));
         assert_eq!(row["presented"], Value::Null);
         assert_eq!(row["turned_away"], json!([]));
-        assert_eq!(row["room"], json!(WORKSPACE));
+        assert_eq!(row["workspace"], json!(WORKSPACE));
         assert_eq!(row["state"], json!("open"));
         assert_eq!(row["waiting_for"], json!(""));
         assert_eq!(row["relay"], json!(hex::encode([0xab; 32])));

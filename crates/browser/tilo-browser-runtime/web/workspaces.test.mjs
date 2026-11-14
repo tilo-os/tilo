@@ -52,7 +52,7 @@ function harness({person = identity(0x22), membership = null, door = [null], con
       join: async options => {
         knock(options);
         calls.joined.push(options);
-        options.onProgress?.({phase: 'admitted', room: 'WORKSPACE'});
+        options.onProgress?.({phase: 'admitted', workspace: 'WORKSPACE'});
         return {workspace: 'WORKSPACE', dispose: async () => {}};
       },
       connect: async options => { calls.connected.push(options); if (connectFails) throw new Error('refused: not a member'); return {workspace: options.workspace}; },
@@ -79,7 +79,7 @@ test('a person new to the host is pre-admitted by it and joins with the pre-admi
   assert.equal(calls.joined[0].door, commons.admission, 'through the workspace\'s door, by the shared entry');
   assert.equal(calls.joined[0].origin, 'https://rooms.example');
   assert.equal(calls.joined[0].identity.userPublicKey, '22'.repeat(32));
-  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '22'.repeat(32)});
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '22'.repeat(32)});
 });
 
 /** The host turning away the device a join comes with (`peer.mjs`). */
@@ -91,7 +91,7 @@ const refusing = (calls, reasons, knock = knocking(calls, [null])) => async join
   knock(joined);
   calls.joined.push(joined);
   if (reasons.length) throw refusal(reasons.shift());
-  joined.onProgress?.({phase: 'admitted', room: 'WORKSPACE'});
+  joined.onProgress?.({phase: 'admitted', workspace: 'WORKSPACE'});
   return {workspace: 'WORKSPACE', dispose: async () => { await joined.custody?.close(); }};
 };
 
@@ -99,7 +99,7 @@ test('a device the host knows under a certificate this browser lost joins as a n
   // The browser kept its device key but not the certificate the workspace
   // admitted it under (storage cleared, or a join the host admitted never
   // finished here): the workspace never admits that key under another.
-  const membership = {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
+  const membership = {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
   options.connect = async connected => { calls.connected.push(connected); throw new Error('certification denied: host certificate is not a host of this user'); };
   options.join = refusing(calls, ['certificate conflict']);
@@ -121,7 +121,7 @@ test('a device the host knows under a certificate this browser lost joins as a n
 test('a host started anew that knows this device under another certificate is joined as a new device', async () => {
   // The host at the origin was set up again with the same workspace root: the
   // kept membership is the old host's, and the device key a stale one.
-  const membership = {origin: 'https://rooms.example', room: 'OLD', userPublicKey: '11'.repeat(32)};
+  const membership = {origin: 'https://rooms.example', workspace: 'OLD', userPublicKey: '11'.repeat(32)};
   const {calls, options} = harness({person: identity(0x11), membership});
   options.connect = async connected => {
     calls.connected.push(connected);
@@ -137,7 +137,7 @@ test('a browser whose person is gone joins as the person it holds now, on a new 
   // The membership names a person whose identity this browser no longer
   // holds: the door is asked for the one it does, and the key the host
   // turns away is replaced.
-  const {calls, options, store} = harness({person: identity(0x33), membership: {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)}});
+  const {calls, options, store} = harness({person: identity(0x33), membership: {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)}});
   options.join = refusing(calls, ['certificate conflict']);
   assert.equal((await joinViaHost(options)).workspace, 'WORKSPACE');
   assert.equal(calls.connected.length, 0);
@@ -160,12 +160,12 @@ test('a person the workspace bans is told they were removed, not asked to reload
 
 test('a refusal a new device does not end says it is reconnecting and asks again, later each time', async () => {
   const {calls, options} = harness();
-  options.join = refusing(calls, ['the room stopped admitting', 'the room stopped admitting', 'join was not answered',
+  options.join = refusing(calls, ['the workspace stopped admitting', 'the workspace stopped admitting', 'join was not answered',
     'join was not answered', 'join was not answered', 'join was not answered']);
   assert.equal((await joinViaHost(options)).workspace, 'WORKSPACE');
   assert.equal(calls.posted.length, 7);
   assert.deepEqual(calls.waited.map(next => next.attempt), [0, 1, 2, 3, 4], 'the reconnect screen\'s backoff, try by try');
-  assert.deepEqual(calls.waited.map(next => next.error.reason), ['the room stopped admitting', 'join was not answered',
+  assert.deepEqual(calls.waited.map(next => next.error.reason), ['the workspace stopped admitting', 'join was not answered',
     'join was not answered', 'join was not answered', 'join was not answered'], 'each with the refusal it follows');
   assert.ok(calls.waited.every(next => next.since === calls.waited[0].since && Number.isFinite(next.since)));
   assert.equal(calls.progress.at(-1), 'admitted');
@@ -193,7 +193,7 @@ test('the own desktop opens for a browser some host let in, and asks no door', a
   globalThis.fetch = async url => { requests.push(String(url)); return new Response(null, {status: 405}); };
   try {
     const none = {getItem: () => null};
-    const kept = {getItem: () => JSON.stringify({'https://elsewhere.example': {origin: 'https://elsewhere.example', room: 'R', userPublicKey: '11'.repeat(32)}})};
+    const kept = {getItem: () => JSON.stringify({'https://elsewhere.example': {origin: 'https://elsewhere.example', workspace: 'R', userPublicKey: '11'.repeat(32)}})};
     assert.equal(await ownDesktopOpen(null, {memberships: none}), true, 'no home: nothing to gate');
     assert.equal(await ownDesktopOpen({...commons, admission: undefined}, {memberships: none}), true);
     assert.equal(await ownDesktopOpen(commons, {memberships: none}), false, 'no host let it in yet: the door first');
@@ -214,7 +214,7 @@ test('a person joins at once under a random adjective-animal name when none is g
 });
 
 test('a person who joined the host before reconnects without asking it', async () => {
-  const {calls, options} = harness({person: identity(0x11), membership: {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)}});
+  const {calls, options} = harness({person: identity(0x11), membership: {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)}});
   await joinViaHost(options);
   assert.equal(calls.posted.length, 0);
   assert.equal(calls.connected[0].identity.userPublicKey, '11'.repeat(32));
@@ -222,7 +222,7 @@ test('a person who joined the host before reconnects without asking it', async (
 });
 
 test('a person who was pruned is pre-admitted again as the same person', async () => {
-  const {calls, options} = harness({person: identity(0x11), membership: {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)}, connectFails: true});
+  const {calls, options} = harness({person: identity(0x11), membership: {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)}, connectFails: true});
   await joinViaHost(options);
   assert.equal(calls.posted[0].body.userPublicKey, '11'.repeat(32));
 });
@@ -230,7 +230,7 @@ test('a person who was pruned is pre-admitted again as the same person', async (
 test('a kept membership the host refuses once the session starts is joined again as the same person', async () => {
   // A host that started its workspace anew answers the old certificate only when
   // the session begins, after connecting resolved.
-  const membership = {origin: 'https://rooms.example', room: 'OLD', userPublicKey: '11'.repeat(32)};
+  const membership = {origin: 'https://rooms.example', workspace: 'OLD', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
   let disposed = false;
   options.connect = async connected => {
@@ -242,14 +242,14 @@ test('a kept membership the host refuses once the session starts is joined again
   assert.ok(disposed);
   assert.equal(calls.posted[0].body.userPublicKey, '11'.repeat(32));
   assert.equal(peer.workspace, 'WORKSPACE');
-  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)});
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)});
 });
 
 test('a person the host removed is told so, asks the door once and is not let in again', async () => {
   // Removed and pruned look alike to the returning browser: the host no
   // longer has the person. The door tells them apart, turning away the
   // address a removed person joined from.
-  const membership = {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
+  const membership = {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership,
     door: [{code: 'removed', error: 'you were removed from this workspace within the day'}]});
   options.connect = async connected => {
@@ -397,7 +397,7 @@ test('a removal link takes its address off, and this browser forgets what it lef
 });
 
 test('a host that has not answered a kept membership yet keeps it and is not asked to admit again', async () => {
-  const membership = {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
+  const membership = {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
   options.connect = async connected => ({workspace: connected.workspace, dispose: async () => {},
     whenReady: async () => { throw new DOMException('Room admission timed out', 'TimeoutError'); }});
@@ -407,7 +407,7 @@ test('a host that has not answered a kept membership yet keeps it and is not ask
 });
 
 test('a host that does not answer a kept membership at all (restarting) keeps it and is not asked to admit again', async () => {
-  const membership = {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
+  const membership = {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
   options.connect = async () => { throw new Error('fetch failed'); };
   await assert.rejects(joinViaHost(options), {message: 'fetch failed'});
@@ -418,14 +418,14 @@ test('a host that does not answer a kept membership at all (restarting) keeps it
 test('a second tab is a new device of the person, admitted through the door once', async () => {
   // Its device key is one no host has seen: the workspace admits each device
   // once, so it asks the door for the same person rather than fail to connect.
-  const membership = {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
+  const membership = {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership, created: true});
   const peer = await joinViaHost(options);
-  assert.equal(calls.connected.length, 0, 'no connection the room would refuse');
+  assert.equal(calls.connected.length, 0, 'no connection the workspace would refuse');
   assert.deepEqual(calls.posted.map(post => post.body.userPublicKey), ['11'.repeat(32)]);
   assert.equal(calls.joined[0].custody, calls.custodies[0], 'joined with the new tab\u2019s own key');
   assert.equal(calls.custodies[0].profile, `tilo-identity:${'11'.repeat(32)}@rooms.example`);
-  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {...membership, room: 'WORKSPACE'});
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {...membership, workspace: 'WORKSPACE'});
   // The tab's key is let go with its peer.
   assert.equal(calls.custodies[0].closed, false);
   await peer.dispose();
@@ -434,7 +434,7 @@ test('a second tab is a new device of the person, admitted through the door once
 
 test('a second tab of a paired device pairs as a new device, approved on one of the person\u2019s devices', async () => {
   const person = '33'.repeat(32);
-  const membership = {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: person, paired: true};
+  const membership = {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: person, paired: true};
   const {calls, options} = harness({membership, created: true});
   await joinViaHost({...options, identity: undefined, onPairingCode: () => {}});
   assert.equal(calls.connected.length, 0);
@@ -449,7 +449,7 @@ test('every device key held by other tabs keeps the membership and asks the host
   // Not the host's refusal: this browser has as many tabs open as device
   // keys. Joining again would spend a seat and the address's join window,
   // then fail the same way.
-  const membership = {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
+  const membership = {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
   options.openCustody = async () => { throw new CustodyError('custody-busy', 'Every device key is held by another tab'); };
   await assert.rejects(joinViaHost(options), {name: 'CustodyError', code: 'custody-busy'});
@@ -461,7 +461,7 @@ test('every device key held by other tabs keeps the membership and asks the host
 test('a host set up again is joined again through its door once, without asking', async () => {
   // The peer refuses what this browser kept for the previous host before
   // any session starts (peer.mjs); the person simply joins the new host.
-  const membership = {origin: 'https://rooms.example', room: 'OLD', userPublicKey: '11'.repeat(32)};
+  const membership = {origin: 'https://rooms.example', workspace: 'OLD', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
   options.connect = async connected => {
     calls.connected.push(connected);
@@ -475,11 +475,11 @@ test('a host set up again is joined again through its door once, without asking'
   assert.equal(calls.joined[0].identity.userPublicKey, '11'.repeat(32));
   assert.equal(peer.workspace, 'WORKSPACE');
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}),
-    {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)});
+    {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)});
 });
 
 test('a membership kept for another person is not reused for this one', async () => {
-  const {calls, options} = harness({person: identity(0x33), membership: {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)}});
+  const {calls, options} = harness({person: identity(0x33), membership: {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '11'.repeat(32)}});
   await joinViaHost(options);
   assert.equal(calls.connected.length, 0);
   assert.equal(calls.posted[0].body.userPublicKey, '33'.repeat(32));
@@ -543,7 +543,7 @@ test('a name someone in the workspace already goes by is drawn again from the ke
   const other = defaultDisplayName(late, Math.random, [name]);
   assert.notEqual(other, name);
   assert.match(other, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
-  assert.equal(defaultDisplayName(late, Math.random, [name]), other, 'the same room draws the same name again');
+  assert.equal(defaultDisplayName(late, Math.random, [name]), other, 'the same workspace draws the same name again');
   assert.equal(defaultDisplayName(late, Math.random, [name.toUpperCase()]), other, 'names collide whatever their case');
 });
 
@@ -567,7 +567,7 @@ test('when every name a key draws is taken, the first is numbered', () => {
 });
 
 test('the home workspace is listed first, then the person\u2019s own, each host once', () => {
-  const team = {name: 'Team', host: {origin: 'https://team.example'}, room: 'r'};
+  const team = {name: 'Team', host: {origin: 'https://team.example'}, workspace: 'r'};
   const again = {name: 'Commons again', host: {origin: 'https://rooms.example/'}};
   assert.deepEqual(listedWorkspaces({stored: [team]}), [team]);
   assert.deepEqual(listedWorkspaces({home: commons, stored: [again, team]}), [commons, team]);
@@ -580,7 +580,7 @@ test('a paired device is kept as its person and reconnects as them, never as a p
   const {calls, options, store, knock} = harness();
   const person = '33'.repeat(32);
   const codes = [];
-  await pairViaHost({origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: person, invite: '0f'.repeat(16), workspace: commons,
+  await pairViaHost({origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: person, invite: '0f'.repeat(16), listed: commons,
     displayName: 'Ada', memberships: options.memberships, onPairingCode: code => codes.push(code),
     pair: async pairing => { calls.connected.push(pairing); knock(pairing); return {workspace: 'WORKSPACE'}; }});
   const paired = calls.connected[0];
@@ -593,7 +593,7 @@ test('a paired device is kept as its person and reconnects as them, never as a p
     'the new device joins the person\u2019s workspace through the host\u2019s door');
   calls.posted.length = 0;
   assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}),
-    {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: person, paired: true});
+    {origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: person, paired: true});
 
   await joinViaHost({...options, identity: undefined});
   assert.equal(calls.posted.length, 0, 'the host is not asked to admit another person');
@@ -604,9 +604,9 @@ test('a paired device is kept as its person and reconnects as them, never as a p
 
 test('a pairing link that names no person is refused before anything is asked', async () => {
   const {calls, options} = harness();
-  await assert.rejects(pairViaHost({origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: 'nobody', pair: options.connect,
+  await assert.rejects(pairViaHost({origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: 'nobody', pair: options.connect,
     memberships: options.memberships}), {code: 'invalid'});
-  await assert.rejects(pairViaHost({origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '33'.repeat(32), invite: 'short',
+  await assert.rejects(pairViaHost({origin: 'https://rooms.example', workspace: 'WORKSPACE', userPublicKey: '33'.repeat(32), invite: 'short',
     pair: options.connect, memberships: options.memberships}), {code: 'invalid'});
   assert.equal(calls.connected.length, 0);
 });
@@ -632,7 +632,7 @@ const memoryStore = () => {
 
 /** The list as storage holds it. */
 const seed = (store, list) => store.setItem('tilo-entered-workspaces', JSON.stringify(list));
-const kept = (origin, room, extra = {}) => ({origin, room, hostDevice: HOST, ...extra});
+const kept = (origin, workspace, extra = {}) => ({origin, workspace, hostDevice: HOST, ...extra});
 
 /** The runtime's rules of the list (tilo-session-client's `entered`, tested
  * there), answering what each was asked with `answer`. */
@@ -649,13 +649,13 @@ test('the remembered workspaces are read as kept, and damaged or roomless entrie
   const store = memoryStore();
   seed(store, [kept('https://globex.example', 'H', {name: 'Hank'}), kept('https://acme.example/', 'A', {unavailable: true})]);
   assert.deepEqual(enteredWorkspaces(store), [
-    {origin: 'https://globex.example', room: 'H', hostDevice: HOST, name: 'Hank', unavailable: false},
-    {origin: 'https://acme.example', room: 'A', hostDevice: HOST, name: null, unavailable: true},
+    {origin: 'https://globex.example', workspace: 'H', hostDevice: HOST, name: 'Hank', unavailable: false},
+    {origin: 'https://acme.example', workspace: 'A', hostDevice: HOST, name: null, unavailable: true},
   ]);
   // One that names no host that held it could never be told gone: not offered.
-  store.setItem('tilo-entered-workspaces', JSON.stringify([{origin: 'not a url', room: 'X', hostDevice: HOST},
-    {origin: 'https://ok.example', room: 'OK', hostDevice: HOST}, {origin: 'https://old.example', room: 'O'}, 7]));
-  assert.deepEqual(enteredWorkspaces(store), [{origin: 'https://ok.example', room: 'OK', hostDevice: HOST, name: null, unavailable: false}]);
+  store.setItem('tilo-entered-workspaces', JSON.stringify([{origin: 'not a url', workspace: 'X', hostDevice: HOST},
+    {origin: 'https://ok.example', workspace: 'OK', hostDevice: HOST}, {origin: 'https://old.example', workspace: 'O'}, 7]));
+  assert.deepEqual(enteredWorkspaces(store), [{origin: 'https://ok.example', workspace: 'OK', hostDevice: HOST, name: null, unavailable: false}]);
   store.setItem('tilo-entered-workspaces', '{broken');
   assert.deepEqual(enteredWorkspaces(store), []);
 });
@@ -663,17 +663,17 @@ test('the remembered workspaces are read as kept, and damaged or roomless entrie
 test('each change is the runtime\'s rules\', written back with no bare entry reopening what it forgot', () => {
   const store = memoryStore();
   seed(store, [kept('https://acme.example', 'A')]);
-  chooseWorkspace({origin: 'https://acme.example', room: 'A'}, store);
+  chooseWorkspace({origin: 'https://acme.example', workspace: 'A'}, store);
   const after = [kept('https://acme.example', 'B', {name: 'Bee'})];
-  const {runtime, asked} = rules(() => ({entered: after, unchoose: [{origin: 'https://acme.example', room: 'A'}]}));
-  rememberEntered(runtime, {hostDevice: HOST, origin: 'https://acme.example/', room: 'B', name: 'Bee'}, store);
+  const {runtime, asked} = rules(() => ({entered: after, unchoose: [{origin: 'https://acme.example', workspace: 'A'}]}));
+  rememberEntered(runtime, {hostDevice: HOST, origin: 'https://acme.example/', workspace: 'B', name: 'Bee'}, store);
   assert.deepEqual(asked[0], ['rememberEntered', JSON.stringify([kept('https://acme.example', 'A')]),
-    JSON.stringify({origin: 'https://acme.example', room: 'B', hostDevice: HOST, name: 'Bee'})], 'asked with the origin as a link names it');
+    JSON.stringify({origin: 'https://acme.example', workspace: 'B', hostDevice: HOST, name: 'Bee'})], 'asked with the origin as a link names it');
   assert.deepEqual(JSON.parse(store.getItem('tilo-entered-workspaces')), after);
   assert.equal(chosenWorkspace(store), null, 'the one it forgot is not reopened');
   // What is no entry is not asked about.
-  rememberEntered(runtime, {hostDevice: HOST, origin: 'not a url', room: 'X'}, store);
-  rememberEntered(runtime, {hostDevice: undefined, origin: 'https://acme.example', room: 'X'}, store);
+  rememberEntered(runtime, {hostDevice: HOST, origin: 'not a url', workspace: 'X'}, store);
+  rememberEntered(runtime, {hostDevice: undefined, origin: 'https://acme.example', workspace: 'X'}, store);
   assert.equal(asked.length, 1);
 });
 
@@ -681,16 +681,16 @@ test('a bare entry reopens the chosen workspace until it does not open, and choo
   const store = memoryStore();
   seed(store, [kept('https://acme.example', 'A', {name: 'Acme'})]);
   // A choice this browser never entered is not reopened.
-  chooseWorkspace({origin: 'https://other.example', room: 'O'}, store);
+  chooseWorkspace({origin: 'https://other.example', workspace: 'O'}, store);
   assert.equal(chosenWorkspace(store), null);
-  chooseWorkspace({origin: 'https://acme.example/', room: 'A'}, store);
-  assert.deepEqual(chosenWorkspace(store), {origin: 'https://acme.example', room: 'A'});
+  chooseWorkspace({origin: 'https://acme.example/', workspace: 'A'}, store);
+  assert.deepEqual(chosenWorkspace(store), {origin: 'https://acme.example', workspace: 'A'});
   chooseWorkspace(null, store);
   assert.equal(chosenWorkspace(store), null);
-  chooseWorkspace({origin: 'https://acme.example', room: 'A'}, store);
+  chooseWorkspace({origin: 'https://acme.example', workspace: 'A'}, store);
   const {runtime} = rules(() => ({entered: [kept('https://acme.example', 'A', {name: 'Acme', unavailable: true})],
-    unchoose: [{origin: 'https://acme.example', room: 'A'}]}));
-  markUnavailable(runtime, {origin: 'https://acme.example', room: 'A'}, store);
+    unchoose: [{origin: 'https://acme.example', workspace: 'A'}]}));
+  markUnavailable(runtime, {origin: 'https://acme.example', workspace: 'A'}, store);
   assert.equal(chosenWorkspace(store), null);
   assert.equal(enteredWorkspaces(store)[0].unavailable, true);
 });
@@ -698,14 +698,14 @@ test('a bare entry reopens the chosen workspace until it does not open, and choo
 test('a workspace its owner deleted is forgotten and no longer reopened', () => {
   const store = memoryStore();
   seed(store, [kept('https://acme.example', 'A', {name: 'Acme'}), kept('https://acme.example', 'B')]);
-  chooseWorkspace({origin: 'https://acme.example', room: 'A'}, store);
-  const {runtime, asked} = rules(() => ({entered: [kept('https://acme.example', 'B')], unchoose: [{origin: 'https://acme.example', room: 'A'}]}));
-  forgetDeletedWorkspace(runtime, {origin: 'https://acme.example/', room: 'A'}, store);
+  chooseWorkspace({origin: 'https://acme.example', workspace: 'A'}, store);
+  const {runtime, asked} = rules(() => ({entered: [kept('https://acme.example', 'B')], unchoose: [{origin: 'https://acme.example', workspace: 'A'}]}));
+  forgetDeletedWorkspace(runtime, {origin: 'https://acme.example/', workspace: 'A'}, store);
   assert.deepEqual(asked[0].slice(0, 1), ['forgetDeletedWorkspace']);
-  assert.deepEqual(JSON.parse(asked[0][2]), {origin: 'https://acme.example', room: 'A'}, 'asked with the origin as a link names it');
-  assert.deepEqual(enteredWorkspaces(store).map(entry => entry.room), ['B']);
+  assert.deepEqual(JSON.parse(asked[0][2]), {origin: 'https://acme.example', workspace: 'A'}, 'asked with the origin as a link names it');
+  assert.deepEqual(enteredWorkspaces(store).map(entry => entry.workspace), ['B']);
   assert.equal(chosenWorkspace(store), null, 'the deleted one is not reopened');
-  forgetDeletedWorkspace(runtime, {origin: 'not a url', room: 'A'}, store);
+  forgetDeletedWorkspace(runtime, {origin: 'not a url', workspace: 'A'}, store);
   assert.equal(asked.length, 1, 'what is no place is not asked about');
 });
 
@@ -720,13 +720,13 @@ test('a workspace that did not open is settled by what its origin answers now, a
   };
   const settled = {'https://lounge.example': 'gone', 'https://away.example': 'unavailable'};
   const {runtime, asked: rulesAsked} = rules((name, list, place) => ({entered: [], unchoose: [], settled: settled[JSON.parse(place).origin]}));
-  assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://lounge.example/', room: 'OLD'}, {hostInfo, store}), 'gone');
+  assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://lounge.example/', workspace: 'OLD'}, {hostInfo, store}), 'gone');
   assert.equal(rulesAsked[0][3], 'cd'.repeat(32), 'the host answering there now');
   seed(store, [kept('https://away.example', 'AWAY')]);
-  assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://away.example', room: 'AWAY'}, {hostInfo, store}), 'unavailable');
+  assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://away.example', workspace: 'AWAY'}, {hostInfo, store}), 'unavailable');
   assert.equal(rulesAsked[1][3], undefined, 'no answer is no host');
   assert.deepEqual(asked, ['https://lounge.example', 'https://away.example']);
-  assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://nowhere.example', room: 'X'}, {hostInfo, store}), null);
+  assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://nowhere.example', workspace: 'X'}, {hostInfo, store}), null);
   assert.equal(rulesAsked.length, 2, 'a workspace this browser does not remember is not asked about');
 });
 
@@ -735,17 +735,17 @@ test('a workspace whose origin says its owner deleted it is settled as deleted, 
   seed(store, [kept('https://acme.example', 'GONE', {name: 'Acme'})]);
   const hostInfo = async () => ({device_public_key: Array(32).fill(0xab)});
   const named = [];
-  const deleted = async (origin, room) => { named.push([origin, room]); return room === 'GONE'; };
+  const deleted = async (origin, workspace) => { named.push([origin, workspace]); return workspace === 'GONE'; };
   const {runtime, asked} = rules((name, list, place, answering, gone) => ({entered: [], unchoose: [JSON.parse(place)],
     settled: gone ? 'deleted' : 'unavailable'}));
-  assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://acme.example/', room: 'GONE'}, {hostInfo, deleted, store}), 'deleted');
+  assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://acme.example/', workspace: 'GONE'}, {hostInfo, deleted, store}), 'deleted');
   assert.deepEqual(named, [['https://acme.example', 'GONE']], 'the origin is asked about the workspace by its id');
   assert.deepEqual(asked[0].slice(3), [HOST, true], 'the rules hear the host answering and that it said deleted');
   assert.deepEqual(enteredWorkspaces(store), [], 'forgotten');
   // A host that cannot be reached, or answers anything but yes, deletes nothing.
   for (const answer of [async () => { throw new TypeError('Failed to fetch'); }, async () => 'yes', async () => false]) {
     seed(store, [kept('https://acme.example', 'GONE')]);
-    assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://acme.example', room: 'GONE'}, {hostInfo, deleted: answer, store}), 'unavailable');
+    assert.equal(await settleFailedWorkspace(runtime, {origin: 'https://acme.example', workspace: 'GONE'}, {hostInfo, deleted: answer, store}), 'unavailable');
     assert.equal(asked.at(-1)[4], false);
   }
 });
@@ -757,7 +757,7 @@ test('a host\'s certificate names its device key as the list keeps it', () => {
 });
 
 test('workspaces that share a name are told apart in the menu, others keep their plain name', () => {
-  const choice = (origin, room, name) => ({id: `open-workspace:${origin}/${room}`, name, origin, room, home: false, unavailable: false});
+  const choice = (origin, workspace, name) => ({id: `open-workspace:${origin}/${workspace}`, name, origin, workspace, home: false, unavailable: false});
   const labels = (choices, current) => workspaceActions(choices, {current}).map(action => action.label);
   // The common case: distinct names, nothing added.
   assert.deepEqual(labels([choice('https://a.example', 'A', 'Acme'), choice('https://b.example', 'B', 'Lounge')], 'Team'), ['Acme', 'Lounge']);
@@ -774,22 +774,22 @@ test('workspaces that share a name are told apart in the menu, others keep their
 test('the person switches between the home and the workspaces they entered, never to the one in front', () => {
   const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const entered = [
-    {origin: 'https://acme.example', room: 'A', name: 'Acme', unavailable: false},
-    {origin: 'https://globex.example', room: 'G', name: null, unavailable: true},
+    {origin: 'https://acme.example', workspace: 'A', name: 'Acme', unavailable: false},
+    {origin: 'https://globex.example', workspace: 'G', name: null, unavailable: true},
     // The workspace the home's door admitted this browser to is the home itself.
-    {origin: 'https://rooms.example', room: 'LOUNGE', name: 'Lounge', unavailable: false},
+    {origin: 'https://rooms.example', workspace: 'LOUNGE', name: 'Lounge', unavailable: false},
     // Another workspace on the home's host is a workspace of its own.
-    {origin: 'https://rooms.example', room: 'TEAM', name: 'Team', unavailable: false},
+    {origin: 'https://rooms.example', workspace: 'TEAM', name: 'Team', unavailable: false},
   ];
   const fromAcme = workspaceChoices({home, homeWorkspace: 'LOUNGE', entered, current: {kind: 'workspace', host: 'https://acme.example', workspace: 'A'}});
-  assert.deepEqual(fromAcme.map(choice => [choice.id, choice.name, choice.room, choice.home, choice.unavailable]), [
+  assert.deepEqual(fromAcme.map(choice => [choice.id, choice.name, choice.workspace, choice.home, choice.unavailable]), [
     ['open-workspace:home', 'Lounge', null, true, false],
     ['open-workspace:https://globex.example/G', 'globex.example', 'G', false, true],
     ['open-workspace:https://rooms.example/TEAM', 'Team', 'TEAM', false, false],
   ]);
   // In the home (before or after its workspace is known), the home is not offered.
-  for (const room of [null, 'LOUNGE']) {
-    const fromHome = workspaceChoices({home, homeWorkspace: 'LOUNGE', entered, current: {kind: 'workspace', host: 'https://rooms.example', workspace: room}});
+  for (const workspace of [null, 'LOUNGE']) {
+    const fromHome = workspaceChoices({home, homeWorkspace: 'LOUNGE', entered, current: {kind: 'workspace', host: 'https://rooms.example', workspace}});
     assert.deepEqual(fromHome.map(choice => choice.name), ['Acme', 'globex.example', 'Team']);
   }
   // Without a home, the person's own desktop offers every workspace entered.
@@ -805,10 +805,10 @@ test('the person switches between the home and the workspaces they entered, neve
 test('the directory lists the workspaces this page holds by the host actions that open them, the one in front included', () => {
   const held = heldWorkspaces({
     entered: [
-      {origin: 'https://rooms.example', room: 'WORKSPACE', name: 'Commons'},
+      {origin: 'https://rooms.example', workspace: 'WORKSPACE', name: 'Commons'},
       // The same workspace remembered twice is offered once.
-      {origin: 'https://rooms.example/', room: 'WORKSPACE', name: 'Commons'},
-      {origin: 'https://garden.example', room: 'GARDEN', name: null},
+      {origin: 'https://rooms.example/', workspace: 'WORKSPACE', name: 'Commons'},
+      {origin: 'https://garden.example', workspace: 'GARDEN', name: null},
     ],
     current: {kind: 'workspace', host: 'https://rooms.example/join', workspace: 'HERE', name: 'Here'},
   });
@@ -830,7 +830,7 @@ test('a join chosen in the directory enters through its door on the session, the
   );
   assert.deepEqual(joined, [{origin: 'https://rooms.example', door, displayName: 'Brave Otter'}],
     'the page enters through the door itself, holding no invitation or token');
-  assert.deepEqual(grant, {peer: {workspace: 'WORKSPACE'}, origin: 'https://rooms.example', room: 'WORKSPACE', name: 'Gardeners'});
+  assert.deepEqual(grant, {peer: {workspace: 'WORKSPACE'}, origin: 'https://rooms.example', workspace: 'WORKSPACE', name: 'Gardeners'});
 });
 
 test('a pasted link\'s invitation is redeemed with the same join', async () => {
@@ -852,18 +852,18 @@ test('an invitation to another workspace on the home\'s host leaves the home its
   const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}};
   const person = 'cd'.repeat(32);
   // The home's door let this browser into its workspace.
-  keepJoinedHost({origin: 'https://lounge.example', room: 'lounge', userPublicKey: person}, store);
+  keepJoinedHost({origin: 'https://lounge.example', workspace: 'lounge', userPublicKey: person}, store);
   // Then the person accepts an invitation to a customer's workspace on the same host.
-  keepJoinedHost({origin: 'https://lounge.example/', room: 'customer', userPublicKey: person}, store);
-  assert.equal(keptMembership(home, store).room, 'lounge');
-  const scope = room => ({kind: 'workspace', host: 'https://lounge.example', workspace: room});
+  keepJoinedHost({origin: 'https://lounge.example/', workspace: 'customer', userPublicKey: person}, store);
+  assert.equal(keptMembership(home, store).workspace, 'lounge');
+  const scope = workspace => ({kind: 'workspace', host: 'https://lounge.example', workspace});
   assert.equal(listedAt([home], scope('customer'), null, store), null, 'the customer\'s workspace is not named Lounge');
   assert.equal(listedAt([home], scope('lounge'), null, store), home);
-  const choices = workspaceChoices({home, homeWorkspace: keptMembership(home, store).room,
-    entered: [{origin: 'https://lounge.example', room: 'customer', name: 'Applicant: Jane Doe', unavailable: false}],
+  const choices = workspaceChoices({home, homeWorkspace: keptMembership(home, store).workspace,
+    entered: [{origin: 'https://lounge.example', workspace: 'customer', name: 'Applicant: Jane Doe', unavailable: false}],
     current: scope('customer')});
-  assert.deepEqual(choices.map(choice => [choice.name, choice.room]), [['Lounge', null]], 'the home stays one to go back to');
+  assert.deepEqual(choices.map(choice => [choice.name, choice.workspace]), [['Lounge', null]], 'the home stays one to go back to');
   // Another person on this browser joins as themselves.
-  keepJoinedHost({origin: 'https://lounge.example', room: 'customer', userPublicKey: 'ef'.repeat(32)}, store);
-  assert.equal(keptMembership(home, store).room, 'customer');
+  keepJoinedHost({origin: 'https://lounge.example', workspace: 'customer', userPublicKey: 'ef'.repeat(32)}, store);
+  assert.equal(keptMembership(home, store).workspace, 'customer');
 });

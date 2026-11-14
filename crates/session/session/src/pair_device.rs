@@ -29,7 +29,7 @@ const ON_CLIPBOARD_FOR: Duration = Duration::from_secs(300);
 pub(crate) struct Place {
     pub site: String,
     pub origin: String,
-    pub room: String,
+    pub workspace: String,
     pub person: [u8; 32],
 }
 
@@ -88,7 +88,7 @@ impl Adding {
         match self.invites.borrow_mut().at(
             &place.site,
             &place.origin,
-            &place.room,
+            &place.workspace,
             &place.person,
             now_ms,
         ) {
@@ -220,7 +220,7 @@ impl crate::Shared {
             .as_ref()
             .filter(|_| self.fabric.is_some())
             .ok_or(NoLink::Because("pair-device-not-yours"))?;
-        let room = self
+        let workspace = self
             .handle
             .read(|tree| {
                 tree.active_workspace()
@@ -229,7 +229,7 @@ impl crate::Shared {
             .ok_or(NoLink::Because("pair-device-no-workspace"))?;
         let keeper = self
             .directory_store
-            .listing(&room)
+            .listing(&workspace)
             .and_then(|listed| listed.door)
             .map(|door| door.origin().ascii_serialization());
         let (site, origin) =
@@ -237,7 +237,7 @@ impl crate::Shared {
         Ok(Place {
             site,
             origin,
-            room,
+            workspace,
             person: engine.identity().device_cert.user_public_key,
         })
     }
@@ -271,7 +271,7 @@ mod tests {
 
     const SITE: &str = "https://tilo.coffee/";
     const ORIGIN: &str = "https://eu1.tilo.coffee";
-    const ROOM: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
+    const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     const START: u64 = 1_700_000_000_000;
 
     /// A clipboard that keeps what it was given.
@@ -288,7 +288,7 @@ mod tests {
         Place {
             site: SITE.to_owned(),
             origin: ORIGIN.to_owned(),
-            room: ROOM.to_owned(),
+            workspace: WORKSPACE.to_owned(),
             person: [0xab; 32],
         }
     }

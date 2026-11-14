@@ -40,7 +40,7 @@ const refusal = (code, reason) => Promise.reject(new Error(`${code}: ${reason}`)
  *
  * `undefined` when `resource` and `action` name no such action of this
  * workspace, so the application's door answers them; else a promise of the
- * `ActionResult` (`{state: 'completed', output: {value: {room, members}}}`
+ * `ActionResult` (`{state: 'completed', output: {value: {workspace, members}}}`
  * once the host applied it), rejected `code: reason` as the door's errors
  * read when the host refused it.
  */
@@ -57,7 +57,7 @@ export function invokeMembershipAction({membership, workspace, resource, action,
     return refusal('action_confirmation_required', `${action} takes ${person} out of the workspace; invoke it with confirm`);
   }
   return Promise.resolve().then(() => membership[verb](person)).then(
-    changed => ({state: 'completed', output: {value: {room: changed?.room ?? workspace, members: changed?.members ?? []}}}),
+    changed => ({state: 'completed', output: {value: {workspace: changed?.workspace ?? workspace, members: changed?.members ?? []}}}),
     error => refusal('action_failed', String(error?.message ?? error)),
   );
 }

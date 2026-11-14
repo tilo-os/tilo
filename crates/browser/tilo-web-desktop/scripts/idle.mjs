@@ -1,4 +1,4 @@
-// An idle desktop presents no frames. Opens a room's worth of windows,
+// An idle desktop presents no frames. Opens a workspace's worth of windows,
 // leaves them alone, and counts the frames presented over a few seconds; the
 // only ones allowed are scheduled ticks (Clocks' second hand, once a second).
 // Each presented frame is attributed to what asked for it (the runtime's

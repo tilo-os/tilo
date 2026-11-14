@@ -2,7 +2,7 @@
  * The page side of `tilo-app run --platform web --share`: open an app in the
  * development workspace the CLI runs, as a person of this page's own.
  *
- * The CLI runs the SDK's workspace host on this machine (`/__tilo/room/…` on
+ * The CLI runs the SDK's workspace host on this machine (`/__tilo/workspace/…` on
  * the page's own origin): it learns each person's name and answers the
  * workspace's door, which the page enters through on its session with the
  * host, as an Editor. Each page creates a person, so two tabs are two
@@ -17,7 +17,7 @@
 import {joinWorkspace} from './peer.mjs';
 import {createIdentity} from './identity.mjs';
 
-const API = '/__tilo/room';
+const API = '/__tilo/workspace';
 
 async function call(path, body, method = body === undefined ? 'GET' : 'POST') {
   const response = await fetch(API + path, {
@@ -39,7 +39,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
  * once the app is about to present into `surface` (show it by then), and
  * `ready`. Resolves to `{peer, mount, record, stop}`.
  */
-export async function openInRoom({surface, name, onStatus = () => {}}) {
+export async function openInWorkspace({surface, name, onStatus = () => {}}) {
   const workspace = await call('/');
   onStatus('joining');
   const {identity} = await createIdentity({passkey: false});
@@ -47,7 +47,7 @@ export async function openInRoom({surface, name, onStatus = () => {}}) {
   const offer = await call('/join', {userPublicKey: identity.userPublicKey, name});
   const peer = await joinWorkspace({
     ...offer, identity, displayName: name, label: name,
-    profile: `tilo-dev-room:${identity.userPublicKey.slice(0, 16)}`,
+    profile: `tilo-dev-workspace:${identity.userPublicKey.slice(0, 16)}`,
   });
   await peer.whenReady();
   let claim = await call('/record', {app: workspace.app});

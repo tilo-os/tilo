@@ -1,7 +1,7 @@
 // Collaboration end to end: native macOS apps, headless Chrome pages and a
-// host agent in one room of a local `tilo-relay dev` host.
+// host agent in one workspace of a local `tilo-relay dev` host.
 //
-// For each app it starts the native shell in the room (TILO_COLLAB_HOST), two
+// For each app it starts the native shell in the workspace (TILO_COLLAB_HOST), two
 // Chrome pages (two certified devices), later a third, and an agent spawned
 // from a page, then checks:
 //   - every side opens the same record (the native seed shows in the pages,
@@ -11,8 +11,8 @@
 //   - named cursors and carets cross both ways;
 //   - a page that joins late shows everything written before;
 //   - the agent's edit shows on native and in the pages, with its cursor;
-//   - a reloaded page keeps its device and room membership: no new
-//     certification, the room's content, and its edits still reach the others.
+//   - a reloaded page keeps its device and workspace membership: no new
+//     certification, the workspace's content, and its edits still reach the others.
 // It writes summary.json and summary.md under --out and stops everything it
 // started.
 //
@@ -215,7 +215,7 @@ try {
   const profile = q.get('profile');
   const custody = await openDeviceCustody({profile, storage: idbStorage()});
   const peer = globalThis.peer = await connectPeer({
-    origin: q.get('origin'), userPublicKey: q.get('user'), label: q.get('label'), room: q.get('room'),
+    origin: q.get('origin'), userPublicKey: q.get('user'), label: q.get('label'), workspace: q.get('workspace'),
     custody, profile, displayName: q.get('label'),
   });
   globalThis.tiloMount = await peer.mountDesktop(document.getElementById('surface'), {apps: [q.get('app')]});
@@ -253,7 +253,7 @@ const pageArgs = [pinnedCertificates([{...hostCertificate, sha256: host.certific
 
 // A native profile whose identity is the dev host's user root: the host
 // treats its device as one of the user's, like the pages it certifies. Each
-// app gets its own profile, so its own room (a page restores its room's
+// app gets its own profile, so its own workspace (a page restores its workspace's
 // desktop, which would reopen the previous app's windows).
 const NATIVE_LABEL = 'Mac native';
 async function startNative(name) {
@@ -275,10 +275,10 @@ async function startNative(name) {
   if (!await until(async () => /collaboration broker: bound/.test(read(daemon.stderr)), 300000, 250)) {
     throw new Error(`the runtime daemon did not start: ${read(daemon.stderr).slice(-600)}`);
   }
-  const room = await until(async () => JSON.parse(read(join(profile, 'workspace.json')) || 'null')?.workspaces?.[0]?.room, 60000, 250);
-  if (!room) throw new Error('the native profile has no room');
-  log(`[${name}] native daemon up; room ${room}`);
-  return {daemon, profile, room};
+  const workspace = await until(async () => JSON.parse(read(join(profile, 'workspace.json')) || 'null')?.workspaces?.[0]?.workspace, 60000, 250);
+  if (!workspace) throw new Error('the native profile has no workspace');
+  log(`[${name}] native daemon up; workspace ${workspace}`);
+  return {daemon, profile, workspace};
 }
 
 // ---------------------------------------------------------------------------
@@ -293,12 +293,12 @@ const NODES = `(() => {
   return out;
 })()`;
 
-async function openPage(name, app, room, profileName = `${name}-${app.bin}`) {
+async function openPage(name, app, workspace, profileName = `${name}-${app.bin}`) {
   const browser = await launch({args: pageArgs});
   const tab = await browser.tab();
   await tab.send('Emulation.setDeviceMetricsOverride', {width: 1240, height: 860, deviceScaleFactor: 1, mobile: false});
   await tab.send('Accessibility.enable');
-  const url = `${pagesOrigin}/collab-e2e.html?${new URLSearchParams({origin: host.origin, user: host.userPublicKey, room, label: name, profile: profileName, app: app.id})}`;
+  const url = `${pagesOrigin}/collab-e2e.html?${new URLSearchParams({origin: host.origin, user: host.userPublicKey, workspace, label: name, profile: profileName, app: app.id})}`;
   const page = {name, browser, tab, url};
   await ready(page, () => tab.navigate(url));
   return page;
@@ -443,20 +443,20 @@ async function runApp(name) {
     log(`[${name}] ${pass ? 'PASS' : 'FAIL'} ${id}${ms === undefined ? '' : ` ${ms} ms`} ${detail ? `- ${String(detail).slice(0, 200)}` : ''}`);
   };
   let native, ax, a, b, c;
-  const {daemon, profile, room} = await startNative(name);
-  result.room = room;
+  const {daemon, profile, workspace} = await startNative(name);
+  result.workspace = workspace;
   const daemonFrom = 0;
   try {
     if (process.env.COLLAB_E2E_PAGES_FIRST) {
-      a = await openPage('Browser-A', app, room); a.dir = dir;
-      b = await openPage('Browser-B', app, room); b.dir = dir;
+      a = await openPage('Browser-A', app, workspace); a.dir = dir;
+      b = await openPage('Browser-B', app, workspace); b.dir = dir;
     }
-    // 1. Native app in the room.
+    // 1. Native app in the workspace.
     const scenario = join(dir, 'scenario.json');
     nativeScenario(scenario, app, {seed: T.mac, live: T.mac2});
     native = detached(`${name}-native`, join(binDir, app.bin), app.seedArgs?.(dir, `Mac note ${T.mac}`) ?? [], {cwd: join(repo, app.dir), env: {
       TILO_RUNTIME_PROFILE: profile, TILO_RUNTIME_BINARY: runtimeBin, TILO_COLLAB_HOST: host.irohAddr,
-      TILO_WORKSPACE_ID: room, TILO_PARTICIPATION: 'author', TILO_NATIVE_SCENARIO: scenario,
+      TILO_WORKSPACE_ID: workspace, TILO_PARTICIPATION: 'author', TILO_NATIVE_SCENARIO: scenario,
       TILO_PROFILE_OUT: join(dir, 'native-profile.jsonl'),
       XDG_DATA_HOME: join(dir, 'native-data'), RUST_LOG: 'info,iroh=warn',
     }});
@@ -484,8 +484,8 @@ async function runApp(name) {
     writeFileSync(join(dir, 'native-ax-1.json'), JSON.stringify(await ax.dump(), null, 1));
 
     // 2. Two pages join: the native record replays to them.
-    a ??= await openPage('Browser-A', app, room); a.dir = dir;
-    b ??= await openPage('Browser-B', app, room); b.dir = dir;
+    a ??= await openPage('Browser-A', app, workspace); a.dir = dir;
+    b ??= await openPage('Browser-B', app, workspace); b.dir = dir;
     const joined = Date.now();
     const seenA = await until(async () => (await pageText(a)).includes(T.mac), 60000);
     const replayMs = Date.now() - joined;
@@ -594,7 +594,7 @@ async function runApp(name) {
     // 7. The agent edits; native and pages show it, with its cursor.
     if (withAgent) await phase('agent edit -> native and browsers', async () => {
       const label = 'E2E agent';
-      const grant = await a.tab.evaluate(`${agentInvoke('agents', 'request-grant', {Json: {label, rooms: [room], apps: [app.id], expiresInSecs: 3600}})}`);
+      const grant = await a.tab.evaluate(`${agentInvoke('agents', 'request-grant', {Json: {label, workspaces: [workspace], apps: [app.id], expiresInSecs: 3600}})}`);
       const grantId = grant?.grant ?? grant;
       const approved = await until(async () => {
         const status = await a.tab.evaluate(`${agentInvoke('agents', 'status')}`);
@@ -630,7 +630,7 @@ async function runApp(name) {
     let expected = [];
     await phase('late join sees all edits', async () => {
       const late = Date.now();
-      c = await openPage('Browser-C', app, room); c.dir = dir;
+      c = await openPage('Browser-C', app, workspace); c.dir = dir;
       const textA = await pageText(a);
       expected = Object.values(T).filter(t => textA.includes(t));
       const lateAll = await until(async () => { const text = await pageText(c); return expected.every(t => text.includes(t)); }, 60000);
@@ -692,7 +692,7 @@ function markdown() {
   return [
     `# Collaboration E2E ${summary.started}`,
     '',
-    `Tree ${summary.revision} (${repo}); host ${summary.host?.origin}; one room per app; agent ${withAgent ? 'scripted' : 'off'}.`,
+    `Tree ${summary.revision} (${repo}); host ${summary.host?.origin}; one workspace per app; agent ${withAgent ? 'scripted' : 'off'}.`,
     '',
     `| Check | ${names.join(' | ')} |`,
     `| --- | ${names.map(() => '---').join(' | ')} |`,

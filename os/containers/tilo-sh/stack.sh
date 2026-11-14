@@ -458,13 +458,13 @@ door_env() {
 # opens Chat, and a page whose checks arrive on the workspace's desk names
 # none (TILO_SH_HOME_APP=).
 web_env() {
-  local room=$1 info=$2
+  local workspace=$1 info=$2
   printf '%s\n' \
     "TILO_WEB_HOME_HOST=127.0.0.1:$relay_port" \
     "TILO_WEB_HOME_HOST_INFO=$info" \
     TILO_WEB_HOME_NAME=Lounge \
     "TILO_WEB_HOME_APP=${TILO_SH_HOME_APP-so.tilo.chat}" \
-    "TILO_WEB_HOME_DOOR=$relay_origin/peer/v1/directory/$room/" \
+    "TILO_WEB_HOME_DOOR=$relay_origin/peer/v1/directory/$workspace/" \
     TILO_WEB_HOME_FEEDBACK=c_feedback \
     "TILO_WEB_DIRECTORY=$relay_origin/peer/v1/directory" \
     "TILO_WEB_SHELF=http://127.0.0.1:$plain_port" \
@@ -741,8 +741,8 @@ vm_host() {
   local enrol=${enroll:-${TILO_SH_TILO_ENROLL:-$(cat "$state/vm-host-enroll" 2>/dev/null || true)}}
   # Where the relay that places here reads what the host writes for it: the
   # image's volumes with --images, the stack's own state natively.
-  local secrets_view=/run/secrets rooms_view=/run/tilo-workspaces
-  if [[ $mode == native ]]; then secrets_view=$state/secrets rooms_view=$state/relay; fi
+  local secrets_view=/run/secrets workspaces_view=/run/tilo-workspaces
+  if [[ $mode == native ]]; then secrets_view=$state/secrets workspaces_view=$state/relay; fi
   "${sudo[@]}" env \
     TILO_SH_STATE="$vm_state" \
     "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$(image_archive image-vm-host image.oci.tar)}" \
@@ -750,7 +750,7 @@ vm_host() {
     "TILO_SH_TILO_ENROLL=$enrol" \
     "TILO_SH_RELAY_SECRETS=$state/secrets" \
     "TILO_SH_RELAY_SECRETS_VIEW=$secrets_view" \
-    "TILO_SH_RELAY_ROOMS_VIEW=$rooms_view" \
+    "TILO_SH_RELAY_WORKSPACES_VIEW=$workspaces_view" \
     "TILO_SH_RELAY_ROOT=$state/secrets/workspace-root-lounge" \
     "TILO_SH_RELAY_STATE=$state/relay/lounge/relay" \
     "TILO_SH_RELAY_IROH=127.0.0.1:$iroh_port" \
@@ -806,7 +806,7 @@ sdk_python() {
 # goes, so a dearer last post than first is a regression to chase rather than
 # a reason to seed less.
 seed() {
-  local room=$1 out=$state/seed
+  local workspace=$1 out=$state/seed
   if [[ -f $out/done ]]; then say "the Lounge is already seeded ($(cat "$out/done"))"; return; fi
   mkdir -p "$out"
   local seeder=${TILO_SH_SEEDER:-$repo/target/debug/examples/seed-lounge}
@@ -821,7 +821,7 @@ seed() {
   local want=$((${TILO_SH_SEED_MEMBERS:-300} - members))
   if ((want > 0)); then
     say "seeding $want members through the Lounge's door"
-    "$seeder" "$relay_origin" "$room" "$want" > "$out/members.json" \
+    "$seeder" "$relay_origin" "$workspace" "$want" > "$out/members.json" \
       || die 'seeding the members failed'
   fi
   say 'seeding the history: a member posts chat through the API server'
@@ -1367,7 +1367,7 @@ page_host() {
 }
 
 start_native_web() {
-  local room=$1 caddy container=$repo/crates/browser/tilo-browser-runtime/container info
+  local workspace=$1 caddy container=$repo/crates/browser/tilo-browser-runtime/container info
   caddy=$(find_caddy)
   info=$(page_host) || die 'the relay did not say who it is (tilo-relay page-host)'
 
@@ -1378,7 +1378,7 @@ start_native_web() {
     printf '%s\n' "TILO_WEB_SITE=$web_site" "TILO_WEB_INSTALL=$web_install" \
       "TILO_WEB_RUN=$runs/web/entry" "TILO_WEB_CADDYFILE=$container/Caddyfile" \
       TILO_WEB_BIND=127.0.0.1 "TILO_WEB_PORT=$web_port"
-    web_env "$room" "$info"
+    web_env "$workspace" "$info"
   } > "$runs/web.env"
   run_native web "$native/web" sh "$container/entrypoint.sh"
 }
@@ -1498,16 +1498,16 @@ up_native() {
   fi
   start_native_relay
   wait_relay
-  local room
-  room=$(cat "$state/relay/lounge/workspace-id") || die 'the relay kept no workspace id'
-  say "relay ready: the Lounge is $room ($((SECONDS - phase))s, $((SECONDS - began))s in)"
+  local workspace
+  workspace=$(cat "$state/relay/lounge/workspace-id") || die 'the relay kept no workspace id'
+  say "relay ready: the Lounge is $workspace ($((SECONDS - phase))s, $((SECONDS - began))s in)"
   phase=$SECONDS
   start_native_api
   wait_api
   say "API server up ($((SECONDS - phase))s)"
   phase=$SECONDS
   start_native_releases
-  start_native_web "$room"
+  start_native_web "$workspace"
   wait_web
   say "web up ($((SECONDS - phase))s)"
 }
@@ -1706,9 +1706,9 @@ up_images() {
     "${relay_args[@]}" "$lounge"
   wait_for 'relay (its readiness probe, /mode)' "http://127.0.0.1:$routes_port/mode" 300
   wait_for 'tls (the relay through Caddy)' "$relay_origin/mode" 60
-  local room
-  room=$(cat "$state/relay/lounge/workspace-id") || die 'the relay kept no workspace id'
-  say "relay ready: the Lounge is $room ($((SECONDS - began))s)"
+  local workspace
+  workspace=$(cat "$state/relay/lounge/workspace-id") || die 'the relay kept no workspace id'
+  say "relay ready: the Lounge is $workspace ($((SECONDS - began))s)"
 
   # The API server: uid 65532, its state on its own volume.
   local api_args=()
@@ -1727,7 +1727,7 @@ up_images() {
   start_releases
   local web_args=() info
   info=$(page_host "$lounge") || die 'the relay did not say who it is (tilo-relay page-host)'
-  mapfile -d '' web_args < <(web_env "$room" "$info" | env_args)
+  mapfile -d '' web_args < <(web_env "$workspace" "$info" | env_args)
   start web --network "pasta:-T,$plain_port,-T,$releases_port" -p "127.0.0.1:$web_port:8080" \
     --read-only --tmpfs /tmp --user 10001 \
     "${web_args[@]}" "$web"

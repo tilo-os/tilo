@@ -29,7 +29,7 @@ test('each failure is told apart by what the page knows of it', () => {
     [new Error('WebSocket connection closed'), {admitted: true}, 'unreachable'],
     [Object.assign(new Error('join: HTTP 502'), {status: 502}), {}, 'host-error'],
     [new Error('admit: HTTP 500'), {}, 'host-error'],
-    [new Error('the peer has no replicated room'), {admitted: true}, 'desktop'],
+    [new Error('the peer has no replicated workspace'), {admitted: true}, 'desktop'],
     // Reached the host, which never let the page in: no connection problem.
     [Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {connected: true}), {}, 'host-silent'],
     [Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {connected: false}), {}, 'unreachable'],

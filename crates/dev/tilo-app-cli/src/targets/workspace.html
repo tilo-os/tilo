@@ -30,7 +30,7 @@
 <script type="module">
   const lead = document.getElementById('lead');
   const button = document.getElementById('go');
-  const workspace = await (await fetch('/__tilo/room/', {cache: 'no-store'})).json();
+  const workspace = await (await fetch('/__tilo/workspace/', {cache: 'no-store'})).json();
   document.title = workspace.name;
   document.getElementById('title').textContent = `Join ${workspace.name}`;
   const status = {
@@ -44,8 +44,8 @@
     if (!name) return;
     button.disabled = true;
     try {
-      const {openInRoom} = await import('/dev-room.mjs');
-      globalThis.workspace = await openInRoom({
+      const {openInWorkspace} = await import('/dev-workspace.mjs');
+      globalThis.workspace = await openInWorkspace({
         surface: document.getElementById('surface'),
         name,
         onStatus: phase => {

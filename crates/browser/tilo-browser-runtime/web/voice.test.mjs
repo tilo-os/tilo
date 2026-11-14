@@ -396,7 +396,7 @@ test('peer.voice takes the page\'s planes through the wasm peer and lists its ca
   assert.deepEqual(wasm.shown, [false, false, false, false]);
   // The host's grant comes through the wasm peer's events, and its pictures
   // go out through `callPictures` as they are made.
-  voice.pump(JSON.stringify([{room: 'the-workspace', kind: 'granted', grant: grantFor()}]));
+  voice.pump(JSON.stringify([{workspace: 'the-workspace', kind: 'granted', grant: grantFor()}]));
   await drain();
   assert.equal(voice.call.state.phase, 'live');
   await voice.call.setVideo('camera', true);
@@ -407,7 +407,7 @@ test('peer.voice takes the page\'s planes through the wasm peer and lists its ca
   await voice.call.setMuted(false);
   onFrame({timestamp: 960n, duration: 960, payload: Uint8Array.of(1)});
   assert.deepEqual(wasm.published, [['the-workspace', [{timestamp48k: 960, opus: '01'}]]]);
-  voice.pump(JSON.stringify([{room: 'the-workspace', kind: 'heard', from: BOB, sequence: 1, timestamp48k: 960, opus: '02'}]));
+  voice.pump(JSON.stringify([{workspace: 'the-workspace', kind: 'heard', from: BOB, sequence: 1, timestamp48k: 960, opus: '02'}]));
   assert.deepEqual(played.map(frame => [...frame.payload]), [[2]]);
   voice.call.showPictures([{person: BOB, source: 'camera', layer: 'mid'}]);
   assert.deepEqual(showing.at(-1), ['the-workspace', [{device: BOB, camera: ['mid'], screen: []}]]);

@@ -1109,13 +1109,13 @@ async function connect({
     /** The person's own workspace on this host, with this very device in it
      * (the shared device entry, `enterOwnWorkspace` in wasm): made the first
      * time, answered again after, another for each `name`; the one called
-     * `room` (a UUID) when named, made under that name for a person who has
+     * `workspace` (a UUID) when named, made under that name for a person who has
      * none yet. `entered(id)` says this browser is in that workspace already,
      * so it is not redeemed again. Resolves to the workspace's listing
      * `{workspace, workspace_id, name}`; rejects with the host's refusal as it
      * typed it (`HostRefusal`: `code`, and `refusal` where the host gave one). */
-    enterOwnWorkspace: async ({name = null, room = null, entered = () => false} = {}) => JSON.parse(
-      await peer.enterOwnWorkspace(name, room, fitDisplayName(displayName || label), entered)),
+    enterOwnWorkspace: async ({name = null, workspace = null, entered = () => false} = {}) => JSON.parse(
+      await peer.enterOwnWorkspace(name, workspace, fitDisplayName(displayName || label), entered)),
     /** Who is in the workspace, for its owner (`workspaces.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },
@@ -1447,7 +1447,7 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
     // An administrator's invitation gives the Editor role and makes them an
     // administrator: the card names what they become.
     workspaceName: reply.name, role: reply.administrator ? 'administrator' : reply.role.toLowerCase(),
-    room: reply.room, workspaceId: reply.workspaceId,
+    workspace: reply.workspace, workspaceId: reply.workspaceId,
     expiresAtNs: reply.expiresAtNs, members: reply.members ?? null, inviter: reply.inviter ?? undefined,
   };
 }
@@ -1645,7 +1645,7 @@ async function enterOnSession({
     // the page: what the tab is titled after and the shell's first space is
     // given.
     peer.noteWorkspaceName?.(answered.name);
-    onProgress?.({phase: 'admitted', room: answered.workspace, workspaceName: answered.name, role: answered.role});
+    onProgress?.({phase: 'admitted', workspace: answered.workspace, workspaceName: answered.name, role: answered.role});
     return peer;
   } catch (error) {
     await peer.dispose?.().catch(() => {});

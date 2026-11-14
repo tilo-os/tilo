@@ -198,8 +198,8 @@ const NAMES = ['heading', 'request', 'service', 'reaches', 'reachesRow', 'scope'
 function entered(...entries) {
   const items = new Map();
   if (entries.length) {
-    items.set('tilo-entered-workspaces', JSON.stringify(entries.map(([room, name]) => ({
-      origin: 'https://eu1.tilo.example', room, hostDevice: 'a'.repeat(64), ...(name ? {name} : {}),
+    items.set('tilo-entered-workspaces', JSON.stringify(entries.map(([workspace, name]) => ({
+      origin: 'https://eu1.tilo.example', workspace, hostDevice: 'a'.repeat(64), ...(name ? {name} : {}),
     }))));
   }
   return {getItem: key => items.get(key) ?? null, setItem: (key, value) => items.set(key, value), removeItem: key => items.delete(key)};

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
 
-const room = 'fixture-room', host = 'ab'.repeat(32), provider = 'record:so.tilo.chat:uuid:1';
+const workspace = 'fixture-workspace', host = 'ab'.repeat(32), provider = 'record:so.tilo.chat:uuid:1';
 const reference = {id: 'chat.message:m1', kind: 'chat.message', label: 'untrusted label'};
 const resource = {...reference, label: 'Published message'};
 const view = {address: {resource: resource.id, action: 'show'}, kind: 'View',
@@ -42,10 +42,10 @@ test('shared resource resolves only through its admitted record and current publ
 
 test('a locator names the admitted workspace the page holds, not another', async () => {
   const origin = 'https://ada.tilo.cloud';
-  const locator = {origin, workspace: room, hostDevice: host, provider};
+  const locator = {origin, workspace, hostDevice: host, provider};
   const {actions} = endpoints(() => ({revision: 'r1', rows: [row], locator}));
   try {
-    const scope = {origin, workspace: room, hostDevice: host};
+    const scope = {origin, workspace, hostDevice: host};
     const resolved = await resolveResourceReference({reference, provider, actions, current: () => true, scope});
     assert.equal(resolved.resource.id, resource.id);
     await assert.rejects(resolveResourceReference({reference, provider, actions, current: () => true,

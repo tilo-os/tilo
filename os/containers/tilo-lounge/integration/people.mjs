@@ -790,10 +790,10 @@ try {
   // Each context is its own person: its own root, its own device, and a
   // membership in the Lounge's workspace that nobody else holds.
   const joined = async (person, name) => {
-    await until(person.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(new URL(origin).origin)}]?.room`,
+    await until(person.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(new URL(origin).origin)}]?.workspace`,
       `${name} joining the Lounge`, stepLimit(6));
     const kept = JSON.parse(await membership(person.tab));
-    if (!kept?.userPublicKey || !kept?.room) failed(`${name} joined nothing: ${JSON.stringify(kept)}`);
+    if (!kept?.userPublicKey || !kept?.workspace) failed(`${name} joined nothing: ${JSON.stringify(kept)}`);
     person.membership = kept;
     return kept;
   };
@@ -801,7 +801,7 @@ try {
   const keptB = await joined(b, 'B');
   report.people = {a: keptA, b: keptB};
   if (keptA.userPublicKey === keptB.userPublicKey) failed('both browsers are one person');
-  if (keptA.room !== keptB.room) failed('the two joined different workspaces');
+  if (keptA.workspace !== keptB.workspace) failed('the two joined different workspaces');
   report.distinct = true;
   console.log(`ok: two browsers joined the Lounge as ${keptA.userPublicKey.slice(0, 8)} and ${keptB.userPublicKey.slice(0, 8)}`);
   mark('two browsers joined the Lounge');
@@ -826,7 +826,7 @@ try {
   let lounge;
   for (const deadline = Date.now() + stepLimit(4); ;) {
     listed = await directory();
-    lounge = listed.workspaces?.find(workspace => workspace.workspace === keptA.room);
+    lounge = listed.workspaces?.find(workspace => workspace.workspace === keptA.workspace);
     if ((lounge && counted(lounge)) || Date.now() > deadline) break;
     await sleep(500);
   }
@@ -1427,7 +1427,7 @@ try {
     const windowsBefore = (await snapshot(a.tab)).windows;
     const panBefore = keptNotes ?? await panOf(a.tab);
     if (!panBefore) failed('the strip does not overflow, so nothing can pan');
-    // The way the strip still has room: a gesture at its end pans nothing.
+    // The way the strip still has workspace: a gesture at its end pans nothing.
     const forward = panBefore.offset < panBefore.max / 2;
     const frameBefore = await picture(a.tab);
     await sidewaysSwipe(a.tab, overNotes.x, overNotes.y, forward, async () => {
@@ -1632,7 +1632,7 @@ try {
 
     // The workspace as the invitation describes it, before this person joins:
     // the name and how many people it has, which the host counts itself.
-    const listedNow = (await directory()).workspaces?.find(workspace => workspace.workspace === keptA.room);
+    const listedNow = (await directory()).workspaces?.find(workspace => workspace.workspace === keptA.workspace);
     if (!listedNow) await failed('the directory stopped listing the workspace', a.tab);
     const ownName = (await snapshot(a.tab)).names
       .find(name => / \(you\): your profile$/.test(name))?.replace(/ \(you\): your profile$/, '') ?? null;
@@ -1655,7 +1655,7 @@ try {
     // The Lounge is shared with the run's other flows, whose people come and
     // go meanwhile, so the card's number is held to the host's count before
     // the link was opened and after the card showed, not to one of them.
-    const listedAfter = (await directory()).workspaces?.find(workspace => workspace.workspace === keptA.room);
+    const listedAfter = (await directory()).workspaces?.find(workspace => workspace.workspace === keptA.workspace);
     const counted = Number(c.card.match(/\b(\d+) people\b/)?.[1] ?? (/\b1 person\b/.test(c.card) ? 1 : NaN));
     const fewest = Math.min(listedNow.members, listedAfter?.members ?? listedNow.members);
     const most = Math.max(listedNow.members, listedAfter?.members ?? listedNow.members);
@@ -1695,8 +1695,8 @@ try {
     await mounted(c.tab, 'C');
     const keptC = JSON.parse(await membership(c.tab));
     report.invited = keptC;
-    if (!keptC?.userPublicKey || keptC.room !== keptA.room) {
-      await failed(`the invitation's person joined ${JSON.stringify(keptC)}, not ${keptA.room}`, c.tab);
+    if (!keptC?.userPublicKey || keptC.workspace !== keptA.workspace) {
+      await failed(`the invitation's person joined ${JSON.stringify(keptC)}, not ${keptA.workspace}`, c.tab);
     }
     if (keptC.userPublicKey === keptA.userPublicKey || keptC.userPublicKey === keptB.userPublicKey) {
       await failed("the invitation's person is someone who was already here", c.tab);

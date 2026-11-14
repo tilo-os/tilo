@@ -47,7 +47,7 @@ test('a plain member is allowed to remove nobody', () => {
 });
 
 /** The page in a workspace, as the host answers it. */
-function room() {
+function workspace() {
   const calls = [];
   return {calls, peer: {
     origin: 'https://node.example:8443', workspace: WORKSPACE, userPublicKey: OWNER,
@@ -63,7 +63,7 @@ function room() {
 }
 
 test('the workspace offers People, and choosing it shows the host’s list', async () => {
-  const {peer, calls} = room();
+  const {peer, calls} = workspace();
   const shown = [];
   let opened = null;
   const actions = createWorkspaceActions({peer, inviteLink: async () => 'https://tilo.so/i/x#y',

@@ -218,7 +218,7 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
 
 /// Who hosts each workspace this computer holds, and whether its host took this computer in yet: a
 /// machine copied from another holds its workspaces before their hosts admit it, and `tilo-vm vm
-/// branch` waits for that. One row per held workspace: its id (`room`), its name on the shell, the
+/// branch` waits for that. One row per held workspace: its id, its name on the shell, the
 /// host's name as its person gave it, whether this computer is the host, and whether it still
 /// waits for the host. A socket sees what [`shown`] lets it see of the session: an app its own
 /// workspace, and nothing of a locked session but through a development socket.

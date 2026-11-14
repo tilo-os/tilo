@@ -281,7 +281,7 @@ test('every locale the page can pick has its file beside the module', () => {
 test('a person let in whose desktop never drew is told they got in', () => {
   // The renderer gives up on a first frame that never came and marks the
   // arrival stopped before the page hears the mount failed.
-  const peer = {room: 'r'};
+  const peer = {workspace: 'r'};
   assert.equal(stoppedInside(peer, 'stopped'), true);
   assert.equal(stoppedInside(peer, 'open'), true);
   assert.equal(stoppedInside(peer, 'draw'), true);
@@ -315,10 +315,10 @@ test('a door taking people by invitation is the host’s own answer', () => {
 
 test('a pasted invite link opens as itself; anything else is not one', () => {
   const base = 'https://tilo.sh/';
-  const link = 'https://tilo.sh/#/desktop/room/abc?invite=XYZ';
+  const link = 'https://tilo.sh/#/desktop/workspace/abc?invite=XYZ';
   assert.equal(inviteLinkTarget(`  ${link}\n`, base), link);
   assert.equal(inviteLinkTarget('https://tilo.sh/?invite=XYZ', base), 'https://tilo.sh/?invite=XYZ');
-  for (const text of ['', 'hello', 'https://tilo.sh/', 'https://tilo.sh/#/desktop/room/abc', 'javascript:alert(1)?invite=1', null]) {
+  for (const text of ['', 'hello', 'https://tilo.sh/', 'https://tilo.sh/#/desktop/workspace/abc', 'javascript:alert(1)?invite=1', null]) {
     assert.equal(inviteLinkTarget(text, base), null, String(text));
   }
 });

@@ -1608,7 +1608,7 @@ mod tests {
             Ok(crate::pair_device::Place {
                 site: format!("{origin}/"),
                 origin: origin.clone(),
-                room: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
+                workspace: "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c".into(),
                 person,
             }),
             tilo_clock::unix_now_ms(),

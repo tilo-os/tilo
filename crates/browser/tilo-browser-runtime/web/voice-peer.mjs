@@ -114,7 +114,7 @@ export function createPeerVoice({peer, workspace, device = null, createCall = cr
       let events;
       try { events = JSON.parse(json); } catch { return; }
       for (const event of events) {
-        if (event.room !== workspace) continue;
+        if (event.workspace !== workspace) continue;
         if (event.kind === 'calls') listed(event);
         else if (event.kind === 'callResult') {
           const waiter = requests.get(event.request);

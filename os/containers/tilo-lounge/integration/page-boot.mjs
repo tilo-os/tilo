@@ -167,10 +167,10 @@ mark('the page arrived');
 const membership = await until(`(() => {
   const all = JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}');
   const kept = all[${JSON.stringify(new URL(relay).origin)}];
-  return kept?.room ? JSON.stringify(kept) : '';
+  return kept?.workspace ? JSON.stringify(kept) : '';
 })()`, 'joining the Lounge\'s workspace');
 report.membership = JSON.parse(membership);
-console.log(`ok: the page joined the workspace ${report.membership.room}`);
+console.log(`ok: the page joined the workspace ${report.membership.workspace}`);
 mark('the page joined the workspace');
 
 // 3. Notes opens from the search, and its window shows.

@@ -486,7 +486,7 @@ test('a row drawn again inside itself is its own element',()=>{
 test('caller palette keeps test IDs for identity while actions route by canonical paths',()=>{
   const calls=[];const reports=[];const root=new Element('div');
   const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},report=>reports.push(report));
-  const target='action:exact-certified-host/room/record/revision:insert-table';
+  const target='action:exact-certified-host/workspace/record/revision:insert-table';
   const searchPath='caller-palette/SearchField[0]';
   const field={path:searchPath,semantics:{role:'TextInput',name:'Search',value:'',state:{focusable:true,focused:true}}};
   const results={path:'caller-palette/SearchResultsView[0]',test_id:'action-palette-results',semantics:{role:'List',name:'Search results',children:[{role:'ListItem',name:'Document — Insert table',action_target:target}]}};

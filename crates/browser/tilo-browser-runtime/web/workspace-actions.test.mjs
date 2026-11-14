@@ -39,7 +39,7 @@ function adasRoom({owner = true, letsIn = owner, waitList = []} = {}) {
       mayInvite: async () => letsIn,
       waitList: async () => {
         calls.push(['waitList']);
-        if (!letsIn) throw new Error('only someone the room lets invite lists the wait list');
+        if (!letsIn) throw new Error('only someone the workspace lets invite lists the wait list');
         return waitList;
       },
       unlist: async requestId => { calls.push(['unlist', requestId]); },
@@ -104,8 +104,8 @@ test('a new workspace is made on a machine the person set up, and opened', async
   const lobby = {
     host: {hostCert: {device_public_key: Array(32).fill(0xcd)}},
     workspaces: {
-      create: async name => { calls.push(['create', name]); return {room: WORKSPACE, name}; },
-      enter: async room => { calls.push(['enter', room]); return {room}; },
+      create: async name => { calls.push(['create', name]); return {workspace: WORKSPACE, name}; },
+      enter: async workspace => { calls.push(['enter', workspace]); return {workspace}; },
     },
     dispose: async () => { calls.push(['dispose']); },
   };
@@ -120,7 +120,7 @@ test('a new workspace is made on a machine the person set up, and opened', async
   await actions.perform(NEW_WORKSPACE.id);
   assert.deepEqual(calls, [['lobby', origin], ['create', 'Acme'], ['enter', WORKSPACE], ['dispose']]);
   // Opened as held by the machine's host, which the browser remembers it under.
-  assert.deepEqual(opened, [{origin, room: WORKSPACE, name: 'Acme', hostDevice: 'cd'.repeat(32)}]);
+  assert.deepEqual(opened, [{origin, workspace: WORKSPACE, name: 'Acme', hostDevice: 'cd'.repeat(32)}]);
 });
 
 test('in someone else’s workspace a person with a machine can still make a workspace on it', async () => {
@@ -129,13 +129,13 @@ test('in someone else’s workspace a person with a machine can still make a wor
   const lobby = {
     host: {hostCert: {device_public_key: Array(32).fill(0xcd)}},
     workspaces: {
-      create: async name => { calls.push(['create', name]); return {room: WORKSPACE, name}; },
-      enter: async room => { calls.push(['enter', room]); return {room}; },
+      create: async name => { calls.push(['create', name]); return {workspace: WORKSPACE, name}; },
+      enter: async workspace => { calls.push(['enter', workspace]); return {workspace}; },
     },
     dispose: async () => { calls.push(['dispose']); },
   };
   // The Lounge: a workspace on a host that is not Ada's.
-  const lounge = {origin: 'https://lounge.example', room: 'lounge', userPublicKey: ADA,
+  const lounge = {origin: 'https://lounge.example', workspace: 'lounge', userPublicKey: ADA,
     host: {hostCert: {user_public_key: bytes('bb'.repeat(32))}}};
   const opened = [];
   const {mount, shown} = desktop();
@@ -158,7 +158,7 @@ test('a person on a host that keeps workspaces of people’s own makes their nex
   const lounge = {origin, workspace: 'lounge', userPublicKey: ADA,
     host: {hostCert: {user_public_key: bytes('bb'.repeat(32)), device_public_key: Array(32).fill(0xcd),
       capabilities: {can_own_workspaces: true}}},
-    enterOwnWorkspace: async ({name}) => { calls.push(['own', name]); return {workspace: 'studio-room', name}; }};
+    enterOwnWorkspace: async ({name}) => { calls.push(['own', name]); return {workspace: 'studio-workspace', name}; }};
   const opened = [];
   const {mount, shown} = desktop();
   const actions = createWorkspaceActions({peer: lounge, machines: () => [],
@@ -168,7 +168,7 @@ test('a person on a host that keeps workspaces of people’s own makes their nex
   assert.ok(ids(shown.at(-1)).includes(NEW_WORKSPACE.id), 'the person is in a workspace of their own making on that host');
   await actions.perform(NEW_WORKSPACE.id);
   assert.deepEqual(calls, [['own', 'Studio']]);
-  assert.deepEqual(opened, [{origin, room: 'studio-room', name: 'Studio', hostDevice: 'cd'.repeat(32)}]);
+  assert.deepEqual(opened, [{origin, workspace: 'studio-workspace', name: 'Studio', hostDevice: 'cd'.repeat(32)}]);
 });
 
 test('an invite link is made when it is pressed for, and never before', async () => {

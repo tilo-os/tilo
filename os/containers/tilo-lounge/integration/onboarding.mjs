@@ -206,7 +206,7 @@ const identityModule = `await import(new URL('identity.mjs', new URL('.', (docum
 /** Who this page is, and which workspace it holds. */
 const person = tab => tab.evaluate(`JSON.stringify({
   user: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.userPublicKey ?? null; } catch { return null; } })(),
-  room: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null')?.room ?? null; } catch { return null; } })(),
+  workspace: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null')?.workspace ?? null; } catch { return null; } })(),
   title: document.title,
 })`).then(JSON.parse).catch(() => ({}));
 /** The person's own workspace, as the page titles it: never the Lounge's. */
@@ -450,7 +450,7 @@ try {
   await declareOwner(operatorPerson);
   report.operator = {user: operatorPerson};
   await arrive(operator, {expected: 'let in'});
-  await until(operator.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.room`,
+  await until(operator.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
     'the door letting in the person the deployment declared', stepLimit(8));
   mark('the operator the deployment declares is let in by the closed door');
 
@@ -589,10 +589,10 @@ try {
   if (!await pressText(stranger.tab, 'Join')) await fail(`the invitation offered no Join: ${report.invitationCard}`);
   // Joined: the page enters a workspace other than the one the Lounge listed
   // for it before, and the first screen of a first visit is over it.
-  await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.room`,
+  await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
     'the stranger joining through the invitation', stepLimit(8));
   report.joined = await person(stranger.tab);
-  console.log(`ok: the invitation brought the stranger in (${report.joined.room})`);
+  console.log(`ok: the invitation brought the stranger in (${report.joined.workspace})`);
   mark('the invitation brought the stranger into the workspace');
 
   // The page hands a person it let in by a link, and who is not set up here,
@@ -719,17 +719,17 @@ try {
   const opened = `(() => {
     const chosen = JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null');
     const entered = JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]');
-    const kept = (Array.isArray(entered) ? entered : []).find(entry => entry.room === chosen?.room);
+    const kept = (Array.isArray(entered) ? entered : []).find(entry => entry.workspace === chosen?.workspace);
     const open = document.documentElement.dataset.entry === 'open'
       && ['done', 'stopped'].includes(document.documentElement.dataset.arrival);
-    return open && kept?.name === ${JSON.stringify(named)} ? chosen.room : '';
+    return open && kept?.name === ${JSON.stringify(named)} ? chosen.workspace : '';
   })()`;
   const before = await stranger.tab.evaluate(opened).catch(() => '');
   if (before) await fail(`a workspace named ${named} was open before the person made one: ${before}`);
   await pressText(stranger.tab, 'Create', '.tilo-entry-card');
   const made = await until(stranger.tab, opened, 'the second workspace opening', stepLimit(10));
-  if (made === report.returned?.room) await fail(`the second workspace is the first one again: ${made}`);
-  report.secondWorkspace = {room: made, name: named, title: await stranger.tab.evaluate(`document.title`)};
+  if (made === report.returned?.workspace) await fail(`the second workspace is the first one again: ${made}`);
+  report.secondWorkspace = {workspace: made, name: named, title: await stranger.tab.evaluate(`document.title`)};
   await dump(stranger.tab, '7-second-workspace');
   console.log(`ok: the person made and opened a second workspace (${named}, ${made})`);
   mark('the person made a second workspace');

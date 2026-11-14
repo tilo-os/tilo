@@ -81,7 +81,7 @@ async function settleWorkspace(known, runtime) {
     return httpsPost(origin, (url, init) => globalThis.fetch(url, {...init, signal: AbortSignal.timeout(HOST_CHECK_MS)}));
   };
   const hostInfo = async origin => JSON.parse(await runtime.hostInfo(post(origin))).hostCert;
-  const deleted = async (origin, room) => runtime.workspaceDeleted(post(origin), room);
+  const deleted = async (origin, workspace) => runtime.workspaceDeleted(post(origin), workspace);
   try {
     return await settleFailedWorkspace(runtime, known, {hostInfo, deleted});
   } catch (error) {
@@ -960,7 +960,7 @@ export async function startEntryPage({mode}) {
     },
     // Where the person's agents connect over MCP, which their MCP server shows.
     mcp: MCP_URL,
-    ...(query.get('room') ? {room: query.get('room')} : {}),
+    ...(query.get('workspace') ? {workspace: query.get('workspace')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),
     // The directory sheet's Join: the page enters the workspace through its
     // door on the session, then shows it.
@@ -1108,8 +1108,8 @@ export async function startEntryPage({mode}) {
     ownDesktopOpen: home => ownDesktopOpen(home),
     // A workspace of this host the browser entered before, such as the
     // person's own: reconnected to, not asked for at the host's door.
-    entered: ({origin, room}) => enteredWorkspaces().some(kept => sameEntry(kept, {origin, room})),
-    enterViaHost: async ({workspace, room}) => {
+    entered: ({origin, workspace}) => enteredWorkspaces().some(kept => sameEntry(kept, {origin, workspace})),
+    enterViaHost: async ({workspace}) => {
       workspaceName = workspace.name || workspaceName;
       visitedAt = workspace;
       // An embed joins nothing before the visitor does something: it takes no
@@ -1136,7 +1136,7 @@ export async function startEntryPage({mode}) {
       displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName() ?? defaultDisplayName(identity?.userPublicKey ?? kept?.userPublicKey);
       // A workspace with no seat right now (full, or this address asking too
       // often) is waited out on the reconnect screen, as long as its door
-      // asked: the page joins as the same person once there is room.
+      // asked: the page joins as the same person once there is workspace.
       const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode,
         wait: next => reconnect.wait({...next, origin: workspace.host.origin, build: PAGE_BUILD,
           retryAfterMs: Number.isFinite(next.error?.retryAfter) ? next.error.retryAfter * 1000 : 0})});
@@ -1187,10 +1187,10 @@ export async function startEntryPage({mode}) {
       displayName = options.displayName || chosenDisplayName(identity?.userPublicKey) || defaultDisplayName(identity?.userPublicKey);
       const peer = await joinWorkspace({...options, identity, runtime, displayName});
       // Kept, so the next visit reconnects as the person let in.
-      keepJoinedHost({origin: options.origin, room: peer.workspace, userPublicKey: identity.userPublicKey});
+      keepJoinedHost({origin: options.origin, workspace: peer.workspace, userPublicKey: identity.userPublicKey});
       return peer;
     },
-    reconnect: async ({origin, room}) => {
+    reconnect: async ({origin, workspace}) => {
       // A device paired to a person kept elsewhere goes on as that device,
       // under the certificate it holds: into a workspace its key was
       // admitted to (the person's own, say), never as a new device.
@@ -1199,7 +1199,7 @@ export async function startEntryPage({mode}) {
         const profile = identityProfile(paired, paired.origin);
         const custody = await openDeviceCustody({profile, storage: idbStorage(), requireExisting: true});
         displayName = chosenDisplayName(paired.userPublicKey) ?? defaultDisplayName(paired.userPublicKey);
-        return withCustody(custody, () => connectPeer({origin, workspace: room, userPublicKey: paired.userPublicKey,
+        return withCustody(custody, () => connectPeer({origin, workspace, userPublicKey: paired.userPublicKey,
           profile, custody, displayName, runtime, requireExistingCertificate: true}));
       }
       const identity = currentIdentity() ?? await browserIdentity({create: false});
@@ -1215,7 +1215,7 @@ export async function startEntryPage({mode}) {
         // (the host admits this device as its owner); the host refuses
         // one that does not exist.
         const lobby = await connectPeer({origin, identity, runtime, displayName, live: false});
-        try { await lobby.workspaces.enter(room); } finally { await lobby.dispose?.(); }
+        try { await lobby.workspaces.enter(workspace); } finally { await lobby.dispose?.(); }
       }
       // This tab's own device key, which may be one the workspace never
       // admitted: a new key where other tabs hold the others, or one this
@@ -1227,25 +1227,25 @@ export async function startEntryPage({mode}) {
       // a member at the part the person holds.
       const custody = await openDeviceCustody({profile: identityProfile(identity, origin), storage: idbStorage()});
       if (!kept.owner) {
-        const door = new URL(`directory/${room}/`, `${origin}/`).href;
+        const door = new URL(`directory/${workspace}/`, `${origin}/`).href;
         const entered = await withCustody(custody, () => joinWorkspace({origin, door, identity, runtime, displayName, custody}));
-        keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
+        keepJoinedHost({origin, workspace, userPublicKey: identity.userPublicKey});
         return entered;
       }
-      const peer = await withCustody(custody, () => connectPeer({origin, workspace: room, identity, runtime, displayName, custody}));
+      const peer = await withCustody(custody, () => connectPeer({origin, workspace, identity, runtime, displayName, custody}));
       // What is kept names the workspace the host's door let this browser
       // into (`keepJoinedHost`): reconnecting to another of the host's
       // workspaces, such as the person's own, leaves it as it is.
-      keepJoinedHost({origin, room, userPublicKey: identity.userPublicKey});
+      keepJoinedHost({origin, workspace, userPublicKey: identity.userPublicKey});
       return peer;
     },
     // An embed lists no host actions, so it has nothing to invite with:
     // the desktop offers no Invite there rather than one that does nothing.
-    pairDevice: async ({origin, room, userPublicKey, invite, workspace}) => {
+    pairDevice: async ({origin, workspace, userPublicKey, invite, listed}) => {
       displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
       let waiting = () => {};
       try {
-        return await pairViaHost({origin, room, userPublicKey, invite, workspace, runtime, displayName,
+        return await pairViaHost({origin, workspace, userPublicKey, invite, listed, runtime, displayName,
           label: deviceLabel(), onPairingCode: code => { waiting(); waiting = pairingWait(code); }});
       } catch (error) {
         // The host's answer, said as what to do next; anything else as any failure.
@@ -1262,24 +1262,24 @@ export async function startEntryPage({mode}) {
     // A guest ticket: a fresh device of the workspace's root, certified once the
     // web host spent the ticket on this page's pairing code. The root key is
     // read from the host's own certificate, so the link need not carry it.
-    redeemTicket: async ({origin, room, ticket, tickets}) => {
+    redeemTicket: async ({origin, workspace, ticket, tickets}) => {
       viaTicket = true;
       const {connectRelayPeer} = await import('./relay.mjs');
       const hostCert = await hostCertificate(await loadRuntime(), origin);
-      const admit = new URL(`${encodeURIComponent(room)}/admit`, tickets).href;
-      return connectRelayPeer({origin, workspace: room, userPublicKey: hex(hostCert.user_public_key), label: 'Guest',
+      const admit = new URL(`${encodeURIComponent(workspace)}/admit`, tickets).href;
+      return connectRelayPeer({origin, workspace, userPublicKey: hex(hostCert.user_public_key), label: 'Guest',
         onPairingCode: async pairingCode => {
           const response = await fetch(admit, {method: 'POST', headers: {'content-type': 'application/json'},
             body: JSON.stringify({ticket, pairingCode})});
           if (!response.ok) status.textContent = (await response.json().catch(() => ({}))).error ?? 'The workspace did not let this device in';
         }});
     },
-    connectMember: async ({origin, room, account}) => {
+    connectMember: async ({origin, workspace, account}) => {
       const {userPublicKey, profile, device} = account;
       const custody = await openDeviceCustody({profile, storage: idbStorage(), requireExisting: true});
       // The account names the profile's first device; a tab that took
       // another of its device keys is that device, with its own namespace.
-      return withCustody(custody, () => connectPeer({origin, workspace: room, userPublicKey, profile, custody,
+      return withCustody(custody, () => connectPeer({origin, workspace, userPublicKey, profile, custody,
         device: custody.slot ? profileDevice(profile, globalThis.localStorage, custody.slot) : device,
         runtime, requireExistingCertificate: true}));
     },
@@ -1293,11 +1293,11 @@ export async function startEntryPage({mode}) {
     try {
       // The same join the page's own door and an invitation link take, which
       // keeps the membership so the opened page reconnects as this person.
-      const {peer, origin, room, name} = await joinGranted(joined, {
+      const {peer, origin, workspace, name} = await joinGranted(joined, {
         join: options => deps.joinWorkspace(options), displayName: displayName ?? null,
       });
       await peer?.dispose?.();
-      await openWorkspace({choice: {origin, room, name}, page: opened, status});
+      await openWorkspace({choice: {origin, workspace, name}, page: opened, status});
     } catch (error) {
       console.warn('joining a listed workspace:', error);
       const messages = await localeMessagesSoon();
@@ -1353,10 +1353,10 @@ export async function startEntryPage({mode}) {
     bar.look();
     if (!embed && !enteredViaDoor && !viaTicket && page.peer && here.kind === 'workspace') {
       // A workspace entered as a member: offered again from the person's other workspaces.
-      const entry = {origin: here.host, room: here.workspace ?? page.peer.workspace};
+      const entry = {origin: here.host, workspace: here.workspace ?? page.peer.workspace};
       remembering(() => {
         rememberEntered(runtime, {...entry, hostDevice, name: invitedTo});
-        if (!rememberedWorkspace({kind: 'workspace', host: entry.origin, workspace: entry.room})?.name) unnamed = entry;
+        if (!rememberedWorkspace({kind: 'workspace', host: entry.origin, workspace: entry.workspace})?.name) unnamed = entry;
       });
     }
     if (hostActions) {
@@ -1494,15 +1494,15 @@ export async function startEntryPage({mode}) {
       // rides in the link's fragment. It is the one link a person hands
       // over: a shelf that keeps nothing is said, not worked around.
       inviteLink: invitation => runtime.sealedInvitationLink(page.entry.base, page.peer.origin, invitation),
-      open: async ({origin, room, name, hostDevice: holder}) => {
+      open: async ({origin, workspace, name, hostDevice: holder}) => {
         // The person this page is here as: a page a person signed in by their
         // agent opened holds no root, and opening the workspace it made is
         // theirs by the host's admission, not their signature.
         const person = page.peer?.userPublicKey ?? currentIdentity()?.userPublicKey;
-        keepJoinedHost({origin, room, userPublicKey: person});
-        remembering(() => rememberEntered(runtime, {origin, room, name, hostDevice: holder}));
+        keepJoinedHost({origin, workspace, userPublicKey: person});
+        remembering(() => rememberEntered(runtime, {origin, workspace, name, hostDevice: holder}));
         // Creating a workspace leaves through the same save-and-close path as switching.
-        await openWorkspace({choice: {origin, room, name}, page, status});
+        await openWorkspace({choice: {origin, workspace, name}, page, status});
       },
       ui: {
         askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
@@ -1658,11 +1658,11 @@ function remembering(read) {
 function rememberedWorkspace(scope) {
   if (scope?.kind !== 'workspace' || !scope.workspace) return null;
   const origin = new URL(scope.host).origin;
-  return enteredWorkspaces().find(entry => entry.origin === origin && entry.room === scope.workspace) ?? null;
+  return enteredWorkspaces().find(entry => entry.origin === origin && entry.workspace === scope.workspace) ?? null;
 }
 
 /** The workspace the site's own door names, as its admission address spells it
- * (`<relay>/peer/v1/directory/<room>/`): the site's home. */
+ * (`<relay>/peer/v1/directory/<workspace>/`): the site's home. */
 function homeRoomOf(entry) {
   const admission = entry?.home?.admission;
   const match = typeof admission === 'string' ? admission.match(/\/directory\/([^/]+)\/?$/) : null;
@@ -1671,14 +1671,14 @@ function homeRoomOf(entry) {
 
 /** The workspace this browser was admitted to through the home workspace's door. */
 function homeWorkspaceOf(entry) {
-  return entry?.home ? keptMembership(entry.home)?.room ?? null : null;
+  return entry?.home ? keptMembership(entry.home)?.workspace ?? null : null;
 }
 
 /** The address that opens `choice` (`workspaceChoices`): the bare entry for the home. */
 function choiceUrl(choice, entry, link) {
   if (choice.home) return entry.base;
   if (choice.own) return link.format({mode: 'desktop', target: {scope: {kind: 'own'}}});
-  return link.format({mode: 'desktop', target: {scope: {kind: 'workspace', host: choice.origin, workspace: choice.room}}});
+  return link.format({mode: 'desktop', target: {scope: {kind: 'workspace', host: choice.origin, workspace: choice.workspace}}});
 }
 
 /**
@@ -2339,16 +2339,16 @@ async function ensureOwnWorkspace(page, store = globalThis.localStorage) {
   const origin = new URL(peer.origin).origin;
   const own = await peer.enterOwnWorkspace({
     // The one this browser named for an agent, before the host made it.
-    room: namedOwnWorkspace(origin, peer.userPublicKey, {create: false, store}),
-    entered: id => enteredWorkspaces(store).some(kept => kept.origin === origin && kept.room === id),
+    workspace: namedOwnWorkspace(origin, peer.userPublicKey, {create: false, store}),
+    entered: id => enteredWorkspaces(store).some(kept => kept.origin === origin && kept.workspace === id),
   });
   const name = own.name || null;
   const hostDevice = hostDeviceOf(peer.host?.hostCert);
-  if (hostDevice) rememberEntered(await loadRuntime(), {origin, room: own.workspace, hostDevice, name}, store);
+  if (hostDevice) rememberEntered(await loadRuntime(), {origin, workspace: own.workspace, hostDevice, name}, store);
   return {id: own.workspace, name, origin};
 }
 
-const ownChoice = own => ({id: `${OPEN_WORKSPACE}${own.id}`, name: own.name ?? 'My workspace', origin: own.origin, room: own.id});
+const ownChoice = own => ({id: `${OPEN_WORKSPACE}${own.id}`, name: own.name ?? 'My workspace', origin: own.origin, workspace: own.id});
 
 /**
  * The person's stand-in on the host `peer` is in, where the runtime can
@@ -2414,7 +2414,7 @@ function hostNamed(error, origin) {
  * Pairing an agent's device of `identity` through the host at `origin`,
  * reached by the address it publishes (`hostInfo`) rather than a session in
  * any workspace: what the first screen needs before the page is let in.
- * `link(invite, room)` opens `room` there as that new device.
+ * `link(invite, workspace)` opens `workspace` there as that new device.
  */
 function pairingAt({origin, identity, runtime, link}) {
   if (!runtime?.PairingHost || !link) return null;
@@ -2426,8 +2426,8 @@ function pairingAt({origin, identity, runtime, link}) {
     return new runtime.PairingHost(JSON.stringify(address));
   }).catch(error => { host = null; throw error; }));
   return {
-    link: (invite, room) => {
-      const url = link.format({mode: 'desktop', target: {scope: {kind: 'workspace', host: origin, workspace: room}}});
+    link: (invite, workspace) => {
+      const url = link.format({mode: 'desktop', target: {scope: {kind: 'workspace', host: origin, workspace}}});
       return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(identity.userPublicKey, invite)}`;
     },
     pending: async () => JSON.parse(await (await at()).pending(identity)),
@@ -2449,8 +2449,8 @@ function pairingOf({peer, identity, link}) {
   let host = null;
   const at = () => (host ??= peer.pairing());
   return {
-    link: (invite, room = peer.workspace) => {
-      const url = link.format({mode: 'desktop', target: {scope: {kind: 'workspace', host: peer.origin, workspace: room}}});
+    link: (invite, workspace = peer.workspace) => {
+      const url = link.format({mode: 'desktop', target: {scope: {kind: 'workspace', host: peer.origin, workspace}}});
       return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(identity.userPublicKey, invite)}`;
     },
     pending: async () => JSON.parse(await at().pending(identity)),

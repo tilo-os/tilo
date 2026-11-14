@@ -1,6 +1,6 @@
 // The tilo.sh happy path, shot end to end with a real agent.
 //
-// One run: a local hosted Tilo (a `tilo-relay room` host: its own user root, a
+// One run: a local hosted Tilo (a `tilo-relay workspace` host: its own user root, a
 // listed workspace whose door lets a person in, the records served), the site
 // in front of it (the desktop bundle, with the `entry.json` a deployment
 // writes and the host's routes behind it at one origin, as an ingress puts
@@ -137,7 +137,7 @@ const writeSummary = () => {
   try {
     writeFileSync(join(out, 'summary.json'), JSON.stringify({started: new Date(t0).toISOString(), out,
       bundle: known(() => bundle), relay: known(() => relayBin), tilo: known(() => tiloBin),
-      site: known(() => siteOrigin), host: known(() => hostOrigin), workspace: known(() => roomId),
+      site: known(() => siteOrigin), host: known(() => hostOrigin), workspace: known(() => workspaceId),
       stoppedBy, checks, notes, calls}, null, 2));
   } catch { /* The log has it. */ }
 };
@@ -456,23 +456,23 @@ const siteOrigin = `https://127.0.0.1:${sitePort}`;
 // actions run there.
 
 const rootFile = join(tlsDir, 'root.hex');
-const roomIdFile = join(tlsDir, 'room-id');
+const workspaceIdFile = join(tlsDir, 'workspace-id');
 // A run starts the host clean: what an interrupted run left behind is a
 // workspace whose owner root its secret store never got.
-for (const stale of [join(work, 'room-state'), roomIdFile, rootFile]) rmSync(stale, {recursive: true, force: true});
+for (const stale of [join(work, 'workspace-state'), workspaceIdFile, rootFile]) rmSync(stale, {recursive: true, force: true});
 writeFileSync(rootFile, `${randomBytes(32).toString('hex')}\n`, {mode: 0o600});
 const hostHome = join(work, 'host-home');
 const secretsDir = join(work, 'secrets');
 mkdirSync(secretsDir, {recursive: true, mode: 0o700});
 const OPERATOR_LINE = 'tilo-workspace-operator ';
-const host = detached('host', relayBin, ['room', '--state', join(work, 'room-state'),
-  '--persistent', 'tilo', '--workspace-name', 'Tilo', '--root-file', rootFile, '--room-id-file', roomIdFile,
+const host = detached('host', relayBin, ['workspace', '--state', join(work, 'workspace-state'),
+  '--persistent', 'tilo', '--workspace-name', 'Tilo', '--root-file', rootFile, '--workspace-id-file', workspaceIdFile,
   '--web', `127.0.0.1:${hostPort}`, '--tls', `files:${certPath},${keyPath}`,
   '--web-plain', `127.0.0.1:${plainPort}`, '--public-origin', siteOrigin,
   '--packet-relay', `127.0.0.1:${relayPort}`,
   '--link-listen', `127.0.0.1:${linkPort}`, '--link-origin', `https://127.0.0.1:${linkPort}`,
   '--allowed-origin', siteOrigin, '--listing-description', 'A workspace for a person and their agent',
-  '--default-role', 'editor', '--room-records',
+  '--default-role', 'editor', '--workspace-records',
   // The apps the workspace opens with: the ones the agent drives, which the
   // person's desktop shows too. The Terminal's sessions run on the host,
   // beside the workspace's records.
@@ -494,11 +494,11 @@ const started = await until(() => {
 if (started?.stopped) throw new Error(started.stopped);
 if (!started) throw new Error(`the host did not start: ${host.stderr.slice(-1200)}`);
 hostOrigin = siteOrigin;
-const roomId = started.room;
-if (!roomId) throw new Error(`the host governs no workspace: ${JSON.stringify(started)}`);
-log('host', started.origin, 'as', hostOrigin, 'workspace', roomId);
+const workspaceId = started.workspace;
+if (!workspaceId) throw new Error(`the host governs no workspace: ${JSON.stringify(started)}`);
+log('host', started.origin, 'as', hostOrigin, 'workspace', workspaceId);
 entryJson = JSON.stringify({
-  home: {name: 'Tilo', host: {origin: hostOrigin}, admission: `${hostOrigin}/peer/v1/directory/${roomId}/`},
+  home: {name: 'Tilo', host: {origin: hostOrigin}, admission: `${hostOrigin}/peer/v1/directory/${workspaceId}/`},
   directory: `${hostOrigin}/peer/v1/directory`,
 });
 

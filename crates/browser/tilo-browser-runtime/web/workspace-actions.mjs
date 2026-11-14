@@ -93,7 +93,7 @@ export const keepsOwn = peer => Boolean(peer?.workspace) && Boolean(peer?.host?.
  * this browser set up for the person; `lobby(origin)` connects to one
  * without a workspace and resolves to that peer. `inviteLink(invitation)`
  * resolves to the short link the workspace's site keeps the invitation
- * under, `https://<site>/i/<handle>#<key>`; `open({origin, room, name,
+ * under, `https://<site>/i/<handle>#<key>`; `open({origin, workspace, name,
  * hostDevice})` opens a workspace, held by the host whose device key is
  * `ui` draws what the page shows: `askWorkspaceName(save)`,
  * `chooseMachine(origins)`, `share({title, body, link})`, `copy(text)`
@@ -139,19 +139,19 @@ export function createWorkspaceActions({
     const created = await ui.askWorkspaceName(async name => {
       if (kept) {
         const made = await peer.enterOwnWorkspace({name});
-        return {room: made.workspace, name: made.name ?? name, hostDevice: hex(peer.host?.hostCert?.device_public_key)};
+        return {workspace: made.workspace, name: made.name ?? name, hostDevice: hex(peer.host?.hostCert?.device_public_key)};
       }
       const host = own ? peer : await lobby(origin);
       try {
         const workspace = await host.workspaces.create(name);
-        await host.workspaces.enter(workspace.room);
+        await host.workspaces.enter(workspace.workspace);
         // The host that holds it, which the browser remembers it under.
         return {...workspace, hostDevice: hex(host.host?.hostCert?.device_public_key)};
       } finally {
         if (!own) await host.dispose?.();
       }
     });
-    if (created) await open({origin, room: created.room, name: created.name, hostDevice: created.hostDevice});
+    if (created) await open({origin, workspace: created.workspace, name: created.name, hostDevice: created.hostDevice});
   };
 
   /** Hand over a link in one press: made now, copied when the browser takes

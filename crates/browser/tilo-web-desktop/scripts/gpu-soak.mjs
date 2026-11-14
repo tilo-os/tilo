@@ -10,7 +10,7 @@ import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
 // usage: node gpu-soak.mjs URL [WINDOWS] [MINUTES]
 //   URL      a desktop page: build.sh's desktop output (the page root …/, where
 //            windows are opened through globalThis.tiloMount) or a console
-//            page that mounts host.mjs (its existing room is soaked)
+//            page that mounts host.mjs (its existing workspace is soaked)
 //   WINDOWS  windows to open on the desktop page (default 60)
 //   MINUTES  soak time after the windows are open (default 3)
 //   LOSE=1   halfway through the soak, destroy the page's GPU device, as a

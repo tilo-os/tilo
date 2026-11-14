@@ -59,7 +59,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
     },
     async inspectInvitation(post, invitation) {
       calls.inspected = [...invitation];
-      return JSON.stringify({kind: 'invitation', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
+      return JSON.stringify({kind: 'invitation', workspace: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
         members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
     },
     /** The shared rule of how a device comes back (tilo-session-client's
@@ -256,7 +256,7 @@ test('a door is entered on the session itself: its first connect asks, and the h
   assert.equal(runtime.peer.config.entering.workspace, WORKSPACE, 'the session asks to enter as it opens');
   assert.ok(runtime.peer.configText.includes(`"cert":${LINUX_CERT}`), runtime.peer.configText);
   assert.equal(runtime.peer.workspace, WORKSPACE);
-  assert.deepEqual(progress.at(-1), {phase: 'admitted', room: WORKSPACE, workspaceName: 'Lounge', role: 'editor'});
+  assert.deepEqual(progress.at(-1), {phase: 'admitted', workspace: WORKSPACE, workspaceName: 'Lounge', role: 'editor'});
   await peer.dispose();
 });
 
@@ -1138,7 +1138,7 @@ test('an invitation is accepted as the root-certified device, through the shared
   assert.deepEqual(runtime.calls.inspected, [1, 2, 3]);
   // What the card says comes from here: the workspace, how many people are in
   // it, the part offered and who offers it.
-  assert.deepEqual(offer, {workspaceName: 'Acme', role: 'editor', room: WORKSPACE, workspaceId: '7', expiresAtNs: '9',
+  assert.deepEqual(offer, {workspaceName: 'Acme', role: 'editor', workspace: WORKSPACE, workspaceId: '7', expiresAtNs: '9',
     members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
 
   const progress = [];
@@ -1301,7 +1301,7 @@ test('feedback startup waits for owner admission and never joins another workspa
   runtime.peer.emit();
   await waiting;
   assert.equal(runtime.peer.workspace, WORKSPACE);
-  await assert.rejects(peer.configureFeedback({...destination, workspace: 'another-room'}), /existing workspace/);
+  await assert.rejects(peer.configureFeedback({...destination, workspace: 'another-workspace'}), /existing workspace/);
   status = 'owner refused current certified admission';
   await assert.rejects(peer.configureFeedback(destination), /owner refused/);
 });

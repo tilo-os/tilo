@@ -9,7 +9,7 @@ function canvas(width=100,height=50) {
  const context=new Proxy({calls}, {get:(o,k)=>k in o?o[k]:(...args)=>calls.push([k,...args])});
  return {width,height,calls,getContext:()=>context,toBlob:cb=>cb(new Blob(['fixture'],{type:'image/png'}))};
 }
-function fixture({room='room',app='notes',record='one',width=100,height=50}={}) {
+function fixture({workspace='workspace',app='notes',record='one',width=100,height=50}={}) {
  let valid=true, clock=0;
  // The board's members, as the layer reads them: a pointer with how long ago
  // its publisher said it, and the stay here it belongs to.
@@ -17,7 +17,7 @@ function fixture({room='room',app='notes',record='one',width=100,height=50}={}) 
  const layer={members:()=>members.map(m=>m.publisher),
    presenceMembers:()=>members.map(m=>({...m,pointer:m.pointer?{tab:m.pointer.tab,at:m.pointer.at,ageMs:clock-m.heard}:null}))};
  const copies=[];
- const source=createPresentedSource({audience:room,app,canvas:canvas(width,height),layer:()=>layer,valid:()=>valid,now:()=>clock,makeCanvas:(w,h)=>{const copy=canvas(w,h);copies.push(copy);return copy;}});
+ const source=createPresentedSource({audience:workspace,app,canvas:canvas(width,height),layer:()=>layer,valid:()=>valid,now:()=>clock,makeCanvas:(w,h)=>{const copy=canvas(w,h);copies.push(copy);return copy;}});
  const output=canvas();
  const view=createPanorama({canvas:output,sources:[{source:source.handle,rect:[200,100,100,50]}],width:400,height:200,now:()=>clock});
  return {source,view,output,layer,copies,get members(){return members;},set members(next){members=next;},
@@ -70,7 +70,7 @@ test('camera culls offscreen sources before reading pixels',()=>{
  const f=fixture();f.present();const r=f.view.render({cx:5000,cy:100,scale:1});assert.deepEqual(r.panes,[]);f.view.close();
 });
 test('capture dimensions, audience mixing, overlapping panes and stale frames are refused',()=>{
- const f=fixture(), g=fixture({room:'other'});
+ const f=fixture(), g=fixture({workspace:'other'});
  assert.throws(()=>createPanorama({canvas:canvas(),sources:[{source:f.source.handle,rect:[0,0,100,50]},{source:g.source.handle,rect:[100,0,100,50]}],width:400,height:200}),/audience/);
  assert.throws(()=>createPanorama({canvas:canvas(),sources:[{source:f.source.handle,rect:[0,0,100,50]}],width:100000,height:200}),/dimensions/);
  f.present();f.time=1001;assert.throws(()=>f.view.render({cx:200,cy:100,scale:1}),/stale/);f.view.close();g.view.close();
@@ -132,7 +132,7 @@ test('a disposed source being revealed cannot prevent culling other panes',()=>{
 });
 
 test('an app backing canvas cannot be used as the observer output',()=>{
- const input=canvas();const source=createPresentedSource({audience:'room',app:'notes',canvas:input,layer:()=>undefined,valid:()=>true});
+ const input=canvas();const source=createPresentedSource({audience:'workspace',app:'notes',canvas:input,layer:()=>undefined,valid:()=>true});
  assert.throws(()=>createPanorama({canvas:input,sources:[{source:source.handle,rect:[0,0,100,50]}],width:200,height:100}),/source canvas/);
  assert.equal(input.width,100);assert.equal(input.height,50);source.close();
 });

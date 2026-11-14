@@ -114,15 +114,15 @@ test('any action the workspace\'s host runs goes to it with the person\'s answer
   const archive = '00000000-0000-4000-8000-000000000003';
   const open = '00000000-0000-4000-8000-000000000004';
   const record = {provider:'record:so.tilo.notes:n1', address:{resource:'notes.page:1', action:'archive'}};
-  const room = {provider:'workspace:r', address:{resource:'app.so.tilo.notes', action:'open'}};
+  const workspace = {provider:'workspace:r', address:{resource:'app.so.tilo.notes', action:'open'}};
   const requests = [
     {Invoke:{invocation:archive, target:record, argument:'None', confirmation:'Confirmed'}},
-    {Invoke:{invocation:open, target:room, argument:'None'}},
+    {Invoke:{invocation:open, target:workspace, argument:'None'}},
   ];
   const connection = {invoke(wanted, argument, options) {
     asked.push({wanted, options});
     if (wanted.provider === record.provider) {
-      return {done:Promise.reject(Object.assign(new Error('a Viewer of this room cannot archive this page'),
+      return {done:Promise.reject(Object.assign(new Error('a Viewer of this workspace cannot archive this page'),
         {code:'refused'}))};
     }
     return {done:Promise.resolve({terminal:true, update:{state:'succeeded', output:{value:null, resources:[]}}})};
@@ -133,45 +133,45 @@ test('any action the workspace\'s host runs goes to it with the person\'s answer
   await until(()=>replies.length === 2, 'both receipts');
   assert.deepEqual(asked, [
     {wanted:record, options:{invocation:archive, confirmation:{kind:'confirm'}}},
-    {wanted:room, options:{invocation:open, confirmation:null}},
+    {wanted:workspace, options:{invocation:open, confirmation:null}},
   ]);
   const by = id => replies.find(reply => reply.Receipt.invocation === id).Receipt.status;
-  assert.deepEqual(by(archive), {Rejected:{error:{Unavailable:{reason:'a Viewer of this room cannot archive this page'}}}});
+  assert.deepEqual(by(archive), {Rejected:{error:{Unavailable:{reason:'a Viewer of this workspace cannot archive this page'}}}});
   assert.deepEqual(by(open), {Completed:{output:{value:null, resources:[]}}});
   bridge.dispose();
 });
 
 test('the page removes someone through its own door: the workspace\'s membership request, on confirmation only', async () => {
   const calls = [];
-  const room = 'r1';
+  const workspace = 'r1';
   const person = 'bb'.repeat(32);
   const membership = {
-    remove: async who => { calls.push(['remove', who]); return {room, members: [{userPublicKey: who, removed: true}]}; },
-    unban: async who => { calls.push(['unban', who]); return {room, members: []}; },
+    remove: async who => { calls.push(['remove', who]); return {workspace, members: [{userPublicKey: who, removed: true}]}; },
+    unban: async who => { calls.push(['unban', who]); return {workspace, members: []}; },
   };
-  const invoke = (action, args, options = {}) => invokeMembershipAction({membership, workspace: room,
-    resource: governanceResource(room), action, args, ...options});
+  const invoke = (action, args, options = {}) => invokeMembershipAction({membership, workspace,
+    resource: governanceResource(workspace), action, args, ...options});
   // Not the workspace's membership: the application's door answers.
-  assert.equal(invokeMembershipAction({membership, workspace: room, resource: 'notes.page:1', action: 'remove-member', args: {person}}), undefined);
-  assert.equal(invokeMembershipAction({membership, workspace: room, resource: governanceResource('r2'), action: 'remove-member', args: {person}}),
-    undefined, 'another room\'s governance');
+  assert.equal(invokeMembershipAction({membership, workspace, resource: 'notes.page:1', action: 'remove-member', args: {person}}), undefined);
+  assert.equal(invokeMembershipAction({membership, workspace, resource: governanceResource('r2'), action: 'remove-member', args: {person}}),
+    undefined, 'another workspace\'s governance');
   assert.equal(invoke('invite', {}), undefined, 'a verb the page does not take here');
   assert.equal(invoke('constructor', {person}), undefined, 'an inherited name is no verb');
   assert.equal(invokeMembershipAction({membership, workspace: undefined, resource: governanceResource(undefined),
-    action: 'remove-member', args: {person}}), undefined, 'a peer in no room');
+    action: 'remove-member', args: {person}}), undefined, 'a peer in no workspace');
   // Removing someone asks first, and is the host's to decide.
   await assert.rejects(invoke('remove-member', {person}), /^Error: action_confirmation_required: /);
   await assert.rejects(invoke('remove-member', {person: 'u_guest'}, {confirm: true}), /^Error: invalid_arguments: /);
   await assert.rejects(invoke('remove-member', {person, reason: 'spam'}, {confirm: true}), /^Error: invalid_arguments: /);
   assert.deepEqual(calls, []);
   assert.deepEqual(await invoke('remove-member', {person}, {confirm: true}),
-    {state: 'completed', output: {value: {room, members: [{userPublicKey: person, removed: true}]}}});
+    {state: 'completed', output: {value: {workspace, members: [{userPublicKey: person, removed: true}]}}});
   // Letting someone back in takes nothing from anyone: no confirmation.
   assert.equal((await invoke('unban', {person})).state, 'completed');
   assert.deepEqual(calls, [['remove', person], ['unban', person]]);
   membership.remove = async () => { throw Error('a Moderator cannot do this to a Moderator'); };
   await assert.rejects(invoke('remove-member', {person}, {confirm: true}),
     {message: 'action_failed: a Moderator cannot do this to a Moderator'});
-  await assert.rejects(invokeMembershipAction({membership: undefined, workspace: room, resource: governanceResource(room),
+  await assert.rejects(invokeMembershipAction({membership: undefined, workspace, resource: governanceResource(workspace),
     action: 'remove-member', args: {person}, confirm: true}), /^Error: action_unavailable: /);
 });

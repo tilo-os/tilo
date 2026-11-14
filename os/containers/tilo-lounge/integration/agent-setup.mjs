@@ -320,7 +320,7 @@ const person = tab => tab.evaluate(`JSON.stringify({
     return all[${JSON.stringify(new URL(relay).origin)}]?.userPublicKey ?? null;
   } catch { return null; } })(),
   title: document.title,
-  room: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null')?.room ?? null; } catch { return null; } })(),
+  workspace: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null')?.workspace ?? null; } catch { return null; } })(),
   people: (() => { try { return globalThis.tiloMount?.people?.() ?? null; } catch { return null; } })(),
 })`).then(JSON.parse).catch(() => ({}));
 
@@ -507,8 +507,8 @@ report.reloaded = reloaded;
 if (!signedUp.user || reloaded.user !== signedUp.user) {
   await fail(`after a reload the tab is ${reloaded.user ?? 'nobody'}, not the person who set up (${signedUp.user ?? 'unknown'})`);
 }
-if (!signedUp.room || reloaded.room !== signedUp.room) {
-  await fail(`after a reload the tab is in ${reloaded.room ?? 'no workspace'}, not the person's own (${signedUp.room ?? 'unknown'})`);
+if (!signedUp.workspace || reloaded.workspace !== signedUp.workspace) {
+  await fail(`after a reload the tab is in ${reloaded.workspace ?? 'no workspace'}, not the person's own (${signedUp.workspace ?? 'unknown'})`);
 }
 if (/lounge/i.test(reloaded.title) || reloaded.title !== signedUp.title) {
   await fail(`after a reload the tab is titled "${reloaded.title}", not "${signedUp.title}"`);

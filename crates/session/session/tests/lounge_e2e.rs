@@ -54,33 +54,34 @@ use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
-/// The origin the deployment's ingress publishes for the room: what its pages and its links name.
-/// On this machine it is the address the room is reached at, because the room publishes its live
-/// plane at that origin's host and the port it bound, and the member's page dials it there.
+/// The origin the deployment's ingress publishes for the service: what its pages and its links
+/// name. On this machine it is the address the service is reached at, because the service
+/// publishes its live plane at that origin's host and the port it bound, and the member's page
+/// dials it there.
 const ORIGIN: &str = "https://127.0.0.1";
 
-/// A room service as its deployment runs it: `tilo-relay workspace --persistent` with the deployment's
-/// own routes beside it, spoken to over its stdin as the operator (whose input a deployment leaves
-/// closed).
-struct Room {
+/// A workspace service as its deployment runs it: `tilo-relay workspace --persistent` with the
+/// deployment's own routes beside it, spoken to over its stdin as the operator (whose input a
+/// deployment leaves closed).
+struct WorkspaceService {
     child: Child,
     stdin: Option<ChildStdin>,
     /// The plain listener the deployment's ingress forwards to.
     plain: String,
     /// The governed workspace's UUID.
     workspace: String,
-    /// The owner root the room serves: its person.
+    /// The owner root the service serves: its person.
     owner: ed25519_dalek::SigningKey,
     host_cert: DeviceCert,
-    /// The room's iroh endpoint: how its pages reach its session.
+    /// The service's iroh endpoint: how its pages reach its session.
     host: Host,
-    /// The runtime the page and the room's routes run on: the host's own session and its HTTP
+    /// The runtime the page and the service's routes run on: the host's own session and its HTTP
     /// clients belong to a runtime, and the test drives them from here.
     runtime: tokio::runtime::Runtime,
     _state: tempfile::TempDir,
 }
 
-impl Drop for Room {
+impl Drop for WorkspaceService {
     fn drop(&mut self) {
         if let Some(mut stdin) = self.stdin.take() {
             let _ = stdin.write_all(OperatorCommand::Shutdown {}.to_line().as_bytes());
@@ -91,15 +92,15 @@ impl Drop for Room {
     }
 }
 
-impl Room {
-    /// The room as eu1 runs it: the Lounge image's own entrypoint, given the deployment's
+impl WorkspaceService {
+    /// The service as eu1 runs it: the Lounge image's own entrypoint, given the deployment's
     /// environment. The entrypoint maps it to the host's flags and execs `tilo-relay` , so the test
     /// starts exactly what the image starts and cannot drift from it.
     fn start() -> Self {
         Self::with_admission("invite")
     }
 
-    /// The room as tip's own Lounge runs it: the same entrypoint and the same environment, with
+    /// The service as tip's own Lounge runs it: the same entrypoint and the same environment, with
     /// `admission` open or by invitation. The Lounge's door is open — its directory lists it and
     /// anyone who asks is admitted as its default role, an editor — so a person joins it with no
     /// invitation of their own.
@@ -123,8 +124,8 @@ impl Room {
             .env("TILO_WORKSPACES_NAME", "Lounge")
             .env("TILO_WORKSPACES_ADMISSION", admission)
             // The origin the ingress publishes. The listeners below stand where it forwards to,
-            // each on a port the kernel picks: the plain one's is announced once the room has bound
-            // it, and the live plane's is the room's own origin host and that port.
+            // each on a port the kernel picks: the plain one's is announced once the service has bound
+            // it, and the live plane's is the service's own origin host and that port.
             .env("TILO_WORKSPACES_RELAY_ORIGIN", ORIGIN)
             .env("TILO_WORKSPACES_PUBLIC_API", ORIGIN)
             .env("TILO_WORKSPACES_WEB_ENTRY", "https://tilo.sh/")
@@ -135,7 +136,7 @@ impl Room {
             .env("TILO_WORKSPACES_ROOT_FILE", &root_file)
             .env("TILO_WORKSPACES_FEEDBACK_CHANNEL", "feedback")
             // The listeners, on loopback, each on a port the kernel picks as it binds: two rooms on
-            // one machine take the ports they are given, and the room announces the ones it bound.
+            // one machine take the ports they are given, and the service announces the ones it bound.
             .env(
                 "TILO_WORKSPACES_STATE",
                 state.path().join("tilo-workspaces"),
@@ -144,7 +145,7 @@ impl Room {
             .env("TILO_WORKSPACES_RELAY_PLAIN", "127.0.0.1:0")
             .env("TILO_WORKSPACES_LIVE", "127.0.0.1:0")
             .env("TILO_WORKSPACES_HTTP", "127.0.0.1:0")
-            // The room's state volume, where the host keeps its secrets.
+            // The service's state volume, where the host keeps its secrets.
             .env(
                 "TILO_SECRETS_DIR",
                 state.path().join("tilo-workspaces/secrets"),
@@ -164,9 +165,11 @@ impl Room {
         if admission == "invite" {
             command.env("TILO_WORKSPACES_WAIT_LIST_MAX", "16");
         }
-        let mut child = command.spawn_locked().expect("the room service starts");
-        let stdin = Some(child.stdin.take().expect("the room's operator input"));
-        let stdout = child.stdout.take().expect("the room's operator output");
+        let mut child = command
+            .spawn_locked()
+            .expect("the workspace service starts");
+        let stdin = Some(child.stdin.take().expect("the service's operator input"));
+        let stdout = child.stdout.take().expect("the service's operator output");
         let (sender, events) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -178,7 +181,7 @@ impl Room {
         let started = loop {
             let event = events
                 .recv_timeout(Duration::from_secs(120))
-                .expect("the room service says it started");
+                .expect("the workspace service says it started");
             if matches!(event, OperatorEvent::Started { .. }) {
                 break event;
             }
@@ -189,13 +192,15 @@ impl Room {
             ..
         } = started
         else {
-            panic!("a persistent room announces its workspace and its plain listener: {started:?}");
+            panic!(
+                "a persistent service announces its workspace and its plain listener: {started:?}"
+            );
         };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
-            .expect("a runtime for the room's page");
+            .expect("a runtime for the service's page");
         let info = host_info(&runtime, &plain).expect("the host's certificate");
         Self {
             child,
@@ -206,7 +211,7 @@ impl Room {
             host_cert: info.host_cert,
             host: Host::at(
                 info.address
-                    .expect("the room publishes its iroh endpoint")
+                    .expect("the service publishes its iroh endpoint")
                     .endpoint_addr,
             ),
             runtime,
@@ -214,7 +219,7 @@ impl Room {
         }
     }
 
-    /// The room's person: the root it serves, and its own device.
+    /// The service's person: the root it serves, and its own device.
     fn owner_member(&self) -> Member {
         let key = ed25519_dalek::SigningKey::from_bytes(&[0x2f; 32]);
         let cert = certified(
@@ -259,7 +264,7 @@ fn relay_on_path() -> std::ffi::OsString {
     std::env::join_paths(paths).expect("a PATH")
 }
 
-/// A person in the room: their root, a device of theirs and its certificate.
+/// A person in the service: their root, a device of theirs and its certificate.
 struct Member {
     key: ed25519_dalek::SigningKey,
     cert: DeviceCert,
@@ -292,7 +297,7 @@ fn random_key() -> [u8; 32] {
     key
 }
 
-/// Plain HTTP/1.1 to the room's plain listener: a page's `fetch` .
+/// Plain HTTP/1.1 to the service's plain listener: a page's `fetch` .
 struct Plain(String);
 
 impl tilo_relay_client::HttpClient for Plain {
@@ -318,7 +323,7 @@ impl tilo_relay_client::HttpClient for Plain {
     }
 }
 
-/// The client the site and the room's own routes are read over: the desktop's connection pool.
+/// The client the site and the service's own routes are read over: the desktop's connection pool.
 fn client() -> Result<tilo_net::Client, String> {
     tilo_net::Client::builder()
         .connect_timeout(Duration::from_secs(10))
@@ -339,31 +344,31 @@ fn host_info(
         .map_err(|error| error.to_string())
 }
 
-/// A page of `member` 's device on the room's iroh endpoint, in the room's workspace: the same
+/// A page of `member` 's device on the service's iroh endpoint, in the workspace it serves: the same
 /// session a member's browser runs.
-fn page(room: &Room, member: &Member) -> Link {
-    let _entered = room.runtime.enter();
+fn page(service: &WorkspaceService, member: &Member) -> Link {
+    let _entered = service.runtime.enter();
     let page = tilo_session_client::start_session(
         PeerConfig {
-            host: room.host.clone(),
+            host: service.host.clone(),
             cert: member.cert.clone(),
-            host_cert: room.host_cert.clone(),
+            host_cert: service.host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
             entering: None,
         },
         Arc::new(member.key.clone()) as Arc<dyn tilo_relay_client::DeviceSigner>,
         Arc::new(MemoryPeerStore::default()),
     );
-    page.join_placed(&room.workspace, "Lounge")
-        .expect("the member takes part in the room");
+    page.join_placed(&service.workspace, "Lounge")
+        .expect("the member takes part in the service");
     page
 }
 
-/// The route of the room's shared desktop, as every member's page writes it.
-fn desktop_route(room: &Room) -> DocumentRoute {
+/// The route of the service's shared desktop, as every member's page writes it.
+fn desktop_route(service: &WorkspaceService) -> DocumentRoute {
     DocumentRoute {
         app_id: DESKTOP_APP.to_owned(),
-        cluster_id: room.workspace.clone(),
+        cluster_id: service.workspace.clone(),
         record: DESKTOP_RECORD.to_owned(),
     }
 }
@@ -517,22 +522,22 @@ fn this_computer_with_an_identity(
 /// workspace, and the site's directory of public ones.
 /// The deployment sets no home door: the Lounge is joined through the door its listing names, below
 /// the directory's address (`directory/<workspace>/`).
-fn entry_json(room: &Room) -> String {
+fn entry_json(service: &WorkspaceService) -> String {
     serde_json::json!({
         "home": {
             "name": "Lounge",
-            "host": { "origin": room.plain },
+            "host": { "origin": service.plain },
             "app": "so.tilo.chat",
         },
-        "directory": format!("{}/directory", room.plain),
+        "directory": format!("{}/directory", service.plain),
     })
     .to_string()
 }
 
 /// The site the person types into the sheet: the web entry's pages, whose `entry.json` names the
-/// room service's own directory and door.
-fn site(room: &Room) -> Responder {
-    let entry = entry_json(room);
+/// workspace service's own directory and door.
+fn site(service: &WorkspaceService) -> Responder {
+    let entry = entry_json(service);
     Responder::handle(move |request: &test_http::Request| {
         Some(match (request.method.as_str(), request.target.as_str()) {
             ("GET", "/entry.json") => Reply::status(200)
@@ -712,13 +717,13 @@ fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
 fn wait_until_their_pointer(
     session: &mut Session,
     member_page: &Link,
-    room: &Room,
+    service: &WorkspaceService,
     tab: u64,
     at: (f32, f32),
     what: &str,
 ) {
     let workspace_id =
-        tilo_relay_protocol::WorkspaceId::parse(&room.workspace).expect("a workspace id");
+        tilo_relay_protocol::WorkspaceId::parse(&service.workspace).expect("a workspace id");
     let deadline = Instant::now()
         .checked_add(tilo_test_env::hang_bound())
         .expect("the wait's bound fits in an Instant");
@@ -727,7 +732,7 @@ fn wait_until_their_pointer(
             .send(Cmd::Presence(
                 workspace_id,
                 vec![collab_types::presence::Presence::pointing(
-                    &room.workspace,
+                    &service.workspace,
                     tab,
                     at.0,
                     at.1,
@@ -767,7 +772,7 @@ fn window_in_front(session: &Session) -> Option<u64> {
 
 /// The member's pointer is drawn on the shell where they put it, and follows when they move it.
 #[track_caller]
-fn the_pointer_follows(session: &mut Session, member_page: &Link, room: &Room) {
+fn the_pointer_follows(session: &mut Session, member_page: &Link, service: &WorkspaceService) {
     // Their pointer, over a window they work in: the shell draws it there,
     // without the roster being opened.
     let shown =
@@ -775,7 +780,7 @@ fn the_pointer_follows(session: &mut Session, member_page: &Link, room: &Room) {
     wait_until_their_pointer(
         session,
         member_page,
-        room,
+        service,
         shown,
         (12.0, 34.0),
         "the member's pointer on the window in front",
@@ -795,19 +800,19 @@ fn the_pointer_follows(session: &mut Session, member_page: &Link, room: &Room) {
     wait_until_their_pointer(
         session,
         member_page,
-        room,
+        service,
         shown,
         (40.0, 55.0),
         "the member's pointer follows where they moved it",
     );
 }
 
-/// The invitation the room issues for `person` , as its own API does: a page's `invite` over the
+/// The invitation the service issues for `person` , as its own API does: a page's `invite` over the
 /// host's session, made by a member of the workspace.
-fn invite(room: &Room, member_page: &Link, person: [u8; 32]) -> String {
+fn invite(service: &WorkspaceService, member_page: &Link, person: [u8; 32]) -> String {
     let reply = member_page
         .ask_workspaces(tilo_relay_protocol::workspaces::WorkspacesRequest::Invite {
-            workspace: room.workspace.clone(),
+            workspace: service.workspace.clone(),
             request_id: random_key(),
             role: tilo_relay_protocol::workspaces::Role::Editor,
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
@@ -827,12 +832,12 @@ fn invite(room: &Room, member_page: &Link, person: [u8; 32]) -> String {
         signed_invitation, ..
     } = reply
     else {
-        panic!("the room issued no invitation: {reply:?}");
+        panic!("the service issued no invitation: {reply:?}");
     };
     tilo_workspace_join::encode_invitation_text(&signed_invitation)
 }
 
-/// A computer joins a real room service through its own door and shows the members' desktop, with
+/// A computer joins a real workspace service through its own door and shows the members' desktop, with
 /// nothing of the join path stood in for.
 /// The site's `entry.json` is written as the web entry image writes one; the directory listing, the
 /// door's invitation and the host's answer to the enrollment are the service's. The member laid the
@@ -844,17 +849,17 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
-    let room = Room::start();
-    let member = room.owner_member();
+    let service = WorkspaceService::start();
+    let member = service.owner_member();
 
     // The member lays the workspace out through the same path a page uses: one write of the shared
     // desktop record, kept by the host before the test goes on.
-    let member_page = page(&room, &member);
+    let member_page = page(&service, &member);
     let desktop = the_members_desktop(&member);
     {
         let mut doc = automerge::AutoCommit::new();
         tilo_desktop_model::shared_record::write(&mut doc, &desktop)
-            .expect("the member lays the room out");
+            .expect("the member lays the service out");
         doc.commit_with(
             automerge::transaction::CommitOptions::default().with_message(
                 tilo_desktop_model::shared_record::change_message(Some(&hex::encode(
@@ -864,21 +869,21 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
         );
         member_page
             .write(
-                desktop_route(&room),
+                desktop_route(&service),
                 &DocumentMutation::Snapshot(doc.save()),
             )
-            .expect("the member publishes the room's desktop");
+            .expect("the member publishes the service's desktop");
     }
     member_page
         .barrier()
-        .expect("the room confirms the desktop")
+        .expect("the service confirms the desktop")
         .recv_timeout(Duration::from_secs(60))
-        .expect("the room answers the barrier")
-        .expect("the room keeps the desktop");
+        .expect("the service answers the barrier")
+        .expect("the service keeps the desktop");
 
-    // The site the person types: the web entry's `entry.json` naming the room service's own
+    // The site the person types: the web entry's `entry.json` naming the workspace service's own
     // directory and door.
-    let site = site(&room);
+    let site = site(&service);
     let site_url = format!("{}/", site.url());
     let _config = community_site(home.env(), "");
 
@@ -891,16 +896,17 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
     open_directory(&mut session);
     look_up_site(&mut session, &site_url);
     assert_eq!(
-        listing_row(&session, &room.workspace).action,
+        listing_row(&session, &service.workspace).action,
         ListingAction::Join,
         "the site lists the Lounge, and this computer does not hold it yet"
     );
-    ask_to_join(&mut session, &room.workspace);
+    ask_to_join(&mut session, &service.workspace);
     let refused = crate::common::wait_maybe_past(
         &mut session,
         tilo_session::sync::JOIN_PATIENCE,
         |session| {
-            (listing_row(session, &room.workspace).action == ListingAction::TryAgain).then_some(())
+            (listing_row(session, &service.workspace).action == ListingAction::TryAgain)
+                .then_some(())
         },
     );
     assert!(
@@ -926,13 +932,13 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
     assert!(
         !held(&session)
             .iter()
-            .any(|(_, _, workspace)| workspace == &room.workspace),
+            .any(|(_, _, workspace)| workspace == &service.workspace),
         "and the shell is unchanged: no empty workspace to arrive in"
     );
 
-    // The members invite them through the room's own API: a page's invite over the host's session,
+    // The members invite them through the service's own API: a page's invite over the host's session,
     // naming the person the invitation is for.
-    let invitation = invite(&room, &member_page, person);
+    let invitation = invite(&service, &member_page, person);
     assert!(!invitation.is_empty());
 
     // They open "Join a workspace" again, as the person the banner told to ask for an invitation
@@ -940,27 +946,27 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
     // the workspace is held and shown here.
     open_directory(&mut session);
     look_up_site(&mut session, &site_url);
-    ask_to_join(&mut session, &room.workspace);
+    ask_to_join(&mut session, &service.workspace);
     wait_until(&mut session, "the Lounge is held here", |session| {
         held(session)
             .iter()
-            .any(|(_, _, workspace)| workspace == &room.workspace)
+            .any(|(_, _, workspace)| workspace == &service.workspace)
     });
     let shown = crate::common::wait_maybe_past(
         &mut session,
         tilo_session::sync::JOIN_PATIENCE,
-        |session| (layout(session, &room.workspace) == recorded_layout(&desktop)).then_some(()),
+        |session| (layout(session, &service.workspace) == recorded_layout(&desktop)).then_some(()),
     );
     assert!(
         shown.is_some(),
-        "the shell shows what the member laid out: {:?}, the room holds {:?}; refusals: {:?}",
-        layout(&session, &room.workspace),
+        "the shell shows what the member laid out: {:?}, the service holds {:?}; refusals: {:?}",
+        layout(&session, &service.workspace),
         recorded_layout(&desktop),
         session.shell_refusals()
     );
 
     // The member's pointer is drawn on their window and follows a move.
-    the_pointer_follows(&mut session, &member_page, &room);
+    the_pointer_follows(&mut session, &member_page, &service);
 }
 
 /// An installed app in this computer's own store: a package whose entrypoint is the launcher's to
@@ -1089,8 +1095,8 @@ fn session_opening(
     (session, apps)
 }
 
-/// An app opened in a workspace joined from a real room service shows its window there.
-/// The room's door admits this person by itself — the Lounge's open door, a person joining it with
+/// An app opened in a workspace joined from a real workspace service shows its window there.
+/// The service's door admits this person by itself — the Lounge's open door, a person joining it with
 /// no invitation of their own — so the join is the one the live Lounge makes (`member=false`). The
 /// app is opened the way the launchpad and the applications list open one: through the session's
 /// own launch path, into the workspace in front.
@@ -1104,8 +1110,8 @@ fn an_app_opened_in_a_joined_lounge_shows_its_window() {
     installed(&mut home, app, "Probe");
     let (launcher, records) = the_launchers_place(&home);
 
-    let room = Room::open();
-    let site = site(&room);
+    let service = WorkspaceService::open();
+    let site = site(&service);
     let site_url = format!("{}/", site.url());
     let _config = community_site(home.env(), "");
     let state = tempfile::tempdir().expect("a directory for this computer's shell");
@@ -1116,11 +1122,11 @@ fn an_app_opened_in_a_joined_lounge_shows_its_window() {
     // an editor of a workspace that is not theirs.
     open_directory(&mut session);
     look_up_site(&mut session, &site_url);
-    ask_to_join(&mut session, &room.workspace);
+    ask_to_join(&mut session, &service.workspace);
     wait_until(&mut session, "the Lounge is held here", |session| {
         held(session)
             .iter()
-            .any(|(_, _, workspace)| workspace == &room.workspace)
+            .any(|(_, _, workspace)| workspace == &service.workspace)
     });
     wait_until(
         &mut session,
@@ -1128,7 +1134,7 @@ fn an_app_opened_in_a_joined_lounge_shows_its_window() {
         |session| {
             session.handle().read(|tree| {
                 tree.active_workspace()
-                    .is_some_and(|workspace| workspace.id().to_string() == room.workspace)
+                    .is_some_and(|workspace| workspace.id().to_string() == service.workspace)
             })
         },
     );
@@ -1153,7 +1159,7 @@ fn an_app_opened_in_a_joined_lounge_shows_its_window() {
         "the launch names the app the person opened: {launch}"
     );
     assert!(
-        launch.contains(&format!("--workspace-id {}", room.workspace)),
+        launch.contains(&format!("--workspace-id {}", service.workspace)),
         "the app is started in the workspace the person opened it in: {launch}"
     );
     // The app's window is a window of the Lounge: its ticket is the one the shell makes for the
@@ -1162,7 +1168,7 @@ fn an_app_opened_in_a_joined_lounge_shows_its_window() {
         &mut session,
         "the app shows its window in the Lounge",
         |session| {
-            layout(session, &room.workspace)
+            layout(session, &service.workspace)
                 .iter()
                 .any(|(_, windows)| windows.iter().any(|title| title == app || title == "Probe"))
         },

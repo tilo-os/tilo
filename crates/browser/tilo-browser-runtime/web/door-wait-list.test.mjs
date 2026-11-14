@@ -172,7 +172,7 @@ test('taking the address off shows the form again, saying it is off', async () =
 });
 
 test('a removal the host could not do says so and keeps the address listed', async () => {
-  let refusal = new HostAdmissionError('unavailable', 'the room is restarting');
+  let refusal = new HostAdmissionError('unavailable', 'the workspace is restarting');
   const {elements, shown, mounted} = door({kept: {email: 'ada@example.org', pending: false}, leave: async () => { throw refusal; }});
   await mounted.settled;
   await elements.leave.fire('click');

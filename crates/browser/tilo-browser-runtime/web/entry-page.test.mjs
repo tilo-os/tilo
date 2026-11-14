@@ -37,7 +37,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     const index = listeners.findIndex(held => held.type === type && held.listener === listener);
     if (index >= 0) listeners.splice(index, 1);
   };
-  globalThis.location = {href: 'https://web.example/#/room', search, pathname: '/', reload: () => calls.push('reload'),
+  globalThis.location = {href: 'https://web.example/#/workspace', search, pathname: '/', reload: () => calls.push('reload'),
     assign: url => { calls.push('assign'); assigned = url; }};
   globalThis.history = {pushState: (_state, _title, url) => { calls.push('history'); assigned = url ?? assigned; }};
   globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}}, createElement: tag => new Element(tag),
@@ -54,8 +54,8 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     createInvitation: async () => { calls.push('invite'); return 'signed-secret'; },
     // A member, not the owner, of a host that keeps its wait list to whoever
     // it lets invite.
-    membership: {list: async () => ({name: 'Current', members: []}), mayInvite: async () => false, waitList: async () => { throw new Error('only someone the room lets invite lists the wait list'); }},
-    workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
+    membership: {list: async () => ({name: 'Current', members: []}), mayInvite: async () => false, waitList: async () => { throw new Error('only someone the workspace lets invite lists the wait list'); }},
+    workspaces: {create: async name => ({workspace: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
   const page = {peer: own ? null : {...peer, ...member}, entry: entry ?? {base: 'https://web.example/'},
     mount: {setHostActions: actions => shown.push(actions), setOwnPerson: person => calls.push(['own', person]), flush: async () => calls.push('flush'), cleanup: async () => calls.push('cleanup')},
@@ -79,15 +79,15 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       return JSON.stringify({entered: all.filter(entry => !gone(entry)), unchoose: all.filter(gone)});
     },
     rememberEntered: (list, entry) => {
-      const {origin, room, hostDevice} = JSON.parse(entry);
+      const {origin, workspace, hostDevice} = JSON.parse(entry);
       const {entered, unchoose} = JSON.parse(runtime.forgetGoneWorkspaces(list, origin, hostDevice));
-      const same = kept => kept.origin === origin && kept.room === room;
+      const same = kept => kept.origin === origin && kept.workspace === workspace;
       const name = JSON.parse(entry).name ?? entered.find(same)?.name;
-      return JSON.stringify({entered: [{origin, room, hostDevice, ...(name ? {name} : {})}, ...entered.filter(kept => !same(kept))], unchoose});
+      return JSON.stringify({entered: [{origin, workspace, hostDevice, ...(name ? {name} : {})}, ...entered.filter(kept => !same(kept))], unchoose});
     },
     nameEntered: (list, place, name) => {
-      const {origin, room} = JSON.parse(place);
-      return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.room === room && !entry.name ? {...entry, name} : entry), unchoose: []});
+      const {origin, workspace} = JSON.parse(place);
+      return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.workspace === workspace && !entry.name ? {...entry, name} : entry), unchoose: []});
     },
   });
   globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
@@ -101,7 +101,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
   // A workspace an earlier visit entered, and those it kept as they were
   // stored, whichever host held them.
   localStorage.setItem('tilo-entered-workspaces', JSON.stringify([
-    {origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'}, ...remembered]));
+    {origin: ORIGIN, workspace: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'}, ...remembered]));
   let source = await readFile(new URL('./entry-page.mjs', import.meta.url), 'utf8');
   source = source
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
@@ -299,12 +299,12 @@ test('workspaces another host held at the origin of the page host are no longer 
   // The host at ORIGIN was set up again on fresh state twice since this
   // browser entered workspaces there; both workspaces went with the hosts before.
   const {shown} = await fixture({remembered: [
-    {origin: ORIGIN, room: 'gone-1', hostDevice: 'e1'.repeat(32), name: 'Other'},
-    {origin: ORIGIN, room: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
-    {origin: 'https://elsewhere.example', room: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
+    {origin: ORIGIN, workspace: 'gone-1', hostDevice: 'e1'.repeat(32), name: 'Other'},
+    {origin: ORIGIN, workspace: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
+    {origin: 'https://elsewhere.example', workspace: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
   ]});
   assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'People', 'Join a workspace']);
-  assert.deepEqual(enteredWorkspaces().map(entry => entry.room), ['current', 'other', 'away']);
+  assert.deepEqual(enteredWorkspaces().map(entry => entry.workspace), ['current', 'other', 'away']);
 });
 
 test('the page keeps switch actions together and dispatches them', async () => {
@@ -314,22 +314,22 @@ test('the page keeps switch actions together and dispatches them', async () => {
   diagnostics.onHostAction(actions.find(action => action.title === 'Open Other').id);
   await tick();
   assert.deepEqual(calls, ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
-  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'other'});
+  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: 'other'});
 });
 
 test('a workspace offers the way back to the person’s own desktop, and their own desktop does not offer itself', async () => {
   const {calls, shown, diagnostics, page} = await fixture();
   page.link.format = route => `https://web.example/#/${route.target.scope.kind === 'own' ? 'me' : route.target.scope.workspace}`;
-  chooseWorkspace({origin: ORIGIN, room: 'other'});
+  chooseWorkspace({origin: ORIGIN, workspace: 'other'});
   const back = shown.at(-1).find(action => action.title === 'Open your desktop');
-  assert.ok(back, 'a room is no dead end');
+  assert.ok(back, 'a workspace is no dead end');
   const urls = [];
   globalThis.history.pushState = (_state, _title, url) => { urls.push(url); calls.push('history'); };
   diagnostics.onHostAction(back.id);
   await tick();
   assert.deepEqual(calls.slice(-6), ['flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
   assert.deepEqual(urls, ['https://web.example/#/me']);
-  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'other'}, 'the room a bare entry reopens stays');
+  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: 'other'}, 'the workspace a bare entry reopens stays');
   const {shown: ownShown} = await fixture({own: true});
   assert.ok(!ownShown.flat().some(action => action.title === 'Open your desktop'));
 });
@@ -360,8 +360,8 @@ test('creating a workspace remembers it and uses the existing save-and-close swi
   await form.listeners.get('submit')({preventDefault() {}});
   await tick();
   assert.deepEqual(calls, ['enter', 'flush', 'stop', 'cleanup', 'dispose', 'history', 'reload']);
-  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, room: 'created'});
-  assert.equal(enteredWorkspaces().find(entry => entry.room === 'created').name, 'Created');
+  assert.deepEqual(chosenWorkspace(), {origin: ORIGIN, workspace: 'created'});
+  assert.equal(enteredWorkspaces().find(entry => entry.workspace === 'created').name, 'Created');
 });
 
 
@@ -383,11 +383,11 @@ test('the home workspace’s peer that carries reports from another workspace jo
   await fixture({boot: async (options, page) => { homePeer = options.deps.homePeer; return page; }});
   const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}, admission: 'https://lounge.example/'};
   const joined = [];
-  const carrier = {room: 'LOUNGE'};
+  const carrier = {workspace: 'LOUNGE'};
   globalThis.__entryPageFixture.joinViaHost = async options => { joined.push(options); return carrier; };
   assert.equal(await homePeer(home), null, 'a person the home never let in gets no peer there');
   assert.deepEqual(joined, []);
-  localStorage.setItem('tilo-host-memberships', JSON.stringify({'https://lounge.example': {origin: 'https://lounge.example', room: 'LOUNGE', userPublicKey: USER}}));
+  localStorage.setItem('tilo-host-memberships', JSON.stringify({'https://lounge.example': {origin: 'https://lounge.example', workspace: 'LOUNGE', userPublicKey: USER}}));
   assert.equal(await homePeer(home), carrier);
   assert.equal(joined.length, 1);
   // Nothing live or in calls, which only the workspace in front has.

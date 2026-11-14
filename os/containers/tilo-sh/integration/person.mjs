@@ -50,7 +50,7 @@
 //
 // usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --api URL [--no-pages]] [--root FILE] [--passkey] [--answer FIFO]
 //
-// Prints one JSON line: {arrivedMs, joinedMs, room, followed, key, entered}.
+// Prints one JSON line: {arrivedMs, joinedMs, workspace, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
 // page done arriving and a member of the Lounge, which the entry-speed work
 // measures. Saves the page's console and a screenshot in OUT_DIR, and exits
@@ -159,11 +159,11 @@ if (await tab.evaluate('document.documentElement.dataset.arrival') !== 'done') {
 report.arrivedMs = Date.now() - began;
 const membership = JSON.parse(await until(`(() => {
   const kept = ${memberships}[${JSON.stringify(new URL(relay).origin)}];
-  return kept?.room ? JSON.stringify(kept) : '';
+  return kept?.workspace ? JSON.stringify(kept) : '';
 })()`, 'joining the Lounge'));
 report.joinedMs = Date.now() - began;
-report.room = membership.room;
-console.error(`ok: a fresh visitor arrived in ${report.arrivedMs} ms and was in the Lounge (${report.room}) at ${report.joinedMs} ms`);
+report.workspace = membership.workspace;
+console.error(`ok: a fresh visitor arrived in ${report.arrivedMs} ms and was in the Lounge (${report.workspace}) at ${report.joinedMs} ms`);
 
 if (rootFile) {
   // The person this page is, opened elsewhere: the page's own identity module
@@ -246,7 +246,7 @@ if (follow) {
   report.followed = await until(`(() => {
     const now = ${entered};
     const found = (Array.isArray(now) ? now : Object.values(now)).find(entry =>
-      (entry?.room ?? entry?.scope) && (entry.room ?? entry.scope) !== ${JSON.stringify(report.room)});
+      (entry?.workspace ?? entry?.scope) && (entry.workspace ?? entry.scope) !== ${JSON.stringify(report.workspace)});
     return found ? JSON.stringify(found) : '';
   })()`, `joining the workspace the invitation names (entered before: ${before})`).then(JSON.parse);
   console.error(`ok: the invitation landed them in ${JSON.stringify(report.followed)}`);

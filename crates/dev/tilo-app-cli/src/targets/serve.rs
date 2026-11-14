@@ -55,7 +55,7 @@ struct Server {
     workspace: Option<SharedWorkspace>,
 }
 
-const ROOM_PATH: &str = "/__tilo/room";
+const WORKSPACE_PATH: &str = "/__tilo/workspace";
 const MAX_BODY: usize = 64 * 1024;
 const JOIN_PAGE: &str = include_str!("workspace.html");
 
@@ -116,7 +116,7 @@ pub(super) fn run(
         .context("starting the web server")?;
     if server.workspace.is_some() {
         eprintln!(
-            "[tilo-app] {} is shared: open http://{}{ROOM_PATH}/play in one browser window per person",
+            "[tilo-app] {} is shared: open http://{}{WORKSPACE_PATH}/play in one browser window per person",
             project.display_name(),
             options.address,
         );
@@ -213,7 +213,7 @@ fn handle(server: &Server, mut stream: TcpStream) -> Result<()> {
     let method = parts.next().unwrap_or("");
     let target = parts.next().unwrap_or("/");
     if let Some(workspace) = &server.workspace
-        && let Some(rest) = target.strip_prefix(ROOM_PATH)
+        && let Some(rest) = target.strip_prefix(WORKSPACE_PATH)
     {
         if length > MAX_BODY {
             return respond(
@@ -320,7 +320,7 @@ fn shared_route(
             "200 OK",
             serde_json::json!({
                 "app": workspace.app_id,
-                "room": workspace.relay_room,
+                "workspace": workspace.relay_workspace,
                 "name": workspace.name,
             }),
         ),

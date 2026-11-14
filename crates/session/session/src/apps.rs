@@ -656,16 +656,16 @@ impl Apps {
             state.hosts.clone()
         };
         self.state.borrow_mut().authority_at = Some(revision);
-        let mut rooms = self.state.borrow().authority.workspaces();
+        let mut named = self.state.borrow().authority.workspaces();
         if let Some(hosts) = &hosts {
-            rooms.extend(hosts.instances().into_iter().map(|(room, ..)| room));
-            rooms.sort();
-            rooms.dedup();
+            named.extend(hosts.instances().into_iter().map(|(id, ..)| id));
+            named.sort();
+            named.dedup();
         }
-        for room in rooms {
-            let workspace = self.workspace_named(&room);
+        for id in named {
+            let workspace = self.workspace_named(&id);
             if let Err(error) = self.state.borrow().authority.refresh(&workspace) {
-                tracing::warn!(%room, %error, "the person's authority there was not published");
+                tracing::warn!(%id, %error, "the person's authority there was not published");
             }
             // The windows whose instances a tilolang host runs are told on its door.
             if let Some(hosts) = &hosts {

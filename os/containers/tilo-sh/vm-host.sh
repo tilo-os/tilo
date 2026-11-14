@@ -49,7 +49,7 @@
 #                                       mounts them at /run/secrets; the
 #                                       native stack's relay reads them in the
 #                                       stack's own state)
-#   TILO_SH_RELAY_ROOMS_VIEW=/run/tilo-workspaces
+#   TILO_SH_RELAY_WORKSPACES_VIEW=/run/tilo-workspaces
 #                                       where that relay reads its own state
 #                                       (the image's volume, or natively the
 #                                       stack's state)
@@ -96,9 +96,9 @@ esac
 memory_mib=${TILO_SH_VM_HOST_MEMORY_MIB:-$((size_memory_mib + 3072))}
 # The relay's own view of what this host writes for it: the image's secrets
 # volume and state volume, or, for the stack that runs the relay natively, the
-# paths of its state (TILO_SH_RELAY_SECRETS_VIEW, TILO_SH_RELAY_ROOMS_VIEW).
+# paths of its state (TILO_SH_RELAY_SECRETS_VIEW, TILO_SH_RELAY_WORKSPACES_VIEW).
 relay_secrets=${TILO_SH_RELAY_SECRETS_VIEW:-/run/secrets}
-relay_rooms=${TILO_SH_RELAY_ROOMS_VIEW:-/run/tilo-workspaces}
+relay_workspaces=${TILO_SH_RELAY_WORKSPACES_VIEW:-/run/tilo-workspaces}
 # A VM host's state disk is 512 GiB on the cloud: a sparse file that size
 # holds the same, since only what is written is stored.
 state_size=${TILO_SH_VM_HOST_STATE_SIZE:-512G}
@@ -397,7 +397,7 @@ TILO_HOSTED_MEMBERS=$relay_secrets/vm-host-members.json
 TILO_HOSTED_ACCOUNT=acct-tilo-sh
 TILO_HOSTED_VM_SIZE=${TILO_SH_HOSTED_VM_SIZE:-default}
 TILO_HOSTED_PLANS=$relay_secrets/vm-host-plans.json
-TILO_HOSTED_BROWSER_ACTIONS=$relay_rooms/lounge/relay/browser-actions.jsonl
+TILO_HOSTED_BROWSER_ACTIONS=$relay_workspaces/lounge/relay/browser-actions.jsonl
 TILO_HOSTED_BROWSER_RELAY=$relay_endpoint@$relay_iroh
 ENV
 }

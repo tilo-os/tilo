@@ -403,7 +403,7 @@ async function pairingFixture({invites = [INVITE_A, INVITE_B]} = {}) {
     copy: async () => {}, onAgent: agent => fixture.agents.push(agent),
     every: run => { fixture.poll = run; return () => { fixture.poll = null; }; },
     pairing: {
-      link: (invite, room = 'WORKSPACE') => `https://tilo.example/#/@rooms.example/w/${room}?pair=${identity.userPublicKey}${invite}`,
+      link: (invite, workspace = 'WORKSPACE') => `https://tilo.example/#/@rooms.example/w/${workspace}?pair=${identity.userPublicKey}${invite}`,
       pending: async () => host.pending,
       answer: async (digest, approved) => {
         if (host.fail) throw host.fail;

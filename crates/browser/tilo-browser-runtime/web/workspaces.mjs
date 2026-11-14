@@ -108,7 +108,7 @@ export function listedAt(workspaces, scope, admittedWorkspace = null, membership
   if (scope?.kind !== 'workspace') return null;
   const listed = workspaceAt(workspaces, scope.host);
   if (!listed) return null;
-  const workspace = listed.room ?? admittedWorkspace ?? keptMembership(listed, memberships)?.room ?? null;
+  const workspace = listed.workspace ?? admittedWorkspace ?? keptMembership(listed, memberships)?.workspace ?? null;
   return scope.workspace == null || scope.workspace === workspace ? listed : null;
 }
 
@@ -122,7 +122,7 @@ function isHomeWorkspace({home, homeWorkspace = null, scope}) {
   const homeOrigin = home?.host?.origin ? originOf(home.host.origin) : null;
   return homeOrigin !== null && Boolean(scope?.host ?? scope?.origin)
     && originOf(scope.host ?? scope.origin) === homeOrigin
-    && (scope.workspace == null || scope.workspace === (home.room ?? homeWorkspace));
+    && (scope.workspace == null || scope.workspace === (home.workspace ?? homeWorkspace));
 }
 
 /**
@@ -141,16 +141,16 @@ export function workspaceChoices({home = null, homeWorkspace = null, entered = [
   const isHome = scope => isHomeWorkspace({home, homeWorkspace, scope});
   const choices = [];
   if (own && current?.kind !== 'own') {
-    choices.push({id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', origin: null, room: null, home: false, own: true, unavailable: false});
+    choices.push({id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', origin: null, workspace: null, home: false, own: true, unavailable: false});
   }
   if (homeOrigin && !(here && isHome(here))) {
     choices.push({id: `${OPEN_WORKSPACE}home`, name: home.name || new URL(homeOrigin).host, origin: homeOrigin,
-      room: home.room ?? null, home: true, own: false, unavailable: false});
+      workspace: home.workspace ?? null, home: true, own: false, unavailable: false});
   }
   for (const entry of entered) {
-    if (isHome({host: entry.origin, workspace: entry.room}) || (here && originOf(here.host) === entry.origin && here.workspace === entry.room)) continue;
-    choices.push({id: `${OPEN_WORKSPACE}${entry.origin}/${entry.room}`, name: entry.name || new URL(entry.origin).host,
-      origin: entry.origin, room: entry.room, home: false, own: false, unavailable: entry.unavailable});
+    if (isHome({host: entry.origin, workspace: entry.workspace}) || (here && originOf(here.host) === entry.origin && here.workspace === entry.workspace)) continue;
+    choices.push({id: `${OPEN_WORKSPACE}${entry.origin}/${entry.workspace}`, name: entry.name || new URL(entry.origin).host,
+      origin: entry.origin, workspace: entry.workspace, home: false, own: false, unavailable: entry.unavailable});
   }
   return choices;
 }
@@ -171,7 +171,7 @@ export function workspaceActions(choices, {current = null} = {}) {
     const host = new URL(choice.origin).host;
     const sameHost = choices.filter(other => other.name === choice.name && other.origin === choice.origin).length > 1;
     const label = !shared(choice.name) ? choice.name
-      : sameHost && choice.room ? `${choice.name} · ${host} · ${choice.room.slice(0, 8)}` : `${choice.name} · ${host}`;
+      : sameHost && choice.workspace ? `${choice.name} · ${host} · ${choice.workspace.slice(0, 8)}` : `${choice.name} · ${host}`;
     // `label` and `source`: the desktop's workspace menu lists it by name.
     return {id: choice.id, title: `Open ${label}`, label, source: 'workspaces',
       subtitle: choice.unavailable ? `Workspace · ${host} · did not open last time` : `Workspace · ${host}`};
@@ -188,14 +188,14 @@ export function workspaceActions(choices, {current = null} = {}) {
 export function heldWorkspaces({entered = [], current = null} = {}) {
   const held = [];
   const seen = new Set();
-  const add = (origin, room, name) => {
-    if (!origin || !room || seen.has(room)) return;
-    seen.add(room);
+  const add = (origin, workspace, name) => {
+    if (!origin || !workspace || seen.has(workspace)) return;
+    seen.add(workspace);
     const at = originOf(origin);
-    held.push({workspace: room, key: `${OPEN_WORKSPACE}${at}/${room}`, name: name || new URL(at).host});
+    held.push({workspace, key: `${OPEN_WORKSPACE}${at}/${workspace}`, name: name || new URL(at).host});
   };
   if (current?.kind === 'workspace') add(current.host, current.workspace, current.name ?? null);
-  for (const entry of entered) add(entry?.origin, entry?.room, entry?.name ?? null);
+  for (const entry of entered) add(entry?.origin, entry?.workspace, entry?.name ?? null);
   return held;
 }
 
@@ -206,15 +206,15 @@ export function heldWorkspaces({entered = [], current = null} = {}) {
  * `origin`, the same entry the page's own door takes; or with the
  * `invitation` a pasted link brought. Either goes through the page's join
  * (`join`, its `joinWorkspace`), then the workspace shows. Resolves to
- * `{peer, origin, room, name}`.
+ * `{peer, origin, workspace, name}`.
  */
 export async function joinGranted({origin, door = null, invitation = null, workspace = null, name = null}, {join, displayName = null, ...connectOptions} = {}) {
   if (!origin || !(door || invitation)) throw new TypeError('a granted join names the origin of its host, and its door or its invitation');
   if (typeof join !== 'function') throw new TypeError('a granted join needs the page\'s join');
   const way = door ? {door} : {invitation};
   const peer = await join({...connectOptions, origin, ...way, ...(displayName ? {displayName} : {})});
-  const room = peer?.workspace ?? workspace;
-  return {peer, origin: originOf(origin), room, name: name || room};
+  const id = peer?.workspace ?? workspace;
+  return {peer, origin: originOf(origin), workspace: id, name: name || id};
 }
 
 /** What a person the host took out of a workspace is told. */
@@ -509,7 +509,7 @@ export function keepOwnedHost({origin, userPublicKey}, memberships = globalThis.
   const host = {host: {origin}};
   const kept = keptMembership(host, memberships);
   keepMembership(memberships, host, {
-    origin: originOf(origin), room: kept?.userPublicKey === userPublicKey ? kept.room ?? null : null, userPublicKey, owner: true,
+    origin: originOf(origin), workspace: kept?.userPublicKey === userPublicKey ? kept.workspace ?? null : null, userPublicKey, owner: true,
   });
 }
 
@@ -523,12 +523,12 @@ export function keepOwnedHost({origin, userPublicKey}, memberships = globalThis.
  * invitation or by making one, adds that one to the entered workspaces
  * (`rememberEntered`) and leaves it as it is.
  */
-export function keepJoinedHost({origin, room, userPublicKey}, memberships = globalThis.localStorage) {
+export function keepJoinedHost({origin, workspace, userPublicKey}, memberships = globalThis.localStorage) {
   const host = {host: {origin}};
   const kept = keptMembership(host, memberships);
   const same = kept?.userPublicKey === userPublicKey;
   const owner = Boolean(kept?.owner && same);
-  keepMembership(memberships, host, {origin: originOf(origin), room: (same && kept.room) || room, userPublicKey, ...(owner ? {owner} : {})});
+  keepMembership(memberships, host, {origin: originOf(origin), workspace: (same && kept.workspace) || workspace, userPublicKey, ...(owner ? {owner} : {})});
 }
 
 /** The origins of the hosts this browser set up for `userPublicKey`. */
@@ -591,7 +591,7 @@ export async function joinViaHost({
     // devices can let it in again, so a failure is the page's to show.
     const profile = identityProfile(known, known.origin);
     const custody = await openCustody(profile);
-    const common = {...connectOptions, origin: known.origin, workspace: known.room, userPublicKey: known.userPublicKey, profile, custody, displayName};
+    const common = {...connectOptions, origin: known.origin, workspace: known.workspace, userPublicKey: known.userPublicKey, profile, custody, displayName};
     return withCustody(custody, () => (custody.created
       // A tab with a key of its own: a new device of that person, which
       // only their root can certify. It pairs as a new browser would.
@@ -617,7 +617,7 @@ export async function joinViaHost({
     let admittedAt = null;
     const joining = () => join({
       ...connectOptions, origin, door, identity, displayName, ...(device ? {custody: device} : {}),
-      onProgress: event => { if (event.phase === 'admitted') admittedAt = event.room; onProgress?.(event); },
+      onProgress: event => { if (event.phase === 'admitted') admittedAt = event.workspace; onProgress?.(event); },
     });
     let peer;
     try {
@@ -630,7 +630,7 @@ export async function joinViaHost({
       if (said?.code === 'removed') throw Object.assign(new AdmissionError('removed', removedFrom(workspace.name)), {reason: said.message});
       throw said;
     }
-    keepMembership(memberships, workspace, {origin, room: admittedAt ?? peer.workspace, userPublicKey: identity.userPublicKey});
+    keepMembership(memberships, workspace, {origin, workspace: admittedAt ?? peer.workspace, userPublicKey: identity.userPublicKey});
     return peer;
   };
   /** Join through the door until the host lets the person in. The door
@@ -682,7 +682,7 @@ export async function joinViaHost({
     if (custody.created) return admitAnew(custody);
     let peer;
     try {
-      peer = await connect({...connectOptions, origin: known.origin, workspace: known.room, identity, custody, displayName});
+      peer = await connect({...connectOptions, origin: known.origin, workspace: known.workspace, identity, custody, displayName});
       // A host refuses a membership it no longer has once the session
       // starts, not when connecting: wait for its answer here. A host
       // replaying the workspace's desktop to this device has let it in.
@@ -722,17 +722,17 @@ export async function joinViaHost({
  * joined, paired, for the next visit (`joinViaHost`).
  */
 export async function pairViaHost({
-  origin, room, userPublicKey, workspace = null, label = 'Browser', displayName = defaultDisplayName(userPublicKey),
+  origin, workspace, userPublicKey, listed = null, label = 'Browser', displayName = defaultDisplayName(userPublicKey),
   memberships = globalThis.localStorage, fetch = globalThis.fetch, pair = pairDevice, ...connectOptions
 }) {
   if (!/^[0-9a-f]{64}$/.test(userPublicKey ?? '')) throw new HostAdmissionError('invalid', 'This pairing link names no person');
   if (connectOptions.invite != null && !/^[0-9a-f]{32}$/.test(connectOptions.invite)) {
     throw new HostAdmissionError('invalid', 'This pairing link is damaged');
   }
-  const door = workspace?.admission ?? undefined;
-  const peer = await pair({...connectOptions, origin, workspace: room, userPublicKey, label, displayName, fetch, door,
+  const door = listed?.admission ?? undefined;
+  const peer = await pair({...connectOptions, origin, workspace, userPublicKey, label, displayName, fetch, door,
     profile: identityProfile({userPublicKey}, origin)}).catch(error => { throw doorRefused(error); });
-  keepMembership(memberships, {host: {origin}}, {origin, room: peer.workspace ?? room, userPublicKey, paired: true});
+  keepMembership(memberships, {host: {origin}}, {origin, workspace: peer.workspace ?? workspace, userPublicKey, paired: true});
   return peer;
 }
 
