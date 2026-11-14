@@ -168,8 +168,9 @@ impl collab_types::signer::DeviceSigner for Signatures {
 impl NativeWorkspaceOwner {
     /// Keep this device's verdicts on the document writes `heard` names, each with what
     /// [`Self::receive`] answered for it, in its own slice of `workspace`, signed by `signer`: a
-    /// refused write reaches its author, as the next sync carries the verdict back, and a write
-    /// that landed clears the verdict it lands on. One carrier, the workspace document itself.
+    /// refused write reaches its author, as the next sync carries the verdict back (a device that
+    /// hosts the workspace hands it to the members linked to it as it is kept), and a write that
+    /// landed clears the verdict it lands on. One carrier, the workspace document itself.
     ///
     /// # Errors
     /// The workspace is not held here, `signer` is not this device's, signing failed, or the
@@ -195,7 +196,9 @@ impl NativeWorkspaceOwner {
             let _turn = self.0.mutation.lock();
             let candidate = self.view(workspace)?;
             let device = candidate.device().clone();
-            let (kept, record) = candidate.change(|live, record| {
+            let hosted_here = candidate.record.hosted_here();
+            let ((kept, changes), record) = candidate.change(|live, record| {
+                let before = live.workspace_heads().unwrap_or_default();
                 let mut kept = false;
                 let mut unkept = Vec::new();
                 for (message, report) in &heard {
@@ -229,10 +232,18 @@ impl NativeWorkspaceOwner {
                         .checked_add(1)
                         .ok_or("native owner generation exhausted")?;
                 }
-                Ok(kept)
+                // The verdicts as changes of the workspace document: what a device that hosts
+                // the workspace hands the members linked to it, its writer among them.
+                let changes = if kept {
+                    live.workspace_changes_since(&before)
+                } else {
+                    Vec::new()
+                };
+                Ok((kept, changes))
             })?;
             if kept {
                 self.publish_record(workspace, &candidate, record, None)?;
+                self.0.governance_kept_here(workspace, hosted_here, changes);
             }
             Ok(())
         })

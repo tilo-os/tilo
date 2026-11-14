@@ -479,7 +479,7 @@ impl SharedOwner {
     /// Tell [`NativeKeptHereObserver`]s of `changes`, what this device just
     /// committed to the governance of `workspace`, when it hosts that
     /// workspace itself (`hosted_here`): a share, a member's role, a grant, a
-    /// device it admitted. Such a workspace has no host that hands its
+    /// device it admitted, its verdict on a member's write. Such a workspace has no host that hands its
     /// device's change on, and the custody the change is also kept in leaves
     /// on no link, so without this the members linked to the device read it
     /// only in the governance their next link starts with.

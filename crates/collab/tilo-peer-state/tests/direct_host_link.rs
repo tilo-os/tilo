@@ -63,7 +63,7 @@ fn edit(peer: &DirectSync, key: &SigningKey, value: &str) {
 }
 
 /// Wait until `done` holds of `sync`'s replica.
-async fn until(sync: &DirectSync, step: &str, done: impl Fn(&StatePeer) -> bool + Sync) {
+pub(crate) async fn until(sync: &DirectSync, step: &str, done: impl Fn(&StatePeer) -> bool + Sync) {
     let mut changes = sync.changes();
     tokio::time::timeout(Duration::from_secs(30), async {
         while !sync.read(&done) {
@@ -316,13 +316,13 @@ async fn a_member_syncs_with_the_host_and_a_late_joiner_catches_up_from_its_stor
 }
 
 /// This device's owner, kept at `state` as a session keeps it.
-fn owner_at(state: &Path) -> tilo_peer_state::owner::NativeWorkspaceOwner {
+pub(crate) fn owner_at(state: &Path) -> tilo_peer_state::owner::NativeWorkspaceOwner {
     tilo_peer_state::owner::open_file(&state.join("workspaces.json")).expect("this device's owner")
 }
 
 /// The hint that `certificate`'s device answers `workspace`'s joins at
 /// `endpoint`: what a link hands out so whoever holds it knows where to go.
-fn hint(
+pub(crate) fn hint(
     workspace: tilo_desktop_model::WorkspaceId,
     endpoint: &iroh::Endpoint,
     certificate: &tilo_user_identity::DeviceCert,
@@ -345,7 +345,7 @@ fn hint(
 
 /// The invitation `administrator` issues into `workspace`, as the text a person
 /// hands over.
-async fn invitation(
+pub(crate) async fn invitation(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
     administrator: &tilo_user_identity::DeviceCert,
@@ -377,7 +377,7 @@ async fn invitation(
 
 /// A device that redeems `invitation` into a workspace it takes in, answering
 /// it through `service`: what a device does with a link a person hands it.
-async fn joins(
+pub(crate) async fn joins(
     state: &Path,
     cert: &tilo_user_identity::DeviceCert,
     key: &SigningKey,
@@ -1083,7 +1083,7 @@ fn grants_of(peer: &StatePeer, device: [u8; 32], share: &str) -> usize {
 
 /// Commit `command` into `workspace`'s governance as `owner`'s device, as a session's engine
 /// commits what its person changes of the workspace's people and shares.
-async fn commit_membership(
+pub(crate) async fn commit_membership(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
     (cert, key): (&tilo_user_identity::DeviceCert, &SigningKey),
@@ -1453,7 +1453,7 @@ async fn a_device_the_host_admits_is_known_to_the_members_linked_to_it_at_once()
 /// Commit `value` to the test record of `workspace` as `owner`'s device, numbered from the
 /// durable view as a session's engine does (the record's first write founds it empty), and
 /// answer the write's sequence number.
-fn commit_record(
+pub(crate) fn commit_record(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
     key: &SigningKey,
