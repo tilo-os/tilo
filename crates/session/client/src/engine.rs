@@ -170,7 +170,9 @@ enum Admission {
     /// This machine was copied from another device, and the workspace has not admitted it yet:
     /// its copy still names `copied_from`. It reads what the copy holds as that device could, and
     /// writes nothing until it is admitted.
-    Awaiting { copied_from: [u8; 32] },
+    Awaiting {
+        copied_from: [u8; 32],
+    },
 }
 
 impl Admission {
