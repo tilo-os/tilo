@@ -111,8 +111,8 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
             && let Some(value) = after_name.trim_start().strip_prefix('=')
             && let Some(quote) = value.trim_start().chars().next()
             && matches!(quote, '"' | '\'')
+            && let Some(quoted) = value.trim_start().strip_prefix(quote)
         {
-            let quoted = &value.trim_start()[1..];
             return quoted.split(quote).next();
         }
         rest = after_name;
@@ -325,7 +325,7 @@ mod tests {
         // A box that draws nothing states no size, and neither does no box.
         assert_eq!(size(r#"<svg viewBox="0 0 0 0"></svg>"#), None);
         assert_eq!(size(r#"<svg viewBox="0 0 64"></svg>"#), None);
-        assert_eq!(size(r#"<svg></svg>"#), None);
+        assert_eq!(size("<svg></svg>"), None);
     }
 
     #[test]
