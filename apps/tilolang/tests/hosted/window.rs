@@ -1032,7 +1032,7 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
 // USER REQUIREMENT: a note the workspace does not take yet is kept, never lost: it stands in the
 // window at once, the window's bar marks it unsaved in plain words, and the window rests instead of trying again every frame: no spinning CPU, no drained
 // battery. Once the workspace takes changes again, "Try again" saves it, once, without pressing
-// New note again, and a peer replaying the workspace gets it.
+// New note again, and a peer replaying the workspace gets it, and the title typed into it.
 #[test]
 fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
     let mut session = Session::notes();
@@ -1103,6 +1103,14 @@ fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
         changes_since(&session),
         1,
         "a peer replaying the workspace gets the note"
+    );
+    // The person names the note they kept: the title reaches the workspace, letter by letter.
+    session.window.type_text("Groceries");
+    session.settle();
+    assert_eq!(
+        changes_since(&session),
+        1 + "Groceries".len(),
+        "a peer replaying the workspace gets every letter of the title"
     );
 }
 

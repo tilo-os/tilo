@@ -27,18 +27,19 @@ pub const TEXT_KEY: &str = "text";
 pub const AUTHOR_MARK: &str = "author";
 
 /// Mark `inserted`, just written at the document text index `at` of the text
-/// object `obj`, as written by the author of the action applying now. Nothing
-/// is marked outside an action or for an action with no invoker.
+/// object `obj`, as written by the author of the action applying now, or,
+/// outside an action, by the actor a record write is lent
+/// ([`crate::action::RecordActorScope`]): a store writing an action's edits
+/// before it commits them as the action's change marks them as replaying the
+/// action does. Nothing is marked for an action with no invoker, or with no
+/// actor lent.
 pub fn mark_authored(
     doc: &mut impl Transactable,
     obj: &ObjId,
     at: usize,
     inserted: &str,
 ) -> Result<(), automerge::AutomergeError> {
-    let Some(author) = tilo_actions::invoking_context()
-        .and_then(|context| context.invoker)
-        .map(|invoker| invoker.key())
-    else {
+    let Some(author) = crate::action::writing_author() else {
         return Ok(());
     };
     tilo_automerge::mark_text_author(doc, obj, at, inserted, &author)

@@ -368,15 +368,11 @@ impl Inner {
         let Some(doc) = self.chunks.mirror_mut(chunk) else {
             return;
         };
-        doc.set_actor(automerge::ActorId::from(author));
+        let author = automerge::ActorId::from(author);
+        doc.set_actor(author.clone());
         for write in &part {
-            let seed = crate::action::edit_seed(write.index);
-            let written = crate::action::apply_edits(
-                doc,
-                &write.app,
-                std::slice::from_ref(&write.edit),
-                &seed,
-            );
+            let written =
+                super::write_edit(doc, &write.app, &write.edit, write.index, Some(&author));
             if let Err(error) = written {
                 tracing::error!(app = %write.app, %error, "an action's write did not apply again");
             }

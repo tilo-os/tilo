@@ -46,6 +46,17 @@ fn invoking_author() -> Option<String> {
         .or_else(|| RECORD_ACTOR.with_borrow(Clone::clone))
 }
 
+/// Who writes now: the invoker the envelope of the action applying now
+/// pinned; outside an action, the actor a record write is lent. Inside an
+/// action only its envelope counts, so every replica replaying it reads the
+/// same author.
+pub(crate) fn writing_author() -> Option<String> {
+    match tilo_actions::invoking_context() {
+        Some(context) => context.invoker.map(|invoker| invoker.key()),
+        None => RECORD_ACTOR.with_borrow(Clone::clone),
+    }
+}
+
 thread_local! {
     static RECORD_ACTOR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }

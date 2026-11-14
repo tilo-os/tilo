@@ -233,6 +233,9 @@ struct LocalWrite {
     /// it is the store's unsaved layer, and no change commits it. The record moving on leaves
     /// it in the mirror ([`Inner::drop_committed_local`]).
     derived: bool,
+    /// Whose change it is written as: the store's author when it was written
+    /// ([`TiloStore::writing_as`]); none for a derived write, which no change commits.
+    author: Option<automerge::ActorId>,
     /// Whether those who read the mirror were told what it changed when its action committed
     /// ([`unsaved::tell`]): the record's change that carries it then tells only what the record
     /// says differently ([`TiloStore::sync`]).
@@ -246,7 +249,31 @@ struct Accepted {
     change: automerge::ChangeHash,
 }
 
+/// Write `edit`, the `index`th write of its action into its chunk, into `doc` as `author` writes
+/// it: the ids it mints drawn from its place and the text it types marked as theirs, as
+/// replaying its action under its envelope writes them, so the writes are that action's change.
+fn write_edit(
+    doc: &mut Doc,
+    app: &str,
+    edit: &DynEdit,
+    index: usize,
+    author: Option<&automerge::ActorId>,
+) -> Result<(), tilo_actions::ActionError> {
+    // An author's actor is the bytes of their key ([`TiloStore::writing_as`]).
+    let _lent = author.map(|author| {
+        tilo_resource::action::RecordActorScope::enter(
+            String::from_utf8_lossy(author.to_bytes()).into_owned(),
+        )
+    });
+    apply_edits(doc, app, std::slice::from_ref(edit), &edit_seed(index))
+}
+
 impl LocalWrite {
+    /// Write its edit into `doc` again, as it was first written ([`write_edit`]).
+    fn write_again(&self, doc: &mut Doc) -> Result<(), tilo_actions::ActionError> {
+        write_edit(doc, &self.app, &self.edit, self.index, self.author.as_ref())
+    }
+
     /// What it reached, as derivation takes it.
     fn reached(&self) -> Reached {
         let mut reached = Reached::default();
@@ -2099,7 +2126,8 @@ impl Inner {
         }
         let subject = (!derived && !named && subject_of(edit.bare()))
             .then(|| (AppId::from(app), read_subject(app, edit.bare(), doc)));
-        let applied = apply_edits(doc, app, std::slice::from_ref(&edit), &edit_seed(index));
+        let author = (!derived).then(|| self.author.clone()).flatten();
+        let applied = write_edit(doc, app, &edit, index, author.as_ref());
         if manifest {
             self.chunks.reread_placement();
         }
@@ -2118,6 +2146,7 @@ impl Inner {
             items,
             placed,
             versions: None,
+            author,
             derived,
             told: false,
         };

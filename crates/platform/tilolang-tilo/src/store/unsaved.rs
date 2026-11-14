@@ -26,7 +26,7 @@ use automerge::ChangeHash;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::store::{ChangeNote, ChangeSummary, FieldKey, ListingChange, Version};
 
-use crate::action::{DynEdit, Made, apply_edits, edit_seed};
+use crate::action::{DynEdit, Made};
 use crate::chunk::{ChunkNo, Chunks, Stamps};
 use crate::index as idx;
 use crate::index::derive::Derive;
@@ -311,12 +311,7 @@ impl Inner {
         }
         if let Some(mirror) = self.chunks.mirror_mut(chunk) {
             for write in &kept {
-                if let Err(error) = apply_edits(
-                    mirror,
-                    &write.app,
-                    std::slice::from_ref(&write.edit),
-                    &edit_seed(write.index),
-                ) {
+                if let Err(error) = write.write_again(mirror) {
                     tracing::error!(app = %write.app, %error, "a pending write did not apply again");
                 }
             }
@@ -392,12 +387,7 @@ impl Inner {
         for write in &local {
             if let Some(mirror) = self.chunks.mirror_mut(write.chunk) {
                 // Each applied once already, on this same base: one that fails now is a fault.
-                if let Err(error) = apply_edits(
-                    mirror,
-                    &write.app,
-                    std::slice::from_ref(&write.edit),
-                    &edit_seed(write.index),
-                ) {
+                if let Err(error) = write.write_again(mirror) {
                     tracing::error!(app = %write.app, %error, "a write did not apply again");
                 }
             }

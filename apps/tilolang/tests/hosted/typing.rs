@@ -318,6 +318,49 @@ fn typing_the_title_and_then_the_body_is_two_steps() {
     title_then_body_is_two_steps(Session::notes());
 }
 
+/// Every change the person makes reaches their other devices: "+" and a title typed into the new
+/// note at once, in the same turn or the next, are changes a peer replays to the byte, so the
+/// title is never only on this device.
+fn a_title_typed_right_after_new_note_reaches_a_peer(same_turn: bool) {
+    let mut session = Session::notes();
+    let before = record(&session);
+    let plus = session.control(&session.doing("Notebook", "new_note"));
+    session.window.click_at(plus.0, plus.1);
+    if !same_turn {
+        session.settle();
+    }
+    session.window.type_text("Groceries");
+    session.settle();
+    let host = session.instance_host();
+    let mut reproduced = 0;
+    for (chunk, doc) in record(&session).all() {
+        let from = before
+            .held(chunk)
+            .map(automerge::AutoCommit::committed_heads);
+        reproduced += replayed(&mut doc.clone(), from.as_deref().unwrap_or(&[]), &host);
+    }
+    assert!(
+        reproduced >= 2,
+        "a peer reproduces the new note and its title: {reproduced}"
+    );
+    let peer = Peer::over(&session);
+    let title = peer.host.runtime().read(&peer.note(), "title");
+    assert!(
+        matches!(&title, Ok(Value::Text(title)) if title == "Groceries"),
+        "the record holds the title as typed: {title:?}"
+    );
+}
+
+#[test]
+fn a_title_typed_in_the_turn_after_new_note_reaches_a_peer() {
+    a_title_typed_right_after_new_note_reaches_a_peer(false);
+}
+
+#[test]
+fn a_title_typed_in_the_same_turn_as_new_note_reaches_a_peer() {
+    a_title_typed_right_after_new_note_reaches_a_peer(true);
+}
+
 /// A window dropped with the keyboard still in a field keeps every letter: each was a change of the
 /// record as it was typed, so another device reads the whole burst — one step as far as history
 /// and undo go.
