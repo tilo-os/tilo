@@ -724,412 +724,708 @@ fn resource<'a>(page: &'a Value, kind: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no {kind} in {page}"))
 }
 
-#[test]
-fn opening_an_app_with_a_file_opens_it_through_the_apps_own_action() {
-    let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        let reply = call(
+tilo_test_env::scenario! {
+    fn a_file_is_opened_through_the_action_its_app_declares;
+
+    phase opening_an_app_with_a_file_opens_it_through_the_apps_own_action;
+    {
+        let host = Writer::new(Some("open"));
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            let reply = call(
+                &server,
+                "tilo_invoke",
+                json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+            assert_eq!(reply["peer_id"], 1, "{reply}");
+            assert!(reply["opened"].get("error").is_none(), "{reply}");
+            assert_eq!(reply["opened"]["update"]["state"], "succeeded", "{reply}");
+            assert_eq!(reply["opened"]["action"], "open", "{reply}");
+
+            let document = resource(&reply["directory"], "word_processor.document");
+            assert_eq!(reply["opened"]["resource"], document["resource"]);
+            let actions = &document["actions"];
+            let style = actions["set-paragraph-style"].as_str().unwrap();
+            assert!(
+                !style.contains('—'),
+                "an open directory leaves descriptions to tilo_query: {style}"
+            );
+            assert_eq!(
+                actions["read-text"], "read text (pageSize:integer 1..64, cursor?)",
+                "a bound the app enforces is shown before a call trips over it"
+            );
+            assert!(
+                resource(&reply["directory"], "word_processor.style")["actions"]["toggle-bold"]
+                    .is_string()
+            );
+            assert!(resource(&reply["directory"], "tilo.rich-text")["actions"]["apply"].is_string());
+            assert!(reply["directory"].get("truncated").is_none(), "{reply}");
+            assert!(reply["directory"].to_string().len() < DIRECTORY_BYTES);
+        });
+        // The workspace launched the app empty; the app itself read the file,
+        // inside its sandbox, under the grants it holds.
+        assert_eq!(
+            host.invoked(),
+            [
+                (
+                    WORKSPACE.into(),
+                    "app.so.tilo.word-processor".into(),
+                    "open".into(),
+                    json!({})
+                ),
+                (
+                    "1".into(),
+                    DOC.into(),
+                    "open".into(),
+                    json!({"path": "/data/in/paper.docx"})
+                ),
+            ]
+        );
+    }
+
+    phase an_open_answers_the_instance_the_host_started;
+    // Two sessions opening one app at once each get the instance their own
+    // launch started: the host names it, and the bridge neither lists the
+    // app's instances before nor after to guess which one is new.
+    {
+        let host = Writer {
+            started: 7,
+            bystander: Some(5),
+            ..Writer::new(Some("open"))
+        };
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let reply = run(call(
             &server,
             "tilo_invoke",
             json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
-        )
-        .await
+        ))
         .unwrap();
         assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
-        assert_eq!(reply["peer_id"], 1, "{reply}");
-        assert!(reply["opened"].get("error").is_none(), "{reply}");
+        assert_eq!(reply["peer_id"], 7, "{reply}");
         assert_eq!(reply["opened"]["update"]["state"], "succeeded", "{reply}");
-        assert_eq!(reply["opened"]["action"], "open", "{reply}");
-
-        let document = resource(&reply["directory"], "word_processor.document");
-        assert_eq!(reply["opened"]["resource"], document["resource"]);
-        let actions = &document["actions"];
-        let style = actions["set-paragraph-style"].as_str().unwrap();
+        let asked = host.asked();
         assert!(
-            !style.contains('—'),
-            "an open directory leaves descriptions to tilo_query: {style}"
+            !asked.iter().any(lists_instances),
+            "no instance listing was asked: {asked:?}"
         );
-        assert_eq!(
-            actions["read-text"], "read text (pageSize:integer 1..64, cursor?)",
-            "a bound the app enforces is shown before a call trips over it"
-        );
-        assert!(
-            resource(&reply["directory"], "word_processor.style")["actions"]["toggle-bold"]
-                .is_string()
-        );
-        assert!(resource(&reply["directory"], "tilo.rich-text")["actions"]["apply"].is_string());
-        assert!(reply["directory"].get("truncated").is_none(), "{reply}");
-        assert!(reply["directory"].to_string().len() < DIRECTORY_BYTES);
-    });
-    // The workspace launched the app empty; the app itself read the file,
-    // inside its sandbox, under the grants it holds.
-    assert_eq!(
-        host.invoked(),
-        [
-            (
-                WORKSPACE.into(),
-                "app.so.tilo.word-processor".into(),
-                "open".into(),
-                json!({})
-            ),
-            (
-                "1".into(),
-                DOC.into(),
-                "open".into(),
-                json!({"path": "/data/in/paper.docx"})
-            ),
-        ]
-    );
-}
+        let opened = host.invoked();
+        assert_eq!(opened.len(), 2, "{opened:?}");
+        assert_eq!(opened[1].0, "7", "the file opened in the started instance");
+    }
 
-/// Two sessions opening one app at once each get the instance their own
-/// launch started: the host names it, and the bridge neither lists the
-/// app's instances before nor after to guess which one is new.
-#[test]
-fn an_open_answers_the_instance_the_host_started() {
-    let host = Writer {
-        started: 7,
-        bystander: Some(5),
-        ..Writer::new(Some("open"))
-    };
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let reply = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
-    ))
-    .unwrap();
-    assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
-    assert_eq!(reply["peer_id"], 7, "{reply}");
-    assert_eq!(reply["opened"]["update"]["state"], "succeeded", "{reply}");
-    let asked = host.asked();
-    assert!(
-        !asked.iter().any(lists_instances),
-        "no instance listing was asked: {asked:?}"
-    );
-    let opened = host.invoked();
-    assert_eq!(opened.len(), 2, "{opened:?}");
-    assert_eq!(opened[1].0, "7", "the file opened in the started instance");
-}
-
-/// computer (run 20260930-105710): every task that opened a file spent its
-/// next turn reading it.
-#[test]
-fn opening_a_file_answers_its_first_page_through_the_apps_declared_read() {
-    let text = "# Quarterly Report {#b0}\nOur comittee met. {#b1}\n";
-    let host = Writer::new(Some("open")).reading(text);
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let reply = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/report.docx"}}),
-    ))
-    .unwrap();
-    let content = &reply["content"];
-    let document = resource(&reply["directory"], "word_processor.document");
-    assert_eq!(content["resource"], document["resource"], "{reply}");
-    assert_eq!(content["action"], "read-text", "{reply}");
-    assert_eq!(content["value"]["content"]["markdown"], text, "{reply}");
-    assert_eq!(
-        content["value"]["nextCursor"], "c2",
-        "a whole page keeps its cursor"
-    );
-    assert!(content.get("truncated").is_none(), "{reply}");
-    let calls = host.invoked();
-    assert_eq!(
-        calls.last().unwrap(),
-        &("1".into(), DOC.into(), "read-text".into(), json!({})),
-        "the read runs with no arguments: {calls:?}"
-    );
-
-    let empty = Writer::new(Some("open")).reading(text);
-    let server = McpServer::new(empty.clone(), "workspace".into(), "owner".into());
-    let reply = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
-    ))
-    .unwrap();
-    assert!(reply.get("content").is_none(), "no file, no read: {reply}");
-    assert!(empty.invoked().iter().all(|call| call.2 != "read-text"));
-}
-
-#[test]
-fn a_long_first_page_is_cut_and_drops_its_cursor() {
-    let text = (0..500)
-        .map(|n| format!("Paragraph {n} of a long report. {{#b{n}}}\n"))
-        .collect::<Vec<_>>()
-        .concat();
-    let host = Writer::new(Some("open")).reading(text);
-    let server = McpServer::new(host, "workspace".into(), "owner".into());
-    let reply = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/long.docx"}}),
-    ))
-    .unwrap();
-    let content = &reply["content"];
-    assert_eq!(content["truncated"], true, "{content}");
-    assert!(content["value"].to_string().len() <= content::CONTENT_BYTES);
-    let markdown = content["value"]["content"]["markdown"].as_str().unwrap();
-    assert!(markdown.starts_with("Paragraph 0 of a long report. {#b0}\n"));
-    assert!(content["value"].get("nextCursor").is_none(), "{content}");
-}
-
-/// Only a file opened is read: an app that could not open it answers no
-/// page of a document it does not hold.
-#[test]
-fn a_file_the_app_could_not_open_is_not_read() {
-    let host = Writer::new(None).reading("stale");
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let reply = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
-    ))
-    .unwrap();
-    assert!(reply["opened"]["error"].is_string(), "{reply}");
-    assert!(reply.get("content").is_none(), "{reply}");
-    assert!(host.invoked().iter().all(|call| call.2 != "read-text"));
-}
-
-#[test]
-fn an_app_without_open_imports_the_file_by_its_extension() {
-    let host = Writer::new(Some("import-csv"));
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let reply = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/Sales.CSV"}}),
-    ))
-    .unwrap();
-    assert_eq!(reply["opened"]["action"], "import-csv", "{reply}");
-    assert_eq!(host.invoked()[1].3, json!({"path": "/data/in/Sales.CSV"}));
-}
-
-/// A file is opened only through an action its app declares as opening
-/// paths, and one declared for other extensions does not open it. An
-/// action that merely takes a `path` (importing an installer image, which
-/// needs an administrator) is never chosen by its name.
-#[test]
-fn only_a_declared_opener_opens_a_path() {
-    let open = |path: &str| json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": path}});
-    let host = Writer::new(None).taking_path("import-iso");
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let reply = run(call(
-        &server,
-        "tilo_invoke",
-        open("/home/you/Downloads/Win11.iso"),
-    ))
-    .unwrap();
-    assert_eq!(reply["opened"]["error"], OPENED_NO_ACTION, "{reply}");
-    assert!(
-        host.invoked().iter().all(|call| call.2 != "import-iso"),
-        "{:?}",
-        host.invoked()
-    );
-
-    let host = Writer::new(Some("import-csv"));
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let reply = run(call(&server, "tilo_invoke", open("/data/in/paper.docx"))).unwrap();
-    assert_eq!(reply["opened"]["error"], OPENED_NO_ACTION, "{reply}");
-    assert_eq!(host.invoked().len(), 1, "nothing but the launch ran");
-}
-
-/// workflows (guest run 20260929-200306): opening a workbook Sheets already
-/// held started a second window that imported it again.
-#[test]
-fn opening_a_file_an_instance_holds_returns_that_instance() {
-    let host = Writer::new(Some("import-csv"));
-    let open_files = Arc::new(OpenFiles::default());
-    let session = || {
-        McpServer::new(host.clone(), "workspace".into(), "owner".into())
-            .with_open_files(Arc::clone(&open_files))
-    };
-    let (first, second) = (session(), session());
-    let open = |path: &str| json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": path}});
-    run(async {
-        {
-            call(&first, "tilo_invoke", open("/data/in/Sales.csv"))
-                .await
-                .unwrap();
-            let again = call(&second, "tilo_invoke", open("/data/in/Sales.csv"))
-                .await
-                .unwrap();
-            assert_eq!(again["peer_id"], 1, "{again}");
-            assert_eq!(again["update"]["state"], "succeeded", "{again}");
-            assert_eq!(again["opened"]["already_open"], true, "{again}");
-            assert!(again["directory"]["resources"].is_array(), "{again}");
-        }
-
-        {
-            call(&first, "tilo_invoke", json!({"peer_id": 1, "resource": DOC, "action": "import-csv", "arguments": {"path": "/data/in/Costs.csv"}}))
-                .await
-                .unwrap();
-            let again = call(&second, "tilo_invoke", open("/data/in/Costs.csv"))
-                .await
-                .unwrap();
-            assert_eq!(again["opened"]["already_open"], true, "{again}");
-        }
-    });
-    let calls = host.invoked();
-    let launches = calls.iter().filter(|call| call.0 == WORKSPACE).count();
-    assert_eq!(launches, 1, "nothing started a second instance: {calls:?}");
-    let imports = calls
-        .iter()
-        .filter(|call| call.2 == "import-csv")
-        .map(|call| call.3["path"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        imports,
-        ["/data/in/Sales.csv", "/data/in/Costs.csv"],
-        "each file was read once"
-    );
-}
-
-#[test]
-fn an_app_that_cannot_open_a_path_says_so_and_still_opens() {
-    let host = Writer::new(None);
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let reply = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
-    ))
-    .unwrap();
-    assert_eq!(reply["peer_id"], 1, "{reply}");
-    assert!(reply["opened"]["error"].is_string(), "{reply}");
-    assert!(reply["directory"]["resources"].is_array(), "{reply}");
-    assert_eq!(host.invoked().len(), 1, "nothing but the launch ran");
-    assert!(
-        run(call(
+    phase opening_a_file_answers_its_first_page_through_the_apps_declared_read;
+    // computer (run 20260930-105710): every task that opened a file spent its
+    // next turn reading it.
+    {
+        let text = "# Quarterly Report {#b0}\nOur comittee met. {#b1}\n";
+        let host = Writer::new(Some("open")).reading(text);
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let reply = run(call(
             &server,
             "tilo_invoke",
-            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": 7}}),
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/report.docx"}}),
         ))
-        .is_err()
-    );
-}
+        .unwrap();
+        let content = &reply["content"];
+        let document = resource(&reply["directory"], "word_processor.document");
+        assert_eq!(content["resource"], document["resource"], "{reply}");
+        assert_eq!(content["action"], "read-text", "{reply}");
+        assert_eq!(content["value"]["content"]["markdown"], text, "{reply}");
+        assert_eq!(
+            content["value"]["nextCursor"], "c2",
+            "a whole page keeps its cursor"
+        );
+        assert!(content.get("truncated").is_none(), "{reply}");
+        let calls = host.invoked();
+        assert_eq!(
+            calls.last().unwrap(),
+            &("1".into(), DOC.into(), "read-text".into(), json!({})),
+            "the read runs with no arguments: {calls:?}"
+        );
 
-#[test]
-fn the_workspace_page_offers_a_path_on_opening_an_app() {
-    let server = McpServer::new(
-        Writer::new(Some("open")),
-        "workspace".into(),
-        "owner".into(),
-    );
-    let page = run(call(&server, "tilo_query", json!({"workspace": true}))).unwrap();
-    assert_eq!(
-        resource(&page, "applications.app")["actions"]["open"],
-        "open (path?)",
-        "{page}"
-    );
-    let full = run(call(
-        &server,
-        "tilo_query",
-        json!({"workspace": true, "detail": "full"}),
-    ))
-    .unwrap();
-    assert_eq!(
-        full["rows"][0]["descriptor"]["params"],
-        json!([]),
-        "version 1 rows are as published"
-    );
-}
-
-/// The reference partner proxy provisions file grants from a compact
-/// workspace page: the permission roles' resource, and each app named by the
-/// `app.` prefix of its resource. A handle there left every app ungranted.
-#[test]
-fn workspace_pages_name_their_resources_in_full() {
-    let server = McpServer::new(
-        Writer::new(Some("open")),
-        "workspace".into(),
-        "owner".into(),
-    );
-    let page = run(call(&server, "tilo_query", json!({"workspace": true}))).unwrap();
-    let names = page["resources"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|resource| resource["resource"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(names, ["app.so.tilo.word-processor", PERMISSIONS], "{page}");
-    let found = run(call(
-        &server,
-        "tilo_query",
-        json!({"workspace": true, "needle": "permission assign"}),
-    ))
-    .unwrap();
-    assert_eq!(found["resources"][0]["resource"], PERMISSIONS, "{found}");
-}
-
-/// computer (run 20260930-071012, deck-launch): `set-slide-text` was refused
-/// `slide: "r1"`, the directory's handle for the slide.
-#[test]
-fn a_handle_in_a_resource_argument_is_expanded_and_text_is_not_replayed() {
-    let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        call(
+        let empty = Writer::new(Some("open")).reading(text);
+        let server = McpServer::new(empty.clone(), "workspace".into(), "owner".into());
+        let reply = run(call(
             &server,
             "tilo_invoke",
             json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
-        )
-        .await
+        ))
         .unwrap();
-        let page = call(&server, "tilo_query", json!({"peer_id": 1}))
-            .await
-            .unwrap();
-        let doc = resource(&page, "word_processor.document")["resource"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let style = resource(&page, "tilo.rich-text")["resource"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let styled = call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "apply-style", "arguments": {"style": style}}))
-            .await
-            .unwrap();
-        assert_eq!(styled["update"]["state"], "succeeded", "{styled}");
-        assert!(styled.get("hint").is_none(), "{styled}");
+        assert!(reply.get("content").is_none(), "no file, no read: {reply}");
+        assert!(empty.invoked().iter().all(|call| call.2 != "read-text"));
+    }
 
-        let selected = call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "select-block", "arguments": {"block": style}}))
+    phase a_long_first_page_is_cut_and_drops_its_cursor;
+    {
+        let text = (0..500)
+            .map(|n| format!("Paragraph {n} of a long report. {{#b{n}}}\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let host = Writer::new(Some("open")).reading(text);
+        let server = McpServer::new(host, "workspace".into(), "owner".into());
+        let reply = run(call(
+            &server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/long.docx"}}),
+        ))
+        .unwrap();
+        let content = &reply["content"];
+        assert_eq!(content["truncated"], true, "{content}");
+        assert!(content["value"].to_string().len() <= content::CONTENT_BYTES);
+        let markdown = content["value"]["content"]["markdown"].as_str().unwrap();
+        assert!(markdown.starts_with("Paragraph 0 of a long report. {#b0}\n"));
+        assert!(content["value"].get("nextCursor").is_none(), "{content}");
+    }
+
+    phase a_file_the_app_could_not_open_is_not_read;
+    // Only a file opened is read: an app that could not open it answers no
+    // page of a document it does not hold.
+    {
+        let host = Writer::new(None).reading("stale");
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let reply = run(call(
+            &server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
+        ))
+        .unwrap();
+        assert!(reply["opened"]["error"].is_string(), "{reply}");
+        assert!(reply.get("content").is_none(), "{reply}");
+        assert!(host.invoked().iter().all(|call| call.2 != "read-text"));
+    }
+
+    phase an_app_without_open_imports_the_file_by_its_extension;
+    {
+        let host = Writer::new(Some("import-csv"));
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let reply = run(call(
+            &server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/Sales.CSV"}}),
+        ))
+        .unwrap();
+        assert_eq!(reply["opened"]["action"], "import-csv", "{reply}");
+        assert_eq!(host.invoked()[1].3, json!({"path": "/data/in/Sales.CSV"}));
+    }
+
+    phase only_a_declared_opener_opens_a_path;
+    // A file is opened only through an action its app declares as opening
+    // paths, and one declared for other extensions does not open it. An
+    // action that merely takes a `path` (importing an installer image, which
+    // needs an administrator) is never chosen by its name.
+    {
+        let open = |path: &str| json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": path}});
+        let host = Writer::new(None).taking_path("import-iso");
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let reply = run(call(
+            &server,
+            "tilo_invoke",
+            open("/home/you/Downloads/Win11.iso"),
+        ))
+        .unwrap();
+        assert_eq!(reply["opened"]["error"], OPENED_NO_ACTION, "{reply}");
+        assert!(
+            host.invoked().iter().all(|call| call.2 != "import-iso"),
+            "{:?}",
+            host.invoked()
+        );
+
+        let host = Writer::new(Some("import-csv"));
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let reply = run(call(&server, "tilo_invoke", open("/data/in/paper.docx"))).unwrap();
+        assert_eq!(reply["opened"]["error"], OPENED_NO_ACTION, "{reply}");
+        assert_eq!(host.invoked().len(), 1, "nothing but the launch ran");
+    }
+
+    phase opening_a_file_an_instance_holds_returns_that_instance;
+    // workflows (guest run 20260929-200306): opening a workbook Sheets already
+    // held started a second window that imported it again.
+    {
+        let host = Writer::new(Some("import-csv"));
+        let open_files = Arc::new(OpenFiles::default());
+        let session = || {
+            McpServer::new(host.clone(), "workspace".into(), "owner".into())
+                .with_open_files(Arc::clone(&open_files))
+        };
+        let (first, second) = (session(), session());
+        let open = |path: &str| json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": path}});
+        run(async {
+            {
+                call(&first, "tilo_invoke", open("/data/in/Sales.csv"))
+                    .await
+                    .unwrap();
+                let again = call(&second, "tilo_invoke", open("/data/in/Sales.csv"))
+                    .await
+                    .unwrap();
+                assert_eq!(again["peer_id"], 1, "{again}");
+                assert_eq!(again["update"]["state"], "succeeded", "{again}");
+                assert_eq!(again["opened"]["already_open"], true, "{again}");
+                assert!(again["directory"]["resources"].is_array(), "{again}");
+            }
+
+            {
+                call(&first, "tilo_invoke", json!({"peer_id": 1, "resource": DOC, "action": "import-csv", "arguments": {"path": "/data/in/Costs.csv"}}))
+                    .await
+                    .unwrap();
+                let again = call(&second, "tilo_invoke", open("/data/in/Costs.csv"))
+                    .await
+                    .unwrap();
+                assert_eq!(again["opened"]["already_open"], true, "{again}");
+            }
+        });
+        let calls = host.invoked();
+        let launches = calls.iter().filter(|call| call.0 == WORKSPACE).count();
+        assert_eq!(launches, 1, "nothing started a second instance: {calls:?}");
+        let imports = calls
+            .iter()
+            .filter(|call| call.2 == "import-csv")
+            .map(|call| call.3["path"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            imports,
+            ["/data/in/Sales.csv", "/data/in/Costs.csv"],
+            "each file was read once"
+        );
+    }
+
+    phase an_app_that_cannot_open_a_path_says_so_and_still_opens;
+    {
+        let host = Writer::new(None);
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let reply = run(call(
+            &server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
+        ))
+        .unwrap();
+        assert_eq!(reply["peer_id"], 1, "{reply}");
+        assert!(reply["opened"]["error"].is_string(), "{reply}");
+        assert!(reply["directory"]["resources"].is_array(), "{reply}");
+        assert_eq!(host.invoked().len(), 1, "nothing but the launch ran");
+        assert!(
+            run(call(
+                &server,
+                "tilo_invoke",
+                json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": 7}}),
+            ))
+            .is_err()
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_query_page_names_resources_in_full_and_finds_rows_by_most_of_a_needle;
+
+    phase the_workspace_page_offers_a_path_on_opening_an_app;
+    {
+        let server = McpServer::new(
+            Writer::new(Some("open")),
+            "workspace".into(),
+            "owner".into(),
+        );
+        let page = run(call(&server, "tilo_query", json!({"workspace": true}))).unwrap();
+        assert_eq!(
+            resource(&page, "applications.app")["actions"]["open"],
+            "open (path?)",
+            "{page}"
+        );
+        let full = run(call(
+            &server,
+            "tilo_query",
+            json!({"workspace": true, "detail": "full"}),
+        ))
+        .unwrap();
+        assert_eq!(
+            full["rows"][0]["descriptor"]["params"],
+            json!([]),
+            "version 1 rows are as published"
+        );
+    }
+
+    phase workspace_pages_name_their_resources_in_full;
+    // The reference partner proxy provisions file grants from a compact
+    // workspace page: the permission roles' resource, and each app named by the
+    // `app.` prefix of its resource. A handle there left every app ungranted.
+    {
+        let server = McpServer::new(
+            Writer::new(Some("open")),
+            "workspace".into(),
+            "owner".into(),
+        );
+        let page = run(call(&server, "tilo_query", json!({"workspace": true}))).unwrap();
+        let names = page["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|resource| resource["resource"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["app.so.tilo.word-processor", PERMISSIONS], "{page}");
+        let found = run(call(
+            &server,
+            "tilo_query",
+            json!({"workspace": true, "needle": "permission assign"}),
+        ))
+        .unwrap();
+        assert_eq!(found["resources"][0]["resource"], PERMISSIONS, "{found}");
+    }
+
+    phase a_needle_no_row_matches_whole_finds_the_rows_matching_most_of_it;
+    {
+        let server = McpServer::new(
+            Writer::new(Some("open")),
+            "workspace".into(),
+            "owner".into(),
+        );
+        run(async {
+            call(
+                &server,
+                "tilo_invoke",
+                json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+            )
             .await
             .unwrap();
-        assert_eq!(selected["update"]["state"], "failed", "{selected}");
-        assert_eq!(
-            selected["update"]["error"]["message"],
-            "no block has that id"
+            let page = call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "needle": "open paragraph style heading"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(page["partial_match"], true, "{page}");
+            let document = resource(&page, "word_processor.document");
+            let style = document["actions"]["set-paragraph-style"].as_str().unwrap();
+            assert!(
+                style.contains('—'),
+                "a query keeps the description an open directory leaves out: {style}"
+            );
+            let whole = call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "needle": "paragraph style"}),
+            )
+            .await
+            .unwrap();
+            assert!(whole.get("partial_match").is_none(), "{whole}");
+            let full = call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "needle": "open paragraph style heading", "detail": "full"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                full["rows"],
+                json!([]),
+                "version 1 keeps its every-word needle"
+            );
+            let nothing = call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "needle": "zebra quokka"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(nothing["resources"], json!([]), "{nothing}");
+        });
+    }
+
+    phase a_found_resource_lists_every_action_across_the_hosts_pages;
+    {
+        let writer = Writer {
+            listing_page: Some(2),
+            ..Writer::new(Some("open"))
+        };
+        let server = McpServer::new(writer, "workspace".into(), "owner".into());
+        run(async {
+            call(
+                &server,
+                "tilo_invoke",
+                json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+            )
+            .await
+            .unwrap();
+            let page = call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "needle": "save"}),
+            )
+            .await
+            .unwrap();
+            let actions = resource(&page, "word_processor.document")["actions"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            for action in [
+                "read-text",
+                "save-as",
+                "select-block",
+                "apply-style",
+                "set-paragraph-style",
+                "open",
+            ] {
+                assert!(actions.contains(action), "{action}: {page}");
+            }
+            let capped = call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "needle": "save", "max_results": 1}),
+            )
+            .await
+            .unwrap();
+            let actions = resource(&capped, "word_processor.document")["actions"]
+                .as_object()
+                .unwrap();
+            assert_eq!(
+                actions.keys().collect::<Vec<_>>(),
+                ["save-as"],
+                "max_results caps the rows: {capped}"
+            );
+        });
+    }
+
+    phase a_session_pinned_to_full_rows_gets_no_directory;
+    {
+        let server = McpServer::new(
+            Writer::new(Some("open")),
+            "workspace".into(),
+            "owner".into(),
         );
-        assert!(selected.get("adjusted").is_none(), "{selected}");
-        assert_eq!(
-            selected["hint"],
-            format!(
-                "block `{style}` is a session handle for {RICH}; pass that id if you meant the resource"
-            ),
-            "{selected}"
+        run(async {
+            server
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"detail":"full"}}}}}))
+                .await
+                .unwrap();
+            let reply = call(&server, "tilo_invoke", json!({"workspace": true, "revision": "0.0", "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {}}))
+                .await
+                .unwrap();
+            assert_eq!(reply["peer_id"], 1, "{reply}");
+            assert!(reply.get("directory").is_none(), "{reply}");
+        });
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_handle_stands_for_a_long_id_and_a_failed_call_is_never_rerun;
+
+    phase a_handle_in_a_resource_argument_is_expanded_and_text_is_not_replayed;
+    // computer (run 20260930-071012, deck-launch): `set-slide-text` was refused
+    // `slide: "r1"`, the directory's handle for the slide.
+    {
+        let host = Writer::new(Some("open"));
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            call(
+                &server,
+                "tilo_invoke",
+                json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+            )
+            .await
+            .unwrap();
+            let page = call(&server, "tilo_query", json!({"peer_id": 1}))
+                .await
+                .unwrap();
+            let doc = resource(&page, "word_processor.document")["resource"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let style = resource(&page, "tilo.rich-text")["resource"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let styled = call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "apply-style", "arguments": {"style": style}}))
+                .await
+                .unwrap();
+            assert_eq!(styled["update"]["state"], "succeeded", "{styled}");
+            assert!(styled.get("hint").is_none(), "{styled}");
+
+            let selected = call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "select-block", "arguments": {"block": style}}))
+                .await
+                .unwrap();
+            assert_eq!(selected["update"]["state"], "failed", "{selected}");
+            assert_eq!(
+                selected["update"]["error"]["message"],
+                "no block has that id"
+            );
+            assert!(selected.get("adjusted").is_none(), "{selected}");
+            assert_eq!(
+                selected["hint"],
+                format!(
+                    "block `{style}` is a session handle for {RICH}; pass that id if you meant the resource"
+                ),
+                "{selected}"
+            );
+        });
+        let calls = host.invoked();
+        let arguments = |action: &str| {
+            calls
+                .iter()
+                .filter(|call| call.2 == action)
+                .map(|call| call.3.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(arguments("apply-style"), [json!({"style": RICH})]);
+        let selects = arguments("select-block");
+        assert_eq!(selects.len(), 1, "{selects:?}");
+        assert!(
+            selects[0]["block"]
+                .as_str()
+                .is_some_and(|handle| handle.starts_with('r')),
+            "a text argument stays as given: {selects:?}"
         );
-    });
-    let calls = host.invoked();
-    let arguments = |action: &str| {
-        calls
-            .iter()
-            .filter(|call| call.2 == action)
-            .map(|call| call.3.clone())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(arguments("apply-style"), [json!({"style": RICH})]);
-    let selects = arguments("select-block");
-    assert_eq!(selects.len(), 1, "{selects:?}");
-    assert!(
-        selects[0]["block"]
-            .as_str()
-            .is_some_and(|handle| handle.starts_with('r')),
-        "a text argument stays as given: {selects:?}"
-    );
+    }
+
+    phase a_failed_call_with_an_unexpanded_handle_is_not_rerun;
+    {
+        let host = FailingMutationHost::new(false);
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            let page = call(&server, "tilo_query", json!({"peer_id": 1}))
+                .await
+                .unwrap();
+            let handle = resource(&page, "tilo.rich-text")["resource"]
+                .as_str()
+                .unwrap();
+            assert_ne!(handle, RICH);
+            let id = tilo_actions::InvocationId::new();
+            let arguments = mutation_call(handle, id);
+            let reply = call(&server, "tilo_invoke", arguments.clone())
+                .await
+                .unwrap();
+            assert_eq!(
+                host.mutations.lock().unwrap().len(),
+                1,
+                "one admission must apply one mutation"
+            );
+            assert_failed_mutation(&reply, id);
+            let retried = call(&server, "tilo_invoke", arguments).await.unwrap();
+            assert_failed_mutation(&retried, id);
+            let mutations = host.mutations.lock().unwrap();
+            assert_eq!(
+                mutations.len(),
+                1,
+                "same-id retry must retain the original admission"
+            );
+            assert_eq!(mutations[0].invocation, id);
+            assert!(
+                matches!(&mutations[0].argument, InvokeArgument::Json(map) if map["block"] == handle)
+            );
+            drop(mutations);
+        });
+    }
+
+    phase an_admission_refusal_with_a_text_handle_is_not_an_execution_failure;
+    {
+        let host = FailingMutationHost::new(true);
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            let page = call(&server, "tilo_query", json!({"peer_id": 1}))
+                .await
+                .unwrap();
+            let handle = resource(&page, "tilo.rich-text")["resource"]
+                .as_str()
+                .unwrap();
+            let refusal = call(
+                &server,
+                "tilo_invoke",
+                mutation_call(handle, tilo_actions::InvocationId::new()),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(refusal, ActionHostError::NotPermitted.to_string());
+            assert!(host.mutations.lock().unwrap().is_empty());
+        });
+    }
+
+    phase handles_stand_for_long_ids_and_full_ids_keep_working;
+    {
+        let host = Writer::new(Some("open"));
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            call(
+                &server,
+                "tilo_invoke",
+                json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+            )
+            .await
+            .unwrap();
+            let page = call(&server, "tilo_query", json!({"peer_id": 1}))
+                .await
+                .unwrap();
+            let rich = resource(&page, "tilo.rich-text")["resource"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let doc = resource(&page, "word_processor.document")["resource"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert!(rich.starts_with('r') && rich.len() < 6, "{page}");
+            assert!(
+                !page.to_string().contains(DOC),
+                "no long id is repeated: {page}"
+            );
+            let again = call(&server, "tilo_query", json!({"peer_id": 1}))
+                .await
+                .unwrap();
+            assert_eq!(page, again, "a handle names the same resource all session");
+
+            let children = call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "parent_resource": doc}),
+            )
+            .await
+            .unwrap();
+            assert!(
+                resource(&children, "word_processor.document")["actions"]["save-as"].is_string(),
+                "{children}"
+            );
+            let resolved = call(
+                &server,
+                "tilo_resolve",
+                json!({"peer_id": 1, "resource": doc, "action": "save-as"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                resolved["row"]["resource"], doc,
+                "a resolved contract names the resource by its handle"
+            );
+            assert!(!resolved.to_string().contains(DOC), "{resolved}");
+            for name in [doc.as_str(), DOC] {
+                call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": name, "action": "save-as", "arguments": {"path": "/data/out/a.docx"}}))
+                    .await
+                    .unwrap();
+            }
+            let full = call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "detail": "full"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                full["rows"][0]["resource"], RICH,
+                "version 1 rows carry full ids"
+            );
+        });
+        let saves = host
+            .invoked()
+            .into_iter()
+            .filter(|call| call.2 == "save-as")
+            .collect::<Vec<_>>();
+        assert_eq!(saves.len(), 2);
+        assert!(saves.iter().all(|call| call.1 == DOC), "{saves:?}");
+        assert_eq!(
+            page::Handles::default().short("sheets.workbook"),
+            "sheets.workbook"
+        );
+    }
 }
 
 /// A host that mutates before reporting execution failure. The real ledger
@@ -1229,342 +1525,294 @@ fn assert_failed_mutation(reply: &Value, id: tilo_actions::InvocationId) {
     assert!(reply.get("adjusted").is_none(), "{reply}");
 }
 
-#[test]
-fn a_failed_call_with_an_unexpanded_handle_is_not_rerun() {
-    let host = FailingMutationHost::new(false);
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        let page = call(&server, "tilo_query", json!({"peer_id": 1}))
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn one_invoke_runs_its_calls_in_order_once_each;
+
+    phase doc_real_headings_takes_three_tilo_turns;
+    // doc-real-headings (guest run 20260929-142555) took 12 turns: the open
+    // with a file was refused, then three `tilo_query` turns found the
+    // document's actions and a read failed on `pageSize`. The same task now
+    // needs open, read, edit-and-save.
+    {
+        let host = Writer::new(Some("open"));
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let turns = run(async {
+            let mut turns = 0;
+            turns += 1;
+            let opened = call(
+                &server,
+                "tilo_invoke",
+                json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
+            )
             .await
             .unwrap();
-        let handle = resource(&page, "tilo.rich-text")["resource"]
-            .as_str()
+            let document = resource(&opened["directory"], "word_processor.document");
+            let doc = document["resource"].as_str().unwrap().to_owned();
+            let read = &document["actions"]["read-text"];
+            assert!(read.as_str().unwrap().contains("1..64"));
+
+            turns += 1;
+            call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "read-text", "arguments": {"pageSize": 64}}))
+                .await
+                .unwrap();
+
+            turns += 1;
+            for block in ["b.0", "b.2", "b.4"] {
+                call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "select-block", "arguments": {"block": block}}))
+                    .await
+                    .unwrap();
+                call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "set-paragraph-style", "arguments": {"kind": "heading", "level": 2}}))
+                    .await
+                    .unwrap();
+            }
+            call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "save-as", "arguments": {"path": "/data/out/paper.docx"}}))
+                .await
+                .unwrap();
+            turns
+        });
+        assert_eq!(turns, 3);
+        let calls = host.invoked();
+        assert!(
+            calls
+                .iter()
+                .skip(1)
+                .all(|call| call.0 == "1" && call.1 == DOC),
+            "{calls:?}"
+        );
+        assert_eq!(calls.len(), 10);
+    }
+
+    phase an_out_of_range_number_is_refused_with_its_bound_and_never_rerun;
+    // cross-standup asked `read-text` for 200 blocks and was refused. One call
+    // is one invocation: the refusal carries the bound as data and the answer
+    // names it, and nothing runs again with another value. Replaces the bridge
+    // that clamped the number and started a second invocation under a fresh
+    // id, which a retry of the caller's id then repeated.
+    {
+        let host = Writer::new(Some("open"));
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let reply = run(async {
+            call(
+                &server,
+                "tilo_invoke",
+                json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+            )
+            .await
             .unwrap();
-        assert_ne!(handle, RICH);
+            call(
+                &server,
+                "tilo_invoke",
+                json!({"peer_id": 1, "resource": DOC, "action": "read-text", "arguments": {"pageSize": 200}}),
+            )
+            .await
+            .unwrap()
+        });
+        assert_eq!(reply["update"]["state"], "failed", "{reply}");
+        assert_eq!(
+            reply["update"]["error"]["details"],
+            json!({"param": "pageSize", "violation": {"kind": "maximum", "bound": 64}}),
+            "{reply}"
+        );
+        assert_eq!(
+            reply["update"]["error"]["message"],
+            "argument `pageSize` must be at most 64"
+        );
+        assert_eq!(
+            reply["hint"],
+            "pageSize must be at most 64; call again with a value in range, such as 64"
+        );
+        assert!(reply.get("adjusted").is_none(), "{reply}");
+        assert_eq!(read_sizes(&host), [json!(200)], "exactly one invocation");
+    }
+
+    phase a_retried_invocation_id_never_runs_twice;
+    // The caller retries an out-of-range call with its own invocation id, as
+    // the tool tells it to after a lost reply: every start the host sees
+    // carries that id and the caller's own value, so a host that keeps its
+    // ids (as every production host does) runs it at most once.
+    {
+        let host = Writer::new(Some("open"));
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
         let id = tilo_actions::InvocationId::new();
-        let arguments = mutation_call(handle, id);
-        let reply = call(&server, "tilo_invoke", arguments.clone())
+        let read = json!({
+            "peer_id": 1, "resource": DOC, "action": "read-text",
+            "arguments": {"pageSize": 200}, "invocation_id": id.0.to_string()
+        });
+        let (first, again) = run(async {
+            call(
+                &server,
+                "tilo_invoke",
+                json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
+            )
             .await
             .unwrap();
-        assert_eq!(
-            host.mutations.lock().unwrap().len(),
-            1,
-            "one admission must apply one mutation"
-        );
-        assert_failed_mutation(&reply, id);
-        let retried = call(&server, "tilo_invoke", arguments).await.unwrap();
-        assert_failed_mutation(&retried, id);
-        let mutations = host.mutations.lock().unwrap();
-        assert_eq!(
-            mutations.len(),
-            1,
-            "same-id retry must retain the original admission"
-        );
-        assert_eq!(mutations[0].invocation, id);
-        assert!(
-            matches!(&mutations[0].argument, InvokeArgument::Json(map) if map["block"] == handle)
-        );
-        drop(mutations);
-    });
-}
-
-#[test]
-fn an_admission_refusal_with_a_text_handle_is_not_an_execution_failure() {
-    let host = FailingMutationHost::new(true);
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        let page = call(&server, "tilo_query", json!({"peer_id": 1}))
-            .await
-            .unwrap();
-        let handle = resource(&page, "tilo.rich-text")["resource"]
-            .as_str()
-            .unwrap();
-        let refusal = call(
-            &server,
-            "tilo_invoke",
-            mutation_call(handle, tilo_actions::InvocationId::new()),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(refusal, ActionHostError::NotPermitted.to_string());
-        assert!(host.mutations.lock().unwrap().is_empty());
-    });
-}
-
-#[test]
-fn handles_stand_for_long_ids_and_full_ids_keep_working() {
-    let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        call(
-            &server,
-            "tilo_invoke",
-            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
-        )
-        .await
-        .unwrap();
-        let page = call(&server, "tilo_query", json!({"peer_id": 1}))
-            .await
-            .unwrap();
-        let rich = resource(&page, "tilo.rich-text")["resource"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let doc = resource(&page, "word_processor.document")["resource"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        assert!(rich.starts_with('r') && rich.len() < 6, "{page}");
-        assert!(
-            !page.to_string().contains(DOC),
-            "no long id is repeated: {page}"
-        );
-        let again = call(&server, "tilo_query", json!({"peer_id": 1}))
-            .await
-            .unwrap();
-        assert_eq!(page, again, "a handle names the same resource all session");
-
-        let children = call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "parent_resource": doc}),
-        )
-        .await
-        .unwrap();
-        assert!(
-            resource(&children, "word_processor.document")["actions"]["save-as"].is_string(),
-            "{children}"
-        );
-        let resolved = call(
-            &server,
-            "tilo_resolve",
-            json!({"peer_id": 1, "resource": doc, "action": "save-as"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            resolved["row"]["resource"], doc,
-            "a resolved contract names the resource by its handle"
-        );
-        assert!(!resolved.to_string().contains(DOC), "{resolved}");
-        for name in [doc.as_str(), DOC] {
-            call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": name, "action": "save-as", "arguments": {"path": "/data/out/a.docx"}}))
-                .await
-                .unwrap();
+            let first = call(&server, "tilo_invoke", read.clone()).await.unwrap();
+            let again = call(&server, "tilo_invoke", read).await.unwrap();
+            (first, again)
+        });
+        for reply in [&first, &again] {
+            assert_eq!(reply["invocation_id"], id.0.to_string(), "{reply}");
+            assert_eq!(reply["update"]["state"], "failed", "{reply}");
         }
-        let full = call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "detail": "full"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            full["rows"][0]["resource"], RICH,
-            "version 1 rows carry full ids"
-        );
-    });
-    let saves = host
-        .invoked()
-        .into_iter()
-        .filter(|call| call.2 == "save-as")
-        .collect::<Vec<_>>();
-    assert_eq!(saves.len(), 2);
-    assert!(saves.iter().all(|call| call.1 == DOC), "{saves:?}");
-    assert_eq!(
-        page::Handles::default().short("sheets.workbook"),
-        "sheets.workbook"
-    );
-}
-
-#[test]
-fn a_needle_no_row_matches_whole_finds_the_rows_matching_most_of_it() {
-    let server = McpServer::new(
-        Writer::new(Some("open")),
-        "workspace".into(),
-        "owner".into(),
-    );
-    run(async {
-        call(
-            &server,
-            "tilo_invoke",
-            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
-        )
-        .await
-        .unwrap();
-        let page = call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "needle": "open paragraph style heading"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(page["partial_match"], true, "{page}");
-        let document = resource(&page, "word_processor.document");
-        let style = document["actions"]["set-paragraph-style"].as_str().unwrap();
-        assert!(
-            style.contains('—'),
-            "a query keeps the description an open directory leaves out: {style}"
-        );
-        let whole = call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "needle": "paragraph style"}),
-        )
-        .await
-        .unwrap();
-        assert!(whole.get("partial_match").is_none(), "{whole}");
-        let full = call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "needle": "open paragraph style heading", "detail": "full"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            full["rows"],
-            json!([]),
-            "version 1 keeps its every-word needle"
-        );
-        let nothing = call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "needle": "zebra quokka"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(nothing["resources"], json!([]), "{nothing}");
-    });
-}
-
-#[test]
-fn a_found_resource_lists_every_action_across_the_hosts_pages() {
-    let writer = Writer {
-        listing_page: Some(2),
-        ..Writer::new(Some("open"))
-    };
-    let server = McpServer::new(writer, "workspace".into(), "owner".into());
-    run(async {
-        call(
-            &server,
-            "tilo_invoke",
-            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
-        )
-        .await
-        .unwrap();
-        let page = call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "needle": "save"}),
-        )
-        .await
-        .unwrap();
-        let actions = resource(&page, "word_processor.document")["actions"]
-            .as_object()
+        let started: Vec<_> = host
+            .invoked
+            .lock()
             .unwrap()
-            .keys()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        for action in [
-            "read-text",
-            "save-as",
-            "select-block",
-            "apply-style",
-            "set-paragraph-style",
-            "open",
-        ] {
-            assert!(actions.contains(action), "{action}: {page}");
-        }
-        let capped = call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "needle": "save", "max_results": 1}),
-        )
-        .await
-        .unwrap();
-        let actions = resource(&capped, "word_processor.document")["actions"]
-            .as_object()
-            .unwrap();
-        assert_eq!(
-            actions.keys().collect::<Vec<_>>(),
-            ["save-as"],
-            "max_results caps the rows: {capped}"
-        );
-    });
-}
-
-#[test]
-fn a_session_pinned_to_full_rows_gets_no_directory() {
-    let server = McpServer::new(
-        Writer::new(Some("open")),
-        "workspace".into(),
-        "owner".into(),
-    );
-    run(async {
-        server
-            .handle(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"detail":"full"}}}}}))
-            .await
-            .unwrap();
-        let reply = call(&server, "tilo_invoke", json!({"workspace": true, "revision": "0.0", "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {}}))
-            .await
-            .unwrap();
-        assert_eq!(reply["peer_id"], 1, "{reply}");
-        assert!(reply.get("directory").is_none(), "{reply}");
-    });
-}
-
-/// doc-real-headings (guest run 20260929-142555) took 12 turns: the open
-/// with a file was refused, then three `tilo_query` turns found the
-/// document's actions and a read failed on `pageSize`. The same task now
-/// needs open, read, edit-and-save.
-#[test]
-fn doc_real_headings_takes_three_tilo_turns() {
-    let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let turns = run(async {
-        let mut turns = 0;
-        turns += 1;
-        let opened = call(
-            &server,
-            "tilo_invoke",
-            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/paper.docx"}}),
-        )
-        .await
-        .unwrap();
-        let document = resource(&opened["directory"], "word_processor.document");
-        let doc = document["resource"].as_str().unwrap().to_owned();
-        let read = &document["actions"]["read-text"];
-        assert!(read.as_str().unwrap().contains("1..64"));
-
-        turns += 1;
-        call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "read-text", "arguments": {"pageSize": 64}}))
-            .await
-            .unwrap();
-
-        turns += 1;
-        for block in ["b.0", "b.2", "b.4"] {
-            call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "select-block", "arguments": {"block": block}}))
-                .await
-                .unwrap();
-            call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "set-paragraph-style", "arguments": {"kind": "heading", "level": 2}}))
-                .await
-                .unwrap();
-        }
-        call(&server, "tilo_invoke", json!({"peer_id": 1, "resource": doc, "action": "save-as", "arguments": {"path": "/data/out/paper.docx"}}))
-            .await
-            .unwrap();
-        turns
-    });
-    assert_eq!(turns, 3);
-    let calls = host.invoked();
-    assert!(
-        calls
             .iter()
-            .skip(1)
-            .all(|call| call.0 == "1" && call.1 == DOC),
-        "{calls:?}"
-    );
-    assert_eq!(calls.len(), 10);
+            .filter(|request| request.target.address.action == "read-text")
+            .map(|request| request.invocation)
+            .collect();
+        assert!(
+            started.iter().all(|started| *started == id),
+            "no invocation under another id: {started:?}"
+        );
+        assert!(!started.is_empty());
+        assert!(read_sizes(&host).iter().all(|size| *size == json!(200)));
+    }
+
+    phase calls_run_in_order_and_stop_at_the_first_failure;
+    // Edits and the save that follows are one `tilo_invoke`. A failure stops
+    // the batch, and the single-call form is unchanged.
+    {
+        let host = Writer::new(Some("open")).reading("# Memo {#b0}\n");
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let open = run(call(
+            &server,
+            "tilo_invoke",
+            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/memo.docx"}}),
+        ))
+        .unwrap();
+        assert!(
+            open.get("results").is_none(),
+            "one action stays one reply: {open}"
+        );
+        assert_eq!(open["content"]["action"], "read-text");
+        let doc = resource(&open["directory"], "word_processor.document")["resource"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let saved = run(call(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id": 1, "calls": [
+                {"resource": doc, "action": "paste", "arguments": {"markdown": "# Done {#b0}\n"}},
+                {"resource": doc, "action": "save-as", "arguments": {"path": "/data/out/memo.docx"}}
+            ]}),
+        ))
+        .unwrap();
+        assert_eq!(saved["results"].as_array().unwrap().len(), 2, "{saved}");
+        assert!(saved.get("stopped").is_none(), "{saved}");
+        assert!(
+            saved["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|step| step.get("update").is_none() && step.get("error").is_none()),
+            "a step that succeeded is its output alone: {saved}"
+        );
+
+        let before = host.invoked().len();
+        let stopped = run(call(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id": 1, "calls": [
+                {"resource": doc, "action": "select-block", "arguments": {"block": "r-no-such"}},
+                {"resource": doc, "action": "save-as", "arguments": {"path": "/data/out/should-not.docx"}}
+            ]}),
+        ))
+        .unwrap();
+        assert_eq!(stopped["stopped"], 0, "{stopped}");
+        assert_eq!(stopped["results"].as_array().unwrap().len(), 1, "{stopped}");
+        assert_eq!(stopped["results"][0]["update"]["state"], "failed");
+        assert!(
+            host.invoked()
+                .iter()
+                .skip(before)
+                .all(|call| call.2 != "save-as"),
+            "the save after a failure does not run: {:?}",
+            host.invoked()
+        );
+
+        let kept = run(call(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id": 1, "calls": [
+                {"resource": doc, "action": "paste", "arguments": {"markdown": "# Again {#b0}\n"}},
+                {"resource": doc, "action": "select-block", "arguments": {"block": "r-no-such"}}
+            ]}),
+        ))
+        .unwrap();
+        assert_eq!(kept["stopped"], 1, "{kept}");
+        assert!(
+            kept["kept"]
+                .as_str()
+                .is_some_and(|note| note.contains("0..1")),
+            "a batch stopped after a step that ran says that step stayed: {kept}"
+        );
+        assert!(stopped.get("kept").is_none(), "{stopped}");
+
+        let both = run(call(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id": 1, "resource": doc, "action": "paste", "calls": [{"resource": doc, "action": "paste"}]}),
+        ));
+        assert!(both.unwrap_err().contains("not both"));
+        let neither = run(call(&server, "tilo_invoke", json!({"peer_id": 1})));
+        assert!(neither.unwrap_err().contains("or calls"));
+    }
+
+    phase scripted_replays_of_computer_suite_tasks;
+    // The computer suite's shape, scripted: open, then edits and save-as in
+    // one call. `get_computer` and `finish` are the proxy's and the harness's.
+    {
+        // doc-create-memo: open empty, paste the memo, save-as.
+        replay(
+            "doc-create-memo",
+            None,
+            &json!([
+                {"action": "paste", "arguments": {"markdown": "# Memo {#b0}\nShip Friday. {#b1}\n"}},
+                {"action": "save-as", "arguments": {"path": "/data/out/memo.docx"}}
+            ]),
+        );
+        // doc-fix-typos: open the file (its text comes back), fix, save-as.
+        replay(
+            "doc-fix-typos",
+            Some("/data/in/notes.docx"),
+            &json!([
+                {"action": "apply-spelling-suggestion", "arguments": {"block": "b1", "start": 4, "end": 12, "replacement": "committee"}},
+                {"action": "save-as", "arguments": {"path": "/data/out/notes.docx"}}
+            ]),
+        );
+        // cross-standup: open the notes, replace them, save-as.
+        replay(
+            "cross-standup",
+            Some("/data/in/notes.md"),
+            &json!([
+                {"action": "select-all", "arguments": {}},
+                {"action": "paste", "arguments": {"markdown": "# Standup {#b0}\n"}},
+                {"action": "save-as", "arguments": {"path": "/data/out/standup.docx"}}
+            ]),
+        );
+    }
+
+    phase a_batch_invocation_id_is_stable_per_step;
+    {
+        let id = "6a1e5c3a-9d2f-4a6b-8c1e-2f3a4b5c6d7e";
+        assert_eq!(batch_invocation(Some(id), 0).unwrap().as_deref(), Some(id));
+        let second = batch_invocation(Some(id), 1).unwrap().unwrap();
+        assert_ne!(second, id);
+        assert_eq!(
+            batch_invocation(Some(id), 1).unwrap().as_deref(),
+            Some(second.as_str())
+        );
+        assert!(batch_invocation(None, 2).unwrap().is_none());
+        assert!(batch_invocation(Some("not-a-uuid"), 0).is_err());
+    }
 }
 
 /// What `read-text` was asked for, in order.
@@ -1574,220 +1822,6 @@ fn read_sizes(host: &Writer) -> Vec<Value> {
         .filter(|call| call.2 == "read-text")
         .map(|call| call.3["pageSize"].clone())
         .collect()
-}
-
-/// cross-standup asked `read-text` for 200 blocks and was refused. One call
-/// is one invocation: the refusal carries the bound as data and the answer
-/// names it, and nothing runs again with another value. Replaces the bridge
-/// that clamped the number and started a second invocation under a fresh
-/// id, which a retry of the caller's id then repeated.
-#[test]
-fn an_out_of_range_number_is_refused_with_its_bound_and_never_rerun() {
-    let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let reply = run(async {
-        call(
-            &server,
-            "tilo_invoke",
-            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
-        )
-        .await
-        .unwrap();
-        call(
-            &server,
-            "tilo_invoke",
-            json!({"peer_id": 1, "resource": DOC, "action": "read-text", "arguments": {"pageSize": 200}}),
-        )
-        .await
-        .unwrap()
-    });
-    assert_eq!(reply["update"]["state"], "failed", "{reply}");
-    assert_eq!(
-        reply["update"]["error"]["details"],
-        json!({"param": "pageSize", "violation": {"kind": "maximum", "bound": 64}}),
-        "{reply}"
-    );
-    assert_eq!(
-        reply["update"]["error"]["message"],
-        "argument `pageSize` must be at most 64"
-    );
-    assert_eq!(
-        reply["hint"],
-        "pageSize must be at most 64; call again with a value in range, such as 64"
-    );
-    assert!(reply.get("adjusted").is_none(), "{reply}");
-    assert_eq!(read_sizes(&host), [json!(200)], "exactly one invocation");
-}
-
-/// The caller retries an out-of-range call with its own invocation id, as
-/// the tool tells it to after a lost reply: every start the host sees
-/// carries that id and the caller's own value, so a host that keeps its
-/// ids (as every production host does) runs it at most once.
-#[test]
-fn a_retried_invocation_id_never_runs_twice() {
-    let host = Writer::new(Some("open"));
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let id = tilo_actions::InvocationId::new();
-    let read = json!({
-        "peer_id": 1, "resource": DOC, "action": "read-text",
-        "arguments": {"pageSize": 200}, "invocation_id": id.0.to_string()
-    });
-    let (first, again) = run(async {
-        call(
-            &server,
-            "tilo_invoke",
-            json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
-        )
-        .await
-        .unwrap();
-        let first = call(&server, "tilo_invoke", read.clone()).await.unwrap();
-        let again = call(&server, "tilo_invoke", read).await.unwrap();
-        (first, again)
-    });
-    for reply in [&first, &again] {
-        assert_eq!(reply["invocation_id"], id.0.to_string(), "{reply}");
-        assert_eq!(reply["update"]["state"], "failed", "{reply}");
-    }
-    let started: Vec<_> = host
-        .invoked
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|request| request.target.address.action == "read-text")
-        .map(|request| request.invocation)
-        .collect();
-    assert!(
-        started.iter().all(|started| *started == id),
-        "no invocation under another id: {started:?}"
-    );
-    assert!(!started.is_empty());
-    assert!(read_sizes(&host).iter().all(|size| *size == json!(200)));
-}
-
-/// Edits and the save that follows are one `tilo_invoke`. A failure stops
-/// the batch, and the single-call form is unchanged.
-#[test]
-fn calls_run_in_order_and_stop_at_the_first_failure() {
-    let host = Writer::new(Some("open")).reading("# Memo {#b0}\n");
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let open = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": "/data/in/memo.docx"}}),
-    ))
-    .unwrap();
-    assert!(
-        open.get("results").is_none(),
-        "one action stays one reply: {open}"
-    );
-    assert_eq!(open["content"]["action"], "read-text");
-    let doc = resource(&open["directory"], "word_processor.document")["resource"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-
-    let saved = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"peer_id": 1, "calls": [
-            {"resource": doc, "action": "paste", "arguments": {"markdown": "# Done {#b0}\n"}},
-            {"resource": doc, "action": "save-as", "arguments": {"path": "/data/out/memo.docx"}}
-        ]}),
-    ))
-    .unwrap();
-    assert_eq!(saved["results"].as_array().unwrap().len(), 2, "{saved}");
-    assert!(saved.get("stopped").is_none(), "{saved}");
-    assert!(
-        saved["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|step| step.get("update").is_none() && step.get("error").is_none()),
-        "a step that succeeded is its output alone: {saved}"
-    );
-
-    let before = host.invoked().len();
-    let stopped = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"peer_id": 1, "calls": [
-            {"resource": doc, "action": "select-block", "arguments": {"block": "r-no-such"}},
-            {"resource": doc, "action": "save-as", "arguments": {"path": "/data/out/should-not.docx"}}
-        ]}),
-    ))
-    .unwrap();
-    assert_eq!(stopped["stopped"], 0, "{stopped}");
-    assert_eq!(stopped["results"].as_array().unwrap().len(), 1, "{stopped}");
-    assert_eq!(stopped["results"][0]["update"]["state"], "failed");
-    assert!(
-        host.invoked()
-            .iter()
-            .skip(before)
-            .all(|call| call.2 != "save-as"),
-        "the save after a failure does not run: {:?}",
-        host.invoked()
-    );
-
-    let kept = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"peer_id": 1, "calls": [
-            {"resource": doc, "action": "paste", "arguments": {"markdown": "# Again {#b0}\n"}},
-            {"resource": doc, "action": "select-block", "arguments": {"block": "r-no-such"}}
-        ]}),
-    ))
-    .unwrap();
-    assert_eq!(kept["stopped"], 1, "{kept}");
-    assert!(
-        kept["kept"]
-            .as_str()
-            .is_some_and(|note| note.contains("0..1")),
-        "a batch stopped after a step that ran says that step stayed: {kept}"
-    );
-    assert!(stopped.get("kept").is_none(), "{stopped}");
-
-    let both = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"peer_id": 1, "resource": doc, "action": "paste", "calls": [{"resource": doc, "action": "paste"}]}),
-    ));
-    assert!(both.unwrap_err().contains("not both"));
-    let neither = run(call(&server, "tilo_invoke", json!({"peer_id": 1})));
-    assert!(neither.unwrap_err().contains("or calls"));
-}
-
-/// The computer suite's shape, scripted: open, then edits and save-as in
-/// one call. `get_computer` and `finish` are the proxy's and the harness's.
-#[test]
-fn scripted_replays_of_computer_suite_tasks() {
-    // doc-create-memo: open empty, paste the memo, save-as.
-    replay(
-        "doc-create-memo",
-        None,
-        &json!([
-            {"action": "paste", "arguments": {"markdown": "# Memo {#b0}\nShip Friday. {#b1}\n"}},
-            {"action": "save-as", "arguments": {"path": "/data/out/memo.docx"}}
-        ]),
-    );
-    // doc-fix-typos: open the file (its text comes back), fix, save-as.
-    replay(
-        "doc-fix-typos",
-        Some("/data/in/notes.docx"),
-        &json!([
-            {"action": "apply-spelling-suggestion", "arguments": {"block": "b1", "start": 4, "end": 12, "replacement": "committee"}},
-            {"action": "save-as", "arguments": {"path": "/data/out/notes.docx"}}
-        ]),
-    );
-    // cross-standup: open the notes, replace them, save-as.
-    replay(
-        "cross-standup",
-        Some("/data/in/notes.md"),
-        &json!([
-            {"action": "select-all", "arguments": {}},
-            {"action": "paste", "arguments": {"markdown": "# Standup {#b0}\n"}},
-            {"action": "save-as", "arguments": {"path": "/data/out/standup.docx"}}
-        ]),
-    );
 }
 
 fn replay(task: &str, path: Option<&str>, calls: &Value) {
@@ -1850,420 +1884,414 @@ fn replay(task: &str, path: Option<&str>, calls: &Value) {
     );
 }
 
-#[test]
-fn a_batch_invocation_id_is_stable_per_step() {
-    let id = "6a1e5c3a-9d2f-4a6b-8c1e-2f3a4b5c6d7e";
-    assert_eq!(batch_invocation(Some(id), 0).unwrap().as_deref(), Some(id));
-    let second = batch_invocation(Some(id), 1).unwrap().unwrap();
-    assert_ne!(second, id);
-    assert_eq!(
-        batch_invocation(Some(id), 1).unwrap().as_deref(),
-        Some(second.as_str())
-    );
-    assert!(batch_invocation(None, 2).unwrap().is_none());
-    assert!(batch_invocation(Some("not-a-uuid"), 0).is_err());
-}
+tilo_test_env::scenario! {
+    fn a_resource_is_named_by_its_kind_wherever_it_hangs;
 
-#[test]
-fn a_parent_resource_is_named_as_resources_are_named_elsewhere() {
-    let host = Writer::new(Some("open"));
-    *host.running.lock().unwrap() = true;
-    // A fresh connection: no query has issued a handle yet.
-    let server = McpServer::new(host, "workspace".into(), "owner".into());
-    run(async {
-        for parent in ["word_processor.document", DOC] {
-            let children = call(
+    phase a_parent_resource_is_named_as_resources_are_named_elsewhere;
+    {
+        let host = Writer::new(Some("open"));
+        *host.running.lock().unwrap() = true;
+        // A fresh connection: no query has issued a handle yet.
+        let server = McpServer::new(host, "workspace".into(), "owner".into());
+        run(async {
+            for parent in ["word_processor.document", DOC] {
+                let children = call(
+                    &server,
+                    "tilo_query",
+                    json!({"app_id": APP, "parent_resource": parent}),
+                )
+                .await
+                .unwrap();
+                assert!(
+                    resource(&children, "word_processor.document")["actions"]["save-as"].is_string(),
+                    "{parent}: {children}"
+                );
+            }
+            let page = call(&server, "tilo_query", json!({"app_id": APP}))
+                .await
+                .unwrap();
+            let handle = resource(&page, "word_processor.document")["resource"].clone();
+            let by_handle = call(
                 &server,
                 "tilo_query",
-                json!({"app_id": APP, "parent_resource": parent}),
+                json!({"app_id": APP, "parent_resource": handle}),
             )
             .await
             .unwrap();
             assert!(
-                resource(&children, "word_processor.document")["actions"]["save-as"].is_string(),
-                "{parent}: {children}"
+                resource(&by_handle, "word_processor.style")["actions"]["toggle-bold"].is_string(),
+                "{by_handle}"
             );
-        }
-        let page = call(&server, "tilo_query", json!({"app_id": APP}))
-            .await
-            .unwrap();
-        let handle = resource(&page, "word_processor.document")["resource"].clone();
-        let by_handle = call(
-            &server,
-            "tilo_query",
-            json!({"app_id": APP, "parent_resource": handle}),
-        )
-        .await
-        .unwrap();
-        assert!(
-            resource(&by_handle, "word_processor.style")["actions"]["toggle-bold"].is_string(),
-            "{by_handle}"
-        );
 
-        let leaf = call(
-            &server,
-            "tilo_query",
-            json!({"app_id": APP, "parent_resource": RICH}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            leaf["resources"],
-            json!([]),
-            "a resource with nothing beneath it lists nothing"
-        );
-
-        for (unknown, says) in [
-            ("r42", "no handle of this connection"),
-            ("canvas.artwork", "nothing is listed under canvas.artwork"),
-        ] {
-            let refused = call(
+            let leaf = call(
                 &server,
                 "tilo_query",
-                json!({"app_id": APP, "parent_resource": unknown}),
+                json!({"app_id": APP, "parent_resource": RICH}),
             )
             .await
-            .unwrap_err();
-            assert!(
-                refused.contains(says) && refused.contains("Document (word_processor.document)"),
-                "{refused}"
+            .unwrap();
+            assert_eq!(
+                leaf["resources"],
+                json!([]),
+                "a resource with nothing beneath it lists nothing"
             );
-        }
-    });
-}
 
-#[test]
-fn a_resource_named_by_kind_right_after_a_write_is_found_however_far_its_listing_reaches() {
-    let mut host = Writer::new(Some("open"));
-    host.walks_after_write = true;
-    *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        let page = call(
-            &server,
-            "tilo_query",
-            json!({"app_id": APP, "needle": "select block"}),
-        )
-        .await
-        .unwrap();
-        let doc = resource(&page, "word_processor.document")["resource"].clone();
-        let write = json!({"app_id": APP, "resource": doc, "action": "select-block", "arguments": {"block": "b0"}});
-        call(&server, "tilo_invoke", write).await.unwrap();
-        host.asked();
-        for action in ["save-as", "select-block"] {
-            let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": action, "arguments": {}});
+            for (unknown, says) in [
+                ("r42", "no handle of this connection"),
+                ("canvas.artwork", "nothing is listed under canvas.artwork"),
+            ] {
+                let refused = call(
+                    &server,
+                    "tilo_query",
+                    json!({"app_id": APP, "parent_resource": unknown}),
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    refused.contains(says) && refused.contains("Document (word_processor.document)"),
+                    "{refused}"
+                );
+            }
+        });
+    }
+
+    phase a_resource_named_by_kind_right_after_a_write_is_found_however_far_its_listing_reaches;
+    {
+        let mut host = Writer::new(Some("open"));
+        host.walks_after_write = true;
+        *host.running.lock().unwrap() = true;
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            let page = call(
+                &server,
+                "tilo_query",
+                json!({"app_id": APP, "needle": "select block"}),
+            )
+            .await
+            .unwrap();
+            let doc = resource(&page, "word_processor.document")["resource"].clone();
+            let write = json!({"app_id": APP, "resource": doc, "action": "select-block", "arguments": {"block": "b0"}});
+            call(&server, "tilo_invoke", write).await.unwrap();
+            host.asked();
+            for action in ["save-as", "select-block"] {
+                let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": action, "arguments": {}});
+                let ran = call(&server, "tilo_invoke", by_kind).await;
+                assert!(ran.is_ok(), "{action} by kind after a write: {ran:?}");
+            }
+            let listings = host
+                .asked()
+                .into_iter()
+                .filter(|asked| {
+                    matches!(asked, Asked::Query(query)
+                        if query.provider.is_some()
+                            && query.resource_name.is_none()
+                            && query.target.is_none()
+                            && query.needle.is_empty()
+                            && query.parent_resource.is_none())
+                })
+                .count();
+            assert_eq!(listings, 0, "the host is asked the name, not paged for it");
+        });
+        let invoked = host.invoked();
+        assert_eq!(invoked.len(), 3, "{invoked:?}");
+        assert!(invoked.iter().all(|call| call.1 == DOC), "{invoked:?}");
+    }
+
+    phase a_resource_that_hangs_under_its_app_is_named_by_its_kind_without_browsing;
+    {
+        // A browser's page is a child of the browser's own row, and a caller
+        // names it `browser.page` before it has browsed anything: the name is
+        // what an app's directory answers for, however deep the resource sits.
+        let host = Writer::new(Some("open")).nested();
+        *host.running.lock().unwrap() = true;
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
             let ran = call(&server, "tilo_invoke", by_kind).await;
-            assert!(ran.is_ok(), "{action} by kind after a write: {ran:?}");
-        }
-        let listings = host
-            .asked()
-            .into_iter()
-            .filter(|asked| {
-                matches!(asked, Asked::Query(query)
-                    if query.provider.is_some()
-                        && query.resource_name.is_none()
-                        && query.target.is_none()
-                        && query.needle.is_empty()
-                        && query.parent_resource.is_none())
-            })
-            .count();
-        assert_eq!(listings, 0, "the host is asked the name, not paged for it");
-    });
-    let invoked = host.invoked();
-    assert_eq!(invoked.len(), 3, "{invoked:?}");
-    assert!(invoked.iter().all(|call| call.1 == DOC), "{invoked:?}");
-}
-
-#[test]
-fn a_resource_that_hangs_under_its_app_is_named_by_its_kind_without_browsing() {
-    // A browser's page is a child of the browser's own row, and a caller
-    // names it `browser.page` before it has browsed anything: the name is
-    // what an app's directory answers for, however deep the resource sits.
-    let host = Writer::new(Some("open")).nested();
-    *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
-        let ran = call(&server, "tilo_invoke", by_kind).await;
-        assert!(ran.is_ok(), "a nested resource by kind: {ran:?}");
-        // A handle stands for the resource by kind, whatever level it sits at.
-        let resolved = call(
-            &server,
-            "tilo_resolve",
-            json!({"app_id": APP, "resource": "word_processor.document", "action": "read-text"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            resolved["row"]["resource_kind"], "word_processor.document",
-            "{resolved}"
-        );
-        // The handle names the very resource the kind did.
-        let read = call(
-            &server,
-            "tilo_invoke",
-            json!({"app_id": APP, "resource": resolved["row"]["resource"], "action": "read-text", "arguments": {"pageSize": 1}}),
-        )
-        .await;
-        assert!(
-            read.is_ok(),
-            "the handle resolves to the same row: {read:?}"
-        );
-    });
-    let invoked = host.invoked();
-    assert_eq!(invoked.len(), 2, "{invoked:?}");
-    assert!(
-        invoked.iter().all(|call| call.1 == DOC),
-        "both went to the nested document: {invoked:?}"
-    );
-}
-
-#[test]
-fn a_page_no_listing_shows_is_still_named_by_its_kind() {
-    // A browser publishes no row for its page: the page is one resource whose
-    // actions hang under its own id, so it is at no level a listing shows and
-    // no container lists it. A caller that names `browser.page` before
-    // browsing anything is answered for all the same; a caller descending
-    // listings alone leaves the page unfound and is told no resource of that
-    // kind is here.
-    let host = Writer::new(Some("open")).nested().floating();
-    *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
-        let ran = call(&server, "tilo_invoke", by_kind).await;
-        assert!(ran.is_ok(), "a resource two levels down, by kind: {ran:?}");
-        let resolved = call(
-            &server,
-            "tilo_resolve",
-            json!({"app_id": APP, "resource": "word_processor.document", "action": "read-text"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            resolved["row"]["resource_kind"], "word_processor.document",
-            "{resolved}"
-        );
-        let read = call(
-            &server,
-            "tilo_invoke",
-            json!({"app_id": APP, "resource": resolved["row"]["resource"], "action": "read-text", "arguments": {"pageSize": 1}}),
-        )
-        .await;
-        assert!(
-            read.is_ok(),
-            "the handle resolves to the same row: {read:?}"
-        );
-    });
-    let invoked = host.invoked();
-    assert_eq!(invoked.len(), 2, "{invoked:?}");
-    assert!(
-        invoked.iter().all(|call| call.1 == DOC),
-        "both went to the bound document: {invoked:?}"
-    );
-}
-
-#[test]
-fn an_app_and_its_resources_are_named_as_an_agent_sees_them() {
-    let host = Writer::new(Some("open"));
-    *host.running.lock().unwrap() = true;
-    // A fresh connection: no query has issued a handle yet.
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        let by_kind = json!({"app_id": "word-processor", "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
-        call(&server, "tilo_invoke", by_kind).await.unwrap();
-
-        let resolved = call(
-            &server,
-            "tilo_resolve",
-            json!({"app_id": APP, "resource": "word_processor.document", "action": "read-text"}),
-        )
-        .await
-        .unwrap();
-        let param = &resolved["row"]["descriptor"]["params"][0];
-        assert_eq!(param["schema"]["type"], "integer", "{resolved}");
-        assert!(
-            resolved["row"].get("visibility_action").is_none(),
-            "nothing is said to be null: {resolved}"
-        );
-        assert!(
-            param.get("ty").is_none() && param.get("nullable").is_none(),
-            "the schema says the type once: {resolved}"
-        );
-
-        let unknown_app = call(&server, "tilo_query", json!({"app_id": "sheets"}))
-            .await
-            .unwrap_err();
-        assert!(
-            unknown_app.contains("running: so.tilo.word-processor"),
-            "{unknown_app}"
-        );
-
-        let ambiguous = call(
-            &server,
-            "tilo_invoke",
-            json!({"app_id": APP, "resource": "document", "action": "save-as"}),
-        )
-        .await
-        .unwrap_err();
-        assert!(ambiguous.contains("names 2 resources"), "{ambiguous}");
-
-        let stale = call(
-            &server,
-            "tilo_invoke",
-            json!({"app_id": APP, "resource": "r7", "action": "save-as"}),
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            stale.contains("no handle of this connection")
-                && stale.contains("Document (word_processor.document)"),
-            "{stale}"
-        );
-
-        let no_action = call(
-            &server,
-            "tilo_resolve",
-            json!({"app_id": APP, "resource": "word_processor.document", "action": "print"}),
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            no_action.contains("has no action print") && no_action.contains("save-as"),
-            "{no_action}"
-        );
-    });
-    let saves = host
-        .invoked()
-        .into_iter()
-        .filter(|call| call.2 == "save-as")
-        .collect::<Vec<_>>();
-    assert_eq!(saves.len(), 1, "{saves:?}");
-    assert_eq!(saves[0].1, DOC, "the kind named the document");
-}
-
-#[test]
-fn an_edit_and_history_named_by_kind_reach_the_same_discovered_record() {
-    let host = Writer::new(Some("history"));
-    *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        let page = call(&server, "tilo_query", json!({"app_id": APP}))
+            assert!(ran.is_ok(), "a nested resource by kind: {ran:?}");
+            // A handle stands for the resource by kind, whatever level it sits at.
+            let resolved = call(
+                &server,
+                "tilo_resolve",
+                json!({"app_id": APP, "resource": "word_processor.document", "action": "read-text"}),
+            )
             .await
             .unwrap();
-        let handle = resource(&page, "word_processor.document")["resource"].clone();
-        let details = call(
-            &server,
-            "tilo_query",
-            json!({"app_id": APP, "parent_resource": handle}),
-        )
-        .await
-        .unwrap();
-        assert!(resource(&details, "word_processor.document")["actions"]["history"].is_string());
-        for action in ["save-as", "history"] {
+            assert_eq!(
+                resolved["row"]["resource_kind"], "word_processor.document",
+                "{resolved}"
+            );
+            // The handle names the very resource the kind did.
+            let read = call(
+                &server,
+                "tilo_invoke",
+                json!({"app_id": APP, "resource": resolved["row"]["resource"], "action": "read-text", "arguments": {"pageSize": 1}}),
+            )
+            .await;
+            assert!(
+                read.is_ok(),
+                "the handle resolves to the same row: {read:?}"
+            );
+        });
+        let invoked = host.invoked();
+        assert_eq!(invoked.len(), 2, "{invoked:?}");
+        assert!(
+            invoked.iter().all(|call| call.1 == DOC),
+            "both went to the nested document: {invoked:?}"
+        );
+    }
+
+    phase a_page_no_listing_shows_is_still_named_by_its_kind;
+    {
+        // A browser publishes no row for its page: the page is one resource whose
+        // actions hang under its own id, so it is at no level a listing shows and
+        // no container lists it. A caller that names `browser.page` before
+        // browsing anything is answered for all the same; a caller descending
+        // listings alone leaves the page unfound and is told no resource of that
+        // kind is here.
+        let host = Writer::new(Some("open")).nested().floating();
+        *host.running.lock().unwrap() = true;
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
+            let ran = call(&server, "tilo_invoke", by_kind).await;
+            assert!(ran.is_ok(), "a resource two levels down, by kind: {ran:?}");
+            let resolved = call(
+                &server,
+                "tilo_resolve",
+                json!({"app_id": APP, "resource": "word_processor.document", "action": "read-text"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                resolved["row"]["resource_kind"], "word_processor.document",
+                "{resolved}"
+            );
+            let read = call(
+                &server,
+                "tilo_invoke",
+                json!({"app_id": APP, "resource": resolved["row"]["resource"], "action": "read-text", "arguments": {"pageSize": 1}}),
+            )
+            .await;
+            assert!(
+                read.is_ok(),
+                "the handle resolves to the same row: {read:?}"
+            );
+        });
+        let invoked = host.invoked();
+        assert_eq!(invoked.len(), 2, "{invoked:?}");
+        assert!(
+            invoked.iter().all(|call| call.1 == DOC),
+            "both went to the bound document: {invoked:?}"
+        );
+    }
+
+    phase an_app_and_its_resources_are_named_as_an_agent_sees_them;
+    {
+        let host = Writer::new(Some("open"));
+        *host.running.lock().unwrap() = true;
+        // A fresh connection: no query has issued a handle yet.
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            let by_kind = json!({"app_id": "word-processor", "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
+            call(&server, "tilo_invoke", by_kind).await.unwrap();
+
+            let resolved = call(
+                &server,
+                "tilo_resolve",
+                json!({"app_id": APP, "resource": "word_processor.document", "action": "read-text"}),
+            )
+            .await
+            .unwrap();
+            let param = &resolved["row"]["descriptor"]["params"][0];
+            assert_eq!(param["schema"]["type"], "integer", "{resolved}");
+            assert!(
+                resolved["row"].get("visibility_action").is_none(),
+                "nothing is said to be null: {resolved}"
+            );
+            assert!(
+                param.get("ty").is_none() && param.get("nullable").is_none(),
+                "the schema says the type once: {resolved}"
+            );
+
+            let unknown_app = call(&server, "tilo_query", json!({"app_id": "sheets"}))
+                .await
+                .unwrap_err();
+            assert!(
+                unknown_app.contains("running: so.tilo.word-processor"),
+                "{unknown_app}"
+            );
+
+            let ambiguous = call(
+                &server,
+                "tilo_invoke",
+                json!({"app_id": APP, "resource": "document", "action": "save-as"}),
+            )
+            .await
+            .unwrap_err();
+            assert!(ambiguous.contains("names 2 resources"), "{ambiguous}");
+
+            let stale = call(
+                &server,
+                "tilo_invoke",
+                json!({"app_id": APP, "resource": "r7", "action": "save-as"}),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                stale.contains("no handle of this connection")
+                    && stale.contains("Document (word_processor.document)"),
+                "{stale}"
+            );
+
+            let no_action = call(
+                &server,
+                "tilo_resolve",
+                json!({"app_id": APP, "resource": "word_processor.document", "action": "print"}),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                no_action.contains("has no action print") && no_action.contains("save-as"),
+                "{no_action}"
+            );
+        });
+        let saves = host
+            .invoked()
+            .into_iter()
+            .filter(|call| call.2 == "save-as")
+            .collect::<Vec<_>>();
+        assert_eq!(saves.len(), 1, "{saves:?}");
+        assert_eq!(saves[0].1, DOC, "the kind named the document");
+    }
+
+    phase an_edit_and_history_named_by_kind_reach_the_same_discovered_record;
+    {
+        let host = Writer::new(Some("history"));
+        *host.running.lock().unwrap() = true;
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            let page = call(&server, "tilo_query", json!({"app_id": APP}))
+                .await
+                .unwrap();
+            let handle = resource(&page, "word_processor.document")["resource"].clone();
+            let details = call(
+                &server,
+                "tilo_query",
+                json!({"app_id": APP, "parent_resource": handle}),
+            )
+            .await
+            .unwrap();
+            assert!(resource(&details, "word_processor.document")["actions"]["history"].is_string());
+            for action in ["save-as", "history"] {
+                let reply = call(
+                    &server,
+                    "tilo_invoke",
+                    json!({
+                        "app_id": APP, "resource": "word_processor.document", "action": action
+                    }),
+                )
+                .await
+                .unwrap();
+                assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+            }
             let reply = call(
                 &server,
                 "tilo_invoke",
                 json!({
-                    "app_id": APP, "resource": "word_processor.document", "action": action
+                    "app_id": APP, "resource": handle, "action": "history"
                 }),
             )
             .await
             .unwrap();
             assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+        });
+        let invoked = host.invoked();
+        assert_eq!(invoked.len(), 3, "{invoked:?}");
+        for (_, record, _, _) in invoked {
+            assert_eq!(
+                record, DOC,
+                "edits and history share the actual discovered record"
+            );
         }
-        let reply = call(
-            &server,
-            "tilo_invoke",
-            json!({
-                "app_id": APP, "resource": handle, "action": "history"
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
-    });
-    let invoked = host.invoked();
-    assert_eq!(invoked.len(), 3, "{invoked:?}");
-    for (_, record, _, _) in invoked {
-        assert_eq!(
-            record, DOC,
-            "edits and history share the actual discovered record"
-        );
     }
 }
 
-#[test]
-fn directory_failures_are_not_reported_as_missing_resources() {
-    for tool in ["tilo_invoke", "tilo_resolve"] {
-        for failure in [
-            ActionHostError::Unavailable {
-                reason: "the original directory is disconnected".into(),
-            },
-            ActionHostError::NotPermitted,
-        ] {
-            let expected = failure.to_string();
-            let host = Writer::new(Some("history"));
+tilo_test_env::scenario! {
+    fn directory_failures_are_not_reported_as_missing;
+
+    phase directory_failures_are_not_reported_as_missing_resources;
+    {
+        for tool in ["tilo_invoke", "tilo_resolve"] {
+            for failure in [
+                ActionHostError::Unavailable {
+                    reason: "the original directory is disconnected".into(),
+                },
+                ActionHostError::NotPermitted,
+            ] {
+                let expected = failure.to_string();
+                let host = Writer::new(Some("history"));
+                *host.running.lock().unwrap() = true;
+                *host.query_failure.lock().unwrap() = Some(DirectoryFailure {
+                    parent: None,
+                    error: failure,
+                });
+                let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+                let error = run(call(
+                    &server,
+                    tool,
+                    json!({
+                        "app_id": APP, "resource": "word_processor.document", "action": "history",
+                        "revision": "v5"
+                    }),
+                ))
+                .unwrap_err();
+                assert!(error.contains(&expected), "{tool}: {error}");
+                assert!(!error.contains("no resource"), "{tool}: {error}");
+                assert!(host.invoked().is_empty(), "a failed query starts no action");
+                if tool == "tilo_resolve" {
+                    assert!(
+                        host.asked().iter().any(|asked| matches!(
+                            asked,
+                            Asked::Query(query) if query.target.is_some()
+                        )),
+                        "resolve must reach its target before the alias query fails"
+                    );
+                }
+            }
+        }
+    }
+
+    phase directory_failures_are_not_reported_as_missing_actions;
+    {
+        for tool in ["tilo_invoke", "tilo_resolve"] {
+            let host = Writer::new(None);
             *host.running.lock().unwrap() = true;
             *host.query_failure.lock().unwrap() = Some(DirectoryFailure {
-                parent: None,
-                error: failure,
+                parent: Some(DOC.into()),
+                error: ActionHostError::Unavailable {
+                    reason: "the original action directory is disconnected".into(),
+                },
             });
             let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
             let error = run(call(
                 &server,
                 tool,
                 json!({
-                    "app_id": APP, "resource": "word_processor.document", "action": "history",
-                    "revision": "v5"
+                    "app_id": APP, "resource": DOC, "action": "history", "revision": "v5"
                 }),
             ))
             .unwrap_err();
-            assert!(error.contains(&expected), "{tool}: {error}");
+            assert!(
+                error.contains("the original action directory is disconnected"),
+                "{tool}: {error}"
+            );
             assert!(!error.contains("no resource"), "{tool}: {error}");
-            assert!(host.invoked().is_empty(), "a failed query starts no action");
-            if tool == "tilo_resolve" {
-                assert!(
-                    host.asked().iter().any(|asked| matches!(
-                        asked,
-                        Asked::Query(query) if query.target.is_some()
-                    )),
-                    "resolve must reach its target before the alias query fails"
-                );
-            }
+            assert!(
+                host.invoked().is_empty(),
+                "a missing action cannot dispatch"
+            );
         }
-    }
-}
-
-#[test]
-fn directory_failures_are_not_reported_as_missing_actions() {
-    for tool in ["tilo_invoke", "tilo_resolve"] {
-        let host = Writer::new(None);
-        *host.running.lock().unwrap() = true;
-        *host.query_failure.lock().unwrap() = Some(DirectoryFailure {
-            parent: Some(DOC.into()),
-            error: ActionHostError::Unavailable {
-                reason: "the original action directory is disconnected".into(),
-            },
-        });
-        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-        let error = run(call(
-            &server,
-            tool,
-            json!({
-                "app_id": APP, "resource": DOC, "action": "history", "revision": "v5"
-            }),
-        ))
-        .unwrap_err();
-        assert!(
-            error.contains("the original action directory is disconnected"),
-            "{tool}: {error}"
-        );
-        assert!(!error.contains("no resource"), "{tool}: {error}");
-        assert!(
-            host.invoked().is_empty(),
-            "a missing action cannot dispatch"
-        );
     }
 }
 
@@ -2281,137 +2309,141 @@ fn toggle_bold() -> Value {
     json!({"resource": STYLE, "action": "toggle-bold"})
 }
 
-/// #3870: an agent that listed or browsed an instance acts on it without
-/// asking the host anything first.
-#[test]
-fn invoke_on_a_seen_peer_asks_no_catalogue_question() {
-    let host = Writer::new(None);
-    *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "needle": "bold"}),
-        )
-        .await
-        .unwrap();
-        host.asked();
-        let reply = call(
-            &server,
-            "tilo_invoke",
-            json!({"peer_id": 1, "resource": STYLE, "action": "toggle-bold"}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
-    });
-    assert_eq!(host.asked(), [STARTED]);
-}
+tilo_test_env::scenario! {
+    fn a_seen_peer_is_acted_on_without_asking_the_catalogue_again;
 
-/// #3870: a batch asks at most once before its first step, and never
-/// between steps; listing instances asks for providers only.
-#[test]
-fn a_batch_asks_at_most_once_before_its_first_step() {
-    let host = Writer::new(None);
-    *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let steps = (0..10).map(|_| toggle_bold()).collect::<Vec<_>>();
-    run(async {
-        call(&server, "tilo_list_apps", json!({})).await.unwrap();
-        let listed = host.asked();
-        assert_eq!(listed.len(), 1, "{listed:?}");
-        assert!(lists_instances(&listed[0]), "{listed:?}");
-
-        let reply = call(
-            &server,
-            "tilo_invoke",
-            json!({"peer_id": 1, "calls": steps}),
-        )
-        .await
-        .unwrap();
-        assert!(reply.get("stopped").is_none(), "{reply}");
-    });
-    assert_eq!(host.asked(), vec![STARTED; 10]);
-
-    // A session that never listed them, naming the app by id: one list.
-    let fresh = Writer::new(None);
-    *fresh.running.lock().unwrap() = true;
-    let server = McpServer::new(fresh.clone(), "workspace".into(), "owner".into());
-    let steps = (0..10).map(|_| toggle_bold()).collect::<Vec<_>>();
-    run(async {
-        let reply = call(
-            &server,
-            "tilo_invoke",
-            json!({"app_id": APP, "calls": steps}),
-        )
-        .await
-        .unwrap();
-        assert!(reply.get("stopped").is_none(), "{reply}");
-    });
-    let asked = fresh.asked();
-    assert_eq!(asked.len(), 11, "{asked:?}");
-    assert!(lists_instances(&asked[0]), "{asked:?}");
-    assert_eq!(asked[1..], vec![STARTED; 10]);
-}
-
-/// #3870: an instance the session saw that has gone since is refused as
-/// before, by asking once the host refused the call; a browse never takes
-/// it as live.
-#[test]
-fn a_seen_peer_that_has_gone_is_refused_as_unavailable() {
-    let host = Writer::new(None);
-    *host.running.lock().unwrap() = true;
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    run(async {
-        call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "needle": "bold"}),
-        )
-        .await
-        .unwrap();
-        *host.running.lock().unwrap() = false;
-        host.asked();
-        let refused = call(
-            &server,
-            "tilo_invoke",
-            json!({"peer_id": 1, "resource": STYLE, "action": "toggle-bold"}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(refused, "Unavailable live application instance");
-        let asked = host.asked();
-        assert_eq!(asked.len(), 2, "{asked:?}");
-        assert_eq!(asked[0], STARTED);
-        assert!(lists_instances(&asked[1]), "{asked:?}");
-
-        // Gone, it is asked about before the next call, and not started.
-        let again = call(
-            &server,
-            "tilo_invoke",
-            json!({"peer_id": 1, "resource": STYLE, "action": "toggle-bold"}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(again, "Unavailable live application instance");
-        let asked = host.asked();
-        assert_eq!(asked.len(), 1, "{asked:?}");
-        assert!(lists_instances(&asked[0]), "{asked:?}");
-
-        // Live again under a new list, a browse still asks first.
+    phase invoke_on_a_seen_peer_asks_no_catalogue_question;
+    // #3870: an agent that listed or browsed an instance acts on it without
+    // asking the host anything first.
+    {
+        let host = Writer::new(None);
         *host.running.lock().unwrap() = true;
-        call(&server, "tilo_list_apps", json!({})).await.unwrap();
-        *host.running.lock().unwrap() = false;
-        host.asked();
-        let browsed = call(
-            &server,
-            "tilo_query",
-            json!({"peer_id": 1, "needle": "bold"}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(browsed, "Unavailable live application instance");
-    });
-    assert!(host.invoked().is_empty());
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "needle": "bold"}),
+            )
+            .await
+            .unwrap();
+            host.asked();
+            let reply = call(
+                &server,
+                "tilo_invoke",
+                json!({"peer_id": 1, "resource": STYLE, "action": "toggle-bold"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(reply["update"]["state"], "succeeded", "{reply}");
+        });
+        assert_eq!(host.asked(), [STARTED]);
+    }
+
+    phase a_batch_asks_at_most_once_before_its_first_step;
+    // #3870: a batch asks at most once before its first step, and never
+    // between steps; listing instances asks for providers only.
+    {
+        let host = Writer::new(None);
+        *host.running.lock().unwrap() = true;
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        let steps = (0..10).map(|_| toggle_bold()).collect::<Vec<_>>();
+        run(async {
+            call(&server, "tilo_list_apps", json!({})).await.unwrap();
+            let listed = host.asked();
+            assert_eq!(listed.len(), 1, "{listed:?}");
+            assert!(lists_instances(&listed[0]), "{listed:?}");
+
+            let reply = call(
+                &server,
+                "tilo_invoke",
+                json!({"peer_id": 1, "calls": steps}),
+            )
+            .await
+            .unwrap();
+            assert!(reply.get("stopped").is_none(), "{reply}");
+        });
+        assert_eq!(host.asked(), vec![STARTED; 10]);
+
+        // A session that never listed them, naming the app by id: one list.
+        let fresh = Writer::new(None);
+        *fresh.running.lock().unwrap() = true;
+        let server = McpServer::new(fresh.clone(), "workspace".into(), "owner".into());
+        let steps = (0..10).map(|_| toggle_bold()).collect::<Vec<_>>();
+        run(async {
+            let reply = call(
+                &server,
+                "tilo_invoke",
+                json!({"app_id": APP, "calls": steps}),
+            )
+            .await
+            .unwrap();
+            assert!(reply.get("stopped").is_none(), "{reply}");
+        });
+        let asked = fresh.asked();
+        assert_eq!(asked.len(), 11, "{asked:?}");
+        assert!(lists_instances(&asked[0]), "{asked:?}");
+        assert_eq!(asked[1..], vec![STARTED; 10]);
+    }
+
+    phase a_seen_peer_that_has_gone_is_refused_as_unavailable;
+    // #3870: an instance the session saw that has gone since is refused as
+    // before, by asking once the host refused the call; a browse never takes
+    // it as live.
+    {
+        let host = Writer::new(None);
+        *host.running.lock().unwrap() = true;
+        let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
+        run(async {
+            call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "needle": "bold"}),
+            )
+            .await
+            .unwrap();
+            *host.running.lock().unwrap() = false;
+            host.asked();
+            let refused = call(
+                &server,
+                "tilo_invoke",
+                json!({"peer_id": 1, "resource": STYLE, "action": "toggle-bold"}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(refused, "Unavailable live application instance");
+            let asked = host.asked();
+            assert_eq!(asked.len(), 2, "{asked:?}");
+            assert_eq!(asked[0], STARTED);
+            assert!(lists_instances(&asked[1]), "{asked:?}");
+
+            // Gone, it is asked about before the next call, and not started.
+            let again = call(
+                &server,
+                "tilo_invoke",
+                json!({"peer_id": 1, "resource": STYLE, "action": "toggle-bold"}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(again, "Unavailable live application instance");
+            let asked = host.asked();
+            assert_eq!(asked.len(), 1, "{asked:?}");
+            assert!(lists_instances(&asked[0]), "{asked:?}");
+
+            // Live again under a new list, a browse still asks first.
+            *host.running.lock().unwrap() = true;
+            call(&server, "tilo_list_apps", json!({})).await.unwrap();
+            *host.running.lock().unwrap() = false;
+            host.asked();
+            let browsed = call(
+                &server,
+                "tilo_query",
+                json!({"peer_id": 1, "needle": "bold"}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(browsed, "Unavailable live application instance");
+        });
+        assert!(host.invoked().is_empty());
+    }
 }

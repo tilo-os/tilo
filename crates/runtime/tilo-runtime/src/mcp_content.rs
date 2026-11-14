@@ -108,46 +108,50 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn a_page_within_budget_is_left_whole() {
-        let mut page = json!({"content":{"markdown":"# Title {#b0}\n"},"nextCursor":null});
-        let before = page.clone();
-        assert!(!fit(&mut page, CONTENT_BYTES));
-        assert_eq!(page, before);
-    }
+    tilo_test_env::scenario! {
+        fn a_page_is_fitted_to_its_budget;
 
-    #[test]
-    fn long_text_is_cut_at_a_line_and_loses_its_cursor() {
-        let markdown = (0..400)
-            .map(|n| format!("Paragraph {n} of the report. {{#b{n}}}\n"))
-            .collect::<Vec<_>>()
-            .concat();
-        let mut page = json!({"version":1,"content":{"markdown":markdown},"nextCursor":"c1"});
-        assert!(fit(&mut page, CONTENT_BYTES));
-        assert!(page.to_string().len() <= CONTENT_BYTES);
-        let cut = page["content"]["markdown"].as_str().unwrap();
-        assert!(cut.starts_with("Paragraph 0 of the report. {#b0}\n"));
-        assert!(cut.ends_with("}\n…"), "cut inside a line");
-        assert_eq!(page["version"], 1);
-        assert!(page.get("nextCursor").is_none());
-    }
+        phase a_page_within_budget_is_left_whole;
+        {
+            let mut page = json!({"content":{"markdown":"# Title {#b0}\n"},"nextCursor":null});
+            let before = page.clone();
+            assert!(!fit(&mut page, CONTENT_BYTES));
+            assert_eq!(page, before);
+        }
 
-    #[test]
-    fn many_rows_lose_whole_rows_from_the_end() {
-        let rows: Vec<Value> = (0..2000)
-            .map(|n| json!([format!("name {n}"), n, "x@example.com"]))
-            .collect();
-        let mut page =
-            json!({"content":{"sheet":"s","range":"A1:C2000","rows":rows,"formulas":{},"bold":[]}});
-        assert!(fit(&mut page, CONTENT_BYTES));
-        assert!(page.to_string().len() <= CONTENT_BYTES);
-        let rows = page["content"]["rows"].as_array().unwrap();
-        assert!(rows.len() > 50, "{}", rows.len());
-        assert_eq!(rows[0], json!(["name 0", 0, "x@example.com"]));
-        assert!(
-            rows.iter()
-                .all(|row| row.as_array().is_some_and(|r| r.len() == 3))
-        );
-        assert_eq!(page["content"]["range"], "A1:C2000");
+        phase long_text_is_cut_at_a_line_and_loses_its_cursor;
+        {
+            let markdown = (0..400)
+                .map(|n| format!("Paragraph {n} of the report. {{#b{n}}}\n"))
+                .collect::<Vec<_>>()
+                .concat();
+            let mut page = json!({"version":1,"content":{"markdown":markdown},"nextCursor":"c1"});
+            assert!(fit(&mut page, CONTENT_BYTES));
+            assert!(page.to_string().len() <= CONTENT_BYTES);
+            let cut = page["content"]["markdown"].as_str().unwrap();
+            assert!(cut.starts_with("Paragraph 0 of the report. {#b0}\n"));
+            assert!(cut.ends_with("}\n…"), "cut inside a line");
+            assert_eq!(page["version"], 1);
+            assert!(page.get("nextCursor").is_none());
+        }
+
+        phase many_rows_lose_whole_rows_from_the_end;
+        {
+            let rows: Vec<Value> = (0..2000)
+                .map(|n| json!([format!("name {n}"), n, "x@example.com"]))
+                .collect();
+            let mut page =
+                json!({"content":{"sheet":"s","range":"A1:C2000","rows":rows,"formulas":{},"bold":[]}});
+            assert!(fit(&mut page, CONTENT_BYTES));
+            assert!(page.to_string().len() <= CONTENT_BYTES);
+            let rows = page["content"]["rows"].as_array().unwrap();
+            assert!(rows.len() > 50, "{}", rows.len());
+            assert_eq!(rows[0], json!(["name 0", 0, "x@example.com"]));
+            assert!(
+                rows.iter()
+                    .all(|row| row.as_array().is_some_and(|r| r.len() == 3))
+            );
+            assert_eq!(page["content"]["range"], "A1:C2000");
+        }
     }
 }

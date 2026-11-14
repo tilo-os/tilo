@@ -10,90 +10,234 @@ use std::{
 };
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-#[test]
-fn default_admission_activates_a_live_owner_and_retries_after_its_exit() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    struct Endpoint {
-        active: Arc<AtomicBool>,
-        stop: Arc<AtomicBool>,
-        thread: Option<std::thread::JoinHandle<()>>,
-    }
-    impl Drop for Endpoint {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            if let Some(thread) = self.thread.take() {
-                thread.join().unwrap();
-            }
+tilo_test_env::scenario! {
+    fn the_daemons_sockets_activate_open_and_answer_as_requests_finish;
+
+    phase default_admission_activates_a_live_owner_and_retries_after_its_exit;
+    {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        struct Endpoint {
+            active: Arc<AtomicBool>,
+            stop: Arc<AtomicBool>,
+            thread: Option<std::thread::JoinHandle<()>>,
         }
-    }
-    let directory = tempfile::tempdir().unwrap();
-    let listener = UnixListener::bind(directory.path().join("native.sock")).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let active = Arc::new(AtomicBool::new(false));
-    let stop = Arc::new(AtomicBool::new(false));
-    let (serving, stopping) = (active.clone(), stop.clone());
-    let endpoint = Endpoint {
-        active,
-        stop,
-        thread: Some(std::thread::spawn(move || {
-            while !stopping.load(Ordering::SeqCst) {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        stream
-                            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-                            .unwrap();
-                        let mut request = String::new();
-                        BufReader::new(stream.try_clone().unwrap())
-                            .read_line(&mut request)
-                            .unwrap();
-                        let request: serde_json::Value = serde_json::from_str(&request).unwrap();
-                        assert_eq!(
-                            request,
-                            serde_json::json!({"native":"activate", "app_id":"so.tilo.fixture"})
-                        );
-                        writeln!(
-                            stream,
-                            "{}",
-                            serde_json::json!({"activated": serving.load(Ordering::SeqCst)})
-                        )
-                        .unwrap();
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
-                    Err(error) => panic!("activation endpoint failed: {error}"),
+        impl Drop for Endpoint {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::SeqCst);
+                if let Some(thread) = self.thread.take() {
+                    thread.join().unwrap();
                 }
             }
-        })),
-    };
-    let grace = Duration::from_millis(60);
-    let first = super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
-        .unwrap()
-        .unwrap();
-    endpoint.active.store(true, Ordering::SeqCst);
-    assert!(
-        super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let listener = UnixListener::bind(directory.path().join("native.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let active = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (serving, stopping) = (active.clone(), stop.clone());
+        let endpoint = Endpoint {
+            active,
+            stop,
+            thread: Some(std::thread::spawn(move || {
+                while !stopping.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream
+                                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                                .unwrap();
+                            let mut request = String::new();
+                            BufReader::new(stream.try_clone().unwrap())
+                                .read_line(&mut request)
+                                .unwrap();
+                            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                            assert_eq!(
+                                request,
+                                serde_json::json!({"native":"activate", "app_id":"so.tilo.fixture"})
+                            );
+                            writeln!(
+                                stream,
+                                "{}",
+                                serde_json::json!({"activated": serving.load(Ordering::SeqCst)})
+                            )
+                            .unwrap();
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(error) => panic!("activation endpoint failed: {error}"),
+                    }
+                }
+            })),
+        };
+        let grace = Duration::from_millis(60);
+        let first = super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
             .unwrap()
-            .is_none(),
-        "a second healthy launch attaches without replacing its owner"
-    );
-    endpoint.active.store(false, Ordering::SeqCst);
-    let refusal =
-        super::default_launch_guard(directory.path(), "so.tilo.fixture", grace).unwrap_err();
-    assert_eq!(refusal.kind(), io::ErrorKind::WouldBlock);
-    assert!(refusal.to_string().contains("owner was retained"));
-    drop(first);
-    // The stale PID left in the lock file never counts as a live owner.
-    let retry = super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
-        .unwrap()
-        .expect("owner exit releases the kernel lease for a fresh launch");
-    drop(retry);
-    drop(endpoint);
+            .unwrap();
+        endpoint.active.store(true, Ordering::SeqCst);
+        assert!(
+            super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
+                .unwrap()
+                .is_none(),
+            "a second healthy launch attaches without replacing its owner"
+        );
+        endpoint.active.store(false, Ordering::SeqCst);
+        let refusal =
+            super::default_launch_guard(directory.path(), "so.tilo.fixture", grace).unwrap_err();
+        assert_eq!(refusal.kind(), io::ErrorKind::WouldBlock);
+        assert!(refusal.to_string().contains("owner was retained"));
+        drop(first);
+        // The stale PID left in the lock file never counts as a live owner.
+        let retry = super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
+            .unwrap()
+            .expect("owner exit releases the kernel lease for a fresh launch");
+        drop(retry);
+        drop(endpoint);
+    }
+
+    phase a_result_another_process_was_handed_opens_through_the_action_host;
+    {
+        let host = PageHost::default();
+        host.offered
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
+            std::sync::Arc::new(host.clone()),
+            tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
+        ));
+        let runtime = tilo_rt::try_app().unwrap();
+        runtime.handle().block_on(search.refresh()).unwrap();
+        let entry = search.search("travel", 1)[0].id;
+
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("native.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let serving = {
+            let (host, search) = (host.clone(), std::sync::Arc::clone(&search));
+            std::thread::spawn(move || {
+                for _ in 0..2 {
+                    let (stream, _) = listener.accept().unwrap();
+                    super::serve_connection(
+                        stream.try_clone().unwrap(),
+                        stream,
+                        &std::sync::Arc::new(crate::mcp::McpServer::new(
+                            host.clone(),
+                            "workspace".into(),
+                            "owner".into(),
+                        )),
+                        &super::Status {
+                            version: 1,
+                            pid: 1,
+                            workspace: "workspace".into(),
+                        },
+                        None,
+                        &search,
+                    )
+                    .unwrap();
+                }
+            })
+        };
+
+        // What the app a Spotlight click woke sends: the daemon opens it.
+        tilo_host_search::open(&socket, &entry.to_string()).unwrap();
+        let invoked = host.invoked.lock().unwrap().clone();
+        assert_eq!(invoked.len(), 1);
+        assert_eq!(
+            invoked[0].target.address,
+            tilo_actions::ActionAddress::new("page:1", "open")
+        );
+
+        // Access is revoked before the next walk: the daemon re-checks and refuses.
+        host.offered
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let refused = tilo_host_search::open(&socket, &entry.to_string()).unwrap_err();
+        assert!(refused.to_string().contains("NotOffered"), "{refused}");
+        assert_eq!(host.invoked.lock().unwrap().len(), 1, "nothing more ran");
+        serving.join().unwrap();
+    }
+
+    phase native_socket_serves_parallel_requests;
+    // The daemon's native socket answers one session's MCP requests as they
+    // finish, not in the order asked: a `tilo_status` and a `tilo_cancel`
+    // answer while two invokes of the same connection wait.
+    {
+        use crate::mcp_test_hosts::{GatedHost, overlapping_lines};
+        let host = GatedHost::default();
+        let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
+            std::sync::Arc::new(host.clone()),
+            tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
+        ));
+        let (client, served) = std::os::unix::net::UnixStream::pair().unwrap();
+        let serving = {
+            let host = host.clone();
+            std::thread::spawn(move || {
+                super::serve_connection(
+                    served.try_clone().unwrap(),
+                    served,
+                    &std::sync::Arc::new(crate::mcp::McpServer::new(
+                        host,
+                        "workspace".into(),
+                        "owner".into(),
+                    )),
+                    &super::Status {
+                        version: 1,
+                        pid: 1,
+                        workspace: "workspace".into(),
+                    },
+                    None,
+                    &search,
+                )
+            })
+        };
+        overlapping_lines(&host, &client);
+        serving.join().unwrap().unwrap();
+    }
+
+    phase the_proxy_delivers_each_reply_before_the_stream_ends;
+    // The `--connect` proxy hands each reply to the client as it arrives, while
+    // the connection stays open: a client that waits for one answer before it
+    // asks the next must not wait for a reply that is sitting in a buffer.
+    {
+        /// A writer that records what reached its destination: only flushed bytes.
+        #[derive(Default)]
+        struct Client {
+            pending: Vec<u8>,
+            delivered: Vec<u8>,
+        }
+        impl io::Write for Client {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.pending.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.delivered.append(&mut self.pending);
+                Ok(())
+            }
+        }
+        /// The daemon's side: one reply, then a stream that is still open.
+        struct OpenStream(Vec<Vec<u8>>);
+        impl io::Read for OpenStream {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let Some(chunk) = self.0.pop() else {
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, "still open"));
+                };
+                buffer[..chunk.len()].copy_from_slice(&chunk);
+                Ok(chunk.len())
+            }
+        }
+        let mut client = Client::default();
+        let reply = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n".to_vec();
+        let mut daemon = OpenStream(vec![reply[16..].to_vec(), reply[..16].to_vec()]);
+        let still_open = super::relay(&mut daemon, &mut client).unwrap_err();
+        assert_eq!(still_open.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(
+            client.delivered, reply,
+            "the whole reply reached the client while the stream is open"
+        );
+    }
 }
 
 const LIMITS: StartupLimits = StartupLimits {
@@ -174,75 +318,79 @@ impl StartingProcess for Fake {
     }
 }
 
-#[test]
-fn slow_start_that_keeps_progressing_is_waited_for() {
-    let mut fake = Fake::new(Duration::from_secs(60));
-    // Several stall windows long: only continued progress keeps it alive.
-    fake.ready_after = Some(Duration::from_millis(1500));
-    assert_eq!(wait_until_ready(&mut fake, LIMITS).unwrap(), "ready");
-    assert!(fake.elapsed >= Duration::from_millis(1500));
-    assert!(!fake.stopped);
-}
+tilo_test_env::scenario! {
+    fn a_start_is_waited_for_while_it_progresses_and_fails_once_it_stalls_exits_or_never_finishes;
 
-#[test]
-fn stalled_start_fails_at_the_stall_timeout_naming_its_stage() {
-    let mut fake = Fake::new(Duration::from_millis(200));
-    let error = wait_until_ready(&mut fake, LIMITS).unwrap_err();
-    let elapsed = fake.elapsed;
-    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    let message = error.to_string();
-    assert!(
-        message.contains("stalled while waiting on the lock"),
-        "{message}"
-    );
-    assert!(message.contains("fake tail"), "{message}");
-    // Each signal says when it last moved, so a log shows which went quiet.
-    assert!(message.contains("steady last changed"), "{message}");
-    assert!(message.contains("absent unreadable"), "{message}");
-    assert!(message.contains("busy unchanged since launch"), "{message}");
-    assert!(elapsed >= Duration::from_millis(500), "{elapsed:?}");
-    assert!(elapsed < LIMITS.cap, "{elapsed:?}");
-    assert!(fake.stopped);
-}
+    phase slow_start_that_keeps_progressing_is_waited_for;
+    {
+        let mut fake = Fake::new(Duration::from_secs(60));
+        // Several stall windows long: only continued progress keeps it alive.
+        fake.ready_after = Some(Duration::from_millis(1500));
+        assert_eq!(wait_until_ready(&mut fake, LIMITS).unwrap(), "ready");
+        assert!(fake.elapsed >= Duration::from_millis(1500));
+        assert!(!fake.stopped);
+    }
 
-#[test]
-fn progress_in_any_single_signal_keeps_the_start_alive() {
-    let mut fake = Fake::new(Duration::from_secs(60));
-    fake.moving = 2;
-    fake.ready_after = Some(Duration::from_millis(1500));
-    assert_eq!(wait_until_ready(&mut fake, LIMITS).unwrap(), "ready");
-    assert!(!fake.stopped);
-}
+    phase stalled_start_fails_at_the_stall_timeout_naming_its_stage;
+    {
+        let mut fake = Fake::new(Duration::from_millis(200));
+        let error = wait_until_ready(&mut fake, LIMITS).unwrap_err();
+        let elapsed = fake.elapsed;
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        let message = error.to_string();
+        assert!(
+            message.contains("stalled while waiting on the lock"),
+            "{message}"
+        );
+        assert!(message.contains("fake tail"), "{message}");
+        // Each signal says when it last moved, so a log shows which went quiet.
+        assert!(message.contains("steady last changed"), "{message}");
+        assert!(message.contains("absent unreadable"), "{message}");
+        assert!(message.contains("busy unchanged since launch"), "{message}");
+        assert!(elapsed >= Duration::from_millis(500), "{elapsed:?}");
+        assert!(elapsed < LIMITS.cap, "{elapsed:?}");
+        assert!(fake.stopped);
+    }
 
-#[test]
-fn exited_start_fails_immediately_with_its_output() {
-    let mut fake = Fake::new(Duration::from_secs(60));
-    fake.exit_after = Some(Duration::from_millis(20));
-    let message = wait_until_ready(&mut fake, LIMITS).unwrap_err().to_string();
-    assert!(fake.elapsed < LIMITS.stall);
-    assert!(
-        message.contains("exited while warming up (exit status: 3)"),
-        "{message}"
-    );
-    assert!(message.contains("fake tail"), "{message}");
-}
+    phase progress_in_any_single_signal_keeps_the_start_alive;
+    {
+        let mut fake = Fake::new(Duration::from_secs(60));
+        fake.moving = 2;
+        fake.ready_after = Some(Duration::from_millis(1500));
+        assert_eq!(wait_until_ready(&mut fake, LIMITS).unwrap(), "ready");
+        assert!(!fake.stopped);
+    }
 
-#[test]
-fn start_that_never_finishes_fails_at_the_cap() {
-    let mut fake = Fake::new(Duration::from_secs(60));
-    let limits = StartupLimits {
-        cap: Duration::from_millis(800),
-        ..LIMITS
-    };
-    let error = wait_until_ready(&mut fake, limits).unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    assert!(
-        error
-            .to_string()
-            .contains("within 0.8 s (still warming up; steady last changed"),
-        "{error}"
-    );
-    assert!(fake.stopped);
+    phase exited_start_fails_immediately_with_its_output;
+    {
+        let mut fake = Fake::new(Duration::from_secs(60));
+        fake.exit_after = Some(Duration::from_millis(20));
+        let message = wait_until_ready(&mut fake, LIMITS).unwrap_err().to_string();
+        assert!(fake.elapsed < LIMITS.stall);
+        assert!(
+            message.contains("exited while warming up (exit status: 3)"),
+            "{message}"
+        );
+        assert!(message.contains("fake tail"), "{message}");
+    }
+
+    phase start_that_never_finishes_fails_at_the_cap;
+    {
+        let mut fake = Fake::new(Duration::from_secs(60));
+        let limits = StartupLimits {
+            cap: Duration::from_millis(800),
+            ..LIMITS
+        };
+        let error = wait_until_ready(&mut fake, limits).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            error
+                .to_string()
+                .contains("within 0.8 s (still warming up; steady last changed"),
+            "{error}"
+        );
+        assert!(fake.stopped);
+    }
 }
 
 fn daemon_start(profile: &std::path::Path, script: &str) -> DaemonStart {
@@ -257,15 +405,88 @@ fn daemon_start(profile: &std::path::Path, script: &str) -> DaemonStart {
     DaemonStart::new(profile, child)
 }
 
-#[test]
-fn real_child_exit_reports_its_stderr() {
-    let profile = tempfile::tempdir().unwrap();
-    let mut start = daemon_start(profile.path(), "echo 'identity: boom' >&2; exit 3");
-    let message = wait_until_ready(&mut start, LIMITS)
-        .unwrap_err()
-        .to_string();
-    assert!(message.contains("exit status: 3"), "{message}");
-    assert!(message.contains("identity: boom"), "{message}");
+tilo_test_env::scenario! {
+    fn a_real_daemon_start_reports_its_stderr_and_names_its_steps;
+
+    phase real_child_exit_reports_its_stderr;
+    {
+        let profile = tempfile::tempdir().unwrap();
+        let mut start = daemon_start(profile.path(), "echo 'identity: boom' >&2; exit 3");
+        let message = wait_until_ready(&mut start, LIMITS)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("exit status: 3"), "{message}");
+        assert!(message.contains("identity: boom"), "{message}");
+    }
+
+    phase named_startup_steps_are_progress_and_a_stall_names_the_last_one;
+    {
+        let profile = tempfile::tempdir().unwrap();
+        // Names a step every 0.2 s for several stall windows, without output,
+        // then blocks without using CPU, reading, writing or naming a step.
+        let mut child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                &format!(
+                    "for step in 1 2 3 4 5 6 7 8; do read line; echo \"step $step\" >> {STAGES_FILE}; \
+                 done; exec sleep 60"
+                ),
+            ])
+            .current_dir(profile.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(profile.path().join("daemon.log")).unwrap())
+            .spawn_locked()
+            .unwrap();
+        let steps = child.stdin.take().unwrap();
+        let pid = child.id();
+        let mut start = Paced {
+            start: DaemonStart::new(profile.path(), child),
+            stages: profile.path().join(STAGES_FILE),
+            steps,
+            started: Instant::now(),
+            elapsed: Duration::ZERO,
+            every: Duration::from_millis(200),
+            named: 0,
+            total: 8,
+        };
+        let limits = StartupLimits {
+            stall: Duration::from_secs(1),
+            ..LIMITS
+        };
+        let error = wait_until_ready(&mut start, limits).unwrap_err();
+        let message = error.to_string();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(message.contains("stalled while step 8"), "{message}");
+        assert!(start.elapsed >= Duration::from_millis(2600), "{message}");
+        assert!(message.contains("startup step last changed"), "{message}");
+        assert!(message.contains("wrote nothing"), "{message}");
+        #[cfg(target_os = "linux")]
+        {
+            assert!(message.contains("threads: sleep S"), "{message}");
+            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        }
+        // Only Linux exposes a process tree's CPU time and thread states; elsewhere
+        // the step names alone are the progress signal.
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(message.contains("CPU time unreadable"), "{message}");
+            // The stalled child was killed and reaped.
+            // SAFETY: signal 0 only checks whether the exact child still exists.
+            assert_eq!(
+                unsafe { libc::kill(i32::try_from(pid).unwrap(), 0) },
+                -1,
+                "{message}"
+            );
+        }
+    }
+
+    phase the_current_stage_is_the_last_named_step;
+    {
+        assert_eq!(current_stage(b""), "loading the runtime");
+        assert_eq!(current_stage(b"one\ntwo\n\n"), "two");
+        assert_eq!(current_stage("x".repeat(500).as_bytes()).len(), 200);
+    }
 }
 
 /// A real daemon start whose steps the test paces on a virtual clock: the
@@ -332,241 +553,328 @@ impl StartingProcess for Paced {
     }
 }
 
-#[test]
-fn named_startup_steps_are_progress_and_a_stall_names_the_last_one() {
-    let profile = tempfile::tempdir().unwrap();
-    // Names a step every 0.2 s for several stall windows, without output,
-    // then blocks without using CPU, reading, writing or naming a step.
-    let mut child = Command::new("/bin/sh")
-        .args([
-            "-c",
-            &format!(
-                "for step in 1 2 3 4 5 6 7 8; do read line; echo \"step $step\" >> {STAGES_FILE}; \
-                 done; exec sleep 60"
-            ),
-        ])
-        .current_dir(profile.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(std::fs::File::create(profile.path().join("daemon.log")).unwrap())
-        .spawn_locked()
-        .unwrap();
-    let steps = child.stdin.take().unwrap();
-    let pid = child.id();
-    let mut start = Paced {
-        start: DaemonStart::new(profile.path(), child),
-        stages: profile.path().join(STAGES_FILE),
-        steps,
-        started: Instant::now(),
-        elapsed: Duration::ZERO,
-        every: Duration::from_millis(200),
-        named: 0,
-        total: 8,
-    };
-    let limits = StartupLimits {
-        stall: Duration::from_secs(1),
-        ..LIMITS
-    };
-    let error = wait_until_ready(&mut start, limits).unwrap_err();
-    let message = error.to_string();
-    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    assert!(message.contains("stalled while step 8"), "{message}");
-    assert!(start.elapsed >= Duration::from_millis(2600), "{message}");
-    assert!(message.contains("startup step last changed"), "{message}");
-    assert!(message.contains("wrote nothing"), "{message}");
+tilo_test_env::scenario! {
     #[cfg(target_os = "linux")]
+    fn a_process_and_its_tree_are_read_from_proc;
+
+    phase cpu_time_of_a_live_process_is_readable;
     {
-        assert!(message.contains("threads: sleep S"), "{message}");
-        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        assert!(super::cpu_ticks(std::process::id()).is_some());
+        assert!(super::io_bytes(std::process::id()).is_some());
     }
-    // Only Linux exposes a process tree's CPU time and thread states; elsewhere
-    // the step names alone are the progress signal.
-    #[cfg(not(target_os = "linux"))]
+
+    phase a_process_tree_counts_its_descendants_cpu_time_and_runnable_threads;
+    // A launcher that waits on a wrapper still sees the worker it started.
     {
-        assert!(message.contains("CPU time unreadable"), "{message}");
-        // The stalled child was killed and reaped.
-        // SAFETY: signal 0 only checks whether the exact child still exists.
-        assert_eq!(
-            unsafe { libc::kill(i32::try_from(pid).unwrap(), 0) },
-            -1,
-            "{message}"
+        use std::os::unix::process::CommandExt;
+        let mut wrapper = Command::new("/bin/sh")
+            .args(["-c", "sh -c 'while :; do :; done' & wait"])
+            .process_group(0)
+            .stdin(Stdio::null())
+            .spawn_locked()
+            .unwrap();
+        let pid = wrapper.id();
+        let deadline = tilo_test_env::hang_deadline();
+        let (mut sample, mut own) = (super::sample_tree(pid, false).unwrap(), 0);
+        while sample.cpu_ticks <= own && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            own = super::cpu_ticks(pid).unwrap();
+            sample = super::sample_tree(pid, false).unwrap();
+        }
+        let described = super::sample_tree(pid, true).unwrap();
+        // SAFETY: the wrapper leads its own process group, which holds only
+        // itself and the worker it started.
+        unsafe {
+            libc::killpg(i32::try_from(pid).unwrap(), libc::SIGKILL);
+        }
+        let _ = wrapper.wait();
+        assert!(
+            sample.cpu_ticks > own,
+            "the tree never counted its busy descendant's CPU time within the hang bound: {sample:?}, wrapper {own}"
+        );
+        assert!(described.threads.len() >= 2, "{described:?}");
+        assert!(
+            described.held_by_machine || described.cpu_ticks > sample.cpu_ticks,
+            "{described:?}"
         );
     }
-}
 
-#[test]
-fn the_current_stage_is_the_last_named_step() {
-    assert_eq!(current_stage(b""), "loading the runtime");
-    assert_eq!(current_stage(b"one\ntwo\n\n"), "two");
-    assert_eq!(current_stage("x".repeat(500).as_bytes()).len(), 200);
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn cpu_time_of_a_live_process_is_readable() {
-    assert!(super::cpu_ticks(std::process::id()).is_some());
-    assert!(super::io_bytes(std::process::id()).is_some());
-}
-
-/// A launcher that waits on a wrapper still sees the worker it started.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_process_tree_counts_its_descendants_cpu_time_and_runnable_threads() {
-    use std::os::unix::process::CommandExt;
-    let mut wrapper = Command::new("/bin/sh")
-        .args(["-c", "sh -c 'while :; do :; done' & wait"])
-        .process_group(0)
-        .stdin(Stdio::null())
-        .spawn_locked()
-        .unwrap();
-    let pid = wrapper.id();
-    let deadline = tilo_test_env::hang_deadline();
-    let (mut sample, mut own) = (super::sample_tree(pid, false).unwrap(), 0);
-    while sample.cpu_ticks <= own && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-        own = super::cpu_ticks(pid).unwrap();
-        sample = super::sample_tree(pid, false).unwrap();
+    phase parent_pids_find_a_spawned_child;
+    // Without per-task child lists, children are found by their parent pid.
+    {
+        let mut child = Command::new("/bin/sleep").arg("30").spawn_locked().unwrap();
+        let found = super::parent_pids().contains(&(child.id(), std::process::id()));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(found);
     }
-    let described = super::sample_tree(pid, true).unwrap();
-    // SAFETY: the wrapper leads its own process group, which holds only
-    // itself and the worker it started.
-    unsafe {
-        libc::killpg(i32::try_from(pid).unwrap(), libc::SIGKILL);
-    }
-    let _ = wrapper.wait();
-    assert!(
-        sample.cpu_ticks > own,
-        "the tree never counted its busy descendant's CPU time within the hang bound: {sample:?}, wrapper {own}"
-    );
-    assert!(described.threads.len() >= 2, "{described:?}");
-    assert!(
-        described.held_by_machine || described.cpu_ticks > sample.cpu_ticks,
-        "{described:?}"
-    );
 }
 
-/// Without per-task child lists, children are found by their parent pid.
-#[cfg(target_os = "linux")]
-#[test]
-fn parent_pids_find_a_spawned_child() {
-    let mut child = Command::new("/bin/sleep").arg("30").spawn_locked().unwrap();
-    let found = super::parent_pids().contains(&(child.id(), std::process::id()));
-    let _ = child.kill();
-    let _ = child.wait();
-    assert!(found);
-}
+tilo_test_env::scenario! {
+    fn the_command_line_names_one_mode_and_reads_the_names_it_had;
 
-#[test]
-fn owner_action_is_bounded_and_exclusive_with_other_modes() {
-    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-    let parsed = args(&["--profile", "/run/example-profile", "--owner-action", "{}"]).unwrap();
-    assert_eq!(
-        parsed.mode,
-        Mode::OwnerAction {
-            request: "{}".into()
+    phase owner_action_is_bounded_and_exclusive_with_other_modes;
+    {
+        let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+        let parsed = args(&["--profile", "/run/example-profile", "--owner-action", "{}"]).unwrap();
+        assert_eq!(
+            parsed.mode,
+            Mode::OwnerAction {
+                request: "{}".into()
+            }
+        );
+        for invalid in [
+            vec!["--owner-action"],
+            vec!["--owner-action", ""],
+            vec!["--owner-action", "{}", "--daemon"],
+            vec!["--owner-action", "{}", "--connect"],
+            vec!["--owner-action", "{}", "--dev"],
+            vec!["--owner-action", "{}", "--standalone"],
+        ] {
+            assert!(args(&invalid).is_err(), "{invalid:?}");
         }
-    );
-    for invalid in [
-        vec!["--owner-action"],
-        vec!["--owner-action", ""],
-        vec!["--owner-action", "{}", "--daemon"],
-        vec!["--owner-action", "{}", "--connect"],
-        vec!["--owner-action", "{}", "--dev"],
-        vec!["--owner-action", "{}", "--standalone"],
-    ] {
-        assert!(args(&invalid).is_err(), "{invalid:?}");
+        assert!(args(&["--owner-action", &"x".repeat(32 * 1024 + 1)]).is_err());
     }
-    assert!(args(&["--owner-action", &"x".repeat(32 * 1024 + 1)]).is_err());
-}
 
-/// A launcher outside this repository passes the flag by the name it had
-/// before the workspace was called a workspace.
-#[test]
-fn run_app_reads_the_workspace_flag_it_had_another_name_for() {
-    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-    let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
-    let named = args(&[
-        "--profile",
-        "/tmp/profile",
-        "--run-app",
-        "so.tilo.photos",
-        "--workspace",
-        workspace,
-        "--",
-        "/bin/true",
-    ])
-    .unwrap();
-    let Mode::RunApp {
-        workspace: Some(id),
-        ..
-    } = &named.mode
-    else {
-        panic!("the launch was parsed as {:?}", named.mode);
-    };
-    assert_eq!(id, workspace);
+    phase run_app_reads_the_workspace_flag_it_had_another_name_for;
+    // A launcher outside this repository passes the flag by the name it had
+    // before the workspace was called a workspace.
+    {
+        let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+        let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
+        let named = args(&[
+            "--profile",
+            "/tmp/profile",
+            "--run-app",
+            "so.tilo.photos",
+            "--workspace",
+            workspace,
+            "--",
+            "/bin/true",
+        ])
+        .unwrap();
+        let Mode::RunApp {
+            workspace: Some(id),
+            ..
+        } = &named.mode
+        else {
+            panic!("the launch was parsed as {:?}", named.mode);
+        };
+        assert_eq!(id, workspace);
 
-    let old = args(&[
-        "--profile",
-        "/tmp/profile",
-        "--run-app",
-        "so.tilo.photos",
-        "--room",
-        workspace,
-        "--",
-        "/bin/true",
-    ])
-    .unwrap();
-    assert_eq!(old.mode, named.mode);
-
-    assert!(
-        args(&[
+        let old = args(&[
             "--profile",
             "/tmp/profile",
             "--run-app",
             "so.tilo.photos",
             "--room",
-            "not-a-workspace",
+            workspace,
             "--",
             "/bin/true",
         ])
-        .is_err()
-    );
-}
+        .unwrap();
+        assert_eq!(old.mode, named.mode);
 
-/// The status probe answers the served workspace as `room` and reads
-/// `workspace` as the same.
-#[test]
-fn the_status_probe_reads_the_field_name_it_had() {
-    let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
-    let old: super::Status = serde_json::from_str(&format!(
-        "{{\"version\":1,\"pid\":42,\"room\":\"{workspace}\"}}"
-    ))
-    .unwrap();
-    assert_eq!(old.workspace, workspace);
-    let new: super::Status = serde_json::from_str(&format!(
-        "{{\"version\":1,\"pid\":42,\"workspace\":\"{workspace}\"}}"
-    ))
-    .unwrap();
-    assert_eq!(new.workspace, old.workspace);
-    // Launchers and scripts read the answer's `room`.
-    assert_eq!(
-        serde_json::to_value(&new).unwrap()["room"],
-        serde_json::json!(workspace)
-    );
-}
+        assert!(
+            args(&[
+                "--profile",
+                "/tmp/profile",
+                "--run-app",
+                "so.tilo.photos",
+                "--room",
+                "not-a-workspace",
+                "--",
+                "/bin/true",
+            ])
+            .is_err()
+        );
+    }
 
-#[test]
-fn dev_mode_is_an_explicit_daemon_flag() {
-    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-    let dev = args(&["--profile", "/tmp/profile", "--daemon", "--dev"]).unwrap();
-    assert_eq!((dev.mode, dev.dev), (Mode::Daemon, true));
-    assert!(
-        !args(&["--profile", "/tmp/profile", "--daemon"])
+    phase the_status_probe_reads_the_field_name_it_had;
+    // The status probe answers the served workspace as `room` and reads
+    // `workspace` as the same.
+    {
+        let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
+        let old: super::Status = serde_json::from_str(&format!(
+            "{{\"version\":1,\"pid\":42,\"room\":\"{workspace}\"}}"
+        ))
+        .unwrap();
+        assert_eq!(old.workspace, workspace);
+        let new: super::Status = serde_json::from_str(&format!(
+            "{{\"version\":1,\"pid\":42,\"workspace\":\"{workspace}\"}}"
+        ))
+        .unwrap();
+        assert_eq!(new.workspace, old.workspace);
+        // Launchers and scripts read the answer's `room`.
+        assert_eq!(
+            serde_json::to_value(&new).unwrap()["room"],
+            serde_json::json!(workspace)
+        );
+    }
+
+    phase dev_mode_is_an_explicit_daemon_flag;
+    {
+        let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+        let dev = args(&["--profile", "/tmp/profile", "--daemon", "--dev"]).unwrap();
+        assert_eq!((dev.mode, dev.dev), (Mode::Daemon, true));
+        assert!(
+            !args(&["--profile", "/tmp/profile", "--daemon"])
+                .unwrap()
+                .dev
+        );
+        assert!(args(&["--profile", "/tmp/profile", "--connect", "--dev"]).is_err());
+        assert!(args(&["--profile", "/tmp/profile", "--daemon", "--dev", "--dev"]).is_err());
+    }
+
+    phase a_device_and_its_workspace_choose_where_connect_goes;
+    // `--device` carries `--connect` on to another of the person's devices, in
+    // the workspace `--workspace` names there; neither means anything elsewhere.
+    {
+        let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+        let workspace = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        assert_eq!(
+            args(&[
+                "--profile",
+                "/tmp/p",
+                "--connect",
+                "--device",
+                " Build box "
+            ])
             .unwrap()
-            .dev
-    );
-    assert!(args(&["--profile", "/tmp/profile", "--connect", "--dev"]).is_err());
-    assert!(args(&["--profile", "/tmp/profile", "--daemon", "--dev", "--dev"]).is_err());
+            .forward,
+            Some(crate::remote_door::Forward {
+                device: "Build box".into(),
+                workspace: None
+            })
+        );
+        assert_eq!(
+            args(&[
+                "--profile",
+                "/tmp/p",
+                "--connect",
+                "--device",
+                "b",
+                "--workspace",
+                workspace
+            ])
+            .unwrap()
+            .forward
+            .and_then(|forward| forward.workspace)
+            .as_deref(),
+            Some(workspace)
+        );
+        assert_eq!(
+            args(&["--profile", "/tmp/p", "--connect"]).unwrap().forward,
+            None
+        );
+        for refused in [
+            &["--profile", "/tmp/p", "--daemon", "--device", "b"][..],
+            &["--profile", "/tmp/p", "--connect", "--workspace", workspace],
+            &[
+                "--profile",
+                "/tmp/p",
+                "--connect",
+                "--device",
+                "b",
+                "--workspace",
+                "Studio",
+            ],
+            &["--profile", "/tmp/p", "--connect", "--device", "  "],
+            &["--profile", "/tmp/p", "--connect", "--device"],
+            &[
+                "--profile",
+                "/tmp/p",
+                "--connect",
+                "--device",
+                "a",
+                "--device",
+                "b",
+            ],
+        ] {
+            assert!(args(refused).is_err(), "{refused:?}");
+        }
+    }
+
+    phase admission_daemon_requires_an_explicit_non_root_owner_and_no_dev_bypass;
+    {
+        let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+        let parsed = args(&["--profile", "/run/admission", "--admission-daemon", "1000"]).unwrap();
+        assert_eq!(parsed.mode, Mode::AdmissionDaemon { owner_uid: 1000 });
+        for invalid in [
+            vec!["--admission-daemon", "1000"],
+            vec!["--profile", "/run/admission", "--admission-daemon"],
+            vec!["--profile", "/run/admission", "--admission-daemon", "0"],
+            vec![
+                "--profile",
+                "/run/admission",
+                "--admission-daemon",
+                "unknown",
+            ],
+            vec![
+                "--profile",
+                "/run/admission",
+                "--admission-daemon",
+                "1000",
+                "--dev",
+            ],
+            vec![
+                "--profile",
+                "/run/admission",
+                "--admission-daemon",
+                "1000",
+                "--daemon",
+            ],
+        ] {
+            assert!(args(&invalid).is_err(), "{invalid:?}");
+        }
+    }
+
+    phase connect_asks_for_a_workspace_by_its_id;
+    // `--connect --workspace ID` asks the desktop's door for that workspace: it
+    // is a client's request of the person, so it goes with `--connect` alone,
+    // never with a standalone runtime of the client's own.
+    {
+        let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+        let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
+        let asked = args(&["--connect", "--workspace", workspace]).unwrap();
+        assert_eq!(asked.mode, Mode::Connect);
+        assert_eq!(asked.workspace.as_deref(), Some(workspace));
+        assert_eq!(args(&["--connect"]).unwrap().workspace, None);
+        assert_eq!(asked.forward, None, "this desktop's own door");
+        let elsewhere = args(&["--connect", "--device", "b", "--workspace", workspace]).unwrap();
+        assert_eq!(
+            elsewhere.workspace, None,
+            "with --device, the workspace is the other device's"
+        );
+        for invalid in [
+            vec!["--connect", "--workspace"],
+            vec!["--connect", "--workspace", "not-a-workspace"],
+            vec![
+                "--connect",
+                "--workspace",
+                workspace,
+                "--workspace",
+                workspace,
+            ],
+            vec!["--connect", "--standalone", "--workspace", workspace],
+            vec![
+                "--profile",
+                "/tmp/profile",
+                "--connect",
+                "--workspace",
+                workspace,
+            ],
+            vec![
+                "--profile",
+                "/tmp/profile",
+                "--daemon",
+                "--workspace",
+                workspace,
+            ],
+        ] {
+            assert!(args(&invalid).is_err(), "{invalid:?}");
+        }
+    }
 }
 
 /// A client that names a profile chose a standalone runtime itself; one that
@@ -583,109 +891,6 @@ fn standalone_is_the_clients_own_explicit_choice_for_connect() {
     );
     assert!(args(&["--profile", "/tmp/profile", "--daemon", "--standalone"]).is_err());
     assert!(args(&["--connect", "--standalone", "--standalone"]).is_err());
-}
-
-/// `--device` carries `--connect` on to another of the person's devices, in
-/// the workspace `--workspace` names there; neither means anything elsewhere.
-#[test]
-fn a_device_and_its_workspace_choose_where_connect_goes() {
-    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-    let workspace = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-    assert_eq!(
-        args(&[
-            "--profile",
-            "/tmp/p",
-            "--connect",
-            "--device",
-            " Build box "
-        ])
-        .unwrap()
-        .forward,
-        Some(crate::remote_door::Forward {
-            device: "Build box".into(),
-            workspace: None
-        })
-    );
-    assert_eq!(
-        args(&[
-            "--profile",
-            "/tmp/p",
-            "--connect",
-            "--device",
-            "b",
-            "--workspace",
-            workspace
-        ])
-        .unwrap()
-        .forward
-        .and_then(|forward| forward.workspace)
-        .as_deref(),
-        Some(workspace)
-    );
-    assert_eq!(
-        args(&["--profile", "/tmp/p", "--connect"]).unwrap().forward,
-        None
-    );
-    for refused in [
-        &["--profile", "/tmp/p", "--daemon", "--device", "b"][..],
-        &["--profile", "/tmp/p", "--connect", "--workspace", workspace],
-        &[
-            "--profile",
-            "/tmp/p",
-            "--connect",
-            "--device",
-            "b",
-            "--workspace",
-            "Studio",
-        ],
-        &["--profile", "/tmp/p", "--connect", "--device", "  "],
-        &["--profile", "/tmp/p", "--connect", "--device"],
-        &[
-            "--profile",
-            "/tmp/p",
-            "--connect",
-            "--device",
-            "a",
-            "--device",
-            "b",
-        ],
-    ] {
-        assert!(args(refused).is_err(), "{refused:?}");
-    }
-}
-
-#[test]
-fn admission_daemon_requires_an_explicit_non_root_owner_and_no_dev_bypass() {
-    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-    let parsed = args(&["--profile", "/run/admission", "--admission-daemon", "1000"]).unwrap();
-    assert_eq!(parsed.mode, Mode::AdmissionDaemon { owner_uid: 1000 });
-    for invalid in [
-        vec!["--admission-daemon", "1000"],
-        vec!["--profile", "/run/admission", "--admission-daemon"],
-        vec!["--profile", "/run/admission", "--admission-daemon", "0"],
-        vec![
-            "--profile",
-            "/run/admission",
-            "--admission-daemon",
-            "unknown",
-        ],
-        vec![
-            "--profile",
-            "/run/admission",
-            "--admission-daemon",
-            "1000",
-            "--dev",
-        ],
-        vec![
-            "--profile",
-            "/run/admission",
-            "--admission-daemon",
-            "1000",
-            "--daemon",
-        ],
-    ] {
-        assert!(args(&invalid).is_err(), "{invalid:?}");
-    }
 }
 
 /// One page resource with an `open` view action, offered by publisher `7`,
@@ -783,193 +988,6 @@ impl tilo_actions::remote::ActionHost for PageHost {
         tilo_actions::remote::Pending::ready(Err(
             tilo_actions::remote::ActionHostError::UnknownInvocation,
         ))
-    }
-}
-
-#[test]
-fn a_result_another_process_was_handed_opens_through_the_action_host() {
-    let host = PageHost::default();
-    host.offered
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
-        std::sync::Arc::new(host.clone()),
-        tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
-    ));
-    let runtime = tilo_rt::try_app().unwrap();
-    runtime.handle().block_on(search.refresh()).unwrap();
-    let entry = search.search("travel", 1)[0].id;
-
-    let directory = tempfile::tempdir().unwrap();
-    let socket = directory.path().join("native.sock");
-    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-    let serving = {
-        let (host, search) = (host.clone(), std::sync::Arc::clone(&search));
-        std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (stream, _) = listener.accept().unwrap();
-                super::serve_connection(
-                    stream.try_clone().unwrap(),
-                    stream,
-                    &std::sync::Arc::new(crate::mcp::McpServer::new(
-                        host.clone(),
-                        "workspace".into(),
-                        "owner".into(),
-                    )),
-                    &super::Status {
-                        version: 1,
-                        pid: 1,
-                        workspace: "workspace".into(),
-                    },
-                    None,
-                    &search,
-                )
-                .unwrap();
-            }
-        })
-    };
-
-    // What the app a Spotlight click woke sends: the daemon opens it.
-    tilo_host_search::open(&socket, &entry.to_string()).unwrap();
-    let invoked = host.invoked.lock().unwrap().clone();
-    assert_eq!(invoked.len(), 1);
-    assert_eq!(
-        invoked[0].target.address,
-        tilo_actions::ActionAddress::new("page:1", "open")
-    );
-
-    // Access is revoked before the next walk: the daemon re-checks and refuses.
-    host.offered
-        .store(false, std::sync::atomic::Ordering::SeqCst);
-    let refused = tilo_host_search::open(&socket, &entry.to_string()).unwrap_err();
-    assert!(refused.to_string().contains("NotOffered"), "{refused}");
-    assert_eq!(host.invoked.lock().unwrap().len(), 1, "nothing more ran");
-    serving.join().unwrap();
-}
-
-/// The daemon's native socket answers one session's MCP requests as they
-/// finish, not in the order asked: a `tilo_status` and a `tilo_cancel`
-/// answer while two invokes of the same connection wait.
-#[test]
-fn native_socket_serves_parallel_requests() {
-    use crate::mcp_test_hosts::{GatedHost, overlapping_lines};
-    let host = GatedHost::default();
-    let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
-        std::sync::Arc::new(host.clone()),
-        tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),
-    ));
-    let (client, served) = std::os::unix::net::UnixStream::pair().unwrap();
-    let serving = {
-        let host = host.clone();
-        std::thread::spawn(move || {
-            super::serve_connection(
-                served.try_clone().unwrap(),
-                served,
-                &std::sync::Arc::new(crate::mcp::McpServer::new(
-                    host,
-                    "workspace".into(),
-                    "owner".into(),
-                )),
-                &super::Status {
-                    version: 1,
-                    pid: 1,
-                    workspace: "workspace".into(),
-                },
-                None,
-                &search,
-            )
-        })
-    };
-    overlapping_lines(&host, &client);
-    serving.join().unwrap().unwrap();
-}
-
-/// The `--connect` proxy hands each reply to the client as it arrives, while
-/// the connection stays open: a client that waits for one answer before it
-/// asks the next must not wait for a reply that is sitting in a buffer.
-#[test]
-fn the_proxy_delivers_each_reply_before_the_stream_ends() {
-    /// A writer that records what reached its destination: only flushed bytes.
-    #[derive(Default)]
-    struct Client {
-        pending: Vec<u8>,
-        delivered: Vec<u8>,
-    }
-    impl io::Write for Client {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.pending.extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            self.delivered.append(&mut self.pending);
-            Ok(())
-        }
-    }
-    /// The daemon's side: one reply, then a stream that is still open.
-    struct OpenStream(Vec<Vec<u8>>);
-    impl io::Read for OpenStream {
-        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-            let Some(chunk) = self.0.pop() else {
-                return Err(io::Error::new(io::ErrorKind::WouldBlock, "still open"));
-            };
-            buffer[..chunk.len()].copy_from_slice(&chunk);
-            Ok(chunk.len())
-        }
-    }
-    let mut client = Client::default();
-    let reply = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n".to_vec();
-    let mut daemon = OpenStream(vec![reply[16..].to_vec(), reply[..16].to_vec()]);
-    let still_open = super::relay(&mut daemon, &mut client).unwrap_err();
-    assert_eq!(still_open.kind(), io::ErrorKind::WouldBlock);
-    assert_eq!(
-        client.delivered, reply,
-        "the whole reply reached the client while the stream is open"
-    );
-}
-
-/// `--connect --workspace ID` asks the desktop's door for that workspace: it
-/// is a client's request of the person, so it goes with `--connect` alone,
-/// never with a standalone runtime of the client's own.
-#[test]
-fn connect_asks_for_a_workspace_by_its_id() {
-    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-    let workspace = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
-    let asked = args(&["--connect", "--workspace", workspace]).unwrap();
-    assert_eq!(asked.mode, Mode::Connect);
-    assert_eq!(asked.workspace.as_deref(), Some(workspace));
-    assert_eq!(args(&["--connect"]).unwrap().workspace, None);
-    assert_eq!(asked.forward, None, "this desktop's own door");
-    let elsewhere = args(&["--connect", "--device", "b", "--workspace", workspace]).unwrap();
-    assert_eq!(
-        elsewhere.workspace, None,
-        "with --device, the workspace is the other device's"
-    );
-    for invalid in [
-        vec!["--connect", "--workspace"],
-        vec!["--connect", "--workspace", "not-a-workspace"],
-        vec![
-            "--connect",
-            "--workspace",
-            workspace,
-            "--workspace",
-            workspace,
-        ],
-        vec!["--connect", "--standalone", "--workspace", workspace],
-        vec![
-            "--profile",
-            "/tmp/profile",
-            "--connect",
-            "--workspace",
-            workspace,
-        ],
-        vec![
-            "--profile",
-            "/tmp/profile",
-            "--daemon",
-            "--workspace",
-            workspace,
-        ],
-    ] {
-        assert!(args(&invalid).is_err(), "{invalid:?}");
     }
 }
 

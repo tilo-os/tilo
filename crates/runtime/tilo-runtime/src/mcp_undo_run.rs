@@ -357,64 +357,68 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_run_finds_its_own_changes_in_effect() {
-        let entries = [
-            entry("a1", "before"),
-            entry("b1", "run"),
-            json!({"change": "b2", "invocation": "run", "undone": true}),
-            entry("b3", "run"),
-        ];
-        let standing = standing(&entries, run(&["run"]));
-        assert_eq!(standing.changes, ["b1", "b3"]);
-        assert!(standing.over.is_none());
-    }
+    tilo_test_env::scenario! {
+        fn a_run_takes_back_only_its_own_standing_changes;
 
-    #[test]
-    fn someone_elses_change_on_top_holds_the_run() {
-        let entries = [entry("b1", "run"), entry("c1", "theirs")];
-        let held = standing(&entries, run(&["run"]));
-        assert_eq!(held.over.as_ref().unwrap()["change"], "c1");
-        assert_eq!(
-            refusal("word-processor", held.over.as_ref().unwrap()),
-            "in word-processor, Ada Added a paragraph (c1) after it"
-        );
-        // What they made before the run, what they took back since, and housekeeping
-        // stand on nothing of the run's.
-        let entries = [
-            entry("a1", "theirs"),
-            entry("b1", "run"),
-            json!({"change": "c1", "invocation": "theirs", "undone": true}),
-            json!({"change": "c2", "change_kind": "housekeeping"}),
-        ];
-        assert!(standing(&entries, run(&["run"])).over.is_none());
-    }
+        phase a_run_finds_its_own_changes_in_effect;
+        {
+            let entries = [
+                entry("a1", "before"),
+                entry("b1", "run"),
+                json!({"change": "b2", "invocation": "run", "undone": true}),
+                entry("b3", "run"),
+            ];
+            let standing = standing(&entries, run(&["run"]));
+            assert_eq!(standing.changes, ["b1", "b3"]);
+            assert!(standing.over.is_none());
+        }
 
-    #[test]
-    fn every_call_of_a_named_run_is_its_own() {
-        let entries = [entry("b1", "open"), entry("b2", "append")];
-        let standing = standing(&entries, run(&["open", "append"]));
-        assert_eq!(standing.changes, ["b1", "b2"]);
-        assert!(standing.over.is_none());
-    }
+        phase someone_elses_change_on_top_holds_the_run;
+        {
+            let entries = [entry("b1", "run"), entry("c1", "theirs")];
+            let held = standing(&entries, run(&["run"]));
+            assert_eq!(held.over.as_ref().unwrap()["change"], "c1");
+            assert_eq!(
+                refusal("word-processor", held.over.as_ref().unwrap()),
+                "in word-processor, Ada Added a paragraph (c1) after it"
+            );
+            // What they made before the run, what they took back since, and housekeeping
+            // stand on nothing of the run's.
+            let entries = [
+                entry("a1", "theirs"),
+                entry("b1", "run"),
+                json!({"change": "c1", "invocation": "theirs", "undone": true}),
+                json!({"change": "c2", "change_kind": "housekeeping"}),
+            ];
+            assert!(standing(&entries, run(&["run"])).over.is_none());
+        }
 
-    /// A change is the run's by the undo step history recorded for it under the run it names,
-    /// where the host kept no invocation: never by a step recorded under another run.
-    #[test]
-    fn a_change_is_the_runs_by_its_recorded_step() {
-        let step = tilo_actions::ActionId::new();
-        let run = Run {
-            step,
-            invocations: BTreeSet::new(),
-        };
-        let recorded =
-            tilo_actions::context::recorded_gesture(step, Some(("agent-run", "agent-run:1")));
-        let ours = json!({"change": "b1", "step": recorded.0.to_string(),
-                          "run_kind": "agent-run", "run_id": "agent-run:1"});
-        assert!(run.made(&ours));
-        let elsewhere = json!({"change": "b1", "step": recorded.0.to_string(),
-                               "run_kind": "agent-run", "run_id": "agent-run:2"});
-        assert!(!run.made(&elsewhere));
-        assert!(!run.made(&json!({"change": "c1"})));
+        phase every_call_of_a_named_run_is_its_own;
+        {
+            let entries = [entry("b1", "open"), entry("b2", "append")];
+            let standing = standing(&entries, run(&["open", "append"]));
+            assert_eq!(standing.changes, ["b1", "b2"]);
+            assert!(standing.over.is_none());
+        }
+
+        phase a_change_is_the_runs_by_its_recorded_step;
+        // A change is the run's by the undo step history recorded for it under the run it names,
+        // where the host kept no invocation: never by a step recorded under another run.
+        {
+            let step = tilo_actions::ActionId::new();
+            let run = Run {
+                step,
+                invocations: BTreeSet::new(),
+            };
+            let recorded =
+                tilo_actions::context::recorded_gesture(step, Some(("agent-run", "agent-run:1")));
+            let ours = json!({"change": "b1", "step": recorded.0.to_string(),
+                              "run_kind": "agent-run", "run_id": "agent-run:1"});
+            assert!(run.made(&ours));
+            let elsewhere = json!({"change": "b1", "step": recorded.0.to_string(),
+                                   "run_kind": "agent-run", "run_id": "agent-run:2"});
+            assert!(!run.made(&elsewhere));
+            assert!(!run.made(&json!({"change": "c1"})));
+        }
     }
 }

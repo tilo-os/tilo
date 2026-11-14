@@ -286,254 +286,258 @@ fn door(
     route
 }
 
-/// The round weighs what this device holds: each input's bytes as the
-/// invoking app reads them, and how long the same transform last took here.
-#[test]
-fn the_round_is_weighed_with_the_inputs_as_the_app_reads_them() {
-    let media = Arc::new(Media::default());
-    let input = media.hold(&input());
-    let request = request(&input);
-    let peers = Arc::new(Peers::new(Reply::Silent));
-    let route = door(&media, &peers, &request);
+tilo_test_env::scenario! {
+    fn a_job_is_sent_away_only_when_a_round_wins_and_runs_here_otherwise;
 
-    let _ = drive(route.offload_invocation(request.clone(), invoked(&request)));
-    let asked = peers.asked();
-    assert_eq!(asked.len(), 1, "{asked:?}");
-    let (workspace, asked_route, work) = &asked[0];
-    assert_eq!(workspace, WORKSPACE);
-    assert_eq!(asked_route, &Route::new(APP, "photo", "thumbnail"));
-    let mut named = [0; 32];
-    hex::decode_to_slice(&input, &mut named).unwrap();
-    assert_eq!(work.inputs, vec![(named, INPUT_BYTES)]);
-    assert_eq!(work.input_bytes, INPUT_BYTES);
-    assert_eq!(
-        work.local_wall_ms,
-        Some(u64::try_from(LOCAL_RUN.as_millis()).unwrap()),
-        "the run here is what moving the inputs has to beat"
-    );
-    assert_eq!(
-        media.scopes(),
-        vec![(WORKSPACE.to_owned(), APP.to_owned())],
-        "the inputs are read as the invoking app reads them, in its workspace"
-    );
-}
+    phase the_round_is_weighed_with_the_inputs_as_the_app_reads_them;
+    // The round weighs what this device holds: each input's bytes as the
+    // invoking app reads them, and how long the same transform last took here.
+    {
+        let media = Arc::new(Media::default());
+        let input = media.hold(&input());
+        let request = request(&input);
+        let peers = Arc::new(Peers::new(Reply::Silent));
+        let route = door(&media, &peers, &request);
 
-/// The invocation runs on the device the round picks, and what it produced is
-/// kept where the invoking app reads its output.
-#[test]
-fn the_device_that_wins_the_round_runs_it_and_its_output_is_kept_for_the_app() {
-    let media = Arc::new(Media::default());
-    let input = media.hold(&input());
-    let thumbnail = vec![9; 1_024];
-    let produced = digest(&thumbnail);
-    let expected = ActionOutput {
-        value: Some(serde_json::json!({ "thumbnail": "done" })),
-        resources: vec![format!("tilo.content:{produced}")],
-    };
-    let request = request(&input);
-    let peers = Arc::new(Peers::new(Reply::Ran {
-        output: expected.clone(),
-        content: thumbnail.clone(),
-    }));
-    let route = door(&media, &peers, &request);
+        let _ = drive(route.offload_invocation(request.clone(), invoked(&request)));
+        let asked = peers.asked();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        let (workspace, asked_route, work) = &asked[0];
+        assert_eq!(workspace, WORKSPACE);
+        assert_eq!(asked_route, &Route::new(APP, "photo", "thumbnail"));
+        let mut named = [0; 32];
+        hex::decode_to_slice(&input, &mut named).unwrap();
+        assert_eq!(work.inputs, vec![(named, INPUT_BYTES)]);
+        assert_eq!(work.input_bytes, INPUT_BYTES);
+        assert_eq!(
+            work.local_wall_ms,
+            Some(u64::try_from(LOCAL_RUN.as_millis()).unwrap()),
+            "the run here is what moving the inputs has to beat"
+        );
+        assert_eq!(
+            media.scopes(),
+            vec![(WORKSPACE.to_owned(), APP.to_owned())],
+            "the inputs are read as the invoking app reads them, in its workspace"
+        );
+    }
 
-    let person = invoked(&request);
-    let ran =
-        drive(route.offload_invocation(request.clone(), person.clone())).expect("answers at once");
-    let Offloaded::Ran { output, device, .. } = ran else {
-        panic!("the round picked a device: {ran:?}");
-    };
-    assert_eq!(output, expected, "the app gets the answer made elsewhere");
-    assert_eq!(device, hex::encode(SERVER));
-    assert_eq!(
-        media.held(&produced),
-        Some(thumbnail),
-        "the app reads the answer by the address the run names"
-    );
-    assert_eq!(
-        media.scopes(),
-        vec![(WORKSPACE.to_owned(), APP.to_owned()); 2],
-        "the inputs are read, and the output kept, as the invoking app's own content"
-    );
-    assert_eq!(
-        peers.invoked(),
-        vec![(WORKSPACE.to_owned(), SERVER, person)],
-        "the device that won runs the invocation the person made, once"
-    );
-}
+    phase the_device_that_wins_the_round_runs_it_and_its_output_is_kept_for_the_app;
+    // The invocation runs on the device the round picks, and what it produced is
+    // kept where the invoking app reads its output.
+    {
+        let media = Arc::new(Media::default());
+        let input = media.hold(&input());
+        let thumbnail = vec![9; 1_024];
+        let produced = digest(&thumbnail);
+        let expected = ActionOutput {
+            value: Some(serde_json::json!({ "thumbnail": "done" })),
+            resources: vec![format!("tilo.content:{produced}")],
+        };
+        let request = request(&input);
+        let peers = Arc::new(Peers::new(Reply::Ran {
+            output: expected.clone(),
+            content: thumbnail.clone(),
+        }));
+        let route = door(&media, &peers, &request);
 
-/// A job this device has never run is not sent away: there is no run here to
-/// beat, so it runs here and the device's own time teaches the next round.
-#[test]
-fn a_job_never_run_here_is_not_sent_away() {
-    let media = Arc::new(Media::default());
-    let input = media.hold(&input());
-    let request = request(&input);
-    let peers = Arc::new(Peers::new(Reply::Ran {
-        output: ActionOutput::default(),
-        content: Vec::new(),
-    }));
-    let route = offer_offload(
-        Arc::clone(&media) as Arc<dyn WorkspaceMedia>,
-        Arc::clone(&peers) as Arc<dyn OffloadPeers>,
-    )
-    .expect("offload is on");
+        let person = invoked(&request);
+        let ran =
+            drive(route.offload_invocation(request.clone(), person.clone())).expect("answers at once");
+        let Offloaded::Ran { output, device, .. } = ran else {
+            panic!("the round picked a device: {ran:?}");
+        };
+        assert_eq!(output, expected, "the app gets the answer made elsewhere");
+        assert_eq!(device, hex::encode(SERVER));
+        assert_eq!(
+            media.held(&produced),
+            Some(thumbnail),
+            "the app reads the answer by the address the run names"
+        );
+        assert_eq!(
+            media.scopes(),
+            vec![(WORKSPACE.to_owned(), APP.to_owned()); 2],
+            "the inputs are read, and the output kept, as the invoking app's own content"
+        );
+        assert_eq!(
+            peers.invoked(),
+            vec![(WORKSPACE.to_owned(), SERVER, person)],
+            "the device that won runs the invocation the person made, once"
+        );
+    }
 
-    let ran = drive(route.offload_invocation(request.clone(), invoked(&request)))
-        .expect("answers at once");
-    let Offloaded::RunHere { reason } = ran else {
-        panic!("nothing has run here yet: {ran:?}");
-    };
-    assert!(reason.contains("nothing is quicker"), "{reason}");
-    assert!(peers.invoked().is_empty(), "no device was given the job");
-    assert!(
-        peers.asked().is_empty(),
-        "a run with nothing to beat asks nobody: the round would only add waiting"
-    );
-}
+    phase a_job_never_run_here_is_not_sent_away;
+    // A job this device has never run is not sent away: there is no run here to
+    // beat, so it runs here and the device's own time teaches the next round.
+    {
+        let media = Arc::new(Media::default());
+        let input = media.hold(&input());
+        let request = request(&input);
+        let peers = Arc::new(Peers::new(Reply::Ran {
+            output: ActionOutput::default(),
+            content: Vec::new(),
+        }));
+        let route = offer_offload(
+            Arc::clone(&media) as Arc<dyn WorkspaceMedia>,
+            Arc::clone(&peers) as Arc<dyn OffloadPeers>,
+        )
+        .expect("offload is on");
 
-/// A device that cannot run it leaves the job here, and says why.
-#[test]
-fn a_failing_device_leaves_the_job_here_with_the_reason() {
-    let media = Arc::new(Media::default());
-    let input = media.hold(&input());
-    let request = request(&input);
-    let peers = Arc::new(Peers::new(Reply::Failed("no such app".to_owned())));
-    let route = door(&media, &peers, &request);
+        let ran = drive(route.offload_invocation(request.clone(), invoked(&request)))
+            .expect("answers at once");
+        let Offloaded::RunHere { reason } = ran else {
+            panic!("nothing has run here yet: {ran:?}");
+        };
+        assert!(reason.contains("nothing is quicker"), "{reason}");
+        assert!(peers.invoked().is_empty(), "no device was given the job");
+        assert!(
+            peers.asked().is_empty(),
+            "a run with nothing to beat asks nobody: the round would only add waiting"
+        );
+    }
 
-    let ran = drive(route.offload_invocation(request.clone(), invoked(&request)))
-        .expect("answers at once");
-    let Offloaded::RunHere { reason } = ran else {
-        panic!("the device that was picked failed: {ran:?}");
-    };
-    assert!(reason.contains("did not run it: no such app"), "{reason}");
-    assert!(
-        reason.contains(&hex::encode(&SERVER[..4])),
-        "the reason names the device that failed: {reason}"
-    );
-}
+    phase a_failing_device_leaves_the_job_here_with_the_reason;
+    // A device that cannot run it leaves the job here, and says why.
+    {
+        let media = Arc::new(Media::default());
+        let input = media.hold(&input());
+        let request = request(&input);
+        let peers = Arc::new(Peers::new(Reply::Failed("no such app".to_owned())));
+        let route = door(&media, &peers, &request);
 
-/// Bytes that are not the content an answer names never become the app's
-/// output.
-#[test]
-fn bytes_that_are_not_the_content_it_names_never_become_the_output() {
-    let media = Arc::new(Media::default());
-    let input = media.hold(&input());
-    let named = digest(&[9; 1_024]);
-    let request = request(&input);
-    let peers = Arc::new(Peers::new(Reply::Ran {
-        output: ActionOutput {
-            value: None,
-            resources: vec![format!("tilo.content:{named}")],
-        },
-        content: vec![1, 2, 3],
-    }));
-    let route = door(&media, &peers, &request);
+        let ran = drive(route.offload_invocation(request.clone(), invoked(&request)))
+            .expect("answers at once");
+        let Offloaded::RunHere { reason } = ran else {
+            panic!("the device that was picked failed: {ran:?}");
+        };
+        assert!(reason.contains("did not run it: no such app"), "{reason}");
+        assert!(
+            reason.contains(&hex::encode(&SERVER[..4])),
+            "the reason names the device that failed: {reason}"
+        );
+    }
 
-    let ran = drive(route.offload_invocation(request.clone(), invoked(&request)))
-        .expect("answers at once");
-    let Offloaded::RunHere { reason } = ran else {
-        panic!("the answer is not the content it names: {ran:?}");
-    };
-    assert!(reason.contains("not the content it names"), "{reason}");
-    assert_eq!(media.held(&named), None);
-}
+    phase bytes_that_are_not_the_content_it_names_never_become_the_output;
+    // Bytes that are not the content an answer names never become the app's
+    // output.
+    {
+        let media = Arc::new(Media::default());
+        let input = media.hold(&input());
+        let named = digest(&[9; 1_024]);
+        let request = request(&input);
+        let peers = Arc::new(Peers::new(Reply::Ran {
+            output: ActionOutput {
+                value: None,
+                resources: vec![format!("tilo.content:{named}")],
+            },
+            content: vec![1, 2, 3],
+        }));
+        let route = door(&media, &peers, &request);
 
-/// An invocation that comes back to this device is not sent away again: it is
-/// already running where it was sent, and the app runs this one here.
-#[test]
-fn an_invocation_that_comes_back_is_not_sent_away_again() {
-    let media = Arc::new(Media::default());
-    let input = media.hold(&input());
-    let request = request(&input);
-    let (completer, answered) = pending();
-    let peers = Arc::new(Peers::new(Reply::Later(answered)));
-    let route = door(&media, &peers, &request);
+        let ran = drive(route.offload_invocation(request.clone(), invoked(&request)))
+            .expect("answers at once");
+        let Offloaded::RunHere { reason } = ran else {
+            panic!("the answer is not the content it names: {ran:?}");
+        };
+        assert!(reason.contains("not the content it names"), "{reason}");
+        assert_eq!(media.held(&named), None);
+    }
 
-    let person = invoked(&request);
-    let mut sent = route.offload_invocation(request.clone(), person.clone());
-    assert!(
-        drive(&mut sent).is_none(),
-        "it waits on the device that won the round"
-    );
-    let back = drive(route.offload_invocation(request.clone(), person))
-        .expect("a job already away answers at once");
-    let Offloaded::RunHere { reason } = back else {
-        panic!("the invocation is already running elsewhere: {back:?}");
-    };
-    assert!(reason.contains("already running"), "{reason}");
+    phase an_invocation_that_comes_back_is_not_sent_away_again;
+    // An invocation that comes back to this device is not sent away again: it is
+    // already running where it was sent, and the app runs this one here.
+    {
+        let media = Arc::new(Media::default());
+        let input = media.hold(&input());
+        let request = request(&input);
+        let (completer, answered) = pending();
+        let peers = Arc::new(Peers::new(Reply::Later(answered)));
+        let route = door(&media, &peers, &request);
 
-    completer.complete(Ok(RanAway {
-        device: SERVER,
-        output: ActionOutput::default(),
-        outputs: Vec::new(),
-    }));
-    assert!(
-        matches!(drive(&mut sent), Some(Offloaded::Ran { .. })),
-        "the device that ran it answered the person's invocation"
-    );
-}
+        let person = invoked(&request);
+        let mut sent = route.offload_invocation(request.clone(), person.clone());
+        assert!(
+            drive(&mut sent).is_none(),
+            "it waits on the device that won the round"
+        );
+        let back = drive(route.offload_invocation(request.clone(), person))
+            .expect("a job already away answers at once");
+        let Offloaded::RunHere { reason } = back else {
+            panic!("the invocation is already running elsewhere: {back:?}");
+        };
+        assert!(reason.contains("already running"), "{reason}");
 
-/// A job whose input is not on this device, or is not a content hash at all,
-/// runs here: content this device cannot read is nothing it can weigh moving.
-#[test]
-fn a_job_whose_input_is_not_here_runs_here() {
-    let media = Arc::new(Media::default());
-    let peers = Arc::new(Peers::new(Reply::Ran {
-        output: ActionOutput::default(),
-        content: Vec::new(),
-    }));
-    let route = offer_offload(
-        Arc::clone(&media) as Arc<dyn WorkspaceMedia>,
-        Arc::clone(&peers) as Arc<dyn OffloadPeers>,
-    )
-    .expect("offload is on");
+        completer.complete(Ok(RanAway {
+            device: SERVER,
+            output: ActionOutput::default(),
+            outputs: Vec::new(),
+        }));
+        assert!(
+            matches!(drive(&mut sent), Some(Offloaded::Ran { .. })),
+            "the device that ran it answered the person's invocation"
+        );
+    }
 
-    let elsewhere = request(&digest(&[7; 16]));
-    let ran = drive(route.offload_invocation(elsewhere.clone(), invoked(&elsewhere))).unwrap();
-    let Offloaded::RunHere { reason } = ran else {
-        panic!("the input is not here: {ran:?}");
-    };
-    assert!(reason.contains("not on this device yet"), "{reason}");
+    phase a_job_whose_input_is_not_here_runs_here;
+    // A job whose input is not on this device, or is not a content hash at all,
+    // runs here: content this device cannot read is nothing it can weigh moving.
+    {
+        let media = Arc::new(Media::default());
+        let peers = Arc::new(Peers::new(Reply::Ran {
+            output: ActionOutput::default(),
+            content: Vec::new(),
+        }));
+        let route = offer_offload(
+            Arc::clone(&media) as Arc<dyn WorkspaceMedia>,
+            Arc::clone(&peers) as Arc<dyn OffloadPeers>,
+        )
+        .expect("offload is on");
 
-    let wrong = request("not a content hash");
-    let ran = drive(route.offload_invocation(wrong.clone(), invoked(&wrong))).unwrap();
-    let Offloaded::RunHere { reason } = ran else {
-        panic!("that is not content: {ran:?}");
-    };
-    assert!(reason.contains("not a content hash"), "{reason}");
-    assert!(peers.asked().is_empty(), "nothing weighable was asked");
-}
+        let elsewhere = request(&digest(&[7; 16]));
+        let ran = drive(route.offload_invocation(elsewhere.clone(), invoked(&elsewhere))).unwrap();
+        let Offloaded::RunHere { reason } = ran else {
+            panic!("the input is not here: {ran:?}");
+        };
+        assert!(reason.contains("not on this device yet"), "{reason}");
 
-/// A route handed no invocation runs the job here: without the invocation
-/// there is nothing to send to another device.
-#[test]
-fn a_route_handed_no_invocation_runs_here() {
-    let media = Arc::new(Media::default());
-    let input = media.hold(&input());
-    let request = request(&input);
-    let peers = Arc::new(Peers::new(Reply::Ran {
-        output: ActionOutput::default(),
-        content: Vec::new(),
-    }));
-    let route = door(&media, &peers, &request);
+        let wrong = request("not a content hash");
+        let ran = drive(route.offload_invocation(wrong.clone(), invoked(&wrong))).unwrap();
+        let Offloaded::RunHere { reason } = ran else {
+            panic!("that is not content: {ran:?}");
+        };
+        assert!(reason.contains("not a content hash"), "{reason}");
+        assert!(peers.asked().is_empty(), "nothing weighable was asked");
+    }
 
-    let ran = drive(route.offload(request.clone())).expect("answers at once");
-    let Offloaded::RunHere { reason } = ran else {
-        panic!("there is no invocation to send: {ran:?}");
-    };
-    assert!(reason.contains("not handed to the route"), "{reason}");
-    assert!(peers.asked().is_empty());
-}
+    phase a_route_handed_no_invocation_runs_here;
+    // A route handed no invocation runs the job here: without the invocation
+    // there is nothing to send to another device.
+    {
+        let media = Arc::new(Media::default());
+        let input = media.hold(&input());
+        let request = request(&input);
+        let peers = Arc::new(Peers::new(Reply::Ran {
+            output: ActionOutput::default(),
+            content: Vec::new(),
+        }));
+        let route = door(&media, &peers, &request);
 
-/// Offload turned off installs no route at all: every job runs here.
-#[test]
-fn offload_turned_off_installs_no_route() {
-    let media: Arc<dyn WorkspaceMedia> = Arc::new(Media::default());
-    let peers: Arc<dyn OffloadPeers> = Arc::new(Peers::new(Reply::Silent));
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(OFFLOAD_ENV, "off");
-    assert!(offer_offload(Arc::clone(&media), Arc::clone(&peers)).is_none());
-    env.remove(OFFLOAD_ENV);
-    assert!(offer_offload(media, peers).is_some());
+        let ran = drive(route.offload(request.clone())).expect("answers at once");
+        let Offloaded::RunHere { reason } = ran else {
+            panic!("there is no invocation to send: {ran:?}");
+        };
+        assert!(reason.contains("not handed to the route"), "{reason}");
+        assert!(peers.asked().is_empty());
+    }
+
+    phase offload_turned_off_installs_no_route;
+    // Offload turned off installs no route at all: every job runs here.
+    {
+        let media: Arc<dyn WorkspaceMedia> = Arc::new(Media::default());
+        let peers: Arc<dyn OffloadPeers> = Arc::new(Peers::new(Reply::Silent));
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(OFFLOAD_ENV, "off");
+        assert!(offer_offload(Arc::clone(&media), Arc::clone(&peers)).is_none());
+        env.remove(OFFLOAD_ENV);
+        assert!(offer_offload(media, peers).is_some());
+    }
 }

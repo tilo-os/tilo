@@ -152,151 +152,159 @@ fn encoded(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-#[test]
-fn an_agent_uploads_in_chunks_into_its_workspace_and_gets_a_reference() {
-    let host = Shelf::default();
-    run(async {
-        let server = McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada");
-        let listed = server
-            .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
-            .await
-            .unwrap();
-        let names: Vec<_> = listed["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|tool| tool["name"].as_str())
-            .collect();
-        for name in [BEGIN, APPEND, FINISH] {
-            assert!(names.contains(&name), "{names:?}");
-        }
-        let bytes: Vec<u8> = (0..10_000_u32).map(|n| (n % 251) as u8).collect();
-        let begun = put(&server, BEGIN, json!({"size": bytes.len()}))
-            .await
-            .unwrap();
-        let upload = begun["upload"].clone();
-        let mut offset = 0;
-        for chunk in bytes.chunks(4096) {
-            let appended = put(
-                &server,
-                APPEND,
-                json!({"upload": upload, "offset": offset, "chunk": encoded(chunk)}),
-            )
-            .await
-            .unwrap();
-            offset += chunk.len();
-            assert_eq!(appended["written"], offset);
-        }
-        // A chunk sent again is refused with where to resume.
-        let again = put(
-            &server,
-            APPEND,
-            json!({"upload": upload, "offset": 0, "chunk": encoded(&bytes[..4096])}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(again, "append at offset 10000");
-        let finished = put(&server, FINISH, json!({"upload": upload}))
-            .await
-            .unwrap();
-        assert_eq!(
-            finished["content"],
-            format!("tilo.content:{}", blake3::hash(&bytes).to_hex())
-        );
-        {
-            let log = host.0.lock_recover();
-            assert_eq!(log.begun, [Some("workspace".to_owned())]);
-            assert_eq!(log.stored, [bytes]);
-        }
-        // Finished, it is no longer open.
-        assert!(
-            put(&server, FINISH, json!({"upload": upload}))
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn an_agent_puts_content_into_its_workspace_in_bounded_chunks;
+
+    phase an_agent_uploads_in_chunks_into_its_workspace_and_gets_a_reference;
+    {
+        let host = Shelf::default();
+        run(async {
+            let server = McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada");
+            let listed = server
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
                 .await
-                .unwrap_err()
-                .contains("no upload")
-        );
-    });
-}
-
-#[test]
-fn a_session_holds_few_uploads_takes_bounded_chunks_and_drops_what_it_left_open() {
-    let host = Shelf::default();
-    run(async {
-        let server = McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada");
-        let mut uploads = Vec::new();
-        for _ in 0..MAX_OPEN_CONTENT_PUTS {
-            uploads.push(put(&server, BEGIN, json!({"size": 4})).await.unwrap()["upload"].clone());
-        }
-        let refused = put(&server, BEGIN, json!({"size": 4})).await.unwrap_err();
-        assert!(refused.contains("finish one first"), "{refused}");
-
-        let too_long = put(
-            &server,
-            APPEND,
-            json!({"upload": uploads[0], "offset": 0, "chunk": encoded(&vec![0; MAX_CONTENT_PUT_CHUNK + 1])}),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(too_long, "a chunk carries at most 524288 bytes: split it");
-
-        // Short of its size, an upload stays open to be completed.
-        put(
-            &server,
-            APPEND,
-            json!({"upload": uploads[0], "offset": 0, "chunk": encoded(b"ab")}),
-        )
-        .await
-        .unwrap();
-        let short = put(&server, FINISH, json!({"upload": uploads[0]}))
-            .await
-            .unwrap_err();
-        assert_eq!(
-            short,
-            "the upload has 2 of 4 bytes: append the rest at offset 2"
-        );
-        put(
-            &server,
-            APPEND,
-            json!({"upload": uploads[0], "offset": 2, "chunk": encoded(b"cd")}),
-        )
-        .await
-        .unwrap();
-        put(&server, FINISH, json!({"upload": uploads[0]}))
-            .await
-            .unwrap();
-        assert_eq!(host.0.lock_recover().stored, [b"abcd".to_vec()]);
-
-        drop(server);
-        let log = host.0.lock_recover();
-        assert_eq!(log.stored.len(), 1);
-        assert_eq!(
-            log.aborted,
-            MAX_OPEN_CONTENT_PUTS - 1,
-            "the session's open uploads end with it"
-        );
-        drop(log);
-    });
-}
-
-#[test]
-fn a_host_without_a_content_store_offers_no_put_tools() {
-    let host = Shelf::default();
-    host.0.lock_recover().no_store = true;
-    run(async {
-        let server = McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada");
-        let listed = server
-            .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
-            .await
-            .unwrap();
-        assert!(
-            listed["result"]["tools"]
+                .unwrap();
+            let names: Vec<_> = listed["result"]["tools"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|tool| !is_put_tool(tool["name"].as_str().unwrap())),
-            "{listed}"
-        );
-        let refused = put(&server, BEGIN, json!({"size": 4})).await.unwrap_err();
-        assert_eq!(refused, "content uploads are not available here");
-    });
+                .filter_map(|tool| tool["name"].as_str())
+                .collect();
+            for name in [BEGIN, APPEND, FINISH] {
+                assert!(names.contains(&name), "{names:?}");
+            }
+            let bytes: Vec<u8> = (0..10_000_u32).map(|n| (n % 251) as u8).collect();
+            let begun = put(&server, BEGIN, json!({"size": bytes.len()}))
+                .await
+                .unwrap();
+            let upload = begun["upload"].clone();
+            let mut offset = 0;
+            for chunk in bytes.chunks(4096) {
+                let appended = put(
+                    &server,
+                    APPEND,
+                    json!({"upload": upload, "offset": offset, "chunk": encoded(chunk)}),
+                )
+                .await
+                .unwrap();
+                offset += chunk.len();
+                assert_eq!(appended["written"], offset);
+            }
+            // A chunk sent again is refused with where to resume.
+            let again = put(
+                &server,
+                APPEND,
+                json!({"upload": upload, "offset": 0, "chunk": encoded(&bytes[..4096])}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(again, "append at offset 10000");
+            let finished = put(&server, FINISH, json!({"upload": upload}))
+                .await
+                .unwrap();
+            assert_eq!(
+                finished["content"],
+                format!("tilo.content:{}", blake3::hash(&bytes).to_hex())
+            );
+            {
+                let log = host.0.lock_recover();
+                assert_eq!(log.begun, [Some("workspace".to_owned())]);
+                assert_eq!(log.stored, [bytes]);
+            }
+            // Finished, it is no longer open.
+            assert!(
+                put(&server, FINISH, json!({"upload": upload}))
+                    .await
+                    .unwrap_err()
+                    .contains("no upload")
+            );
+        });
+    }
+
+    phase a_session_holds_few_uploads_takes_bounded_chunks_and_drops_what_it_left_open;
+    {
+        let host = Shelf::default();
+        run(async {
+            let server = McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada");
+            let mut uploads = Vec::new();
+            for _ in 0..MAX_OPEN_CONTENT_PUTS {
+                uploads.push(put(&server, BEGIN, json!({"size": 4})).await.unwrap()["upload"].clone());
+            }
+            let refused = put(&server, BEGIN, json!({"size": 4})).await.unwrap_err();
+            assert!(refused.contains("finish one first"), "{refused}");
+
+            let too_long = put(
+                &server,
+                APPEND,
+                json!({"upload": uploads[0], "offset": 0, "chunk": encoded(&vec![0; MAX_CONTENT_PUT_CHUNK + 1])}),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(too_long, "a chunk carries at most 524288 bytes: split it");
+
+            // Short of its size, an upload stays open to be completed.
+            put(
+                &server,
+                APPEND,
+                json!({"upload": uploads[0], "offset": 0, "chunk": encoded(b"ab")}),
+            )
+            .await
+            .unwrap();
+            let short = put(&server, FINISH, json!({"upload": uploads[0]}))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                short,
+                "the upload has 2 of 4 bytes: append the rest at offset 2"
+            );
+            put(
+                &server,
+                APPEND,
+                json!({"upload": uploads[0], "offset": 2, "chunk": encoded(b"cd")}),
+            )
+            .await
+            .unwrap();
+            put(&server, FINISH, json!({"upload": uploads[0]}))
+                .await
+                .unwrap();
+            assert_eq!(host.0.lock_recover().stored, [b"abcd".to_vec()]);
+
+            drop(server);
+            let log = host.0.lock_recover();
+            assert_eq!(log.stored.len(), 1);
+            assert_eq!(
+                log.aborted,
+                MAX_OPEN_CONTENT_PUTS - 1,
+                "the session's open uploads end with it"
+            );
+            drop(log);
+        });
+    }
+
+    phase a_host_without_a_content_store_offers_no_put_tools;
+    {
+        let host = Shelf::default();
+        host.0.lock_recover().no_store = true;
+        run(async {
+            let server = McpServer::for_agent(host.clone(), "workspace".into(), "claude-code", "ada");
+            let listed = server
+                .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+                .await
+                .unwrap();
+            assert!(
+                listed["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|tool| !is_put_tool(tool["name"].as_str().unwrap())),
+                "{listed}"
+            );
+            let refused = put(&server, BEGIN, json!({"size": 4})).await.unwrap_err();
+            assert_eq!(refused, "content uploads are not available here");
+        });
+    }
 }

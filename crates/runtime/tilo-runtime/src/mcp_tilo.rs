@@ -1666,159 +1666,231 @@ mod tests {
     };
     use tilo_actions::{InvocationId, InvocationUpdate};
 
-    /// A program's answer typed: what it printed, what it changed, and the
-    /// steps of the task's history beside it.
-    #[test]
-    fn a_program_answers_typed_with_its_output_and_the_task_steps() {
-        let host = Native::new();
-        let server = McpServer::new(host, "workspace".to_owned(), "owner".to_owned());
-        server.programs.lock_recover().steps.push(Step {
-            number: 1,
-            apps: vec!["so.tilo.notes".to_owned()],
-            history: Vec::new(),
-            program: "notes.pin(n1)".to_owned(),
-            changed: 1,
-            undone: false,
-            kept: false,
-            gesture: None,
-        });
-        let answer = json!({
-            "state": "done",
-            "output": ["n1 \"Q3 plan\""],
-            "changed": 2,
-            "apps": ["so.tilo.notes"],
-        });
-        let typed = server.program_answer(Some(&answer), &Reply::ok(String::new()));
-        assert_eq!(typed["status"], "ok");
-        assert_eq!(typed["output"], json!(["n1 \"Q3 plan\""]));
-        assert_eq!(typed["changed"], 2);
-        assert_eq!(typed["apps"], json!(["so.tilo.notes"]));
-        assert_eq!(typed["steps"][0]["program"], "notes.pin(n1)");
-        // A preview says so; a failed program carries its detail.
-        let preview = server.program_answer(
-            Some(&json!({"state":"preview","output":[],"complete":true})),
-            &Reply::ok(String::new()),
-        );
-        assert_eq!(preview["status"], "preview");
-        let refused = server.program_answer(
-            Some(&json!({"state":"rejected","detail":["line 1: no such field"]})),
-            &Reply::failed("error".to_owned()),
-        );
-        assert_eq!(refused["status"], "failed");
-        assert_eq!(refused["detail"], json!(["line 1: no such field"]));
-        // The tools that answer text carry their lines as the typed output.
-        let listed = server.program_answer(None, &Reply::ok("ok\nstep 1: 1 change".to_owned()));
-        assert_eq!(listed["status"], "ok");
-        assert_eq!(listed["output"], json!(["ok", "step 1: 1 change"]));
-    }
+    tilo_test_env::scenario! {
+        fn a_task_answers_its_programs_and_keeps_its_steps;
 
-    #[test]
-    fn references_name_what_answers_showed_and_nothing_else() {
-        let mut programs = Programs::default();
-        assert_eq!(
-            shown_line("@notes.Note:root/notes:a \"Q3 plan\"", &mut programs),
-            "n1 \"Q3 plan\""
-        );
-        assert_eq!(
-            resolve_refs("notes.pin(n1)", &programs).unwrap(),
-            "notes.pin(@notes.Note:root/notes:a)"
-        );
-        let invented = resolve_refs("notes.pin(n7)", &programs).unwrap_err();
-        assert!(
-            invented.contains("no reference this session showed"),
-            "{invented}"
-        );
-        assert!(resolve_refs("notes.pin(@notes.Note:x)", &programs).is_err());
-        // A word in a string, or a member, is not a reference.
-        assert_eq!(
-            resolve_refs("print(\"n7\", x.n7)", &programs).unwrap(),
-            "print(\"n7\", x.n7)"
-        );
-    }
+        phase a_program_answers_typed_with_its_output_and_the_task_steps;
+        // A program's answer typed: what it printed, what it changed, and the
+        // steps of the task's history beside it.
+        {
+            let host = Native::new();
+            let server = McpServer::new(host, "workspace".to_owned(), "owner".to_owned());
+            server.programs.lock_recover().steps.push(Step {
+                number: 1,
+                apps: vec!["so.tilo.notes".to_owned()],
+                history: Vec::new(),
+                program: "notes.pin(n1)".to_owned(),
+                changed: 1,
+                undone: false,
+                kept: false,
+                gesture: None,
+            });
+            let answer = json!({
+                "state": "done",
+                "output": ["n1 \"Q3 plan\""],
+                "changed": 2,
+                "apps": ["so.tilo.notes"],
+            });
+            let typed = server.program_answer(Some(&answer), &Reply::ok(String::new()));
+            assert_eq!(typed["status"], "ok");
+            assert_eq!(typed["output"], json!(["n1 \"Q3 plan\""]));
+            assert_eq!(typed["changed"], 2);
+            assert_eq!(typed["apps"], json!(["so.tilo.notes"]));
+            assert_eq!(typed["steps"][0]["program"], "notes.pin(n1)");
+            // A preview says so; a failed program carries its detail.
+            let preview = server.program_answer(
+                Some(&json!({"state":"preview","output":[],"complete":true})),
+                &Reply::ok(String::new()),
+            );
+            assert_eq!(preview["status"], "preview");
+            let refused = server.program_answer(
+                Some(&json!({"state":"rejected","detail":["line 1: no such field"]})),
+                &Reply::failed("error".to_owned()),
+            );
+            assert_eq!(refused["status"], "failed");
+            assert_eq!(refused["detail"], json!(["line 1: no such field"]));
+            // The tools that answer text carry their lines as the typed output.
+            let listed = server.program_answer(None, &Reply::ok("ok\nstep 1: 1 change".to_owned()));
+            assert_eq!(listed["status"], "ok");
+            assert_eq!(listed["output"], json!(["ok", "step 1: 1 change"]));
+        }
 
-    #[test]
-    fn a_regular_expression_holds_no_references_and_no_literal() {
-        let programs = Programs::default();
-        let grep = r"grep(/\bt1\b|x@y/i, in: notes).count_by(.doc)";
-        assert_eq!(resolve_refs(grep, &programs).unwrap(), grep);
-        // After a value, a slash divides; the reference after it is still checked.
-        let divided = resolve_refs("print(10 / t7)", &programs).unwrap_err();
-        assert!(divided.contains("`t7`"), "{divided}");
-    }
+        phase references_name_what_answers_showed_and_nothing_else;
+        {
+            let mut programs = Programs::default();
+            assert_eq!(
+                shown_line("@notes.Note:root/notes:a \"Q3 plan\"", &mut programs),
+                "n1 \"Q3 plan\""
+            );
+            assert_eq!(
+                resolve_refs("notes.pin(n1)", &programs).unwrap(),
+                "notes.pin(@notes.Note:root/notes:a)"
+            );
+            let invented = resolve_refs("notes.pin(n7)", &programs).unwrap_err();
+            assert!(
+                invented.contains("no reference this session showed"),
+                "{invented}"
+            );
+            assert!(resolve_refs("notes.pin(@notes.Note:x)", &programs).is_err());
+            // A word in a string, or a member, is not a reference.
+            assert_eq!(
+                resolve_refs("print(\"n7\", x.n7)", &programs).unwrap(),
+                "print(\"n7\", x.n7)"
+            );
+        }
 
-    #[test]
-    fn a_preview_counts_the_actions_and_resources() {
-        let answer = json!({"steps": [
-            {"action": "pin", "resources": ["a", "root"], "destructive": false},
-            {"action": "pin", "resources": ["b", "root"], "destructive": false},
-            {"action": "delete_card", "resources": ["c"], "destructive": true},
-        ]});
-        assert_eq!(
-            preview(&answer),
-            "preview: 3 actions on 4 resources\n  pin ×2\n  delete_card ×1  destroys\nnothing changed; send the same program with confirm: true to apply it"
-        );
-    }
+        phase a_regular_expression_holds_no_references_and_no_literal;
+        {
+            let programs = Programs::default();
+            let grep = r"grep(/\bt1\b|x@y/i, in: notes).count_by(.doc)";
+            assert_eq!(resolve_refs(grep, &programs).unwrap(), grep);
+            // After a value, a slash divides; the reference after it is still checked.
+            let divided = resolve_refs("print(10 / t7)", &programs).unwrap_err();
+            assert!(divided.contains("`t7`"), "{divided}");
+        }
 
-    #[test]
-    fn a_step_in_two_apps_is_one_step_of_the_task() {
-        let mut programs = Programs::default();
-        let answer = json!({
-            "state": "done",
-            "output": ["@notes.Note:root-a/n1 \"Q3 plan\""],
-            "changed": 2,
-            "apps": ["so.tilo.lang.notes", "so.tilo.lang.todo"],
-            "history": [
-                {"app": "so.tilo.lang.notes", "resource": "tl:so.tilo.lang.notes"},
-                {"app": "so.tilo.lang.todo", "resource": "tl:so.tilo.lang.todo"},
-            ],
-            "lets": [{"name": "plan", "type": "so.tilo.lang.notes.Note"}],
-        });
-        let (text, failed) =
-            answer_text(&mut programs, "notes.pin(n1)\ntodo.add(t1, \"x\")", &answer);
-        assert!(!failed, "{text}");
-        assert_eq!(
-            text,
-            "n1 \"Q3 plan\"\nstep 1: 2 changes in notes and todo; `undo` takes it back"
-        );
-        assert_eq!(programs.lets, ["plan"]);
-        // Undo goes to each app by its id and resource, never by a name another app may share.
-        assert_eq!(
-            programs.steps.first().map(|step| step.history.clone()),
-            Some(vec![
-                History {
-                    app: "so.tilo.lang.notes".into(),
-                    resource: "tl:so.tilo.lang.notes".into(),
-                    published: false,
-                },
-                History {
-                    app: "so.tilo.lang.todo".into(),
-                    resource: "tl:so.tilo.lang.todo".into(),
-                    published: false,
-                },
-            ])
-        );
-        assert_eq!(
-            history_text(&programs),
-            "steps of this task, oldest first\n1  notes and todo  2 changes  notes.pin(n1)"
-        );
-    }
+        phase a_preview_counts_the_actions_and_resources;
+        {
+            let answer = json!({"steps": [
+                {"action": "pin", "resources": ["a", "root"], "destructive": false},
+                {"action": "pin", "resources": ["b", "root"], "destructive": false},
+                {"action": "delete_card", "resources": ["c"], "destructive": true},
+            ]});
+            assert_eq!(
+                preview(&answer),
+                "preview: 3 actions on 4 resources\n  pin ×2\n  delete_card ×1  destroys\nnothing changed; send the same program with confirm: true to apply it"
+            );
+        }
 
-    #[test]
-    fn a_failed_step_says_what_became_of_its_changes() {
-        let mut programs = Programs::default();
-        let answer = json!({"state": "failed", "detail": "trap: no", "changed": 1, "apps": ["so.tilo.lang.todo"]});
-        let (text, failed) = answer_text(&mut programs, "x", &answer);
-        assert!(failed);
-        assert_eq!(text, "error: trap: no\nwhat it changed is taken back");
-        assert!(programs.steps.is_empty(), "a failed program is no step");
-    }
+        phase a_step_in_two_apps_is_one_step_of_the_task;
+        {
+            let mut programs = Programs::default();
+            let answer = json!({
+                "state": "done",
+                "output": ["@notes.Note:root-a/n1 \"Q3 plan\""],
+                "changed": 2,
+                "apps": ["so.tilo.lang.notes", "so.tilo.lang.todo"],
+                "history": [
+                    {"app": "so.tilo.lang.notes", "resource": "tl:so.tilo.lang.notes"},
+                    {"app": "so.tilo.lang.todo", "resource": "tl:so.tilo.lang.todo"},
+                ],
+                "lets": [{"name": "plan", "type": "so.tilo.lang.notes.Note"}],
+            });
+            let (text, failed) =
+                answer_text(&mut programs, "notes.pin(n1)\ntodo.add(t1, \"x\")", &answer);
+            assert!(!failed, "{text}");
+            assert_eq!(
+                text,
+                "n1 \"Q3 plan\"\nstep 1: 2 changes in notes and todo; `undo` takes it back"
+            );
+            assert_eq!(programs.lets, ["plan"]);
+            // Undo goes to each app by its id and resource, never by a name another app may share.
+            assert_eq!(
+                programs.steps.first().map(|step| step.history.clone()),
+                Some(vec![
+                    History {
+                        app: "so.tilo.lang.notes".into(),
+                        resource: "tl:so.tilo.lang.notes".into(),
+                        published: false,
+                    },
+                    History {
+                        app: "so.tilo.lang.todo".into(),
+                        resource: "tl:so.tilo.lang.todo".into(),
+                        published: false,
+                    },
+                ])
+            );
+            assert_eq!(
+                history_text(&programs),
+                "steps of this task, oldest first\n1  notes and todo  2 changes  notes.pin(n1)"
+            );
+        }
 
-    #[test]
-    fn the_policys_refusals_are_told_from_failures() {
-        assert!(refusal("the caller may not invoke this action"));
-        assert!(refusal("refused: asks the person first"));
-        assert!(refusal("no such action is offered"));
-        assert!(!refusal("the action failed: no such note"));
+        phase a_failed_step_says_what_became_of_its_changes;
+        {
+            let mut programs = Programs::default();
+            let answer = json!({"state": "failed", "detail": "trap: no", "changed": 1, "apps": ["so.tilo.lang.todo"]});
+            let (text, failed) = answer_text(&mut programs, "x", &answer);
+            assert!(failed);
+            assert_eq!(text, "error: trap: no\nwhat it changed is taken back");
+            assert!(programs.steps.is_empty(), "a failed program is no step");
+        }
+
+        phase the_policys_refusals_are_told_from_failures;
+        {
+            assert!(refusal("the caller may not invoke this action"));
+            assert!(refusal("refused: asks the person first"));
+            assert!(refusal("no such action is offered"));
+            assert!(!refusal("the action failed: no such note"));
+        }
+
+        phase undoing_a_task_step_starts_the_native_apps_and_takes_their_steps_back;
+        {
+            let host = Native::new();
+            let server = McpServer::new(host.clone(), "workspace".to_owned(), "owner".to_owned());
+            server.programs.lock_recover().steps.push(Step {
+                number: 1,
+                apps: vec!["so.tilo.tasks".to_owned(), "so.tilo.chat".to_owned()],
+                history: vec![
+                    History {
+                        app: "so.tilo.tasks".to_owned(),
+                        resource: "tasks.tracker".to_owned(),
+                        published: false,
+                    },
+                    History {
+                        app: "so.tilo.chat".to_owned(),
+                        resource: "chat.workspace".to_owned(),
+                        published: false,
+                    },
+                ],
+                program: "tasks.create(tasks.tracker, \"Ship it\")".to_owned(),
+                changed: 2,
+                undone: false,
+                kept: false,
+                gesture: None,
+            });
+            let reply = run(server.undo_steps(false)).expect("the step is taken back");
+            assert!(!reply.failed, "{}", reply.text);
+            // Neither app ran: the workspace started each without a window, and its undo went to
+            // the instance it started, on the record the app keeps its steps in.
+            assert_eq!(host.opened(), ["so.tilo.chat", "so.tilo.tasks"]);
+            assert_eq!(
+                host.invoked(),
+                [
+                    (
+                        tilo_actions::remote::workspace_provider("workspace"),
+                        format!(
+                            "{}so.tilo.chat",
+                            tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
+                        ),
+                        tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
+                        json!({}),
+                    ),
+                    (
+                        "11".to_owned(),
+                        "chat.workspace".to_owned(),
+                        "undo".to_owned(),
+                        json!({"steps": 1}),
+                    ),
+                    (
+                        tilo_actions::remote::workspace_provider("workspace"),
+                        format!(
+                            "{}so.tilo.tasks",
+                            tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
+                        ),
+                        tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
+                        json!({}),
+                    ),
+                    (
+                        "12".to_owned(),
+                        "tasks.tracker".to_owned(),
+                        "undo".to_owned(),
+                        json!({"steps": 1}),
+                    ),
+                ]
+            );
+            assert!(server.programs.lock_recover().steps[0].undone);
+        }
     }
 
     /// One invocation the workspace was sent: the provider it went to, and its resource, action
@@ -2010,73 +2082,5 @@ mod tests {
             .build()
             .expect("a runtime")
             .block_on(future)
-    }
-
-    #[test]
-    fn undoing_a_task_step_starts_the_native_apps_and_takes_their_steps_back() {
-        let host = Native::new();
-        let server = McpServer::new(host.clone(), "workspace".to_owned(), "owner".to_owned());
-        server.programs.lock_recover().steps.push(Step {
-            number: 1,
-            apps: vec!["so.tilo.tasks".to_owned(), "so.tilo.chat".to_owned()],
-            history: vec![
-                History {
-                    app: "so.tilo.tasks".to_owned(),
-                    resource: "tasks.tracker".to_owned(),
-                    published: false,
-                },
-                History {
-                    app: "so.tilo.chat".to_owned(),
-                    resource: "chat.workspace".to_owned(),
-                    published: false,
-                },
-            ],
-            program: "tasks.create(tasks.tracker, \"Ship it\")".to_owned(),
-            changed: 2,
-            undone: false,
-            kept: false,
-            gesture: None,
-        });
-        let reply = run(server.undo_steps(false)).expect("the step is taken back");
-        assert!(!reply.failed, "{}", reply.text);
-        // Neither app ran: the workspace started each without a window, and its undo went to
-        // the instance it started, on the record the app keeps its steps in.
-        assert_eq!(host.opened(), ["so.tilo.chat", "so.tilo.tasks"]);
-        assert_eq!(
-            host.invoked(),
-            [
-                (
-                    tilo_actions::remote::workspace_provider("workspace"),
-                    format!(
-                        "{}so.tilo.chat",
-                        tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
-                    ),
-                    tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
-                    json!({}),
-                ),
-                (
-                    "11".to_owned(),
-                    "chat.workspace".to_owned(),
-                    "undo".to_owned(),
-                    json!({"steps": 1}),
-                ),
-                (
-                    tilo_actions::remote::workspace_provider("workspace"),
-                    format!(
-                        "{}so.tilo.tasks",
-                        tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
-                    ),
-                    tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
-                    json!({}),
-                ),
-                (
-                    "12".to_owned(),
-                    "tasks.tracker".to_owned(),
-                    "undo".to_owned(),
-                    json!({"steps": 1}),
-                ),
-            ]
-        );
-        assert!(server.programs.lock_recover().steps[0].undone);
     }
 }

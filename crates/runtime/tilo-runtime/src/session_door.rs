@@ -642,160 +642,164 @@ where
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_login_whose_door_is_missing_says_why_and_how_to_go_on() {
-        let nowhere = route(false, None, true, None, |_| true).unwrap_err();
-        assert!(
-            nowhere
-                .to_string()
-                .starts_with("the desktop's agent door isn't available:"),
-            "{nowhere}"
-        );
-        let down = route(
-            false,
-            None,
-            true,
-            Some(PathBuf::from("/run/user/1000/tilo-session/agent.sock")),
-            |_| false,
-        )
-        .unwrap_err();
-        let text = down.to_string();
-        assert!(
-            text.contains("agent.sock") && text.contains("first login"),
-            "{text}"
-        );
-        assert!(text.contains("--standalone"), "{text}");
-    }
+    tilo_test_env::scenario! {
+        fn a_client_is_routed_to_its_logins_door_and_opens_it_with_initialize;
 
-    #[test]
-    fn control_requests_are_told_from_mcp_by_their_op() {
-        assert!(is_control_request(
-            br#"{"args":{},"id":"x","op":"actions_invoke","provider":"p"}"#
-        ));
-        assert!(!is_control_request(
-            br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#
-        ));
-        assert!(!is_control_request(br#"{"jsonrpc":"2.0","op":"x"}"#));
-        assert!(!is_control_request(br#"{"op":7}"#));
-        assert!(!is_control_request(b"op"));
-    }
+        phase a_login_whose_door_is_missing_says_why_and_how_to_go_on;
+        {
+            let nowhere = route(false, None, true, None, |_| true).unwrap_err();
+            assert!(
+                nowhere
+                    .to_string()
+                    .starts_with("the desktop's agent door isn't available:"),
+                "{nowhere}"
+            );
+            let down = route(
+                false,
+                None,
+                true,
+                Some(PathBuf::from("/run/user/1000/tilo-session/agent.sock")),
+                |_| false,
+            )
+            .unwrap_err();
+            let text = down.to_string();
+            assert!(
+                text.contains("agent.sock") && text.contains("first login"),
+                "{text}"
+            );
+            assert!(text.contains("--standalone"), "{text}");
+        }
 
-    #[test]
-    fn the_door_lives_in_the_private_session_directory() {
-        assert_eq!(
-            agent_socket_path(Some("/run/user/1000".into())),
-            Some(PathBuf::from("/run/user/1000/tilo-session/agent.sock"))
-        );
-        assert_eq!(agent_socket_path(Some("run/user".into())), None);
-        assert_eq!(agent_socket_path(None), None);
-    }
+        phase control_requests_are_told_from_mcp_by_their_op;
+        {
+            assert!(is_control_request(
+                br#"{"args":{},"id":"x","op":"actions_invoke","provider":"p"}"#
+            ));
+            assert!(!is_control_request(
+                br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#
+            ));
+            assert!(!is_control_request(br#"{"jsonrpc":"2.0","op":"x"}"#));
+            assert!(!is_control_request(br#"{"op":7}"#));
+            assert!(!is_control_request(b"op"));
+        }
 
-    #[test]
-    fn a_tilo_login_relays_to_its_door_and_never_falls_back_to_a_standalone_runtime() {
-        let door = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
-        assert_eq!(
-            route(false, None, true, Some(door.clone()), |_| true).unwrap(),
-            Route::Session(door.clone())
-        );
-        let missing = route(false, None, true, Some(door.clone()), |_| false).unwrap_err();
-        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
-        assert!(missing.to_string().contains("--standalone"), "{missing}");
-        assert!(route(false, None, true, None, |_| true).is_err());
-        assert_eq!(
-            route(true, None, true, Some(door.clone()), |_| true).unwrap(),
-            Route::Standalone
-        );
-        assert_eq!(
-            route(false, None, false, Some(door), |_| true).unwrap(),
-            Route::Standalone
-        );
-    }
-
-    #[test]
-    fn a_client_in_an_environment_uses_its_environments_door_in_any_login() {
-        let own = PathBuf::from("/run/tilo/agent.sock");
-        let session = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
-        assert_eq!(
-            environment_door(Some(own.clone().into())),
-            Some(own.clone()),
-            "the environment names its door"
-        );
-        assert_eq!(
-            environment_door(Some("run/tilo/agent.sock".into())),
-            None,
-            "only an absolute path names one"
-        );
-        assert_eq!(environment_door(None), None);
-        for login in [true, false] {
+        phase the_door_lives_in_the_private_session_directory;
+        {
             assert_eq!(
-                route(
-                    false,
-                    Some(own.clone()),
-                    login,
-                    Some(session.clone()),
-                    |_| true
-                )
-                .unwrap(),
-                Route::Session(own.clone()),
-                "an environment's own door, not the session's"
+                agent_socket_path(Some("/run/user/1000".into())),
+                Some(PathBuf::from("/run/user/1000/tilo-session/agent.sock"))
+            );
+            assert_eq!(agent_socket_path(Some("run/user".into())), None);
+            assert_eq!(agent_socket_path(None), None);
+        }
+
+        phase a_tilo_login_relays_to_its_door_and_never_falls_back_to_a_standalone_runtime;
+        {
+            let door = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
+            assert_eq!(
+                route(false, None, true, Some(door.clone()), |_| true).unwrap(),
+                Route::Session(door.clone())
+            );
+            let missing = route(false, None, true, Some(door.clone()), |_| false).unwrap_err();
+            assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+            assert!(missing.to_string().contains("--standalone"), "{missing}");
+            assert!(route(false, None, true, None, |_| true).is_err());
+            assert_eq!(
+                route(true, None, true, Some(door.clone()), |_| true).unwrap(),
+                Route::Standalone
+            );
+            assert_eq!(
+                route(false, None, false, Some(door), |_| true).unwrap(),
+                Route::Standalone
             );
         }
-        let gone = route(false, Some(own.clone()), true, Some(session), |path| {
-            path != own.as_path()
-        })
-        .unwrap_err();
-        assert_eq!(gone.kind(), io::ErrorKind::NotFound);
-        assert!(gone.to_string().contains("/run/tilo/agent.sock"), "{gone}");
-        assert_eq!(
-            route(true, Some(own), true, None, |_| true).unwrap(),
-            Route::Standalone,
-            "a client's own choice of a profile still wins"
-        );
-    }
 
-    #[test]
-    fn a_client_names_the_workspace_it_asks_for() {
-        let hello = parse_hello(
-            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"experimental":{"so.tilo":{"workspace":"3f2c"}}},"clientInfo":{"name":"Claude Code"}}}"#,
-        )
-        .unwrap();
-        assert_eq!(hello.workspace.as_deref(), Some("3f2c"));
-        let anywhere = parse_hello(
-            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"Claude Code"}}}"#,
-        )
-        .unwrap();
-        assert_eq!(anywhere.workspace, None, "the workspace in front");
-    }
+        phase a_client_in_an_environment_uses_its_environments_door_in_any_login;
+        {
+            let own = PathBuf::from("/run/tilo/agent.sock");
+            let session = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
+            assert_eq!(
+                environment_door(Some(own.clone().into())),
+                Some(own.clone()),
+                "the environment names its door"
+            );
+            assert_eq!(
+                environment_door(Some("run/tilo/agent.sock".into())),
+                None,
+                "only an absolute path names one"
+            );
+            assert_eq!(environment_door(None), None);
+            for login in [true, false] {
+                assert_eq!(
+                    route(
+                        false,
+                        Some(own.clone()),
+                        login,
+                        Some(session.clone()),
+                        |_| true
+                    )
+                    .unwrap(),
+                    Route::Session(own.clone()),
+                    "an environment's own door, not the session's"
+                );
+            }
+            let gone = route(false, Some(own.clone()), true, Some(session), |path| {
+                path != own.as_path()
+            })
+            .unwrap_err();
+            assert_eq!(gone.kind(), io::ErrorKind::NotFound);
+            assert!(gone.to_string().contains("/run/tilo/agent.sock"), "{gone}");
+            assert_eq!(
+                route(true, Some(own), true, None, |_| true).unwrap(),
+                Route::Standalone,
+                "a client's own choice of a profile still wins"
+            );
+        }
 
-    #[test]
-    fn only_an_initialize_request_opens_the_door() {
-        let refused = |line: &str| match parse_hello(line.as_bytes()) {
-            Err(HelloError::NotInitialize(id)) => id,
-            other => panic!("{line}: {other:?}"),
-        };
-        assert_eq!(
-            refused(r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{}}"#),
-            serde_json::json!(4)
-        );
-        assert_eq!(
-            refused(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#),
-            serde_json::Value::Null
-        );
-        assert_eq!(refused("not json"), serde_json::Value::Null);
-        assert!(matches!(
-            parse_hello(br#"{"jsonrpc":"2.0","id":"probe","method":"server/discover","params":{}}"#),
-            Err(HelloError::Discover(id)) if id == "probe"
-        ));
-        let hello = parse_hello(
-            br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"  Claude\u0007 Code ","version":"2.1"}}}"#,
-        )
-        .unwrap();
-        assert_eq!(hello.client_name, "Claude Code");
-        assert_eq!(hello.client_version.as_deref(), Some("2.1"));
-        let anonymous =
-            parse_hello(br#"{"jsonrpc":"2.0","id":"a","method":"initialize","params":{}}"#)
-                .unwrap();
-        assert_eq!(anonymous.client_name, "MCP client");
+        phase a_client_names_the_workspace_it_asks_for;
+        {
+            let hello = parse_hello(
+                br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"experimental":{"so.tilo":{"workspace":"3f2c"}}},"clientInfo":{"name":"Claude Code"}}}"#,
+            )
+            .unwrap();
+            assert_eq!(hello.workspace.as_deref(), Some("3f2c"));
+            let anywhere = parse_hello(
+                br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"Claude Code"}}}"#,
+            )
+            .unwrap();
+            assert_eq!(anywhere.workspace, None, "the workspace in front");
+        }
+
+        phase only_an_initialize_request_opens_the_door;
+        {
+            let refused = |line: &str| match parse_hello(line.as_bytes()) {
+                Err(HelloError::NotInitialize(id)) => id,
+                other => panic!("{line}: {other:?}"),
+            };
+            assert_eq!(
+                refused(r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{}}"#),
+                serde_json::json!(4)
+            );
+            assert_eq!(
+                refused(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#),
+                serde_json::Value::Null
+            );
+            assert_eq!(refused("not json"), serde_json::Value::Null);
+            assert!(matches!(
+                parse_hello(br#"{"jsonrpc":"2.0","id":"probe","method":"server/discover","params":{}}"#),
+                Err(HelloError::Discover(id)) if id == "probe"
+            ));
+            let hello = parse_hello(
+                br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"  Claude\u0007 Code ","version":"2.1"}}}"#,
+            )
+            .unwrap();
+            assert_eq!(hello.client_name, "Claude Code");
+            assert_eq!(hello.client_version.as_deref(), Some("2.1"));
+            let anonymous =
+                parse_hello(br#"{"jsonrpc":"2.0","id":"a","method":"initialize","params":{}}"#)
+                    .unwrap();
+            assert_eq!(anonymous.client_name, "MCP client");
+        }
     }
 
     /// Every caller the door's host was asked to answer for.
@@ -885,173 +889,177 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_refused_client_reads_a_json_rpc_error_and_nothing_it_queued_runs() {
-        let (near, served, host, asked) = door(
-            &format!("{INITIALIZE}\n{LIST_APPS}\n"),
-            Consent::Refuse("the person said no".into()),
-        );
-        served.join().unwrap().unwrap();
-        let replies = lines(near);
-        assert_eq!(replies.len(), 1, "{replies:?}");
-        assert_eq!(replies[0]["id"], 1);
-        assert_eq!(replies[0]["error"]["message"], "the person said no");
-        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(
-            host.0.lock().unwrap().is_empty(),
-            "a refused client reached the host"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_door_serves_only_an_initialized_client_the_person_admitted;
 
-    #[test]
-    fn a_tool_call_before_initialize_is_refused_without_asking_anyone() {
-        let (near, served, host, asked) = door(
-            &format!("{LIST_APPS}\n{INITIALIZE}\n"),
-            Consent::Admit {
-                workspace: "workspace".into(),
-                agent: "claude-code".into(),
-                person: "ada".into(),
-                name: "Claude Code".into(),
-            },
-        );
-        served.join().unwrap().unwrap();
-        let replies = lines(near);
-        assert_eq!(replies.len(), 1, "{replies:?}");
-        assert_eq!(replies[0]["id"], 2);
-        assert!(replies[0]["error"].is_object());
-        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(host.0.lock().unwrap().is_empty());
-    }
+        phase a_refused_client_reads_a_json_rpc_error_and_nothing_it_queued_runs;
+        {
+            let (near, served, host, asked) = door(
+                &format!("{INITIALIZE}\n{LIST_APPS}\n"),
+                Consent::Refuse("the person said no".into()),
+            );
+            served.join().unwrap().unwrap();
+            let replies = lines(near);
+            assert_eq!(replies.len(), 1, "{replies:?}");
+            assert_eq!(replies[0]["id"], 1);
+            assert_eq!(replies[0]["error"]["message"], "the person said no");
+            assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(
+                host.0.lock().unwrap().is_empty(),
+                "a refused client reached the host"
+            );
+        }
 
-    /// Claude Code (and any client of MCP's 2026-07-28 revision) probes with
-    /// `server/discover` before `initialize`, and falls back to `initialize`
-    /// on the same connection when told the method is not found. Refusing
-    /// and closing on the probe left such a client unable to connect at all.
-    #[test]
-    fn a_discovery_probe_is_answered_unsupported_and_the_client_goes_on_to_initialize() {
-        const DISCOVER_PROBE: &str = r#"{"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#;
-        let (near, served, host, asked) = door(
-            &format!("{DISCOVER_PROBE}\n{INITIALIZE}\n{LIST_APPS}\n"),
-            Consent::Admit {
-                workspace: "workspace".into(),
-                agent: "claude-code".into(),
-                person: "ada".into(),
-                name: "Claude Code".into(),
-            },
-        );
-        near.shutdown(std::net::Shutdown::Write).unwrap();
-        let replies = lines(near);
-        served.join().unwrap().unwrap();
-        assert_eq!(replies.len(), 3, "{replies:?}");
-        assert_eq!(replies[0]["id"], "server-discover-probe-1");
-        assert_eq!(replies[0]["error"]["code"], -32601, "{}", replies[0]);
-        assert!(
-            replies[1]["result"]["serverInfo"].is_object(),
-            "{}",
-            replies[1]
-        );
-        assert_eq!(replies[2]["id"], 2);
-        assert_eq!(replies[2]["result"]["isError"], false, "{}", replies[2]);
-        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(!host.0.lock().unwrap().is_empty());
+        phase a_tool_call_before_initialize_is_refused_without_asking_anyone;
+        {
+            let (near, served, host, asked) = door(
+                &format!("{LIST_APPS}\n{INITIALIZE}\n"),
+                Consent::Admit {
+                    workspace: "workspace".into(),
+                    agent: "claude-code".into(),
+                    person: "ada".into(),
+                    name: "Claude Code".into(),
+                },
+            );
+            served.join().unwrap().unwrap();
+            let replies = lines(near);
+            assert_eq!(replies.len(), 1, "{replies:?}");
+            assert_eq!(replies[0]["id"], 2);
+            assert!(replies[0]["error"].is_object());
+            assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert!(host.0.lock().unwrap().is_empty());
+        }
+
+        phase a_discovery_probe_is_answered_unsupported_and_the_client_goes_on_to_initialize;
+        // Claude Code (and any client of MCP's 2026-07-28 revision) probes with
+        // `server/discover` before `initialize`, and falls back to `initialize`
+        // on the same connection when told the method is not found. Refusing
+        // and closing on the probe left such a client unable to connect at all.
+        {
+            const DISCOVER_PROBE: &str = r#"{"jsonrpc":"2.0","id":"server-discover-probe-1","method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#;
+            let (near, served, host, asked) = door(
+                &format!("{DISCOVER_PROBE}\n{INITIALIZE}\n{LIST_APPS}\n"),
+                Consent::Admit {
+                    workspace: "workspace".into(),
+                    agent: "claude-code".into(),
+                    person: "ada".into(),
+                    name: "Claude Code".into(),
+                },
+            );
+            near.shutdown(std::net::Shutdown::Write).unwrap();
+            let replies = lines(near);
+            served.join().unwrap().unwrap();
+            assert_eq!(replies.len(), 3, "{replies:?}");
+            assert_eq!(replies[0]["id"], "server-discover-probe-1");
+            assert_eq!(replies[0]["error"]["code"], -32601, "{}", replies[0]);
+            assert!(
+                replies[1]["result"]["serverInfo"].is_object(),
+                "{}",
+                replies[1]
+            );
+            assert_eq!(replies[2]["id"], 2);
+            assert_eq!(replies[2]["result"]["isError"], false, "{}", replies[2]);
+            assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(!host.0.lock().unwrap().is_empty());
+        }
+
+        phase probes_alone_never_admit_and_cannot_keep_the_door_reading;
+        {
+            // Few enough probes to fit in a socket unread, so writing them never
+            // waits on a door that is answering them, and a client that answers
+            // none of it is what the budget is for: the door reads them out,
+            // answers each, and stops rather than going on to wait for the
+            // fallback that never comes.
+            let probes = 8;
+            let flood = format!("{PROBE}\n").repeat(probes);
+            let (near, served, host, asked) = door(
+                &flood,
+                Consent::Admit {
+                    workspace: "workspace".into(),
+                    agent: "claude-code".into(),
+                    person: "ada".into(),
+                    name: "Claude Code".into(),
+                },
+            );
+            let reader = std::thread::spawn(move || {
+                use std::io::BufRead;
+                let replies: Vec<serde_json::Value> =
+                    std::io::BufReader::new(near.try_clone().unwrap())
+                        .lines()
+                        .map_while(Result::ok)
+                        .take(probes)
+                        .map_while(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
+                        .collect();
+                let _ = near.shutdown(std::net::Shutdown::Both);
+                replies
+            });
+            let replies = reader.join().unwrap();
+            // The door goes on to wait for the `initialize` a client falls back
+            // to, which this one never sends.
+            assert!(served.join().unwrap().is_err());
+            assert!(!replies.is_empty(), "each probe was answered");
+            for reply in &replies {
+                assert_eq!(reply["error"]["code"], -32601);
+            }
+            assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert!(host.0.lock().unwrap().is_empty());
+        }
+
+        phase an_admitted_client_is_served_as_its_agent_in_its_workspace;
+        {
+            let (near, served, host, asked) = door(
+                &format!("{INITIALIZE}\n{LIST_APPS}\n"),
+                Consent::Admit {
+                    workspace: "workspace".into(),
+                    agent: "claude-code".into(),
+                    person: "ada".into(),
+                    name: "Claude Code".into(),
+                },
+            );
+            near.shutdown(std::net::Shutdown::Write).unwrap();
+            let replies = lines(near);
+            served.join().unwrap().unwrap();
+            assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(replies.len(), 2, "{replies:?}");
+            assert!(
+                replies[0]["result"]["serverInfo"].is_object(),
+                "{}",
+                replies[0]
+            );
+            assert_eq!(replies[1]["id"], 2);
+            assert_eq!(replies[1]["result"]["isError"], false, "{}", replies[1]);
+            let callers = host.0.lock().unwrap();
+            assert!(!callers.is_empty());
+            for caller in callers.iter() {
+                assert_eq!(
+                    caller.acting().member_id(),
+                    Some(&tilo_action_policy::MemberId::agent("claude-code"))
+                );
+                assert_eq!(caller.workspace(), Some("workspace"));
+                assert!(caller.execution_id().is_some());
+            }
+        }
+
+        phase the_person_is_told_when_a_waiting_client_leaves;
+        {
+            use std::io::Write;
+            let (mut near, far) = std::os::unix::net::UnixStream::pair().unwrap();
+            near.write_all(format!("{INITIALIZE}\n").as_bytes())
+                .unwrap();
+            let (asking, asked) = std::sync::mpsc::channel();
+            let served = std::thread::spawn(move || {
+                serve(far, Recording::default(), move |_hello, connected| {
+                    assert!(connected(), "the client is still there");
+                    asking.send(()).unwrap();
+                    tilo_test_env::wait_until("the waiting client to leave", || !connected());
+                    Consent::Refuse("gone".into())
+                })
+            });
+            tilo_test_env::recv("the person to be asked", &asked);
+            drop(near);
+            served.join().unwrap().unwrap();
+        }
     }
 
     const PROBE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"server/discover"}"#;
-
-    #[test]
-    fn probes_alone_never_admit_and_cannot_keep_the_door_reading() {
-        // Few enough probes to fit in a socket unread, so writing them never
-        // waits on a door that is answering them, and a client that answers
-        // none of it is what the budget is for: the door reads them out,
-        // answers each, and stops rather than going on to wait for the
-        // fallback that never comes.
-        let probes = 8;
-        let flood = format!("{PROBE}\n").repeat(probes);
-        let (near, served, host, asked) = door(
-            &flood,
-            Consent::Admit {
-                workspace: "workspace".into(),
-                agent: "claude-code".into(),
-                person: "ada".into(),
-                name: "Claude Code".into(),
-            },
-        );
-        let reader = std::thread::spawn(move || {
-            use std::io::BufRead;
-            let replies: Vec<serde_json::Value> =
-                std::io::BufReader::new(near.try_clone().unwrap())
-                    .lines()
-                    .map_while(Result::ok)
-                    .take(probes)
-                    .map_while(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
-                    .collect();
-            let _ = near.shutdown(std::net::Shutdown::Both);
-            replies
-        });
-        let replies = reader.join().unwrap();
-        // The door goes on to wait for the `initialize` a client falls back
-        // to, which this one never sends.
-        assert!(served.join().unwrap().is_err());
-        assert!(!replies.is_empty(), "each probe was answered");
-        for reply in &replies {
-            assert_eq!(reply["error"]["code"], -32601);
-        }
-        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(host.0.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn an_admitted_client_is_served_as_its_agent_in_its_workspace() {
-        let (near, served, host, asked) = door(
-            &format!("{INITIALIZE}\n{LIST_APPS}\n"),
-            Consent::Admit {
-                workspace: "workspace".into(),
-                agent: "claude-code".into(),
-                person: "ada".into(),
-                name: "Claude Code".into(),
-            },
-        );
-        near.shutdown(std::net::Shutdown::Write).unwrap();
-        let replies = lines(near);
-        served.join().unwrap().unwrap();
-        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(replies.len(), 2, "{replies:?}");
-        assert!(
-            replies[0]["result"]["serverInfo"].is_object(),
-            "{}",
-            replies[0]
-        );
-        assert_eq!(replies[1]["id"], 2);
-        assert_eq!(replies[1]["result"]["isError"], false, "{}", replies[1]);
-        let callers = host.0.lock().unwrap();
-        assert!(!callers.is_empty());
-        for caller in callers.iter() {
-            assert_eq!(
-                caller.acting().member_id(),
-                Some(&tilo_action_policy::MemberId::agent("claude-code"))
-            );
-            assert_eq!(caller.workspace(), Some("workspace"));
-            assert!(caller.execution_id().is_some());
-        }
-    }
-
-    #[test]
-    fn the_person_is_told_when_a_waiting_client_leaves() {
-        use std::io::Write;
-        let (mut near, far) = std::os::unix::net::UnixStream::pair().unwrap();
-        near.write_all(format!("{INITIALIZE}\n").as_bytes())
-            .unwrap();
-        let (asking, asked) = std::sync::mpsc::channel();
-        let served = std::thread::spawn(move || {
-            serve(far, Recording::default(), move |_hello, connected| {
-                assert!(connected(), "the client is still there");
-                asking.send(()).unwrap();
-                tilo_test_env::wait_until("the waiting client to leave", || !connected());
-                Consent::Refuse("gone".into())
-            })
-        });
-        tilo_test_env::recv("the person to be asked", &asked);
-        drop(near);
-        served.join().unwrap().unwrap();
-    }
 }

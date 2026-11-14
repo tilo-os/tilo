@@ -1105,76 +1105,80 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_agent_from_another_device_is_named_by_it() {
-        let laptop = certificate("Studio Laptop", 0x3f);
-        assert_eq!(
-            agent_id("claude-code", &laptop),
-            "claude-code@studio-laptop-3f3f3f3f"
-        );
-        assert_eq!(
-            agent_id("codex", &certificate("  ", 0xab)),
-            "codex@abababab"
-        );
-        let id = agent_id(&"x".repeat(64), &certificate(&"Ü".repeat(200), 1));
-        tilo_peer_state::workspace_membership::valid_agent_id(&id).unwrap();
-    }
+    tilo_test_env::scenario! {
+        fn a_forward_names_its_agent_its_request_and_the_devices_that_answer;
 
-    #[test]
-    fn only_a_forward_line_asks_for_a_forward() {
-        assert_eq!(
-            forward_request(br#"{"forward":{"device":"studio"}}"#),
-            Some(Forward {
-                device: "studio".into(),
-                workspace: None
-            })
-        );
-        assert_eq!(
-            forward_request(br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#),
-            None
-        );
-        assert_eq!(forward_request(br#"{"op":"agent_seat"}"#), None);
-        assert_eq!(
-            forward_request(br#"{"forward":{"device":"studio","as":"person"}}"#),
-            None,
-            "nothing beyond the device and the workspace is read"
-        );
-        assert!(!crate::session_door::is_control_request(
-            br#"{"forward":{"device":"studio"}}"#
-        ));
-    }
+        phase an_agent_from_another_device_is_named_by_it;
+        {
+            let laptop = certificate("Studio Laptop", 0x3f);
+            assert_eq!(
+                agent_id("claude-code", &laptop),
+                "claude-code@studio-laptop-3f3f3f3f"
+            );
+            assert_eq!(
+                agent_id("codex", &certificate("  ", 0xab)),
+                "codex@abababab"
+            );
+            let id = agent_id(&"x".repeat(64), &certificate(&"Ü".repeat(200), 1));
+            tilo_peer_state::workspace_membership::valid_agent_id(&id).unwrap();
+        }
 
-    #[test]
-    fn the_listing_says_which_device_answers() {
-        let text = listing(&[
-            Reach {
-                device: certificate("Here", 1),
-                this: true,
-                answer: Ok(()),
-            },
-            Reach {
-                device: certificate("Build box", 2),
-                this: false,
-                answer: Ok(()),
-            },
-            Reach {
-                device: certificate("Phone", 3),
-                this: false,
-                answer: Err("it does not answer".into()),
-            },
-        ]);
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 3, "{text}");
-        assert!(lines[0].starts_with("Here  ") && lines[0].ends_with("this device"));
-        assert!(lines[1].contains(&hex::encode([2_u8; 32])) && lines[1].ends_with("reachable"));
-        assert!(lines[2].ends_with("not reachable: it does not answer"));
-        assert!(
-            listing(&[Reach {
-                device: certificate("Here", 1),
-                this: true,
-                answer: Ok(()),
-            }])
-            .starts_with("No other device")
-        );
+        phase only_a_forward_line_asks_for_a_forward;
+        {
+            assert_eq!(
+                forward_request(br#"{"forward":{"device":"studio"}}"#),
+                Some(Forward {
+                    device: "studio".into(),
+                    workspace: None
+                })
+            );
+            assert_eq!(
+                forward_request(br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#),
+                None
+            );
+            assert_eq!(forward_request(br#"{"op":"agent_seat"}"#), None);
+            assert_eq!(
+                forward_request(br#"{"forward":{"device":"studio","as":"person"}}"#),
+                None,
+                "nothing beyond the device and the workspace is read"
+            );
+            assert!(!crate::session_door::is_control_request(
+                br#"{"forward":{"device":"studio"}}"#
+            ));
+        }
+
+        phase the_listing_says_which_device_answers;
+        {
+            let text = listing(&[
+                Reach {
+                    device: certificate("Here", 1),
+                    this: true,
+                    answer: Ok(()),
+                },
+                Reach {
+                    device: certificate("Build box", 2),
+                    this: false,
+                    answer: Ok(()),
+                },
+                Reach {
+                    device: certificate("Phone", 3),
+                    this: false,
+                    answer: Err("it does not answer".into()),
+                },
+            ]);
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(lines.len(), 3, "{text}");
+            assert!(lines[0].starts_with("Here  ") && lines[0].ends_with("this device"));
+            assert!(lines[1].contains(&hex::encode([2_u8; 32])) && lines[1].ends_with("reachable"));
+            assert!(lines[2].ends_with("not reachable: it does not answer"));
+            assert!(
+                listing(&[Reach {
+                    device: certificate("Here", 1),
+                    this: true,
+                    answer: Ok(()),
+                }])
+                .starts_with("No other device")
+            );
+        }
     }
 }

@@ -174,43 +174,47 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
 
-    #[test]
-    fn the_launcher_finds_the_profiles_services_where_it_looks() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(temp.path()).unwrap();
-        let sockets = Sockets {
-            collab: root.join("collab.sock"),
-            identity: root.join("identity.sock"),
-            blobs: root.join("blobs.sock"),
-        };
-        let _collab = std::os::unix::net::UnixListener::bind(&sockets.collab).unwrap();
-        let _identity = std::os::unix::net::UnixListener::bind(&sockets.identity).unwrap();
-        let runtime_dir = service_directory(&root, &sockets).unwrap();
-        assert_eq!(service_directory(&root, &sockets).unwrap(), runtime_dir);
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_RUNTIME_DIR", &runtime_dir);
-        assert_eq!(
-            launcher::services::collab_socket(),
-            runtime_dir.join("tilo/services/collab.sock")
-        );
-        std::os::unix::net::UnixStream::connect(launcher::services::collab_socket()).unwrap();
-        std::os::unix::net::UnixStream::connect(launcher::services::identity_socket()).unwrap();
-        let mode = std::fs::metadata(runtime_dir.join("tilo/services"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o077, 0);
-    }
+    tilo_test_env::scenario! {
+        fn the_launcher_is_resolved_and_finds_the_profiles_services;
 
-    #[test]
-    fn no_launcher_binary_refuses_rather_than_running_unconfined() {
-        let temp = tempfile::tempdir().unwrap();
-        let missing = vec![temp.path().join("nowhere/tilo-launcher")];
-        let err = resolve_launcher(&missing).unwrap_err();
-        assert!(err.contains("refusing to launch"), "{err}");
-        assert!(err.contains("nowhere/tilo-launcher"), "{err}");
-        // A directory of that name is not a launcher either.
-        std::fs::create_dir_all(&missing[0]).unwrap();
-        assert!(resolve_launcher(&missing).is_err());
+        phase the_launcher_finds_the_profiles_services_where_it_looks;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(temp.path()).unwrap();
+            let sockets = Sockets {
+                collab: root.join("collab.sock"),
+                identity: root.join("identity.sock"),
+                blobs: root.join("blobs.sock"),
+            };
+            let _collab = std::os::unix::net::UnixListener::bind(&sockets.collab).unwrap();
+            let _identity = std::os::unix::net::UnixListener::bind(&sockets.identity).unwrap();
+            let runtime_dir = service_directory(&root, &sockets).unwrap();
+            assert_eq!(service_directory(&root, &sockets).unwrap(), runtime_dir);
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", &runtime_dir);
+            assert_eq!(
+                launcher::services::collab_socket(),
+                runtime_dir.join("tilo/services/collab.sock")
+            );
+            std::os::unix::net::UnixStream::connect(launcher::services::collab_socket()).unwrap();
+            std::os::unix::net::UnixStream::connect(launcher::services::identity_socket()).unwrap();
+            let mode = std::fs::metadata(runtime_dir.join("tilo/services"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0);
+        }
+
+        phase no_launcher_binary_refuses_rather_than_running_unconfined;
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let missing = vec![temp.path().join("nowhere/tilo-launcher")];
+            let err = resolve_launcher(&missing).unwrap_err();
+            assert!(err.contains("refusing to launch"), "{err}");
+            assert!(err.contains("nowhere/tilo-launcher"), "{err}");
+            // A directory of that name is not a launcher either.
+            std::fs::create_dir_all(&missing[0]).unwrap();
+            assert!(resolve_launcher(&missing).is_err());
+        }
     }
 }

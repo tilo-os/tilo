@@ -293,63 +293,67 @@ mod tests {
         })
     }
 
-    #[test]
-    fn a_schema_says_each_shape_once_and_keeps_every_constraint() {
-        let mut schema = json!({
-            "type": "object",
-            "required": ["kind", "count"],
-            "properties": {
-                "kind": {"type": "string", "const": "stroke"},
-                "count": {"type": ["integer", "null"], "minimum": 0, "maximum": 4_294_967_295_u64},
-                "quality": {"type": ["integer", "null"], "minimum": 1, "maximum": 100},
-                "drop_shadow": shadow("Behind the mark."),
-                "inner_shadow": shadow("Inside the mark."),
-                "tint": {"oneOf": [{"type": "null"}, {"type": "string", "enum": ["warm", "cool"]}], "description": "A tint."}
-            },
-            "additionalProperties": false
-        });
-        compact(&mut schema, true);
-        let properties = &schema["properties"];
-        assert_eq!(properties["kind"], json!({"const": "stroke"}));
-        assert_eq!(
-            properties["count"],
-            json!({"type": ["integer", "null"], "minimum": 0}),
-            "a required property keeps null; a type's own limit goes"
-        );
-        assert_eq!(
-            properties["quality"],
-            json!({"type": "integer", "minimum": 1, "maximum": 100}),
-            "an optional property's absence says null; its range stays"
-        );
-        assert_eq!(
-            properties["tint"],
-            json!({"type": "string", "enum": ["warm", "cool"], "description": "A tint."})
-        );
-        assert_eq!(
-            properties["drop_shadow"],
-            json!({"$ref": "#/$defs/drop_shadow", "description": "Behind the mark."})
-        );
-        assert_eq!(
-            properties["inner_shadow"],
-            json!({"$ref": "#/$defs/drop_shadow", "description": "Inside the mark."})
-        );
-        let shared = &schema["$defs"]["drop_shadow"];
-        assert_eq!(shared["type"], "object");
-        assert_eq!(shared["properties"]["offset"]["maxItems"], 2);
-        assert_eq!(shared["properties"]["colour"]["type"], "string");
-        assert!(shared.get("description").is_none(), "{schema}");
-    }
+    tilo_test_env::scenario! {
+        fn a_schema_is_said_compactly_and_keeps_every_constraint;
 
-    #[test]
-    fn a_small_or_single_shape_stays_inline() {
-        let point = json!({"type": "array", "items": {"type": "number"}});
-        let mut schema = json!({
-            "type": "object",
-            "properties": {"from": point, "to": point, "only": shadow("Once.")},
-            "additionalProperties": false
-        });
-        compact(&mut schema, false);
-        assert!(schema.get("$defs").is_none(), "{schema}");
-        assert_eq!(schema["properties"]["from"], point);
+        phase a_schema_says_each_shape_once_and_keeps_every_constraint;
+        {
+            let mut schema = json!({
+                "type": "object",
+                "required": ["kind", "count"],
+                "properties": {
+                    "kind": {"type": "string", "const": "stroke"},
+                    "count": {"type": ["integer", "null"], "minimum": 0, "maximum": 4_294_967_295_u64},
+                    "quality": {"type": ["integer", "null"], "minimum": 1, "maximum": 100},
+                    "drop_shadow": shadow("Behind the mark."),
+                    "inner_shadow": shadow("Inside the mark."),
+                    "tint": {"oneOf": [{"type": "null"}, {"type": "string", "enum": ["warm", "cool"]}], "description": "A tint."}
+                },
+                "additionalProperties": false
+            });
+            compact(&mut schema, true);
+            let properties = &schema["properties"];
+            assert_eq!(properties["kind"], json!({"const": "stroke"}));
+            assert_eq!(
+                properties["count"],
+                json!({"type": ["integer", "null"], "minimum": 0}),
+                "a required property keeps null; a type's own limit goes"
+            );
+            assert_eq!(
+                properties["quality"],
+                json!({"type": "integer", "minimum": 1, "maximum": 100}),
+                "an optional property's absence says null; its range stays"
+            );
+            assert_eq!(
+                properties["tint"],
+                json!({"type": "string", "enum": ["warm", "cool"], "description": "A tint."})
+            );
+            assert_eq!(
+                properties["drop_shadow"],
+                json!({"$ref": "#/$defs/drop_shadow", "description": "Behind the mark."})
+            );
+            assert_eq!(
+                properties["inner_shadow"],
+                json!({"$ref": "#/$defs/drop_shadow", "description": "Inside the mark."})
+            );
+            let shared = &schema["$defs"]["drop_shadow"];
+            assert_eq!(shared["type"], "object");
+            assert_eq!(shared["properties"]["offset"]["maxItems"], 2);
+            assert_eq!(shared["properties"]["colour"]["type"], "string");
+            assert!(shared.get("description").is_none(), "{schema}");
+        }
+
+        phase a_small_or_single_shape_stays_inline;
+        {
+            let point = json!({"type": "array", "items": {"type": "number"}});
+            let mut schema = json!({
+                "type": "object",
+                "properties": {"from": point, "to": point, "only": shadow("Once.")},
+                "additionalProperties": false
+            });
+            compact(&mut schema, false);
+            assert!(schema.get("$defs").is_none(), "{schema}");
+            assert_eq!(schema["properties"]["from"], point);
+        }
     }
 }

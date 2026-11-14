@@ -519,34 +519,38 @@ mod tests {
         }
     }
 
-    /// A run's end is one event however many sources report it: its call's
-    /// answer and a watch's look at the host both say it succeeded, and the
-    /// second moves nothing a cursor already passed.
-    #[test]
-    fn a_run_is_told_its_end_once() {
-        let mut runs = vec![started("a", 1)];
-        ended(&mut runs, "a", "succeeded");
-        assert_eq!((runs[0].phase.as_str(), runs[0].seq), ("succeeded", 2));
-        ended(&mut runs, "a", "succeeded");
-        ended(&mut runs, "a", "failed");
-        assert_eq!((runs[0].phase.as_str(), runs[0].seq), ("succeeded", 2));
-    }
+    tilo_test_env::scenario! {
+        fn a_watch_tells_a_runs_end_once_and_reads_history_whole;
 
-    /// History lists a run's author once for the run of versions it made;
-    /// a reader of one version reads it whole.
-    #[test]
-    fn history_entries_are_read_whole() {
-        let answer = json!({"update": {"output": {"value": {"versions": [
-            {"change": "a", "run": "Letter", "run_id": "r1", "time_ms": 5},
-            {"change": "b", "invocation": "i2"},
-            {"change": "c", "by": "Ada", "time_ms": 9},
-        ]}}}});
-        let entries = history_entries(&answer).unwrap();
-        assert_eq!(entries[1]["run_id"], "r1");
-        assert_eq!(entries[1]["time_ms"], 5);
-        assert_eq!(entries[2]["by"], "Ada");
-        // A history answered as a bare list still reads.
-        let bare = json!({"update": {"output": {"value": [{"change": "a"}]}}});
-        assert_eq!(history_entries(&bare).unwrap().len(), 1);
+        phase a_run_is_told_its_end_once;
+        // A run's end is one event however many sources report it: its call's
+        // answer and a watch's look at the host both say it succeeded, and the
+        // second moves nothing a cursor already passed.
+        {
+            let mut runs = vec![started("a", 1)];
+            ended(&mut runs, "a", "succeeded");
+            assert_eq!((runs[0].phase.as_str(), runs[0].seq), ("succeeded", 2));
+            ended(&mut runs, "a", "succeeded");
+            ended(&mut runs, "a", "failed");
+            assert_eq!((runs[0].phase.as_str(), runs[0].seq), ("succeeded", 2));
+        }
+
+        phase history_entries_are_read_whole;
+        // History lists a run's author once for the run of versions it made;
+        // a reader of one version reads it whole.
+        {
+            let answer = json!({"update": {"output": {"value": {"versions": [
+                {"change": "a", "run": "Letter", "run_id": "r1", "time_ms": 5},
+                {"change": "b", "invocation": "i2"},
+                {"change": "c", "by": "Ada", "time_ms": 9},
+            ]}}}});
+            let entries = history_entries(&answer).unwrap();
+            assert_eq!(entries[1]["run_id"], "r1");
+            assert_eq!(entries[1]["time_ms"], 5);
+            assert_eq!(entries[2]["by"], "Ada");
+            // A history answered as a bare list still reads.
+            let bare = json!({"update": {"output": {"value": [{"change": "a"}]}}});
+            assert_eq!(history_entries(&bare).unwrap().len(), 1);
+        }
     }
 }

@@ -77,13 +77,18 @@ fn admission_profile_uses_readonly_existing_directories_without_repair_or_provis
     assert!(super::prepare_admission_profile_environment(Path::new("relative")).is_err());
 }
 
-#[test]
-#[expect(
-    clippy::naive_bytecount,
-    reason = "counts the newlines of one short test reply"
-)]
-fn stdio_framing_is_bounded_line_based_and_flushed() {
-    // Phase `bounded_framing_recovers_after_an_oversized_line`.
+tilo_test_env::scenario! {
+    #[expect(
+        clippy::naive_bytecount,
+        reason = "counts the newlines of one short test reply"
+    )]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn the_stdio_host_frames_bounded_lines_and_answers_as_requests_finish;
+
+    phase bounded_framing_recovers_after_an_oversized_line;
     {
         let mut bytes = vec![b'x'; MAX_REQUEST_BYTES + 1];
         bytes.extend_from_slice(b"\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n");
@@ -99,7 +104,8 @@ fn stdio_framing_is_bounded_line_based_and_flushed() {
         );
         assert_eq!(read_frame(&mut input).unwrap(), Frame::Eof);
     }
-    // Phase `line_at_the_one_mib_limit_is_accepted`.
+
+    phase line_at_the_one_mib_limit_is_accepted;
     {
         let mut bytes = vec![b' '; MAX_REQUEST_BYTES];
         bytes.push(b'\n');
@@ -109,7 +115,8 @@ fn stdio_framing_is_bounded_line_based_and_flushed() {
         };
         assert_eq!(line.len(), MAX_REQUEST_BYTES);
     }
-    // Phase `framing_joins_lines_split_across_buffer_refills`.
+
+    phase framing_joins_lines_split_across_buffer_refills;
     {
         // A three-byte buffer forces every line to span several `fill_buf` calls,
         // including a refill that starts exactly at a newline.
@@ -127,7 +134,8 @@ fn stdio_framing_is_bounded_line_based_and_flushed() {
         );
         assert_eq!(read_frame(&mut input).unwrap(), Frame::Eof);
     }
-    // Phase `protocol_writer_emits_one_json_line_and_flushes`.
+
+    phase protocol_writer_emits_one_json_line_and_flushes;
     {
         #[derive(Default)]
         struct Output {
@@ -154,39 +162,40 @@ fn stdio_framing_is_bounded_line_based_and_flushed() {
         );
         serde_json::from_slice::<serde_json::Value>(&output.bytes).unwrap();
     }
+
+    phase parallel_requests_complete_out_of_order;
+    // The stdio host answers one session's requests as they finish, not in
+    // the order asked: a `tilo_status` and a `tilo_cancel` answer while two
+    // invokes wait, and every reply is one whole line.
+    {
+        use crate::mcp_test_hosts::{GatedHost, overlapping_lines};
+        let host = GatedHost::default();
+        let server = std::sync::Arc::new(crate::mcp::McpServer::new(
+            host.clone(),
+            "workspace".into(),
+            "owner".into(),
+        ));
+        let (client, end) = std::os::unix::net::UnixStream::pair().unwrap();
+        let input = super::spawn_reader(end.try_clone().unwrap()).unwrap();
+        let serving = std::thread::spawn(move || {
+            let mut writer = end;
+            super::serve_lines(
+                tilo_rt::try_app().unwrap(),
+                input,
+                &mut writer,
+                |request| super::mcp_answer(&server, request),
+                Some(&mut || Ok(())),
+            )
+        });
+        overlapping_lines(&host, &client);
+        serving.join().unwrap().unwrap();
+    }
 }
 
-/// The stdio host answers one session's requests as they finish, not in
-/// the order asked: a `tilo_status` and a `tilo_cancel` answer while two
-/// invokes wait, and every reply is one whole line.
-#[test]
-fn parallel_requests_complete_out_of_order() {
-    use crate::mcp_test_hosts::{GatedHost, overlapping_lines};
-    let host = GatedHost::default();
-    let server = std::sync::Arc::new(crate::mcp::McpServer::new(
-        host.clone(),
-        "workspace".into(),
-        "owner".into(),
-    ));
-    let (client, end) = std::os::unix::net::UnixStream::pair().unwrap();
-    let input = super::spawn_reader(end.try_clone().unwrap()).unwrap();
-    let serving = std::thread::spawn(move || {
-        let mut writer = end;
-        super::serve_lines(
-            tilo_rt::try_app().unwrap(),
-            input,
-            &mut writer,
-            |request| super::mcp_answer(&server, request),
-            Some(&mut || Ok(())),
-        )
-    });
-    overlapping_lines(&host, &client);
-    serving.join().unwrap().unwrap();
-}
+tilo_test_env::scenario! {
+    fn cli_and_manifest_are_validated_before_launch;
 
-#[test]
-fn cli_and_manifest_are_validated_before_launch() {
-    // Phase `manifest_validation_precedes_launch_and_accepts_duplicate_ids`.
+    phase manifest_validation_precedes_launch_and_accepts_duplicate_ids;
     {
         let executable = std::env::current_exe().unwrap();
         let duplicates = AppManifest {
@@ -222,7 +231,8 @@ fn cli_and_manifest_are_validated_before_launch() {
         let error = validate_manifest(invalid).unwrap_err();
         assert!(error.to_string().contains("absolute"));
     }
-    // Phase `cli_requires_profile_and_manifest_paths`.
+
+    phase cli_requires_profile_and_manifest_paths;
     {
         let parsed = parse_args([
             OsString::from("--profile"),

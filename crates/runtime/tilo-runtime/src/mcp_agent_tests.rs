@@ -1083,33 +1083,6 @@ where
 }
 
 #[test]
-fn a_path_is_app_names_and_an_action() {
-    assert_eq!(
-        parse_path("notes/Todo/body#append-paragraph").unwrap(),
-        ParsedPath {
-            app: "notes".into(),
-            segments: vec!["Todo".into(), "body".into()],
-            action: Some("append-paragraph".into()),
-        }
-    );
-    assert_eq!(
-        parse_path("  notes ").unwrap(),
-        ParsedPath {
-            app: "notes".into(),
-            segments: Vec::new(),
-            action: None,
-        }
-    );
-    // A title with a slash or a hash writes it escaped.
-    let parsed = parse_path(r"notes/Q1\/Q2 plan\#1#rename").unwrap();
-    assert_eq!(parsed.segments, vec!["Q1/Q2 plan#1".to_owned()]);
-    assert_eq!(parsed.action.as_deref(), Some("rename"));
-    assert_eq!(path_name("Q1/Q2 plan#1"), r"Q1\/Q2 plan\#1");
-    assert!(parse_path("").is_err());
-    assert!(parse_path("#rename").is_err());
-}
-
-#[test]
 fn an_agent_is_offered_eight_small_tools_and_no_classic_ones() {
     let host = Notes::new(true);
     run(async {
@@ -1154,341 +1127,980 @@ fn an_agent_is_offered_eight_small_tools_and_no_classic_ones() {
     });
 }
 
-#[test]
-fn the_apps_are_listed_by_name_running_first() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
-        assert!(!failed, "{text}");
-        assert_eq!(
-            text,
-            "apps\nnotes  Notes  running\nsheets  Sheets  installed"
-        );
-    });
-}
+tilo_test_env::scenario! {
+    fn tilo_ls_lists_the_workspaces_apps_and_says_which_the_agent_may_open;
 
-/// A host busy with the person's changes ran nothing: a typed call is told
-/// `rate_limited` with the wait the host said, so the caller asks again then.
-#[test]
-fn a_busy_host_answers_rate_limited_with_its_wait() {
-    run(async {
-        let busy = Notes::new(true);
-        *busy.unreachable.lock().unwrap() = Some(format!(
-            "backpressure: {}",
-            tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(480))
-        ));
-        let (typed, failed) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
-        assert!(failed, "{typed}");
-        assert_eq!(typed["error"]["code"], "rate_limited", "{typed}");
-        assert_eq!(typed["error"]["retry_after_ms"], 480, "{typed}");
-        // Anything else the host is short of stays a plain failure.
-        *busy.unreachable.lock().unwrap() = Some("offline: the device left".into());
-        let (typed, _) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
-        assert_eq!(typed["error"]["code"], "failed", "{typed}");
-    });
-}
+    phase the_apps_are_listed_by_name_running_first;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
+            assert!(!failed, "{text}");
+            assert_eq!(
+                text,
+                "apps\nnotes  Notes  running\nsheets  Sheets  installed"
+            );
+        });
+    }
 
-/// An empty list and one that could not be read are different answers: the
-/// first says there are no apps, the second says why the agent cannot know.
-#[test]
-fn no_apps_and_an_unreachable_session_are_told_apart() {
-    run(async {
-        let empty = Notes::new(false).installed(Installed::Nothing);
-        let (text, failed) = tool(&agent(&empty), "tilo_ls", json!({})).await;
-        assert!(!failed, "{text}");
-        assert_eq!(
-            text,
-            "apps\nnone: no app runs in this workspace and none is installed"
-        );
-        let (text, failed) = tool(&agent(&empty), "tilo_do", json!({"path": "notes#open"})).await;
-        assert!(
-            failed
-                && text
-                    == "no app notes; name a running app by its id or last part, e.g. <app_id>. Running none; installed none",
-            "{text}"
-        );
+    phase no_apps_and_an_unreachable_session_are_told_apart;
+    // An empty list and one that could not be read are different answers: the
+    // first says there are no apps, the second says why the agent cannot know.
+    {
+        run(async {
+            let empty = Notes::new(false).installed(Installed::Nothing);
+            let (text, failed) = tool(&agent(&empty), "tilo_ls", json!({})).await;
+            assert!(!failed, "{text}");
+            assert_eq!(
+                text,
+                "apps\nnone: no app runs in this workspace and none is installed"
+            );
+            let (text, failed) = tool(&agent(&empty), "tilo_do", json!({"path": "notes#open"})).await;
+            assert!(
+                failed
+                    && text
+                        == "no app notes; name a running app by its id or last part, e.g. <app_id>. Running none; installed none",
+                "{text}"
+            );
 
-        // The session's actions do not answer for this agent: it is told
-        // why, not handed an empty list.
-        let unreachable = Notes::new(true);
-        *unreachable.unreachable.lock().unwrap() = Some(
-            "agent claude-code is no longer a member of workspace Home who may read it".into(),
-        );
-        let (text, failed) = tool(&agent(&unreachable), "tilo_ls", json!({})).await;
-        assert!(
-            failed && text.contains("no longer a member of workspace Home"),
-            "{text}"
-        );
-        let (text, failed) =
-            tool(&agent(&unreachable), "tilo_find", json!({"query": "notes"})).await;
-        assert!(failed && text.contains("no longer a member"), "{text}");
+            // The session's actions do not answer for this agent: it is told
+            // why, not handed an empty list.
+            let unreachable = Notes::new(true);
+            *unreachable.unreachable.lock().unwrap() = Some(
+                "agent claude-code is no longer a member of workspace Home who may read it".into(),
+            );
+            let (text, failed) = tool(&agent(&unreachable), "tilo_ls", json!({})).await;
+            assert!(
+                failed && text.contains("no longer a member of workspace Home"),
+                "{text}"
+            );
+            let (text, failed) =
+                tool(&agent(&unreachable), "tilo_find", json!({"query": "notes"})).await;
+            assert!(failed && text.contains("no longer a member"), "{text}");
 
-        // The running apps answer and the installed list does not: what runs
-        // is listed, and the missing list says why.
-        let unreadable = Notes::new(true).installed(Installed::Unreadable);
-        let (text, failed) = tool(&agent(&unreadable), "tilo_ls", json!({})).await;
-        assert!(!failed, "{text}");
-        assert_eq!(
-            text,
-            "apps\nnotes    running\nthe installed apps could not be read: remote actions are unavailable: this session's workspaces cannot be read"
-        );
-        let (text, failed) = tool(&agent(&unreadable), "tilo_ls", json!({"path": "sheets"})).await;
-        assert!(
-            failed
-                && text.contains("no running app is named sheets")
-                && text.contains("installed apps could not be read"),
-            "{text}"
-        );
-    });
-}
+            // The running apps answer and the installed list does not: what runs
+            // is listed, and the missing list says why.
+            let unreadable = Notes::new(true).installed(Installed::Unreadable);
+            let (text, failed) = tool(&agent(&unreadable), "tilo_ls", json!({})).await;
+            assert!(!failed, "{text}");
+            assert_eq!(
+                text,
+                "apps\nnotes    running\nthe installed apps could not be read: remote actions are unavailable: this session's workspaces cannot be read"
+            );
+            let (text, failed) = tool(&agent(&unreadable), "tilo_ls", json!({"path": "sheets"})).await;
+            assert!(
+                failed
+                    && text.contains("no running app is named sheets")
+                    && text.contains("installed apps could not be read"),
+                "{text}"
+            );
+        });
+    }
 
-/// An installed app the agent may not open is still listed, saying so, and
-/// opening it says who decides rather than that there is no such app.
-#[test]
-fn an_app_the_agent_may_not_open_is_listed_and_says_who_decides() {
-    let host = Notes::new(true).installed(Installed::SheetsClosedToAgent);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
-        assert!(!failed, "{text}");
-        assert_eq!(
-            text,
-            "apps\nnotes  Notes  running\nsheets  Sheets  installed, not yours to open\nthe person decides which apps an agent may open in this workspace"
-        );
-        let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
-        assert!(
-            failed && text.contains("this agent may not open sheets"),
-            "{text}"
-        );
-        assert!(
-            !host
-                .invoked()
-                .iter()
-                .any(|(resource, _, _)| resource.contains("sheets")),
-            "nothing was asked of the workspace on the agent's behalf"
-        );
-        let (text, _) = tool(&agent(&host), "tilo_ls", json!({"path": "sheets"})).await;
-        assert!(
-            text.contains("installed but not running") && text.contains("may not open"),
-            "{text}"
-        );
-    });
-}
+    phase an_app_the_agent_may_not_open_is_listed_and_says_who_decides;
+    // An installed app the agent may not open is still listed, saying so, and
+    // opening it says who decides rather than that there is no such app.
+    {
+        let host = Notes::new(true).installed(Installed::SheetsClosedToAgent);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
+            assert!(!failed, "{text}");
+            assert_eq!(
+                text,
+                "apps\nnotes  Notes  running\nsheets  Sheets  installed, not yours to open\nthe person decides which apps an agent may open in this workspace"
+            );
+            let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
+            assert!(
+                failed && text.contains("this agent may not open sheets"),
+                "{text}"
+            );
+            assert!(
+                !host
+                    .invoked()
+                    .iter()
+                    .any(|(resource, _, _)| resource.contains("sheets")),
+                "nothing was asked of the workspace on the agent's behalf"
+            );
+            let (text, _) = tool(&agent(&host), "tilo_ls", json!({"path": "sheets"})).await;
+            assert!(
+                text.contains("installed but not running") && text.contains("may not open"),
+                "{text}"
+            );
+        });
+    }
 
-/// An app the workspace offers this agent only to close (it runs, but its
-/// directory is not yet there to browse) is one the agent may use: it is
-/// listed as installed, never as one the person has to grant.
-#[test]
-fn an_app_offered_only_to_close_is_still_the_agents_to_open() {
-    let host = Notes::new(true).installed(Installed::SheetsOnlyCloses);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
-        assert!(!failed, "{text}");
-        assert_eq!(
-            text,
-            "apps\nnotes  Notes  running\nsheets  Sheets  installed"
-        );
-        let (text, _) = tool(&agent(&host), "tilo_ls", json!({"path": "sheets"})).await;
-        assert!(
-            text.contains("installed but not running") && !text.contains("may not open"),
-            "{text}"
-        );
-        let (text, _) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
-        assert!(!text.contains("may not open"), "{text}");
-        assert!(
-            host.invoked()
-                .iter()
-                .any(|(resource, action, _)| resource == "app.so.tilo.sheets" && action == "open"),
-            "the workspace was asked to open Sheets: {text}"
-        );
-    });
-}
+    phase an_app_offered_only_to_close_is_still_the_agents_to_open;
+    // An app the workspace offers this agent only to close (it runs, but its
+    // directory is not yet there to browse) is one the agent may use: it is
+    // listed as installed, never as one the person has to grant.
+    {
+        let host = Notes::new(true).installed(Installed::SheetsOnlyCloses);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_ls", json!({})).await;
+            assert!(!failed, "{text}");
+            assert_eq!(
+                text,
+                "apps\nnotes  Notes  running\nsheets  Sheets  installed"
+            );
+            let (text, _) = tool(&agent(&host), "tilo_ls", json!({"path": "sheets"})).await;
+            assert!(
+                text.contains("installed but not running") && !text.contains("may not open"),
+                "{text}"
+            );
+            let (text, _) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
+            assert!(!text.contains("may not open"), "{text}");
+            assert!(
+                host.invoked()
+                    .iter()
+                    .any(|(resource, action, _)| resource == "app.so.tilo.sheets" && action == "open"),
+                "the workspace was asked to open Sheets: {text}"
+            );
+        });
+    }
 
-/// An app is named by the name the listing shows it by, not only by its id:
-/// `spreadsheets` is the app listed as `sheets  Spreadsheets`.
-#[test]
-fn an_app_is_named_by_the_name_it_is_listed_by() {
-    let host = Notes::new(true).installed(Installed::SheetsNamedSpreadsheets);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "spreadsheets"})).await;
-        assert!(
-            !failed && text.contains("installed but not running"),
-            "{text}"
-        );
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": "Spreadsheets#open"}),
-        )
-        .await;
-        assert!(!failed, "{text}");
-        assert!(
-            host.invoked()
-                .iter()
-                .any(|(resource, action, _)| resource == "app.so.tilo.sheets" && action == "open"),
-            "the workspace was asked to open Sheets: {text}"
-        );
-    });
-}
-
-#[test]
-fn an_app_lists_its_pages_and_actions_by_the_names_a_person_uses() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes"})).await;
-        assert!(!failed, "{text}");
-        assert!(text.starts_with("notes  (so.tilo.notes)\n"), "{text}");
-        for line in [
-            "Todo/  notes.page",
-            "Groceries/  notes.page",
-            "#new-page(title?)  New note",
-            "#read(item?)",
-        ] {
-            assert!(text.lines().any(|found| found == line), "{line} in\n{text}");
-        }
-        assert!(
-            !text.contains("tilo-ui-bound") && !text.contains("3fa2c1d0"),
-            "{text}"
-        );
-        let (actions, _) = tool(
-            &agent(&host),
-            "tilo_ls",
-            json!({"path":"notes","kind":"actions"}),
-        )
-        .await;
-        assert!(!actions.contains("notes.page"), "{actions}");
-        let (resources, _) = tool(
-            &agent(&host),
-            "tilo_ls",
-            json!({"path":"notes","kind":"resources"}),
-        )
-        .await;
-        assert!(!resources.contains('#'), "{resources}");
-        let (first, _) = tool(&agent(&host), "tilo_ls", json!({"path":"notes","limit":1})).await;
-        assert!(first.contains("… 4 more: cursor \"1\""), "{first}");
-        let (rest, _) = tool(
-            &agent(&host),
-            "tilo_ls",
-            json!({"path":"notes","limit":10,"cursor":"1"}),
-        )
-        .await;
-        assert!(
-            !rest.contains("Notebook/") && rest.contains("Groceries/"),
-            "{rest}"
-        );
-    });
-}
-
-#[test]
-fn a_page_lists_its_actions_and_the_body_published_beside_it() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes/todo"})).await;
-        assert!(!failed, "{text}");
-        assert!(text.starts_with("notes/Todo  (notes.page)\n"), "{text}");
-        assert!(text.contains("#rename(title)  Rename note"), "{text}");
-        assert!(
-            text.contains("#delete  Delete note [destructive]"),
-            "{text}"
-        );
-        // The body shares the page's title; it is named by what tells it apart.
-        assert!(text.contains("body  tilo.rich-text"), "{text}");
-        let (body, failed) =
-            tool(&agent(&host), "tilo_ls", json!({"path": "notes/Todo/body"})).await;
-        assert!(!failed, "{body}");
-        assert!(body.contains("#append-paragraph(text)"), "{body}");
-        assert!(!body.contains("Groceries"), "{body}");
-    });
-}
-
-#[test]
-fn an_action_is_described_on_demand() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_ls",
-            json!({"path": "notes/Todo/body#insert-block"}),
-        )
-        .await;
-        assert!(!failed, "{text}");
-        assert!(
-            text.starts_with("notes/Todo/body#insert-block  Insert paragraph\nInsert paragraph\n"),
-            "{text}"
-        );
-        assert!(text.contains("\n  after — Text"), "{text}");
-        assert!(text.contains("\n  text?"), "{text}");
-        assert!(!text.contains("Longer explanation"), "{text}");
-    });
-}
-
-#[test]
-fn a_path_means_the_same_resource_after_the_desktop_restarts() {
-    let before = Notes::new(true);
-    let after = before.restarted();
-    assert_ne!(
-        before.id(TODO_BODY),
-        after.id(TODO_BODY),
-        "the broker's ids moved"
-    );
-    run(async {
-        for host in [&before, &after] {
+    phase an_app_is_named_by_the_name_it_is_listed_by;
+    // An app is named by the name the listing shows it by, not only by its id:
+    // `spreadsheets` is the app listed as `sheets  Spreadsheets`.
+    {
+        let host = Notes::new(true).installed(Installed::SheetsNamedSpreadsheets);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "spreadsheets"})).await;
+            assert!(
+                !failed && text.contains("installed but not running"),
+                "{text}"
+            );
             let (text, failed) = tool(
-                &agent(host),
+                &agent(&host),
                 "tilo_do",
-                json!({"path": "notes/Todo/body#append-paragraph", "args": {"text": "x"}}),
+                json!({"path": "Spreadsheets#open"}),
             )
             .await;
             assert!(!failed, "{text}");
-            let invoked = host.invoked();
-            let (resource, action, _) = invoked.last().unwrap();
-            assert_eq!(*resource, host.id(TODO_BODY));
-            assert_eq!(action, "append-paragraph");
-        }
-    });
+            assert!(
+                host.invoked()
+                    .iter()
+                    .any(|(resource, action, _)| resource == "app.so.tilo.sheets" && action == "open"),
+                "the workspace was asked to open Sheets: {text}"
+            );
+        });
+    }
+
+    phase a_newer_instance_with_nothing_published_does_not_hide_the_app;
+    {
+        let host = Notes::with_unpublished_instance();
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes"})).await;
+            assert!(!failed && text.contains("#new-page"), "{text}");
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "notes/Todo#delete"}),
+            )
+            .await;
+            assert_eq!((text.as_str(), failed), ("ok", false));
+        });
+    }
+
+    phase an_installed_app_is_started_by_its_path_and_then_listed;
+    {
+        let host = Notes::new(false);
+        run(async {
+            let server = agent(&host);
+            let (text, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+            assert!(!failed, "{text}");
+            assert!(
+                text.contains("installed but not running") && text.contains("notes#open"),
+                "{text}"
+            );
+            let (text, failed) = tool(&server, "tilo_do", json!({"path": "notes#open"})).await;
+            assert!(!failed, "{text}");
+            assert!(
+                text.starts_with("ok: notes is running\nnotes  (so.tilo.notes)\n"),
+                "{text}"
+            );
+            assert!(text.contains("Todo/  notes.page"), "{text}");
+            // One of the app's own actions, or `#start`, starts it first without
+            // a window: the workspace is asked to start it, never to open it.
+            for (path, said) in [
+                ("notes#read", "Groceries"),
+                ("notes#start", "ok: notes is running"),
+            ] {
+                let host = Notes::new(false);
+                let (text, failed) = tool(&agent(&host), "tilo_do", json!({ "path": path })).await;
+                assert!(!failed && text.contains(said), "{text}");
+                let asked = host.invoked.lock().unwrap().clone();
+                let target = &asked[0].target;
+                assert_eq!(
+                    (target.provider.as_str(), target.address.action.as_str()),
+                    (WORKSPACE, "start")
+                );
+                assert!(
+                    asked
+                        .iter()
+                        .all(|request| request.target.address.action != "open")
+                );
+            }
+            // Not the app's own action on an app that is not running.
+            let host = Notes::new(false);
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "notes/Todo#rename"}),
+            )
+            .await;
+            assert!(
+                failed && text.contains("installed but not running"),
+                "{text}"
+            );
+        });
+    }
 }
 
-#[test]
-fn a_page_reads_as_markdown_with_the_ids_edits_take() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_read", json!({"path": "notes/Todo"})).await;
-        assert!(!failed, "{text}");
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one test walks every tool's typed answer in one place, so a missing one is caught"
+    )]
+    fn the_agents_tools_answer_typed_when_a_call_asks;
+
+    phase a_busy_host_answers_rate_limited_with_its_wait;
+    // A host busy with the person's changes ran nothing: a typed call is told
+    // `rate_limited` with the wait the host said, so the caller asks again then.
+    {
+        run(async {
+            let busy = Notes::new(true);
+            *busy.unreachable.lock().unwrap() = Some(format!(
+                "backpressure: {}",
+                tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(480))
+            ));
+            let (typed, failed) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
+            assert!(failed, "{typed}");
+            assert_eq!(typed["error"]["code"], "rate_limited", "{typed}");
+            assert_eq!(typed["error"]["retry_after_ms"], 480, "{typed}");
+            // Anything else the host is short of stays a plain failure.
+            *busy.unreachable.lock().unwrap() = Some("offline: the device left".into());
+            let (typed, _) = answer(&agent(&busy), "tilo_find", json!({"query": "notes"})).await;
+            assert_eq!(typed["error"]["code"], "failed", "{typed}");
+        });
+    }
+
+    phase every_agent_tool_answers_typed_when_its_call_asks;
+    // Every agent tool answers typed when its call asks, and the text a model
+    // reads is the same as before.
+    {
+        let host = Notes::new(true);
+        run(async {
+            // A listing: what it is, its own actions, and a row per resource.
+            let (apps, failed) = answer(&agent(&host), "tilo_ls", json!({})).await;
+            assert!(!failed, "{apps}");
+            assert_eq!(
+                (apps["path"].as_str(), apps["kind"].as_str()),
+                (Some("apps"), Some("apps"))
+            );
+            assert_eq!(apps["rows"][0]["name"], "notes");
+            assert_eq!(apps["rows"][0]["kind"], "app");
+            assert_eq!(apps["rows"][0]["state"], "running");
+            assert_eq!(apps["rows"][0]["has_children"], true);
+
+            let (listing, failed) = answer(&agent(&host), "tilo_ls", json!({"path":"notes"})).await;
+            assert!(!failed, "{listing}");
+            assert_eq!(listing["path"], "notes");
+            let rows = listing["rows"].as_array().unwrap();
+            let todo = rows
+                .iter()
+                .find(|row| row["name"] == "Todo")
+                .expect("the note is a row");
+            assert_eq!(todo["path"], "notes/Todo");
+            assert_eq!(todo["kind"], "notes.page");
+            assert_eq!(todo["has_children"], true);
+            // One resource's own actions, with what each takes.
+            let (note, failed) = answer(&agent(&host), "tilo_ls", json!({"path":"notes/Todo"})).await;
+            assert!(!failed, "{note}");
+            let rename = note["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == "rename")
+                .unwrap_or_else(|| panic!("the note's rename is an action: {note}"));
+            assert_eq!(rename["label"], "Rename note");
+            assert_eq!(rename["params"][0]["name"], "title");
+            assert_eq!(rename["kind"], "undoable");
+
+            // A read is its typed answer ([`ResourceRead`]).
+            let (note, failed) = answer(&agent(&host), "tilo_read", json!({"path":"notes/Todo"})).await;
+            assert!(!failed, "{note}");
+            assert_eq!(note["fields"]["title"], "Todo");
+
+            // An action: what it ran, its id, and what it answered.
+            let (ran, failed) = answer(
+                &agent(&host),
+                "tilo_do",
+                json!({"path":"notes/Todo/body#append-paragraph","args":{"text":"x"}}),
+            )
+            .await;
+            assert!(!failed, "{ran}");
+            assert_eq!(ran["status"], "ok");
+            assert_eq!(ran["path"], "notes/Todo/body#append-paragraph");
+            assert_eq!(ran["result"], json!({"block":"b9","note":null}));
+            let id = ran["invocation_id"]
+                .as_str()
+                .expect("the call names its invocation");
+
+            // Its status answers the same shape.
+            let (status, failed) =
+                answer(&agent(&host), "tilo_status", json!({"invocation_id": id})).await;
+            assert!(!failed, "{status}");
+            assert_eq!(status["status"], "ok");
+            assert_eq!(status["invocation_id"], id);
+
+            // A refusal: the app's code, its message, and what would work.
+            let (refused, failed) = answer(
+                &agent(&host),
+                "tilo_do",
+                json!({"path":"notes/Todo#rename","args":{}}),
+            )
+            .await;
+            assert!(failed, "{refused}");
+            assert_eq!(refused["status"], "failed");
+            assert_eq!(refused["error"]["code"], "invalid_arguments");
+            assert!(
+                refused["error"]["next_steps"][0]
+                    .as_str()
+                    .is_some_and(|step| step.contains("tilo_ls notes/Todo")),
+                "{refused}"
+            );
+            assert_eq!(refused["action"]["id"], "rename");
+
+            // Several actions: one step each, in order.
+            let (batch, failed) = answer(
+                &agent(&host),
+                "tilo_do",
+                json!({"calls":[
+                    {"path":"notes/Todo/body#append-paragraph","args":{"text":"a"}},
+                    {"path":"notes/Todo/body#append-paragraph","args":{"text":"b"}},
+                ]}),
+            )
+            .await;
+            assert!(!failed, "{batch}");
+            assert_eq!(batch["status"], "ok");
+            assert_eq!(batch["steps"].as_array().unwrap().len(), 2);
+            assert_eq!(
+                batch["steps"][1]["result"],
+                json!({"block":"b9","note":null})
+            );
+            assert!(batch["steps"][0]["invocation_id"].is_string());
+
+            // A search: hits by the paths the other tools take.
+            let (found, failed) = answer(&agent(&host), "tilo_find", json!({"query":"todo"})).await;
+            assert!(!failed, "{found}");
+            assert_eq!(found["query"], "todo");
+            assert!(
+                found["hits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|hit| hit["path"]
+                        .as_str()
+                        .is_some_and(|path| path.ends_with("/Todo"))),
+                "{found}"
+            );
+
+            // A program: what it printed and the steps of the task's history.
+            let (program, failed) =
+                answer(&agent(&host), "tilo", json!({"program":"history task"})).await;
+            assert!(!failed, "{program}");
+            assert_eq!(program["status"], "ok");
+            assert!(program["steps"].is_array(), "{program}");
+        });
+    }
+
+    phase a_watch_answers_changes_runs_and_presence;
+    // A watch tells what happened since its cursor: a change to a resource and
+    // who made it, a run that finished, and who is in the workspace.
+    {
+        let host = Notes::new(true);
+        run(async {
+            let server = agent(&host);
+            let (start, failed) = answer(&server, "tilo_watch", json!({"wait_ms": 50})).await;
+            assert!(!failed, "{start}");
+            assert_eq!(
+                start["events"],
+                json!([]),
+                "a watch with no cursor starts now"
+            );
+            let cursor = start["cursor"].as_str().unwrap().to_owned();
+
+            host.changed(json!({
+                "change": "c1a2",
+                "sentence": "added \"Buy milk\"",
+                "by": "Ada",
+                "time_ms": 1_730_000_000_000_i64,
+            }));
+            host.people(Some(vec![
+                tilo_actions::remote::Here {
+                    who: "person:ada".into(),
+                    name: "Ada".into(),
+                    kind: "person".into(),
+                },
+                tilo_actions::remote::Here {
+                    who: "agent:claude".into(),
+                    name: "Claude Code".into(),
+                    kind: "agent".into(),
+                },
+            ]));
+            let (ran, failed) = answer(
+                &server,
+                "tilo_do",
+                json!({"path":"notes/Todo/body#append-paragraph","args":{"text":"x"}}),
+            )
+            .await;
+            assert!(!failed, "{ran}");
+
+            let (watched, failed) = answer(
+                &server,
+                "tilo_watch",
+                json!({"path":"notes/Todo","cursor":cursor,"wait_ms":50}),
+            )
+            .await;
+            assert!(!failed, "{watched}");
+            let events = watched["events"].as_array().unwrap();
+            let change = events
+                .iter()
+                .find(|event| event["kind"] == "change")
+                .expect("the change is told");
+            assert_eq!(change["path"], "notes/Todo");
+            assert_eq!(change["change"], "c1a2");
+            assert_eq!(change["sentence"], "added \"Buy milk\"");
+            assert_eq!(change["by"], "Ada");
+            let run = events
+                .iter()
+                .find(|event| event["kind"] == "run")
+                .unwrap_or_else(|| panic!("the run is told: {watched}"));
+            assert_eq!(run["invocation_id"], ran["invocation_id"]);
+            assert_eq!(run["path"], "notes/Todo/body#append-paragraph");
+            assert_eq!(run["phase"], "succeeded");
+            assert_eq!(run["run"], "MCP agent");
+            let here = events
+                .iter()
+                .find(|event| event["kind"] == "presence")
+                .expect("who is here is told");
+            assert!(
+                here["here"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|member| member["name"] == "Claude Code" && member["kind"] == "agent"),
+                "{here}"
+            );
+            // Everything it told is told once.
+            let (again, failed) = answer(
+                &server,
+                "tilo_watch",
+                json!({"path":"notes/Todo","cursor":watched["cursor"].as_str().unwrap(),"wait_ms":50}),
+            )
+            .await;
+            assert!(!failed, "{again}");
+            assert_eq!(again["events"], json!([]), "{again}");
+        });
+    }
+
+    phase an_action_the_person_must_allow_answers_pending_with_the_ask;
+    // An action the person must allow: a typed call answers `pending` with the
+    // ask rather than holding the caller, and the text a model reads is what it
+    // was.
+    {
+        let host = Notes::new(true).asking();
+        run(async {
+            let server = agent(&host);
+            let (asked, failed) = answer(&server, "tilo_do", json!({"path":"notes/Todo#delete"})).await;
+            assert!(!failed, "pending is not an error: {asked}");
+            assert_eq!(asked["status"], "pending");
+            let id = asked["invocation_id"]
+                .as_str()
+                .expect("the call names its invocation");
+            assert_eq!(asked["ask"]["invocation_id"], id);
+            assert_eq!(asked["path"], "notes/Todo#delete");
+
+            // A model still reads the refusal's words.
+            let (text, failed) = tool(&server, "tilo_do", json!({"path":"notes/Todo#delete"})).await;
+            assert!(failed, "{text}");
+            assert!(text.contains("requires confirmation"), "{text}");
+        });
+    }
+}
+
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn tilo_ls_lists_what_an_app_holds_by_the_names_its_paths_take;
+
+    phase an_app_lists_its_pages_and_actions_by_the_names_a_person_uses;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes"})).await;
+            assert!(!failed, "{text}");
+            assert!(text.starts_with("notes  (so.tilo.notes)\n"), "{text}");
+            for line in [
+                "Todo/  notes.page",
+                "Groceries/  notes.page",
+                "#new-page(title?)  New note",
+                "#read(item?)",
+            ] {
+                assert!(text.lines().any(|found| found == line), "{line} in\n{text}");
+            }
+            assert!(
+                !text.contains("tilo-ui-bound") && !text.contains("3fa2c1d0"),
+                "{text}"
+            );
+            let (actions, _) = tool(
+                &agent(&host),
+                "tilo_ls",
+                json!({"path":"notes","kind":"actions"}),
+            )
+            .await;
+            assert!(!actions.contains("notes.page"), "{actions}");
+            let (resources, _) = tool(
+                &agent(&host),
+                "tilo_ls",
+                json!({"path":"notes","kind":"resources"}),
+            )
+            .await;
+            assert!(!resources.contains('#'), "{resources}");
+            let (first, _) = tool(&agent(&host), "tilo_ls", json!({"path":"notes","limit":1})).await;
+            assert!(first.contains("… 4 more: cursor \"1\""), "{first}");
+            let (rest, _) = tool(
+                &agent(&host),
+                "tilo_ls",
+                json!({"path":"notes","limit":10,"cursor":"1"}),
+            )
+            .await;
+            assert!(
+                !rest.contains("Notebook/") && rest.contains("Groceries/"),
+                "{rest}"
+            );
+        });
+    }
+
+    phase a_page_lists_its_actions_and_the_body_published_beside_it;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes/todo"})).await;
+            assert!(!failed, "{text}");
+            assert!(text.starts_with("notes/Todo  (notes.page)\n"), "{text}");
+            assert!(text.contains("#rename(title)  Rename note"), "{text}");
+            assert!(
+                text.contains("#delete  Delete note [destructive]"),
+                "{text}"
+            );
+            // The body shares the page's title; it is named by what tells it apart.
+            assert!(text.contains("body  tilo.rich-text"), "{text}");
+            let (body, failed) =
+                tool(&agent(&host), "tilo_ls", json!({"path": "notes/Todo/body"})).await;
+            assert!(!failed, "{body}");
+            assert!(body.contains("#append-paragraph(text)"), "{body}");
+            assert!(!body.contains("Groceries"), "{body}");
+        });
+    }
+
+    phase an_action_is_described_on_demand;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_ls",
+                json!({"path": "notes/Todo/body#insert-block"}),
+            )
+            .await;
+            assert!(!failed, "{text}");
+            assert!(
+                text.starts_with("notes/Todo/body#insert-block  Insert paragraph\nInsert paragraph\n"),
+                "{text}"
+            );
+            assert!(text.contains("\n  after — Text"), "{text}");
+            assert!(text.contains("\n  text?"), "{text}");
+            assert!(!text.contains("Longer explanation"), "{text}");
+        });
+    }
+
+    phase what_a_listing_offers_is_what_its_path_invokes;
+    // An agent reads a listing and then runs what it read: every action a
+    // listing writes must run by the path that listing names, with no argument
+    // where the listing asks for none. What a listing offers and what the door
+    // admits are one answer, not two.
+    {
+        let host = Notes::new(true).live();
+        run(async {
+            let server = agent(&host);
+            let (app, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+            assert!(!failed, "{app}");
+            let mut tried = 0;
+            for path in std::iter::once("notes".to_owned()).chain(listed_paths(&app, "notes")) {
+                let (listing, failed) =
+                    tool(&server, "tilo_ls", json!({"path": path, "kind": "actions"})).await;
+                assert!(!failed, "{path}: {listing}");
+                for action in listed_actions(&listing) {
+                    // The point here is the path, not the arguments: an action
+                    // that needs one is asked for its arguments by the door, and
+                    // that answer is not this test's.
+                    let signature = listing
+                        .lines()
+                        .find(|line| line.starts_with(&format!("#{action}(")))
+                        .unwrap_or("");
+                    let inside = signature
+                        .split_once('(')
+                        .and_then(|(_, rest)| rest.split_once(')'))
+                        .map_or("", |(inside, _)| inside);
+                    if inside
+                        .split(',')
+                        .map(str::trim)
+                        .any(|param| !param.is_empty() && !param.ends_with('?'))
+                    {
+                        continue;
+                    }
+                    let at = format!("{path}#{action}");
+                    let (text, failed) = tool(&server, "tilo_do", json!({"path": at})).await;
+                    assert!(
+                        !failed,
+                        "the listing names {at}, which that same path refuses: {text}"
+                    );
+                    tried += 1;
+                }
+            }
+            assert!(tried >= 2, "the listing named no action to try in\n{app}");
+        });
+    }
+
+    phase a_name_that_is_not_there_lists_what_is;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes/Nope"})).await;
+            assert!(failed, "{text}");
+            assert!(text.starts_with("no Nope in notes; it has: "), "{text}");
+            assert!(
+                text.contains("Todo") && text.contains("Groceries"),
+                "{text}"
+            );
+            let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "mail"})).await;
+            assert!(failed, "{text}");
+            assert!(
+                text.contains("no app mail") && text.contains("notes") && text.contains("sheets"),
+                "{text}"
+            );
+        });
+    }
+
+    phase a_name_read_off_a_listing_walks_back_to_its_resource;
+    // A name read off an `ls` row walks back to that resource: a listing prints a tilolang
+    // resource's type the way a program types it (`notes.Note`), and that name is one
+    // `tilo_ls`, `tilo_read` and `tilo_do` take back to the resource the row showed. Only the
+    // Todo page is published under that kind, so the name means one resource.
+    {
+        let host = tilolang_kind(&Notes::new(true));
+        let server = agent(&host)
+            .with_agent_run("task:1", "Tidy the notes")
+            .with_task_hosts(Some(CatalogueHost::new(tilolang_notes_catalogue())));
+        let live_todo = host.id(&Notes::live_key(TODO));
+        run(async {
+            let (listed, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+            assert!(!failed, "{listed}");
+            // The row prints its type as a program types it, not as the app publishes it.
+            let row = listed
+                .lines()
+                .find(|line| line.starts_with("Todo/"))
+                .unwrap_or_else(|| panic!("the note is listed: {listed}"));
+            assert_eq!(
+                row.split_once("  ")
+                    .map(|(name, rest)| (name, rest.split("  ").next().unwrap_or(rest))),
+                Some(("Todo/", "notes.Note")),
+                "the row prints its type as a program types it: {listed}"
+            );
+
+            // The type name read off that row is a path: it names the resource the row showed.
+            let path = "notes/notes.Note";
+            let (here, failed) = tool(&server, "tilo_ls", json!({"path": path})).await;
+            assert!(!failed, "{path} reads: {here}");
+            assert!(
+                here.lines()
+                    .next()
+                    .unwrap_or_default()
+                    .ends_with("(notes.Note)"),
+                "the path walks back: {here}"
+            );
+
+            // A program form names the resource a `tilo_do` acts on: the note's own action runs.
+            let (done, failed) = tool(
+                &server,
+                "tilo_do",
+                json!({"path": format!("{path}#rename"), "args": {"title": "Renamed"}}),
+            )
+            .await;
+            assert!(!failed, "{done}");
+            let invoked = host.invoked();
+            let (resource, action, arguments) = invoked.last().unwrap();
+            assert_eq!(*resource, live_todo);
+            assert_eq!(action, "rename");
+            assert_eq!(*arguments, json!({"title": "Renamed"}));
+
+            // And the resource a `tilo_read` reads.
+            let (read, failed) = tool(&server, "tilo_read", json!({"path": path})).await;
+            assert!(!failed, "{path} reads: {read}");
+            assert!(read.starts_with("# Todo\n"), "the note's own body: {read}");
+        });
+    }
+}
+
+tilo_test_env::scenario! {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
+    )]
+    fn tilo_read_answers_a_resource_as_markdown_typed_and_in_pages;
+
+    phase a_page_reads_as_markdown_with_the_ids_edits_take;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_read", json!({"path": "notes/Todo"})).await;
+            assert!(!failed, "{text}");
+            assert_eq!(
+                text,
+                "# Todo\n- [ ] milk ^b1\n- [x] bread ^b2\ncall mom ^b3\n## Later ^b4"
+            );
+            // The notebook's read takes the page by its stable key, not the broker's id.
+            let invoked = host.invoked();
+            let (resource, action, arguments) = invoked.last().unwrap();
+            assert_eq!((resource.as_str(), action.as_str()), (NOTEBOOK, "read"));
+            assert_eq!(*arguments, json!({"item": TODO}));
+            let structured = todo_page().to_string();
+            eprintln!(
+                "page read: {} bytes as text, {} as JSON",
+                text.len(),
+                structured.len()
+            );
+            assert!(
+                text.len() * 2 < structured.len(),
+                "{} against {}",
+                text.len(),
+                structured.len()
+            );
+        });
+    }
+
+    phase an_app_reads_as_the_list_of_what_it_holds;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_read", json!({"path": "notes"})).await;
+            assert!(!failed, "{text}");
+            assert!(
+                text.starts_with("pages:\n  Todo  (notes.page:3fa2c1d0"),
+                "{text}"
+            );
+            assert!(!text.contains("tags"), "empty things are left out: {text}");
+        });
+    }
+
+    phase a_structured_read_is_the_typed_answer_the_markdown_read_renders;
+    // A program reads the same resource the markdown read renders, typed: its
+    // fields as the app typed them, what it holds as children with the path
+    // each reads by, and the app's own paging; at the same cost.
+    {
+        let host = Notes::new(true);
+        // A note: its fields, typed.
+        let (text_asked, text_answered, text) =
+            work_of(&host, "tilo_read", &json!({"path": "notes/Todo"}));
+        let (note, asked, answered) = structured_read(&host, "notes/Todo", None);
+        assert_eq!(
+            (asked, answered),
+            (text_asked, text_answered),
+            "reads cost what they touch"
+        );
+        assert_eq!(note["path"], "notes/Todo");
+        assert_eq!(note["kind"], "notes.page");
+        assert_eq!(note["fields"]["title"], "Todo");
+        assert_eq!(
+            note["fields"]["blocks"][1],
+            json!({"id": "b2", "kind": {"checklist": 0, "done": true}, "text": "bread"})
+        );
+        assert!(
+            note.get("children").is_none() && note.get("cursor").is_none(),
+            "{note:#}"
+        );
+        let fields = note["fields"]["markdown"].as_str().unwrap();
         assert_eq!(
             text,
-            "# Todo\n- [ ] milk ^b1\n- [x] bread ^b2\ncall mom ^b3\n## Later ^b4"
+            format!("# Todo\n{fields}"),
+            "the markdown read renders these fields"
         );
-        // The notebook's read takes the page by its stable key, not the broker's id.
-        let invoked = host.invoked();
-        let (resource, action, arguments) = invoked.last().unwrap();
-        assert_eq!((resource.as_str(), action.as_str()), (NOTEBOOK, "read"));
-        assert_eq!(*arguments, json!({"item": TODO}));
-        let structured = todo_page().to_string();
-        eprintln!(
-            "page read: {} bytes as text, {} as JSON",
-            text.len(),
-            structured.len()
-        );
-        assert!(
-            text.len() * 2 < structured.len(),
-            "{} against {}",
-            text.len(),
-            structured.len()
-        );
-    });
-}
 
-#[test]
-fn an_app_reads_as_the_list_of_what_it_holds() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_read", json!({"path": "notes"})).await;
-        assert!(!failed, "{text}");
+        // The app: what it holds, each with the path that reads it.
+        let (_, _, listing) = work_of(&host, "tilo_read", &json!({"path": "notes"}));
+        let (app, _, _) = structured_read(&host, "notes", None);
+        let children = app["children"].as_array().unwrap();
+        assert_eq!(children.len(), 2, "{app:#}");
+        assert_eq!(children[0]["list"], "pages");
+        assert_eq!(children[0]["name"], "Todo");
+        assert_eq!(children[0]["item"], TODO);
+        for child in children {
+            let line = format!(
+                "  {}  ({})",
+                child["name"].as_str().unwrap(),
+                child["item"].as_str().unwrap()
+            );
+            assert!(
+                listing.contains(&line),
+                "the listing renders each child: {listing}"
+            );
+        }
         assert!(
-            text.starts_with("pages:\n  Todo  (notes.page:3fa2c1d0"),
-            "{text}"
+            app["fields"].get("pages").is_none(),
+            "children are not fields too: {app:#}"
         );
-        assert!(!text.contains("tags"), "empty things are left out: {text}");
-    });
+        // A child's path is a ref the other tools take: it reads that note.
+        let path = children[0]["path"].as_str().unwrap();
+        let (child, _, _) = structured_read(&host, path, None);
+        assert_eq!(child["fields"]["title"], "Todo", "{child:#}");
+
+        // Paging is the app's own: the cursor it gave, passed back, reads the rest.
+        *host.long.lock().unwrap() = Some(3);
+        let (first, _, _) = structured_read(&host, "notes/Todo", None);
+        assert_eq!(first["cursor"], "second", "{first:#}");
+        let (second, _, _) = structured_read(&host, "notes/Todo", Some("second"));
+        assert!(second.get("cursor").is_none(), "{second:#}");
+        assert!(
+            second["fields"]["markdown"]
+                .as_str()
+                .unwrap()
+                .contains("item 1-000")
+        );
+    }
+
+    phase a_read_is_cut_at_a_line_and_says_how_much_is_left;
+    {
+        let mut text = (0..100)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let total = text.chars().count();
+        let left = cut_at_line(&mut text, 200).unwrap();
+        assert_eq!(text.chars().count() + left, total);
+        assert!(text.ends_with(|c: char| c.is_ascii_digit()) && !text.ends_with('\n'));
+        assert!(text.lines().all(|line| line.starts_with("line ")));
+        let mut short = "a\nb".to_owned();
+        assert_eq!(cut_at_line(&mut short, 200), None);
+    }
+
+    phase a_cut_read_continues_from_its_cursor_through_the_apps_own_pages;
+    // A read cut at `max_chars` ends in a cursor, and following the cursors
+    // answers the rest of the note once and in order, across the page the app
+    // itself paged to.
+    {
+        let host = Notes::new(true);
+        *host.long.lock().unwrap() = Some(40);
+        run(async {
+            let mut cursor: Option<String> = None;
+            let mut read: Vec<String> = Vec::new();
+            let mut cursors: Vec<String> = Vec::new();
+            for _ in 0..40 {
+                let mut args = json!({"path": "notes/Todo", "max_chars": 200});
+                if let Some(cursor) = &cursor {
+                    args["cursor"] = json!(cursor);
+                }
+                let (text, failed) = tool(&agent(&host), "tilo_read", args).await;
+                assert!(!failed, "{text}");
+                let (body, last) = text.rsplit_once('\n').unwrap_or((text.as_str(), ""));
+                cursor = last
+                    .split_once("cursor \"")
+                    .and_then(|(_, rest)| rest.strip_suffix('"'))
+                    .map(str::to_owned);
+                let body = if cursor.is_some() {
+                    body
+                } else {
+                    text.as_str()
+                };
+                assert!(body.chars().count() <= 200, "{text}");
+                read.extend(
+                    body.lines()
+                        .filter(|line| line.starts_with("- [ ]"))
+                        .map(str::to_owned),
+                );
+                match &cursor {
+                    Some(next) => cursors.push(next.clone()),
+                    None => break,
+                }
+            }
+            assert!(
+                cursor.is_none(),
+                "still a cursor after 40 reads: {cursors:?}"
+            );
+            let expected: Vec<String> = (0..2)
+                .flat_map(|half| {
+                    (0..40).map(move |line| format!("- [ ] item {half}-{line:03} ^h{half}l{line:03}"))
+                })
+                .collect();
+            assert_eq!(read, expected, "cursors: {cursors:?}");
+            assert!(
+                cursors.iter().any(|cursor| cursor == "second"),
+                "{cursors:?}"
+            );
+            assert!(
+                cursors
+                    .iter()
+                    .any(|cursor| cursor.starts_with("read+") && cursor.ends_with("+second")),
+                "a cut of the app's second page keeps its cursor: {cursors:?}"
+            );
+            // The app is asked for its second page by its own cursor, never by one
+            // of the door's.
+            for (_, action, arguments) in host.invoked() {
+                if action == "read" {
+                    let asked = arguments.get("cursor").and_then(Value::as_str);
+                    assert!(asked.is_none_or(|asked| asked == "second"), "{arguments}");
+                }
+            }
+        });
+    }
+
+    phase a_read_cursor_names_what_was_answered_and_the_apps_cursor;
+    {
+        assert_eq!(
+            parse_read_cursor(&read_cursor(120, None)),
+            Some((120, None))
+        );
+        assert_eq!(
+            parse_read_cursor(&read_cursor(7, Some("a+b"))),
+            Some((7, Some("a+b".to_owned())))
+        );
+        assert_eq!(parse_read_cursor("second"), None);
+        assert_eq!(parse_read_cursor("read+x"), None);
+        let mut text = "one\ntwo\nthree".to_owned();
+        assert_eq!(skip_answered(&mut text, 3), 4, "the line break goes too");
+        assert_eq!(text, "two\nthree");
+        let mut short = "ab".to_owned();
+        assert_eq!(skip_answered(&mut short, 10), 2);
+        assert_eq!(short, "");
+    }
+
+    phase a_read_in_an_app_that_names_only_its_top_level_reads_the_level;
+    // An app from before a name could be asked under a parent answers it
+    // about its top level: the door reads the level instead, and the read
+    // still finds the note.
+    {
+        let host = Notes::new(true).live().with_notes(3);
+        *host.names_parents.lock().unwrap() = false;
+        let (text, failed) = run(tool(
+            &agent(&host),
+            "tilo_read",
+            json!({"path": "notes/Notebook/Todo"}),
+        ));
+        assert!(!failed, "{text}");
+        assert!(text.starts_with("# Todo\n"), "{text}");
+    }
 }
 
 /// A structured read of `path` (with `cursor`), as a program asks for it:
@@ -1517,106 +2129,269 @@ fn structured_read(host: &Notes, path: &str, cursor: Option<&str>) -> (Value, us
     (structured, host.take_asked().len(), host.take_answered())
 }
 
-/// A program reads the same resource the markdown read renders, typed: its
-/// fields as the app typed them, what it holds as children with the path
-/// each reads by, and the app's own paging; at the same cost.
-#[test]
-fn a_structured_read_is_the_typed_answer_the_markdown_read_renders() {
-    let host = Notes::new(true);
-    // A note: its fields, typed.
-    let (text_asked, text_answered, text) =
-        work_of(&host, "tilo_read", &json!({"path": "notes/Todo"}));
-    let (note, asked, answered) = structured_read(&host, "notes/Todo", None);
-    assert_eq!(
-        (asked, answered),
-        (text_asked, text_answered),
-        "reads cost what they touch"
-    );
-    assert_eq!(note["path"], "notes/Todo");
-    assert_eq!(note["kind"], "notes.page");
-    assert_eq!(note["fields"]["title"], "Todo");
-    assert_eq!(
-        note["fields"]["blocks"][1],
-        json!({"id": "b2", "kind": {"checklist": 0, "done": true}, "text": "bread"})
-    );
-    assert!(
-        note.get("children").is_none() && note.get("cursor").is_none(),
-        "{note:#}"
-    );
-    let fields = note["fields"]["markdown"].as_str().unwrap();
-    assert_eq!(
-        text,
-        format!("# Todo\n{fields}"),
-        "the markdown read renders these fields"
-    );
+tilo_test_env::scenario! {
+    fn tilo_do_runs_actions_and_groups_them_into_undo_steps;
 
-    // The app: what it holds, each with the path that reads it.
-    let (_, _, listing) = work_of(&host, "tilo_read", &json!({"path": "notes"}));
-    let (app, _, _) = structured_read(&host, "notes", None);
-    let children = app["children"].as_array().unwrap();
-    assert_eq!(children.len(), 2, "{app:#}");
-    assert_eq!(children[0]["list"], "pages");
-    assert_eq!(children[0]["name"], "Todo");
-    assert_eq!(children[0]["item"], TODO);
-    for child in children {
-        let line = format!(
-            "  {}  ({})",
-            child["name"].as_str().unwrap(),
-            child["item"].as_str().unwrap()
-        );
-        assert!(
-            listing.contains(&line),
-            "the listing renders each child: {listing}"
-        );
+    phase a_do_answers_with_its_result_and_never_a_receipt;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "notes/Todo/body#append-paragraph", "args": {"text": "Buy milk"}}),
+            )
+            .await;
+            assert!(!failed, "{text}");
+            assert_eq!(text, "ok\n{\"block\":\"b9\"}");
+            let invoked = host.invoked();
+            let (resource, action, arguments) = invoked.last().unwrap();
+            assert_eq!(*resource, host.id(TODO_BODY));
+            assert_eq!(action, "append-paragraph");
+            assert_eq!(*arguments, json!({"text": "Buy milk"}));
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "notes/Todo#delete"}),
+            )
+            .await;
+            assert_eq!((text.as_str(), failed), ("ok", false));
+        });
     }
-    assert!(
-        app["fields"].get("pages").is_none(),
-        "children are not fields too: {app:#}"
-    );
-    // A child's path is a ref the other tools take: it reads that note.
-    let path = children[0]["path"].as_str().unwrap();
-    let (child, _, _) = structured_read(&host, path, None);
-    assert_eq!(child["fields"]["title"], "Todo", "{child:#}");
 
-    // Paging is the app's own: the cursor it gave, passed back, reads the rest.
-    *host.long.lock().unwrap() = Some(3);
-    let (first, _, _) = structured_read(&host, "notes/Todo", None);
-    assert_eq!(first["cursor"], "second", "{first:#}");
-    let (second, _, _) = structured_read(&host, "notes/Todo", Some("second"));
-    assert!(second.get("cursor").is_none(), "{second:#}");
-    assert!(
-        second["fields"]["markdown"]
-            .as_str()
-            .unwrap()
-            .contains("item 1-000")
-    );
-}
+    phase the_calls_of_one_task_step_share_its_undo_step_and_each_other_call_has_its_own;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let server = agent(&host).with_agent_run("task:7", "Tidy the notes");
+            let call = |text: &str, meta: Value| {
+                let mut request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+                    "name":"tilo_do",
+                    "arguments":{"path":"notes/Todo/body#append-paragraph","args":{"text":text}}}});
+                if !meta.is_null() {
+                    request["params"]["_meta"] = meta;
+                }
+                request
+            };
+            let step = json!({"so.tilo.mcp": {"step": "program-1"}});
+            for text in ["milk", "bread"] {
+                let reply = server.handle(call(text, step.clone())).await.unwrap();
+                assert_eq!(reply["result"]["isError"], false, "{reply}");
+            }
+            for text in ["eggs", "tea"] {
+                let reply = server.handle(call(text, Value::Null)).await.unwrap();
+                assert_eq!(reply["result"]["isError"], false, "{reply}");
+            }
+            let steps = gestures(&host);
+            assert_eq!(steps.len(), 4);
+            assert!(steps.iter().all(Option::is_some), "{steps:?}");
+            assert_eq!(steps[0], steps[1], "one task step, one undo step");
+            assert_ne!(steps[2], steps[3], "two calls, two steps");
+            assert!(!steps[2..].contains(&steps[0]));
+            // The step a client names is this session's: another session naming
+            // it does not join it.
+            let other = agent(&host).with_agent_run("task:7", "Tidy the notes");
+            other.handle(call("jam", step.clone())).await.unwrap();
+            assert_ne!(gestures(&host)[4], steps[0]);
+            // Every invocation is attributed to the task.
+            assert!(host.invoked.lock().unwrap().iter().all(|request| {
+                request
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.group.as_ref())
+                    .is_some_and(|group| group.id == "task:7")
+            }));
+            let refused = server
+                .handle(call("x", json!({"so.tilo.mcp": {"step": 7}})))
+                .await
+                .unwrap();
+            assert!(refused.get("error").is_some(), "{refused}");
+        });
+    }
 
-#[test]
-fn a_do_answers_with_its_result_and_never_a_receipt() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": "notes/Todo/body#append-paragraph", "args": {"text": "Buy milk"}}),
-        )
-        .await;
-        assert!(!failed, "{text}");
-        assert_eq!(text, "ok\n{\"block\":\"b9\"}");
-        let invoked = host.invoked();
-        let (resource, action, arguments) = invoked.last().unwrap();
-        assert_eq!(*resource, host.id(TODO_BODY));
-        assert_eq!(action, "append-paragraph");
-        assert_eq!(*arguments, json!({"text": "Buy milk"}));
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": "notes/Todo#delete"}),
-        )
-        .await;
-        assert_eq!((text.as_str(), failed), ("ok", false));
-    });
+    phase a_refused_action_says_why_and_what_it_takes;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "notes/Todo#rename"}),
+            )
+            .await;
+            assert!(failed, "{text}");
+            assert!(
+                text.starts_with("failed: invalid_arguments: argument `title` is required"),
+                "{text}"
+            );
+            assert!(text.contains("\n  title"), "the parameters follow: {text}");
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "notes/Todo#explode"}),
+            )
+            .await;
+            assert!(failed, "{text}");
+            // Not the app's whole list: what may have been meant, then where
+            // the actions are.
+            assert!(
+                text.contains("has no action explode")
+                    && text.contains("tilo_ls notes/Todo lists them"),
+                "{text}"
+            );
+            assert!(!text.contains("delete, slow"), "no wall of names: {text}");
+            let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes/Todo"})).await;
+            assert!(failed && text.contains("name the action"), "{text}");
+        });
+    }
+
+    phase steps_run_in_order_and_stop_at_the_first_failure;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"calls": [
+                    {"path": "notes/Todo/body#append-paragraph", "args": {"text": "a"}},
+                    {"path": "notes/Todo#rename"},
+                    {"path": "notes/Todo/body#append-paragraph", "args": {"text": "never"}},
+                ]}),
+            )
+            .await;
+            assert!(failed, "{text}");
+            assert!(text.starts_with("[1] notes/Todo/body#append-paragraph: ok\n{\"block\":\"b9\"}\n[2] notes/Todo#rename: failed: invalid_arguments"), "{text}");
+            assert!(
+                text.contains("stopped at 2 of 3; earlier steps stay applied"),
+                "{text}"
+            );
+            assert_eq!(host.invoked().len(), 2, "the third step never ran");
+        });
+    }
+
+    phase an_action_still_running_says_so_and_status_follows_it;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "notes/Todo#slow", "wait_ms": 30}),
+            )
+            .await;
+            assert!(failed, "{text}");
+            let id = text
+                .strip_prefix("pending ")
+                .and_then(|rest| rest.split(':').next())
+                .unwrap_or_else(|| panic!("{text}"));
+            assert!(uuid::Uuid::parse_str(id).is_ok(), "{text}");
+            let (status, failed) =
+                tool(&agent(&host), "tilo_status", json!({"invocation_id": id})).await;
+            assert!(failed && status.starts_with("pending "), "{status}");
+        });
+    }
+
+    phase a_block_action_takes_the_id_a_read_showed_and_an_abbreviation_of_its_name;
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                // The action by the start of its name, the block by the id the read showed.
+                json!({"path": "notes/Todo/body#set-block", "args": {"block": "b1"}}),
+            )
+            .await;
+            assert_eq!(
+                (text.as_str(), failed),
+                ("ok", false),
+                "one action starts so"
+            );
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "notes/Todo/body#set-block-done", "args": {"block": "b1"}}),
+            )
+            .await;
+            assert_eq!((text.as_str(), failed), ("ok", false));
+            let invoked = host.invoked();
+            let (resource, action, arguments) = invoked.last().unwrap();
+            assert_eq!(*resource, host.id(TODO_BODY));
+            assert_eq!(
+                (action.as_str(), arguments),
+                ("set-block-done", &json!({"block": "b1"}))
+            );
+        });
+    }
+
+    phase a_run_groups_its_calls_into_one_undo_step;
+    // A group of calls naming one run is one undo step, attributed to the run's
+    // name, and `undo task` takes it back.
+    {
+        let host = Notes::new(true);
+        run(async {
+            let server = agent(&host);
+            for text in ["a", "b"] {
+                let (ran, failed) = typed(
+                    &server,
+                    "tilo_do",
+                    json!({"path":"notes/Todo/body#append-paragraph","args":{"text":text}}),
+                    json!({"id":"fill-jane","title":"Fill Jane's application"}),
+                )
+                .await;
+                assert!(!failed, "{ran}");
+            }
+            // A call of another run is another step.
+            let (ran, failed) = typed(
+                &server,
+                "tilo_do",
+                json!({"path":"notes/Todo/body#append-paragraph","args":{"text":"c"}}),
+                json!({"id":"other"}),
+            )
+            .await;
+            assert!(!failed, "{ran}");
+
+            let contexts = host.contexts();
+            let steps: Vec<_> = contexts
+                .iter()
+                .filter(|(_, _, action)| action == "append-paragraph")
+                .collect();
+            assert_eq!(steps.len(), 3, "{contexts:?}");
+            assert!(steps[0].0.is_some(), "a call joins an undo step");
+            assert_eq!(steps[0].0, steps[1].0, "one run is one step");
+            assert_ne!(steps[0].0, steps[2].0, "another run is another step");
+            assert_eq!(
+                steps[0].1.as_deref(),
+                Some("Fill Jane's application"),
+                "the run is named as its caller named it"
+            );
+
+            // `undo task` takes the run back, in the app it changed.
+            let (undone, failed) = answer(&server, "tilo", json!({"program":"history task"})).await;
+            assert!(!failed, "{undone}");
+            assert!(
+                undone["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|step| step["program"] == "run \"Fill Jane's application\""
+                        && step["apps"][0] == "so.tilo.notes"),
+                "{undone}"
+            );
+            let (taken, failed) = answer(&server, "tilo", json!({"program":"undo task"})).await;
+            assert!(!failed, "{taken}");
+            let undone = host
+                .invoked()
+                .into_iter()
+                .filter(|(resource, action, arguments)| {
+                    resource == "tl:so.tilo.notes"
+                        && action == "undo"
+                        && arguments == &json!({"steps": 1})
+                })
+                .count();
+            assert_eq!(undone, 2, "each run's step is taken back once, in the app");
+        });
+    }
 }
 
 /// The undo step each invocation the host was asked for joins, in order.
@@ -1627,56 +2402,6 @@ fn gestures(host: &Notes) -> Vec<Option<tilo_actions::ActionId>> {
         .iter()
         .map(|request| request.context.as_ref().and_then(|context| context.gesture))
         .collect()
-}
-
-#[test]
-fn the_calls_of_one_task_step_share_its_undo_step_and_each_other_call_has_its_own() {
-    let host = Notes::new(true);
-    run(async {
-        let server = agent(&host).with_agent_run("task:7", "Tidy the notes");
-        let call = |text: &str, meta: Value| {
-            let mut request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
-                "name":"tilo_do",
-                "arguments":{"path":"notes/Todo/body#append-paragraph","args":{"text":text}}}});
-            if !meta.is_null() {
-                request["params"]["_meta"] = meta;
-            }
-            request
-        };
-        let step = json!({"so.tilo.mcp": {"step": "program-1"}});
-        for text in ["milk", "bread"] {
-            let reply = server.handle(call(text, step.clone())).await.unwrap();
-            assert_eq!(reply["result"]["isError"], false, "{reply}");
-        }
-        for text in ["eggs", "tea"] {
-            let reply = server.handle(call(text, Value::Null)).await.unwrap();
-            assert_eq!(reply["result"]["isError"], false, "{reply}");
-        }
-        let steps = gestures(&host);
-        assert_eq!(steps.len(), 4);
-        assert!(steps.iter().all(Option::is_some), "{steps:?}");
-        assert_eq!(steps[0], steps[1], "one task step, one undo step");
-        assert_ne!(steps[2], steps[3], "two calls, two steps");
-        assert!(!steps[2..].contains(&steps[0]));
-        // The step a client names is this session's: another session naming
-        // it does not join it.
-        let other = agent(&host).with_agent_run("task:7", "Tidy the notes");
-        other.handle(call("jam", step.clone())).await.unwrap();
-        assert_ne!(gestures(&host)[4], steps[0]);
-        // Every invocation is attributed to the task.
-        assert!(host.invoked.lock().unwrap().iter().all(|request| {
-            request
-                .context
-                .as_ref()
-                .and_then(|context| context.group.as_ref())
-                .is_some_and(|group| group.id == "task:7")
-        }));
-        let refused = server
-            .handle(call("x", json!({"so.tilo.mcp": {"step": 7}})))
-            .await
-            .unwrap();
-        assert!(refused.get("error").is_some(), "{refused}");
-    });
 }
 
 /// The actions a listing writes, as the names an agent would call: one line
@@ -1701,295 +2426,147 @@ fn listed_paths(listing: &str, app: &str) -> Vec<String> {
         .collect()
 }
 
-/// An agent reads a listing and then runs what it read: every action a
-/// listing writes must run by the path that listing names, with no argument
-/// where the listing asks for none. What a listing offers and what the door
-/// admits are one answer, not two.
-#[test]
-fn what_a_listing_offers_is_what_its_path_invokes() {
-    let host = Notes::new(true).live();
-    run(async {
-        let server = agent(&host);
-        let (app, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
-        assert!(!failed, "{app}");
-        let mut tried = 0;
-        for path in std::iter::once("notes".to_owned()).chain(listed_paths(&app, "notes")) {
-            let (listing, failed) =
-                tool(&server, "tilo_ls", json!({"path": path, "kind": "actions"})).await;
-            assert!(!failed, "{path}: {listing}");
-            for action in listed_actions(&listing) {
-                // The point here is the path, not the arguments: an action
-                // that needs one is asked for its arguments by the door, and
-                // that answer is not this test's.
-                let signature = listing
-                    .lines()
-                    .find(|line| line.starts_with(&format!("#{action}(")))
-                    .unwrap_or("");
-                let inside = signature
-                    .split_once('(')
-                    .and_then(|(_, rest)| rest.split_once(')'))
-                    .map_or("", |(inside, _)| inside);
-                if inside
-                    .split(',')
-                    .map(str::trim)
-                    .any(|param| !param.is_empty() && !param.ends_with('?'))
-                {
-                    continue;
-                }
-                let at = format!("{path}#{action}");
-                let (text, failed) = tool(&server, "tilo_do", json!({"path": at})).await;
-                assert!(
-                    !failed,
-                    "the listing names {at}, which that same path refuses: {text}"
-                );
-                tried += 1;
-            }
-        }
-        assert!(tried >= 2, "the listing named no action to try in\n{app}");
-    });
-}
+tilo_test_env::scenario! {
+    fn tilo_find_answers_by_the_desktops_search_in_the_paths_ls_lists;
 
-#[test]
-fn a_newer_instance_with_nothing_published_does_not_hide_the_app() {
-    let host = Notes::with_unpublished_instance();
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes"})).await;
-        assert!(!failed && text.contains("#new-page"), "{text}");
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": "notes/Todo#delete"}),
-        )
-        .await;
-        assert_eq!((text.as_str(), failed), ("ok", false));
-    });
-}
-
-#[test]
-fn a_refused_action_says_why_and_what_it_takes() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": "notes/Todo#rename"}),
-        )
-        .await;
-        assert!(failed, "{text}");
-        assert!(
-            text.starts_with("failed: invalid_arguments: argument `title` is required"),
-            "{text}"
-        );
-        assert!(text.contains("\n  title"), "the parameters follow: {text}");
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": "notes/Todo#explode"}),
-        )
-        .await;
-        assert!(failed, "{text}");
-        // Not the app's whole list: what may have been meant, then where
-        // the actions are.
-        assert!(
-            text.contains("has no action explode")
-                && text.contains("tilo_ls notes/Todo lists them"),
-            "{text}"
-        );
-        assert!(!text.contains("delete, slow"), "no wall of names: {text}");
-        let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes/Todo"})).await;
-        assert!(failed && text.contains("name the action"), "{text}");
-    });
-}
-
-/// The live Settings publishes `add-email-account` on the root resource it
-/// lists, not on the app's own root: `settings#add-email-account` names it
-/// as surely as `settings/settings.root#add-email-account` does.
-#[test]
-fn the_app_alone_names_an_action_it_publishes_on_a_resource_it_lists() {
-    let host = Notes::new(true).live();
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes#archive"})).await;
-        assert!(!failed, "{text}");
-        assert_eq!(text, "ok", "{text}");
-        let (resource, action, _) = host.invoked().last().cloned().unwrap();
-        assert_eq!(resource, host.id(&Notes::live_key(TODO)), "{resource}");
-        assert_eq!(action, "archive");
-        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes#archive"})).await;
-        assert!(!failed, "{text}");
-        assert!(
-            text.starts_with("notes/Notebook/Todo#archive  Archive note"),
-            "{text}"
-        );
-    });
-}
-
-/// Two resources carrying the same action is not one action: the app alone
-/// names neither, and says which it would have to be told.
-#[test]
-fn an_app_action_on_two_resources_is_refused_naming_both() {
-    let host = Notes::new(true).live().archiving_both_notes();
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_do", json!({"path": "notes#archive"})).await;
-        assert!(failed, "{text}");
-        assert!(
-            text.contains("names 2 actions")
-                && text.contains("notes/Notebook/Todo#archive")
-                && text.contains("notes/Notebook/Groceries#archive"),
-            "{text}"
-        );
-        assert!(text.contains("#archive"), "{text}");
-        assert!(host.invoked().is_empty(), "nothing ran: {text}");
-    });
-}
-
-#[test]
-fn a_name_that_is_not_there_lists_what_is() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "notes/Nope"})).await;
-        assert!(failed, "{text}");
-        assert!(text.starts_with("no Nope in notes; it has: "), "{text}");
-        assert!(
-            text.contains("Todo") && text.contains("Groceries"),
-            "{text}"
-        );
-        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "mail"})).await;
-        assert!(failed, "{text}");
-        assert!(
-            text.contains("no app mail") && text.contains("notes") && text.contains("sheets"),
-            "{text}"
-        );
-    });
-}
-
-#[test]
-fn steps_run_in_order_and_stop_at_the_first_failure() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"calls": [
-                {"path": "notes/Todo/body#append-paragraph", "args": {"text": "a"}},
-                {"path": "notes/Todo#rename"},
-                {"path": "notes/Todo/body#append-paragraph", "args": {"text": "never"}},
-            ]}),
-        )
-        .await;
-        assert!(failed, "{text}");
-        assert!(text.starts_with("[1] notes/Todo/body#append-paragraph: ok\n{\"block\":\"b9\"}\n[2] notes/Todo#rename: failed: invalid_arguments"), "{text}");
-        assert!(
-            text.contains("stopped at 2 of 3; earlier steps stay applied"),
-            "{text}"
-        );
-        assert_eq!(host.invoked().len(), 2, "the third step never ran");
-    });
-}
-
-#[test]
-fn an_action_still_running_says_so_and_status_follows_it() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": "notes/Todo#slow", "wait_ms": 30}),
-        )
-        .await;
-        assert!(failed, "{text}");
-        let id = text
-            .strip_prefix("pending ")
-            .and_then(|rest| rest.split(':').next())
-            .unwrap_or_else(|| panic!("{text}"));
-        assert!(uuid::Uuid::parse_str(id).is_ok(), "{text}");
-        let (status, failed) =
-            tool(&agent(&host), "tilo_status", json!({"invocation_id": id})).await;
-        assert!(failed && status.starts_with("pending "), "{status}");
-    });
-}
-
-#[test]
-fn an_installed_app_is_started_by_its_path_and_then_listed() {
-    let host = Notes::new(false);
-    run(async {
-        let server = agent(&host);
-        let (text, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
-        assert!(!failed, "{text}");
-        assert!(
-            text.contains("installed but not running") && text.contains("notes#open"),
-            "{text}"
-        );
-        let (text, failed) = tool(&server, "tilo_do", json!({"path": "notes#open"})).await;
-        assert!(!failed, "{text}");
-        assert!(
-            text.starts_with("ok: notes is running\nnotes  (so.tilo.notes)\n"),
-            "{text}"
-        );
-        assert!(text.contains("Todo/  notes.page"), "{text}");
-        // One of the app's own actions, or `#start`, starts it first without
-        // a window: the workspace is asked to start it, never to open it.
-        for (path, said) in [
-            ("notes#read", "Groceries"),
-            ("notes#start", "ok: notes is running"),
-        ] {
-            let host = Notes::new(false);
-            let (text, failed) = tool(&agent(&host), "tilo_do", json!({ "path": path })).await;
-            assert!(!failed && text.contains(said), "{text}");
-            let asked = host.invoked.lock().unwrap().clone();
-            let target = &asked[0].target;
+    phase find_answers_by_the_desktops_one_search_or_says_there_is_none;
+    // `find` answers by the one search the desktop runs, and a host without one
+    // says so: it never answers by a ranking of its own, which is what the
+    // palette and text typed on the canvas would not agree with.
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": "Groceries"})).await;
+            assert!(!failed, "{text}");
+            // The note leads: a row about the note's body is about the note, too,
+            // and every row names the app's path down to what it is about.
             assert_eq!(
-                (target.provider.as_str(), target.address.action.as_str()),
-                (WORKSPACE, "start")
+                text.lines().next(),
+                Some("notes/Notebook/Groceries  notes.page"),
+                "{text}"
             );
-            assert!(
-                asked
-                    .iter()
-                    .all(|request| request.target.address.action != "open")
-            );
-        }
-        // Not the app's own action on an app that is not running.
-        let host = Notes::new(false);
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": "notes/Todo#rename"}),
-        )
-        .await;
-        assert!(
-            failed && text.contains("installed but not running"),
-            "{text}"
-        );
-    });
-}
+            // A host with no search of its own is told so, never given a second
+            // ranking's answers.
+            let no_search = NoSearch::new(&host);
+            let (text, failed) = tool(
+                &agent(&no_search),
+                "tilo_find",
+                json!({"query": "Groceries"}),
+            )
+            .await;
+            assert!(failed, "{text}");
+            assert!(text.contains("keeps no search of its workspace"), "{text}");
+        });
+    }
 
-/// `find` answers by the one search the desktop runs, and a host without one
-/// says so: it never answers by a ranking of its own, which is what the
-/// palette and text typed on the canvas would not agree with.
-#[test]
-fn find_answers_by_the_desktops_one_search_or_says_there_is_none() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": "Groceries"})).await;
-        assert!(!failed, "{text}");
-        // The note leads: a row about the note's body is about the note, too,
-        // and every row names the app's path down to what it is about.
-        assert_eq!(
-            text.lines().next(),
-            Some("notes/Notebook/Groceries  notes.page"),
-            "{text}"
-        );
-        // A host with no search of its own is told so, never given a second
-        // ranking's answers.
-        let no_search = NoSearch::new(&host);
-        let (text, failed) = tool(
-            &agent(&no_search),
-            "tilo_find",
-            json!({"query": "Groceries"}),
-        )
-        .await;
-        assert!(failed, "{text}");
-        assert!(text.contains("keeps no search of its workspace"), "{text}");
-    });
+    phase a_search_narrows_to_an_app_by_name_or_id_and_names_the_apps_when_none_is;
+    // A search narrows to an app by the name `tilo_ls` lists or by its whole
+    // id, and an app that is not there is an error naming the ones that are,
+    // never an empty search.
+    {
+        let host = Notes::new(true);
+        run(async {
+            let query = |app: &str| json!({"query": "append paragraph", "app": app});
+            let (by_name, failed) = tool(&agent(&host), "tilo_find", query("notes")).await;
+            assert!(!failed, "{by_name}");
+            assert!(
+                by_name
+                    .lines()
+                    .any(|line| line.starts_with("notes/Notebook/Todo/body#append-paragraph")),
+                "{by_name}"
+            );
+            for app in [APP, "SO.TILO.NOTES", " Notes "] {
+                let (text, failed) = tool(&agent(&host), "tilo_find", query(app)).await;
+                assert_eq!((text.as_str(), failed), (by_name.as_str(), false), "{app}");
+            }
+            let (text, failed) = tool(&agent(&host), "tilo_find", query("so.tilo.nope")).await;
+            assert!(failed, "{text}");
+            assert_eq!(text, "no app so.tilo.nope; the apps: notes, sheets");
+        });
+    }
+
+    phase a_search_narrowed_to_an_app_says_when_the_installed_apps_could_not_be_read;
+    // A search narrowed to an app that is not running, while the installed
+    // apps cannot be read, says why the agent cannot know whether it is
+    // installed: it is never told there is no such app. A running app named
+    // still searches.
+    {
+        run(async {
+            let query = |app: &str| json!({"query": "append paragraph", "app": app});
+            let stopped = Notes::new(false).installed(Installed::Unreadable);
+            let (text, failed) = tool(&agent(&stopped), "tilo_find", query("notes")).await;
+            assert!(failed, "{text}");
+            assert_eq!(
+                text,
+                "no running app is named notes, and the installed apps could not be read: remote actions are unavailable: this session's workspaces cannot be read"
+            );
+            let running = Notes::new(true).installed(Installed::Unreadable);
+            let (text, failed) = tool(&agent(&running), "tilo_find", query(APP)).await;
+            assert!(!failed, "{text}");
+            assert!(
+                text.lines()
+                    .any(|line| line.starts_with("notes/Notebook/Todo/body#append-paragraph")),
+                "{text}"
+            );
+            let (text, failed) = tool(&agent(&running), "tilo_find", query("sheets")).await;
+            assert!(
+                failed
+                    && text.starts_with("no running app is named sheets")
+                    && text.contains("installed apps could not be read"),
+                "{text}"
+            );
+        });
+    }
+
+    phase every_row_find_answers_is_one_ls_lists;
+    // Every row `find` answers is named by the path `ls` lists that resource
+    // at, and `ls` there answers the row's own kind: one path model, read back
+    // through the same door.
+    {
+        let host = Notes::new(true);
+        run(async {
+            for query in ["Todo", "Groceries", "append paragraph", "new note"] {
+                let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": query})).await;
+                assert!(!failed, "{query}: {text}");
+                for line in text.lines() {
+                    let (path, rest) = line
+                        .split_once("  ")
+                        .unwrap_or_else(|| panic!("{query}: {line} names no kind"));
+                    let resource = path.split('#').next().unwrap_or(path);
+                    let (listed, failed) =
+                        tool(&agent(&host), "tilo_ls", json!({"path": resource})).await;
+                    assert!(
+                        !failed,
+                        "{query}: find says {line}, ls reads no {resource}: {listed}"
+                    );
+                    let header = listed.lines().next().unwrap_or_default();
+                    assert!(
+                        header.starts_with(&format!("{resource}  (")),
+                        "{query}: find says {line}, and ls reads {listed}"
+                    );
+                    // A resource row names the resource itself: `ls` there
+                    // answers it as the kind find wrote. An action row names the
+                    // resource it runs the action on, with the action after `#`:
+                    // `ls` there lists that action.
+                    if let Some((_, action)) = path.split_once('#') {
+                        let action = action.split('(').next().unwrap_or(action);
+                        assert!(
+                            listed.lines().skip(1).any(|held| {
+                                held.strip_prefix('#')
+                                    .is_some_and(|held| held.split(['(', ' ']).next() == Some(action))
+                            }),
+                            "{query}: find says {line}, and ls there lists no #{action}: {listed}"
+                        );
+                    } else {
+                        assert!(
+                            header.ends_with(&format!("({})", rest.split("  ").next().unwrap_or(rest))),
+                            "{query}: find says {line}, and ls reads {listed}"
+                        );
+                    }
+                }
+            }
+        });
+    }
 }
 
 /// [`Notes`] publishing everything it does, and no search of its own: a
@@ -2033,305 +2610,182 @@ impl ActionHost for NoSearch {
     }
 }
 
-/// A search narrows to an app by the name `tilo_ls` lists or by its whole
-/// id, and an app that is not there is an error naming the ones that are,
-/// never an empty search.
-#[test]
-fn a_search_narrows_to_an_app_by_name_or_id_and_names_the_apps_when_none_is() {
-    let host = Notes::new(true);
-    run(async {
-        let query = |app: &str| json!({"query": "append paragraph", "app": app});
-        let (by_name, failed) = tool(&agent(&host), "tilo_find", query("notes")).await;
-        assert!(!failed, "{by_name}");
-        assert!(
-            by_name
-                .lines()
-                .any(|line| line.starts_with("notes/Notebook/Todo/body#append-paragraph")),
-            "{by_name}"
-        );
-        for app in [APP, "SO.TILO.NOTES", " Notes "] {
-            let (text, failed) = tool(&agent(&host), "tilo_find", query(app)).await;
-            assert_eq!((text.as_str(), failed), (by_name.as_str(), false), "{app}");
-        }
-        let (text, failed) = tool(&agent(&host), "tilo_find", query("so.tilo.nope")).await;
-        assert!(failed, "{text}");
-        assert_eq!(text, "no app so.tilo.nope; the apps: notes, sheets");
-    });
-}
+tilo_test_env::scenario! {
+    fn a_call_reads_the_directory_once_at_a_cost_that_does_not_grow;
 
-/// A search narrowed to an app that is not running, while the installed
-/// apps cannot be read, says why the agent cannot know whether it is
-/// installed: it is never told there is no such app. A running app named
-/// still searches.
-#[test]
-fn a_search_narrowed_to_an_app_says_when_the_installed_apps_could_not_be_read() {
-    run(async {
-        let query = |app: &str| json!({"query": "append paragraph", "app": app});
-        let stopped = Notes::new(false).installed(Installed::Unreadable);
-        let (text, failed) = tool(&agent(&stopped), "tilo_find", query("notes")).await;
-        assert!(failed, "{text}");
+    phase a_level_read_across_a_moving_directory_starts_again_at_the_new_revision;
+    // A level is read as one snapshot: when the app's directory moves on
+    // between its pages, the read starts again at the new revision and the agent
+    // sees the whole level, not an error or a mix of two revisions.
+    {
+        let steady = Notes::new(true);
+        let moving = Notes::new(true);
+        *moving.moves.lock().unwrap() = 2;
+        let (expected, failed) = run(tool(&agent(&steady), "tilo_ls", json!({"path": "notes"})));
+        assert!(!failed, "{expected}");
+        let (listed, failed) = run(tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})));
+        assert!(!failed, "{listed}");
+        assert_eq!(listed, expected);
         assert_eq!(
-            text,
-            "no running app is named notes, and the installed apps could not be read: remote actions are unavailable: this session's workspaces cannot be read"
+            *moving.moves.lock().unwrap(),
+            0,
+            "both moves were read past"
         );
-        let running = Notes::new(true).installed(Installed::Unreadable);
-        let (text, failed) = tool(&agent(&running), "tilo_find", query(APP)).await;
-        assert!(!failed, "{text}");
+    }
+
+    phase a_directory_that_never_holds_still_is_reported;
+    // A directory that never holds still for one read is reported, once the
+    // time an action is waited for has passed, and is read again with a pause
+    // that grows rather than as fast as it answers.
+    {
+        let moving = Notes::new(true);
+        *moving.moves.lock().unwrap() = u32::MAX;
+        let (text, failed, waited) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap()
+            .block_on(async {
+                let started = tokio::time::Instant::now();
+                let (text, failed) = tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})).await;
+                (text, failed, started.elapsed())
+            });
+        assert!(failed, "{text}");
+        assert!(text.contains("kept changing"), "{text}");
+        assert!(
+            waited >= std::time::Duration::from_millis(DEFAULT_WAIT_MS),
+            "gave up after {waited:?}"
+        );
+        let reads = u32::MAX.saturating_sub(*moving.moves.lock().unwrap());
+        assert!(
+            (20..=50).contains(&reads),
+            "read {reads} times in {waited:?}"
+        );
+    }
+
+    phase a_changing_directory_is_read_again_at_once_then_after_a_growing_pause;
+    {
+        let ms = std::time::Duration::from_millis;
+        let pauses: Vec<_> = (0..10).map(restart_pause).collect();
+        assert_eq!(
+            pauses,
+            [
+                ms(0),
+                ms(0),
+                ms(5),
+                ms(10),
+                ms(20),
+                ms(40),
+                ms(80),
+                ms(160),
+                ms(200),
+                ms(200)
+            ]
+        );
+        assert_eq!(restart_pause(u32::MAX), RESTART_PAUSE_MAX);
+    }
+
+    phase a_call_asks_for_each_directory_level_and_the_running_apps_once;
+    // One call asks the app's directory for each level once and asks which apps
+    // run once: reading a note finds the action that reads it among the levels
+    // its path was resolved through, and running an action resolves its path in
+    // the app it looked up, without asking either again.
+    {
+        let host = Notes::new(true);
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_read", json!({"path": "notes/Todo"})).await;
+            assert!(!failed, "{text}");
+            let asked = host.take_asked();
+            let mut once = asked.clone();
+            once.sort();
+            once.dedup();
+            assert_eq!(asked.len(), once.len(), "asked twice: {asked:#?}");
+
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "notes/Todo/body#append-paragraph", "args": {"text": "x"}}),
+            )
+            .await;
+            assert!(!failed, "{text}");
+            let asked = host.take_asked();
+            assert_eq!(
+                asked.iter().filter(|asked| *asked == "apps").count(),
+                1,
+                "{asked:#?}"
+            );
+        });
+    }
+
+    phase a_read_of_one_note_costs_the_same_in_a_notebook_of_any_size;
+    // Reading one note costs what it costs however many notes the notebook
+    // holds: a notebook grown from 2 notes to 32 asks the directory nothing
+    // more and is answered no more rows for one note's read.
+    {
+        let read = json!({"path": "notes/Notebook/Todo"});
+        let small = work_of(&Notes::new(true).live(), "tilo_read", &read);
+        let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_read", &read);
+        eprintln!("one read: {small:?} at 2 notes, {large:?} at 32");
+        assert_eq!(small.2, large.2, "the same note reads the same");
+        assert_eq!(
+            (small.0, small.1),
+            (large.0, large.1),
+            "queries and rows at 2 notes against 32"
+        );
+    }
+
+    phase an_action_on_the_notebook_or_a_note_costs_the_same_in_a_notebook_of_any_size;
+    // Making a note through the notebook's action, or appending to one note's
+    // body, costs the same however many notes the notebook holds: the action is
+    // found by its address, not in a page of the notebook's notes.
+    {
+        for (path, args) in [
+            ("notes/Notebook#new-note", json!({"title": "Plan"})),
+            (
+                "notes/Notebook/Todo/Body#append-paragraph",
+                json!({"text": "milk"}),
+            ),
+        ] {
+            let call = json!({"path": path, "args": args});
+            let small = work_of(&Notes::new(true).live(), "tilo_do", &call);
+            let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_do", &call);
+            eprintln!("{path}: {small:?} at 2 notes, {large:?} at 32");
+            assert_eq!(small.2, large.2, "{path} answers the same");
+            assert_eq!(
+                (small.0, small.1),
+                (large.0, large.1),
+                "{path}: queries and rows at 2 notes against 32"
+            );
+        }
+    }
+
+    phase a_find_costs_what_it_finds_in_a_notebook_of_any_size;
+    // Finding a note by its title, or the action that makes one, costs the
+    // rows that name it however many notes the notebook holds.
+    {
+        for query in ["Todo", "new note"] {
+            let find = json!({"query": query, "app": "notes"});
+            let small = work_of(&Notes::new(true).live(), "tilo_find", &find);
+            let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_find", &find);
+            eprintln!("find {query}: {small:?} at 2 notes, {large:?} at 32");
+            assert_eq!(small.2, large.2, "{query} finds the same");
+            assert_eq!(
+                (small.0, small.1),
+                (large.0, large.1),
+                "{query}: queries and rows at 2 notes against 32"
+            );
+        }
+        let (text, _) = run(tool(
+            &agent(&Notes::new(true).live().with_notes(30)),
+            "tilo_find",
+            json!({"query": "Todo", "app": "notes"}),
+        ));
         assert!(
             text.lines()
-                .any(|line| line.starts_with("notes/Notebook/Todo/body#append-paragraph")),
-            "{text}"
+                .any(|line| line == "notes/Notebook/Todo  notes.notebook.pages"),
+            "the note is named by the path its listing names it: {text}"
         );
-        let (text, failed) = tool(&agent(&running), "tilo_find", query("sheets")).await;
-        assert!(
-            failed
-                && text.starts_with("no running app is named sheets")
-                && text.contains("installed apps could not be read"),
-            "{text}"
-        );
-    });
-}
-
-#[test]
-fn a_read_is_cut_at_a_line_and_says_how_much_is_left() {
-    let mut text = (0..100)
-        .map(|n| format!("line {n}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let total = text.chars().count();
-    let left = cut_at_line(&mut text, 200).unwrap();
-    assert_eq!(text.chars().count() + left, total);
-    assert!(text.ends_with(|c: char| c.is_ascii_digit()) && !text.ends_with('\n'));
-    assert!(text.lines().all(|line| line.starts_with("line ")));
-    let mut short = "a\nb".to_owned();
-    assert_eq!(cut_at_line(&mut short, 200), None);
-}
-
-/// A read cut at `max_chars` ends in a cursor, and following the cursors
-/// answers the rest of the note once and in order, across the page the app
-/// itself paged to.
-#[test]
-fn a_cut_read_continues_from_its_cursor_through_the_apps_own_pages() {
-    let host = Notes::new(true);
-    *host.long.lock().unwrap() = Some(40);
-    run(async {
-        let mut cursor: Option<String> = None;
-        let mut read: Vec<String> = Vec::new();
-        let mut cursors: Vec<String> = Vec::new();
-        for _ in 0..40 {
-            let mut args = json!({"path": "notes/Todo", "max_chars": 200});
-            if let Some(cursor) = &cursor {
-                args["cursor"] = json!(cursor);
-            }
-            let (text, failed) = tool(&agent(&host), "tilo_read", args).await;
-            assert!(!failed, "{text}");
-            let (body, last) = text.rsplit_once('\n').unwrap_or((text.as_str(), ""));
-            cursor = last
-                .split_once("cursor \"")
-                .and_then(|(_, rest)| rest.strip_suffix('"'))
-                .map(str::to_owned);
-            let body = if cursor.is_some() {
-                body
-            } else {
-                text.as_str()
-            };
-            assert!(body.chars().count() <= 200, "{text}");
-            read.extend(
-                body.lines()
-                    .filter(|line| line.starts_with("- [ ]"))
-                    .map(str::to_owned),
-            );
-            match &cursor {
-                Some(next) => cursors.push(next.clone()),
-                None => break,
-            }
-        }
-        assert!(
-            cursor.is_none(),
-            "still a cursor after 40 reads: {cursors:?}"
-        );
-        let expected: Vec<String> = (0..2)
-            .flat_map(|half| {
-                (0..40).map(move |line| format!("- [ ] item {half}-{line:03} ^h{half}l{line:03}"))
-            })
-            .collect();
-        assert_eq!(read, expected, "cursors: {cursors:?}");
-        assert!(
-            cursors.iter().any(|cursor| cursor == "second"),
-            "{cursors:?}"
-        );
-        assert!(
-            cursors
-                .iter()
-                .any(|cursor| cursor.starts_with("read+") && cursor.ends_with("+second")),
-            "a cut of the app's second page keeps its cursor: {cursors:?}"
-        );
-        // The app is asked for its second page by its own cursor, never by one
-        // of the door's.
-        for (_, action, arguments) in host.invoked() {
-            if action == "read" {
-                let asked = arguments.get("cursor").and_then(Value::as_str);
-                assert!(asked.is_none_or(|asked| asked == "second"), "{arguments}");
-            }
-        }
-    });
-}
-
-#[test]
-fn a_read_cursor_names_what_was_answered_and_the_apps_cursor() {
-    assert_eq!(
-        parse_read_cursor(&read_cursor(120, None)),
-        Some((120, None))
-    );
-    assert_eq!(
-        parse_read_cursor(&read_cursor(7, Some("a+b"))),
-        Some((7, Some("a+b".to_owned())))
-    );
-    assert_eq!(parse_read_cursor("second"), None);
-    assert_eq!(parse_read_cursor("read+x"), None);
-    let mut text = "one\ntwo\nthree".to_owned();
-    assert_eq!(skip_answered(&mut text, 3), 4, "the line break goes too");
-    assert_eq!(text, "two\nthree");
-    let mut short = "ab".to_owned();
-    assert_eq!(skip_answered(&mut short, 10), 2);
-    assert_eq!(short, "");
-}
-
-#[test]
-fn a_block_action_takes_the_id_a_read_showed_and_an_abbreviation_of_its_name() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            // The action by the start of its name, the block by the id the read showed.
-            json!({"path": "notes/Todo/body#set-block", "args": {"block": "b1"}}),
-        )
-        .await;
-        assert_eq!(
-            (text.as_str(), failed),
-            ("ok", false),
-            "one action starts so"
-        );
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": "notes/Todo/body#set-block-done", "args": {"block": "b1"}}),
-        )
-        .await;
-        assert_eq!((text.as_str(), failed), ("ok", false));
-        let invoked = host.invoked();
-        let (resource, action, arguments) = invoked.last().unwrap();
-        assert_eq!(*resource, host.id(TODO_BODY));
-        assert_eq!(
-            (action.as_str(), arguments),
-            ("set-block-done", &json!({"block": "b1"}))
-        );
-    });
-}
-
-/// A level is read as one snapshot: when the app's directory moves on
-/// between its pages, the read starts again at the new revision and the agent
-/// sees the whole level, not an error or a mix of two revisions.
-#[test]
-fn a_level_read_across_a_moving_directory_starts_again_at_the_new_revision() {
-    let steady = Notes::new(true);
-    let moving = Notes::new(true);
-    *moving.moves.lock().unwrap() = 2;
-    let (expected, failed) = run(tool(&agent(&steady), "tilo_ls", json!({"path": "notes"})));
-    assert!(!failed, "{expected}");
-    let (listed, failed) = run(tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})));
-    assert!(!failed, "{listed}");
-    assert_eq!(listed, expected);
-    assert_eq!(
-        *moving.moves.lock().unwrap(),
-        0,
-        "both moves were read past"
-    );
-}
-
-/// A directory that never holds still for one read is reported, once the
-/// time an action is waited for has passed, and is read again with a pause
-/// that grows rather than as fast as it answers.
-#[test]
-fn a_directory_that_never_holds_still_is_reported() {
-    let moving = Notes::new(true);
-    *moving.moves.lock().unwrap() = u32::MAX;
-    let (text, failed, waited) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap()
-        .block_on(async {
-            let started = tokio::time::Instant::now();
-            let (text, failed) = tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})).await;
-            (text, failed, started.elapsed())
-        });
-    assert!(failed, "{text}");
-    assert!(text.contains("kept changing"), "{text}");
-    assert!(
-        waited >= std::time::Duration::from_millis(DEFAULT_WAIT_MS),
-        "gave up after {waited:?}"
-    );
-    let reads = u32::MAX.saturating_sub(*moving.moves.lock().unwrap());
-    assert!(
-        (20..=50).contains(&reads),
-        "read {reads} times in {waited:?}"
-    );
-}
-
-#[test]
-fn a_changing_directory_is_read_again_at_once_then_after_a_growing_pause() {
-    let ms = std::time::Duration::from_millis;
-    let pauses: Vec<_> = (0..10).map(restart_pause).collect();
-    assert_eq!(
-        pauses,
-        [
-            ms(0),
-            ms(0),
-            ms(5),
-            ms(10),
-            ms(20),
-            ms(40),
-            ms(80),
-            ms(160),
-            ms(200),
-            ms(200)
-        ]
-    );
-    assert_eq!(restart_pause(u32::MAX), RESTART_PAUSE_MAX);
-}
-
-/// One call asks the app's directory for each level once and asks which apps
-/// run once: reading a note finds the action that reads it among the levels
-/// its path was resolved through, and running an action resolves its path in
-/// the app it looked up, without asking either again.
-#[test]
-fn a_call_asks_for_each_directory_level_and_the_running_apps_once() {
-    let host = Notes::new(true);
-    run(async {
-        let (text, failed) = tool(&agent(&host), "tilo_read", json!({"path": "notes/Todo"})).await;
-        assert!(!failed, "{text}");
-        let asked = host.take_asked();
-        let mut once = asked.clone();
-        once.sort();
-        once.dedup();
-        assert_eq!(asked.len(), once.len(), "asked twice: {asked:#?}");
-
-        let (text, failed) = tool(
-            &agent(&host),
-            "tilo_do",
-            json!({"path": "notes/Todo/body#append-paragraph", "args": {"text": "x"}}),
-        )
-        .await;
-        assert!(!failed, "{text}");
-        let asked = host.take_asked();
-        assert_eq!(
-            asked.iter().filter(|asked| *asked == "apps").count(),
-            1,
-            "{asked:#?}"
-        );
-    });
+    }
 }
 
 /// What one call made the app's directory do: the queries it was asked and
@@ -2342,142 +2796,6 @@ fn work_of(host: &Notes, name: &str, arguments: &Value) -> (usize, usize, String
     let (text, failed) = run(tool(&agent(host), name, arguments.clone()));
     assert!(!failed, "{name} {arguments}: {text}");
     (host.take_asked().len(), host.take_answered(), text)
-}
-
-/// Reading one note costs what it costs however many notes the notebook
-/// holds: a notebook grown from 2 notes to 32 asks the directory nothing
-/// more and is answered no more rows for one note's read.
-#[test]
-fn a_read_of_one_note_costs_the_same_in_a_notebook_of_any_size() {
-    let read = json!({"path": "notes/Notebook/Todo"});
-    let small = work_of(&Notes::new(true).live(), "tilo_read", &read);
-    let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_read", &read);
-    eprintln!("one read: {small:?} at 2 notes, {large:?} at 32");
-    assert_eq!(small.2, large.2, "the same note reads the same");
-    assert_eq!(
-        (small.0, small.1),
-        (large.0, large.1),
-        "queries and rows at 2 notes against 32"
-    );
-}
-
-/// Making a note through the notebook's action, or appending to one note's
-/// body, costs the same however many notes the notebook holds: the action is
-/// found by its address, not in a page of the notebook's notes.
-#[test]
-fn an_action_on_the_notebook_or_a_note_costs_the_same_in_a_notebook_of_any_size() {
-    for (path, args) in [
-        ("notes/Notebook#new-note", json!({"title": "Plan"})),
-        (
-            "notes/Notebook/Todo/Body#append-paragraph",
-            json!({"text": "milk"}),
-        ),
-    ] {
-        let call = json!({"path": path, "args": args});
-        let small = work_of(&Notes::new(true).live(), "tilo_do", &call);
-        let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_do", &call);
-        eprintln!("{path}: {small:?} at 2 notes, {large:?} at 32");
-        assert_eq!(small.2, large.2, "{path} answers the same");
-        assert_eq!(
-            (small.0, small.1),
-            (large.0, large.1),
-            "{path}: queries and rows at 2 notes against 32"
-        );
-    }
-}
-
-/// Every row `find` answers is named by the path `ls` lists that resource
-/// at, and `ls` there answers the row's own kind: one path model, read back
-/// through the same door.
-#[test]
-fn every_row_find_answers_is_one_ls_lists() {
-    let host = Notes::new(true);
-    run(async {
-        for query in ["Todo", "Groceries", "append paragraph", "new note"] {
-            let (text, failed) = tool(&agent(&host), "tilo_find", json!({"query": query})).await;
-            assert!(!failed, "{query}: {text}");
-            for line in text.lines() {
-                let (path, rest) = line
-                    .split_once("  ")
-                    .unwrap_or_else(|| panic!("{query}: {line} names no kind"));
-                let resource = path.split('#').next().unwrap_or(path);
-                let (listed, failed) =
-                    tool(&agent(&host), "tilo_ls", json!({"path": resource})).await;
-                assert!(
-                    !failed,
-                    "{query}: find says {line}, ls reads no {resource}: {listed}"
-                );
-                let header = listed.lines().next().unwrap_or_default();
-                assert!(
-                    header.starts_with(&format!("{resource}  (")),
-                    "{query}: find says {line}, and ls reads {listed}"
-                );
-                // A resource row names the resource itself: `ls` there
-                // answers it as the kind find wrote. An action row names the
-                // resource it runs the action on, with the action after `#`:
-                // `ls` there lists that action.
-                if let Some((_, action)) = path.split_once('#') {
-                    let action = action.split('(').next().unwrap_or(action);
-                    assert!(
-                        listed.lines().skip(1).any(|held| {
-                            held.strip_prefix('#')
-                                .is_some_and(|held| held.split(['(', ' ']).next() == Some(action))
-                        }),
-                        "{query}: find says {line}, and ls there lists no #{action}: {listed}"
-                    );
-                } else {
-                    assert!(
-                        header.ends_with(&format!("({})", rest.split("  ").next().unwrap_or(rest))),
-                        "{query}: find says {line}, and ls reads {listed}"
-                    );
-                }
-            }
-        }
-    });
-}
-
-/// Finding a note by its title, or the action that makes one, costs the
-/// rows that name it however many notes the notebook holds.
-#[test]
-fn a_find_costs_what_it_finds_in_a_notebook_of_any_size() {
-    for query in ["Todo", "new note"] {
-        let find = json!({"query": query, "app": "notes"});
-        let small = work_of(&Notes::new(true).live(), "tilo_find", &find);
-        let large = work_of(&Notes::new(true).live().with_notes(30), "tilo_find", &find);
-        eprintln!("find {query}: {small:?} at 2 notes, {large:?} at 32");
-        assert_eq!(small.2, large.2, "{query} finds the same");
-        assert_eq!(
-            (small.0, small.1),
-            (large.0, large.1),
-            "{query}: queries and rows at 2 notes against 32"
-        );
-    }
-    let (text, _) = run(tool(
-        &agent(&Notes::new(true).live().with_notes(30)),
-        "tilo_find",
-        json!({"query": "Todo", "app": "notes"}),
-    ));
-    assert!(
-        text.lines()
-            .any(|line| line == "notes/Notebook/Todo  notes.notebook.pages"),
-        "the note is named by the path its listing names it: {text}"
-    );
-}
-
-/// An app from before a name could be asked under a parent answers it
-/// about its top level: the door reads the level instead, and the read
-/// still finds the note.
-#[test]
-fn a_read_in_an_app_that_names_only_its_top_level_reads_the_level() {
-    let host = Notes::new(true).live().with_notes(3);
-    *host.names_parents.lock().unwrap() = false;
-    let (text, failed) = run(tool(
-        &agent(&host),
-        "tilo_read",
-        json!({"path": "notes/Notebook/Todo"}),
-    ));
-    assert!(!failed, "{text}");
-    assert!(text.starts_with("# Todo\n"), "{text}");
 }
 
 /// A task host that answers the one thing a listing asks of it: the catalogue of what the apps
@@ -2565,65 +2883,6 @@ fn tilolang_kind(host: &Notes) -> Notes {
     live
 }
 
-/// A name read off an `ls` row walks back to that resource: a listing prints a tilolang
-/// resource's type the way a program types it (`notes.Note`), and that name is one
-/// `tilo_ls`, `tilo_read` and `tilo_do` take back to the resource the row showed. Only the
-/// Todo page is published under that kind, so the name means one resource.
-#[test]
-fn a_name_read_off_a_listing_walks_back_to_its_resource() {
-    let host = tilolang_kind(&Notes::new(true));
-    let server = agent(&host)
-        .with_agent_run("task:1", "Tidy the notes")
-        .with_task_hosts(Some(CatalogueHost::new(tilolang_notes_catalogue())));
-    let live_todo = host.id(&Notes::live_key(TODO));
-    run(async {
-        let (listed, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
-        assert!(!failed, "{listed}");
-        // The row prints its type as a program types it, not as the app publishes it.
-        let row = listed
-            .lines()
-            .find(|line| line.starts_with("Todo/"))
-            .unwrap_or_else(|| panic!("the note is listed: {listed}"));
-        assert_eq!(
-            row.split_once("  ")
-                .map(|(name, rest)| (name, rest.split("  ").next().unwrap_or(rest))),
-            Some(("Todo/", "notes.Note")),
-            "the row prints its type as a program types it: {listed}"
-        );
-
-        // The type name read off that row is a path: it names the resource the row showed.
-        let path = "notes/notes.Note";
-        let (here, failed) = tool(&server, "tilo_ls", json!({"path": path})).await;
-        assert!(!failed, "{path} reads: {here}");
-        assert!(
-            here.lines()
-                .next()
-                .unwrap_or_default()
-                .ends_with("(notes.Note)"),
-            "the path walks back: {here}"
-        );
-
-        // A program form names the resource a `tilo_do` acts on: the note's own action runs.
-        let (done, failed) = tool(
-            &server,
-            "tilo_do",
-            json!({"path": format!("{path}#rename"), "args": {"title": "Renamed"}}),
-        )
-        .await;
-        assert!(!failed, "{done}");
-        let invoked = host.invoked();
-        let (resource, action, arguments) = invoked.last().unwrap();
-        assert_eq!(*resource, live_todo);
-        assert_eq!(action, "rename");
-        assert_eq!(*arguments, json!({"title": "Renamed"}));
-
-        // And the resource a `tilo_read` reads.
-        let (read, failed) = tool(&server, "tilo_read", json!({"path": path})).await;
-        assert!(!failed, "{path} reads: {read}");
-        assert!(read.starts_with("# Todo\n"), "the note's own body: {read}");
-    });
-}
-
 /// A tool call that asks for typed answers, with `meta` merged into
 /// `so.tilo.mcp`: its `structuredContent`, and whether it is an error.
 async fn typed<H: ActionHost + Send + Sync + 'static>(
@@ -2671,323 +2930,6 @@ async fn answer<H: ActionHost + Send + Sync + 'static>(
         "{name} answered no typed value: {reply}"
     );
     (structured, result["isError"].as_bool().unwrap_or_default())
-}
-
-/// Every agent tool answers typed when its call asks, and the text a model
-/// reads is the same as before.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one test walks every tool's typed answer in one place, so a missing one is caught"
-)]
-fn every_agent_tool_answers_typed_when_its_call_asks() {
-    let host = Notes::new(true);
-    run(async {
-        // A listing: what it is, its own actions, and a row per resource.
-        let (apps, failed) = answer(&agent(&host), "tilo_ls", json!({})).await;
-        assert!(!failed, "{apps}");
-        assert_eq!(
-            (apps["path"].as_str(), apps["kind"].as_str()),
-            (Some("apps"), Some("apps"))
-        );
-        assert_eq!(apps["rows"][0]["name"], "notes");
-        assert_eq!(apps["rows"][0]["kind"], "app");
-        assert_eq!(apps["rows"][0]["state"], "running");
-        assert_eq!(apps["rows"][0]["has_children"], true);
-
-        let (listing, failed) = answer(&agent(&host), "tilo_ls", json!({"path":"notes"})).await;
-        assert!(!failed, "{listing}");
-        assert_eq!(listing["path"], "notes");
-        let rows = listing["rows"].as_array().unwrap();
-        let todo = rows
-            .iter()
-            .find(|row| row["name"] == "Todo")
-            .expect("the note is a row");
-        assert_eq!(todo["path"], "notes/Todo");
-        assert_eq!(todo["kind"], "notes.page");
-        assert_eq!(todo["has_children"], true);
-        // One resource's own actions, with what each takes.
-        let (note, failed) = answer(&agent(&host), "tilo_ls", json!({"path":"notes/Todo"})).await;
-        assert!(!failed, "{note}");
-        let rename = note["actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["id"] == "rename")
-            .unwrap_or_else(|| panic!("the note's rename is an action: {note}"));
-        assert_eq!(rename["label"], "Rename note");
-        assert_eq!(rename["params"][0]["name"], "title");
-        assert_eq!(rename["kind"], "undoable");
-
-        // A read is its typed answer ([`ResourceRead`]).
-        let (note, failed) = answer(&agent(&host), "tilo_read", json!({"path":"notes/Todo"})).await;
-        assert!(!failed, "{note}");
-        assert_eq!(note["fields"]["title"], "Todo");
-
-        // An action: what it ran, its id, and what it answered.
-        let (ran, failed) = answer(
-            &agent(&host),
-            "tilo_do",
-            json!({"path":"notes/Todo/body#append-paragraph","args":{"text":"x"}}),
-        )
-        .await;
-        assert!(!failed, "{ran}");
-        assert_eq!(ran["status"], "ok");
-        assert_eq!(ran["path"], "notes/Todo/body#append-paragraph");
-        assert_eq!(ran["result"], json!({"block":"b9","note":null}));
-        let id = ran["invocation_id"]
-            .as_str()
-            .expect("the call names its invocation");
-
-        // Its status answers the same shape.
-        let (status, failed) =
-            answer(&agent(&host), "tilo_status", json!({"invocation_id": id})).await;
-        assert!(!failed, "{status}");
-        assert_eq!(status["status"], "ok");
-        assert_eq!(status["invocation_id"], id);
-
-        // A refusal: the app's code, its message, and what would work.
-        let (refused, failed) = answer(
-            &agent(&host),
-            "tilo_do",
-            json!({"path":"notes/Todo#rename","args":{}}),
-        )
-        .await;
-        assert!(failed, "{refused}");
-        assert_eq!(refused["status"], "failed");
-        assert_eq!(refused["error"]["code"], "invalid_arguments");
-        assert!(
-            refused["error"]["next_steps"][0]
-                .as_str()
-                .is_some_and(|step| step.contains("tilo_ls notes/Todo")),
-            "{refused}"
-        );
-        assert_eq!(refused["action"]["id"], "rename");
-
-        // Several actions: one step each, in order.
-        let (batch, failed) = answer(
-            &agent(&host),
-            "tilo_do",
-            json!({"calls":[
-                {"path":"notes/Todo/body#append-paragraph","args":{"text":"a"}},
-                {"path":"notes/Todo/body#append-paragraph","args":{"text":"b"}},
-            ]}),
-        )
-        .await;
-        assert!(!failed, "{batch}");
-        assert_eq!(batch["status"], "ok");
-        assert_eq!(batch["steps"].as_array().unwrap().len(), 2);
-        assert_eq!(
-            batch["steps"][1]["result"],
-            json!({"block":"b9","note":null})
-        );
-        assert!(batch["steps"][0]["invocation_id"].is_string());
-
-        // A search: hits by the paths the other tools take.
-        let (found, failed) = answer(&agent(&host), "tilo_find", json!({"query":"todo"})).await;
-        assert!(!failed, "{found}");
-        assert_eq!(found["query"], "todo");
-        assert!(
-            found["hits"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|hit| hit["path"]
-                    .as_str()
-                    .is_some_and(|path| path.ends_with("/Todo"))),
-            "{found}"
-        );
-
-        // A program: what it printed and the steps of the task's history.
-        let (program, failed) =
-            answer(&agent(&host), "tilo", json!({"program":"history task"})).await;
-        assert!(!failed, "{program}");
-        assert_eq!(program["status"], "ok");
-        assert!(program["steps"].is_array(), "{program}");
-    });
-}
-
-/// A group of calls naming one run is one undo step, attributed to the run's
-/// name, and `undo task` takes it back.
-#[test]
-fn a_run_groups_its_calls_into_one_undo_step() {
-    let host = Notes::new(true);
-    run(async {
-        let server = agent(&host);
-        for text in ["a", "b"] {
-            let (ran, failed) = typed(
-                &server,
-                "tilo_do",
-                json!({"path":"notes/Todo/body#append-paragraph","args":{"text":text}}),
-                json!({"id":"fill-jane","title":"Fill Jane's application"}),
-            )
-            .await;
-            assert!(!failed, "{ran}");
-        }
-        // A call of another run is another step.
-        let (ran, failed) = typed(
-            &server,
-            "tilo_do",
-            json!({"path":"notes/Todo/body#append-paragraph","args":{"text":"c"}}),
-            json!({"id":"other"}),
-        )
-        .await;
-        assert!(!failed, "{ran}");
-
-        let contexts = host.contexts();
-        let steps: Vec<_> = contexts
-            .iter()
-            .filter(|(_, _, action)| action == "append-paragraph")
-            .collect();
-        assert_eq!(steps.len(), 3, "{contexts:?}");
-        assert!(steps[0].0.is_some(), "a call joins an undo step");
-        assert_eq!(steps[0].0, steps[1].0, "one run is one step");
-        assert_ne!(steps[0].0, steps[2].0, "another run is another step");
-        assert_eq!(
-            steps[0].1.as_deref(),
-            Some("Fill Jane's application"),
-            "the run is named as its caller named it"
-        );
-
-        // `undo task` takes the run back, in the app it changed.
-        let (undone, failed) = answer(&server, "tilo", json!({"program":"history task"})).await;
-        assert!(!failed, "{undone}");
-        assert!(
-            undone["steps"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|step| step["program"] == "run \"Fill Jane's application\""
-                    && step["apps"][0] == "so.tilo.notes"),
-            "{undone}"
-        );
-        let (taken, failed) = answer(&server, "tilo", json!({"program":"undo task"})).await;
-        assert!(!failed, "{taken}");
-        let undone = host
-            .invoked()
-            .into_iter()
-            .filter(|(resource, action, arguments)| {
-                resource == "tl:so.tilo.notes"
-                    && action == "undo"
-                    && arguments == &json!({"steps": 1})
-            })
-            .count();
-        assert_eq!(undone, 2, "each run's step is taken back once, in the app");
-    });
-}
-
-/// A watch tells what happened since its cursor: a change to a resource and
-/// who made it, a run that finished, and who is in the workspace.
-#[test]
-fn a_watch_answers_changes_runs_and_presence() {
-    let host = Notes::new(true);
-    run(async {
-        let server = agent(&host);
-        let (start, failed) = answer(&server, "tilo_watch", json!({"wait_ms": 50})).await;
-        assert!(!failed, "{start}");
-        assert_eq!(
-            start["events"],
-            json!([]),
-            "a watch with no cursor starts now"
-        );
-        let cursor = start["cursor"].as_str().unwrap().to_owned();
-
-        host.changed(json!({
-            "change": "c1a2",
-            "sentence": "added \"Buy milk\"",
-            "by": "Ada",
-            "time_ms": 1_730_000_000_000_i64,
-        }));
-        host.people(Some(vec![
-            tilo_actions::remote::Here {
-                who: "person:ada".into(),
-                name: "Ada".into(),
-                kind: "person".into(),
-            },
-            tilo_actions::remote::Here {
-                who: "agent:claude".into(),
-                name: "Claude Code".into(),
-                kind: "agent".into(),
-            },
-        ]));
-        let (ran, failed) = answer(
-            &server,
-            "tilo_do",
-            json!({"path":"notes/Todo/body#append-paragraph","args":{"text":"x"}}),
-        )
-        .await;
-        assert!(!failed, "{ran}");
-
-        let (watched, failed) = answer(
-            &server,
-            "tilo_watch",
-            json!({"path":"notes/Todo","cursor":cursor,"wait_ms":50}),
-        )
-        .await;
-        assert!(!failed, "{watched}");
-        let events = watched["events"].as_array().unwrap();
-        let change = events
-            .iter()
-            .find(|event| event["kind"] == "change")
-            .expect("the change is told");
-        assert_eq!(change["path"], "notes/Todo");
-        assert_eq!(change["change"], "c1a2");
-        assert_eq!(change["sentence"], "added \"Buy milk\"");
-        assert_eq!(change["by"], "Ada");
-        let run = events
-            .iter()
-            .find(|event| event["kind"] == "run")
-            .unwrap_or_else(|| panic!("the run is told: {watched}"));
-        assert_eq!(run["invocation_id"], ran["invocation_id"]);
-        assert_eq!(run["path"], "notes/Todo/body#append-paragraph");
-        assert_eq!(run["phase"], "succeeded");
-        assert_eq!(run["run"], "MCP agent");
-        let here = events
-            .iter()
-            .find(|event| event["kind"] == "presence")
-            .expect("who is here is told");
-        assert!(
-            here["here"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|member| member["name"] == "Claude Code" && member["kind"] == "agent"),
-            "{here}"
-        );
-        // Everything it told is told once.
-        let (again, failed) = answer(
-            &server,
-            "tilo_watch",
-            json!({"path":"notes/Todo","cursor":watched["cursor"].as_str().unwrap(),"wait_ms":50}),
-        )
-        .await;
-        assert!(!failed, "{again}");
-        assert_eq!(again["events"], json!([]), "{again}");
-    });
-}
-
-/// An action the person must allow: a typed call answers `pending` with the
-/// ask rather than holding the caller, and the text a model reads is what it
-/// was.
-#[test]
-fn an_action_the_person_must_allow_answers_pending_with_the_ask() {
-    let host = Notes::new(true).asking();
-    run(async {
-        let server = agent(&host);
-        let (asked, failed) = answer(&server, "tilo_do", json!({"path":"notes/Todo#delete"})).await;
-        assert!(!failed, "pending is not an error: {asked}");
-        assert_eq!(asked["status"], "pending");
-        let id = asked["invocation_id"]
-            .as_str()
-            .expect("the call names its invocation");
-        assert_eq!(asked["ask"]["invocation_id"], id);
-        assert_eq!(asked["path"], "notes/Todo#delete");
-
-        // A model still reads the refusal's words.
-        let (text, failed) = tool(&server, "tilo_do", json!({"path":"notes/Todo#delete"})).await;
-        assert!(failed, "{text}");
-        assert!(text.contains("requires confirmation"), "{text}");
-    });
 }
 #[path = "mcp_status_tests.rs"]
 mod status;

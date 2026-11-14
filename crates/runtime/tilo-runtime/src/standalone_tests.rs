@@ -653,197 +653,236 @@ fn holds_the_persons_own_documents_store(session: &Standalone) {
     assert!(personal.rows().is_empty(), "nothing is written yet");
 }
 
-#[test]
-fn a_new_profile_bootstraps_one_owned_workspace_and_keeps_it() {
-    let temp = tempfile::tempdir().unwrap();
-    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-    let workspace_id = workspace.workspace();
-    assert!(!workspace_id.is_empty());
-    workspace.adopt("person-1").unwrap();
-    let path = temp.path().join(STANDALONE_WORKSPACE);
+tilo_test_env::scenario! {
+    fn a_profile_keeps_its_own_workspace_and_serves_the_desktop_sessions_read_only;
+
+    phase a_new_profile_bootstraps_one_owned_workspace_and_keeps_it;
     {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-    }
-    let reopened = ProfileWorkspace::open(temp.path()).unwrap();
-    assert_eq!(reopened.workspace(), workspace_id);
-    let tree = reopened.snapshot().unwrap();
-    assert_eq!(tree.workspaces.len(), 1);
-    assert_eq!(
-        tree.workspaces[0].owner().map(String::as_str),
-        Some("person-1")
-    );
-    assert_eq!(tree.workspaces[0].strips.len(), 1);
-    // An owner is kept, not replaced by the next actor.
-    reopened.adopt("person-2").unwrap();
-    let tree = ProfileWorkspace::open(temp.path())
-        .unwrap()
-        .snapshot()
-        .unwrap();
-    assert_eq!(
-        tree.workspaces[0].owner().map(String::as_str),
-        Some("person-1")
-    );
-    let mut seen = None;
-    WorkspaceMembership::with_workspace(&reopened, &tree.workspaces[0].id(), &mut |workspace| {
-        seen = Some(workspace.name.clone());
-    });
-    assert_eq!(
-        seen.as_deref(),
-        Some(""),
-        "a workspace nobody named keeps no name of its own"
-    );
-    WorkspaceMembership::with_workspace(&reopened, &WorkspaceId::new(), &mut |_| {
-        panic!("no such workspace");
-    });
-}
-
-#[test]
-fn the_first_desk_a_profile_starts_on_is_the_one_its_next_start_reads() {
-    let temp = tempfile::tempdir().unwrap();
-    let first = ProfileWorkspace::open(temp.path()).unwrap();
-    let made = first.snapshot().unwrap();
-    assert!(!first.workspace().is_empty());
-    // The next start reads the desk this one made, rather than making another
-    // with fresh ids: what the person opened stays in the workspace it was
-    // opened in.
-    let second = ProfileWorkspace::open(temp.path()).unwrap();
-    let read = second.snapshot().unwrap();
-    assert_eq!(second.workspace(), first.workspace());
-    assert_eq!(read.workspaces.len(), 1, "one desk, not one per start");
-    assert_eq!(read.workspaces[0].slot, made.workspaces[0].slot);
-    assert_eq!(
-        read.workspaces[0].strips[0].id,
-        made.workspaces[0].strips[0].id
-    );
-}
-
-#[test]
-fn effect_records_persist_in_the_profile() {
-    let temp = tempfile::tempdir().unwrap();
-    let tree = bootstrap();
-    let workspace_id = tree.workspaces[0].id().to_string();
-    std::fs::write(
-        temp.path().join(STANDALONE_WORKSPACE),
-        serde_json::to_vec_pretty(&tree).unwrap(),
-    )
-    .unwrap();
-    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-
-    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
-    let context = tilo_actions::ActionContext::default().with_described(
-        tilo_actions::Described::new(tilo_actions::Did::verb(
-            tilo_actions::ActionKey::new("org.tilo.Mail", "mail.message", "send"),
-            [],
-        )),
-    );
-    let status = tilo_actions::EffectReceiptStatus::Succeeded;
-    for _ in 0..2 {
-        workspace
-            .record_effect(
-                &workspace_id,
-                invocation,
-                "agent-1",
-                context.clone(),
-                status.clone(),
-            )
-            .unwrap();
-    }
-    assert!(
-        workspace
-            .record_effect(
-                &WorkspaceId::new().to_string(),
-                invocation,
-                "a",
-                context,
-                status
-            )
-            .is_err()
-    );
-
-    let reopened = ProfileWorkspace::open(temp.path())
-        .unwrap()
-        .snapshot()
-        .unwrap();
-    let workspace = &reopened.workspaces[0];
-    assert_eq!(
-        workspace.effect_receipts.len(),
-        1,
-        "a retry keeps one receipt"
-    );
-    assert_eq!(workspace.effect_receipts[0].invocation, invocation);
-}
-
-#[test]
-fn the_desktop_sessions_workspace_refuses_records() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut tree = bootstrap();
-    tree.workspaces[0].set_owner("desktop-owner".to_owned());
-    let workspace_id = tree.workspaces[0].id().to_string();
-    let bytes = serde_json::to_vec_pretty(&tree).unwrap();
-    let desktop = temp.path().join(DESKTOP_WORKSPACE);
-    std::fs::write(&desktop, &bytes).unwrap();
-    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-
-    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
-    let status = tilo_actions::EffectReceiptStatus::Succeeded;
-    assert!(
-        workspace
-            .record_effect(
-                &workspace_id,
-                invocation,
-                "agent-1",
-                tilo_actions::ActionContext::default(),
-                status
-            )
-            .is_err()
-    );
-    assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
-    let tree = workspace.snapshot().unwrap();
-    assert!(tree.workspaces[0].effect_receipts.is_empty());
-    assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
-}
-
-#[test]
-fn the_desktop_sessions_workspace_is_served_read_only() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut tree = bootstrap();
-    tree.workspaces[0].set_owner("desktop-owner".to_owned());
-    let mut value = serde_json::to_value(&tree).unwrap();
-    // The desktop session's file carries its native layout and fields.
-    value["schema_version"] = json!(3);
-    value["native_authority"] = json!({"kept": true});
-    let bytes = serde_json::to_vec_pretty(&value).unwrap();
-    let desktop = temp.path().join(DESKTOP_WORKSPACE);
-    std::fs::write(&desktop, &bytes).unwrap();
-    let workspace = ProfileWorkspace::open(temp.path()).unwrap();
-    assert_eq!(workspace.workspace(), tree.workspaces[0].id().to_string());
-    workspace.adopt("someone-else").unwrap();
-    assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
-    assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
-    assert_eq!(
-        workspace.snapshot().unwrap().workspaces[0]
-            .owner()
-            .map(String::as_str),
-        Some("desktop-owner")
-    );
-
-    // Without an owner there is nobody this host could act as.
-    value["workspaces"][0]["policy"]["owner"] = serde_json::Value::Null;
-    std::fs::write(&desktop, serde_json::to_vec(&value).unwrap()).unwrap();
-    assert!(
-        ProfileWorkspace::open(temp.path())
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+        let workspace_id = workspace.workspace();
+        assert!(!workspace_id.is_empty());
+        workspace.adopt("person-1").unwrap();
+        let path = temp.path().join(STANDALONE_WORKSPACE);
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let reopened = ProfileWorkspace::open(temp.path()).unwrap();
+        assert_eq!(reopened.workspace(), workspace_id);
+        let tree = reopened.snapshot().unwrap();
+        assert_eq!(tree.workspaces.len(), 1);
+        assert_eq!(
+            tree.workspaces[0].owner().map(String::as_str),
+            Some("person-1")
+        );
+        assert_eq!(tree.workspaces[0].strips.len(), 1);
+        // An owner is kept, not replaced by the next actor.
+        reopened.adopt("person-2").unwrap();
+        let tree = ProfileWorkspace::open(temp.path())
             .unwrap()
-            .adopt("someone-else")
-            .is_err()
-    );
-    // A file that is not a workspace tree fails closed.
-    std::fs::write(&desktop, b"not json").unwrap();
-    assert_eq!(
-        ProfileWorkspace::open(temp.path()).err().unwrap().kind(),
-        io::ErrorKind::InvalidData
-    );
+            .snapshot()
+            .unwrap();
+        assert_eq!(
+            tree.workspaces[0].owner().map(String::as_str),
+            Some("person-1")
+        );
+        let mut seen = None;
+        WorkspaceMembership::with_workspace(&reopened, &tree.workspaces[0].id(), &mut |workspace| {
+            seen = Some(workspace.name.clone());
+        });
+        assert_eq!(
+            seen.as_deref(),
+            Some(""),
+            "a workspace nobody named keeps no name of its own"
+        );
+        WorkspaceMembership::with_workspace(&reopened, &WorkspaceId::new(), &mut |_| {
+            panic!("no such workspace");
+        });
+    }
+
+    phase the_first_desk_a_profile_starts_on_is_the_one_its_next_start_reads;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let first = ProfileWorkspace::open(temp.path()).unwrap();
+        let made = first.snapshot().unwrap();
+        assert!(!first.workspace().is_empty());
+        // The next start reads the desk this one made, rather than making another
+        // with fresh ids: what the person opened stays in the workspace it was
+        // opened in.
+        let second = ProfileWorkspace::open(temp.path()).unwrap();
+        let read = second.snapshot().unwrap();
+        assert_eq!(second.workspace(), first.workspace());
+        assert_eq!(read.workspaces.len(), 1, "one desk, not one per start");
+        assert_eq!(read.workspaces[0].slot, made.workspaces[0].slot);
+        assert_eq!(
+            read.workspaces[0].strips[0].id,
+            made.workspaces[0].strips[0].id
+        );
+    }
+
+    phase effect_records_persist_in_the_profile;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let tree = bootstrap();
+        let workspace_id = tree.workspaces[0].id().to_string();
+        std::fs::write(
+            temp.path().join(STANDALONE_WORKSPACE),
+            serde_json::to_vec_pretty(&tree).unwrap(),
+        )
+        .unwrap();
+        let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
+        let context = tilo_actions::ActionContext::default().with_described(
+            tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new("org.tilo.Mail", "mail.message", "send"),
+                [],
+            )),
+        );
+        let status = tilo_actions::EffectReceiptStatus::Succeeded;
+        for _ in 0..2 {
+            workspace
+                .record_effect(
+                    &workspace_id,
+                    invocation,
+                    "agent-1",
+                    context.clone(),
+                    status.clone(),
+                )
+                .unwrap();
+        }
+        assert!(
+            workspace
+                .record_effect(
+                    &WorkspaceId::new().to_string(),
+                    invocation,
+                    "a",
+                    context,
+                    status
+                )
+                .is_err()
+        );
+
+        let reopened = ProfileWorkspace::open(temp.path())
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        let workspace = &reopened.workspaces[0];
+        assert_eq!(
+            workspace.effect_receipts.len(),
+            1,
+            "a retry keeps one receipt"
+        );
+        assert_eq!(workspace.effect_receipts[0].invocation, invocation);
+    }
+
+    phase the_desktop_sessions_workspace_refuses_records;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let mut tree = bootstrap();
+        tree.workspaces[0].set_owner("desktop-owner".to_owned());
+        let workspace_id = tree.workspaces[0].id().to_string();
+        let bytes = serde_json::to_vec_pretty(&tree).unwrap();
+        let desktop = temp.path().join(DESKTOP_WORKSPACE);
+        std::fs::write(&desktop, &bytes).unwrap();
+        let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(1));
+        let status = tilo_actions::EffectReceiptStatus::Succeeded;
+        assert!(
+            workspace
+                .record_effect(
+                    &workspace_id,
+                    invocation,
+                    "agent-1",
+                    tilo_actions::ActionContext::default(),
+                    status
+                )
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
+        let tree = workspace.snapshot().unwrap();
+        assert!(tree.workspaces[0].effect_receipts.is_empty());
+        assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
+    }
+
+    phase the_desktop_sessions_workspace_is_served_read_only;
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let mut tree = bootstrap();
+        tree.workspaces[0].set_owner("desktop-owner".to_owned());
+        let mut value = serde_json::to_value(&tree).unwrap();
+        // The desktop session's file carries its native layout and fields.
+        value["schema_version"] = json!(3);
+        value["native_authority"] = json!({"kept": true});
+        let bytes = serde_json::to_vec_pretty(&value).unwrap();
+        let desktop = temp.path().join(DESKTOP_WORKSPACE);
+        std::fs::write(&desktop, &bytes).unwrap();
+        let workspace = ProfileWorkspace::open(temp.path()).unwrap();
+        assert_eq!(workspace.workspace(), tree.workspaces[0].id().to_string());
+        workspace.adopt("someone-else").unwrap();
+        assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
+        assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
+        assert_eq!(
+            workspace.snapshot().unwrap().workspaces[0]
+                .owner()
+                .map(String::as_str),
+            Some("desktop-owner")
+        );
+
+        // Without an owner there is nobody this host could act as.
+        value["workspaces"][0]["policy"]["owner"] = serde_json::Value::Null;
+        std::fs::write(&desktop, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(
+            ProfileWorkspace::open(temp.path())
+                .unwrap()
+                .adopt("someone-else")
+                .is_err()
+        );
+        // A file that is not a workspace tree fails closed.
+        std::fs::write(&desktop, b"not json").unwrap();
+        assert_eq!(
+            ProfileWorkspace::open(temp.path()).err().unwrap().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    phase the_desktop_sessions_workspace_takes_no_grants_here;
+    {
+        use tilo_action_broker::app_actions::AppActionConsent;
+        let temp = tempfile::tempdir().unwrap();
+        let mut tree = bootstrap();
+        tree.workspaces[0].set_owner("owner".to_owned());
+        let workspace_id = tree.workspaces[0].id().to_string();
+        let bytes = serde_json::to_vec_pretty(&tree).unwrap();
+        let desktop = temp.path().join(DESKTOP_WORKSPACE);
+        std::fs::write(&desktop, &bytes).unwrap();
+        let grants = grants(ProfileWorkspace::open(temp.path()).unwrap(), temp.path());
+
+        assert!(
+            tilo_rt::app()
+                .handle()
+                .block_on(grants.record(
+                    &consent(&workspace_id, "owner"),
+                    app_grant(&workspace_id),
+                    AppActionConsent::Always
+                ))
+                .is_err()
+        );
+        grants.revoke(&workspace_id, "owner-1");
+        assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
+        assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
+        assert!(
+            grants.workspace.snapshot().unwrap().workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .all(|grant| grant.id.as_str() != "caller-opens-target"),
+            "nothing recorded here"
+        );
+    }
 }
 
 fn consent(
@@ -942,88 +981,57 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     );
 }
 
-#[test]
-fn the_desktop_sessions_workspace_takes_no_grants_here() {
-    use tilo_action_broker::app_actions::AppActionConsent;
-    let temp = tempfile::tempdir().unwrap();
-    let mut tree = bootstrap();
-    tree.workspaces[0].set_owner("owner".to_owned());
-    let workspace_id = tree.workspaces[0].id().to_string();
-    let bytes = serde_json::to_vec_pretty(&tree).unwrap();
-    let desktop = temp.path().join(DESKTOP_WORKSPACE);
-    std::fs::write(&desktop, &bytes).unwrap();
-    let grants = grants(ProfileWorkspace::open(temp.path()).unwrap(), temp.path());
+tilo_test_env::scenario! {
+    fn the_runtimes_certificates_govern_its_own_workspace_while_their_origin_lives;
 
-    assert!(
-        tilo_rt::app()
-            .handle()
-            .block_on(grants.record(
-                &consent(&workspace_id, "owner"),
-                app_grant(&workspace_id),
-                AppActionConsent::Always
-            ))
-            .is_err()
-    );
-    grants.revoke(&workspace_id, "owner-1");
-    assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
-    assert!(!temp.path().join(STANDALONE_WORKSPACE).exists());
-    assert!(
-        grants.workspace.snapshot().unwrap().workspaces[0]
-            .policy
-            .grants
-            .iter()
-            .all(|grant| grant.id.as_str() != "caller-opens-target"),
-        "nothing recorded here"
-    );
-}
+    phase the_runtime_governs_only_its_own_workspace_from_its_own_device;
+    {
+        use tilo_action_broker::certificate_authority::CertificateAuthority as _;
+        let workspace = uuid::Uuid::from_u128(7);
+        let origin = Arc::new(
+            tilo_action_broker::policy_clock::OwnerPolicyClock::new()
+                .unwrap()
+                .new_origin(),
+        );
+        let certificates = Certificates {
+            workspace: workspace.to_string(),
+            device: [2; 32],
+            policy_time: origin.capture().unwrap(),
+            joined: std::sync::Weak::new(),
+        };
+        assert!(certificates.governs(workspace, Some(&[2; 32])));
+        assert!(certificates.governs(workspace, None));
+        assert!(!certificates.governs(workspace, Some(&[3; 32])));
+        assert!(!certificates.governs(uuid::Uuid::from_u128(8), None));
+        drop(certificates);
+    }
 
-#[test]
-fn the_runtime_governs_only_its_own_workspace_from_its_own_device() {
-    use tilo_action_broker::certificate_authority::CertificateAuthority as _;
-    let workspace = uuid::Uuid::from_u128(7);
-    let origin = Arc::new(
-        tilo_action_broker::policy_clock::OwnerPolicyClock::new()
+    phase runtime_original_policy_time_cannot_survive_origin_retirement;
+    {
+        use tilo_action_broker::certificate_authority::CertificateAuthority as _;
+        let origin = Arc::new(
+            tilo_action_broker::policy_clock::OwnerPolicyClock::new()
+                .unwrap()
+                .new_origin(),
+        );
+        let certificates = Certificates {
+            workspace: uuid::Uuid::from_u128(7).to_string(),
+            device: [2; 32],
+            policy_time: origin.capture().unwrap(),
+            joined: std::sync::Weak::new(),
+        };
+        let retained = certificates.policy_time().unwrap().unwrap();
+        origin.invalidate();
+        assert!(certificates.policy_time().is_err());
+        drop(certificates);
+        assert!(retained.now_ns().is_err());
+        let replacement = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
             .unwrap()
-            .new_origin(),
-    );
-    let certificates = Certificates {
-        workspace: workspace.to_string(),
-        device: [2; 32],
-        policy_time: origin.capture().unwrap(),
-        joined: std::sync::Weak::new(),
-    };
-    assert!(certificates.governs(workspace, Some(&[2; 32])));
-    assert!(certificates.governs(workspace, None));
-    assert!(!certificates.governs(workspace, Some(&[3; 32])));
-    assert!(!certificates.governs(uuid::Uuid::from_u128(8), None));
-    drop(certificates);
-}
-
-#[test]
-fn runtime_original_policy_time_cannot_survive_origin_retirement() {
-    use tilo_action_broker::certificate_authority::CertificateAuthority as _;
-    let origin = Arc::new(
-        tilo_action_broker::policy_clock::OwnerPolicyClock::new()
-            .unwrap()
-            .new_origin(),
-    );
-    let certificates = Certificates {
-        workspace: uuid::Uuid::from_u128(7).to_string(),
-        device: [2; 32],
-        policy_time: origin.capture().unwrap(),
-        joined: std::sync::Weak::new(),
-    };
-    let retained = certificates.policy_time().unwrap().unwrap();
-    origin.invalidate();
-    assert!(certificates.policy_time().is_err());
-    drop(certificates);
-    assert!(retained.now_ns().is_err());
-    let replacement = tilo_action_broker::policy_clock::OwnerPolicyClock::new()
-        .unwrap()
-        .new_origin();
-    assert!(!retained.same_origin(&replacement.capture().unwrap()));
-    assert!(
-        retained.now_ns().is_err(),
-        "a new runtime clock cannot revive the original custody"
-    );
+            .new_origin();
+        assert!(!retained.same_origin(&replacement.capture().unwrap()));
+        assert!(
+            retained.now_ns().is_err(),
+            "a new runtime clock cannot revive the original custody"
+        );
+    }
 }
