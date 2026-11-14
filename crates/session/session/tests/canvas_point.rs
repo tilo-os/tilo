@@ -8,7 +8,7 @@
 //! its handle shows only while the pointer is over it.
 //!
 //! Every step is the production path: the person's pointer and keys through the compositor, the
-//! shell's own views and actions, the session's arrangement. What is stubbed: the agent's model;
+//! shell's own views and actions, the session's layout. What is stubbed: the agent's model;
 //! its step is invoked as the agent, exactly as the broker invokes it for the turn.
 
 #![cfg(target_os = "linux")]
@@ -615,7 +615,7 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
         .invoke_in_turn(
             "agent:assistant",
             (CONVERSATION, "q2"),
-            "shell:arrangement",
+            "shell:layout",
             "place",
             &serde_json::json!({"resource": notes}),
         )
@@ -691,7 +691,7 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
     session
         .invoke_with_actor(
             "agent:assistant",
-            "shell:arrangement",
+            "shell:layout",
             "place",
             &serde_json::json!({
                 "resource": notes,
@@ -713,7 +713,7 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
     session
         .invoke_with_actor(
             "agent:assistant",
-            "shell:arrangement",
+            "shell:layout",
             "show",
             &serde_json::json!({
                 "place": format!("shell:place:{}", turn.key),
@@ -784,7 +784,7 @@ fn the_whole_conversation_stands_beside_its_turn() {
     // the shell places what a composed view opened.
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place",
             serde_json::json!({"resource": "chat.workspace.channels:c_ask"})
                 .as_object()
@@ -1295,7 +1295,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
         .invoke_in_turn(
             "agent:assistant",
             (CONVERSATION, "q1"),
-            "shell:arrangement",
+            "shell:layout",
             "place",
             &serde_json::json!({"resource": notes}),
         )
@@ -1337,7 +1337,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
     session
         .invoke_with_actor(
             "agent:assistant",
-            "shell:arrangement",
+            "shell:layout",
             "place",
             &serde_json::json!({"resource": mails, "x": 6000, "y": 5000}),
         )
@@ -1471,8 +1471,8 @@ fn open_mail_places_the_whole_app() {
 }
 
 /// An agent showing the person's mail stands the same thing typing "my mails" does: the
-/// arrangement's `place` of Mail's root with no view places the inbox's list, never Mail's window
-/// (canvas.md §4, §7). The step is the arrangement's own published `place`, as the broker runs an
+/// layout's `place` of Mail's root with no view places the inbox's list, never Mail's window
+/// (canvas.md §4, §7). The step is the layout's own published `place`, as the broker runs an
 /// agent's.
 #[test]
 fn placing_mails_root_without_a_view_stands_the_message_list() {
@@ -1487,7 +1487,7 @@ fn placing_mails_root_without_a_view_stands_the_message_list() {
         .expect("Mail's root is published");
     session
         .invoke(
-            "shell:arrangement",
+            "shell:layout",
             "place",
             serde_json::json!({ "resource": mail }).as_object().unwrap(),
         )
@@ -1591,7 +1591,7 @@ fn two_asks_in_quick_succession_each_fill_their_own_rectangle() {
             .invoke_in_turn(
                 "agent:assistant",
                 (CONVERSATION, message),
-                "shell:arrangement",
+                "shell:layout",
                 "place",
                 &serde_json::json!({ "resource": resource }),
             )
@@ -1645,7 +1645,7 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
         .invoke_in_turn(
             "agent:assistant",
             (CONVERSATION, "q7"),
-            "shell:arrangement",
+            "shell:layout",
             "place",
             &serde_json::json!({ "resource": notes }),
         )
@@ -1671,7 +1671,7 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
         .invoke_in_turn(
             "agent:assistant",
             (CONVERSATION, "q7"),
-            "shell:arrangement",
+            "shell:layout",
             "place",
             &serde_json::json!({ "resource": mails }),
         )
@@ -1721,7 +1721,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
         .invoke_in_turn(
             "agent:assistant",
             (CONVERSATION, "q9"),
-            "shell:arrangement",
+            "shell:layout",
             "place",
             &serde_json::json!({ "resource": notes }),
         )
@@ -1750,7 +1750,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
         .invoke_in_turn(
             "agent:assistant",
             (CONVERSATION, "q10"),
-            "shell:arrangement",
+            "shell:layout",
             "place",
             &serde_json::json!({ "resource": mails }),
         )
@@ -1823,7 +1823,7 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
         .invoke_in_turn(
             "agent:assistant",
             (CONVERSATION, "q21"),
-            "shell:arrangement",
+            "shell:layout",
             "place",
             &serde_json::json!({ "resource": mails }),
         )

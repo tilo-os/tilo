@@ -287,7 +287,7 @@ seams:
   - *Resource:* a mailbox, a message, a channel page. The workspace's arrangement is a resource
     too: which resources are open, through which view, where.
   - *Action:* putting the mailbox on the canvas as its `inbox` view at a point is an action on
-    the **arrangement** (`shell:arrangement`, `arranging.tl`), never on the mailbox. Archiving
+    the **arrangement** (`shell:layout`, `layout.tl`), never on the mailbox. Archiving
     a message is an action on the message. A person, an agent and the REPL show things the same
     way, attributed and undoable. No resource carries an action that shows it.
   - *View:* the canvas is a view over the arrangement. For each entry it calls the entry's view
@@ -469,7 +469,7 @@ type Pin     { place: Place, x: Int, y: Int, width: Int, height: Int }
 - **Every shell answers two actions under the same names**: `place(resource, view)` and
   `close(place)` on its arrangement root. The checker enforces this for a package of category
   `.shell`. The session publishes the person's active shell's arrangement root as
-  `shell:arrangement`, so the agent, the REPL and a reference's activation call
+  `shell:layout`, so the agent, the REPL and a reference's activation call
   `arrangement.place(r, view:)` without knowing which shell is up. When an app maps a new
   window, the session calls `place` with that `Window`, so every window gets a place in whatever
   shell is active.

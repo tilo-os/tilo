@@ -62,7 +62,7 @@ A place on the canvas is a resource's view, drawn as itself:
 ## 4. The agent has the whole session
 
 The agent acts through the same published actions the person's gestures and the REPL run:
-placing, moving, resizing and closing content (`shell:arrangement`), finding resources, every
+placing, moving, resizing and closing content (`shell:layout`), finding resources, every
 app's actions on its resources, and the desk style itself. It changes how the canvas works by
 writing the person's own style package (shell.md §6, "Make it mine"): its views are tilolang the
 agent edits, checks and installs, and the desk switches to it. Every step is attributed and

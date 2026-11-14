@@ -105,7 +105,7 @@ fn session_actions() -> Vec<ExportedAction> {
     let int = |name: &'static str| ActionParam::optional(name, ParamType::Integer, name);
     let arrangement = |action: &str, label: &str, params| {
         on(
-            "shell:arrangement",
+            "shell:layout",
             "shell",
             "The person's arrangement",
             action,
@@ -342,12 +342,12 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
         first.contains(&format!(
             "Show a resource: `invoke` with `\\\"operation\\\": \\\"{}\\\"` and \
              `\\\"parameters\\\": {{\\\"resource\\\": …}}`",
-            session_op(SESSION_PEER, "shell:arrangement", "place")
+            session_op(SESSION_PEER, "shell:layout", "place")
         )),
         "{first}"
     );
     for (resource, action) in [
-        ("shell:arrangement", "open"),
+        ("shell:layout", "open"),
         ("tl:so.tilo.shell:root-v", "show-style"),
         (INBOX_PLACE, "close"),
         (NOTE_PLACE, "position"),
@@ -383,7 +383,7 @@ fn the_first_turn_leads_with_the_canvas_and_leaves_host_programs_out() {
     // The canvas' steps are not summarised a second time among the applications'.
     let applications = &first[applications_at.unwrap()..];
     assert!(
-        !applications.contains("shell:arrangement#place"),
+        !applications.contains("shell:layout#place"),
         "{applications}"
     );
 }
@@ -406,7 +406,7 @@ fn a_question_is_answered_in_words_and_its_view_placed_beside_the_conversation()
             turn(
                 &[canvas_invoke(
                     SESSION_PEER,
-                    "shell:arrangement",
+                    "shell:layout",
                     "place",
                     &serde_json::json!({"resource": TASKS}),
                     Some(reply),
@@ -448,7 +448,7 @@ fn showing_arranging_and_restyling_are_one_step_each() {
             "show me my mails",
             canvas_invoke(
                 SESSION_PEER,
-                "shell:arrangement",
+                "shell:layout",
                 "place",
                 &serde_json::json!({"resource": MAIL}),
                 Some("Your inbox is beside us."),

@@ -6,7 +6,7 @@
 //! tools, ahead of every application's own operations.
 //!
 //! Nothing here names an application. The canvas is what the session publishes
-//! on its arrangement's resources (`shell:arrangement`, a `shell:place:<key>`
+//! on its layout's resources (`shell:layout`, a `shell:place:<key>`
 //! per place, a `shell:strip:<key>` per strip) and on the record of how the
 //! person views it (the desk style package's `Viewing`, whose `show_style` is
 //! the style switch, and every action a style package publishes there).
@@ -17,13 +17,13 @@ use std::fmt::Write as _;
 use super::Revealed;
 use crate::surface::{Catalogue, Offer};
 
-/// The arrangement's own resource, whose `place` shows a resource on the canvas.
-pub const ARRANGEMENT: &str = "shell:arrangement";
+/// The layout's own resource, whose `place` shows a resource on the canvas.
+pub const LAYOUT: &str = "shell:layout";
 /// The action that shows a resource on the canvas.
 pub const PLACE: &str = "place";
-/// The prefix of every resource of the arrangement: itself, its record, and
+/// The prefix of every resource of the layout: itself, its record, and
 /// each row, strip and place.
-const ARRANGEMENT_PREFIX: &str = "shell:";
+const SHELL_PREFIX: &str = "shell:";
 /// The kind of the record a person's view of their desk is kept in: the desk
 /// style it shows, and the strip in front. Its actions switch the style.
 const VIEWING_KIND_SUFFIX: &str = ".Viewing";
@@ -46,7 +46,7 @@ pub fn is_host_app(offer: &Offer) -> bool {
 /// close, move, focus, pin, resize) or switching how the canvas is shown.
 pub fn is_canvas_step(offer: &Offer) -> bool {
     let resource = offer.address().resource.as_str();
-    (resource.starts_with(ARRANGEMENT_PREFIX) && offer.descriptor.address.action != "place-found")
+    (resource.starts_with(SHELL_PREFIX) && offer.descriptor.address.action != "place-found")
         || (offer.descriptor.resource_kind.starts_with("tl.")
             && offer
                 .descriptor
@@ -64,7 +64,7 @@ pub fn conversation_of(task_id: &str) -> Option<&str> {
 }
 
 /// A resource there is to show on the canvas: a tilolang app's record, not
-/// one of the arrangement's own and not one of the desk style's.
+/// one of the layout's own and not one of the desk style's.
 fn showable(offer: &Offer) -> bool {
     let resource = offer.address().resource.as_str();
     resource.starts_with(TILOLANG_PREFIX)
@@ -87,7 +87,7 @@ pub fn canvas_section(
     let Some(place) = catalogue
         .offers
         .iter()
-        .find(|offer| offer.address().resource == ARRANGEMENT && offer.address().action == PLACE)
+        .find(|offer| offer.address().resource == LAYOUT && offer.address().action == PLACE)
     else {
         return String::new();
     };
@@ -106,7 +106,7 @@ pub fn canvas_section(
         place.id()
     );
 
-    // The arranging steps on the arrangement itself and on how it is shown,
+    // The layout steps on the layout itself and on how it is shown,
     // then each place standing now with its own.
     let (places, steps): (Vec<&Offer>, Vec<&Offer>) = catalogue
         .offers

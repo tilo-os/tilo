@@ -193,7 +193,7 @@ fn an_operation_written_inside_parameters_is_named_back_and_the_task_finishes() 
                 &[(
                     tools::INVOKE,
                     serde_json::json!({"parameters": {
-                        "operation": "broker:so.tilo.session:shell:arrangement#place",
+                        "operation": "broker:so.tilo.session:shell:layout#place",
                         "resource": "tl:so.tilo.lang.mail:root",
                     }}),
                 )],

@@ -450,7 +450,7 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     5. a restart keeps every place (shot 3).
 
     The words the send carried are the session's own test (`session/tests/canvas_ask.rs`: the
-    entry's submit is `shell:arrangement#place-found`, and what it sends is `session:send-to`'s
+    entry's submit is `shell:layout#place-found`, and what it sends is `session:send-to`'s
     reading); what only a live session shows is here: the conversation the person reads the
     answer in stands on the canvas, at the free space beside them."""
     steps: dict = {}
