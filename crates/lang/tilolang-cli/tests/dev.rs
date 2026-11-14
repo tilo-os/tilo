@@ -227,7 +227,7 @@ fn write_program(path: &Path, note: &str, starts: &Path) {
 
 tilo_test_env::scenario! {
     #[cfg(unix)]
-    fn a_save_or_a_new_runtime_reaches_the_running_window;
+    fn a_new_runtime_restarts_the_window;
 
     phase a_new_build_of_the_runtime_replaced_by_rename_restarts_the_window;
     // A new build of the runtime reaches the window: the file is published beside the old one and
@@ -261,6 +261,11 @@ tilo_test_env::scenario! {
         dev.wait_report("the app runs on the new runtime");
         dev.stop();
     }
+}
+
+tilo_test_env::scenario! {
+    #[cfg(unix)]
+    fn a_save_in_the_package_reaches_the_app;
 
     phase a_saved_source_replaced_by_rename_reaches_the_app;
     // A saved source reaches the app: the editor's file is renamed over the package's, and the loop
