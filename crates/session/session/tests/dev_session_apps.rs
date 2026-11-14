@@ -22,18 +22,56 @@
 use tilo_app_launch::SessionEnvironment;
 use tilo_session::apps::Apps;
 
+/// A development session's app store, as `tilolang run` leaves it: every app of `apps/tl` built
+/// into a signed `.tapp` and installed, in a home of its own, with the store named for the
+/// session the way the environment names it.
+///
+/// Building the apps is what costs here (about five seconds of this unoptimised binary), and
+/// everything below only reads what the install left: so the store is installed once, and the
+/// four readings of it are the four parts of one test instead of four installs.
+struct DevSession {
+    home: tilo_test_env::TestHome,
+    /// The session's app store.
+    store: std::path::PathBuf,
+    /// The apps the install answered, by package id.
+    installed: Vec<String>,
+}
+
+impl DevSession {
+    fn installed() -> Self {
+        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let store = home.data().join("tilo-apps");
+        let runtime = home.state().join("tilolang");
+        std::fs::create_dir_all(&runtime).expect("a directory for the build");
+        let installed = crate::common::dev_apps::install(&store, &runtime);
+        home.env().set("TILO_APPS_DATA_DIR", &store);
+        Self {
+            home,
+            store,
+            installed,
+        }
+    }
+}
+
+/// What a development session's install leaves, read four ways from the one store it installed:
+/// every part reads the store and none writes it, so a later part sees exactly what the first
+/// one did. (The third stands a launcher's stand-in beside the store, in the home, which no
+/// other part reads.)
+#[test]
+fn a_dev_sessions_apps_are_installed_packages_it_plans_and_seeds_from() {
+    let session = DevSession::installed();
+    every_dev_session_app_is_an_installed_package(&session);
+    a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with(&session);
+    the_installed_apps_connectors_are_planned_from_their_manifests(&session);
+    the_installed_apps_scenarios_fill_the_sessions_records(&session);
+}
+
 /// Every app of the development session is a package the session's store holds, built from
 /// `apps/tl` and installed with its signed manifest.
-#[test]
-fn every_dev_session_app_is_an_installed_package() {
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let store = home.data().join("tilo-apps");
-    let runtime = home.state().join("tilolang");
-    std::fs::create_dir_all(&runtime).expect("a directory for the build");
-    let installed = crate::common::dev_apps::install(&store, &runtime);
-    home.env().set("TILO_APPS_DATA_DIR", &store);
-    for app in installed {
-        let found = app_catalogue::apps::read_one_from_env(&app)
+fn every_dev_session_app_is_an_installed_package(session: &DevSession) {
+    for app in &session.installed {
+        let app = app.as_str();
+        let found = app_catalogue::apps::read_one_from_env(app)
             .ok()
             .flatten()
             .unwrap_or_else(|| panic!("{app} is installed in the session's store"));
@@ -62,21 +100,15 @@ fn every_dev_session_app_is_an_installed_package() {
 /// and the comments on a task or a note are kept in that app's own record, as a package an app
 /// uses that is not installed keeps its records in it. Installed as an app of its own it would
 /// be a second record the threads are read from, and an app a person could open.
-#[test]
-fn a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with() {
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let store = home.data().join("tilo-apps");
-    let runtime = home.state().join("tilolang");
-    std::fs::create_dir_all(&runtime).expect("a directory for the build");
-    let installed = crate::common::dev_apps::install(&store, &runtime);
-    home.env().set("TILO_APPS_DATA_DIR", &store);
-    let catalog = package_store::Catalog::at(&store, None);
+fn a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with(session: &DevSession) {
+    let installed = &session.installed;
+    let catalog = package_store::Catalog::at(&session.store, None);
     let apps: Vec<String> = app_catalogue::apps::read(&catalog)
         .expect("the store's apps read")
         .into_iter()
         .map(|app| app.app_id.to_string())
         .collect();
-    for app in &installed {
+    for app in installed {
         assert!(apps.contains(app), "{app} is installed: {apps:?}");
     }
     assert!(
@@ -105,15 +137,8 @@ fn a_dev_session_installs_the_apps_and_not_the_parts_they_are_made_with() {
 /// `youtube` connector and Mail's `imap` one are the apps' own declarations, and their launch is
 /// the app's own with the origin named (`--tilolang-connector <origin>`) and nothing a window
 /// has — no display, no render node, nothing open — which the launcher refuses beside it.
-#[test]
-fn the_installed_apps_connectors_are_planned_from_their_manifests() {
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let store = home.data().join("tilo-apps");
-    let runtime = home.state().join("tilolang");
-    std::fs::create_dir_all(&runtime).expect("a directory for the build");
-    crate::common::dev_apps::install(&store, &runtime);
-    home.env().set("TILO_APPS_DATA_DIR", &store);
-
+fn the_installed_apps_connectors_are_planned_from_their_manifests(session: &DevSession) {
+    let home = &session.home;
     // The launcher a connector's launch is planned through: what it would start is read from the
     // plan, so a stand-in that starts nothing is the launcher here.
     let launcher = tilo_test_env::stand_in(home.home().join("tilo-launcher"), "exit 0\n")
@@ -166,6 +191,18 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests() {
             );
         }
     }
+    // A package that is no app of the session's has no connector to plan: Discussion rides in the
+    // apps made with it and is installed as none, so asking for one of its own is refused by name
+    // rather than planned from a manifest the store does not hold.
+    let part = "so.tilo.lang.discussion";
+    assert_eq!(
+        apps.plan_connector(part, "imap", &workspace)
+            .map(|planned| planned.args)
+            .err()
+            .as_deref(),
+        Some(format!("{part} is not installed here").as_str()),
+        "a connector is planned only for an app the store holds"
+    );
 }
 
 /// Every kind the resources `resources` publish, at any depth.
@@ -183,16 +220,8 @@ fn kinds_of(
 /// holds the channels its subscriptions feed shows, and Notes its notebook, so what those apps draw
 /// and what a search's answer lands beside are there. Nothing here seeds after the fact: the
 /// scenario is the package's own, run once as a development session runs it.
-#[test]
-fn the_installed_apps_scenarios_fill_the_sessions_records() {
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let store = home.data().join("tilo-apps");
-    let scratch = home.state().join("tilolang");
-    std::fs::create_dir_all(&scratch).expect("a directory for the build");
-    crate::common::dev_apps::install(&store, &scratch);
-    home.env().set("TILO_APPS_DATA_DIR", &store);
-
-    let apps = crate::common::seeded_apps_in(&store);
+fn the_installed_apps_scenarios_fill_the_sessions_records(session: &DevSession) {
+    let apps = crate::common::seeded_apps_in(&session.store);
     let mut kinds = std::collections::BTreeSet::new();
     kinds_of(&crate::common::published(&apps), &mut kinds);
     for kind in [
