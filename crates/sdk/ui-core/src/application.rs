@@ -1084,6 +1084,7 @@ impl ApplicationDefinition {
             )));
         }
         context.validate_restore(&restore)?;
+        let shows_existing = matches!(target, LaunchTarget::Record { .. });
         let records = context.records.clone();
         let record = context.record.clone();
         let construction = context.construction.clone();
@@ -1109,6 +1110,18 @@ impl ApplicationDefinition {
                 let (view, application) = component
                     .capture_local_pair_owned(&component.local_view)
                     .map_err(LaunchError::Restore)?;
+                // The window remembers the record it shows from the start, not only once it
+                // closes: a session that ends without closing it (a crash, power lost) brings it
+                // back on this record rather than on a new, empty one.
+                if shows_existing
+                    && let Err(error) = component.context.views.save(
+                        &component
+                            .context
+                            .envelope(view.clone(), application.clone()),
+                    )
+                {
+                    tracing::warn!(%error, "the window's record is not remembered");
+                }
                 component.local_view = view;
                 component.application_view = application;
             }

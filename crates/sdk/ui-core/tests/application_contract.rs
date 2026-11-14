@@ -117,6 +117,23 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
     }
 }
 
+/// A window opened on a record remembers it before it ever closes: a session that ends with the
+/// window still open (a crash, power lost) brings it back on that record, not on a new one.
+#[test]
+fn a_window_remembers_its_record_before_it_closes() {
+    let host = ProbeHost::new();
+    let mut first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
+    let checkout = first.record().clone();
+    drop(first.close());
+    let _open = instantiate_probe(&host, 12, existing(&checkout), RestoreInput::None).unwrap();
+    let saved = host
+        .views
+        .load(12)
+        .unwrap()
+        .expect("the window's record is remembered");
+    assert_eq!(saved.record_id, checkout.id.as_str());
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"

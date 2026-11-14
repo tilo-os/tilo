@@ -175,8 +175,14 @@ fn attach(editor: &mut Editor, cx: &ViewCx<Document>) {
         .content()
         .unwrap_or_else(tilo_content::ContentStore::memory);
     editor.model_mut().set_content_store(content);
-    if let Some(path) = cx.launch_arguments().first() {
-        editor.show_record_of(std::path::PathBuf::from(path));
+    // The file the window shows: the one its record is of, which a window brought back after a
+    // restart still names, else the one its launch named.
+    let file = cx
+        .record_id()
+        .and_then(RecordId::file_path)
+        .or_else(|| cx.launch_arguments().first().map(std::path::PathBuf::from));
+    if let Some(path) = file {
+        editor.show_record_of(path);
     }
     editor.follow_personal_dictionary();
     if cx.mode() == RunMode::Live {
