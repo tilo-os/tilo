@@ -251,7 +251,7 @@ impl WindowGraphics {
     /// EGL's default swap interval is 1, and on Wayland that makes a swap wait for the desktop's
     /// frame callback for the frame before. A desktop sends none to a window it does not show
     /// (hidden, another workspace, not mapped yet), so the swap blocks the session's whole loop:
-    /// its clients, its input, its agent door and its control socket all stop after the first
+    /// its clients, its input, its MCP server and its control socket all stop after the first
     /// frame. The session paces its own frames (`next_frame`, one refresh apart, and none while
     /// idle), so the swap only hands the frame over. The interval belongs to the surface, so each
     /// new one is set.

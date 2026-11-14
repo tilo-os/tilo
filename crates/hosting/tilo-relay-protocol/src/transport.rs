@@ -637,7 +637,7 @@ pub enum Envelope {
     /// History names its runs), answered through [`Self::AgentRunAnswer`]
     /// with the asker's `request_id`. Said before anything else: every
     /// request the session makes from then on is the agent's, for the person,
-    /// within what bounds an agent, and the person's agent door lists the run
+    /// within what bounds an agent, and the person's MCP server lists the run
     /// while the session lasts.
     AgentRun { request_id: u64, label: String },
 

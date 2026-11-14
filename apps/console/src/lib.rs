@@ -23,7 +23,7 @@ use ui::framework::{Publishes, RecordEnv};
 use ui::prelude::*;
 use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::RemoteActionTarget;
-use ui::tilo_actions::remote::agent_door as door;
+use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ListRow, NavItem, NavSection};
 
@@ -154,7 +154,7 @@ impl Nav {
 #[derive(Clone)]
 pub(crate) struct Reads {
     pub(crate) runs: Query<wire::Runs>,
-    pub(crate) door: Query<door::Door>,
+    pub(crate) door: Query<mcp_server::Server>,
 }
 
 impl Reads {
@@ -168,7 +168,7 @@ impl Reads {
     }
 }
 
-/// A door the app reads and asks through: the workspaces' history or the agent door.
+/// A door the app reads and asks through: the workspaces' history or the MCP server.
 #[derive(Clone)]
 pub(crate) struct Doors(RecordEnv<Console>);
 
@@ -186,9 +186,9 @@ impl Doors {
         self.ask(wire::target(action), wire::argument(value));
     }
 
-    /// Ask the agent door for `action` with `value` as its argument.
+    /// Ask the MCP server for `action` with `value` as its argument.
     pub(crate) fn door(&self, action: &str, value: &impl serde::Serialize) {
-        self.ask(door::target(action), door::argument(value));
+        self.ask(mcp_server::target(action), mcp_server::argument(value));
     }
 
     /// Follow the history's read `action` with `value` as its argument.
@@ -199,9 +199,10 @@ impl Doors {
         self.0.query(wire::target(action), wire::argument(value))
     }
 
-    /// Follow the agent door.
-    pub(crate) fn follow_door(&self) -> Query<door::Door> {
-        self.0.query(door::target(door::DOOR), InvokeArgument::None)
+    /// Follow the MCP server.
+    pub(crate) fn follow_door(&self) -> Query<mcp_server::Server> {
+        self.0
+            .query(mcp_server::target(mcp_server::SERVER), InvokeArgument::None)
     }
 
     /// Ask for the link to `resource`, as the framework's `share-link` hands it out:
@@ -345,7 +346,9 @@ impl ResourceApp for App {
                     let runs = listed.runs();
                     let door = door_read.answer().with(|read| match read {
                         Arrival::Ready(door) => door.clone(),
-                        Arrival::Pending { .. } | Arrival::Failed(_) => door::Door::default(),
+                        Arrival::Pending { .. } | Arrival::Failed(_) => {
+                            mcp_server::Server::default()
+                        }
                     });
                     let mut rows = agents::live_runs(&runs);
                     let agent_names = runs

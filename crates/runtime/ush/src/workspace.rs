@@ -113,7 +113,7 @@ impl std::fmt::Display for EnvironmentId {
 }
 
 /// The workspace the environment `environment` belongs to, as its record
-/// says: for `agent-door` and anything else outside a session that has an
+/// says: for `mcp-server` and anything else outside a session that has an
 /// environment's id ([`ENVIRONMENT_ENV`]) and must know its workspace.
 /// `store` is the runtime's store ([`Store::discover`]).
 ///

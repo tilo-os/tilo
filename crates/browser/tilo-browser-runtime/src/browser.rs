@@ -305,14 +305,14 @@ impl Config {
             .unwrap_or_else(|| ui::collaboration::local_user_id().key())
     }
 
-    /// Carry the agent-door asks of `session` to the person's host, through
+    /// Carry the mcp-server asks of `session` to the person's host, through
     /// this mount's peer; the grants they take back there, for the page.
-    fn agent_door(
+    fn mcp_server(
         &self,
         session: &tilo_desktop_surface::session::DesktopSession,
         woken: &Arc<std::sync::atomic::AtomicBool>,
-    ) -> crate::agent_door::Revoked {
-        crate::agent_door::serve(session, self.peer, &self.workspace, self.mcp.clone(), woken)
+    ) -> crate::mcp_server::Revoked {
+        crate::mcp_server::serve(session, self.peer, &self.workspace, self.mcp.clone(), woken)
     }
 }
 
@@ -604,7 +604,7 @@ pub(crate) struct Desktop {
     openings: tilo_desktop_surface::session::Openings,
     /// The agent grants the person took back at their door since the last
     /// frame, for the page to sign.
-    revoked: crate::agent_door::Revoked,
+    revoked: crate::mcp_server::Revoked,
     /// What the session asked of the page for its windows, still open.
     asks: session_asks::Asks,
     /// The session's search, which the shell's palette asks beyond the shell's own windows and

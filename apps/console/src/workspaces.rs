@@ -3,7 +3,7 @@
 
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::tilo_actions::remote::agent_door as door;
+use ui::tilo_actions::remote::mcp_server;
 use ui::widget::{ListRow, Section};
 
 use crate::{Console, Doors, Reads, ago, page, tr, trf};
@@ -30,10 +30,10 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
     }))
 }
 
-fn row(doors: &Doors, index: usize, workspace: &door::Workspace) -> Element {
+fn row(doors: &Doors, index: usize, workspace: &mcp_server::Workspace) -> Element {
     let by = match &workspace.made_by {
-        Some(door::Maker::Person) => Some(tr("console-workspace-made-by-you")),
-        Some(door::Maker::Agent { agent, .. }) => Some(trf(
+        Some(mcp_server::Maker::Person) => Some(tr("console-workspace-made-by-you")),
+        Some(mcp_server::Maker::Agent { agent, .. }) => Some(trf(
             "console-workspace-made-by",
             &[("agent", agent.clone().into())],
         )),

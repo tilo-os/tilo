@@ -44,7 +44,7 @@ pub struct SessionOptions {
     pub runs: Option<String>,
     pub editor: Option<Arc<runtime_portal::editor::Socket>>,
     pub terminal: Option<Arc<OwnedFd>>,
-    pub agent_door: Option<PathBuf>,
+    pub mcp_server: Option<PathBuf>,
     /// On a host that serves other people's workspaces: the workspace's
     /// own VM runs the session's programs, not a guest on this kernel
     /// ([`crate::hosted_vm`]). Set from the host's environment.
@@ -64,7 +64,7 @@ impl Default for SessionOptions {
                 .filter(|key| crate::runs::valid_key(key)),
             editor: None,
             terminal: None,
-            agent_door: None,
+            mcp_server: None,
             hosted_vm: crate::hosted_vm::HostedTarget::from_env(),
         }
     }
@@ -304,7 +304,7 @@ impl Session {
             resolver: None,
             terminal: None,
             control: None,
-            agent_door: self.opts.agent_door.clone(),
+            mcp_server: self.opts.mcp_server.clone(),
         })
     }
 
@@ -329,12 +329,12 @@ impl Session {
         }
         self.store.ensure()?;
         let resolved = self.resolve()?;
-        let door = crate::agent_door::open_for(
+        let door = crate::mcp_server::open_for(
             &self.store,
             &self.environment_id(&resolved.key),
             &resolved.environment,
         );
-        self.opts.agent_door = door.as_ref().map(|door| door.path().to_path_buf());
+        self.opts.mcp_server = door.as_ref().map(|door| door.path().to_path_buf());
         let session_dir = self.store.session_dir(&self.session_id);
         std::fs::create_dir_all(&session_dir)?;
         let outcome = self.run_guest(&resolved, &session_dir);
@@ -2381,7 +2381,7 @@ mod tests {
             .with_workspace(&files)
             .for_workspace(&w1);
         let resolved = session.resolve().unwrap();
-        let lease = crate::agent_door::open_at(
+        let lease = crate::mcp_server::open_at(
             &door,
             &session.store,
             &session.environment_id(&resolved.key),
@@ -2392,7 +2392,7 @@ mod tests {
 
         let primary = session_in(&dir.path().join("primary"));
         let primary_resolved = primary.resolve().unwrap();
-        let front = crate::agent_door::open_at(
+        let front = crate::mcp_server::open_at(
             &door,
             &primary.store,
             &primary.environment_id(&primary_resolved.key),
@@ -2407,7 +2407,7 @@ mod tests {
         assert_eq!(asked[1].environment, "personal/default");
         assert_eq!(asked[1].workspace, None);
 
-        session.opts.agent_door = Some(lease.path().to_path_buf());
+        session.opts.mcp_server = Some(lease.path().to_path_buf());
         let plan = session
             .plan(
                 &resolved,

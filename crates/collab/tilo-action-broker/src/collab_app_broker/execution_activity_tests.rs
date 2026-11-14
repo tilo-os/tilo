@@ -265,7 +265,7 @@ tilo_test_env::scenario! {
     // The person told the agent not to change the app: its change is refused
     // before the app hears of it, the action not offered to the agent at all.
     {
-        for door in agent_doors() {
+        for door in mcp_servers() {
             let (answered, heard) = agent_answered(tilo_action_policy::Answer::Deny, door);
             assert!(
                 matches!(
@@ -282,7 +282,7 @@ tilo_test_env::scenario! {
     // The person told the agent to ask first: its change waits for the
     // person's confirmation.
     {
-        for door in agent_doors() {
+        for door in mcp_servers() {
             let (answered, heard) = agent_answered(tilo_action_policy::Answer::Ask, door);
             assert!(
                 matches!(
@@ -298,7 +298,7 @@ tilo_test_env::scenario! {
     phase an_agents_change_the_person_allowed_runs;
     // The person allowed the agent the app's changes: its change runs.
     {
-        for door in agent_doors() {
+        for door in mcp_servers() {
             let (answered, heard) = agent_answered(tilo_action_policy::Answer::Allow, door);
             assert!(
                 matches!(answered, PendingPoll::Ready(Ok(_))),
@@ -1639,7 +1639,7 @@ fn agent_answered(
 /// The agents a person's answers bind: one the person's own device handed its
 /// session, and one inside a turn their message caused. An agent that no
 /// person's turn carries holds nothing.
-fn agent_doors() -> [fn(&str) -> Caller; 2] {
+fn mcp_servers() -> [fn(&str) -> Caller; 2] {
     [
         |workspace| {
             Caller::local_person("a1".repeat(32))

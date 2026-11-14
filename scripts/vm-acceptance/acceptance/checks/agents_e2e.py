@@ -443,13 +443,13 @@ def tool_answering(ctx, agent: Agent, name: str, arguments: dict, what: str) -> 
 # -- the sheet -------------------------------------------------------------------------------
 
 
-def seated(ctx) -> list[dict]:
+def agent_sessions(ctx) -> list[dict]:
     """The agents at the person's desk, as the desk lists them (the state dump's `agents`)."""
     return [a for a in ctx.state().get("agents") or [] if isinstance(a, dict)]
 
 
-def seated_keys(ctx) -> list[str]:
-    return sorted(a.get("key", "") for a in seated(ctx) if a.get("seat", True))
+def session_keys(ctx) -> list[str]:
+    return sorted(a.get("key", "") for a in agent_sessions(ctx) if a.get("stoppable", True))
 
 
 # -- the scenario ------------------------------------------------------------------------------
@@ -562,8 +562,8 @@ def admitted(ctx, res):
         agent.send("notifications/initialized", notify=True)
         agents[e["name"]] = agent
     res.metrics["sheets"] = {e["name"]: e["dialog"] for e in (one, two)}
-    keys = wait_until(lambda: (k if len(k := seated_keys(ctx)) >= 2 else None), 20, interval=0.5) or seated_keys(ctx)
-    res.metrics["seated"] = seated(ctx)
+    keys = wait_until(lambda: (k if len(k := session_keys(ctx)) >= 2 else None), 20, interval=0.5) or session_keys(ctx)
+    res.metrics["sessions"] = agent_sessions(ctx)
     for e in (one, two):
         want = f"{CLIENT}@{e['record'].lower()}#"
         mine = [k for k in keys if k.startswith(want)]
@@ -792,7 +792,7 @@ def asked_change(ctx, res):
                 print(json.dumps({k: row.get(k) for k in ("application", "room", "provider", "record",
                                                           "resource", "parent_resource", "operation")}),
                       flush=True)
-            journal(ctx, "agent door")
+            journal(ctx, "MCP server")
             problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]} "
                             f"(tilo_ls terminal: {seen[:500]!r})")
             continue
@@ -844,8 +844,8 @@ def always_allow(ctx, res):
     first = one["agent_id"]
     base, _, n = first.rpartition("#")
     second = f"{base}#{int(n) + 1}" if n.isdigit() else None
-    keys = wait_until(lambda: (k if second in (k := seated_keys(ctx)) else None), 20, interval=0.5) or seated_keys(ctx)
-    res.metrics["seated"] = keys
+    keys = wait_until(lambda: (k if second in (k := session_keys(ctx)) else None), 20, interval=0.5) or session_keys(ctx)
+    res.metrics["sessions"] = keys
     expect(second in keys and first in keys, f"the desk does not seat {first} and {second}: {keys}")
     scene["second"] = agent
 
@@ -859,7 +859,7 @@ def stop_one(ctx, res):
     invoke(ctx, provider, action, args, name="stop-agent")
     stopped = agents[two["name"]]
     ended = wait_until(lambda: any(l.get("e2e") == "eof" for l in stopped.lines()), 20, interval=0.5)
-    keys = seated_keys(ctx)
+    keys = session_keys(ctx)
     res.metrics["seated_after"] = keys
     stopped.keep()
     expect(ended, f"{two['name']}'s connection did not close on the person's Stop")

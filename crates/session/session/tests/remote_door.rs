@@ -252,7 +252,7 @@ impl ThisBox {
     fn shown(&self) -> Vec<String> {
         agent_sessions(&self.session)
             .into_iter()
-            .filter(|agent| agent["seat"] == true)
+            .filter(|agent| agent["stoppable"] == true)
             .map(|agent| agent["name"].as_str().unwrap_or_default().to_owned())
             .collect()
     }
@@ -261,7 +261,7 @@ impl ThisBox {
     fn session_of(&self, name: &str) -> String {
         agent_sessions(&self.session)
             .into_iter()
-            .find(|agent| agent["seat"] == true && agent["name"] == name)
+            .find(|agent| agent["stoppable"] == true && agent["name"] == name)
             .and_then(|agent| agent["key"].as_str().map(str::to_owned))
             .unwrap_or_else(|| panic!("no agent session called {name} works here"))
     }
@@ -333,7 +333,7 @@ impl Agent {
 fn agent_sessions(session: &Session) -> Vec<Value> {
     session
         .read("session:agents")
-        .and_then(|agents| agents.get("seated").and_then(Value::as_array).cloned())
+        .and_then(|agents| agents.get("sessions").and_then(Value::as_array).cloned())
         .unwrap_or_default()
 }
 
@@ -502,12 +502,12 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
     // an agent of theirs does: the setting's own verb.
     b.session
         .invoke(
-            "settings:settings.agent-door",
+            "settings:settings.mcp-server",
             "set-accept-own-devices",
             json!({"on": true}).as_object().unwrap(),
         )
         .expect("the setting is kept");
-    b.pump(|_| settings_store::agent_door::accepts_own_devices(&settings_store::load()));
+    b.pump(|_| settings_store::mcp_server::accepts_own_devices(&settings_store::load()));
 
     let agent = b.dial(&person.laptop, None).unwrap();
     agent.send(initialize());
@@ -1016,7 +1016,7 @@ const NOTEBOOK: &str = "notes.notebook";
 const NOTES_SURFACE: &[u8] = b"format = 2\n\n[[resources]]\nkind = \"notes.notebook\"\nlabel = \"Notebook\"\nversion = 1\nperson = true\n\n[[resources.verbs]]\nid = \"open\"\nkind = \"outside\"\n";
 
 /// What the run's question to the person is read as on the sheet.
-const RUN_QUESTION: &str = "session.run-question";
+const STEP_QUESTION: &str = "session.step-question";
 
 /// Another device of the person's computer's: a laptop their root certified, which their own store
 /// on this computer lists.
@@ -1148,7 +1148,7 @@ impl DeskWithNotes {
     fn set(&mut self, verb: &str, holds: fn(&serde_json::Map<String, Value>) -> bool) {
         self.session
             .invoke(
-                "settings:settings.agent-door",
+                "settings:settings.mcp-server",
                 verb,
                 json!({"on": true}).as_object().unwrap(),
             )
@@ -1401,7 +1401,7 @@ fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person()
     let mut shell = DeskWithNotes::start();
     shell.set(
         "set-accept-own-devices",
-        settings_store::agent_door::accepts_own_devices,
+        settings_store::mcp_server::accepts_own_devices,
     );
     let agent = shell
         .dial(&shell.laptop)
@@ -1420,7 +1420,7 @@ fn with_only_agents_from_other_devices_let_in_their_step_still_asks_the_person()
         "the person asked about the step",
         |_| !shell.questions.pending().is_empty(),
     );
-    assert_eq!(shell.asked(), [RUN_QUESTION], "the run's question is up");
+    assert_eq!(shell.asked(), [STEP_QUESTION], "the run's question is up");
     for _ in 0..200 {
         shell.session.step(Duration::from_millis(2)).expect("step");
     }
@@ -1464,11 +1464,11 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
     let mut shell = DeskWithNotes::start();
     shell.set(
         "set-accept-own-devices",
-        settings_store::agent_door::accepts_own_devices,
+        settings_store::mcp_server::accepts_own_devices,
     );
     shell.set(
         "set-act-without-asking",
-        settings_store::agent_door::acts_without_asking,
+        settings_store::mcp_server::acts_without_asking,
     );
     let agent = shell
         .dial(&shell.laptop)
@@ -1527,7 +1527,7 @@ fn with_their_steps_let_go_unasked_an_agent_from_another_device_acts_without_a_q
         "the person asked about its step",
         |_| !shell.questions.pending().is_empty(),
     );
-    assert_eq!(shell.asked(), [RUN_QUESTION], "its step is asked about");
+    assert_eq!(shell.asked(), [STEP_QUESTION], "its step is asked about");
     assert!(
         local.answers.try_recv().is_err(),
         "the program waits for the person"

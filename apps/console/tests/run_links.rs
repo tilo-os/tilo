@@ -15,7 +15,7 @@ use serde_json::json;
 use tilo_console::{App, ConsoleEffect};
 use ui::collaboration::{CollabEvent, CollabRequest};
 use ui::prelude::*;
-use ui::tilo_actions::remote::agent_door as door;
+use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
@@ -121,14 +121,14 @@ fn run() -> wire::AgentRun {
     }
 }
 
-fn the_door() -> door::Door {
-    door::Door {
+fn the_door() -> mcp_server::Server {
+    mcp_server::Server {
         endpoint: "https://mcp.example".into(),
-        grants: vec![door::Grant {
+        grants: vec![mcp_server::Grant {
             id: "g1".into(),
             agent: "Claude Code".into(),
             runs: Vec::new(),
-            ..door::Grant::default()
+            ..mcp_server::Grant::default()
         }],
         workspaces: Vec::new(),
     }
@@ -210,7 +210,7 @@ fn open() -> TestApp<App> {
 /// Answer `requests`' runs read with `runs` and its door read.
 fn answer_reads(app: &mut TestApp<App>, requests: &[InvokeRequest], runs: Vec<wire::AgentRun>) {
     let runs_read = find(requests, &wire::target(wire::RUNS));
-    let door_read = find(requests, &door::target(door::DOOR));
+    let door_read = find(requests, &mcp_server::target(mcp_server::SERVER));
     answer(
         app,
         runs_read.invocation,

@@ -223,7 +223,7 @@ impl AppBrokerState {
                 // silently downgrade a certified caller to actor-only ownership.
                 // A native host serves everyone through retained custody: a
                 // person through the seat's, an agent through its task run's
-                // admission (the session's agent door takes host steps in
+                // admission (the session's MCP server takes host steps in
                 // its run, as `task_run_host` does).
                 if self.services.local_person.is_some()
                     || self.services.native_certificates.is_some()

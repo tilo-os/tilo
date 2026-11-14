@@ -1,4 +1,4 @@
-//! The session's agent door as the REPL speaks to it: newline-delimited MCP JSON-RPC on the
+//! The session's MCP server as the REPL speaks to it: newline-delimited MCP JSON-RPC on the
 //! door's socket (`docs/runtime-mcp.md`, "Inside a Tilo session").
 //!
 //! The REPL acts as the person, once they admit it: every call passes the broker's gate as them,
@@ -84,7 +84,7 @@ impl Door {
     /// PATH`), by their decision made ahead of time.
     pub fn open(socket: &Path, say: &dyn Fn(&str)) -> Result<Self, String> {
         let mut lines = Lines::connect(socket)
-            .map_err(|error| format!("the session's agent door isn't available: {error}"))?;
+            .map_err(|error| format!("the session's MCP server isn't available: {error}"))?;
         // The REPL asks to act as the person: its lines are theirs, typed by them.
         lines.send(&json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",

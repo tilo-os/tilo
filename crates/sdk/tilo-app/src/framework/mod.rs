@@ -145,7 +145,7 @@
 //!   ([`RecordEnv::mode`]) and woken through [`SurfaceCx::waker`].
 //! * **Mounted in another process** — the shell hosting a terminal tab in
 //!   its own — the app is the same component, on a record the host opens
-//!   for it, publishing into the host's palette and agent door. What only
+//!   for it, publishing into the host's palette and MCP server. What only
 //!   the host can provide (the session's process supervisor) it lends
 //!   ([`HostContext::lend`](ui_core::application::HostContext::lend)); the
 //!   view takes it with [`RecordEnv::take_lent`] and otherwise uses its own.

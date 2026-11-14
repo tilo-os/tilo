@@ -3,7 +3,7 @@
 
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::tilo_actions::remote::agent_door as door;
+use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
@@ -88,16 +88,16 @@ pub(crate) fn live_run_at(runs: &[wire::AgentRun], resource: &str) -> Option<Liv
 #[derive(Clone, Default)]
 pub(crate) struct Seen {
     pub(crate) runs: wire::Runs,
-    pub(crate) door: door::Door,
+    pub(crate) door: mcp_server::Server,
 }
 
 impl Seen {
     /// The door's open run `run` is, with the grant it came in by: History names a run as
     /// the door does ("Claude Code #2").
-    pub(crate) fn open(&self, run: &wire::AgentRun) -> Option<door::RunRef> {
+    pub(crate) fn open(&self, run: &wire::AgentRun) -> Option<mcp_server::RunRef> {
         self.door
             .run(&run.agent.name)
-            .map(|(grant, open)| door::RunRef {
+            .map(|(grant, open)| mcp_server::RunRef {
                 grant: grant.id.clone(),
                 run: open.name.clone(),
             })
@@ -117,7 +117,7 @@ impl Seen {
     }
 
     /// The workspace `run` worked in, as the door lists it.
-    pub(crate) fn workspace(&self, run: &wire::AgentRun) -> Option<&door::Workspace> {
+    pub(crate) fn workspace(&self, run: &wire::AgentRun) -> Option<&mcp_server::Workspace> {
         let name = run.workspace.as_deref()?;
         self.door
             .workspaces
@@ -153,10 +153,10 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
 
 /// The door as far as it answered: nothing connected until it does, and nothing where no
 /// door is served.
-pub(crate) fn ready<E>(door: &Arrival<door::Door, E>) -> door::Door {
+pub(crate) fn ready<E>(door: &Arrival<mcp_server::Server, E>) -> mcp_server::Server {
     match door {
         Arrival::Ready(door) => door.clone(),
-        Arrival::Pending { .. } | Arrival::Failed(_) => door::Door::default(),
+        Arrival::Pending { .. } | Arrival::Failed(_) => mcp_server::Server::default(),
     }
 }
 
@@ -519,7 +519,7 @@ fn take_over_target(seen: &Seen, run: &wire::AgentRun) -> Option<Result<wire::Ta
 pub(crate) fn stop(doors: &Doors, seen: &Seen, run: &wire::AgentRun) -> bool {
     match seen.open(run).filter(|_| seen.working(run)) {
         Some(open) => {
-            doors.door(door::STOP, &open);
+            doors.door(mcp_server::STOP, &open);
             true
         }
         None => false,

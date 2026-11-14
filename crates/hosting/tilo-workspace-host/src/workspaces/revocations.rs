@@ -115,7 +115,7 @@ impl Workspaces {
             // The door holds only the host's own person's devices.
             if entry.user_public_key == host.cert.user_public_key {
                 self.inner
-                    .agent_door
+                    .mcp_server
                     .forget(&entry.revoked_device_public_key);
             }
         }

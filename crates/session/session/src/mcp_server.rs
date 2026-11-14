@@ -2301,7 +2301,7 @@ impl ActionHost for Host {
         request: &InvokeRequest,
     ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
         // An admitted agent's step is its session's to ask about: its person answers on this
-        // shell's sheet ([`crate::run_questions`]).
+        // shell's sheet ([`crate::step_questions`]).
         if let Some(agent) = &self.agent
             && !caller.acting().is_person()
         {

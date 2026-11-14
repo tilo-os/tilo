@@ -373,7 +373,7 @@ pub struct TrackerRun {
     /// none; `None` for a collaborator's run. Read through [`Self::delegation`].
     pub delegation: Option<Result<Vec<u8>, String>>,
     /// The other device of the starter's that the run's agent works from, for the run of an
-    /// agent door's connection that came from one: the device whose certificate the door
+    /// MCP server's connection that came from one: the device whose certificate the door
     /// verified. `None` for every other run, whose agent works on this device.
     pub origin: Option<tilo_actions::InvokerDevice>,
 }

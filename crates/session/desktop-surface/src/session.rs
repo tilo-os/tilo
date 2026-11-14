@@ -15,13 +15,13 @@
 //! in progress, then done or refused, exactly as with a broker.
 //! The session also serves the workspace's activity, as a native session's broker does
 //! (`activity`), and carries the person's own asks of what only they reach
-//! (their agent door, [`agent_door::PROVIDER`], and their devices,
+//! (their MCP server, [`mcp_server::PROVIDER`], and their devices,
 //! [`identity_admin::PROVIDER`]) to the door the desktop's host hands it for
 //! each ([`DesktopSession::serve_person_door`]): the person's host, on a page.
 
 mod activity;
 #[cfg(test)]
-mod agent_door_tests;
+mod mcp_server_tests;
 
 pub use activity::{ActivityAsk, ActivityReads, ActivityRequests, activity_requests};
 
@@ -34,9 +34,9 @@ use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHost, ActionHostError, Caller,
     CataloguePage, CatalogueQuery, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, Pending, ReceiptStatus,
-    SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, agent_door, application_provider,
-    application_provider_record, identity_admin, pending, person_accounts, person_models,
-    provider_workspace, session_actions, workspace_activity as wire,
+    SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, application_provider, application_provider_record,
+    identity_admin, mcp_server, pending, person_accounts, person_models, provider_workspace,
+    session_actions, workspace_activity as wire,
 };
 
 use tilo_lock::MutexRecover as _;
@@ -161,7 +161,7 @@ fn node_action(request: &InvokeRequest) -> Result<NodeAction, ActionHostError> {
 /// The providers only the person reaches, each served by a door the
 /// desktop's host hands the session ([`DesktopSession::serve_person_door`]).
 pub const PERSON_PROVIDERS: [&str; 4] = [
-    agent_door::PROVIDER,
+    mcp_server::PROVIDER,
     identity_admin::PROVIDER,
     // The person's mail accounts and model providers, which the host that
     // runs their workspace keeps: a page has no mail connection and no vault
@@ -282,8 +282,8 @@ impl DesktopSession {
             .cloned();
         let Some(door) = door else {
             return Pending::ready(Err(ActionHostError::Unavailable {
-                reason: if request.target.provider == agent_door::PROVIDER {
-                    "No agent door answers here".into()
+                reason: if request.target.provider == mcp_server::PROVIDER {
+                    "No MCP server answers here".into()
                 } else {
                     "Your devices can't be reached from here".into()
                 },
@@ -488,7 +488,7 @@ impl ActionHost for DesktopSession {
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         // Every open is answered whole at admission; what stays open is a view of the activity
-        // or of the agent door.
+        // or of the MCP server.
         if let Some(door) = self.door_of(id) {
             return door.observe(caller, id);
         }

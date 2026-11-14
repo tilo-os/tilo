@@ -97,7 +97,7 @@ profile_args() {
 # Each line of a build's output carries its name, as the builds interleave.
 label() { sed -u "s/^/$1: /"; }
 host_profile=nested
-# tilo-runtime-mcp is the agent's end of the session's agent door
+# tilo-runtime-mcp is the agent's end of the session's MCP server
 # (`tilo-runtime-mcp --connect`), so a check that drives the session as an
 # admitted agent runs against the staged build without building its own.
 host_bins=(tilo-session tilo-runtime-mcp tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle

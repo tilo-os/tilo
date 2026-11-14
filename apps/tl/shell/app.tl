@@ -193,7 +193,7 @@ view bar_part(part: BarPart) {
             }
         }
     } else if part.slot == .agent {
-        for a in device.agents.seated {
+        for a in device.agents.sessions {
             agent_chip(a)
         }
     } else if part.slot == .status and frames_style() {

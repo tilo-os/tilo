@@ -36,7 +36,7 @@ impl DesktopChrome {
     }
 
     /// What the overview of the person's Tilo shows below their workspaces: their hosts' answers
-    /// for their account, the agent door's, and who they are. Shown at once while it is open.
+    /// for their account, the MCP server's, and who they are. Shown at once while it is open.
     pub fn set_tilo(&mut self, tilo: crate::overview_tilo::TiloOverview) {
         if self.tilo == tilo {
             return;

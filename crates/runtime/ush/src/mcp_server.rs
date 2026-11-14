@@ -1,4 +1,4 @@
-//! The environment's own agent door: where a coding agent inside the guest reaches
+//! The environment's own MCP server: where a coding agent inside the guest reaches
 //! the desktop's actions (`tilo-runtime --connect`).
 //!
 //! The session's own door serves only programs outside every sandbox, so the
@@ -56,7 +56,7 @@ pub fn open_for(store: &Store, id: &str, environment: &Environment) -> Option<Le
 #[must_use]
 pub fn open_at(door: &Path, store: &Store, id: &str, environment: &Environment) -> Option<Lease> {
     if !door.exists() {
-        tracing::debug!(door = %door.display(), "ush: no session door; the guest has no agent door");
+        tracing::debug!(door = %door.display(), "ush: no session door; the guest has no MCP server");
         return None;
     }
     let workspace = workspace_of(store, id);
@@ -69,12 +69,12 @@ pub fn open_at(door: &Path, store: &Store, id: &str, environment: &Environment) 
                 environment = id,
                 workspace = lease.workspace(),
                 door = %lease.path().display(),
-                "ush: the environment's agent door is open"
+                "ush: the environment's MCP server is open"
             );
             Some(lease)
         }
         Err(error) => {
-            tracing::warn!(%error, environment = id, "ush: the session opened no agent door for this environment");
+            tracing::warn!(%error, environment = id, "ush: the session opened no MCP server for this environment");
             None
         }
     }
@@ -99,12 +99,12 @@ pub fn connect_main(args: &[String]) -> anyhow::Result<i32> {
         .filter(|door| door.is_absolute())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "this environment has no agent door: the desktop opens one as the environment starts"
+                "this environment has no MCP server: the desktop opens one as the environment starts"
             )
         })?;
     let stream = tilo_files::native::socket::connect(&door).map_err(|error| {
         anyhow::anyhow!(
-            "the environment's agent door, {}, does not answer: {error}",
+            "the environment's MCP server, {}, does not answer: {error}",
             door.display()
         )
     })?;
@@ -124,7 +124,7 @@ pub fn relay(
 ) -> std::io::Result<()> {
     let mut writer = stream.try_clone()?;
     std::thread::Builder::new()
-        .name("ush-agent-door-input".into())
+        .name("ush-mcp-server-input".into())
         .spawn(move || {
             let _ = copy_flushing(&mut input, &mut writer);
             let _ = writer.shutdown(std::net::Shutdown::Write);
@@ -154,8 +154,8 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// `connect`: a client's lines to the environment's agent door and its answers back.
-        fn connect_carries_a_client_to_the_agent_door;
+        /// `connect`: a client's lines to the environment's MCP server and its answers back.
+        fn connect_carries_a_client_to_the_mcp_server;
 
         phase connect_relays_the_clients_lines_to_the_door_and_its_answers_back;
         {

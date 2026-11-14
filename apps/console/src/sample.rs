@@ -1,9 +1,9 @@
 //! What the screenshot scenarios show: a person whose two agents worked in their workspaces
-//! this afternoon, as the history and the agent door would serve it. Never written into a
+//! this afternoon, as the history and the MCP server would serve it. Never written into a
 //! real workspace.
 
 use ui::prelude::*;
-use ui::tilo_actions::remote::agent_door as door;
+use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 
 use crate::{Console, Nav, Place};
@@ -318,27 +318,27 @@ fn runs() -> wire::Runs {
     }
 }
 
-fn the_door() -> door::Door {
-    door::Door {
+fn the_door() -> mcp_server::Server {
+    mcp_server::Server {
         endpoint: "https://mcp.tilo.sh".to_owned(),
         grants: vec![
-            door::Grant {
+            mcp_server::Grant {
                 id: "grant:claude".to_owned(),
                 agent: "Claude Code".to_owned(),
-                reach: door::Reach::Account,
+                reach: mcp_server::Reach::Account,
                 granted_ms: minutes_ago_ms(9 * 24 * 60),
                 last_ms: Some(minutes_ago_ms(1)),
-                runs: vec![door::Run {
+                runs: vec![mcp_server::Run {
                     name: CLAUDE_RUN.to_owned(),
                     started_ms: minutes_ago_ms(14),
                 }],
                 browser_pages: true,
-                ..door::Grant::default()
+                ..mcp_server::Grant::default()
             },
-            door::Grant {
+            mcp_server::Grant {
                 id: "grant:codex".to_owned(),
                 agent: "Codex".to_owned(),
-                reach: door::Reach::Workspace {
+                reach: mcp_server::Reach::Workspace {
                     id: "ws-launch".to_owned(),
                     name: "Launch".to_owned(),
                 },
@@ -346,24 +346,24 @@ fn the_door() -> door::Door {
                 last_ms: Some(minutes_ago_ms(80)),
                 runs: Vec::new(),
                 browser_pages: false,
-                ..door::Grant::default()
+                ..mcp_server::Grant::default()
             },
         ],
         workspaces: vec![
-            door::Workspace {
+            mcp_server::Workspace {
                 id: "ws-storefront".to_owned(),
                 name: "Storefront".to_owned(),
-                made_by: Some(door::Maker::Agent {
+                made_by: Some(mcp_server::Maker::Agent {
                     grant: "grant:claude".to_owned(),
                     agent: "Claude Code".to_owned(),
                 }),
                 made_ms: minutes_ago_ms(2 * 24 * 60),
                 open: "tilo://open#/room/ws-storefront".to_owned(),
             },
-            door::Workspace {
+            mcp_server::Workspace {
                 id: "ws-launch".to_owned(),
                 name: "Launch".to_owned(),
-                made_by: Some(door::Maker::Person),
+                made_by: Some(mcp_server::Maker::Person),
                 made_ms: minutes_ago_ms(12 * 24 * 60),
                 open: "tilo://open#/room/ws-launch".to_owned(),
             },
@@ -388,7 +388,7 @@ pub(crate) fn fixture(fixture: &mut Fixture<Console>) {
     fixture.answer(&wire::target(wire::RUNS), &runs());
     fixture.answer(&wire::target(wire::DETAIL), &detail());
     fixture.answer(&wire::target(wire::RUN_OUTPUT), &whole_output());
-    fixture.answer(&door::target(door::DOOR), &the_door());
+    fixture.answer(&mcp_server::target(mcp_server::SERVER), &the_door());
 }
 
 /// The view state a scenario shows.

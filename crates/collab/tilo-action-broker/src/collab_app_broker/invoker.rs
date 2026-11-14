@@ -58,7 +58,7 @@ pub(super) fn host_set_invoker(
 }
 
 /// `context` with the device a run's agent works from named on its invoker:
-/// `origin`, the device the agent door verified the run's connection came
+/// `origin`, the device the MCP server verified the run's connection came
 /// from, as the host's own record of the run keeps it
 /// (`NativeTaskBinding::origin`). It follows [`host_set_invoker`], which
 /// discarded whatever device the envelope named, so an application is told

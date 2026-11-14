@@ -632,7 +632,7 @@ fn runs_listed(
 enum Ending {
     /// Its session closes: `tilo mcp`'s input closed, or its process was killed.
     Closes,
-    /// The person stops it from its card, through their agent door.
+    /// The person stops it from its card, through their MCP server.
     Stopped,
 }
 
@@ -660,7 +660,7 @@ async fn a_stopped_agent_leaves_who_is_here() {
 /// [`LEAVES_WITHIN`], so the page can say the agent finished; a stopped
 /// agent's session connects no more.
 async fn leaves_who_is_here(ending: Ending) {
-    use tilo_actions::remote::{ActionHost as _, Caller, InvokeRequest, agent_door};
+    use tilo_actions::remote::{ActionHost as _, Caller, InvokeRequest, mcp_server};
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
@@ -706,8 +706,8 @@ async fn leaves_who_is_here(ending: Ending) {
             let request = InvokeRequest {
                 on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
-                target: agent_door::target(agent_door::STOP),
-                argument: agent_door::argument(&agent_door::RunRef {
+                target: mcp_server::target(mcp_server::STOP),
+                argument: mcp_server::argument(&mcp_server::RunRef {
                     grant: hex::encode(device),
                     run: "Claude Code".into(),
                 }),

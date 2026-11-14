@@ -41,7 +41,7 @@ const SEEDED_TASK: &str = "Take the bins out";
 const SEEDED_PROJECT: &str = "Move flat";
 
 /// A seeded session as `dist/dev/shell-run.sh` starts one, in `home`: the shell as the whole
-/// screen, the development apps seeded, the agent door admitting this test's program as the
+/// screen, the development apps seeded, the MCP server admitting this test's program as the
 /// person, and the workspace it founds on its throwaway identity, its channel keys in the file
 /// store `home` keeps. Answers the session once it holds that workspace.
 fn session(home: &mut tilo_test_env::TestHome, root: &std::path::Path) -> (Session, String) {

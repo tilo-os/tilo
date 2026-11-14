@@ -153,7 +153,7 @@ impl InvocationOwner {
                 || agent.chars().any(char::is_control)
                 || task.is_empty()
                 || task.len() > 256
-                // A conversation turn's answer, an agent door connection's
+                // A conversation turn's answer, an MCP server connection's
                 // run, or a workspace task's in a journal kept from before
                 // tasks were turns.
                 || !(task.starts_with("task:")

@@ -11,7 +11,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 
-use super::{DoorRead, agent_door};
+use super::{DoorRead, mcp_server};
 use crate::overview_panel::OverviewPick;
 use crate::overview_tilo::{TiloItem, TiloOverview, TiloRow, rows};
 
@@ -19,11 +19,11 @@ fn en() {
     ui::i18n::I18nManager::init("en-US");
 }
 
-/// The agent door of a host: what it let in, read live, and the grants the
+/// The MCP server of a host: what it let in, read live, and the grants the
 /// person took back there.
 #[derive(Default)]
 struct DoorHost {
-    grants: Vec<agent_door::Grant>,
+    grants: Vec<mcp_server::Grant>,
     /// The state the door's read last answered.
     read: RefCell<Option<InvocationState>>,
     /// The grants a revoke named, in the order they were asked.
@@ -31,7 +31,7 @@ struct DoorHost {
 }
 
 impl DoorHost {
-    fn with(grants: Vec<agent_door::Grant>) -> Self {
+    fn with(grants: Vec<mcp_server::Grant>) -> Self {
         Self {
             grants,
             ..Self::default()
@@ -56,13 +56,13 @@ impl ActionHost for DoorHost {
         _caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        if request.target == agent_door::target(agent_door::REVOKE) {
+        if request.target == mcp_server::target(mcp_server::REVOKE) {
             let InvokeArgument::Json(argument) = &request.argument else {
                 return Pending::ready(Err(ActionHostError::InvalidRequest {
                     reason: "a revoke names its grant".into(),
                 }));
             };
-            let grant: agent_door::GrantRef =
+            let grant: mcp_server::GrantRef =
                 serde_json::from_value(Value::Object(argument.clone())).unwrap_or_default();
             self.revoked.borrow_mut().push(grant.grant);
             return Pending::ready(Ok(InvocationReceipt {
@@ -73,10 +73,10 @@ impl ActionHost for DoorHost {
             }));
         }
         // The door's read: what a live door holds now.
-        let door = agent_door::Door {
+        let door = mcp_server::Server {
             endpoint: "https://mcp.tilo.sh".into(),
             grants: self.grants.clone(),
-            ..agent_door::Door::default()
+            ..mcp_server::Server::default()
         };
         let state = InvocationState::new(
             request.invocation,
@@ -107,17 +107,17 @@ fn caller() -> Caller {
 }
 
 /// An agent the door let into every workspace, working now.
-fn working() -> agent_door::Grant {
-    agent_door::Grant {
+fn working() -> mcp_server::Grant {
+    mcp_server::Grant {
         id: "g1".into(),
         agent: "Claude Code".into(),
-        reach: agent_door::Reach::Account,
+        reach: mcp_server::Reach::Account,
         granted_ms: 1,
-        runs: vec![agent_door::Run {
+        runs: vec![mcp_server::Run {
             name: "Claude Code #2".into(),
             started_ms: 2,
         }],
-        ..agent_door::Grant::default()
+        ..mcp_server::Grant::default()
     }
 }
 
@@ -144,7 +144,7 @@ fn shell(read: &DoorRead) -> TiloOverview {
 }
 
 tilo_test_env::scenario! {
-    fn the_agent_door_feeds_the_overviews_agents_rows;
+    fn the_mcp_server_feeds_the_overviews_agents_rows;
 
     phase the_doors_answer_becomes_the_overviews_agents_rows;
     {
@@ -176,9 +176,9 @@ tilo_test_env::scenario! {
     phase an_agent_at_rest_says_where_it_reaches_and_nothing_of_work;
     {
         en();
-        let at_rest = agent_door::Grant {
+        let at_rest = mcp_server::Grant {
             runs: Vec::new(),
-            reach: agent_door::Reach::Workspace {
+            reach: mcp_server::Reach::Workspace {
                 id: "ws-build".into(),
                 name: "Build".into(),
             },

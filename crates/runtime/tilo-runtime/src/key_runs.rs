@@ -10,7 +10,7 @@
 //! ([`HostConfig::apps`](tilo_workspace_host::host::HostConfig::apps)).
 //!
 //! Each key works in a run of its own, which the device's broker admits as it
-//! admits an agent at the device's agent door ([`Runs::open`]). Before every
+//! admits an agent at the device's MCP server ([`Runs::open`]). Before every
 //! message the key is checked against the person's own store of their devices
 //! ([`PersonsDevices::admit`]: theirs, current, not revoked) and its grant's
 //! scope against the workspace; a key that no longer holds loses its run.
@@ -41,7 +41,7 @@ pub trait Runs: Send + Sync {
 
     /// A run for `key` in `workspace`: the host its calls go through and the
     /// caller they go as. The broker admits it as it admits an agent at this
-    /// device's agent door; a refusal says why.
+    /// device's MCP server; a refusal says why.
     ///
     /// # Errors
     /// The broker does not admit a run for the key.

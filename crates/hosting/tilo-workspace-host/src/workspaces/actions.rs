@@ -40,8 +40,8 @@
 //! caller's own `confirm` is never taken for the person's. Ending a call
 //! waits for everyone.
 //!
-//! The host also serves its own person's agent door
-//! ([`agent_door::PROVIDER`]): the devices they run an agent on, read live,
+//! The host also serves its own person's MCP server
+//! ([`mcp_server::PROVIDER`]): the devices they run an agent on, read live,
 //! and stopping one's run. Only a device of that person's own asks it, never
 //! an agent's.
 //!
@@ -58,7 +58,7 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
-    WORKSPACE_GOVERNANCE_PROVIDER, agent_door, host_account, person_accounts, person_models,
+    WORKSPACE_GOVERNANCE_PROVIDER, host_account, mcp_server, person_accounts, person_models,
     workspace_governance_resource,
 };
 use tilo_actions::{
@@ -1049,18 +1049,18 @@ impl Workspaces {
                     asks_host(caller, certificate).ok_or(ActionHostError::UnknownAction)?;
                 self.host_invoke(certificate, asking, request).await
             }
-            (agent_door::PROVIDER, _) => {
+            (mcp_server::PROVIDER, _) => {
                 self.door_keeper(caller, certificate)?;
-                if request.target != agent_door::target(agent_door::STOP) {
+                if request.target != mcp_server::target(mcp_server::STOP) {
                     return Err(ActionHostError::UnknownAction);
                 }
                 let InvokeArgument::Json(argument) = &request.argument else {
                     return Err(invalid("a stop names its grant and run"));
                 };
-                let run: agent_door::RunRef =
+                let run: mcp_server::RunRef =
                     serde_json::from_value(Value::Object(argument.clone()))
                         .map_err(|error| invalid(error.to_string()))?;
-                if self.inner.agent_door.stop(&run.grant, &run.run) {
+                if self.inner.mcp_server.stop(&run.grant, &run.run) {
                     Ok(Value::Null)
                 } else {
                     Err(ActionHostError::Refused {
@@ -1107,7 +1107,7 @@ impl Workspaces {
     }
 
     /// Whether `caller`, on the device `certificate` certifies, keeps this
-    /// host's agent door: a device of the host's own person speaking for
+    /// host's MCP server: a device of the host's own person speaking for
     /// themselves, and no agent's. Unknown and forbidden are the same answer.
     fn door_keeper(
         &self,
@@ -1123,7 +1123,7 @@ impl Workspaces {
                     && certificate.user_public_key == host.user_public_key
                     && !self
                         .inner
-                        .agent_door
+                        .mcp_server
                         .is_agent(&certificate.device_public_key)
             })
             .map(|_| ())
@@ -1527,7 +1527,7 @@ struct Shared {
     runtime: tokio::runtime::Handle,
     /// What each admitted invocation came to.
     ledger: Mutex<InvocationLedger<InvocationState>>,
-    /// The admitted invocations that follow the agent door: live reads,
+    /// The admitted invocations that follow the MCP server: live reads,
     /// moved on whenever the door does.
     door_follows: Mutex<std::collections::HashSet<InvocationId>>,
 }
@@ -1611,7 +1611,7 @@ impl HostWorkspaceActions {
                 .is_some_and(|workspaces| workspaces.own().is_some())
     }
 
-    /// Follow the agent door for `caller` as invocation `request` asks: the
+    /// Follow the MCP server for `caller` as invocation `request` asks: the
     /// door now, as its first item; [`Self::door_moved`] moves it on.
     fn follow_door(
         &self,
@@ -1644,7 +1644,7 @@ impl HostWorkspaceActions {
         Ok(receipt)
     }
 
-    /// Whether `id` is a live read of the agent door `caller` follows.
+    /// Whether `id` is a live read of the MCP server `caller` follows.
     fn follows_door(&self, caller: &Caller, id: &InvocationId) -> bool {
         self.shared.door_follows.lock_recover().contains(id) && self.admitted(caller, id)
     }
@@ -1789,7 +1789,7 @@ impl ActionHost for InWorkspace {
         let Some(workspaces) = self.host.shared.workspaces.get().cloned() else {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         };
-        if request.target == agent_door::target(agent_door::DOOR) {
+        if request.target == mcp_server::target(mcp_server::SERVER) {
             return Pending::ready(self.host.follow_door(
                 &workspaces,
                 caller,
@@ -1881,7 +1881,7 @@ impl ActionHost for InWorkspace {
             return None;
         }
         let workspaces = self.host.shared.workspaces.get()?.clone();
-        let mut changes = workspaces.inner.agent_door.changes();
+        let mut changes = workspaces.inner.mcp_server.changes();
         if self.host.door_moved(&workspaces, caller, id) {
             return Some(Pending::ready(()));
         }
@@ -1922,19 +1922,19 @@ impl ActionHost for InWorkspace {
     }
 }
 
-/// The longest a follower of the agent door waits before it reads again.
+/// The longest a follower of the MCP server waits before it reads again.
 const DOOR_WAKE: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// The agent door as its read answers it.
+/// The MCP server as its read answers it.
 fn door_value(workspaces: &Workspaces) -> Value {
-    serde_json::to_value(workspaces.inner.agent_door.door()).unwrap_or(Value::Null)
+    serde_json::to_value(workspaces.inner.mcp_server.door()).unwrap_or(Value::Null)
 }
 
 /// The providers a relay that governs workspaces answers itself.
 const PROVIDERS: [&str; 5] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
-    agent_door::PROVIDER,
+    mcp_server::PROVIDER,
     // The person's own mail accounts and model providers: a page asks here
     // because it has no mail connection and no vault of its own.
     person_accounts::PROVIDER,

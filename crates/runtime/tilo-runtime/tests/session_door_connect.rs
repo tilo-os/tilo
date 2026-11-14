@@ -1,5 +1,5 @@
 //! `--connect` inside a Tilo login, across a real process boundary: it relays
-//! to the session's agent door and never starts a standalone runtime beside
+//! to the session's MCP server and never starts a standalone runtime beside
 //! the desktop.
 #![allow(
     clippy::unwrap_used,
@@ -59,7 +59,7 @@ fn standalone_profile(home: &Path) -> std::path::PathBuf {
 }
 
 #[test]
-fn a_tilo_login_relays_to_the_agent_door_and_starts_no_runtime() {
+fn a_tilo_login_relays_to_the_mcp_server_and_starts_no_runtime() {
     let root = tempfile::tempdir().unwrap();
     let runtime_dir = root.path().join("run");
     let home = root.path().join("home");
@@ -120,7 +120,7 @@ tilo_test_env::scenario! {
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("agent door") && stderr.contains("--standalone"),
+            stderr.contains("MCP server") && stderr.contains("--standalone"),
             "{stderr}"
         );
         assert!(!standalone_profile(&home).exists());
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_login_without_its_desktop_name_or_door_fails_and_starts_no_runtime;
-    // A compositor whose agent door is not (yet) served still serves its admin
+    // A compositor whose MCP server is not (yet) served still serves its admin
     // control socket: that marker is enough to know this is a Tilo login, so the
     // client fails with the reason and starts nothing.
     {
@@ -187,7 +187,7 @@ tilo_test_env::scenario! {
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("the desktop's agent door isn't available")
+            stderr.contains("the desktop's MCP server isn't available")
                 && stderr.contains("agent.sock"),
             "{stderr}"
         );

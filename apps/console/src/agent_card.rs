@@ -2,7 +2,7 @@
 
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::tilo_actions::remote::agent_door as door;
+use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::tokens::TextRole;
 use ui::widget::{ButtonRole, ListRow, Section, SectionHeader};
@@ -78,7 +78,7 @@ fn runs_of<'a>(seen: &'a Seen, client: &str) -> Vec<&'a wire::AgentRun> {
 }
 
 /// The grant `client` came in by, when the door lists one.
-fn grant_of<'a>(seen: &'a Seen, client: &str) -> Option<&'a door::Grant> {
+fn grant_of<'a>(seen: &'a Seen, client: &str) -> Option<&'a mcp_server::Grant> {
     seen.door
         .grants
         .iter()
@@ -97,8 +97,8 @@ pub(crate) fn act(doors: &Doors, seen: &Seen, client: &str, command: AgentComman
         }),
         AgentCommand::Revoke => grant_of(seen, client).is_some_and(|grant| {
             doors.door(
-                door::REVOKE,
-                &door::GrantRef {
+                mcp_server::REVOKE,
+                &mcp_server::GrantRef {
                     grant: grant.id.clone(),
                 },
             );
@@ -174,7 +174,10 @@ fn card(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen, client: &str) -> Element {
             Button::new("console-agent-revoke", "console-grant-revoke")
                 .role(ButtonRole::Destructive)
                 .on_view(move || {
-                    doors.door(door::REVOKE, &door::GrantRef { grant: id.clone() });
+                    doors.door(
+                        mcp_server::REVOKE,
+                        &mcp_server::GrantRef { grant: id.clone() },
+                    );
                 })
         };
         parts.push(Box::new(Section::titled(

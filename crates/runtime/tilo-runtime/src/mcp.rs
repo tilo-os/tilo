@@ -614,7 +614,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// One session of agent `agent_id`, which the host admitted itself into
-    /// `workspace` (a desktop's agent door, after `person` said so). The
+    /// `workspace` (a desktop's MCP server, after `person` said so). The
     /// person's own device hands the session to that agent: the agent stays
     /// the principal, and what it may do is the person's own authority held
     /// to the delegation a device gives its agents
@@ -631,7 +631,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// One session of `person` themselves in `workspace`: a REPL the host admitted because
-    /// the person said so (a desktop's agent door). Every call is the person's own, attributed
+    /// the person said so (a desktop's MCP server). Every call is the person's own, attributed
     /// to them and decided by their own authority, as their own input is. Its own fresh
     /// execution, retired when the session drops.
     #[must_use]

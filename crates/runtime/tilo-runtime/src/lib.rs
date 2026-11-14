@@ -160,7 +160,7 @@ pub trait RuntimeServices: Sized {
         None
     }
 
-    /// The agent doors of the person's other devices, as this host reaches
+    /// The MCP servers of the person's other devices, as this host reaches
     /// them from its own endpoint: what a `--connect --device` client is
     /// carried to. `None` for a host that reaches none.
     fn remote_doors(&self) -> Option<std::sync::Arc<remote_door::Doors>> {

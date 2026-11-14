@@ -77,7 +77,7 @@ struct Served {
 }
 
 /// A run in a workspace one of the person's devices hosts, entered at that
-/// device's agent door: the device serves the whole run, its people and its
+/// device's MCP server: the device serves the whole run, its people and its
 /// windows included, and shows the agent there itself.
 struct OnDevice(tilo_runtime::enter::Entered);
 
@@ -350,7 +350,7 @@ impl Session {
     }
 
     /// The run in `workspace` when one of the person's devices hosts it, as
-    /// their list says, entering it at that device's agent door the first
+    /// their list says, entering it at that device's MCP server the first
     /// time (and again once the device closed it); `None` for a workspace the
     /// relay keeps. As [`Self::served`], each workspace's entry has a lock of
     /// its own.

@@ -35,7 +35,7 @@ impl LocalCaller {
     }
     /// The caller `admitted` on connection `peer` of `route`, now: what
     /// [`Self::capture`] takes from a channel, for a connection the broker
-    /// serves in this process (the desktop's agent door).
+    /// serves in this process (the desktop's MCP server).
     pub(super) fn admitted_on(
         state: &AppBrokerState,
         peer: u64,

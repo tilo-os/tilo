@@ -536,7 +536,7 @@ pub(crate) struct BrowserShell {
     links_asked: (u32, Option<ui::time::Instant>),
     /// The pointer, in logical pixels, for the popover's targets.
     cursor: Option<Point>,
-    /// The agent door, as the overview's Agents rows show it: the read the
+    /// The MCP server, as the overview's Agents rows show it: the read the
     /// session's door serves, followed while the overview is up.
     door: tilo_desktop::overview_tilo::door::DoorRead,
     /// The session the door is read on, and who reads it.
@@ -566,7 +566,7 @@ pub struct ChromeSources {
     /// The peer whose workspace this desktop is in, for the questions only its
     /// host answers.
     pub peer: Option<u32>,
-    /// The session the desktop serves its windows: the agent door the
+    /// The session the desktop serves its windows: the MCP server the
     /// overview's Agents rows show is the one it serves.
     pub session: Arc<tilo_desktop_surface::session::DesktopSession>,
     /// Who asks the door: this page's person in its workspace.
@@ -1277,10 +1277,10 @@ impl BrowserShell {
         None
     }
 
-    /// The agent door as the overview's Agents rows show it: the read the
+    /// The MCP server as the overview's Agents rows show it: the read the
     /// session's door serves, followed while the overview is up, so a grant
     /// appears, works and leaves as it happens. Whether the rows changed.
-    fn follow_agent_door(&mut self) -> bool {
+    fn follow_mcp_server(&mut self) -> bool {
         if !self.top.overview_open()
             || !self
                 .door
@@ -1863,7 +1863,7 @@ impl Widget for BrowserShell {
             self.chrome.shared.presented.get(),
             search_keys,
         );
-        changed |= self.follow_agent_door();
+        changed |= self.follow_mcp_server();
         changed |= self.top.update(state, path);
         if let Some(learned) = self.hints.take_learned() {
             // Not kept, a hint at worst shows once more: nothing to tell.

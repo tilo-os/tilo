@@ -9,7 +9,7 @@
 //!   the palette.
 //! - **A terminal app, and everything run in it,** is turned away there by
 //!   the desktop (the kernel says it is an app's process), and goes on to the
-//!   session's agent door, which serves it with the terminal workspace's
+//!   session's MCP server, which serves it with the terminal workspace's
 //!   scope; anything beyond that is the person's to allow.
 //! - **A development session** named by `$TILO_TEST_CONTROL` is reached
 //!   there alone.

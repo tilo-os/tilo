@@ -1,4 +1,4 @@
-//! The agent door at its bound, through the ways in a session really serves: its own socket for
+//! The MCP server at its bound, through the ways in a session really serves: its own socket for
 //! the programs of this login, the door of a confined environment for the programs inside it,
 //! and this device's endpoint for the agents on the person's other devices. The door serves
 //! sixteen connections at once and counts them as one whichever way they came. The one past them
@@ -118,7 +118,7 @@ impl Inside {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "agent_door_room::program",
+                "mcp_server_workspace::program",
                 "--nocapture",
                 "--test-threads",
                 "1",
@@ -317,7 +317,7 @@ fn tree() -> Layout {
     }
 }
 
-/// This box: its headless session with the agent door open, the questions it asks the person,
+/// This box: its headless session with the MCP server open, the questions it asks the person,
 /// and its endpoint answering the door toward the person's other devices.
 struct Shell {
     session: Session,
@@ -345,7 +345,7 @@ impl Shell {
             mcp_server: Some(door.clone()),
             state: Some(home.state().to_path_buf()),
             // The person's settings, as the session serves them: what the person sets this
-            // box's agent door with.
+            // box's MCP server with.
             services: vec![std::boxed::Box::new(
                 tilo_settings_service::SettingsService::new(),
             )],
@@ -390,13 +390,13 @@ impl Shell {
     fn accept_own_devices(&mut self) {
         self.session
             .invoke(
-                "settings:settings.agent-door",
+                "settings:settings.mcp-server",
                 "set-accept-own-devices",
                 json!({"on": true}).as_object().unwrap(),
             )
             .expect("the setting is kept");
         crate::common::wait_for(&mut self.session, "the setting to be kept", |_| {
-            settings_store::agent_door::accepts_own_devices(&settings_store::load()).then_some(())
+            settings_store::mcp_server::accepts_own_devices(&settings_store::load()).then_some(())
         });
     }
 
@@ -522,21 +522,21 @@ impl Shell {
         crate::common::press_sheet(&mut self.session, PortalEffect::CONFIRM.id, &json!({}));
     }
 
-    /// Wait until `seats` agents sit at the shell.
+    /// Wait until `sessions` agent sessions are at the shell.
     #[track_caller]
-    fn seated(&mut self, seats: usize) {
+    fn at_shell(&mut self, sessions: usize) {
         crate::common::wait_for(
             &mut self.session,
-            format!("{seats} agents at the shell"),
+            format!("{sessions} agent sessions at the shell"),
             |session| {
-                let seated = session
+                let here = session
                     .read("session:agents")
-                    .and_then(|agents| agents.get("seated").and_then(Value::as_array).cloned())
+                    .and_then(|agents| agents.get("sessions").and_then(Value::as_array).cloned())
                     .unwrap_or_default()
                     .into_iter()
-                    .filter(|agent| agent["seat"] == true)
+                    .filter(|agent| agent["stoppable"] == true)
                     .count();
-                (seated == seats).then_some(())
+                (here == sessions).then_some(())
             },
         );
     }
@@ -638,7 +638,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
         shell.questions.pending().is_empty(),
         "nobody is waiting on the person"
     );
-    shell.seated(SERVED);
+    shell.at_shell(SERVED);
 
     // The seventeenth, at the session's own door: told before anything is read of it, and
     // closed.
@@ -738,7 +738,7 @@ fn the_door_serves_sixteen_connections_however_they_came_and_tells_the_next_ther
     });
     programs.push(program);
     assert!(shell.questions.pending().is_empty());
-    shell.seated(SERVED);
+    shell.at_shell(SERVED);
 
     for program in inside {
         program.end();
@@ -788,7 +788,7 @@ fn connections_from_other_devices_wait_for_the_pass_in_the_doors_places_and_no_m
         shell.introduced(agent);
     }
     assert!(shell.questions.pending().is_empty(), "nobody was asked");
-    shell.seated(SERVED);
+    shell.at_shell(SERVED);
 
     // One of them leaves: a device that connects again is served.
     drop(waiting.pop());

@@ -5,7 +5,7 @@
 //! `app open` are all this module, over the one control protocol
 //! ([`crate::client`]). Each request goes through the first door that serves
 //! this process: the device admin's socket at their own login, or the
-//! session's agent door from inside an app such as Terminal, which acts with
+//! session's MCP server from inside an app such as Terminal, which acts with
 //! that app's workspace scope. Nothing here picks authority; the desktop
 //! decides what each door may do.
 //!

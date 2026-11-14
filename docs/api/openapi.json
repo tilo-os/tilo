@@ -20612,7 +20612,7 @@
         "required": [],
         "description": ""
       },
-      "settings.agent-door.set-accept-own-devices.Arguments": {
+      "settings.mcp-server.set-accept-own-devices.Arguments": {
         "type": "object",
         "properties": {
           "on": {
@@ -20624,7 +20624,7 @@
         ],
         "description": ""
       },
-      "settings.agent-door.set-act-without-asking.Arguments": {
+      "settings.mcp-server.set-act-without-asking.Arguments": {
         "type": "object",
         "properties": {
           "on": {
@@ -29792,15 +29792,15 @@
     },
     {
       "app": "so.tilo.settings",
-      "resource": "settings.agent-door",
+      "resource": "settings.mcp-server",
       "action": "set-accept-own-devices",
-      "arguments": "#/components/schemas/settings.agent-door.set-accept-own-devices.Arguments"
+      "arguments": "#/components/schemas/settings.mcp-server.set-accept-own-devices.Arguments"
     },
     {
       "app": "so.tilo.settings",
-      "resource": "settings.agent-door",
+      "resource": "settings.mcp-server",
       "action": "set-act-without-asking",
-      "arguments": "#/components/schemas/settings.agent-door.set-act-without-asking.Arguments"
+      "arguments": "#/components/schemas/settings.mcp-server.set-act-without-asking.Arguments"
     },
     {
       "app": "so.tilo.settings",

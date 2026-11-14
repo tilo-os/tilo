@@ -24,7 +24,7 @@ pub(crate) const KIND: &str = "session.turn-question";
 /// Whether `request` is a conversation turn's step: never a grant, a run's question or a Store
 /// disclosure. Those name the person and the app asking, and a turn's ask names neither (the
 /// broker holds it for the run's person). The broker has one prompter, the shell's sheet
-/// ([`crate::run_questions::Sheet`]), and it hands such a step here.
+/// ([`crate::step_questions::Sheet`]), and it hands such a step here.
 pub(crate) fn is_turn_ask(request: &AppActionConsentRequest) -> bool {
     request.confirming && request.app_id.is_empty() && request.person.is_empty()
 }

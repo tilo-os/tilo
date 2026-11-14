@@ -91,7 +91,7 @@ impl ui::tilo_actions::remote::ActionHost for RecordingHost {
             self.listed.lock().unwrap().clone()
         } else if request.target == device_pairing::target(device_pairing::ASKING) {
             self.asking.lock().unwrap().clone()
-        } else if request.target == agent_door::target(agent_door::DOOR) {
+        } else if request.target == mcp_server::target(mcp_server::SERVER) {
             return ui::tilo_actions::remote::Pending::ready(Err(
                 ui::tilo_actions::remote::ActionHostError::UnknownAction,
             ));

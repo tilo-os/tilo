@@ -1,5 +1,5 @@
-//! The person's agent door, as their page carries it
-//! ([`tilo_actions::remote::agent_door`]).
+//! The person's MCP server, as their page carries it
+//! ([`tilo_actions::remote::mcp_server`]).
 //!
 //! The door is served by the person's host: what it let in, read live, and
 //! stopping one run are asked there, through the page's session with it
@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
-use tilo_actions::remote::agent_door::{self, GrantRef};
+use tilo_actions::remote::mcp_server::{self, GrantRef};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
@@ -30,7 +30,7 @@ pub(crate) type Revoked = Arc<Mutex<Vec<Revoking>>>;
 
 pub(crate) use crate::shell::Revoking;
 
-/// The agent door as the page's desktop asks it.
+/// The MCP server as the page's desktop asks it.
 struct PageDoor {
     host: SessionActions,
     /// Where agents connect over MCP, as the page names it.
@@ -95,7 +95,7 @@ impl PageDoor {
     }
 }
 
-/// Carry the agent-door asks of the desktop `session` serves, for the
+/// Carry the mcp-server asks of the desktop `session` serves, for the
 /// workspace `workspace`, to the host the page's peer `peer` is with, and the
 /// asks of the person's devices there too ([`crate::identity_door`]); the
 /// keys the person takes back at either, for the page to sign. A page with no
@@ -112,7 +112,7 @@ pub(crate) fn serve(
         && let Some(door) = crate::peer_sync::actions_of(peer, workspace)
     {
         session.serve_person_door(
-            agent_door::PROVIDER,
+            mcp_server::PROVIDER,
             Arc::new(PageDoor::new(
                 door.clone(),
                 endpoint,
@@ -152,7 +152,7 @@ impl ActionHost for PageDoor {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        if request.target == agent_door::target(agent_door::REVOKE) {
+        if request.target == mcp_server::target(mcp_server::REVOKE) {
             return Pending::ready(self.revoke(&request));
         }
         self.host.invoke(caller, request)

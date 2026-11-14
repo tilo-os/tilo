@@ -5,7 +5,7 @@
 //! enters it there, over iroh, wherever it is hosted:
 //!
 //! - **A device of the person's** (their desktop, a paired box) hosts it: the
-//!   key dials that device's agent door ([`crate::remote_door`]), which admits
+//!   key dials that device's MCP server ([`crate::remote_door`]), which admits
 //!   it as the person's relay does (`tilo_workspace_host::workspace_access`): a
 //!   certificate the person's root signed, unrevoked, current, its scope
 //!   reaching the workspace, and the person's "allow this agent?" where the
@@ -42,7 +42,7 @@ pub struct Key {
 
 /// A workspace a key entered: where its MCP is answered.
 pub enum Entered {
-    /// A device of the person's serves it; its agent door carries the lines.
+    /// A device of the person's serves it; its MCP server carries the lines.
     Door(Box<DoorLines>),
     /// A dedicated host's actions, served by the agent surface here.
     Host {
@@ -138,7 +138,7 @@ impl Entered {
     }
 }
 
-/// The MCP lines of an agent door one device opened for this key: each
+/// The MCP lines of an MCP server one device opened for this key: each
 /// request a line out, its answer the line back with its id; what the door
 /// says in between (a notification) is not an answer.
 pub struct DoorLines {

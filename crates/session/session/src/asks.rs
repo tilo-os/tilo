@@ -332,11 +332,11 @@ impl Shared {
 
     /// Take the agent grant `grant` back at the person's MCP server.
     fn revoke_agent_grant(&self, grant: String) {
-        use tilo_actions::remote::agent_door;
+        use tilo_actions::remote::mcp_server;
         let mut arguments = serde_json::Map::new();
         arguments.insert("grant".into(), grant.into());
         let revoked = self.doors.invoke(
-            &ActionAddress::new(agent_door::RESOURCE, agent_door::REVOKE),
+            &ActionAddress::new(mcp_server::RESOURCE, mcp_server::REVOKE),
             &arguments,
             &mut tilo_session_core::door::Look::none(),
         );

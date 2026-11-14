@@ -2,7 +2,7 @@
 # Run the tilolang shell as the whole screen of a headless tilo-session, the way a
 # person uses it, and see it: rendered by Mesa's software Vulkan driver (lavapipe),
 # never this machine's GPU; with the tilolang apps installed as packages and their
-# scenario data in their records (`--seed-apps`); with the agent door admitting
+# scenario data in their records (`--seed-apps`); with the MCP server admitting
 # `tilolang repl` to act as the person (`--admit-repl`); and with the development
 # test-control socket `tilo-control snapshot PATH` writes a PNG of the screen over
 # (`--test-control`).
@@ -22,7 +22,7 @@
 # tree, a private XDG_RUNTIME_DIR, no D-Bus and no X11. It holds secrets in the
 # sealed file store a headless machine uses, in its own scratch directory, so
 # the workspaces it founds have channel keys and their shared desks are written
-# as on any device. It prints where its agent door and control socket are and
+# as on any device. It prints where its MCP server and control socket are and
 # how to drive it, then runs until it ends or this script is stopped (Ctrl+C,
 # SIGTERM, SIGHUP). Either way the session, everything it started, its FUSE
 # mount, its secret store and the scratch directory go with it.
@@ -541,8 +541,8 @@ start_session --shell screen --admit-repl "$bin/tilolang" "${apps[@]}"
 # path in this session's runtime directory, which it announces the same way.
 tries=600
 until grep -q "^TILO_MCP_SERVER=$runtime/" "$log"; do
-    kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its agent door"; }
-    ((tries--)) || { tail -40 "$log" >&2; die "the session serves no agent door"; }
+    kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its MCP server"; }
+    ((tries--)) || { tail -40 "$log" >&2; die "the session serves no MCP server"; }
     sleep 0.1
 done
 door=$(sed -n "s|^TILO_MCP_SERVER=\($runtime/.*\)\$|\1|p" "$log" | tail -1)

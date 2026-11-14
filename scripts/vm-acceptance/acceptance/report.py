@@ -17,7 +17,7 @@ ESSENTIALS = [
     ("search", "4. Search and history/activity"),
     ("resources", "5. Resources"),
     ("basics", "6. Basics (hardware controls, keyboard layout, displays)"),
-    ("agent", "7. Agent door (in-session MCP from a terminal)"),
+    ("agent", "7. MCP server (in-session MCP from a terminal)"),
     ("input", "8. Input fidelity (real device descriptors, layouts, touchpad)"),
 ]
 

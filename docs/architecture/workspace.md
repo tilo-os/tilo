@@ -563,7 +563,7 @@ its governance names the person as its owner or as a member not removed
 person's unless it names someone else). A record sealed to readers that exclude
 this device is one it cannot read, so it is not branched. An agent may branch
 only the workspace it works in, and only as the person's grants let it take
-the desk's actions; a branch of another workspace is refused at the agent door.
+the desk's actions; a branch of another workspace is refused at the MCP server.
 
 **What a branch copies**
 
@@ -589,7 +589,7 @@ the desk's actions; a branch of another workspace is refused at the agent door.
   branch as its workspace, its home and its grants of the source's files moved
   to the same places in the branch's, and what it keeps outside its record (its
   `/var` and legacy home) copied. Its id (`TILO_ENVIRONMENT`, `<branch>/<key>`)
-  and its `TILO_WORKSPACE` are the branch's, so its sessions and its agent door
+  and its `TILO_WORKSPACE` are the branch's, so its sessions and its MCP server
   act in the branch only. File actions not carried out yet stay with the
   source. Images are the device's and shared already.
 - **The desk.** The source's strips, a window for each of this device's

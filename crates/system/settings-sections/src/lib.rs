@@ -7,11 +7,11 @@
 //! of them.
 
 pub mod accessibility;
-pub mod agent_door;
 pub mod continuity;
 pub mod desktop;
 pub mod device_vpn;
 pub mod identity;
+pub mod mcp_server;
 pub mod network_usage;
 pub mod osk;
 pub mod prefs;
@@ -98,7 +98,7 @@ sections!(
     device_vpn::DeviceVpnPrefs,
     identity::IdentityPrefs,
     network_usage::NetworkUsage,
-    agent_door::AgentDoorDevice,
+    mcp_server::McpServerDevice,
 );
 
 #[cfg(test)]

@@ -288,7 +288,7 @@ impl AppBrokerState {
 
     /// Start `reask`'s child, a host step marked for tasks (a task's
     /// programs), as a step of its run: through the run's
-    /// [`super::TaskRunHost`], the one run-admitted path the agent door's
+    /// [`super::TaskRunHost`], the one run-admitted path the MCP server's
     /// connections take, so the run reads it back
     /// ([`Self::native_host_step_observation`]).
     fn start_native_host_step(

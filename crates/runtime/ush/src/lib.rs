@@ -18,7 +18,6 @@
 //! record's `CapOverride`s, evaluated by `decide_capability` ([`policy`]), not a
 //! second system.
 
-pub mod agent_door;
 pub mod approved_checks;
 pub mod audit;
 pub mod branch;
@@ -36,6 +35,7 @@ pub mod home;
 pub mod host;
 pub mod hosted_vm;
 pub mod images;
+pub mod mcp_server;
 pub mod policy;
 pub mod records;
 pub mod runs;

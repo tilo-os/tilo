@@ -178,7 +178,7 @@ impl Device {
             workspace_id: entered,
             ..device
         };
-        // The session is the agent's run: the person's agent door lists it while it lasts.
+        // The session is the agent's run: the person's MCP server lists it while it lasts.
         let _ = run_as_agent(&device.peer, &sign_in.agent).await;
         Ok(device)
     }
@@ -1040,7 +1040,7 @@ impl From<HostRefusal> for CertifyError {
 }
 
 /// Say `peer`'s session is one run of the agent `label` names: every request it makes from then on
-/// is the agent's, for the device's person, and the person's agent door lists the run while the
+/// is the agent's, for the device's person, and the person's MCP server lists the run while the
 /// session lasts.
 ///
 /// # Errors

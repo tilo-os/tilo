@@ -1,10 +1,10 @@
-//! This device's agent door, as the person set it (`agent_door`): whether an agent on another of
+//! This device's MCP server, as the person set it (`mcp_server`): whether an agent on another of
 //! their devices is let in without asking here, and whether, once in, it takes its steps without
 //! asking too. Kept on this device only, and off unless the person turns it on.
 
 use serde_json::{Map, Value};
 
-pub const SECTION: &str = "agent_door";
+pub const SECTION: &str = "mcp_server";
 
 pub const ACCEPT_OWN_DEVICES: &str = "accept_own_devices";
 

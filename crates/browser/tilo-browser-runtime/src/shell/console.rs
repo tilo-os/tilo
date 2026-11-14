@@ -5,7 +5,7 @@
 //! It is the same desktop, session and windows as the desktop layout, not a
 //! page of its own: Console is an ordinary window, held fullscreen, so the
 //! bar and the strips are out of sight and everything Console reads (the
-//! workspaces' history, the agent door) is served the way it is served to
+//! workspaces' history, the MCP server) is served the way it is served to
 //! any window. The page holds Console in front until the person opens
 //! something in it — takes over a run, opens what an action changed, opens a
 //! workspace in Tilo. That window comes to the front of the desktop, and the

@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
+use tilo_actions::remote::mcp_server::{Grant, Reach, Run, Server};
 
 use super::{DesktopAsk, DesktopChrome};
 use crate::about::{AboutLinks, AboutSheet, AboutVariant};
@@ -76,7 +76,7 @@ fn chrome_with_an_agent() -> DesktopChrome {
         false,
     );
     chrome.set_tilo(TiloOverview {
-        door: Some(Door {
+        door: Some(Server {
             endpoint: "https://mcp.tilo.sh".into(),
             grants: vec![Grant {
                 id: "g1".into(),
@@ -88,7 +88,7 @@ fn chrome_with_an_agent() -> DesktopChrome {
                 }],
                 ..Grant::default()
             }],
-            ..Door::default()
+            ..Server::default()
         }),
         ..TiloOverview::default()
     });

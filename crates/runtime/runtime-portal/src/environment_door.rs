@@ -1,7 +1,7 @@
-//! An environment's own agent door, asked of the session by the runtime that
+//! An environment's own MCP server, asked of the session by the runtime that
 //! confines the environment (`ush`).
 //!
-//! The session's agent door (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`)
+//! The session's MCP server (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`)
 //! serves only programs in the session's own namespaces, so nothing inside a
 //! confined environment reaches it. When `ush` opens an environment it asks
 //! the session, on that door, for a door of the environment's own: one
@@ -115,7 +115,7 @@ impl Lease {
     }
 }
 
-/// Ask the session whose agent door is `door` for `request`'s door.
+/// Ask the session whose MCP server is `door` for `request`'s door.
 ///
 /// # Errors
 /// The door does not answer, refuses, or answers something else.

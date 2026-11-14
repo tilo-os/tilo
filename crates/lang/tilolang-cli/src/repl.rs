@@ -1,6 +1,6 @@
-//! `tilolang repl`: tilolang typed against a running Tilo session, through its agent door.
+//! `tilolang repl`: tilolang typed against a running Tilo session, through its MCP server.
 //!
-//! The REPL is the person at the session's agent door (`docs/runtime-mcp.md`): they admit it to
+//! The REPL is the person at the session's MCP server (`docs/runtime-mcp.md`): they admit it to
 //! act as them, and what it changes is theirs, attributed to them, in history and undo. Each entry
 //! is a program for the door's `tilo` tool (`docs/designs/app-language/agents.md`), the same call
 //! the session's agent makes, with the same session semantics: `let`s kept between entries,
@@ -282,7 +282,7 @@ impl Complete for Session {
     }
 }
 
-/// The agent door of the session `options` names.
+/// The MCP server of the session `options` names.
 fn locate(options: &ReplOptions) -> Result<PathBuf, String> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
     if let Some(door) = &options.door {
@@ -342,7 +342,7 @@ fn newest_nested(runtime: Option<&Path>) -> Result<PathBuf, String> {
         .collect();
     found.sort();
     found.pop().map(|(_, path)| path).ok_or_else(|| {
-        "no nested session with an agent door is running; start one (dist/dev/nested-session.sh), \
+        "no nested session with an MCP server is running; start one (dist/dev/nested-session.sh), \
          or name one with --session, --door PATH or --real"
             .to_owned()
     })

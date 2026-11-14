@@ -658,7 +658,7 @@ impl Workspaces {
 
     /// Say that `cert`, a key of its person's, runs the agent `name`: their
     /// record keeps it for every person's host, and the host's own person's
-    /// agent door lists the run.
+    /// MCP server lists the run.
     pub(crate) fn note_agent(
         &self,
         cert: &DeviceCert,
@@ -671,7 +671,7 @@ impl Workspaces {
         if cert.user_public_key == self.inner.host.cert.user_public_key
             && cert.device_public_key != self.inner.host.cert.device_public_key
         {
-            self.inner.agent_door.note(cert, name, stop);
+            self.inner.mcp_server.note(cert, name, stop);
         }
     }
 

@@ -15,7 +15,7 @@ use serde_json::Value;
 const MAX_STEPS: usize = 1000;
 
 /// Another of the person's devices an actor worked from, as the tab's record
-/// keeps it: the device the agent door verified the actor's connection came
+/// keeps it: the device the MCP server verified the actor's connection came
 /// from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Device {

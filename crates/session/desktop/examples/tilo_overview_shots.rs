@@ -21,11 +21,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use tilo_actions::remote::agent_door::{Door, Grant, Run};
 use tilo_actions::remote::host_account::{
     Entitlement, HostAccount, HostKind, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer,
     Standing, Usage, WorkspaceUsage,
 };
+use tilo_actions::remote::mcp_server::{Grant, Run, Server};
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::chrome::ClockSnapshot;
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
@@ -157,7 +157,7 @@ fn tilo_shell(build_box: &str) -> TiloOverview {
             HostAccount::sells_nothing("Framework 16", HostKind::Device),
             tilo_cloud(build_box),
         ],
-        door: Some(Door {
+        door: Some(Server {
             grants: vec![Grant {
                 id: "g1".into(),
                 agent: "Claude Code".into(),
@@ -168,7 +168,7 @@ fn tilo_shell(build_box: &str) -> TiloOverview {
                 browser_pages: true,
                 ..Grant::default()
             }],
-            ..Door::default()
+            ..Server::default()
         }),
         ..TiloOverview::default()
     }

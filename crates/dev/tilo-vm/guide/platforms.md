@@ -102,7 +102,7 @@ passt reaches out from the host, but not the host's other VMs, so two boxes
 on one machine could find each other only through an internet relay. So
 every libvirt VM tilo-vm makes also has a NIC on a network of its host's own:
 a branch is taken in by its source there (`vm branch`), and two boxes sync
-and reach each other's agent door there, with no internet.
+and reach each other's MCP server there, with no internet.
 
 - The network is QEMU's socket multicast on the host's loopback
   (`239.255.84.76`, a port of your own from your home directory,

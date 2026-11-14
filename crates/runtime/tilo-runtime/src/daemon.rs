@@ -60,14 +60,14 @@ pub struct Args {
     /// The client chose a standalone profile itself (`--standalone`,
     /// `--profile` or `TILO_RUNTIME_PROFILE`), so `--connect` attaches to
     /// that profile even inside a Tilo login, where it otherwise relays to
-    /// the desktop's agent door ([`crate::session_door`]).
+    /// the desktop's MCP server ([`crate::session_door`]).
     pub standalone: bool,
     /// `--device NAME [--workspace ID]`, for `--connect` only: carry the
-    /// client to that device of the person's agent door instead of this
+    /// client to that device of the person's MCP server instead of this
     /// one's ([`crate::remote_door`]).
     pub forward: Option<crate::remote_door::Forward>,
     /// `--workspace ID` without `--device`, for `--connect` only: the
-    /// workspace the client asks this desktop's agent door to let it work in,
+    /// workspace the client asks this desktop's MCP server to let it work in,
     /// rather than the one in front of the person. The person decides; it is
     /// never authority.
     pub workspace: Option<String>,
@@ -193,7 +193,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     let workspace = workspace.filter(|_| local);
     if workspace.is_some() && (standalone || explicit_profile) {
         return Err(invalid(
-            "--workspace asks the desktop's agent door for a workspace, not a standalone runtime",
+            "--workspace asks the desktop's MCP server for a workspace, not a standalone runtime",
         ));
     }
     Ok(Args {
@@ -847,7 +847,7 @@ struct Endpoint<H> {
     search: Arc<tilo_os_search::OsSearch>,
     /// Where answers read the content actions produced.
     media: Option<Arc<dyn crate::MediaReader>>,
-    /// The person's other devices' agent doors, as this runtime reaches them.
+    /// The person's other devices' MCP servers, as this runtime reaches them.
     remote: Option<Arc<crate::remote_door::Doors>>,
 }
 
@@ -902,7 +902,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .spawn(move || {
                     let _slot = slot;
                     // The first line says whether the client asks to be
-                    // carried to another device's agent door; anything else
+                    // carried to another device's MCP server; anything else
                     // is served here, that line first.
                     let mut reader = match stream.try_clone() {
                         Ok(clone) => BufReader::new(clone),
@@ -1094,13 +1094,13 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
 /// Bridge this process's stdio to the MCP host it belongs to: inside a
 /// confined environment, the door the environment names
 /// ([`tilo_paths::login::AGENT_SOCKET_ENV`]); inside a Tilo login, the
-/// desktop's agent door, which is never replaced by a standalone runtime;
+/// desktop's MCP server, which is never replaced by a standalone runtime;
 /// elsewhere, or when `standalone`, the persistent daemon of `profile`,
 /// started when none runs. EOF closes only this client's connection; neither
 /// applications nor the daemon are owned here.
 ///
 /// With `forward`, the host this process belongs to carries the connection on
-/// to the agent door of the device it names, and this process's stdio is that
+/// to the MCP server of the device it names, and this process's stdio is that
 /// door's once it opened ([`crate::remote_door::ask_forward`]). `workspace` is
 /// the workspace the client asks this desktop's door for, written into its
 /// `initialize`.
@@ -1126,7 +1126,7 @@ pub fn connect(
             .map_err(|error| crate::session_door::unreachable_door(&door, &error))?,
         crate::session_door::Route::Standalone if workspace.is_some() => {
             return Err(invalid(
-                "--workspace asks a Tilo desktop's agent door for a workspace, and this process \
+                "--workspace asks a Tilo desktop's MCP server for a workspace, and this process \
                  is not in a Tilo login",
             ));
         }

@@ -1,5 +1,5 @@
 //! An agent on one of the person's devices works on another of them over iroh:
-//! its client asks its own host to carry it to that device's agent door, the
+//! its client asks its own host to carry it to that device's MCP server, the
 //! door decides from the transport and the person's own store whether the
 //! dialing device is one of theirs, and an admitted agent is served there as an
 //! agent delegated by the person, named after the device it came from. Every
@@ -236,7 +236,7 @@ impl ActionHost for Host {
     }
 }
 
-/// B's agent door: each connection its endpoint opens is served as the
+/// B's MCP server: each connection its endpoint opens is served as the
 /// desktop's door serves one, admitted as the agent the device it came from
 /// names, for the person.
 #[derive(Clone, Default)]
@@ -347,7 +347,7 @@ async fn a(person: &Person, b: &B, others: &[&DeviceCert]) -> Arc<Doors> {
 
 /// A client of A's host asking to be carried to `device`, as
 /// `tilo-runtime-mcp --connect --device` does: A's host reads the line it
-/// opens with and carries it on, as its agent door does.
+/// opens with and carries it on, as its MCP server does.
 fn connect(
     doors: &Arc<Doors>,
     device: &str,

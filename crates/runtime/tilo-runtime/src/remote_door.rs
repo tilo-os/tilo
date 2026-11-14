@@ -1,8 +1,8 @@
-//! The agent door between the person's own devices.
+//! The MCP server between the person's own devices.
 //!
 //! An agent on one of the person's devices (A) steers another of them (B) over
 //! MCP as it would if it ran on B: A carries the agent's MCP lines over iroh,
-//! on [`ALPN`], to B's agent door, where the person — or B's own setting —
+//! on [`ALPN`], to B's MCP server, where the person — or B's own setting —
 //! admits it as an agent delegated by them, via A. Nothing else is new
 //! authority: B serves the connection as it serves a program of its own login
 //! ([`crate::session_door`]), through its broker's ordinary gate, in one
@@ -41,8 +41,8 @@ use tilo_peer_state::PersonalSync;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-/// ALPN of the agent door between two of the person's devices.
-pub const ALPN: &[u8] = b"tilo-agent-door/1";
+/// ALPN of the MCP server between two of the person's devices.
+pub const ALPN: &[u8] = b"tilo-mcp-server/1";
 
 /// The longest hello, answer or forward line either side reads.
 const MAX_LINE: usize = 64 * 1024;
@@ -339,7 +339,7 @@ pub struct Arrival {
     pub stream: UnixStream,
 }
 
-/// Where a door hands the connections it opened: the host's agent door.
+/// Where a door hands the connections it opened: the host's MCP server.
 pub trait Arrivals: Send + Sync {
     /// Take `arrival` to be asked about and served.
     ///
@@ -449,7 +449,7 @@ impl RemoteDoor {
                         return;
                     }
                     splice(send, recv, local).await;
-                    connection.close(0_u32.into(), b"the agent door closed");
+                    connection.close(0_u32.into(), b"the MCP server closed");
                     return;
                 }
                 Err(reason) => Answer::Refused { reason },
@@ -458,7 +458,7 @@ impl RemoteDoor {
                 tracing::info!(
                     device = %hex::encode(dialer),
                     reason = %refusal.reason(),
-                    "agent door: another device's connection is refused"
+                    "MCP server: another device's connection is refused"
                 );
                 Answer::Refused {
                     reason: refusal.reason(),
@@ -479,7 +479,7 @@ impl RemoteDoor {
         tracing::info!(
             device = %hex::encode(origin.key()),
             name = %origin.name(),
-            "agent door: one of the person's devices connects"
+            "MCP server: one of the person's devices connects"
         );
         self.arrivals.arrive(Arrival {
             origin,
@@ -756,7 +756,7 @@ impl Drop for Lines {
 }
 
 /// What a `--connect --device` client asks of its own host: carry this
-/// connection to that device's agent door.
+/// connection to that device's MCP server.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Forward {
@@ -1029,7 +1029,7 @@ impl Doors {
             let local = match into_tokio(local) {
                 Ok(local) => local,
                 Err(error) => {
-                    tracing::debug!(%error, "agent door: a forwarded client's socket");
+                    tracing::debug!(%error, "MCP server: a forwarded client's socket");
                     return;
                 }
             };

@@ -315,7 +315,7 @@ pub struct DeviceCapabilities {
     pub can_administer_devices: bool,
 
     /// The key belongs to an agent's grant, not to a machine of the person:
-    /// a service (the person's hosting provider's agent door, say) holds it
+    /// a service (the person's hosting provider's MCP server, say) holds it
     /// so an agent the person approved acts for them, in the workspaces the
     /// scope names and nowhere else. Such a certificate grants none of the
     /// flags above, expires within [`MAX_AGENT_GRANT_LIFETIME_NS`] unless it

@@ -1281,7 +1281,7 @@ fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
 }
 
 #[test]
-fn a_guest_reaches_the_session_through_its_own_agent_door() {
+fn a_guest_reaches_the_session_through_its_own_mcp_server() {
     require_guest!();
     let dir = tempfile::tempdir().unwrap();
     let images = dir.path().join("images");

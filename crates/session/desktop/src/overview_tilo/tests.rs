@@ -1,8 +1,8 @@
-use tilo_actions::remote::agent_door::{Door, Grant, Run};
 use tilo_actions::remote::host_account::{
     Entitlement, Invoice, InvoiceStatus, Limits, PaymentMethod, PlanOffer, Standing, Usage,
     WorkspaceUsage,
 };
+use tilo_actions::remote::mcp_server::{Grant, Run, Server};
 
 use super::*;
 
@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
     {
         en();
         let shell = TiloOverview {
-            door: Some(Door {
+            door: Some(Server {
                 grants: vec![Grant {
                     id: "g1".into(),
                     agent: "Claude Code".into(),
@@ -197,7 +197,7 @@ tilo_test_env::scenario! {
                     browser_pages: true,
                     ..Grant::default()
                 }],
-                ..Door::default()
+                ..Server::default()
             }),
             ..TiloOverview::default()
         };
@@ -255,7 +255,7 @@ tilo_test_env::scenario! {
     {
         en();
         let shell = TiloOverview {
-            door: Some(Door {
+            door: Some(Server {
                 grants: vec![Grant {
                     id: "g2".into(),
                     agent: "Cursor".into(),
@@ -265,7 +265,7 @@ tilo_test_env::scenario! {
                     },
                     ..Grant::default()
                 }],
-                ..Door::default()
+                ..Server::default()
             }),
             ..TiloOverview::default()
         };

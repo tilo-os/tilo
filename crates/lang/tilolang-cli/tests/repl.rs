@@ -1,4 +1,4 @@
-//! `tilolang repl` against a session's agent door.
+//! `tilolang repl` against a session's MCP server.
 //!
 //! The first tests need nothing running: a door that serves the agent tools but no `tilo` (a
 //! session from before programs on the door), which the REPL refuses cleanly, and asks the person

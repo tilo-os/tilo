@@ -403,8 +403,8 @@ pub(crate) fn access_fixture(
 ) -> Option<crate::panes::devices_access::AccessSample> {
     use crate::device_fleet::DeviceView;
     use crate::panes::devices_access::{AccessSample, Asking};
-    use ui::tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
     use ui::tilo_actions::remote::identity_admin::KeyKind;
+    use ui::tilo_actions::remote::mcp_server::{Grant, Reach, Run, Server};
     const MINUTE: i64 = 60_000;
     const DAY: i64 = 86_400_000;
     const NOW: i64 = 1_794_400_000_000;
@@ -449,7 +449,7 @@ pub(crate) fn access_fixture(
                 ..device(5, "Claude Code on laptop")
             },
         ],
-        door: Door {
+        door: Server {
             endpoint: "https://mcp.tilo.sh".into(),
             grants: vec![
                 Grant {

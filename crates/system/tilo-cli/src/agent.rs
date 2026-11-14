@@ -1,8 +1,8 @@
 //! `tilo agent`: the agents you run, and the models they run on.
 //!
-//! `connect` registers this desktop's agent door with an agent tool you run
+//! `connect` registers this desktop's MCP server with an agent tool you run
 //! in a terminal, so it can act on the desktop through the same actions a
-//! person has — or, with `--device`, the agent door of another of your own
+//! person has — or, with `--device`, the MCP server of another of your own
 //! devices, reached from this one. `check` says whether Tilo's own MCP server
 //! is in the agent running it, and answers, which is what `tilo login` leaves
 //! that agent to confirm: it is the only one that can, since it knows when
@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 
 use crate::nouns;
 
-/// The agent door an agent tool starts.
+/// The MCP server an agent tool starts.
 pub const DOOR: &str = "tilo-runtime-mcp";
 /// The program that keeps the model list.
 pub const MODELS: &str = "tilo-model-manager";

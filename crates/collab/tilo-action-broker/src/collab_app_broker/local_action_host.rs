@@ -216,7 +216,7 @@ impl AppBrokerState {
     }
 
     /// Preserve native physical intent without dropping the signed session.
-    /// Network, app and delegated-agent doors never select this entrypoint.
+    /// Network, app and delegated-MCP servers never select this entrypoint.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the checked host is a value moved into the answer, not a guard"

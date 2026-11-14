@@ -30,8 +30,6 @@ mod call;
 #[path = "support/mod.rs"]
 mod support;
 
-#[path = "agent_door.rs"]
-mod agent_door;
 #[path = "agent_login.rs"]
 mod agent_login;
 #[path = "browser_root.rs"]
@@ -80,6 +78,8 @@ mod late_join;
 mod login_codes;
 #[path = "lounge_fresh_page.rs"]
 mod lounge_fresh_page;
+#[path = "mcp_server.rs"]
+mod mcp_server;
 #[path = "message_latency.rs"]
 mod message_latency;
 #[path = "newcomer_channels.rs"]

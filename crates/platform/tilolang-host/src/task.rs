@@ -1,7 +1,7 @@
 //! The host of an agent task: its programs, their author the task
 //! (`docs/designs/app-language/agents.md`, "How a program runs").
 //!
-//! The agent door starts it on the task's first `tilo` call and it lives as long as the task:
+//! The MCP server starts it on the task's first `tilo` call and it lives as long as the task:
 //! until the door closes the task's program connection. It holds the task's session (the `let`s
 //! its programs bound) and no records, opens no windows and no broker connection of its own.
 //! Every program comes in on the program connection, and everything a program reads or changes

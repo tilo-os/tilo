@@ -17,7 +17,7 @@
 //! overview shows; a press on one is an [`OverviewPick`] the host carries
 //! out, as every pick of the overview is.
 //!
-//! The agents' rows are the agent door's ([`door::DoorRead`]): the read the
+//! The agents' rows are the MCP server's ([`door::DoorRead`]): the read the
 //! host serves, followed while the overview is up, so the rows say who was
 //! let in, what each may reach and what is working, as that changes. An
 //! agent is drawn as presence draws it everywhere, so it reads as itself
@@ -30,8 +30,8 @@ pub mod door;
 
 use std::time::Duration;
 
-use tilo_actions::remote::agent_door::{self, Reach};
 use tilo_actions::remote::host_account::{HostAccount, HostKind};
+use tilo_actions::remote::mcp_server::{self, Reach};
 use ui::icons::Icon;
 use ui::tokens::PresenceHue;
 use ui::widget::{Fact, Tone};
@@ -48,8 +48,8 @@ pub struct TiloOverview {
     /// Each host's answer for the person's account
     /// ([`tilo_actions::remote::host_account::ACCOUNT`]).
     pub hosts: Vec<HostAccount>,
-    /// The agent door's answer, when one answers ([`agent_door::DOOR`]).
-    pub door: Option<agent_door::Door>,
+    /// The MCP server's answer, when one answers ([`mcp_server::SERVER`]).
+    pub door: Option<mcp_server::Server>,
 }
 
 /// One row below the workspaces.
@@ -241,13 +241,13 @@ fn host_row(index: usize, host: &HostAccount) -> TiloItem {
 
 /// The colour every face of an agent wears: the one its own id is known by
 /// ([`ui::presence::member_hue`]), the same its face on the bar, its card and its marks wear.
-fn agent_hue(grant: &agent_door::Grant) -> PresenceHue {
+fn agent_hue(grant: &mcp_server::Grant) -> PresenceHue {
     ui::presence::member_hue(&ui::permissions::MemberId::agent(&grant.agent), None)
 }
 
 /// What a grant may reach: the words its row says it with, and the same words inside the
 /// sentence naming what revoking takes.
-fn agent_reach(grant: &agent_door::Grant) -> (String, String) {
+fn agent_reach(grant: &mcp_server::Grant) -> (String, String) {
     match &grant.reach {
         // A fact starts a line, a sentence does not.
         Reach::Account => (
@@ -261,7 +261,7 @@ fn agent_reach(grant: &agent_door::Grant) -> (String, String) {
 /// An agent let in: its face, what it may reach, what it is doing now, the way to its card, and
 /// the way to take its grant back. Revoking ends its access and its runs, so that control asks
 /// first.
-fn agent_row(grant: &agent_door::Grant) -> TiloItem {
+fn agent_row(grant: &mcp_server::Grant) -> TiloItem {
     let hue = agent_hue(grant);
     let (reach, in_sentence) = agent_reach(grant);
     let mut facts = vec![Fact::text(reach)];

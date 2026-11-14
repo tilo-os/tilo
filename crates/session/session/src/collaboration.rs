@@ -120,14 +120,14 @@ impl Session {
         let runs: Vec<(String, String, ShellPresence)> = self.shared.handle.read(|tree| {
             present
                 .into_iter()
-                .map(|seated| {
-                    let (line, focus) = match &seated.doing {
+                .map(|present| {
+                    let (line, focus) = match &present.doing {
                         // The window of the app it acts in, and what that window is called: the
                         // note, the sheet, the meeting. What it does is said on that record, as
                         // the window's own activity cards say it.
                         Some(doing) => {
                             let window = doing.app.as_deref().and_then(|app| {
-                                app_window(tree, &self.shared.notes, &seated.workspace, app)
+                                app_window(tree, &self.shared.notes, &present.workspace, app)
                             });
                             let step = tilo_actions::Step::new(
                                 doing.step.unwrap_or(tilo_actions::StepKind::Work),
@@ -142,19 +142,19 @@ impl Session {
                     // of its sessions, and clear of the colour of the person it works for — the one
                     // rule and the one key every surface asks.
                     let (r, g, b) = ui::presence::member_color(
-                        &ui::permissions::MemberId::agent(&seated.agent),
+                        &ui::permissions::MemberId::agent(&present.agent),
                         Some(&self.shared.person),
                     );
                     let face = tilo_session_client::presence::view(
                         0,
                         ui::time::unix_now_ms(),
-                        &seated.name,
+                        &present.name,
                         [r, g, b],
                         Some(line),
                         focus.as_ref(),
                         None,
                     );
-                    (seated.workspace, seated.session.0, face)
+                    (present.workspace, present.session.0, face)
                 })
                 .collect()
         });

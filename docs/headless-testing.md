@@ -19,7 +19,7 @@ A session binds its Wayland socket, its doors and its files under `$XDG_RUNTIME_
 |---|---|---|
 | `wayland-display` | the compositor, when it binds its socket (`Compositor::listen`) | everything that starts a program beside the session: `tilo-app dev`, `scripts/agent-loop/session.py`, `real_apps.ScriptedSession` |
 | `workspace-id` | the session, on every workspace switch | `tilo-app dev`, which names it to the session's file chooser with the app; `scripts/agent-loop/session.py`, which waits for it |
-| `agent.sock` | the session's agent door, for a session that owns the machine | `tilo-runtime-mcp --connect`, `tilolang repl --door` |
+| `agent.sock` | the session's MCP server, for a session that owns the machine | `tilo-runtime-mcp --connect`, `tilolang repl --door` |
 | `test-control.sock` | a development build, or `--test-control PATH` | `tilo-control`, every harness here |
 | `admin-control.sock` | a session that owns the machine, for the device's owner | `tilo-control --socket …` (semantic ops only) |
 | `headless-owner-control.sock` | a headless session started with `--headless-owner-control` | the same, for an owner's scripts |
@@ -264,7 +264,7 @@ Read the ids the app publishes (`apps/tl/<app>/app.ids`) rather than its words; 
 # tears the session down.
 ```
 
-- `real_apps.py` — the one client: `Session` (the tree's apps), `ScriptedSession` (a build of its own), `Agent` (the agent door), `Session.attach` (a session another tool started)
+- `real_apps.py` — the one client: `Session` (the tree's apps), `ScriptedSession` (a build of its own), `Agent` (the MCP server), `Session.attach` (a session another tool started)
 - `reaper.py` — takes a session down, process group and all
 - `list-targets.py`, `click-and-snapshot.py`, `keyboard-flow.py`, `drag-demo.py`, `full-loop.py` — one op each
 - `first-frame.py`, `startup-frame-timeline.py` — what a session's first frame costs

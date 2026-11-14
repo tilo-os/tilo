@@ -76,9 +76,9 @@ GUEST_AGENT = HERE / "guest" / "agent.py"
 GUEST_DIR = ".cache/e2e-remote"
 MARK = "E2E-MCP "
 SLOT = "me"
-# What the boxes' sessions log of the agent door, its remote side and the questions it asks.
-DOOR_LOG = ("info,tilo_session::agent_door=debug,tilo_session::remote_door=debug,"
-            "tilo_session::questions=debug,tilo_session::agent_door::seats=debug")
+# What the boxes' sessions log of the MCP server, its remote side and the questions it asks.
+DOOR_LOG = ("info,tilo_session::mcp_server=debug,tilo_session::remote_door=debug,"
+            "tilo_session::questions=debug,tilo_session::agent_sessions=debug")
 # Each box: guest memory and CPUs. Three fit beside each other in the micro-VM.
 # A, B and D run side by side; C runs beside B once A and D have stopped. A box takes 3 GiB: with less its
 # first login's onboarding does not come up (1.6 GiB boxes never showed it). A micro-VM t booked
@@ -97,12 +97,12 @@ _TOTAL_MB, _NPROC = _host() if Path("/proc/meminfo").exists() else (0, 0)
 OUTPUT = "1280x800"
 # How long a step that waits on the boxes finding each other may take.
 FIND_S = 180
-# The agent door sheet's choice and button, as the person reads them (en-US).
+# The MCP server sheet's choice and button, as the person reads them (en-US).
 ALLOW_ONCE = "Allow once"
 ALLOW = "Allow"
 DENY = "Deny"
 # The choice only the door's own sheet offers: a sheet with "Allow once" and without it asks
-# about one step of an agent that is in already (crates/session/session/src/run_questions.rs).
+# about one step of an agent that is in already (crates/session/session/src/step_questions.rs).
 ALLOW_SESSION = "Allow for this session"
 # The Browser, as the desk names the app.
 BROWSER = "so.tilo.browser"
@@ -321,7 +321,7 @@ class Run:
                 pass
 
     def keep_logs(self, box: Box) -> None:
-        """What `box`'s session said, for a run that failed: its agent door, its endpoint and
+        """What `box`'s session said, for a run that failed: its MCP server, its endpoint and
         its identity, without the per-frame statistics; what it shows and what it lists."""
         for name, fetch in (("targets", lambda: box.vm.targets()), ("state", lambda: box.vm.state()),
                             ("identity", lambda: box.vm.exec("tilo-identity --json status", timeout=60,
@@ -348,7 +348,7 @@ class Run:
         kept = [l for l in text.splitlines() if not any(n in l for n in noise)]
         self.write(f"logs-{box.letter}.txt", "\n".join(kept))
         # A failed run keeps no outputs: what matters of it goes to the log.
-        telling = ("agent door", "agent_door", "remote_door", "questions", "lan:", "onboarding",
+        telling = ("MCP server", "mcp_server", "remote_door", "questions", "lan:", "onboarding",
                    "identity", "personal", "ERROR", "WARN", "panicked", "refused", "branch")
         excerpt = ([l for l in kept if any(t in l for t in telling)][-200:]
                    + ["  (its last lines)"] + kept[-40:])
@@ -419,7 +419,7 @@ class Run:
 
     # -- B's desk ------------------------------------------------------------------
 
-    def seated(self, box: Box) -> list[dict]:
+    def agent_sessions(self, box: Box) -> list[dict]:
         dump = box.vm.state()
         return (dump.get("state") or dump).get("agents") or []
 
@@ -447,13 +447,13 @@ class Run:
             time.sleep(0.5)
 
     def set_accept(self, box: Box, on: bool) -> dict:
-        return self.set_agent_door(box, "set-accept-own-devices", on)
+        return self.set_mcp_server(box, "set-accept-own-devices", on)
 
     def set_unasked(self, box: Box, on: bool) -> dict:
-        """B's second agent door setting, "Let them act without asking"."""
-        return self.set_agent_door(box, "set-act-without-asking", on)
+        """B's second MCP server setting, "Let them act without asking"."""
+        return self.set_mcp_server(box, "set-act-without-asking", on)
 
-    def set_agent_door(self, box: Box, verb: str, on: bool) -> dict:
+    def set_mcp_server(self, box: Box, verb: str, on: bool) -> dict:
         row = self.find_row(box, verb, "agents") or self.find_row(box, verb)
         if row is None:
             raise Failed(f"{box.name} lists no {verb} action")
@@ -462,7 +462,7 @@ class Run:
     def allow_step_once(self, box: Box, res: Result) -> None:
         """The person at `box` allows the step a run asks about once: the run's sheet has its
         "Allow once" as a button of its own (crates/session/session/src/questions.rs,
-        `run_question`)."""
+        `step_question`)."""
         targets = self.targets(box)
         self.write(f"targets-{box.letter}-step-{int(time.time())}.json", targets)
         res.facts.setdefault("step_sheets", []).append(
@@ -572,7 +572,7 @@ class Run:
             raise Failed(f"A's person has no certified device after onboarding: {status}")
 
     def log_door(self, box: Box) -> None:
-        """Have `box` 's session log its agent door and questions at debug from its next start
+        """Have `box` 's session log its MCP server and questions at debug from its next start
         on; B, branched from A, inherits it. Read back only when a step fails."""
         box.vm.root_exec(
             f"d=/etc/systemd/system/tilo-vm-session@{SLOT}.service.d; mkdir -p $d && "
@@ -710,7 +710,7 @@ class Run:
             raise Failed(f"{box.name} never asked its person about the agent within {within}s")
 
     def sheet_targets(self, box: Box) -> list[dict]:
-        """The agent door's sheet, when it is up on `box`: its "Allow once" choice."""
+        """The MCP server's sheet, when it is up on `box`: its "Allow once" choice."""
         try:
             return [t for t in self.targets(box) if t.get("name") == ALLOW_ONCE]
         except VmError:
@@ -731,19 +731,19 @@ class Run:
         gone = wait_until(lambda: not self.sheet_targets(b), 30, 1.0)
         if not gone:
             raise Failed("B's question stayed up after the agent left")
-        if self.seated(b):
-            raise Failed(f"an agent is seated on B: {self.seated(b)}")
+        if self.agent_sessions(b):
+            raise Failed(f"an agent is seated on B: {self.agent_sessions(b)}")
 
     def approve_and_stop(self, a: Box, b: Box, res: Result, facts: dict) -> None:
         ready = f"$HOME/{GUEST_DIR}/stop-ready"
         a.vm.exec(f'rm -f "{ready}"')
         thread, holder = self.agent_beside(a, "stop", facts["command"], E2E_READY=ready, E2E_WAIT_S="90")
         self.answer_when_asked(b, res, thread)
-        seated = wait_until(lambda: [s for s in self.seated(b) if s.get("seat")], 60, 1.0)
-        res.facts["seated"] = seated
-        if not seated:
+        sessions = wait_until(lambda: [s for s in self.agent_sessions(b) if s.get("stoppable")], 60, 1.0)
+        res.facts["sessions"] = sessions
+        if not sessions:
             raise Failed("B seats no agent after its person allowed it")
-        agent = seated[0]["key"]
+        agent = sessions[0]["key"]
         if not wait_until(lambda: "yes" in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'), 120, 1.0):
             raise Failed("the agent never got through its first calls on B")
         res.facts["stopped"] = self.stop_agent(b, agent)
@@ -753,8 +753,8 @@ class Run:
         last = (t.get("after_stop") or [{}])[-1].get("reply")
         if last not in (None,) and not (isinstance(last, dict) and "error" in last):
             raise Failed(f"A's connection did not end after B's Stop: {t.get('after_stop')}")
-        if [s for s in self.seated(b) if s.get("seat")]:
-            raise Failed(f"B still seats the agent after its Stop: {self.seated(b)}")
+        if [s for s in self.agent_sessions(b) if s.get("stoppable")]:
+            raise Failed(f"B still seats the agent after its Stop: {self.agent_sessions(b)}")
 
     def unasked(self, res: Result, names: list[str]) -> None:
         """Nobody sits at B and both its settings are on, so no sheet may be up on it: neither
@@ -780,9 +780,9 @@ class Run:
         title = f"From A {int(time.time())}"
         thread, holder = self.agent_beside(a, "work", facts["command"], E2E_READY=ready, E2E_GO=go,
                                            E2E_TITLE=title, E2E_WAIT_S="60")
-        seated = wait_until(lambda: [s for s in self.seated(b) if s.get("seat")], 90, 1.0)
-        res.facts["seated"] = seated
-        if not seated:
+        sessions = wait_until(lambda: [s for s in self.agent_sessions(b) if s.get("stoppable")], 90, 1.0)
+        res.facts["sessions"] = sessions
+        if not sessions:
             names = [t.get("name") for t in self.targets(b)]
             raise Failed("B seats no agent although its setting lets the person's devices in; "
                          f"its screen names {names}")
@@ -805,13 +805,13 @@ class Run:
                 self.allow_step_once(b, res)
             thread.join(1.0)
         t = self.finish(thread, holder)
-        self.check_work(a, b, res, t, seated, title)
+        self.check_work(a, b, res, t, sessions, title)
 
     def work_unasked(self, a: Box, b: Box, res: Result, facts: dict) -> None:
         """Both settings on: the agent's whole work goes through with no sheet ever up on B."""
         self.no_sheet_before(b)
-        if wait_until(lambda: not [s for s in self.seated(b) if s.get("seat")], 60, 1.0) is None:
-            raise Failed(f"E08's agent is still seated on B: {self.seated(b)}")
+        if wait_until(lambda: not [s for s in self.agent_sessions(b) if s.get("stoppable")], 60, 1.0) is None:
+            raise Failed(f"E08's agent is still seated on B: {self.agent_sessions(b)}")
         res.facts["setting"] = self.set_accept(b, True)
         res.facts["unasked"] = self.set_unasked(b, True)
         ready, go = f"$HOME/{GUEST_DIR}/work-ready", f"$HOME/{GUEST_DIR}/work-go"
@@ -819,8 +819,8 @@ class Run:
         title = f"From A unasked {int(time.time())}"
         thread, holder = self.agent_beside(a, "work", facts["command"], E2E_READY=ready, E2E_GO=go,
                                            E2E_TITLE=title, E2E_WAIT_S="60")
-        seated = wait_until(lambda: [s for s in self.seated(b) if s.get("seat")], 90, 1.0)
-        res.facts["seated"] = seated
+        sessions = wait_until(lambda: [s for s in self.agent_sessions(b) if s.get("stoppable")], 90, 1.0)
+        res.facts["sessions"] = sessions
         sheets: list = []
 
         def watch() -> None:
@@ -842,7 +842,7 @@ class Run:
         if sheets:
             self.unasked(res, [str(name) for name in sheets[0]])
         t = self.finish(thread, holder)
-        self.check_work(a, b, res, t, seated, title)
+        self.check_work(a, b, res, t, sessions, title)
 
     def no_sheet_before(self, b: Box) -> None:
         # What an earlier agent asked is withdrawn once it is gone: no sheet stands on B before
@@ -851,7 +851,7 @@ class Run:
             names = [t.get("name") for t in self.targets(b)]
             raise Failed(f"a question about an agent that left still stands on B's desk: {names}")
 
-    def check_work(self, a: Box, b: Box, res: Result, t: dict, seated: list, title: str) -> None:
+    def check_work(self, a: Box, b: Box, res: Result, t: dict, sessions: list, title: str) -> None:
         for key in ("initialize", "devices", "apps", "open_notes", "new_note", "found_note"):
             res.facts[key] = t.get(key) if key == "initialize" else text_of(t.get(key)) or t.get(key)
         if not (isinstance(t.get("initialize"), dict) and "result" in t["initialize"]):
@@ -859,9 +859,9 @@ class Run:
         opened = t.get("open_notes")
         if not (isinstance(opened, dict) and (opened.get("result") or {}).get("isError") is False):
             raise Failed(f"the agent's notes#open did not go through on B: {opened}")
-        if not seated:
+        if not sessions:
             raise Failed("B seats no agent")
-        agent = seated[0]["key"]
+        agent = sessions[0]["key"]
         name_a = (a.identity.get("this_device") or {}).get("device", "")[:8]
         if not agent.startswith("claude-code@") or name_a not in agent:
             raise Failed(f"B seats the agent as {agent!r}, not as claude-code@<A>-{name_a}")
@@ -1057,7 +1057,7 @@ class Run:
                 if not reads():
                     raise Failed(f"the agent on {box.letter.upper()} never read the form in B's tab: "
                                  f"{json.dumps(held, ensure_ascii=False)[:600]}")
-            res.facts["seated"] = [s.get("key") for s in self.seated(b) if s.get("seat")]
+            res.facts["sessions"] = [s.get("key") for s in self.agent_sessions(b) if s.get("stoppable")]
             # All of them answer in the same moment.
             starters = [threading.Thread(target=lambda box=party.box, go=go: box.vm.exec(f'touch "{go}"'))
                         for party, _, _, go in runs]
@@ -2173,7 +2173,7 @@ class Run:
         said = json.dumps(t)
         if "someone else" not in said and "refus" not in said.lower():
             raise Failed(f"C was not told B's door refused it: {said[:1500]}")
-        if [s for s in self.seated(b) if s.get("seat") and "claude-code" in s.get("key", "")
+        if [s for s in self.agent_sessions(b) if s.get("stoppable") and "claude-code" in s.get("key", "")
                 and (sc.get("this_device") or {}).get("device", "")[:8] in s.get("key", "")]:
             raise Failed("B seats C's agent")
 

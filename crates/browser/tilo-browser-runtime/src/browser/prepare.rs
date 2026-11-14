@@ -125,7 +125,7 @@ impl tilo_session::platform::Models for PageModels {
     }
 }
 
-/// The session that serves this desktop's windows, what it opens, its agent door, and the
+/// The session that serves this desktop's windows, what it opens, its MCP server, and the
 /// notifications the shell posts: served before the chrome reads any of them.
 pub(super) fn serve_session(
     surface: &mut tilo_desktop_surface::DesktopSurface,
@@ -135,12 +135,12 @@ pub(super) fn serve_session(
 ) -> (
     Arc<tilo_desktop_surface::session::DesktopSession>,
     tilo_desktop_surface::session::Openings,
-    crate::agent_door::Revoked,
+    crate::mcp_server::Revoked,
 ) {
     let (session, openings) =
         tilo_desktop_surface::session::serve(config.workspace.clone(), Arc::clone(&shared.woken));
     surface.serve_activity(openings.activity());
-    let revoked = config.agent_door(&session, &shared.woken);
+    let revoked = config.mcp_server(&session, &shared.woken);
     surface.set_notifications(persistence.notifications.clone());
     if let Some(inbox) = crate::host_services::notification_inbox() {
         surface.set_app_notifications(inbox);

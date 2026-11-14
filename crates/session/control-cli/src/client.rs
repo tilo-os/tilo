@@ -119,7 +119,7 @@ pub enum Door {
     Named(PathBuf),
     /// The device admin's own socket: their login or ssh, never an app.
     Admin(PathBuf),
-    /// The session's agent door: the socket a process inside an app the
+    /// The session's MCP server: the socket a process inside an app the
     /// session launched — a terminal, and what runs in it — reaches. It acts
     /// with that app's workspace scope, never the admin's authority.
     Agent(PathBuf),
@@ -136,7 +136,7 @@ impl Door {
 
 /// The doors a semantic request may go through, in the order to try them:
 /// the named development socket alone when `$TILO_TEST_CONTROL` is set;
-/// otherwise the admin's socket, then the agent door. Empty without a
+/// otherwise the admin's socket, then the MCP server. Empty without a
 /// private runtime directory.
 #[must_use]
 pub fn semantic_doors(test_control: Option<OsString>, runtime_dir: Option<OsString>) -> Vec<Door> {
@@ -287,7 +287,7 @@ impl Desktop {
 
 /// Whether `answer`, a door's first, turns away the process itself rather
 /// than answering its request: the admin socket's `not_permitted` refusal
-/// of a connection, or the agent door's JSON-RPC error. Returns the door's
+/// of a connection, or the MCP server's JSON-RPC error. Returns the door's
 /// own words, for logs; a person is shown a plain sentence instead.
 #[must_use]
 pub fn refusal_of_process(door: &Door, answer: &serde_json::Value) -> Option<String> {

@@ -3,17 +3,17 @@
 
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::tilo_actions::remote::agent_door as door;
+use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ButtonRole, ChipStyle, ListRow, Property, PropertyList, Section};
 
 use crate::{Console, Doors, Reads, ago, faced, page, tr, trf};
 
-const fn client_label(client: door::Client) -> &'static str {
+const fn client_label(client: mcp_server::Client) -> &'static str {
     match client {
-        door::Client::ClaudeCode => "console-client-claude-code",
-        door::Client::Codex => "console-client-codex",
-        door::Client::Other => "console-client-other",
+        mcp_server::Client::ClaudeCode => "console-client-claude-code",
+        mcp_server::Client::Codex => "console-client-codex",
+        mcp_server::Client::Other => "console-client-other",
     }
 }
 
@@ -21,7 +21,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
     let doors = Doors::of(cx);
     let read = &reads.door;
     Box::new(cx.arriving(&read.answer(), move |_, door| {
-        let commands = door::Client::ALL
+        let commands = mcp_server::Client::ALL
             .into_iter()
             .map(|client| {
                 Property::new(tr(client_label(client)), client.command(&door.endpoint))
@@ -60,17 +60,17 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
 }
 
 /// Where the grant lets the agent work, in words.
-pub(crate) fn access(grant: &door::Grant) -> String {
+pub(crate) fn access(grant: &mcp_server::Grant) -> String {
     match &grant.reach {
-        door::Reach::Account => tr("console-reach-account"),
-        door::Reach::Workspace { name, .. } => trf(
+        mcp_server::Reach::Account => tr("console-reach-account"),
+        mcp_server::Reach::Workspace { name, .. } => trf(
             "console-reach-workspace",
             &[("workspace", name.clone().into())],
         ),
     }
 }
 
-fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
+fn grant_row(doors: &Doors, index: usize, grant: &mcp_server::Grant) -> Element {
     let agent = wire::Author {
         name: grant.agent.clone(),
         relation: wire::Relation::Software,
@@ -100,7 +100,10 @@ fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
         )
         .role(ButtonRole::Destructive)
         .on_view(move || {
-            doors.door(door::REVOKE, &door::GrantRef { grant: id.clone() });
+            doors.door(
+                mcp_server::REVOKE,
+                &mcp_server::GrantRef { grant: id.clone() },
+            );
         })
     };
     // What the agent may reach says on a line of its own that wraps: it is the whole of

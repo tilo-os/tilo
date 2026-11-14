@@ -1202,7 +1202,7 @@ impl std::fmt::Display for ParticipantId {
 const MAX_DEVICE_NAME_CHARS: usize = 64;
 
 /// Another of its person's devices that an agent works from: the device the
-/// agent door that admitted the agent's connection verified it came from, by
+/// MCP server that admitted the agent's connection verified it came from, by
 /// the certificate the person's root signed for it.
 ///
 /// It says where the agent runs, and grants nothing: who the agent is and
@@ -1272,7 +1272,7 @@ pub struct ActionInvoker {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The other device of its person's an agent works from, when it came to
-    /// this host through its agent door. Set only by the host that admitted
+    /// this host through its MCP server. Set only by the host that admitted
     /// the connection, from the device certificate the door verified, and
     /// never taken from a request. `None` for an actor on the host's own
     /// device.

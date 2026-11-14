@@ -151,8 +151,8 @@ pub enum DesktopAsk {
     ForceQuitApp(TabId),
     /// The pointer on the switcher's panel: which card it stands over, and whether it pressed it.
     Switcher(SwitcherAsk),
-    /// The person took back the agent door's grant `id` in the overview of their Tilo
-    /// (`tilo_actions::remote::agent_door::REVOKE`).
+    /// The person took back the MCP server's grant `id` in the overview of their Tilo
+    /// (`tilo_actions::remote::mcp_server::REVOKE`).
     RevokeAgentGrant(String),
     /// The person pressed the agent of `client` in the overview of their Tilo: the host opens its
     /// card beside the work, the same card its face opens anywhere else.

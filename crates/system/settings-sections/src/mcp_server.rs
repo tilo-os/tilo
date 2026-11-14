@@ -1,4 +1,4 @@
-//! This device's agent door (`agent_door`): whether an agent on another of
+//! This device's MCP server (`mcp_server`): whether an agent on another of
 //! the person's own devices works here without the person being asked here,
 //! and whether its steps then go unasked too. The session reads it when such
 //! an agent connects and when it asks; it stays on this device, so a box
@@ -7,12 +7,12 @@
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
 
-/// The agent door's setting on this device.
+/// The MCP server's setting on this device.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
 )]
 #[model(defaults)]
-pub struct AgentDoorDevice {
+pub struct McpServerDevice {
     /// Accept agents from my other devices: an agent that connects from
     /// another of your own devices works here without asking you on this
     /// one. Off unless you turn it on.
@@ -27,13 +27,13 @@ pub struct AgentDoorDevice {
     pub act_without_asking: bool,
 }
 
-impl ui::storage::SettingsSchema for AgentDoorDevice {
+impl ui::storage::SettingsSchema for McpServerDevice {
     const SCOPE: ui::storage::Scope =
-        ui::storage::Scope::Shared(settings_store::agent_door::SECTION);
+        ui::storage::Scope::Shared(settings_store::mcp_server::SECTION);
 }
 
-#[ui::tilo_resource::resource(kind = "settings.agent-door")]
-impl AgentDoorDevice {
+#[ui::tilo_resource::resource(kind = "settings.mcp-server")]
+impl McpServerDevice {
     /// Accept agents from my other devices without asking on this one, or
     /// ask again.
     #[action(id = "set-accept-own-devices")]

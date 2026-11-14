@@ -390,10 +390,10 @@ fn do_validates_then_invokes_through_a_control_socket() {
 
 /// From inside an app — the Terminal app and what runs in it — the admin
 /// socket turns the process away. The same commands then list and run
-/// through the session's agent door, which acts with that terminal's
+/// through the session's MCP server, which acts with that terminal's
 /// workspace scope; nothing is widened.
 #[test]
-fn inside_a_sandboxed_app_actions_list_and_run_through_the_agent_door() {
+fn inside_a_sandboxed_app_actions_list_and_run_through_the_mcp_server() {
     let dir = tempfile::tempdir().expect("tempdir");
     let admin = FakeDoor::serve(dir.path(), "admin-control.sock", admin_refusal, true);
     let agent = FakeDoor::serve(dir.path(), "agent.sock", desktop_answer, false);
@@ -417,7 +417,7 @@ fn inside_a_sandboxed_app_actions_list_and_run_through_the_agent_door() {
 
     let done = ran(|io| run(&doors, "new-terminal-window", &[], &spelling, io));
     assert_eq!(done.code, 0, "{}", done.err);
-    assert_eq!(agent.invocations().len(), 1, "run through the agent door");
+    assert_eq!(agent.invocations().len(), 1, "run through the MCP server");
     assert!(
         admin.invocations().is_empty(),
         "nothing ran through the admin socket"
@@ -428,13 +428,13 @@ fn inside_a_sandboxed_app_actions_list_and_run_through_the_agent_door() {
         admin.requests()
     );
 
-    // An agent door that turns the process away too ends in one sentence.
+    // An MCP server that turns the process away too ends in one sentence.
     let refusing = FakeDoor::serve(
         dir.path(),
         "refusing-agent.sock",
         |_| {
             serde_json::json!({"jsonrpc": "2.0", "id": null,
-            "error": {"code": -32001, "message": "a sandboxed process cannot use the agent door"}})
+            "error": {"code": -32001, "message": "a sandboxed process cannot use the MCP server"}})
         },
         true,
     );

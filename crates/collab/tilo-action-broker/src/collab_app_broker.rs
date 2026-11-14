@@ -2837,7 +2837,7 @@ pub struct AppBrokerState {
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
     /// The host each launched task agent's run takes its host steps through
-    /// (a task's programs), by run: the same the agent door's connection is,
+    /// (a task's programs), by run: the same the MCP server's connection is,
     /// one for the run, so each step is read back by the caller that took
     /// it. Made at its first host step; gone with the agent's stream.
     run_task_hosts: Mutex<HashMap<u64, TaskRunHost>>,

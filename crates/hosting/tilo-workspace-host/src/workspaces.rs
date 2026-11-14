@@ -21,7 +21,6 @@
 
 mod actions;
 mod admissions;
-mod agent_door;
 #[cfg(feature = "agents")]
 mod agent_members;
 pub mod app_files;
@@ -32,6 +31,7 @@ mod authority;
 mod bootstrap;
 mod channel_governance;
 mod index;
+mod mcp_server;
 pub(crate) use bootstrap::member_bootstrap;
 mod collaboration;
 mod content;
@@ -990,8 +990,8 @@ struct WorkspacesInner {
     /// here ([`personal`]).
     online: std::sync::Mutex<HashMap<[u8; 32], usize>>,
     /// The devices the host's own person runs an agent on, and their open
-    /// sessions ([`agent_door`]).
-    agent_door: agent_door::AgentDoor,
+    /// sessions ([`mcp_server`]).
+    mcp_server: mcp_server::McpServer,
     /// The task following where this host answers ([`hosts::Workspaces::follow_own_address`]),
     /// aborted with the host: it holds the endpoint's address watcher, which keeps the
     /// endpoint's socket open until it goes.
@@ -1231,7 +1231,7 @@ impl Workspaces {
                 memberships: memberships::Memberships::default(),
                 personal: personal::PersonalLists::new(&dir),
                 online: std::sync::Mutex::default(),
-                agent_door: agent_door::AgentDoor::default(),
+                mcp_server: mcp_server::McpServer::default(),
                 own_address: std::sync::OnceLock::new(),
             }),
         };

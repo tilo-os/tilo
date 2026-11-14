@@ -884,8 +884,8 @@ impl Session {
         self.store.ensure()?;
         let (key, environment) = self.resolve_record()?;
         let door =
-            crate::agent_door::open_for(&self.store, &self.environment_id(&key), &environment);
-        self.opts.agent_door = door.as_ref().map(|door| door.path().to_path_buf());
+            crate::mcp_server::open_for(&self.store, &self.environment_id(&key), &environment);
+        self.opts.mcp_server = door.as_ref().map(|door| door.path().to_path_buf());
         let session_dir = self.store.session_dir(&self.session_id);
         std::fs::create_dir_all(&session_dir)?;
         let outcome = self.tilo_side_in(key, environment, &session_dir, script);
@@ -1124,7 +1124,7 @@ impl Session {
             }
         }
         env.extend(self.workspace_env(&resolved.key));
-        if self.opts.agent_door.is_some() {
+        if self.opts.mcp_server.is_some() {
             env.push((
                 tilo_paths::login::AGENT_SOCKET_ENV.to_owned(),
                 tilo_paths::login::GUEST_AGENT_SOCKET.to_owned(),

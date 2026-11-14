@@ -1262,7 +1262,7 @@ fields = [
 ]
 
 [[resources]]
-kind = "settings.agent-door"
+kind = "settings.mcp-server"
 label = "Agents from your other devices"
 version = 1
 person = true

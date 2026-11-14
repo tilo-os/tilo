@@ -752,7 +752,7 @@ fn compose(question: &Question) -> Option<Composed> {
         tilo_bluetooth_agent::KIND => pairing(&question.handle, details)?,
         crate::mcp_server::KIND => admitted(&question.handle, &who, details)?,
         crate::network::AGENT_QUESTION => agent_question(&question.handle, details)?,
-        crate::run_questions::KIND => run_question(&question.handle, details)?,
+        crate::step_questions::KIND => step_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
         crate::turn_questions::KIND => turn_question(&question.handle, details)?,
         _ => return None,
@@ -889,10 +889,10 @@ fn agent_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
 
 /// What an agent's run asks before a step its grants leave to the person, or an app before it takes
 /// another app's action: the step, what it would do, and whether to allow it once, allow the agent
-/// or the app every such step, or deny it ([`crate::run_questions`]).
-fn run_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
-    use crate::run_questions::{ALLOW_AGENT, ALLOW_ONCE, RunQuestion};
-    let asked: RunQuestion = serde_json::from_value(details).ok()?;
+/// or the app every such step, or deny it ([`crate::step_questions`]).
+fn step_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    use crate::step_questions::{ALLOW_AGENT, ALLOW_ONCE, StepQuestion};
+    let asked: StepQuestion = serde_json::from_value(details).ok()?;
     // An app asking to take another app's action is named as the person knows both apps; a
     // label that asks for more ("File a note…") is the step itself here, its arguments below it.
     let (title, detail, always) = match &asked.target {
@@ -909,11 +909,11 @@ fn run_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
         ),
         None => (
             words(
-                "run-question-title",
+                "step-question-title",
                 &[("agent", &asked.agent), ("action", &asked.action)],
             ),
-            words("run-question-detail", &[("resource", &asked.resource)]),
-            words("run-question-allow-agent", &[("agent", &asked.agent)]),
+            words("step-question-detail", &[("resource", &asked.resource)]),
+            words("step-question-allow-agent", &[("agent", &asked.agent)]),
         ),
     };
     let mut dialog = review(handle, title, String::new(), detail);
@@ -1734,8 +1734,8 @@ mod tests {
     fn an_apps_change_of_another_app_names_both_apps() {
         let asked = |may_allow_agent| {
             sheet(
-                crate::run_questions::KIND,
-                serde_json::to_value(crate::run_questions::RunQuestion {
+                crate::step_questions::KIND,
+                serde_json::to_value(crate::step_questions::StepQuestion {
                     agent: "so.tilo.files".into(),
                     target: Some("so.tilo.notes".into()),
                     action: "Delete finished tasks…".into(),

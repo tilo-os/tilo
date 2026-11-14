@@ -1,22 +1,22 @@
-//! The agent door of the host's own person: the devices they run an agent on
+//! The MCP server of the host's own person: the devices they run an agent on
 //! (`tilo login`, then `tilo mcp`), and each session of one open now.
 //!
 //! A device says it runs an agent when its session opens
 //! ([`tilo_relay_protocol::transport::Envelope::AgentRun`]), naming the agent
 //! as History names its runs; the host keeps that only for a device of its own
 //! person. Each of the device's sessions is one run, ended at once by
-//! [`AgentDoor::stop`] while the device stays the person's, so the agent can
-//! come back. A revoked device leaves the door ([`AgentDoor::forget`]); its
+//! [`McpServer::stop`] while the device stays the person's, so the agent can
+//! come back. A revoked device leaves the door ([`McpServer::forget`]); its
 //! sessions end through the access audit that refuses it everywhere.
 //!
 //! The door is served as a live read
-//! ([`tilo_actions::remote::agent_door::DOOR`]): [`AgentDoor::changes`]
+//! ([`tilo_actions::remote::mcp_server::SERVER`]): [`McpServer::changes`]
 //! moves whenever what it reads would read differently.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
+use tilo_actions::remote::mcp_server::{Grant, Reach, Run, Server};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::{AgentScope, DeviceCert};
 use tokio::sync::{Notify, watch};
@@ -24,7 +24,7 @@ use tokio::sync::{Notify, watch};
 /// One session of an agent's device, open now.
 struct OpenRun {
     started_ms: i64,
-    /// Ends the session ([`AgentDoor::stop`]).
+    /// Ends the session ([`McpServer::stop`]).
     stop: Arc<Notify>,
 }
 
@@ -38,13 +38,13 @@ struct Agent {
     cert: DeviceCert,
 }
 
-/// The agent door of the host's own person.
-pub(crate) struct AgentDoor {
+/// The MCP server of the host's own person.
+pub(crate) struct McpServer {
     agents: Mutex<HashMap<[u8; 32], Agent>>,
     change: watch::Sender<u64>,
 }
 
-impl Default for AgentDoor {
+impl Default for McpServer {
     fn default() -> Self {
         Self {
             agents: Mutex::default(),
@@ -57,7 +57,7 @@ fn now_ms() -> i64 {
     i64::try_from(tilo_clock::unix_now_ns() / 1_000_000).unwrap_or(i64::MAX)
 }
 
-impl AgentDoor {
+impl McpServer {
     /// `cert`'s device, on the session `stop` ends, runs the agent `name`.
     pub(crate) fn note(&self, cert: &DeviceCert, name: &str, stop: &Arc<Notify>) {
         let now = now_ms();
@@ -144,7 +144,7 @@ impl AgentDoor {
     }
 
     /// The door as the person reads it: every agent, the latest to act first.
-    pub(crate) fn door(&self) -> Door {
+    pub(crate) fn door(&self) -> Server {
         let agents = self.agents.lock_recover();
         let mut grants = agents
             .iter()
@@ -182,9 +182,9 @@ impl AgentDoor {
             .collect::<Vec<_>>();
         drop(agents);
         grants.sort_by(|a, b| b.last_ms.cmp(&a.last_ms).then_with(|| a.id.cmp(&b.id)));
-        Door {
+        Server {
             grants,
-            ..Door::default()
+            ..Server::default()
         }
     }
 
@@ -203,12 +203,12 @@ impl super::Workspaces {
     /// Whether `device` still runs the person's agent: a stop that leaves it so is the person
     /// stopping a run, and one that does not is the device being revoked.
     pub(crate) fn runs_agent(&self, device: &[u8; 32]) -> bool {
-        self.inner.agent_door.is_agent(device)
+        self.inner.mcp_server.is_agent(device)
     }
 
     /// The session of `device` that `stop` ends has ended.
     pub(crate) fn agent_session_ended(&self, device: &[u8; 32], stop: &Arc<tokio::sync::Notify>) {
-        self.inner.agent_door.ended(device, stop);
+        self.inner.mcp_server.ended(device, stop);
     }
 }
 
@@ -263,7 +263,7 @@ mod tests {
     /// without it is asked about every page action.
     #[test]
     fn an_agents_key_says_whether_it_operates_web_pages() {
-        let door = AgentDoor::default();
+        let door = McpServer::default();
         let stop = Arc::new(Notify::new());
         let operating = cert(
             DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces).with_browser_pages(true),
@@ -283,7 +283,7 @@ mod tests {
     /// operate web pages in Browser, and whether it is a script's key.
     #[test]
     fn a_grant_reads_as_its_certificate_says() {
-        let door = AgentDoor::default();
+        let door = McpServer::default();
         let workspace = [7; 16];
         let stop = Arc::new(Notify::new());
         door.note(

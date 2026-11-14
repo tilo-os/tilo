@@ -1233,12 +1233,12 @@ impl Session {
                 .map(|desktop| desktop.questions().clone())
         });
         // What an agent's run asks its person before a step its grants leave to them is put on
-        // the same sheets ([`crate::run_questions`]).
+        // the same sheets ([`crate::step_questions`]).
         if let (Some(questions), Some(broker)) = (
             questions.clone(),
             action_plane.as_ref().and_then(Plane::agent_broker),
         ) {
-            broker.set_app_action_consent(std::sync::Arc::new(crate::run_questions::Sheet::new(
+            broker.set_app_action_consent(std::sync::Arc::new(crate::step_questions::Sheet::new(
                 questions,
                 std::sync::Arc::clone(&agent_sessions),
             )));

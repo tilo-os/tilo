@@ -958,7 +958,7 @@ export async function startEntryPage({mode}) {
       else if (workspaceActions?.handles(id)) void workspaceActions.perform(id);
       else void identityActions?.perform(id, value);
     },
-    // Where the person's agents connect over MCP, which their agent door shows.
+    // Where the person's agents connect over MCP, which their MCP server shows.
     mcp: MCP_URL,
     ...(query.get('room') ? {room: query.get('room')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),

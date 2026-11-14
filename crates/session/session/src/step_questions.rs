@@ -26,8 +26,8 @@ use tilo_service::{Question, Questions};
 
 use crate::agent_sessions::AgentSessions;
 
-/// The kind the session's sheet reads a run's question as.
-pub(crate) const KIND: &str = "session.run-question";
+/// The kind the session's sheet reads an agent session's or an app's question as.
+pub(crate) const KIND: &str = "session.step-question";
 
 /// What a question whether an app may take another app's action is named by.
 const APP_ACTION: &str = "app-action:";
@@ -36,10 +36,10 @@ const APP_ACTION: &str = "app-action:";
 pub(crate) const ALLOW_ONCE: usize = 0;
 pub(crate) const ALLOW_AGENT: usize = 1;
 
-/// A run's or an app's question, as the sheet shows it.
+/// An agent session's or an app's question, as the sheet shows it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct RunQuestion {
-    /// The agent, as the shell seats it; the asking app's id when an app asks.
+pub(crate) struct StepQuestion {
+    /// The agent, as the shell names it; the asking app's id when an app asks.
     pub agent: String,
     /// The app whose action an app asks to take, by its id; `None` for an agent session.
     #[serde(default)]
@@ -131,7 +131,7 @@ impl AppActionConsentPrompter for Sheet {
                 };
                 tokio::select! {
                     chosen = &mut asked => chosen,
-                    // The run stopped waiting: dropping the question takes the sheet down.
+                    // The asker stopped waiting: dropping the question takes the sheet down.
                     () = waiting.closed() => return,
                 }
             };
@@ -173,7 +173,7 @@ fn question(request: &AppActionConsentRequest) -> Question {
                 .collect()
         })
         .unwrap_or_default();
-    let details = RunQuestion {
+    let details = StepQuestion {
         agent: agent.clone(),
         target: (!agent_asks).then(|| request.target_app.clone()),
         action: request.action_label.clone(),
@@ -232,7 +232,7 @@ mod tests {
         let pending = questions.pending();
         assert_eq!(pending.len(), 1, "the sheet is up");
         assert_eq!(pending[0].kind, KIND);
-        let shown: RunQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
+        let shown: StepQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
         assert_eq!(shown.agent, scope.unwrap_or("claude-code"));
         assert_eq!(shown.may_allow_agent, scope.is_some());
         let given = match choice {
@@ -249,9 +249,9 @@ mod tests {
         answer.await.ok()
     }
 
-    /// The person's choice on the sheet is the run's answer; Deny (the sheet declined) refuses it.
+    /// The person's choice on the sheet is the answer; Deny (the sheet declined) refuses it.
     #[tokio::test]
-    async fn the_sheet_answers_the_runs_question_as_the_person_chose() {
+    async fn the_sheet_answers_as_the_person_chose() {
         let once = answered(Some(ALLOW_ONCE), Some("Claude Code #1")).await;
         assert_eq!(
             once.map(|answer| answer.consent),
@@ -335,7 +335,7 @@ mod tests {
         assert_eq!(questions.pending().len(), 1, "an app is asked about");
     }
 
-    /// A run that stops waiting takes its question down; anything but a run's question is not
+    /// A question nobody waits for any more is taken down; anything but a step's question is not
     /// asked here at all.
     #[tokio::test]
     async fn a_question_nobody_waits_for_leaves_the_sheet() {
@@ -387,7 +387,7 @@ mod tests {
             let pending = questions.pending();
             assert_eq!(pending.len(), 1, "the sheet is up");
             assert_eq!(pending[0].app_id.as_deref(), Some("so.tilo.lang.today"));
-            let shown: RunQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
+            let shown: StepQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
             assert_eq!(shown.agent, "so.tilo.lang.today");
             assert_eq!(shown.target.as_deref(), Some("so.tilo.lang.tasks"));
             assert_eq!(shown.may_allow_agent, always, "{handle}");

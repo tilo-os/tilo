@@ -43,7 +43,7 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     ("shortcuts", Holder::Person),
     ("text_assistance", Holder::Person),
     ("accessibility_device", Holder::Device),
-    (crate::agent_door::SECTION, Holder::Device),
+    (crate::mcp_server::SECTION, Holder::Device),
     ("agent_providers", Holder::Device),
     (APP_DEVICE_LOCAL_SECTION, Holder::Device),
     ("appearance_device", Holder::Device),

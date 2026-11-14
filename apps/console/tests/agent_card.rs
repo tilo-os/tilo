@@ -8,14 +8,14 @@
 
 //! An agent's card: the resource Console publishes for each client, the card its face in
 //! the workspace's presence opens, and what that face asks of it (Stop, Revoke) reaching
-//! the agent door once the card has read the door.
+//! the MCP server once the card has read the door.
 
 use serde_json::json;
 use tilo_console::{App, ConsoleEffect};
 use ui::collaboration::{CollabEvent, CollabRequest};
 use ui::prelude::*;
 use ui::tilo_actions::InvocationUpdate;
-use ui::tilo_actions::remote::agent_door as door;
+use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, RemoteActionMessage, RemoteActionTarget,
@@ -91,17 +91,17 @@ fn run() -> wire::AgentRun {
     }
 }
 
-fn the_door() -> door::Door {
-    door::Door {
+fn the_door() -> mcp_server::Server {
+    mcp_server::Server {
         endpoint: "https://mcp.example".into(),
-        grants: vec![door::Grant {
+        grants: vec![mcp_server::Grant {
             id: "g1".into(),
             agent: "Claude Code".into(),
-            runs: vec![door::Run {
+            runs: vec![mcp_server::Run {
                 name: "Claude Code #2".into(),
                 started_ms: 1,
             }],
-            ..door::Grant::default()
+            ..mcp_server::Grant::default()
         }],
         workspaces: Vec::new(),
     }
@@ -113,7 +113,7 @@ fn opened() -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let requests = asked(&mut app);
     let runs = find(&requests, &wire::target(wire::RUNS));
-    let read = find(&requests, &door::target(door::DOOR));
+    let read = find(&requests, &mcp_server::target(mcp_server::SERVER));
     answer(
         &mut app,
         &runs,
@@ -175,7 +175,7 @@ fn stopping_an_agent_from_its_face_opens_its_card_and_ends_its_run() {
     app.call_on(AGENT, "stop-agent", json!({}))
         .expect("stop the agent");
     let requests = asked(&mut app);
-    let stop = find(&requests, &door::target(door::STOP));
+    let stop = find(&requests, &mcp_server::target(mcp_server::STOP));
     assert_eq!(
         argument(&stop),
         json!({"grant": "g1", "run": "Claude Code #2"}),
@@ -188,7 +188,7 @@ fn stopping_an_agent_from_its_face_opens_its_card_and_ends_its_run() {
     assert!(
         !asked(&mut app)
             .iter()
-            .any(|request| request.target == door::target(door::STOP)),
+            .any(|request| request.target == mcp_server::target(mcp_server::STOP)),
         "asked once"
     );
 }
@@ -199,7 +199,7 @@ fn revoking_an_agent_takes_back_its_grant() {
     app.call_on(AGENT, "revoke-agent", json!({}))
         .expect("revoke the agent");
     let requests = asked(&mut app);
-    let revoke = find(&requests, &door::target(door::REVOKE));
+    let revoke = find(&requests, &mcp_server::target(mcp_server::REVOKE));
     assert_eq!(argument(&revoke), json!({"grant": "g1"}));
     assert!(
         app.harness()

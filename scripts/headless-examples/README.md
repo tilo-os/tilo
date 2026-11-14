@@ -16,11 +16,11 @@ every claim back off that session rather than off the thing that asked for it.
 
 | Proof | What it asserts |
 |---|---|
-| `agent-seats-proof.py` | Two agents at the session's agent door, each admitted as itself through the workspace's governance, each served its own tools, the desk's Stop ending one of their connections alone. |
+| `agent-seats-proof.py` | Two agents at the session's MCP server, each admitted as itself through the workspace's governance, each served its own tools, the desk's Stop ending one of their connections alone. |
 | `session-lock-proof.py` | The desk's own lock action locks the session, the lock screen's own frame covers the desk, a password that is not the person's is refused, and the person's own password brings the desk back. |
 
 `agent-files-story.py` drives a desktop with the tree's own apps as an agent
-does, through the session's agent door and nothing else: it names Files as the
+does, through the session's MCP server and nothing else: it names Files as the
 listing does and starts it by one of its actions, finds the device and folder
 Files' changes run in from Files' own read, renames a file with
 `files.folder#rename` and reads the new name off the disk, sends the file into
@@ -63,7 +63,7 @@ behind.
 
 ## Examples
 
-Each script drives a running session: the socket path is its first argument, else `$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`. `real_apps.py` is the client they all use (`Session.attach` for a session another tool started, `ScriptedSession` for the tree's own build on a scratch profile, `Agent` for the session's agent door).
+Each script drives a running session: the socket path is its first argument, else `$TILO_TEST_CONTROL`, else `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`. `real_apps.py` is the client they all use (`Session.attach` for a session another tool started, `ScriptedSession` for the tree's own build on a scratch profile, `Agent` for the session's MCP server).
 
 | Script | What it shows |
 |---|---|

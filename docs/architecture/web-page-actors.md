@@ -36,7 +36,7 @@ decides nothing by it; who may act is decided before the action reaches it.
 
 An agent that works from another of the person's devices is one actor like
 any other, under its own name. Where it works from is said beside the name,
-never inside it. The desktop's agent door verifies the certificate of the
+never inside it. The desktop's MCP server verifies the certificate of the
 device a connection comes from. The run that connection works in keeps that
 device, and the action system tells Browser the device with every action of
 the run. Browser takes the device from there and from nowhere else: not from
@@ -532,7 +532,7 @@ Browser's.
   view one window at once, each a viewer of its own: one who stops
   viewing ends their own picture, seat and reach, and nobody else's.
 - **Acting.** An agent on another of the person's devices connects to the
-  desktop's agent door and works there under a name of its own, as an agent
+  desktop's MCP server and works there under a name of its own, as an agent
   on the desktop itself does. Its page actions take their turn in the tab,
   are recorded under that name with the device the door verified it came
   from (see "Actors"), and the person is asked before one that acts on the
@@ -616,7 +616,7 @@ share, when the first picture came and again twenty seconds on.
 | --- | --- |
 | Two agents, one tab | Turns, own reads, told of the other, one record |
 | Two agents, two tabs | Two pages with two records; one profile, so the site's own session (a basket, a sign-in) is shared between them |
-| Two devices, one tab | One page on the device that runs it; the other sees the shared window and types into it, and its agent acts through the desktop's agent door |
+| Two devices, one tab | One page on the device that runs it; the other sees the shared window and types into it, and its agent acts through the desktop's MCP server |
 | Two agents and a person | The person's typing is direct input; the review read tells the three apart |
 | Three devices, one tab | As two; each device's actor has its own read and is told of the others, and each viewer of the shared window has its own picture and seat |
 
@@ -625,7 +625,7 @@ share, when the first picture came and again twenty seconds on.
 How many can work in one tab is bounded in six places. Each says what
 happens to the one beyond it.
 
-- **Connections to the desktop's agent door: sixteen at once.** One count
+- **Connections to the desktop's MCP server: sixteen at once.** One count
   holds the login's own programs, the programs inside its environments and
   the agents on the person's other devices together, so sixteen agents, on
   however many machines, is the most one desktop serves at a time. A
@@ -737,7 +737,7 @@ What checks this: the runtime's tests reach its endpoint's sixty-four
 connections and a connection's sixteen and sixty-four requests through the
 endpoint's own accept loop on a socket, and make room as a client does, by
 an answer, a cancel and a closed connection. The session's tests reach the
-agent door's sixteen in one session through its own socket, an
+MCP server's sixteen in one session through its own socket, an
 environment's door and the device's endpoint: seven programs of the login,
 three inside an environment and six agents on two other devices are served
 at once, the next is refused by each way in, in the same words and without
@@ -888,7 +888,7 @@ down.
   devices it turned away and why, which is what the step reads when a page
   does not arrive or does not go on arriving.
   And nothing has run more than three machines. What bounds their number is
-  under "Limits". The agent door's sixteen connections are reached with one
+  under "Limits". The MCP server's sixteen connections are reached with one
   session and the endpoints of two more devices on one machine, not by
   machines, and nothing keeps a place at the door for each device.
   Thirty-three devices that all hear each other, a

@@ -610,7 +610,7 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
         .expect("the notes' root is published");
 
     // The agent's step in the turn, as the broker hands it to the session: its `place` names no
-    // point, and stands beside the turn, as the agent door fills it in for a turn's step.
+    // point, and stands beside the turn, as the MCP server fills it in for a turn's step.
     session
         .invoke_in_turn(
             "agent:assistant",

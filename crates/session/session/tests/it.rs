@@ -39,8 +39,6 @@ mod acceptance;
 mod action_plane;
 #[path = "agent_control.rs"]
 mod agent_control;
-#[path = "agent_door_room.rs"]
-mod agent_door_room;
 #[path = "agent_environments.rs"]
 mod agent_environments;
 #[path = "agent_story.rs"]
@@ -153,6 +151,8 @@ mod log_says_once;
 mod logging;
 #[path = "lounge_e2e.rs"]
 mod lounge_e2e;
+#[path = "mcp_server_workspace.rs"]
+mod mcp_server_workspace;
 #[path = "mention_notice.rs"]
 mod mention_notice;
 #[path = "network_agent_questions.rs"]

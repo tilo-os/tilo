@@ -1,4 +1,4 @@
-//! An MCP agent at a headless session's agent door, as `cargo headless --check` proves one works:
+//! An MCP agent at a headless session's MCP server, as `cargo headless --check` proves one works:
 //! `tilo-runtime-mcp --connect`, the program an agent runs, presenting the session's agent key, is
 //! admitted without anyone answering the door, lists what the workspace offers and runs an action.
 
@@ -57,7 +57,7 @@ impl Connection {
             let left = ANSWER.saturating_sub(began.elapsed());
             let answer = self.lines.recv_timeout(left).map_err(|_| {
                 format!(
-                    "the agent door did not answer {method} within {}s",
+                    "the MCP server did not answer {method} within {}s",
                     ANSWER.as_secs()
                 )
             })?;
@@ -149,7 +149,7 @@ impl Agent<'_> {
                 std::thread::sleep(Duration::from_secs(1));
                 continue;
             }
-            return Err(format!("the agent door did not admit the agent: {answer}"));
+            return Err(format!("the MCP server did not admit the agent: {answer}"));
         }
     }
 

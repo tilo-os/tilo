@@ -930,7 +930,7 @@ def open_window(vm: TiloVm, ws: dict) -> object:
 # branched, so a and b inherit it. Read back only when a window does not travel.
 SYNC_LOG = ("info,tilo_session::sync=debug,tilo_session::layout=debug,"
             "tilo_session::workspaces=debug,tilo_peer_state=debug,tilo::join_flow=debug,"
-            "tilo_network_actor=debug,tilo_action_broker=debug,tilo_session::agent_door=debug")
+            "tilo_network_actor=debug,tilo_action_broker=debug,tilo_session::mcp_server=debug")
 
 
 def log_sync(vm: TiloVm) -> None:

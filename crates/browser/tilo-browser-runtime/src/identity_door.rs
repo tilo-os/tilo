@@ -36,7 +36,7 @@ use tilo_relay_session::workspaces::{
 use tilo_session_core::remote::SessionActions;
 
 #[cfg(target_arch = "wasm32")]
-use crate::agent_door::{Revoked, Revoking};
+use crate::mcp_server::{Revoked, Revoking};
 
 #[cfg(target_arch = "wasm32")]
 /// Why a device's access ends, as a revocation names it.

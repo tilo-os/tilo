@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Two agents at the session's agent door, each admitted as itself.
+"""Two agents at the session's MCP server, each admitted as itself.
 
-The session's agent door is how a program of this login — an AI agent in a
+The session's MCP server is how a program of this login — an AI agent in a
 terminal — reaches this desktop's actions as an agent, never as the person.
 This proof drives two such clients at once, through a headless session of its
 own, and reads every claim back off the session rather than off the clients:
@@ -248,7 +248,7 @@ def main() -> int:
         desk.start()
         check("the desk opens with a workspace in front", bool(desk.workspace()),
               json.dumps(desk.workspace())[:80])
-        check("and its agent door answers", until(lambda: desk.door.exists()))
+        check("and its MCP server answers", until(lambda: desk.door.exists()))
 
         print("\n[1] two agents ask, and nothing they ask for runs yet")
         for name, _ in CLIENTS:
@@ -280,11 +280,11 @@ def main() -> int:
             agent.notify("notifications/initialized")
         check("admitting them grants nothing beyond the person's own",
               desk.grants() == grants_before, ", ".join(desk.grants())[:160])
-        seated = {agent.get("name") for agent in desk.agents()}
+        sessions = {agent.get("name") for agent in desk.agents()}
         check("the desk shows both agent sessions, each as itself",
-              seated == {expected for _, expected in CLIENTS}, ", ".join(sorted(map(str, seated))))
+              sessions == {expected for _, expected in CLIENTS}, ", ".join(sorted(map(str, sessions))))
         check("each seat is the person's own to end",
-              all(agent.get("seat") for agent in desk.agents()), json.dumps(desk.agents())[:160])
+              all(agent.get("stoppable") for agent in desk.agents()), json.dumps(desk.agents())[:160])
 
         print("\n[3] each agent acts as itself")
         for agent, (name, _) in zip(agents, CLIENTS):
@@ -389,8 +389,8 @@ def main() -> int:
               until(lambda: again.hears(), 30) and again.answered(),
               json.dumps(again.served)[:120])
         again.notify("notifications/initialized")
-        seated = [agent.get("key") for agent in desk.agents()]
-        check("the desk seats the agent it let in", len(seated) == 1, ", ".join(seated))
+        sessions = [agent.get("key") for agent in desk.agents()]
+        check("the desk shows the agent it let in", len(sessions) == 1, ", ".join(sessions))
         open_card(desk, desk.agents()[0]["name"])
         check("its card offers Revoke", "profile-agent-revoke" in desk.targets())
         pressed = desk.call({"op": "click_named", "name": "profile-agent-revoke"})

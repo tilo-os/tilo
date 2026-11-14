@@ -21,7 +21,7 @@ use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationReason};
 use web_time::SystemTime;
 
 /// The person's devices as `store`'s device lists them to an agent: the ones
-/// it holds a certificate of that are theirs now, as the agent door's
+/// it holds a certificate of that are theirs now, as the MCP server's
 /// directory reads them for `tilo_devices`.
 fn listed(store: &PersonalStore) -> Vec<[u8; 32]> {
     let now = SystemTime::now();

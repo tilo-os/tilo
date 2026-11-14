@@ -20,7 +20,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@432b4ab0ef8cfa2c";
+export const SURFACE = "so.tilo.settings@8d8766b1b5ed5a7c";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
@@ -895,8 +895,8 @@ export function networkUsage(ws: tilo.Workspace, path: string): NetworkUsage {
   return resourceProxy(ws, path, SURFACE) as unknown as NetworkUsage;
 }
 
-/** Agents from your other devices — `settings.agent-door`. */
-export interface AgentDoor extends tilo.Resource {
+/** Agents from your other devices — `settings.mcp-server`. */
+export interface McpServer extends tilo.Resource {
   readonly accept_own_devices: boolean;
   readonly act_without_asking: boolean;
   setAcceptOwnDevices(args: {
@@ -907,9 +907,9 @@ export interface AgentDoor extends tilo.Resource {
   }): Promise<tilo.Run | void>;
 }
 
-/** The `settings.agent-door` kind at `path`. */
-export function agentDoor(ws: tilo.Workspace, path: string): AgentDoor {
-  return resourceProxy(ws, path, SURFACE) as unknown as AgentDoor;
+/** The `settings.mcp-server` kind at `path`. */
+export function mcpServer(ws: tilo.Workspace, path: string): McpServer {
+  return resourceProxy(ws, path, SURFACE) as unknown as McpServer;
 }
 
 /** Accounts — `tilo.accounts`. */

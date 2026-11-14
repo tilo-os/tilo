@@ -9,7 +9,7 @@ It spawns `tilo-runtime-mcp --connect` (override with ACC_MCP_BIN) with no profi
 over its stdio, and prints one line, `ACC-MCP <json>`, with everything it saw. It judges
 nothing: the harness reads the transcript. Python standard library only (the guest image's).
 
-Inside a Tilo session `--connect` relays to the session's agent door, and the door asks the
+Inside a Tilo session `--connect` relays to the session's MCP server, and the door asks the
 person before it answers `initialize`, so `initialize` may take as long as the person does.
 """
 from __future__ import annotations

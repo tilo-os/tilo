@@ -403,10 +403,10 @@ fn allow(session: &mut Session, choice: usize) {
 fn seated(session: &Session) -> Vec<(String, String, String)> {
     session
         .read("session:agents")
-        .and_then(|agents| agents.get("seated").and_then(Value::as_array).cloned())
+        .and_then(|agents| agents.get("sessions").and_then(Value::as_array).cloned())
         .unwrap_or_default()
         .into_iter()
-        .filter(|agent| agent["seat"] == true)
+        .filter(|agent| agent["stoppable"] == true)
         .map(|agent| {
             let text = |field: &str| agent[field].as_str().unwrap_or_default().to_owned();
             (text("key"), text("name"), text("doing"))

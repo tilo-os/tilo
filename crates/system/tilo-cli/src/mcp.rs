@@ -1,5 +1,5 @@
 //! `tilo mcp`: the agent's MCP server over stdio. On a Tilo desktop it is
-//! the desktop's own agent door (`agent.sock`), which the person admits the
+//! the desktop's own MCP server (`agent.sock`), which the person admits the
 //! agent at; elsewhere it serves as the device `tilo login` made of this
 //! computer.
 //!
@@ -230,7 +230,7 @@ fn open(session: Arc<Session>, device: &Device, run: &str) -> Result<Served, Str
     })
 }
 
-/// `tilo mcp`: on a Tilo desktop, the desktop's own agent door, which asks the person to let the
+/// `tilo mcp`: on a Tilo desktop, the desktop's own MCP server, which asks the person to let the
 /// agent in; elsewhere, this computer's login, entering the person's workspace wherever it is
 /// hosted, as a connection to the process holding that device's session ([`held`]), started when
 /// none runs. `hold` is that process (`tilo mcp --hold`, which a connection starts).

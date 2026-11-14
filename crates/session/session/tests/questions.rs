@@ -1108,10 +1108,10 @@ fn door_answers(
 fn seated_agents(session: &Session) -> Vec<String> {
     session
         .read("session:agents")
-        .and_then(|agents| agents.get("seated").and_then(Value::as_array).cloned())
+        .and_then(|agents| agents.get("sessions").and_then(Value::as_array).cloned())
         .unwrap_or_default()
         .into_iter()
-        .filter(|agent| agent["seat"] == true)
+        .filter(|agent| agent["stoppable"] == true)
         .map(|agent| agent["name"].as_str().unwrap_or_default().to_owned())
         .collect()
 }

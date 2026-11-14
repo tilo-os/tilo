@@ -158,7 +158,7 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
                 "key": agent.key,
                 "name": agent.name,
                 "doing": agent.doing,
-                "seat": agent.seat,
+                "stoppable": agent.stoppable,
                 "device": agent.device,
                 "device_name": agent.device_name,
                 "environment": agent.environment,

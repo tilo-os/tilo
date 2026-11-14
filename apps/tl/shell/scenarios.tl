@@ -28,7 +28,7 @@ scenario "an afternoon of work" {
     stage(
         device.agents,
         device.Agents(
-            seated: [
+            sessions: [
                 device.Agent(
                     key: "fieldwork",
                     name: "Fieldwork",
@@ -269,7 +269,7 @@ scenario "the overview" {
     stage(
         device.agents,
         device.Agents(
-            seated: [
+            sessions: [
                 device.Agent(
                     key: "fieldwork",
                     name: "Fieldwork",
@@ -415,7 +415,7 @@ scenario "the overview, searching" {
     stage(
         device.agents,
         device.Agents(
-            seated: [
+            sessions: [
                 device.Agent(
                     key: "fieldwork",
                     name: "Fieldwork",
@@ -1371,7 +1371,7 @@ scenario "a person's menu" {
     stage(
         device.agents,
         device.Agents(
-            seated: [
+            sessions: [
                 device.Agent(
                     key: "fieldwork",
                     name: "Fieldwork",
@@ -1988,7 +1988,7 @@ scenario "the agents on the bar" {
     stage(
         device.agents,
         device.Agents(
-            seated: [
+            sessions: [
                 device.Agent(
                     key: "fieldwork",
                     name: "Fieldwork",

@@ -1,6 +1,6 @@
 """The person's answers to the questions a session puts on its sheet.
 
-A service or the agent door asks the person a question; the portal sheet
+A service or the MCP server asks the person a question; the portal sheet
 (`so.tilo.portal-sheet`) shows it, and the person presses one of its controls: a
 choice ("Allow once", "Allow for this session", "Always allow"), the sheet's
 Allow that answers with the choice highlighted, or its Deny. Everything here

@@ -9,7 +9,7 @@
 use tilo_console::App;
 use ui::collaboration::{CollabEvent, CollabRequest};
 use ui::prelude::*;
-use ui::tilo_actions::remote::agent_door as door;
+use ui::tilo_actions::remote::mcp_server;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, RemoteActionMessage, RemoteActionTarget,
@@ -276,21 +276,21 @@ fn run() -> wire::AgentRun {
 }
 
 /// The door, with the run History names "Claude Code #2" open through it or not.
-fn the_door(open: bool) -> door::Door {
-    door::Door {
+fn the_door(open: bool) -> mcp_server::Server {
+    mcp_server::Server {
         endpoint: "https://mcp.example".into(),
-        grants: vec![door::Grant {
+        grants: vec![mcp_server::Grant {
             id: "g1".into(),
             agent: "Claude Code".into(),
             runs: if open {
-                vec![door::Run {
+                vec![mcp_server::Run {
                     name: "Claude Code #2".into(),
                     started_ms: 1,
                 }]
             } else {
                 Vec::new()
             },
-            ..door::Grant::default()
+            ..mcp_server::Grant::default()
         }],
         workspaces: Vec::new(),
     }
@@ -308,7 +308,7 @@ fn opened(open: bool) -> TestApp<App> {
         wire::Scope::AllWorkspaces,
         "the console reads every workspace's runs"
     );
-    let door_read = find(&requests, &door::target(door::DOOR));
+    let door_read = find(&requests, &mcp_server::target(mcp_server::SERVER));
     answer(
         &mut app,
         runs.invocation,
@@ -336,10 +336,11 @@ fn stopping_a_working_run_asks_the_door_to_end_that_run_alone() {
     asked(&mut app);
     app.harness().click_named("console-run-stop").unwrap();
     let requests = asked(&mut app);
-    let stop: door::RunRef = argument(&find(&requests, &door::target(door::STOP)));
+    let stop: mcp_server::RunRef =
+        argument(&find(&requests, &mcp_server::target(mcp_server::STOP)));
     assert_eq!(
         stop,
-        door::RunRef {
+        mcp_server::RunRef {
             grant: "g1".into(),
             run: "Claude Code #2".into(),
         }
@@ -397,7 +398,7 @@ fn connect(browser_pages: bool) -> TestApp<App> {
     let mut app = TestApp::<App>::for_person("ada").expect("open");
     let requests = asked(&mut app);
     let runs = find(&requests, &wire::target(wire::RUNS));
-    let door_read = find(&requests, &door::target(door::DOOR));
+    let door_read = find(&requests, &mcp_server::target(mcp_server::SERVER));
     answer(
         &mut app,
         runs.invocation,
@@ -442,7 +443,8 @@ fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
         .click_named("console-grant-0-revoke")
         .unwrap();
     let requests = asked(&mut operating);
-    let revoke: door::GrantRef = argument(&find(&requests, &door::target(door::REVOKE)));
+    let revoke: mcp_server::GrantRef =
+        argument(&find(&requests, &mcp_server::target(mcp_server::REVOKE)));
     assert_eq!(
         revoke.grant, "g1",
         "revoking that agent ends the key that operates web pages"
@@ -468,7 +470,7 @@ fn revoking_a_grant_names_it_to_the_door() {
     let requests = asked(&mut app);
     if let Some(read) = requests
         .iter()
-        .find(|request| request.target == door::target(door::DOOR))
+        .find(|request| request.target == mcp_server::target(mcp_server::SERVER))
     {
         answer(
             &mut app,
@@ -478,7 +480,8 @@ fn revoking_a_grant_names_it_to_the_door() {
     }
     app.harness().click_named("console-grant-0-revoke").unwrap();
     let requests = asked(&mut app);
-    let revoke: door::GrantRef = argument(&find(&requests, &door::target(door::REVOKE)));
+    let revoke: mcp_server::GrantRef =
+        argument(&find(&requests, &mcp_server::target(mcp_server::REVOKE)));
     assert_eq!(revoke.grant, "g1");
 }
 

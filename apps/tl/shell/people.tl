@@ -34,11 +34,11 @@ view people_button() {
     }
 }
 
-/// An agent here, as its presence: a chip that opens its menu. One seated at the person's door
-/// is stopped by ending the connection they admitted.
+/// An agent here, as its presence: a chip that opens its menu. Stopping one ends
+/// the connection the person admitted.
 view agent_chip(a: device.Agent) {
     ui.MenuButton(a.name, icon: .bot, role: .bar) {
-        if a.seat {
+        if a.stoppable {
             ui.MenuItem("Stop", icon: .square, destructive: true) {
                 on choose: device.stop_agent(device.agents, agent: a.key)
             }

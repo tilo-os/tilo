@@ -127,7 +127,7 @@ pub enum OverviewPick {
     OpenPage(String),
     /// Run one of the session's own actions (lock, sign out, …) by the id it published.
     HostAction(String),
-    /// Take back the agent door's grant by its id; the overview stays to show it go.
+    /// Take back the MCP server's grant by its id; the overview stays to show it go.
     RevokeGrant(String),
     /// Open an agent's own card, by its client's name, as its face anywhere else does: the same
     /// ask Console answers, which brings the card forward beside the work. The overview goes.
@@ -1062,9 +1062,9 @@ mod tests {
 
     /// A shell whose Tilo let one agent in, working now, with what the overview measured of it.
     fn shell_with_an_agent() -> OverviewCards {
-        use tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
+        use tilo_actions::remote::mcp_server::{Grant, Reach, Run, Server};
         let mut shell = shell();
-        shell.tilo.door = Some(Door {
+        shell.tilo.door = Some(Server {
             grants: vec![Grant {
                 id: "g1".into(),
                 agent: "Claude Code".into(),
@@ -1075,7 +1075,7 @@ mod tests {
                 }],
                 ..Grant::default()
             }],
-            ..Door::default()
+            ..Server::default()
         });
         shell
     }
@@ -1280,10 +1280,10 @@ mod tests {
         // A row too narrow for both facts keeps the live one: what an agent is doing now is what the
         // person acts on, and what it may reach is its card's to say.
         {
-            use tilo_actions::remote::agent_door::{Grant, Reach, Run};
+            use tilo_actions::remote::mcp_server::{Grant, Reach, Run};
             ui::i18n::I18nManager::init("en-US");
             let row = crate::overview_tilo::rows(&TiloOverview {
-                door: Some(tilo_actions::remote::agent_door::Door {
+                door: Some(tilo_actions::remote::mcp_server::Server {
                     grants: vec![Grant {
                         id: "g1".into(),
                         agent: "Claude Code".into(),

@@ -35,12 +35,12 @@ pub use window_actions::{
     activation_requested,
 };
 
-pub mod agent_door;
 mod application;
 pub mod browser;
 mod caller;
 pub mod environment_device;
 pub mod linux_apps;
+pub mod mcp_server;
 pub use caller::Caller;
 mod catalogue;
 mod changes;

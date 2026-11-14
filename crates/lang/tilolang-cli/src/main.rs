@@ -49,7 +49,7 @@ usage:
       print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
       a native app (its committed surface.toml) and a tilolang package alike
   tilolang repl [--session SESSION | --door SOCKET | --real] [--color always|never]
-      tilolang typed against a running session through its agent door: the nested session
+      tilolang typed against a running session through its MCP server: the nested session
       started last by default (SESSION: its --ready file, runtime directory or control socket),
       another session's door, or the person's own session (--real). The person admits it there:
       on the sheet the door puts up, or ahead of time when they start the session

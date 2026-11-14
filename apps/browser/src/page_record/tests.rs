@@ -61,7 +61,7 @@ fn agent_for_ada(principal: &str) -> ActionInvoker {
     ActionInvoker::admitted(&Acting::of_key(principal)).acting_for(ada())
 }
 
-/// Ada's laptop, another of her devices, as the agent door of the device
+/// Ada's laptop, another of her devices, as the MCP server of the device
 /// that runs the page verified it for a connection that came from there.
 fn laptop() -> InvokerDevice {
     InvokerDevice::certified([0x5c; 32], "Studio laptop")

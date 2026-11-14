@@ -1,7 +1,7 @@
 //! Where an MCP client inside a Tilo login reaches the desktop it runs in.
 //!
 //! A Tilo session's compositor serves its action broker to agents at
-//! `$XDG_RUNTIME_DIR/tilo-session/agent.sock` (the session's *agent door*):
+//! `$XDG_RUNTIME_DIR/tilo-session/agent.sock` (the session's *MCP server*):
 //! the person admits each connection as an agent member of a workspace, and
 //! every call then passes the broker's ordinary gate as that agent. A
 //! `--connect` client inside the login relays to that door. It never starts
@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The agent door's path under `runtime_dir`; `None` when there is none to
+/// The MCP server's path under `runtime_dir`; `None` when there is none to
 /// look in, which leaves no private place for it.
 #[must_use]
 pub fn agent_socket_path(runtime_dir: Option<OsString>) -> Option<PathBuf> {
@@ -102,7 +102,7 @@ fn key_text(text: &str) -> Option<String> {
 /// Where a `--connect` client goes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Route {
-    /// The desktop's agent door at this path.
+    /// The desktop's MCP server at this path.
     Session(PathBuf),
     /// A standalone runtime profile, started when none runs.
     Standalone,
@@ -163,7 +163,7 @@ fn missing_door(reason: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::NotFound,
         format!(
-            "the desktop's agent door isn't available: {reason}. This is a Tilo login, where a \
+            "the desktop's MCP server isn't available: {reason}. This is a Tilo login, where a \
              standalone runtime would be a second, empty authority beside the desktop, so none \
              was started. Check that the Tilo desktop is running and its first login is \
              complete; pass --standalone to run a separate runtime anyway"
@@ -177,7 +177,7 @@ pub fn unreachable_door(path: &Path, error: &io::Error) -> io::Error {
     io::Error::new(
         error.kind(),
         format!(
-            "the desktop's agent door isn't available: {} does not answer ({error}). The Tilo \
+            "the desktop's MCP server isn't available: {} does not answer ({error}). The Tilo \
              desktop may have ended or be starting; pass --standalone to run a separate runtime \
              instead",
             path.display()
@@ -419,7 +419,7 @@ pub fn client_connected(stream: &std::os::unix::net::UnixStream) -> bool {
     }
 }
 
-/// Serve one agent door connection, whose peer the host has already
+/// Serve one MCP server connection, whose peer the host has already
 /// checked: read its `initialize`, `ask` the person (with a probe that says
 /// whether the client is still there), and only once they admit it answer
 /// that `initialize` and every later request as the admitted agent, over
@@ -560,7 +560,7 @@ where
                     &mut stream,
                     &error_reply(
                         &id,
-                        "the agent door opens with initialize; nothing else is answered before the \
+                        "the MCP server opens with initialize; nothing else is answered before the \
                      person admits this client",
                     ),
                 );
@@ -652,7 +652,7 @@ mod tests {
             assert!(
                 nowhere
                     .to_string()
-                    .starts_with("the desktop's agent door isn't available:"),
+                    .starts_with("the desktop's MCP server isn't available:"),
                 "{nowhere}"
             );
             let down = route(

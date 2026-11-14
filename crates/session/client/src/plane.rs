@@ -419,7 +419,7 @@ pub enum Cmd {
         Answer<Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>>,
     ),
     /// Say this session is one run of the agent the label names: every request it makes from then
-    /// on is the agent's, for this device's person, and the person's agent door lists the run while
+    /// on is the agent's, for this device's person, and the person's MCP server lists the run while
     /// the session lasts. The answer is the host's.
     AgentRun(String, Answer<Result<(), String>>),
     /// Enter another workspace through its door, on a stream of its own on this session's

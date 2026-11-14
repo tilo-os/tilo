@@ -1,4 +1,4 @@
-//! A session declaring itself one run of an agent: the person's agent door
+//! A session declaring itself one run of an agent: the person's MCP server
 //! lists the run while the session lasts.
 
 use tilo_relay_protocol::Envelope;

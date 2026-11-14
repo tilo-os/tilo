@@ -499,7 +499,7 @@ uninstall-from-apps-title = Remove { $name } from apps?
 uninstall-from-apps-action = Remove from apps
 uninstall-entry-body = It's part of the system, so it stays on this computer and no longer shows in your apps.
 
-## The agent door: a program of this login (an AI agent in a terminal) asks to
+## The MCP server: a program of this login (an AI agent in a terminal) asks to
 ## work in a workspace as an agent member.
 mcp-server-client = { $client } ({ $program })
 mcp-server-client-in-app = { $who }, in { $app }
@@ -543,9 +543,9 @@ network-agent-question-unknown = It may do something that can’t be undone.
 network-agent-question-risk = It could { $risk }.
 network-agent-question-allow = Allow once
 app-question-title = { $app } wants to change { $target }
-run-question-title = { $agent } asks to: { $action }
-run-question-detail = On { $resource }. Allow only what you asked it to do.
-run-question-allow-agent = Always allow { $agent }
+step-question-title = { $agent } asks to: { $action }
+step-question-detail = On { $resource }. Allow only what you asked it to do.
+step-question-allow-agent = Always allow { $agent }
 network-agent-risk-none = do nothing you would notice
 network-agent-risk-low = change what you see here
 network-agent-risk-destructive = delete or overwrite something

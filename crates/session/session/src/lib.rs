@@ -329,8 +329,6 @@ mod rotation;
 #[cfg(target_os = "linux")]
 pub mod run;
 #[cfg(target_os = "linux")]
-mod run_questions;
-#[cfg(target_os = "linux")]
 mod seams;
 #[cfg(target_os = "linux")]
 mod seats;
@@ -371,6 +369,8 @@ mod sockets;
 #[cfg(target_os = "linux")]
 pub mod startup;
 pub mod status;
+#[cfg(target_os = "linux")]
+mod step_questions;
 #[cfg(target_os = "linux")]
 pub mod style_packages;
 #[cfg(target_os = "linux")]

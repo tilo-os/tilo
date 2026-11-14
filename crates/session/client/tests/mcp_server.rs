@@ -1,4 +1,4 @@
-//! The person's agent door on their host, as their page reads and uses it: a
+//! The person's MCP server on their host, as their page reads and uses it: a
 //! computer they logged in with `tilo login` that runs an agent is listed
 //! with its open run, followed as a page's window follows it (a held observe,
 //! answered when the door moves, never a blocking ask); stopping the run ends that session and the agent can
@@ -19,7 +19,7 @@ use tilo_session_client::{Cmd, Link, Outbox};
 
 use tilo_actions::InvocationId;
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::agent_door::{self, Door};
+use tilo_actions::remote::mcp_server::{self, Server};
 use tilo_actions::remote::{
     ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, settle_with,
 };
@@ -48,7 +48,7 @@ fn ask(door: &SessionActions, action: &str, argument: InvokeArgument) -> (Invoca
             InvokeRequest {
                 on_behalf_of: None,
                 invocation,
-                target: agent_door::target(action),
+                target: mcp_server::target(action),
                 argument,
                 context: None,
                 confirmation: None,
@@ -68,7 +68,7 @@ fn ask(door: &SessionActions, action: &str, argument: InvokeArgument) -> (Invoca
 
 /// The door as the follow `read` last read it: what is kept, never asked
 /// again, as a page observes it.
-fn door_now(door: &SessionActions, read: &InvocationId) -> Option<Door> {
+fn door_now(door: &SessionActions, read: &InvocationId) -> Option<Server> {
     match door.observe(&caller(), read)?.update {
         InvocationUpdate::Item { value, .. } => serde_json::from_value(value).ok(),
         _ => None,
@@ -81,8 +81,8 @@ async fn door_until(
     what: &str,
     door: &SessionActions,
     read: &InvocationId,
-    wanted: impl Fn(&Door) -> bool,
-) -> Door {
+    wanted: impl Fn(&Server) -> bool,
+) -> Server {
     let started = std::time::Instant::now();
     let mut seen = UpdateMark::Accepted;
     loop {
@@ -105,7 +105,7 @@ async fn door_until(
 }
 
 fn stop(grant: &str) -> InvokeArgument {
-    agent_door::argument(&agent_door::RunRef {
+    mcp_server::argument(&mcp_server::RunRef {
         grant: grant.to_owned(),
         run: "Claude Code".into(),
     })
@@ -121,10 +121,10 @@ async fn nobody_else_reaches(other: &Link, agent: &Link, device: [u8; 32], host_
     let workspace = crate::support::workspace();
     let grant = hex::encode(device);
     let others = SessionActions::new(other, workspace, host_key);
-    assert!(!ask(&others, agent_door::DOOR, InvokeArgument::None).1);
-    assert!(!ask(&others, agent_door::STOP, stop(&grant)).1);
+    assert!(!ask(&others, mcp_server::SERVER, InvokeArgument::None).1);
+    assert!(!ask(&others, mcp_server::STOP, stop(&grant)).1);
     let own = SessionActions::new(agent, workspace, host_key);
-    assert!(!ask(&own, agent_door::STOP, stop(&grant)).1);
+    assert!(!ask(&own, mcp_server::STOP, stop(&grant)).1);
     let still = run_as_agent(agent, "Claude Code").await;
     assert!(
         still.is_ok(),
@@ -260,7 +260,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     // The computer says its session is the agent it runs; the tab says nothing of the kind.
     assert!(agent_says_its_run(&stopped).await);
     let door = SessionActions::new(&page, workspace, host_key);
-    let (read, taken) = ask(&door, agent_door::DOOR, InvokeArgument::None);
+    let (read, taken) = ask(&door, mcp_server::SERVER, InvokeArgument::None);
     assert!(taken, "the person reads their own door");
     let listed = door_until("the door to list the agent's run", &door, &read, |door| {
         door.run("Claude Code").is_some()
@@ -269,14 +269,14 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     assert_eq!(listed.grants.len(), 1, "the tab is no agent: {listed:?}");
     assert_eq!(listed.grants[0].id, grant);
     assert_eq!(listed.grants[0].runs.len(), 1);
-    assert_eq!(listed.grants[0].reach, agent_door::Reach::Account);
+    assert_eq!(listed.grants[0].reach, mcp_server::Reach::Account);
 
     nobody_else_reaches(&other, &stopped, computer.cert.device_public_key, host_key).await;
     assert!(door_now(&door, &read).unwrap().run("Claude Code").is_some());
 
     // Stopping the run ends that session for good: the computer is told, says so, and connects
     // no more, so nothing of the agent is said from it again.
-    assert!(ask(&door, agent_door::STOP, stop(&grant)).1);
+    assert!(ask(&door, mcp_server::STOP, stop(&grant)).1);
     door_until("the stopped run to end", &door, &read, |door| {
         door.grants
             .iter()

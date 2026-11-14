@@ -4,7 +4,7 @@
 //! A page cannot open a mail server's session and keeps no vault of its own,
 //! so these asks are the workspace host's to answer. The page's desktop
 //! hands them to the session it already holds with the host
-//! ([`SessionActions`]), as it hands the agent door there: the host keeps
+//! ([`SessionActions`]), as it hands the MCP server there: the host keeps
 //! the accounts, proves each sign-in, and seals the secrets in the
 //! workspace's vault. Nothing is stored in the page.
 

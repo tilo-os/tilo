@@ -6,7 +6,7 @@ use std::rc::Rc;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;
-use ui::tilo_actions::remote::agent_door::{self, Door, Grant, Reach};
+use ui::tilo_actions::remote::mcp_server::{self, Grant, Reach, Server};
 use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing, session_actions};
 use ui::tilo_resource::{self, Effect as _};
 use ui::widget::{
@@ -133,7 +133,7 @@ pub struct DevicesAccessArea {
 #[derive(Clone, Debug, Default)]
 pub struct AccessSample {
     pub devices: Vec<DeviceView>,
-    pub door: Door,
+    pub door: Server,
     pub asking: Vec<Asking>,
     pub now_ms: i64,
 }
@@ -388,7 +388,7 @@ struct Asked {
 pub struct AccessModel {
     devices: Vec<DeviceView>,
     devices_asked: Asked,
-    door: Door,
+    door: Server,
     door_followed: Option<ui::Followed>,
     door_seen: u64,
     asking: Vec<Asking>,
@@ -401,7 +401,7 @@ impl AccessModel {
     fn asking(remote: &ui::RemoteActions) -> Self {
         let mut model = Self::empty();
         model.door_followed =
-            Some(remote.follow(agent_door::target(agent_door::DOOR), InvokeArgument::None));
+            Some(remote.follow(mcp_server::target(mcp_server::SERVER), InvokeArgument::None));
         model.ask_lists(remote);
         model
     }
@@ -421,7 +421,7 @@ impl AccessModel {
         Self {
             devices: Vec::new(),
             devices_asked: Asked::default(),
-            door: Door::default(),
+            door: Server::default(),
             door_followed: None,
             door_seen: 0,
             asking: Vec::new(),
@@ -482,8 +482,8 @@ impl AccessModel {
             DevicesAccessEffect::RevokeAgent { grant } => {
                 self.grant(grant)?;
                 remote.invoke(
-                    agent_door::target(agent_door::REVOKE),
-                    agent_door::argument(&agent_door::GrantRef {
+                    mcp_server::target(mcp_server::REVOKE),
+                    mcp_server::argument(&mcp_server::GrantRef {
                         grant: grant.clone(),
                     }),
                     Some(Confirmation::Confirmed),
@@ -492,8 +492,8 @@ impl AccessModel {
             DevicesAccessEffect::StopRun { grant, run } => {
                 self.grant(grant)?;
                 remote.invoke(
-                    agent_door::target(agent_door::STOP),
-                    agent_door::argument(&agent_door::RunRef {
+                    mcp_server::target(mcp_server::STOP),
+                    mcp_server::argument(&mcp_server::RunRef {
                         grant: grant.clone(),
                         run: run.clone(),
                     }),
@@ -643,22 +643,22 @@ impl AccessModel {
                 output.value.unwrap_or(serde_json::Value::Null)
             }
             ui::Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
-                tracing::debug!(target: "tilo::settings", error = %error.message, "no agent door answers here");
+                tracing::debug!(target: "tilo::settings", error = %error.message, "no MCP server answers here");
                 return false;
             }
             ui::Arrival::Failed(error) => {
-                tracing::debug!(target: "tilo::settings", %error, "no agent door answers here");
+                tracing::debug!(target: "tilo::settings", %error, "no MCP server answers here");
                 return false;
             }
             ui::Arrival::Ready(_) | ui::Arrival::Pending { .. } => return false,
         };
-        match serde_json::from_value::<Door>(value) {
+        match serde_json::from_value::<Server>(value) {
             Ok(door) => {
                 self.door = door;
                 true
             }
             Err(error) => {
-                tracing::warn!(target: "tilo::settings", %error, "the agent door answered something unreadable");
+                tracing::warn!(target: "tilo::settings", %error, "the MCP server answered something unreadable");
                 false
             }
         }

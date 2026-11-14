@@ -113,7 +113,7 @@ frame-timing checks gated to real display hardware report that. The report (`rep
 check passes.
 
 
-### Agent door (M01-M04) and input fidelity (I01-I08)
+### MCP server (M01-M04) and input fidelity (I01-I08)
 
 M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Code would run
 `tilo-runtime-mcp --connect`: the person's consent is answered through the control socket's
@@ -121,7 +121,7 @@ M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Co
 must list Notes as a running app (it is open), a note made with `notes#new-note` (the harness
 grants the test agent Notes for the session) is read back through the desktop, and refusals
 must reach the agent as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
-(fix/agent-door) they report **xfail** with that reason: an expected failure does not fail the
+(fix/mcp-server) they report **xfail** with that reason: an expected failure does not fail the
 run (`core.ExpectedFailure`), is listed in the report, and becomes an ordinary check when the
 socket appears.
 
@@ -195,7 +195,7 @@ the marker is removed. hwdb `KEYBOARD_KEY_` remaps need the real driver and are 
 Capture a new profile from a device's `/sys/class/input/eventN/device/capabilities/*` and HID
 report descriptor (see `crates/dev/tilo-vm-protocol/src/profile.rs`).
 
-Pull requests touching the input path, tilo-vm(d), the profiles or the agent door run only
+Pull requests touching the input path, tilo-vm(d), the profiles or the MCP server run only
 these areas (`ci_select.py`).
 
 ### Secret custody (C01, C02)

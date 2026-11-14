@@ -498,7 +498,7 @@ impl DeviceLists {
                 items: self.tray_items(),
             })),
             AGENTS_RESOURCE => Some(reading(&crate::agent_sessions::Agents {
-                seated: self.agent_sessions.readings(),
+                sessions: self.agent_sessions.readings(),
             })),
             STYLES_RESOURCE => Some(reading(&OfferedStyles {
                 offered: self.styles.borrow().list.clone(),

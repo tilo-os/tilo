@@ -57,7 +57,7 @@ struct Native {
     listed: Mutex<Vec<crate::services::ListedAgent>>,
 }
 
-/// The run the fixture's agent works in: an agent door connection's.
+/// The run the fixture's agent works in: an MCP server connection's.
 const ISSUE: &str = "so.tilo.session/agent-session/release";
 /// The grant admitting the fixture's agent to read the workspace.
 const AGENT_GRANT: &str = "agent-member:scribe";
@@ -1708,7 +1708,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             f.caused("message-1");
             grant_the_arrangement(&f, true);
 
-            // The agent answering the person's turn, as the agent door's connection is.
+            // The agent answering the person's turn, as the MCP server's connection is.
             let agent = Caller::agent_turn(
                 "scribe",
                 hex::encode(f.native.certificate.user_public_key),

@@ -181,7 +181,7 @@ layer; there is no separate package manifest.
 <grants>     one bind per FsPath grant, at the same path as on the host
 /tmp /run /proc /dev   fresh
 /var         tmpfs, plus the environment's own /var/lib and /var/cache
-/run/tilo/agent.sock   the environment's own agent door (below)
+/run/tilo/agent.sock   the environment's own MCP server (below)
 ```
 
 - The guest runs as **the real uid** (a single-uid user namespace mapping), so
@@ -261,7 +261,7 @@ The first asks to work in *Studio* as `claude-code@dev#1`, the second in
 *Garden* as `claude-code@site#1`. The person allows each on the sheet; the bar
 shows both, each in its workspace, and Stop on one ends that one alone.
 
-**The environment's door.** The session's agent door
+**The environment's door.** The session's MCP server
 (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`) serves only programs of the login
 outside every sandbox, so nothing in a guest reaches it. When `ush` opens an
 environment it asks the session, on that door, for a door of the

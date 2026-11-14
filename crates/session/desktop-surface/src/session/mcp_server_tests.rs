@@ -1,4 +1,4 @@
-//! The person's asks of their agent door reach the door the desktop's host
+//! The person's asks of their MCP server reach the door the desktop's host
 //! hands its session, and nobody else's do.
 
 use std::sync::{Arc, Mutex};
@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, agent_door,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, mcp_server,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
@@ -76,7 +76,7 @@ fn ask(action: &str) -> InvokeRequest {
     InvokeRequest {
         on_behalf_of: None,
         invocation: InvocationId::new(),
-        target: agent_door::target(action),
+        target: mcp_server::target(action),
         argument: InvokeArgument::None,
         context: None,
         confirmation: None,
@@ -101,15 +101,15 @@ fn the_persons_asks_reach_the_door_the_host_hands_the_session() {
     let (session, _openings) = super::serve("workspace", Arc::default());
     let person = Caller::local_person("ada").in_workspace("workspace");
 
-    let early = answer(session.invoke(&person, ask(agent_door::DOOR)));
+    let early = answer(session.invoke(&person, ask(mcp_server::SERVER)));
     assert!(
         matches!(early, Err(ActionHostError::Unavailable { .. })),
         "without a door the read says none answers: {early:?}"
     );
 
     let door = Arc::new(Door::default());
-    session.serve_person_door(agent_door::PROVIDER, door.clone());
-    let read = ask(agent_door::DOOR);
+    session.serve_person_door(mcp_server::PROVIDER, door.clone());
+    let read = ask(mcp_server::SERVER);
     let id = read.invocation;
     assert!(answer(session.invoke(&person, read)).is_ok());
     let state = session
@@ -120,13 +120,13 @@ fn the_persons_asks_reach_the_door_the_host_hands_the_session() {
         session.next_change(&person, &id).is_some(),
         "the read is followed"
     );
-    assert!(answer(session.invoke(&person, ask(agent_door::STOP))).is_ok());
+    assert!(answer(session.invoke(&person, ask(mcp_server::STOP))).is_ok());
     assert_eq!(door.admitted.lock().unwrap().len(), 2);
 
     // An agent the person runs keeps no say over the door, nor does an
     // invocation the door never admitted read through it.
     let agent = person.clone().delegated_to("claude-code");
-    let refused = answer(session.invoke(&agent, ask(agent_door::STOP)));
+    let refused = answer(session.invoke(&agent, ask(mcp_server::STOP)));
     assert_eq!(refused.unwrap_err(), ActionHostError::UnknownAction);
     assert_eq!(door.admitted.lock().unwrap().len(), 2);
     assert!(session.observe(&person, &InvocationId::new()).is_none());
@@ -163,7 +163,7 @@ fn a_window_asks_the_shell_for_the_persons_connect_setup() {
     let connect = || InvokeRequest {
         target: session_actions::target(session_actions::SHOW_CONNECT),
         argument: InvokeArgument::Json(serde_json::Map::new()),
-        ..ask(agent_door::DOOR)
+        ..ask(mcp_server::SERVER)
     };
 
     let agent = person.clone().delegated_to("claude-code");

@@ -1,9 +1,9 @@
-//! The door agents come in by from outside, as the person who owns it sees
-//! it: where an agent connects, which agents it let in and into which
+//! The MCP server agents come in by from outside, as the person who owns it
+//! sees it: where an agent connects, which agents it let in and into which
 //! workspaces, and the person's say over each of them.
 //!
 //! An agent on another machine (Claude Code, Codex, any MCP client) reaches
-//! the person's workspaces over MCP at [`Door::endpoint`]. The person grants
+//! the person's workspaces over MCP at [`Server::endpoint`]. The person grants
 //! it once, and the grant names the workspaces it may work in. Every change
 //! it makes there is attributed to it in the workspace's history
 //! ([`super::workspace_activity`]), where its runs are read and undone.
@@ -11,7 +11,7 @@
 //! The model is the API server's (`crates/hosting/tilo-api`): a
 //! grant reaches every workspace of the person or exactly one, and each MCP
 //! session through it is one run, named for the person ("Claude Code #2") as
-//! History names it. Whoever runs the door serves [`PROVIDER`]; a host
+//! History names it. Whoever runs the server serves [`PROVIDER`]; a host
 //! without one leaves the reads unanswered, and a view that follows them
 //! says so. Revoking a grant ([`REVOKE`]) ends every run it carries and lets
 //! none in again; stopping a run ([`STOP`]) ends that one session and keeps
@@ -22,13 +22,13 @@ use serde::{Deserialize, Serialize};
 use super::{InvokeArgument, RemoteActionTarget};
 use crate::door::ActionAddress;
 
-/// The provider the agent door is served under.
-pub const PROVIDER: &str = "tilo.agent-door";
+/// The provider the MCP server is served under.
+pub const PROVIDER: &str = "tilo.mcp-server";
 /// The resource every action is an action of.
-pub const RESOURCE: &str = "agent.door";
+pub const RESOURCE: &str = "mcp.server";
 
-/// Live: the door and what it let in; answers [`Door`].
-pub const DOOR: &str = "door";
+/// Live: the server and what it let in; answers [`Server`].
+pub const SERVER: &str = "server";
 /// Take back a grant ([`Grant`] by [`Grant::id`], as [`GrantRef`]): its
 /// runs end now and it lets none in again.
 pub const REVOKE: &str = "revoke";
@@ -50,7 +50,7 @@ pub fn argument(value: &impl Serialize) -> InvokeArgument {
     super::workspace_activity::argument(value)
 }
 
-/// An MCP client and the command that connects it to [`Door::endpoint`].
+/// An MCP client and the command that connects it to [`Server::endpoint`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Client {
@@ -63,7 +63,7 @@ pub enum Client {
 impl Client {
     pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Other];
 
-    /// The one line that connects this client to the door at `endpoint`,
+    /// The one line that connects this client to the server at `endpoint`,
     /// or for [`Client::Other`] the configuration it reads.
     #[must_use]
     pub fn command(self, endpoint: &str) -> String {
@@ -92,7 +92,7 @@ pub enum Reach {
     },
 }
 
-/// One run of an agent through the door: one MCP session, open now.
+/// One run of an agent through the server: one MCP session, open now.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Run {
@@ -104,7 +104,7 @@ pub struct Run {
     pub started_ms: i64,
 }
 
-/// One agent the door let in.
+/// One agent the server let in.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Grant {
@@ -150,7 +150,7 @@ impl Grant {
     }
 }
 
-/// Who made a workspace the door reaches.
+/// Who made a workspace the server reaches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Maker {
@@ -160,13 +160,13 @@ pub enum Maker {
     Agent { grant: String, agent: String },
 }
 
-/// One of the person's workspaces the door reaches.
+/// One of the person's workspaces the server reaches.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
     /// The workspace's id, as a run's history names it.
     pub id: String,
     pub name: String,
-    /// Who made it, when the door knows: it knows the workspaces an agent
+    /// Who made it, when the server knows: it knows the workspaces an agent
     /// made through it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by: Option<Maker>,
@@ -176,10 +176,10 @@ pub struct Workspace {
     pub open: String,
 }
 
-/// The door, as the person sees it.
+/// The server, as the person sees it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Door {
+pub struct Server {
     /// The MCP endpoint agents connect to (`https://mcp.tilo.sh`).
     pub endpoint: String,
     /// Every grant, newest first.
@@ -188,7 +188,7 @@ pub struct Door {
     pub workspaces: Vec<Workspace>,
 }
 
-impl Door {
+impl Server {
     /// The grant whose open run History names `name`, and that run.
     #[must_use]
     pub fn run(&self, name: &str) -> Option<(&Grant, &Run)> {
@@ -219,7 +219,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn an_agent_door_names_its_endpoint_and_grants;
+        fn an_mcp_server_names_its_endpoint_and_grants;
 
         phase each_client_connects_with_one_line_naming_the_endpoint;
         {
@@ -240,7 +240,7 @@ mod tests {
 
         phase a_run_in_history_finds_its_grant_by_the_name_history_gives_it;
         {
-            let door = Door {
+            let server = Server {
                 grants: vec![Grant {
                     id: "g1".into(),
                     runs: vec![Run {
@@ -249,15 +249,15 @@ mod tests {
                     }],
                     ..Grant::default()
                 }],
-                ..Door::default()
+                ..Server::default()
             };
             assert_eq!(
-                door.run("Claude Code #2")
+                server.run("Claude Code #2")
                     .map(|(grant, _)| grant.id.as_str()),
                 Some("g1")
             );
             assert!(
-                door.run("Claude Code #1").is_none(),
+                server.run("Claude Code #1").is_none(),
                 "a run that ended is no longer open"
             );
         }

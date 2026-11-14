@@ -99,7 +99,7 @@ pub struct Standalone {
     /// runtime runs, and the workspaces' store answered on the same router.
     _personal_door: tilo_action_broker::personal::Door,
     _personal_router: iroh::protocol::Router,
-    /// The agent doors of the person's other devices, dialed from this
+    /// The MCP servers of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
     remote_doors: Arc<crate::remote_door::Doors>,
     _lock: advisory_lock::FileLock,
@@ -1063,7 +1063,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
     Ok(PersonalParts { sync, door, router })
 }
 
-/// The agent doors of the person's other devices, dialed from `joined`'s
+/// The MCP servers of the person's other devices, dialed from `joined`'s
 /// endpoint as the device the person's store `personal` certifies.
 fn remote_doors(joined: &Joined, personal: &PersonalSync) -> Arc<crate::remote_door::Doors> {
     Arc::new(crate::remote_door::Doors::new(

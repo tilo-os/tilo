@@ -23,7 +23,7 @@
 //!
 //! An actor that works from another of the person's devices is set down
 //! with that device beside its name (`device`, `device_name`): the one the
-//! agent door verified its connection came from, which the action system
+//! MCP server verified its connection came from, which the action system
 //! says on the invoker of each of its actions
 //! ([`ui::tilo_actions::ActionInvoker::device`]). The window writes it from
 //! there, never from what the engine lists, and the record's door refuses an
@@ -122,7 +122,7 @@ pub struct PageAction {
     /// The name its actor acted under; empty for the person at the window.
     pub actor: Atom,
     /// The other device of the person's its actor worked from, by its key in
-    /// hex: the device the agent door verified the actor's connection came
+    /// hex: the device the MCP server verified the actor's connection came
     /// from. Empty for an actor on the device whose engine runs the page,
     /// and for the person.
     pub device: Atom,

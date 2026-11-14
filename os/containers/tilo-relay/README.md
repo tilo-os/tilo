@@ -60,7 +60,7 @@ separate from filesystem replication.
 
 ## Three roles
 
-This image is the **relay / home peer** — not the agent door:
+This image is the **relay / home peer** — not the MCP server:
 
 1. **Relay / headless store-and-forward** — this daemon (authenticated workspace host).
 2. **Home server / full always-on peer** — this Compose file: host-capable device cert, full file replica, LAN pair from Settings.

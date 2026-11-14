@@ -5,7 +5,7 @@
 //! record forked with its history ([`Records::branch_into`]), its home and grants moved
 //! to the same places in the branch's tree, and what it keeps outside its record (its
 //! legacy home, its guest's `/var`) copied there. Its id is the branch's
-//! (`<branch>/<key>`), so its sessions and agent door are the branch's. The source is
+//! (`<branch>/<key>`), so its sessions and MCP server are the branch's. The source is
 //! read and never changed, and images are shared already.
 
 use std::path::{Path, PathBuf};

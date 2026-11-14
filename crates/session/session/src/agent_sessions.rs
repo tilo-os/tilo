@@ -322,7 +322,7 @@ impl AgentSessions {
                     doing: present.workspace_name,
                     mark: String::new(),
                     unseen: 0,
-                    seat: true,
+                    stoppable: true,
                     device,
                     device_name,
                     environment,
@@ -438,7 +438,7 @@ pub(crate) struct Working {
     tilo_resource::JsonSchema,
 )]
 pub(crate) struct Agents {
-    pub seated: Vec<Agent>,
+    pub sessions: Vec<Agent>,
 }
 
 /// One agent session.
@@ -462,7 +462,7 @@ pub(crate) struct Agent {
     pub mark: String,
     pub unseen: i64,
     /// Whether the person may stop it here.
-    pub seat: bool,
+    pub stoppable: bool,
     /// The other device of the person's it works from, as the door that let it in verified: its
     /// key in hex. Empty for a program of this device.
     pub device: String,

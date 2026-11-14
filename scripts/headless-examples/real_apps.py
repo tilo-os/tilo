@@ -60,7 +60,7 @@ APPS = "notes file-explorer chat settings terminal"
 TARGET = Path(os.environ.get("CARGO_TARGET_DIR") or REPO / "target")
 # Where the nested-session build lands (dist/dev/nested-session-build.sh).
 BUILD = Path(os.environ.get("TILO_NESTED_SESSION_BUILD") or TARGET / "nested-session")
-# The MCP revision the agent door speaks.
+# The MCP revision the MCP server speaks.
 MCP_PROTOCOL = "2025-06-18"
 
 
@@ -365,7 +365,7 @@ def prepare(state: Path, *, apps: str = APPS, built: bool = False, remote=None) 
 
 
 class Agent:
-    """One MCP client at a session's agent door, on its own connection: a
+    """One MCP client at a session's MCP server, on its own connection: a
     program of the login asking to act as an agent, served once the person
     answers the sheet the door puts up."""
 

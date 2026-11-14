@@ -9,7 +9,7 @@ nothing when anything else changed (the runner, the VM door, the report): then t
 whole suite runs. P01/P02 come with any selection (run.py adds them).
 
 Paths outside this directory select by what they feed (FEATURES): the input path, the
-device-profile fixtures and the in-session agent door each have an area of checks that
+device-profile fixtures and the in-session MCP server each have an area of checks that
 proves them in a real session. Anything else outside it is ignored, so the caller may
 pass a pull request's whole diff.
 """
@@ -39,7 +39,7 @@ FEATURES = [
     (re.compile(r"^os/usr/lib/udev/"), INPUT),
     (re.compile(r"^os/hardware/profiles/lenovo-83ed/input/"), INPUT),
     (re.compile(r"^crates/runtime/tilo-runtime/src/(session_door|mcp|daemon|cli)"), "agent"),
-    (re.compile(r"^crates/session/session/src/(compositor/agent_door|shell/agent_admission)"), "agent"),
+    (re.compile(r"^crates/session/session/src/(compositor/mcp_server|shell/agent_admission)"), "agent"),
     # Where the compositor's secrets go: the store, its client, the MLS vault, the portal
     # backend and the identity's secret providers.
     (re.compile(r"^crates/system/secret-service/"), "secrets"),

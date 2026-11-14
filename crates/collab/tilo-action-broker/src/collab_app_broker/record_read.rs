@@ -154,7 +154,7 @@ fn apply_record_change(
 /// A task run's reads and changes of records outside their apps: admitted by
 /// the run, as every other step of it is (its delegation, its issue's and its
 /// starter's live grants decide, only while it goes), then read and applied
-/// as the run's agent acting for its starter. The agent door's connection
+/// as the run's agent acting for its starter. The MCP server's connection
 /// and a launched task agent's programs reach records through it alike.
 pub(super) struct RunRecords(pub(super) super::TaskRunHost);
 

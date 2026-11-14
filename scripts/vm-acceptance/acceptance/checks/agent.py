@@ -1,4 +1,4 @@
-"""Essential 7: the in-session agent door, driven the way Claude Code drives it.
+"""Essential 7: the in-session MCP server, driven the way Claude Code drives it.
 
 Inside the booted session, `tilo-runtime-mcp --connect` (no profile) must relay to the
 desktop's own agent socket: the person is asked in trusted chrome, an admitted client is an
@@ -41,8 +41,8 @@ DOOR_TOOLS = ["tilo_do", "tilo_find", "tilo_ls", "tilo_read", "tilo_status"]
 # The client names itself so (clientInfo), and the door admits it as this agent.
 AGENT = "acceptance-agent"
 
-NO_DOOR = ("the session serves no agent door ($XDG_RUNTIME_DIR/tilo-session/agent.sock): this image "
-           "predates the in-session agent door (fix/agent-door, 2d43ddb51e), so `tilo-runtime-mcp "
+NO_DOOR = ("the session serves no MCP server ($XDG_RUNTIME_DIR/tilo-session/agent.sock): this image "
+           "predates the in-session MCP server (fix/mcp-server, 2d43ddb51e), so `tilo-runtime-mcp "
            "--connect` in a Tilo login starts a second, empty standalone runtime instead of "
            "reaching the desktop")
 
@@ -91,7 +91,7 @@ def is_error(reply) -> bool | None:
 
 
 def _door_or_xfail(ctx) -> None:
-    if "agent_door" not in ctx.facts:
+    if "mcp_server" not in ctx.facts:
         out = ctx.vm.exec(f"test -S {DOOR} && echo door || echo no-door; "
                           "command -v tilo-runtime-mcp >/dev/null && echo mcp || echo no-mcp; "
                           "command -v python3 >/dev/null && echo python || echo no-python")
@@ -99,14 +99,14 @@ def _door_or_xfail(ctx) -> None:
         for need, what in (("mcp", "tilo-runtime-mcp"), ("python", "python3")):
             if need not in words:
                 raise Unobservable(f"the guest has no {what} on PATH")
-        ctx.facts["agent_door"] = "door" in words
-    if not ctx.facts["agent_door"]:
+        ctx.facts["mcp_server"] = "door" in words
+    if not ctx.facts["mcp_server"]:
         raise ExpectedFailure(NO_DOOR)
 
 
 def _answer_prompt(ctx, decision: str) -> str:
     """Answer the door's question as the person: admit the client once, or refuse it."""
-    what = f"agent-door-{decision}"
+    what = f"mcp-server-{decision}"
     if decision == "deny":
         return deny_sheet(ctx, what)["chosen"]
     return answer_sheet(ctx, ALLOW_ONCE, what)["chosen"]
@@ -168,7 +168,7 @@ def handshake(ctx, res):
     names = tool_names(t)
     res.metrics["tools"] = names
     expect(not [n for n in names if n.startswith("computer")],
-           f"the door offers pixel tools, which an agent door must not: {names}")
+           f"the door offers pixel tools, which an MCP server must not: {names}")
     missing = [n for n in DOOR_TOOLS if n not in names]
     expect(not missing, f"tools/list offers no {missing}: {names}")
 

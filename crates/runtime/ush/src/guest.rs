@@ -123,7 +123,7 @@ pub struct GuestPlan {
     /// own and a process group of its own: the terminal reaches only the
     /// programs given it.
     pub control: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
-    pub agent_door: Option<PathBuf>,
+    pub mcp_server: Option<PathBuf>,
 }
 
 impl GuestPlan {
@@ -459,10 +459,10 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool
     a.push("--bind".into());
     a.push(plan.broker_socket.clone().into_os_string());
     a.push(crate::GUEST_BROKER_SOCK.into());
-    // The environment's own agent door, which nothing outside it reaches. A
+    // The environment's own MCP server, which nothing outside it reaches. A
     // door the session took away (it ended) leaves the guest without one,
     // never without a guest.
-    if let Some(door) = &plan.agent_door {
+    if let Some(door) = &plan.mcp_server {
         a.push("--bind-try".into());
         a.push(door.clone().into_os_string());
         a.push(tilo_paths::login::GUEST_AGENT_SOCKET.into());
@@ -543,7 +543,7 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
     setenv("TILO_USH_ENVIRONMENT", &plan.environment, a);
     if broker {
         setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
-        if plan.agent_door.is_some() {
+        if plan.mcp_server.is_some() {
             setenv(
                 tilo_paths::login::AGENT_SOCKET_ENV,
                 tilo_paths::login::GUEST_AGENT_SOCKET,
@@ -730,12 +730,12 @@ mod tests {
             assert!(!argv.iter().any(|s| s == plan.broker_socket.as_os_str()));
         }
 
-        phase the_environments_agent_door_is_bound_where_its_variable_says;
+        phase the_environments_mcp_server_is_bound_where_its_variable_says;
         {
             let dir = tempfile::tempdir().unwrap();
             let door = dir.path().join("tilo-session/environments/0123.sock");
             let plan = GuestPlan {
-                agent_door: Some(door.clone()),
+                mcp_server: Some(door.clone()),
                 ..plan_in(dir.path())
             };
             let argv = build_argv(&plan, None);
@@ -993,7 +993,7 @@ mod tests {
             resolver: None,
             terminal: None,
             control: None,
-            agent_door: None,
+            mcp_server: None,
         }
     }
 
