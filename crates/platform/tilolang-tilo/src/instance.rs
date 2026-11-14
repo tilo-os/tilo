@@ -37,7 +37,7 @@ pub use convert::{
 pub(crate) use convert::{bound_values, convert_with, referenced_resource, rows_message};
 pub mod wire;
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -380,7 +380,9 @@ pub struct Instance {
     person_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
-    door_work: Rc<Cell<bool>>,
+    /// Whether the window was told the person has changes the workspace has not taken yet
+    /// ([`ToUi::Kept`]).
+    kept: bool,
     open_requests: Rc<RefCell<Vec<crate::effects::OpenEffect>>>,
     /// Whether the view of a shell places what it opens on the canvas, rather than opening a
     /// detail lane of the shell's own window ([`Instance::place_opens`]).
@@ -492,7 +494,7 @@ impl Instance {
             person_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
-            door_work: Rc::default(),
+            kept: false,
             open_requests: Rc::default(),
             place_opens: false,
             opens_to_place: Vec::new(),
@@ -1221,38 +1223,23 @@ impl Instance {
         });
     }
 
-    /// The record's changes stay on this device, for `why` (the workspace refused them for good):
-    /// the window says so.
-    pub fn unshared(&mut self, why: String) {
+    /// What the person asked for did not happen, for `why`, and the window says so: the
+    /// record's changes stay on this device (the workspace refused them for good), an undo or
+    /// redo failed (somebody else having changed the record since is never a failure: undo
+    /// leaves their newer value), or the action they chose from the window's command palette
+    /// did not run.
+    pub fn failed(&mut self, why: String) {
         self.notice(Words::Plain(why), ui::NoticeKind::Error);
         self.flush();
     }
 
-    /// The undo or redo the person asked for failed, for `why` (an inverse could not be applied,
-    /// or the workspace refused the change for good): the window says so. Somebody else having changed
-    /// the record since is never a failure: undo leaves their newer value and takes back the rest.
-    pub fn history_failed(&mut self, why: String) {
-        self.notice(Words::Plain(why), ui::NoticeKind::Error);
-        self.flush();
-    }
-
-    /// The action the person chose from the window's command palette did not run, for `why`
-    /// (the app refused it, or it was no longer offered): the window says so.
-    pub fn action_refused(&mut self, why: String) {
-        self.notice(Words::Plain(why), ui::NoticeKind::Error);
-        self.flush();
-    }
-
-    fn take_door_work(&mut self) -> bool {
-        if !self.door_work.take() {
+    /// Ask the person about what a run waits on them for since the last frame. Whether one did.
+    fn take_suspended(&mut self) -> bool {
+        let Some(suggestion) = self.host().and_then(|host| host.take_suspended()) else {
             return false;
-        }
+        };
         self.commit_planned();
-        if let Some(host) = self.host()
-            && let Some(suggestion) = host.take_suspended()
-        {
-            self.ask_for(suggestion);
-        }
+        self.ask_for(suggestion);
         true
     }
 
@@ -1377,7 +1364,6 @@ impl Instance {
 
     /// The next invocation for the door, with the invocation of the door that made it.
     pub fn take_invocation(&mut self) -> Option<(ControlInvocation, Option<InvocationId>)> {
-        self.take_door_work();
         let (invocation, origin) = self.outgoing.borrow_mut().pop_front()?;
         if invocation.address.resource == HOST_RESOURCE {
             let ticket = invocation
@@ -1511,6 +1497,8 @@ impl Instance {
             ToApp::Redo => self.history.push(HistoryAsk::Redo),
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,
+            // The frame it arrives in hands what the workspace refused on ([`Self::hand_kept`]).
+            ToApp::SaveAgain => {}
             ToApp::Space {
                 lane,
                 width,
@@ -1613,6 +1601,7 @@ impl Instance {
             | ToApp::Redo
             | ToApp::Focus { .. }
             | ToApp::Composing(_)
+            | ToApp::SaveAgain
             | ToApp::Space { .. }) => {
                 self.window_told(told);
                 Ok(())
@@ -2353,19 +2342,15 @@ impl Instance {
     }
 
     /// Whether a frame has work the window has not seen: a change no sync has sent it yet
-    /// (`moved`: the record moved, an index was taken in), a commit the door answered
-    /// (`door_work`), an invocation the window handed the host (`outgoing`), a write the record's
+    /// (`moved`: the record moved, an index was taken in), an invocation the window handed the
+    /// host (`outgoing`), a write the record's
     /// outbox owes ([`Self::settle_owed`]), or work under way off the frame
     /// ([`Self::pending`]). A frame taken while any of it holds shows what the workspace held
     /// before it, so a window that owes one syncs — and the host runs what it is owed — before it
     /// rests.
     #[must_use]
     pub fn owes_a_frame(&self) -> bool {
-        self.moved
-            || self.settle_owed()
-            || self.door_work.get()
-            || !self.outgoing.borrow().is_empty()
-            || self.pending()
+        self.moved || self.settle_owed() || !self.outgoing.borrow().is_empty() || self.pending()
     }
 
     /// Whether the record's outbox owes a settlement a frame would take in: only a live window
@@ -2392,7 +2377,8 @@ impl Instance {
     /// runtime, and what changed sent. Whether anything changed.
     pub fn update(&mut self) -> bool {
         let received = self.receive();
-        let door = self.take_door_work();
+        let kept = self.hand_kept();
+        let asked = self.take_suspended();
         let opened = self.take_open_requests();
         let pulled = self.poll_origins();
         let settled = self.settle_outbox();
@@ -2413,8 +2399,16 @@ impl Instance {
         let members = self.follow_members();
         // The time a view read moved on: the frame its embedder woke for it.
         let timed = self.wakes_in().is_some_and(|wait| wait.is_zero());
-        let changed =
-            received || door || opened || pulled || settled || lenses || person || members || timed;
+        let changed = received
+            || kept
+            || asked
+            || opened
+            || pulled
+            || settled
+            || lenses
+            || person
+            || members
+            || timed;
         // A view runs where something reached it: what a change told its store, a state it
         // read, the time it waits for ([`crate::runtime::ViewInstance::woken`]).
         let changed = self.poll_views() || changed;
@@ -2430,6 +2424,31 @@ impl Instance {
         self.tell_took();
         self.flush();
         changed
+    }
+
+    /// Hand on what the workspace refused before, once it takes changes again, and tell the
+    /// window whether changes are kept while it does not: the frame the next event brings asks,
+    /// and nothing asks again in between. Whether anything moved.
+    fn hand_kept(&mut self) -> bool {
+        if self.mode == Mode::Past {
+            return false;
+        }
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let kept = host.store().hand_kept();
+        if let Some(why) = &kept.refused {
+            tracing::warn!(%why, "the workspace refused a change: it is kept here until it takes it");
+        }
+        let told = kept.waiting != self.kept;
+        if told {
+            self.kept = kept.waiting;
+            self.out.push(ToUi::Kept(kept.waiting));
+        }
+        if kept.handed {
+            self.commit_planned();
+        }
+        kept.handed || told
     }
 
     /// Give the runtime the workspace's members as the workspace's policy has them now, when it

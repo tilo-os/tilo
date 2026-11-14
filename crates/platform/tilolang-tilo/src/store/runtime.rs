@@ -236,18 +236,14 @@ impl Store for TiloStore {
 
     fn commit(&mut self, txn: Txn, note: &ChangeNote) -> Result<(), StoreError> {
         let mut inner = self.mutate();
-        // A change a test asked to be refused is not made: what wrote it takes it back, as it
-        // does when a record cannot take the change.
-        if let Some(ty) = inner.refused_commit.clone()
+        // A step of an origin's sync that the workspace refuses is not made: what wrote it takes
+        // it back, and the origin takes the step again itself. Every other change is kept until
+        // the workspace takes it ([`Inner::enqueue`]).
+        if note.action == tilolang_runtime::origin::ORIGIN_ACTION
             && let Some(state) = inner.txns.get(&txn.0)
-            && state.edits.iter().any(|edit| match edit {
-                DynEdit::Insert { record, .. } | DynEdit::Create { record, .. } => {
-                    record.get(crate::schema::TYPE_KEY).and_then(Json::as_str) == Some(&ty)
-                }
-                _ => false,
-            })
+            && let Some(why) = inner.refusal(&state.edits)
         {
-            return Err(invalid(format!("a commit adding a {ty} was refused")));
+            return Err(invalid(why));
         }
         let mut state = inner
             .txns

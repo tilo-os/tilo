@@ -1733,30 +1733,6 @@ impl Host {
     }
 }
 
-/// The `surface.toml` bytes of the host with these built-in packages (source and ids lock),
-/// generated from their metadata: what receivers decide the host's changes against.
-///
-/// # Errors
-/// A package does not compile, or the surface cannot be written: never a surface missing a
-/// package receivers would then decide its changes without.
-pub fn builtin_surface(packages: &[(&str, &str)]) -> Result<Vec<u8>, String> {
-    let doc = tilo_resource::Doc::new();
-    let host = Host::new(&doc, Principal::new("surface"), || None)
-        .map_err(|error| format!("no runtime to load the built-in packages: {error}"))?;
-    for (source, ids) in packages {
-        host.load_builtin(source, ids)
-            .map_err(|error| format!("a built-in tilolang package did not compile: {error}"))?;
-    }
-    let metas: Vec<Meta> = host
-        .packages()
-        .into_iter()
-        .map(|package| package.meta.clone())
-        .collect();
-    let refs: Vec<&Meta> = metas.iter().collect();
-    crate::surface::surface_toml(&refs, &tilolang_runtime::SourceWords)
-        .map_err(|error| error.to_string())
-}
-
 /// The system time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`: what `now` reads.
 #[must_use]
 pub fn system_time() -> String {
@@ -1769,35 +1745,8 @@ pub fn system_time() -> String {
 /// Seconds since the Unix epoch as ISO-8601 UTC text.
 #[must_use]
 pub fn iso_utc(secs: u64) -> String {
-    let days = secs / 86_400;
-    let rest = secs % 86_400;
-    let (h, m, s) = (rest / 3600, rest % 3600 / 60, rest % 60);
-    // Days to a civil date (proleptic Gregorian), after Howard Hinnant's `civil_from_days`.
-    // Every step stays far inside `u64` for any time a clock reports.
-    let z = days.wrapping_add(719_468);
-    let era = z / 146_097;
-    let doe = z % 146_097;
-    let yoe = doe
-        .wrapping_sub(doe / 1460)
-        .wrapping_add(doe / 36_524)
-        .wrapping_sub(doe / 146_096)
-        / 365;
-    let doy = doe.wrapping_sub(
-        yoe.wrapping_mul(365)
-            .wrapping_add(yoe / 4)
-            .wrapping_sub(yoe / 100),
-    );
-    let mp = doy.wrapping_mul(5).wrapping_add(2) / 153;
-    let day = doy
-        .wrapping_sub(mp.wrapping_mul(153).wrapping_add(2) / 5)
-        .wrapping_add(1);
-    let month = if mp < 10 {
-        mp.wrapping_add(3)
-    } else {
-        mp.wrapping_sub(9)
-    };
-    let year = yoe
-        .wrapping_add(era.wrapping_mul(400))
-        .wrapping_add(u64::from(month <= 2));
+    let (h, m, s) = (secs % 86_400 / 3600, secs % 3600 / 60, secs % 60);
+    let (year, month, day) =
+        tilolang::calendar::civil_from_days(i64::try_from(secs / 86_400).unwrap_or(i64::MAX));
     format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}Z")
 }

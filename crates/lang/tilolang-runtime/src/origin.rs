@@ -162,6 +162,9 @@ impl OriginChange<'_> {
     }
 }
 
+/// The action a change an origin wrote names: no action of an app's, the origin's own step.
+pub const ORIGIN_ACTION: &str = "$origin";
+
 impl Runtime {
     /// Write what the origin `origin` says as one change, at the time `at`, made of whatever
     /// writes `step` makes — see [`OriginChange::write`]. What `step` gives back is given back
@@ -177,7 +180,7 @@ impl Runtime {
         step: impl FnOnce(&mut OriginChange<'_>) -> Result<T, RuntimeError>,
     ) -> Result<T, RuntimeError> {
         let note = ChangeNote {
-            action: "$origin".into(),
+            action: ORIGIN_ACTION.into(),
             args: serde_json::Value::String(origin.to_owned()),
             invoker: format!("origin:{origin}"),
             chain: Vec::new(),

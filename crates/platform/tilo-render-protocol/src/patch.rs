@@ -645,6 +645,9 @@ pub enum ToUi {
     /// The language the window reads in now (`de-DE`): the person chose another in Settings while
     /// it is open. Its own chrome relabels in it, as the app's words the app sends do.
     Speak(String),
+    /// Whether the app holds changes of the person's that the workspace has not taken yet: the
+    /// window marks them unsaved and offers to try again ([`ToApp::SaveAgain`]) until it has.
+    Kept(bool),
 }
 
 /// What the person did, as the window tells its app.
@@ -764,6 +767,9 @@ pub enum ToApp {
         address: ActionAddress,
         argument: Option<String>,
     },
+    /// The person asked to save the changes the workspace has not taken yet again
+    /// ([`ToUi::Kept`]).
+    SaveAgain,
 }
 
 /// Largest batch either side sends or accepts.

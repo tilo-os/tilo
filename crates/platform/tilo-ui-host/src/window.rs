@@ -324,6 +324,8 @@ pub struct AppWindow {
     /// How many rows the frame's list showed before the search typed anything: what the search's
     /// counter counts them of.
     search_total: Option<usize>,
+    /// Whether the person's changes are saved, as the window's bar says it ([`ToUi::Kept`]).
+    save: ui::SaveStatusSurface,
 }
 
 impl AppWindow {
@@ -428,6 +430,7 @@ impl AppWindow {
             notices: Vec::new(),
             actions: Vec::new(),
             search_total: None,
+            save: ui::SaveStatusSurface::new(),
         }
     }
 
@@ -565,6 +568,7 @@ impl AppWindow {
                 ToUi::Activate => self.activations = self.activations.saturating_add(1),
                 ToUi::ShowRun { run } => self.shown_runs.push(run),
                 ToUi::Speak(language) => ui::i18n::I18nManager::set_locale(&language),
+                ToUi::Kept(kept) => self.kept(kept),
                 ToUi::Open {
                     lane,
                     target,
@@ -907,6 +911,19 @@ impl AppWindow {
         }
         self.bound.borrow_mut().insert(key, value);
         self.refresh_bound();
+    }
+
+    /// Say in the window's bar whether the person's changes are saved: changes the workspace has
+    /// not taken yet are marked unsaved, with "Try again", until it has; then the mark goes.
+    fn kept(&mut self, kept: bool) {
+        let state = if kept {
+            ui::SaveState::Failed(t("tilolang-change-kept"))
+        } else {
+            ui::SaveState::Idle
+        };
+        self.save.set(state, ui::time::Instant::now());
+        self.save.publish();
+        ui::window_toolbar::show_edited(self.save.shows_unsaved());
     }
 
     fn notice(&mut self, words: &Words, kind: wire::NoticeKind, undo: bool) {
@@ -1259,6 +1276,9 @@ impl AppWindow {
         self.take_form_answer();
         if self.shell().and_then(NavShell::take_toast_action).is_some() {
             self.out.push(ToApp::Undo);
+        }
+        if self.save.take_bar_action().is_some() {
+            self.out.push(ToApp::SaveAgain);
         }
         if std::mem::take(&mut self.input) {
             self.follow_focus();

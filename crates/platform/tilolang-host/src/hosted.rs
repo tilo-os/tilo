@@ -1225,7 +1225,7 @@ impl Hosted {
             Ok(done) => done,
             Err(error) => {
                 tracing::warn!(app = self.spec.app, ?asked, %error, "an undo or redo failed");
-                self.instance.history_failed(error.to_string());
+                self.instance.failed(error.to_string());
                 true
             }
         }
@@ -1315,7 +1315,7 @@ impl Hosted {
 
     fn took_share(&mut self, unshared: Option<String>) {
         if let Some(why) = unshared {
-            self.instance.unshared(why);
+            self.instance.failed(why);
         }
         self.record.sync_instance(&mut self.instance);
     }
@@ -2233,7 +2233,7 @@ impl Hosted {
                     }
                 }
             }
-            Err(refused) => self.instance.action_refused(refused.message),
+            Err(refused) => self.instance.failed(refused.message),
         }
         // The press ran: once it is in the record this frame sends what it opened, then tells
         // the window it ran, so what the person typed after it goes there.

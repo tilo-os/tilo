@@ -91,6 +91,18 @@ use crate::schema::{MergeKind, TYPE_KEY, lookup};
 
 type Doc = tilo_resource::Doc;
 
+/// What handing on the changes the workspace refused did ([`TiloStore::hand_kept`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Kept {
+    /// Some went on to the door.
+    pub handed: bool,
+    /// Some are still kept: the workspace has not taken them yet.
+    pub waiting: bool,
+    /// Why the workspace refused a change, the first time it did since this was last asked:
+    /// the log says it once.
+    pub refused: Option<String>,
+}
+
 /// An action the runtime committed, waiting for the host to commit it through the executor.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Committed {
@@ -470,6 +482,13 @@ struct Inner {
     /// What changed during the trial runs under way, told to nobody: a trial run is taken back.
     held: Vec<ChangeSummary>,
     committed: VecDeque<Committed>,
+    /// The changes the workspace did not take, oldest first, each under its ticket: their writes
+    /// stay in the mirror, so the window shows them, and every later change waits behind them,
+    /// so the workspace takes them in the order they were made ([`TiloStore::hand_kept`]).
+    kept: VecDeque<Committed>,
+    /// Why the workspace refused the first of the kept changes, until it was logged: once, not
+    /// again while they wait.
+    kept_unsaid: Option<String>,
     /// The burst of typing the person is in: the gesture its keystrokes share, and what its next
     /// one continues ([`burst`]).
     burst: Option<burst::Burst>,
@@ -734,6 +753,9 @@ pub struct Checkpoint {
     held: usize,
     /// How many of the store's writes the mirror held.
     local: usize,
+    /// The ticket the next committed action was to get: what the trial run keeps of the
+    /// workspace's refusals, from it on, is taken back with it.
+    ticket: u64,
     index: BTreeMap<DocId, (AppId, TypeId)>,
     notes: BTreeMap<DocId, Vec<ChangeNote>>,
     overlay: Arc<Overlay>,
@@ -834,6 +856,8 @@ impl TiloStore {
                 burst: None,
                 edit_pause: DEFAULT_EDIT_PAUSE,
                 refused_commit: None,
+                kept: VecDeque::new(),
+                kept_unsaid: None,
                 refused_read: None,
                 runs: HashMap::new(),
                 handed: BTreeMap::new(),
@@ -1048,6 +1072,7 @@ impl TiloStore {
         Checkpoint {
             held: inner.held.len(),
             local: inner.local.len(),
+            ticket: inner.next_ticket,
             index: inner.index.clone(),
             notes: inner.notes.clone(),
             overlay: Arc::clone(&inner.overlay),
@@ -1068,6 +1093,10 @@ impl TiloStore {
         inner.overlay = checkpoint.overlay;
         inner.index = checkpoint.index;
         inner.notes = checkpoint.notes;
+        inner.kept.retain(|kept| kept.ticket < checkpoint.ticket);
+        if inner.kept.is_empty() {
+            inner.kept_unsaid = None;
+        }
         inner.changed();
         inner.held.truncate(checkpoint.held);
         inner.trials = inner.trials.saturating_sub(1);
@@ -1115,6 +1144,28 @@ impl TiloStore {
     /// Refuse no commit: the store takes changes again ([`Self::fail_commits_adding`]).
     pub fn take_commits(&self) {
         self.mutate().refused_commit = None;
+    }
+
+    /// Hand the changes the workspace refused on, oldest first, as far as it takes them now:
+    /// each joins the queue for the door under the ticket it was made with
+    /// ([`Self::take_committed`]).
+    pub fn hand_kept(&self) -> Kept {
+        let mut inner = self.changing();
+        let mut handed = false;
+        while let Some(entry) = inner.kept.front() {
+            if inner.refusal(&entry.action.edits).is_some() {
+                break;
+            }
+            if let Some(entry) = inner.kept.pop_front() {
+                inner.committed.push_back(entry);
+                handed = true;
+            }
+        }
+        Kept {
+            handed,
+            waiting: !inner.kept.is_empty(),
+            refused: inner.kept_unsaid.take(),
+        }
     }
 
     /// Refuse every read of the resource `at` (as [`ResourceRef::id_string`] names it), with
@@ -2099,10 +2150,36 @@ impl Inner {
         format!("{prefix}{}-{}", self.instance, self.counter)
     }
 
+    /// Queue `action` for the door. One the workspace refuses is kept, and so is every one
+    /// after it while any is kept: its writes stay in the mirror and it goes once the workspace
+    /// takes it ([`TiloStore::hand_kept`]).
     fn enqueue(&mut self, action: DynAction) {
         let ticket = self.next_ticket;
         self.next_ticket = self.next_ticket.wrapping_add(1);
-        self.committed.push_back(Committed { ticket, action });
+        let entry = Committed { ticket, action };
+        if self.kept.is_empty() {
+            let Some(why) = self.refusal(&entry.action.edits) else {
+                self.committed.push_back(entry);
+                return;
+            };
+            self.kept_unsaid = Some(why);
+        }
+        self.kept.push_back(entry);
+    }
+
+    /// Why the workspace refuses a change made of `edits`, when it does: a test asked commits
+    /// adding a type to be refused ([`TiloStore::fail_commits_adding`]).
+    fn refusal(&self, edits: &[DynEdit]) -> Option<String> {
+        let ty = self.refused_commit.as_deref()?;
+        edits
+            .iter()
+            .any(|edit| match edit.bare() {
+                DynEdit::Insert { record, .. } | DynEdit::Create { record, .. } => {
+                    record.get(crate::schema::TYPE_KEY).and_then(Json::as_str) == Some(ty)
+                }
+                _ => false,
+            })
+            .then(|| format!("a commit adding a {ty} was refused"))
     }
 
     /// The type the workspace holds the resource `at` to be: the one its package's index names

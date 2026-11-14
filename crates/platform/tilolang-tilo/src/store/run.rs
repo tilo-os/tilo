@@ -33,6 +33,7 @@ impl Inner {
         };
         self.committed
             .retain(|committed| committed.ticket < begin.ticket);
+        self.kept.retain(|kept| kept.ticket < begin.ticket);
         if self.local.len() > begin.local {
             self.drop_local_from(begin.local);
             self.reapply();

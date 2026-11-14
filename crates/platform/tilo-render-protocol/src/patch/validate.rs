@@ -194,6 +194,7 @@ impl<'a> Validator<'a> {
             | ToUi::Ask(None)
             | ToUi::Form(None)
             | ToUi::Activate
+            | ToUi::Kept(_)
             | ToUi::Took { .. } => Ok(()),
             ToUi::Actions(catalogue) => {
                 if catalogue.bytes() > self.limits.string_bytes as usize {
@@ -735,6 +736,7 @@ impl<'a> Validator<'a> {
             | ToApp::Undo
             | ToApp::Redo
             | ToApp::Composing(_)
+            | ToApp::SaveAgain
             | ToApp::FormSubmit { .. }
             | ToApp::FormCancel { .. } => {}
         }

@@ -1055,10 +1055,7 @@ impl InstanceRecord {
         if !taken {
             return false;
         }
-        if let Some(why) = self.share() {
-            instance.unshared(why);
-        }
-        self.sync_instance(instance);
+        self.share_into(instance);
         true
     }
 
@@ -1093,7 +1090,7 @@ impl InstanceRecord {
         let (result, unshared) =
             self.history_step(chunk, edit, resource, kind, invoker, ambient)?;
         if let Some(why) = unshared {
-            instance.unshared(why);
+            instance.failed(why);
         }
         self.sync_instance(instance);
         Ok(result)
@@ -1173,6 +1170,15 @@ impl InstanceRecord {
             let doc = chunks.first().ok_or("the record is not held here")?;
             verbs::answer(doc, payload, &self.words)
         })
+    }
+
+    /// [`Self::share`], said in `instance` when the workspace refused it for good, and bring
+    /// `instance` up to date.
+    fn share_into(&mut self, instance: &mut Instance) {
+        if let Some(why) = self.share() {
+            instance.failed(why);
+        }
+        self.sync_instance(instance);
     }
 
     /// Hand the workspace what the record holds past what it was handed, as one change. What the
@@ -1431,10 +1437,7 @@ impl InstanceRecord {
     /// what is still queued stays queued.
     pub fn commit(&mut self, instance: &mut Instance) -> Result<Vec<u64>, RecordError> {
         let committed = self.commit_queued(instance);
-        if let Some(why) = self.share() {
-            instance.unshared(why);
-        }
-        self.sync_instance(instance);
+        self.share_into(instance);
         committed
     }
 
@@ -1496,10 +1499,7 @@ impl InstanceRecord {
         ambient: Option<&ActionContext>,
     ) -> Result<(), RecordError> {
         self.apply(action, invoker, ambient)?;
-        if let Some(why) = self.share() {
-            instance.unshared(why);
-        }
-        self.sync_instance(instance);
+        self.share_into(instance);
         Ok(())
     }
 
@@ -1686,7 +1686,7 @@ impl InstanceRecord {
     pub fn receive_and(&mut self, instance: &mut Instance, other: impl FnMut(CollabEvent)) -> bool {
         let changed = self.take_in(other);
         if let Some(why) = self.unreadable.take() {
-            instance.unshared(why);
+            instance.failed(why);
         }
         if changed {
             self.sync_instance(instance);

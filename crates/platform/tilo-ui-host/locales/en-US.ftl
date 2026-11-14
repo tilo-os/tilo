@@ -22,6 +22,7 @@ tilolang-suggested-by = suggested by { $name }
 tilolang-ask-always = Always allow
 tilolang-ask-denied = That change is not allowed here.
 tilolang-ask-needs-approval = That change needs approval first.
+tilolang-change-kept = Your change is kept on this device until the workspace takes it.
 # What a change reads as in history, worked out from the field it wrote and what it held before
 # and after: a sentence goes on with it after who made it ("You moved this to Friday"). `$field`
 # is the field's name in a sentence ("due", "priority").

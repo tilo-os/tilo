@@ -1029,9 +1029,10 @@ fn approving_a_pressed_send_through_the_ask_bar_sends_the_letter_once() {
     );
 }
 
-// USER REQUIREMENT: a note the workspace cannot keep is said once, and the window waits for the
-// person's next step instead of trying again every frame: no spinning CPU, no drained battery.
-// Once the workspace takes changes again, the same press makes the note.
+// USER REQUIREMENT: a note the workspace does not take yet is kept, never lost: it stands in the
+// window at once, the window's bar marks it unsaved in plain words, and the window rests instead of trying again every frame: no spinning CPU, no drained
+// battery. Once the workspace takes changes again, "Try again" saves it, once, without pressing
+// New note again, and a peer replaying the workspace gets it.
 #[test]
 fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
     let mut session = Session::notes();
@@ -1047,6 +1048,20 @@ fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
         .expect("Notes keeps notes")
         .id
         .clone();
+    let held = super::record(&session);
+    let changes_since = |session: &Session| -> usize {
+        let host = session.instance_host();
+        super::record(session)
+            .all()
+            .map(|(chunk, doc)| {
+                let from = held
+                    .held(chunk)
+                    .map(automerge::AutoCommit::committed_heads)
+                    .unwrap_or_default();
+                super::replayed(&mut doc.clone(), &from, &host)
+            })
+            .sum()
+    };
     store.fail_commits_adding(&note);
     let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
@@ -1059,21 +1074,35 @@ fn a_note_the_workspace_cannot_keep_is_said_once_and_the_window_rests() {
     );
     assert_eq!(
         session.titles().len(),
-        notes,
-        "no note stands that the workspace did not keep"
-    );
-    let said = ui::window_toolbar::notice().expect("the window says the note was not kept");
-    assert_eq!(said.kind, ui::widget::toast::ToastKind::Error, "{said:?}");
-    assert!(said.text.contains("refused"), "it says why: {said:?}");
-
-    store.take_commits();
-    let plus = session.control(&session.doing("Notebook", "new_note"));
-    session.window.click_at(plus.0, plus.1);
-    session.settle();
-    assert_eq!(
-        session.titles().len(),
         notes + 1,
-        "the press makes the note now"
+        "the new note stands, kept on this device"
+    );
+    assert_eq!(changes_since(&session), 0, "nothing reached the workspace");
+    let said = ui::window_toolbar::notice().expect("the window says the note is not saved");
+    assert_eq!(said.kind, ui::widget::toast::ToastKind::Error, "{said:?}");
+    assert!(said.text.contains("kept on this device"), "{said:?}");
+    assert!(
+        !said.text.contains("refused") && !said.text.contains("commit"),
+        "it says it in the person's words, not the store's: {said:?}"
+    );
+    assert!(ui::window_toolbar::edited(), "the window marks it unsaved");
+
+    // The workspace takes changes again: "Try again" saves the note.
+    store.take_commits();
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+        id: ui::SAVE_RETRY_ACTION.to_owned(),
+    });
+    session.settle();
+    let titles = session.titles();
+    assert_eq!(titles.len(), notes + 1, "the note is made once: {titles:?}");
+    assert!(
+        !ui::window_toolbar::edited() && ui::window_toolbar::notice().is_none(),
+        "nothing is marked unsaved any more"
+    );
+    assert_eq!(
+        changes_since(&session),
+        1,
+        "a peer replaying the workspace gets the note"
     );
 }
 
