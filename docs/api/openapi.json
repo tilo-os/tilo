@@ -1322,7 +1322,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The upload's id, chosen by the caller when it opened the upload"
           },
           {
             "$ref": "#/components/parameters/Run"
@@ -1390,7 +1390,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The upload's id, chosen by the caller when it opened the upload"
           },
           {
             "$ref": "#/components/parameters/Run"
@@ -1459,7 +1459,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The upload's id, chosen by the caller when it opened the upload"
           },
           {
             "$ref": "#/components/parameters/Run"
@@ -1514,7 +1514,7 @@
             "schema": {
               "type": "string"
             },
-            "description": ""
+            "description": "The upload's id, chosen by the caller when it opened the upload"
           },
           {
             "$ref": "#/components/parameters/Run"

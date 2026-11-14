@@ -202,6 +202,7 @@ fn path_parameter(name: &str) -> &'static str {
         "content" => "`tilo.content:<hash>`, as an upload or an action answered it",
         "grant" => "The key's grant, as `GET /v1/keys` lists it",
         "webhook" => "The webhook's id, as its creation answered it",
+        "upload" => "The upload's id, chosen by the caller when it opened the upload",
         _ => "",
     }
 }
