@@ -36,46 +36,6 @@ fn stream(doc: &Workspace) -> AgentStream {
 }
 
 #[test]
-fn only_the_reply_author_can_append_and_rejected_output_creates_no_message() {
-    let mut doc = fixture();
-    assert!(
-        crate::testing::apply_part_as(
-            &mut doc,
-            crate::model::ME,
-            event(
-                2,
-                AgentOutput::Progress {
-                    label: "gap".into()
-                }
-            )
-        )
-        .is_err()
-    );
-    assert!(doc.message_row("stream_reply").is_none());
-    apply(
-        &mut doc,
-        1,
-        AgentOutput::TextDelta {
-            text: "owned".into(),
-        },
-    );
-    assert!(
-        crate::testing::apply_part_as(
-            &mut doc,
-            "u_aria",
-            event(
-                2,
-                AgentOutput::TextDelta {
-                    text: "forged".into()
-                }
-            )
-        )
-        .is_err()
-    );
-    assert_eq!(message(&doc).text, "owned");
-}
-
-#[test]
 fn reasoning_history_grows_linearly_with_received_content() {
     let mut doc = fixture();
     let part = |doc: &Workspace| doc.part_bytes(0).unwrap();
@@ -314,6 +274,46 @@ tilo_test_env::scenario! {
         assert_eq!(work.trace.len(), 1);
         assert_eq!(work.trace[0].label, "Read");
         assert_eq!(message.text, "Answer");
+    }
+
+    phase only_the_reply_author_can_append_and_rejected_output_creates_no_message;
+    {
+        let mut doc = fixture();
+        assert!(
+            crate::testing::apply_part_as(
+                &mut doc,
+                crate::model::ME,
+                event(
+                    2,
+                    AgentOutput::Progress {
+                        label: "gap".into()
+                    }
+                )
+            )
+            .is_err()
+        );
+        assert!(doc.message_row("stream_reply").is_none());
+        apply(
+            &mut doc,
+            1,
+            AgentOutput::TextDelta {
+                text: "owned".into(),
+            },
+        );
+        assert!(
+            crate::testing::apply_part_as(
+                &mut doc,
+                "u_aria",
+                event(
+                    2,
+                    AgentOutput::TextDelta {
+                        text: "forged".into()
+                    }
+                )
+            )
+            .is_err()
+        );
+        assert_eq!(message(&doc).text, "owned");
     }
 }
 

@@ -2819,45 +2819,50 @@ fn an_attachment_is_saved_where_a_pathless_host_keeps_it() {
     );
 }
 
-/// The attach action on a page with no file paths: without a path it
-/// opens the conversation and asks the platform's chooser, whose bytes go
-/// to the page's content store; a path is refused with how to attach.
-#[test]
-fn the_attach_action_chooses_files_where_the_device_has_no_paths() {
-    let (mut app, _doc) = app_with_doc();
-    app.external_services = false;
-    app.active_channel = "c_chat".into();
-    let refused = app
-        .attach_file_effect("c_crit", Some(&"/home/ada/plan.pdf".parse().unwrap()))
-        .unwrap_err();
-    assert!(refused.contains("leave out the path"), "{refused}");
-    assert!(app.device_pick.is_none(), "a refused path asks nothing");
-    app.attach_file_effect("c_crit", None).unwrap();
-    assert_eq!(
-        app.active_channel, "c_crit",
-        "the files' conversation opens"
-    );
-    assert!(app.device_pick.is_some(), "the platform's chooser is asked");
-}
+tilo_test_env::scenario! {
+    /// The attach action where a device has no file paths, and with a path that names no one file.
+    fn the_attach_action_asks_the_chooser_and_refuses_a_path_it_cannot_take;
 
-/// The attach action refuses a relative path before Chat sees it: it would
-/// name a file wherever the app happens to run.
-#[test]
-fn the_attach_action_refuses_a_relative_path() {
-    use ui::tilo_resource::Effect as _;
-    let arguments = serde_json::Map::from_iter([
-        ("channel".to_owned(), serde_json::json!("c_chat")),
-        ("path".to_owned(), serde_json::json!("plan.pdf")),
-    ]);
-    let refused = crate::effects::ChatEffect::decode("attach-file", &arguments).unwrap_err();
-    assert!(
-        matches!(
-            &refused,
-            ui::tilo_resource::EffectDecodeError::Argument { name, source }
-                if name == "path" && source.to_string().contains("absolute")
-        ),
-        "{refused}"
-    );
+    phase the_attach_action_chooses_files_where_the_device_has_no_paths;
+    // The attach action on a page with no file paths: without a path it
+    // opens the conversation and asks the platform's chooser, whose bytes go
+    // to the page's content store; a path is refused with how to attach.
+    {
+        let (mut app, _doc) = app_with_doc();
+        app.external_services = false;
+        app.active_channel = "c_chat".into();
+        let refused = app
+            .attach_file_effect("c_crit", Some(&"/home/ada/plan.pdf".parse().unwrap()))
+            .unwrap_err();
+        assert!(refused.contains("leave out the path"), "{refused}");
+        assert!(app.device_pick.is_none(), "a refused path asks nothing");
+        app.attach_file_effect("c_crit", None).unwrap();
+        assert_eq!(
+            app.active_channel, "c_crit",
+            "the files' conversation opens"
+        );
+        assert!(app.device_pick.is_some(), "the platform's chooser is asked");
+    }
+
+    phase the_attach_action_refuses_a_relative_path;
+    // The attach action refuses a relative path before Chat sees it: it would
+    // name a file wherever the app happens to run.
+    {
+        use ui::tilo_resource::Effect as _;
+        let arguments = serde_json::Map::from_iter([
+            ("channel".to_owned(), serde_json::json!("c_chat")),
+            ("path".to_owned(), serde_json::json!("plan.pdf")),
+        ]);
+        let refused = crate::effects::ChatEffect::decode("attach-file", &arguments).unwrap_err();
+        assert!(
+            matches!(
+                &refused,
+                ui::tilo_resource::EffectDecodeError::Argument { name, source }
+                    if name == "path" && source.to_string().contains("absolute")
+            ),
+            "{refused}"
+        );
+    }
 }
 
 /// The bar names the conversation with who or what it is: the face of the agent a direct

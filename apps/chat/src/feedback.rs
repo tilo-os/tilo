@@ -308,36 +308,6 @@ mod tests {
         })
     }
 
-    #[test]
-    fn unauthored_and_conflicting_retries_are_refused_without_changes() {
-        let (mut doc, submission) = seeded();
-        let mut unauthored = ui::tilo_resource::Replica::<Chat>::from_doc(doc.fork());
-        assert!(unauthored.apply(action(&submission)).is_err());
-        assert!(reports(unauthored.doc()).unwrap().is_empty());
-        apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
-        let before = doc.get_heads();
-        assert!(apply_as(&mut doc, "visitor:other", action(&submission)).is_err());
-        let mut changed = submission.clone();
-        changed.feedback.text = "different".into();
-        assert!(apply_as(&mut doc, "visitor:one", action(&changed)).is_err());
-        let mut elsewhere = submission;
-        elsewhere.id = "fedcba9876543210fedcba9876543210".into();
-        elsewhere.destination.channel = "c_random".into();
-        assert!(
-            apply_as(
-                &mut doc,
-                "visitor:one",
-                Chat::SUBMIT_FEEDBACK.with(chat::SubmitFeedback {
-                    channel: Id::from_raw("c_general"),
-                    submission: serde_json::to_value(&elsewhere).unwrap(),
-                })
-            )
-            .is_err(),
-            "a submission is filed in the channel it names"
-        );
-        assert_eq!(doc.get_heads(), before);
-    }
-
     tilo_test_env::scenario! {
         /// Filing a report and triaging it, retried, reloaded and merged.
         /// Each case was a test of its own, on a fixture of its own; a failure
@@ -458,6 +428,36 @@ mod tests {
                     .count(),
                 1
             );
+        }
+
+        phase unauthored_and_conflicting_retries_are_refused_without_changes;
+        {
+            let (mut doc, submission) = seeded();
+            let mut unauthored = ui::tilo_resource::Replica::<Chat>::from_doc(doc.fork());
+            assert!(unauthored.apply(action(&submission)).is_err());
+            assert!(reports(unauthored.doc()).unwrap().is_empty());
+            apply_as(&mut doc, "visitor:one", action(&submission)).unwrap();
+            let before = doc.get_heads();
+            assert!(apply_as(&mut doc, "visitor:other", action(&submission)).is_err());
+            let mut changed = submission.clone();
+            changed.feedback.text = "different".into();
+            assert!(apply_as(&mut doc, "visitor:one", action(&changed)).is_err());
+            let mut elsewhere = submission;
+            elsewhere.id = "fedcba9876543210fedcba9876543210".into();
+            elsewhere.destination.channel = "c_random".into();
+            assert!(
+                apply_as(
+                    &mut doc,
+                    "visitor:one",
+                    Chat::SUBMIT_FEEDBACK.with(chat::SubmitFeedback {
+                        channel: Id::from_raw("c_general"),
+                        submission: serde_json::to_value(&elsewhere).unwrap(),
+                    })
+                )
+                .is_err(),
+                "a submission is filed in the channel it names"
+            );
+            assert_eq!(doc.get_heads(), before);
         }
     }
 
