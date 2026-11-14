@@ -214,10 +214,6 @@ pub trait SettingsSource: Send + Sync {
     fn store(&self) -> Option<&crate::Store> {
         None
     }
-
-    fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>> {
-        None
-    }
 }
 
 macro_rules! shared_source {
@@ -264,7 +260,6 @@ shared_source! {
     ) -> std::io::Result<()>;
     fn revision(&self) -> u64;
     fn changes(&self) -> &ChangeSignal;
-    fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>>;
 }
 
 #[derive(Default)]

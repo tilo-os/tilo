@@ -1,9 +1,8 @@
 //! Change notification for the settings and the directories beside them.
 //!
-//! The settings ring their source's change signal ([`watch_settings`]). The identity and dictionary
-//! directories are watched as directories, because their writers replace files by rename and a
-//! watch on a file would follow the old inode. The directory watches are change-only: reading a
-//! file in a watched directory does not wake them.
+//! The settings ring their source's change signal ([`watch_settings`]). The identity directory is
+//! watched as a directory, because its writer replaces files by rename and a watch on a file would
+//! follow the old inode. The directory watch is change-only: reading a file in it does not wake it.
 
 use std::path::Path;
 
@@ -65,31 +64,6 @@ fn identity_entry(root: std::path::PathBuf) -> impl Fn(&Path) -> bool + Send + '
                     .extension()
                     .is_some_and(|extension| extension == "json"))
     }
-}
-
-/// Watch atomic account-dictionary publications, excluding temporary files and
-/// legacy ownership markers. The host creates the private directory first.
-pub(crate) fn watch_dictionary_at(
-    directory: &Path,
-    on_change: impl Fn() + Send + 'static,
-) -> std::io::Result<SettingsWatch> {
-    let root = directory.to_owned();
-    watch_directory(
-        directory,
-        move |path| {
-            path.parent() == Some(root.as_path())
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-                && path
-                    .file_stem()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|stem| {
-                        stem.len() == 64 && stem.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
-        },
-        on_change,
-    )
 }
 
 fn watch_directory(

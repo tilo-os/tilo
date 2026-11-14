@@ -1,22 +1,30 @@
-//! Local personal vocabulary shared by input consumers, outside workspace records.
+//! The person's personal vocabulary, shared by every input surface that checks or helps with
+//! spelling: the word processor, the on-screen keyboard and dictation.
 //!
-//! The session host owns [`Service`] and binds the authenticated person's root key; consumers
-//! receive only [`Reader`], never a filesystem path or the authority to switch people. Old readers
-//! fail closed, including after switching back to the same person.
+//! The words are a section of the person's settings document ([`SECTION`]) beside their other
+//! settings, so they follow them to their other devices. A consumer reads through a [`Reader`]
+//! bound to one document; a reader is revoked when the session replaces that document.
 
 use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
-use tilo_lock::MutexRecover as _;
+use serde_json::{Map, Value};
 use unicode_normalization::UnicodeNormalization;
 
-pub mod host;
+use crate::{ConditionalUpdate, SettingsSource};
+
+pub mod delivery;
+
+/// The person's words, as a section of their settings document.
+pub const SECTION: &str = "personal_dictionary";
+
+/// The section's one leaf: the words and the revision an edit names. One value, so a device's
+/// change reaches the person's other devices whole.
+const WORDS: &str = "words";
 
 const MAX_WORDS: usize = 1_024;
-const MAX_FILE_BYTES: usize = 512 * 1_024;
-const VERSION: u32 = 1;
 
 /// An explicit user addition. Display spelling is retained, including casing.
 /// `None` means all languages; a tag such as `fr` restricts the hint to that
@@ -82,19 +90,17 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Preview a queued edit without writing a second vocabulary store.
-    /// Imports wait for the host's ownership/migration decision before words
-    /// are shown. All other changes use the same canonical word rules.
-    pub fn preview(&self, edit: &Edit) -> io::Result<Self> {
+    /// The words `edit` makes of these, with the revision after it.
+    pub fn preview(&self, edit: Edit) -> io::Result<Self> {
         let mut next = self.clone();
         match edit {
-            Edit::Add(word) => insert(&mut next.words, validate(word)?)?,
+            Edit::Add(word) => insert(&mut next.words, validate(&word)?)?,
             Edit::Replace { old, new } => {
-                let new = validate(new)?;
+                let new = validate(&new)?;
                 let index = next
                     .words
                     .iter()
-                    .position(|word| word.same_key(old))
+                    .position(|word| word.same_key(&old))
                     .ok_or_else(|| invalid("the word no longer exists"))?;
                 if next
                     .words
@@ -108,7 +114,7 @@ impl Snapshot {
                     *word = new;
                 }
             }
-            Edit::Remove(old) => next.words.retain(|word| !word.same_key(old)),
+            Edit::Remove(old) => next.words.retain(|word| !word.same_key(&old)),
             Edit::Reset => next.words.clear(),
         }
         next.revision = next
@@ -159,232 +165,108 @@ pub enum Edit {
     Reset,
 }
 
-#[derive(Serialize, Deserialize)]
-struct Document {
-    version: u32,
-    owner: [u8; 32],
-    revision: u64,
-    words: Vec<Word>,
+/// The person's dictionary as `source` holds it. A missing or unreadable section is empty: a
+/// settings read never fails.
+#[must_use]
+pub fn snapshot_in(source: &dyn SettingsSource) -> Snapshot {
+    snapshot_of(&source.load())
 }
 
-impl Document {
-    fn empty(owner: [u8; 32]) -> Self {
-        Self {
-            version: VERSION,
-            owner,
-            revision: 0,
-            words: Vec::new(),
-        }
+/// [`snapshot_in`] of a document already loaded.
+#[must_use]
+pub fn snapshot_of(document: &Map<String, Value>) -> Snapshot {
+    document
+        .get(SECTION)
+        .and_then(Value::as_object)
+        .and_then(|section| section.get(WORDS))
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Snapshot>(value).ok())
+        .filter(|snapshot| {
+            snapshot.words.len() <= MAX_WORDS
+                && snapshot.words.iter().all(|word| {
+                    Word::new(&word.spelling, word.language.as_deref())
+                        .is_ok_and(|valid| valid == *word)
+                })
+        })
+        .unwrap_or_default()
+}
+
+/// Apply `edit` to the dictionary `revision` was read from.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::WouldBlock`] when another edit landed since `revision`; [`io::ErrorKind::InvalidData`]
+/// when the edit is not a valid change to the words; otherwise the source's own error.
+pub fn edit_in(source: &dyn SettingsSource, revision: u64, edit: Edit) -> io::Result<Snapshot> {
+    let document = source.load();
+    let current = snapshot_of(&document);
+    if current.revision != revision {
+        return Err(changed());
     }
-
-    fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            revision: self.revision,
-            words: self.words.clone(),
-        }
+    let next = current.preview(edit)?;
+    if serde_json::to_vec(&next.words)
+        .map_err(io::Error::other)?
+        .len()
+        > crate::placement::MAX_PERSONAL_VALUE_BYTES
+    {
+        return Err(invalid("personal dictionary is full"));
+    }
+    let mut values = Map::new();
+    values.insert(
+        WORDS.to_owned(),
+        serde_json::to_value(&next).map_err(io::Error::other)?,
+    );
+    let expected = match document.get(SECTION) {
+        Some(Value::Object(section)) => section.clone(),
+        _ => Map::new(),
+    };
+    match source.compare_update_section(SECTION, &expected, values)? {
+        ConditionalUpdate::Stored => Ok(next),
+        ConditionalUpdate::Superseded => Err(changed()),
     }
 }
 
-struct Binding {
-    owner: Option<[u8; 32]>,
-    epoch: u64,
-}
-
-struct Inner {
-    root: PathBuf,
-    binding: Mutex<Binding>,
-    changes: crate::ChangeSignal,
-}
-
-/// Host-owned local dictionary service. The root must be a trusted private
-/// directory outside app/room stores, controlled by the session's OS account.
-/// Do not hand this authority or its root to untrusted apps or collaborators.
-pub struct Service(Arc<Inner>);
-
-impl Drop for Service {
-    fn drop(&mut self) {
-        self.0.binding.lock_recover().owner = None;
-        self.0.changes.ring();
-    }
-}
-
+/// One document's view of the person's dictionary. Revoking it makes every clone fail, as the
+/// session does when it replaces the document a recognizer was reading.
 #[derive(Clone)]
 pub struct Reader {
-    inner: Arc<Inner>,
-    epoch: u64,
-}
-
-impl Service {
-    pub fn new(root: PathBuf) -> io::Result<Self> {
-        if !root.is_absolute() {
-            return Err(invalid(
-                "dictionary root must be an absolute host-owned path",
-            ));
-        }
-        Ok(Self(Arc::new(Inner {
-            root,
-            binding: Mutex::new(Binding {
-                owner: None,
-                epoch: 0,
-            }),
-            changes: crate::ChangeSignal::default(),
-        })))
-    }
-
-    pub fn bind(&self, owner: Option<[u8; 32]>) -> Option<Reader> {
-        let mut binding = self.0.binding.lock_recover();
-        let Some(epoch) = binding.epoch.checked_add(1) else {
-            binding.owner = None;
-            return None;
-        };
-        binding.epoch = epoch;
-        binding.owner = owner;
-        let reader = owner.map(|_| Reader {
-            inner: Arc::clone(&self.0),
-            epoch: binding.epoch,
-        });
-        drop(binding);
-        self.0.changes.ring();
-        reader
-    }
-
-    pub fn owner(&self) -> Option<[u8; 32]> {
-        self.0.binding.lock_recover().owner
-    }
-
-    pub fn reader(&self) -> Option<Reader> {
-        let binding = self.0.binding.lock_recover();
-        let reader = binding.owner.map(|_| Reader {
-            inner: Arc::clone(&self.0),
-            epoch: binding.epoch,
-        });
-        drop(binding);
-        reader
-    }
-
-    pub(crate) fn reader_for(&self, owner: [u8; 32]) -> Option<Reader> {
-        let binding = self.0.binding.lock_recover();
-        (binding.owner == Some(owner)).then(|| Reader {
-            inner: Arc::clone(&self.0),
-            epoch: binding.epoch,
-        })
-    }
-
-    #[cfg(feature = "watch")]
-    pub(crate) fn watch(&self) -> io::Result<crate::watch::SettingsWatch> {
-        create_private_directory(&self.0.root)?;
-        let inner = Arc::downgrade(&self.0);
-        crate::watch::watch_dictionary_at(&self.0.root, move || {
-            if let Some(inner) = inner.upgrade() {
-                inner.changes.ring();
-            }
-        })
-    }
-
-    pub fn changes(&self) -> &crate::ChangeSignal {
-        &self.0.changes
-    }
-
-    pub fn edit(&self, reader: &Reader, revision: u64, edit: Edit) -> io::Result<Snapshot> {
-        let result = self.change(reader, revision, |doc| {
-            match edit {
-                Edit::Add(word) => insert(&mut doc.words, validate(&word)?)?,
-                Edit::Replace { old, new } => {
-                    let new = validate(&new)?;
-                    let index = doc
-                        .words
-                        .iter()
-                        .position(|w| w.same_key(&old))
-                        .ok_or_else(|| invalid("the word no longer exists"))?;
-                    if doc
-                        .words
-                        .iter()
-                        .enumerate()
-                        .any(|(i, w)| i != index && w.same_key(&new))
-                    {
-                        return Err(invalid("the edited word already exists"));
-                    }
-                    if let Some(word) = doc.words.get_mut(index) {
-                        *word = new;
-                    }
-                }
-                Edit::Remove(old) => doc.words.retain(|w| !w.same_key(&old)),
-                Edit::Reset => doc.words.clear(),
-            }
-            Ok(())
-        });
-        if result.is_ok() {
-            self.0.changes.ring();
-        }
-        result
-    }
-
-    fn change(
-        &self,
-        reader: &Reader,
-        revision: u64,
-        change: impl FnOnce(&mut Document) -> io::Result<()>,
-    ) -> io::Result<Snapshot> {
-        if !Arc::ptr_eq(&self.0, &reader.inner) {
-            return Err(denied());
-        }
-        let binding = reader.inner.binding.lock_recover();
-        let owner = reader.owner(&binding)?;
-        let path = self.0.path(owner);
-        create_private_directory(&self.0.root)?;
-        let _lock = advisory_lock::FileLock::open(
-            &path.with_extension("lock"),
-            advisory_lock::LockMode::Exclusive,
-        )?;
-        let mut doc = read(&path, owner)?;
-        if doc.revision != revision {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "dictionary changed; reload before editing",
-            ));
-        }
-        change(&mut doc)?;
-        doc.revision = doc
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| invalid("dictionary revision exhausted"))?;
-        let bytes = serde_json::to_vec(&doc).map_err(io::Error::other)?;
-        if bytes.len() > MAX_FILE_BYTES {
-            return Err(invalid("dictionary is too large"));
-        }
-        tilo_files::native::atomic::write_private(&path, &bytes)?;
-        let snapshot = doc.snapshot();
-        drop(binding);
-        Ok(snapshot)
-    }
-}
-
-impl Inner {
-    fn path(&self, owner: [u8; 32]) -> PathBuf {
-        self.root.join(format!("{}.json", hex::encode(owner)))
-    }
+    source: Arc<dyn SettingsSource>,
+    revoked: Arc<AtomicBool>,
 }
 
 impl Reader {
-    pub fn same_binding(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner) && self.epoch == other.epoch
+    #[must_use]
+    pub fn bind(source: Arc<dyn SettingsSource>) -> Self {
+        Self {
+            source,
+            revoked: Arc::new(AtomicBool::new(false)),
+        }
     }
 
-    fn owner(&self, binding: &Binding) -> io::Result<[u8; 32]> {
-        if binding.epoch != self.epoch {
-            return Err(denied());
-        }
-        binding.owner.ok_or_else(denied)
+    pub fn revoke(&self) {
+        self.revoked.store(true, Ordering::Release);
+    }
+
+    /// Whether `other` reads the same document: two readers of it stay interchangeable while the
+    /// words change.
+    #[must_use]
+    pub fn same_binding(&self, other: &Self) -> bool {
+        self.reads(&other.source)
+    }
+
+    /// Whether this reader reads `source`.
+    #[must_use]
+    pub fn reads(&self, source: &Arc<dyn SettingsSource>) -> bool {
+        Arc::ptr_eq(&self.source, source)
     }
 }
 
 impl Vocabulary for Reader {
     fn snapshot(&self) -> io::Result<Snapshot> {
-        let binding = self.inner.binding.lock_recover();
-        let owner = self.owner(&binding)?;
-        let snapshot = read(&self.inner.path(owner), owner)?.snapshot();
-        drop(binding);
-        Ok(snapshot)
+        if self.revoked.load(Ordering::Acquire) {
+            return Err(denied());
+        }
+        Ok(snapshot_in(self.source.as_ref()))
     }
 }
 
@@ -393,7 +275,7 @@ fn validate(word: &Word) -> io::Result<Word> {
 }
 
 fn insert(words: &mut Vec<Word>, word: Word) -> io::Result<()> {
-    if words.iter().any(|w| w.same_key(&word)) {
+    if words.iter().any(|held| held.same_key(&word)) {
         return Ok(());
     }
     if words.len() == MAX_WORDS {
@@ -403,38 +285,21 @@ fn insert(words: &mut Vec<Word>, word: Word) -> io::Result<()> {
     Ok(())
 }
 
-fn read(path: &Path, owner: [u8; 32]) -> io::Result<Document> {
-    let Some(bytes) = tilo_files::native::bounded::read(path, MAX_FILE_BYTES)? else {
-        return Ok(Document::empty(owner));
-    };
-    let doc: Document = serde_json::from_slice(&bytes).map_err(|e| invalid(&e.to_string()))?;
-    if doc.version != VERSION || doc.owner != owner || doc.words.len() > MAX_WORDS {
-        return Err(invalid("invalid dictionary version, owner or size"));
-    }
-    let mut validated = Vec::new();
-    for word in &doc.words {
-        let valid = validate(word)?;
-        if &valid != word || validated.iter().any(|w: &Word| w.same_key(word)) {
-            return Err(invalid(
-                "dictionary contains noncanonical or duplicate entries",
-            ));
-        }
-        validated.push(valid);
-    }
-    Ok(doc)
-}
-
-fn create_private_directory(root: &Path) -> io::Result<()> {
-    tilo_files::native::atomic::create_private_directory(root)
+fn changed() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "dictionary changed; reload before editing",
+    )
 }
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+
 fn denied() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
-        "personal dictionary binding was revoked",
+        "personal dictionary reader was revoked",
     )
 }
 

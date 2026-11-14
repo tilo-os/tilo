@@ -755,20 +755,10 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
             avatar_color: [0; 3],
         },
     ))));
-    let directory = tempfile::tempdir().unwrap();
-    let service = Arc::new(
-        settings_store::personal_dictionary::Service::new(directory.path().to_owned()).unwrap(),
+    let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
+        settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
     );
-    let source = Arc::new(settings_store::personal_dictionary::host::Host::new(
-        Arc::new(settings_store::HostDocument::new(
-            serde_json::Map::new(),
-            |_| Ok(()),
-        )),
-        service,
-        Arc::new(|| Some([1; 32])),
-    ));
-    let mut host =
-        crate::personal_dictionary::TestHost::new(source, "so.tilo.notes", [1; 32]).unwrap();
+    let mut host = crate::personal_dictionary::TestHost::new(source, "so.tilo.notes");
     let field = |text: &str| {
         TextInput::local()
             .with_autocorrect(true)

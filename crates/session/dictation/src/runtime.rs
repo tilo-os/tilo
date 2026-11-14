@@ -1065,15 +1065,17 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
     tilo_test_env::scenario! {
         fn the_actor_over_a_real_pipe_finishes_cancels_and_reaps_its_worker;
 
-        phase actual_pipe_dictionary_removal_revocation_and_service_drop_reap_busy_worker;
+        phase actual_pipe_dictionary_removal_and_revocation_reap_busy_worker;
         {
-            use settings_store::personal_dictionary::{Edit, Service, Word};
+            use settings_store::personal_dictionary::{Edit, Reader, Word, edit_in};
             let directory = tempfile::tempdir().unwrap();
-            for mode in ["remove", "rebind", "drop"] {
-                let service = Service::new(directory.path().join(mode)).unwrap();
-                let reader = service.bind(Some([7; 32])).unwrap();
+            for mode in ["remove", "revoke"] {
+                let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
+                    settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+                );
+                let reader = Reader::bind(Arc::clone(&source));
                 let word = Word::new("TiLo", None).unwrap();
-                let snapshot = service.edit(&reader, 0, Edit::Add(word.clone())).unwrap();
+                let snapshot = edit_in(source.as_ref(), 0, Edit::Add(word.clone())).unwrap();
                 let pid = directory.path().join(format!("{mode}.pid"));
                 let mut runtime = Runtime::spawn_with_vocabulary(
                     peer_command("dictionary_slow", &pid),
@@ -1086,15 +1088,9 @@ reply(dict(kind='done', sequence=s, text=repairs[sys.argv[1]] if sys.argv[1] in 
                 assert!(matches!(next(&runtime), RuntimeEvent::Finishing));
                 match mode {
                     "remove" => {
-                        service
-                            .edit(&reader, snapshot.revision, Edit::Remove(word))
-                            .unwrap();
+                        edit_in(source.as_ref(), snapshot.revision, Edit::Remove(word)).unwrap();
                     }
-                    "rebind" => {
-                        service.bind(None);
-                        service.bind(Some([7; 32]));
-                    }
-                    _ => drop(service),
+                    _ => reader.revoke(),
                 }
                 let expected = if mode == "remove" {
                     RuntimeError::VocabularyChanged

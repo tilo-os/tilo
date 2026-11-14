@@ -143,7 +143,14 @@ impl ChannelSettings {
     }
 
     pub fn disconnected(&self) {
-        self.lock().connected = false;
+        let mut state = self.lock();
+        state.connected = false;
+        // Whatever the shell showed this process is the shell's, and the next
+        // link may be another document's.
+        state.view.clear();
+        state.confirmed.clear();
+        state.confirmed_revision = 0;
+        drop(state);
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.changes.ring();
     }
@@ -151,15 +158,7 @@ impl ChannelSettings {
     pub fn dictionary_snapshot(
         &self,
     ) -> std::io::Result<settings_store::personal_dictionary::Snapshot> {
-        use settings_store::personal_dictionary::host::{Delivery, VIEW_KEY};
-        let owner = crate::local_identity::bound()
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "no authenticated personal dictionary",
-                )
-            })?
-            .group_public_key;
+        use settings_store::personal_dictionary::delivery::VIEW_KEY;
         let state = self.lock();
         if !state.connected || state.identity_generation != crate::local_identity::generation() {
             return Err(std::io::Error::new(
@@ -174,7 +173,7 @@ impl ChannelSettings {
             .and_then(|entry| entry.get(VIEW_KEY))
             .cloned();
         drop(state);
-        let delivery: Delivery = serde_json::from_value(delivery.ok_or_else(|| {
+        serde_json::from_value(delivery.ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotConnected,
                 "personal dictionary is unavailable",
@@ -183,16 +182,9 @@ impl ChannelSettings {
         .map_err(|error| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("personal dictionary delivery does not decode: {error}"),
+                format!("personal dictionary does not decode: {error}"),
             )
-        })?;
-        if delivery.owner != owner {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "dictionary belongs to another person",
-            ));
-        }
-        Ok(delivery.snapshot)
+        })
     }
 
     pub fn dictionary_edit(
@@ -200,7 +192,7 @@ impl ChannelSettings {
         revision: u64,
         edit: settings_store::personal_dictionary::Edit,
     ) -> std::io::Result<()> {
-        use settings_store::personal_dictionary::host::{Command, EDIT_KEY};
+        use settings_store::personal_dictionary::delivery::{Command, EDIT_KEY};
         let snapshot = self.dictionary_snapshot()?;
         if snapshot.revision != revision {
             return Err(std::io::Error::new(
@@ -208,29 +200,9 @@ impl ChannelSettings {
                 "dictionary changed; reload before editing",
             ));
         }
-        let owner = crate::local_identity::bound()
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "dictionary identity was revoked",
-                )
-            })?
-            .group_public_key;
-        if !matches!(edit, settings_store::personal_dictionary::Edit::Add(_))
-            && !["so.tilo.settings", "so.tilo.word-processor"].contains(&self.app_id.as_str())
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "this app can add words but cannot edit the dictionary",
-            ));
-        }
-        let preview = snapshot.preview(&edit)?;
-        let value = serde_json::to_value(Command {
-            owner,
-            revision,
-            edit,
-        })
-        .map_err(std::io::Error::other)?;
+        let preview = snapshot.preview(edit.clone())?;
+        let value =
+            serde_json::to_value(Command { revision, edit }).map_err(std::io::Error::other)?;
         let values = Map::from_iter([(
             self.app_id.clone(),
             serde_json::Value::Object(Map::from_iter([(EDIT_KEY.to_owned(), value)])),
@@ -249,7 +221,7 @@ impl ChannelSettings {
                 .get_mut(settings_store::placement::APP_DEVICE_LOCAL_SECTION)
                 .and_then(|section| section.get_mut(&self.app_id))
                 .and_then(|entry| {
-                    entry.get_mut(settings_store::personal_dictionary::host::VIEW_KEY)
+                    entry.get_mut(settings_store::personal_dictionary::delivery::VIEW_KEY)
                 })
                 .ok_or_else(|| {
                     std::io::Error::new(
@@ -257,19 +229,15 @@ impl ChannelSettings {
                         "dictionary channel closed",
                     )
                 })?;
-            let current: settings_store::personal_dictionary::host::Delivery =
+            let current: settings_store::personal_dictionary::Snapshot =
                 serde_json::from_value(delivery.clone()).map_err(std::io::Error::other)?;
-            if current.owner != owner || current.snapshot.revision != revision {
+            if current.revision != revision {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
                     "dictionary changed",
                 ));
             }
-            *delivery = serde_json::to_value(settings_store::personal_dictionary::host::Delivery {
-                owner,
-                snapshot: preview,
-            })
-            .map_err(std::io::Error::other)?;
+            *delivery = serde_json::to_value(preview).map_err(std::io::Error::other)?;
             state.outbox.push((
                 settings_store::placement::APP_DEVICE_LOCAL_SECTION.to_owned(),
                 values,
@@ -367,7 +335,7 @@ fn settings_document(view: &Map<String, Value>) -> Map<String, Value> {
         .and_then(Value::as_object_mut)
     {
         for entry in entries.values_mut().filter_map(Value::as_object_mut) {
-            entry.remove(settings_store::personal_dictionary::host::VIEW_KEY);
+            entry.remove(settings_store::personal_dictionary::delivery::VIEW_KEY);
         }
     }
     document
@@ -410,7 +378,9 @@ impl SettingsSource for ChannelSettings {
                 .view
                 .get(settings_store::placement::APP_DEVICE_LOCAL_SECTION)
                 .and_then(|entries| entries.get(&self.app_id))
-                .and_then(|entry| entry.get(settings_store::personal_dictionary::host::VIEW_KEY))
+                .and_then(|entry| {
+                    entry.get(settings_store::personal_dictionary::delivery::VIEW_KEY)
+                })
                 .cloned();
             state.view = shown.load();
             if let Some(delivery) = delivery {
@@ -424,7 +394,7 @@ impl SettingsSource for ChannelSettings {
                         .or_insert_with(|| Value::Object(Map::new()));
                     if let Some(entry) = entry.as_object_mut() {
                         entry.insert(
-                            settings_store::personal_dictionary::host::VIEW_KEY.to_owned(),
+                            settings_store::personal_dictionary::delivery::VIEW_KEY.to_owned(),
                             delivery,
                         );
                     }
@@ -460,9 +430,8 @@ mod tests {
 
     #[test]
     fn dictionary_delivery_preserves_settings_and_revokes_cached_hints() {
-        use settings_store::personal_dictionary::{
-            Edit, Snapshot, Word, host::Delivery, host::VIEW_KEY,
-        };
+        use settings_store::personal_dictionary::delivery::VIEW_KEY;
+        use settings_store::personal_dictionary::{Edit, Snapshot, Word};
         let _guard = tilo_test_env::lock();
         struct Restore;
         impl Drop for Restore {
@@ -487,11 +456,7 @@ mod tests {
             revision: 1,
             words: vec![Word::new("Tilo", None).unwrap()],
         };
-        let delivery = serde_json::to_value(Delivery {
-            owner: [1; 32],
-            snapshot: snapshot.clone(),
-        })
-        .unwrap();
+        let delivery = serde_json::to_value(&snapshot).unwrap();
         channel.received(1, object(json!({"app_device_local": {"so.tilo.settings": { VIEW_KEY: delivery, "local_setting": true }}})));
         assert_eq!(channel.dictionary_snapshot().unwrap(), snapshot);
         assert!(
@@ -532,14 +497,13 @@ mod tests {
         channel.disconnected();
         assert!(channel.dictionary_snapshot().is_err());
         channel.linked();
+        assert!(
+            channel.dictionary_snapshot().is_err(),
+            "a new link shows nothing until the shell answers for it"
+        );
         crate::local_identity::install_source(Some(identity(2)));
         assert!(channel.dictionary_snapshot().is_err());
         assert!(channel.dictionary_edit(2, Edit::Reset).is_err());
-        channel.linked();
-        assert!(
-            channel.dictionary_snapshot().is_err(),
-            "old owner's cached delivery cannot survive account switching"
-        );
         crate::local_identity::install_source(Some(Arc::new(
             crate::local_identity::NoLocalIdentity,
         )));

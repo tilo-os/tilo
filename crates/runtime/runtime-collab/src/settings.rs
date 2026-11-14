@@ -202,7 +202,13 @@ pub mod host {
         /// The current view, with a revision that changes exactly when the
         /// view does.
         fn current(&self) -> (u64, Map<String, Value>) {
-            let view = view_at(&self.source.load(), &self.app_id, self.reach);
+            let document = self.source.load();
+            let mut view = view_at(&document, &self.app_id, self.reach);
+            settings_store::personal_dictionary::delivery::project(
+                &document,
+                &self.app_id,
+                &mut view,
+            );
             let mut answered = self.answered.borrow_mut();
             if answered.0 == 0 || answered.1 != view {
                 answered.0 = answered.0.wrapping_add(1).max(1);
@@ -288,6 +294,20 @@ pub mod host {
                 principal: None,
                 invoked_by: None,
             };
+            if settings_store::personal_dictionary::delivery::command(
+                self.source.as_ref(),
+                &self.app_id,
+                section,
+                &values,
+            )
+            .map_err(|e| e.to_string())?
+            {
+                let (revision, view) = self.current();
+                return Ok((revision, encode(&view)?));
+            }
+            if section == settings_store::personal_dictionary::SECTION {
+                return Err("the personal dictionary is edited through its own command".to_owned());
+            }
             update_at(
                 self.source.as_ref(),
                 &self.app_id,

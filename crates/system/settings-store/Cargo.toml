@@ -14,7 +14,6 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-hex.workspace = true
 tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
 tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

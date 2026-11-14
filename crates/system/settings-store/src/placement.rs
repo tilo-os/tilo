@@ -37,6 +37,7 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     (crate::lockdown::SECTION, Holder::Person),
     ("locale", Holder::Person),
     ("notifications", Holder::Person),
+    (crate::personal_dictionary::SECTION, Holder::Person),
     ("quick_settings", Holder::Person),
     ("shell_views", Holder::Person),
     ("shortcuts", Holder::Person),

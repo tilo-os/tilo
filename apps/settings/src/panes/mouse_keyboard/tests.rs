@@ -18,7 +18,7 @@ use winit::event::WindowEvent;
 
 #[test]
 fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
-    use settings_store::personal_dictionary::{Service, Vocabulary, host::Host};
+    use settings_store::personal_dictionary::{Reader, Vocabulary};
     use std::sync::Arc;
     struct Restore;
     impl Drop for Restore {
@@ -35,19 +35,12 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
             avatar_color: [0; 3],
         },
     ))));
-    let profile = tempfile::tempdir().unwrap();
-    let service = Arc::new(Service::new(profile.path().join("dictionary")).unwrap());
-    let source = Arc::new(Host::new(
-        Arc::new(settings_store::HostDocument::new(
-            serde_json::Map::new(),
-            |_| Ok(()),
-        )),
-        service.clone(),
-        Arc::new(|| Some([1; 32])),
-    ));
+    let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
+        settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+    );
+    let reader = Reader::bind(Arc::clone(&source));
     let mut app = TestApp::<SettingsShell>::for_person(&"01".repeat(32)).unwrap();
-    let mut host =
-        ui::personal_dictionary::TestHost::new(source, "so.tilo.settings", [1; 32]).unwrap();
+    let mut host = ui::personal_dictionary::TestHost::new(source.clone(), "so.tilo.settings");
     app.harness().resize((1200, 2200)).unwrap();
     crate::effects::show_pane(&mut app, crate::categories::Category::Spelling);
     app.settle();
@@ -57,7 +50,6 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
     app.settle();
     host.flush().unwrap();
     app.settle();
-    let reader = service.reader().unwrap();
     assert_eq!(
         reader.snapshot().unwrap().hints("en").collect::<Vec<_>>(),
         ["Tilo"]
@@ -76,9 +68,8 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
         reader.snapshot().unwrap().hints("nl").collect::<Vec<_>>(),
         ["TiLo"]
     );
-    let reopened = Service::new(profile.path().join("dictionary")).unwrap();
     assert_eq!(
-        reopened.bind(Some([1; 32])).unwrap().snapshot().unwrap(),
+        settings_store::personal_dictionary::snapshot_in(source.as_ref()),
         reader.snapshot().unwrap()
     );
     if let Some(path) = std::env::var_os("TILO_DICTIONARY_LIVE_SCREENSHOT") {
@@ -110,7 +101,7 @@ fn mounted_dictionary_actions_add_edit_remove_reset_and_survive_restart() {
 
 #[test]
 fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
-    use settings_store::personal_dictionary::{Edit, Service, Vocabulary, Word, host::Host};
+    use settings_store::personal_dictionary::{Edit, Word, edit_in};
     use std::sync::Arc;
     struct Restore;
     impl Drop for Restore {
@@ -127,30 +118,20 @@ fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
             avatar_color: [0; 3],
         },
     ))));
-    let profile = tempfile::tempdir().unwrap();
-    let service = Arc::new(Service::new(profile.path().join("dictionary")).unwrap());
-    let reader = service.bind(Some([1; 32])).unwrap();
+    let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
+        settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+    );
     for (word, language) in [("Tilo", None), ("Élodie", Some("fr")), ("東京", Some("ja"))] {
-        let revision = reader.snapshot().unwrap().revision;
-        service
-            .edit(
-                &reader,
-                revision,
-                Edit::Add(Word::new(word, language).unwrap()),
-            )
-            .unwrap();
+        let revision = settings_store::personal_dictionary::snapshot_in(source.as_ref()).revision;
+        edit_in(
+            source.as_ref(),
+            revision,
+            Edit::Add(Word::new(word, language).unwrap()),
+        )
+        .unwrap();
     }
-    let source = Arc::new(Host::new(
-        Arc::new(settings_store::HostDocument::new(
-            serde_json::Map::new(),
-            |_| Ok(()),
-        )),
-        service,
-        Arc::new(|| Some([1; 32])),
-    ));
     let mut app = TestApp::<SettingsShell>::for_person(&"01".repeat(32)).unwrap();
-    let _host =
-        ui::personal_dictionary::TestHost::new(source, "so.tilo.settings", [1; 32]).unwrap();
+    let _host = ui::personal_dictionary::TestHost::new(source.clone(), "so.tilo.settings");
     app.harness().resize((1100, 1400)).unwrap();
     crate::effects::show_pane(&mut app, crate::categories::Category::Spelling);
     app.settle();
