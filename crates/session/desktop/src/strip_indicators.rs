@@ -207,114 +207,122 @@ mod tests {
         }
     }
 
-    #[test]
-    fn hidden_at_rest_shown_on_navigation_then_faded_and_settled() {
-        let t0 = Instant::now();
-        let mut s = StripIndicators::default();
-        s.observe(position(0, 0), t0);
-        assert_eq!(
-            s.alpha_at(t0, false),
-            0.0,
-            "the starting position is not navigation"
-        );
-        assert_eq!(s.next_wake_deadline_at(t0), None);
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn strip_indicators_show_on_navigation_and_fade;
 
-        let t1 = t0 + Duration::from_millis(50);
-        s.observe(position(0, 40), t1);
-        assert_eq!(s.alpha_at(t1, false), 1.0, "a scroll shows them at once");
-        assert!(!s.needs_animation_frame_at(t1), "the hold is static");
-        assert_eq!(s.next_wake_deadline_at(t1), Some(t1 + STRIP_INDICATOR_HOLD));
+        phase hidden_at_rest_shown_on_navigation_then_faded_and_settled;
+        {
+            let t0 = Instant::now();
+            let mut s = StripIndicators::default();
+            s.observe(position(0, 0), t0);
+            assert_eq!(
+                s.alpha_at(t0, false),
+                0.0,
+                "the starting position is not navigation"
+            );
+            assert_eq!(s.next_wake_deadline_at(t0), None);
 
-        let mid_fade = t1 + STRIP_INDICATOR_HOLD + fade(false) / 2;
-        let a = s.alpha_at(mid_fade, false);
-        assert!(a > 0.0 && a < 1.0, "fading, got {a}");
-        assert!(s.needs_animation_frame_at(mid_fade));
-        assert_eq!(
-            s.alpha_at(mid_fade, true),
-            0.0,
-            "under reduced motion they go at the end of the hold"
-        );
-        s.alpha_at(mid_fade, false);
+            let t1 = t0 + Duration::from_millis(50);
+            s.observe(position(0, 40), t1);
+            assert_eq!(s.alpha_at(t1, false), 1.0, "a scroll shows them at once");
+            assert!(!s.needs_animation_frame_at(t1), "the hold is static");
+            assert_eq!(s.next_wake_deadline_at(t1), Some(t1 + STRIP_INDICATOR_HOLD));
 
-        let end = t1 + STRIP_INDICATOR_HOLD + fade(false);
-        assert_eq!(s.alpha_at(end, false), 0.0);
-        assert_eq!(
-            s.next_wake_deadline_at(mid_fade),
-            None,
-            "the fade's own frames carry it"
-        );
-        assert_eq!(
-            s.next_wake_deadline_at(end),
-            None,
-            "nothing is owed after it"
-        );
-        assert!(!s.needs_animation_frame_at(end));
-    }
+            let mid_fade = t1 + STRIP_INDICATOR_HOLD + fade(false) / 2;
+            let a = s.alpha_at(mid_fade, false);
+            assert!(a > 0.0 && a < 1.0, "fading, got {a}");
+            assert!(s.needs_animation_frame_at(mid_fade));
+            assert_eq!(
+                s.alpha_at(mid_fade, true),
+                0.0,
+                "under reduced motion they go at the end of the hold"
+            );
+            s.alpha_at(mid_fade, false);
 
-    #[test]
-    fn a_direct_pan_shows_them_from_the_frame_after_it_rests() {
-        let t0 = Instant::now();
-        let mut s = StripIndicators::default();
-        s.observe(position(0, 0), t0);
-        // The pan's frames are not observed; it rests somewhere new.
-        let rest = t0 + Duration::from_millis(400);
-        s.settle_after_pan(position(1, 900));
-        assert_eq!(
-            s.alpha_at(rest, false),
-            0.0,
-            "the frame the pan rests on keeps the chrome it began with"
-        );
-        assert_eq!(
-            s.next_wake_deadline_at(rest),
-            Some(rest),
-            "the next frame is owed at once"
-        );
-        let next = rest + Duration::from_millis(8);
-        s.observe(position(1, 900), next);
-        assert_eq!(s.alpha_at(next, false), 1.0, "the next frame shows them");
-        assert_eq!(
-            s.next_wake_deadline_at(next),
-            Some(next + STRIP_INDICATOR_HOLD),
-            "and the owed frame is paid: only the fade start remains"
-        );
-
-        let later = next + STRIP_INDICATOR_HOLD + fade(false);
-        s.observe(position(1, 900), later);
-        s.settle_after_pan(position(1, 900));
-        assert_eq!(s.next_wake_deadline_at(later), None);
-        s.observe(position(1, 900), later + Duration::from_millis(8));
-        assert_eq!(s.alpha_at(later + Duration::from_millis(8), false), 0.0);
-    }
-
-    #[test]
-    fn continued_navigation_and_hover_keep_them_up() {
-        let t0 = Instant::now();
-        let mut s = StripIndicators::default();
-        s.observe(position(0, 0), t0);
-        let mut t = t0;
-        for step in 1..=10 {
-            t = t0 + STRIP_INDICATOR_HOLD / 2 * step;
-            s.observe(position(usize::try_from(step % 4).unwrap(), 0), t);
-            assert_eq!(s.alpha_at(t, false), 1.0);
+            let end = t1 + STRIP_INDICATOR_HOLD + fade(false);
+            assert_eq!(s.alpha_at(end, false), 0.0);
+            assert_eq!(
+                s.next_wake_deadline_at(mid_fade),
+                None,
+                "the fade's own frames carry it"
+            );
+            assert_eq!(
+                s.next_wake_deadline_at(end),
+                None,
+                "nothing is owed after it"
+            );
+            assert!(!s.needs_animation_frame_at(end));
         }
-        let mut hovered = position(2, 0);
-        hovered.hovered = true;
-        s.observe(hovered, t);
-        let later = t + STRIP_INDICATOR_HOLD * 10;
-        assert_eq!(
-            s.alpha_at(later, false),
-            1.0,
-            "the pointer on them keeps them"
-        );
-        s.observe(position(2, 0), later);
-        assert_eq!(
-            s.alpha_at(later, false),
-            1.0,
-            "leaving them restarts the hold"
-        );
-        assert_eq!(
-            s.alpha_at(later + STRIP_INDICATOR_HOLD + fade(false), false),
-            0.0
-        );
+
+        phase a_direct_pan_shows_them_from_the_frame_after_it_rests;
+        {
+            let t0 = Instant::now();
+            let mut s = StripIndicators::default();
+            s.observe(position(0, 0), t0);
+            // The pan's frames are not observed; it rests somewhere new.
+            let rest = t0 + Duration::from_millis(400);
+            s.settle_after_pan(position(1, 900));
+            assert_eq!(
+                s.alpha_at(rest, false),
+                0.0,
+                "the frame the pan rests on keeps the chrome it began with"
+            );
+            assert_eq!(
+                s.next_wake_deadline_at(rest),
+                Some(rest),
+                "the next frame is owed at once"
+            );
+            let next = rest + Duration::from_millis(8);
+            s.observe(position(1, 900), next);
+            assert_eq!(s.alpha_at(next, false), 1.0, "the next frame shows them");
+            assert_eq!(
+                s.next_wake_deadline_at(next),
+                Some(next + STRIP_INDICATOR_HOLD),
+                "and the owed frame is paid: only the fade start remains"
+            );
+
+            let later = next + STRIP_INDICATOR_HOLD + fade(false);
+            s.observe(position(1, 900), later);
+            s.settle_after_pan(position(1, 900));
+            assert_eq!(s.next_wake_deadline_at(later), None);
+            s.observe(position(1, 900), later + Duration::from_millis(8));
+            assert_eq!(s.alpha_at(later + Duration::from_millis(8), false), 0.0);
+        }
+
+        phase continued_navigation_and_hover_keep_them_up;
+        {
+            let t0 = Instant::now();
+            let mut s = StripIndicators::default();
+            s.observe(position(0, 0), t0);
+            let mut t = t0;
+            for step in 1..=10 {
+                t = t0 + STRIP_INDICATOR_HOLD / 2 * step;
+                s.observe(position(usize::try_from(step % 4).unwrap(), 0), t);
+                assert_eq!(s.alpha_at(t, false), 1.0);
+            }
+            let mut hovered = position(2, 0);
+            hovered.hovered = true;
+            s.observe(hovered, t);
+            let later = t + STRIP_INDICATOR_HOLD * 10;
+            assert_eq!(
+                s.alpha_at(later, false),
+                1.0,
+                "the pointer on them keeps them"
+            );
+            s.observe(position(2, 0), later);
+            assert_eq!(
+                s.alpha_at(later, false),
+                1.0,
+                "leaving them restarts the hold"
+            );
+            assert_eq!(
+                s.alpha_at(later + STRIP_INDICATOR_HOLD + fade(false), false),
+                0.0
+            );
+        }
     }
 }

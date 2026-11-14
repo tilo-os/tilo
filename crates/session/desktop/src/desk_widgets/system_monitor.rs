@@ -227,41 +227,45 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_reading_is_load_memory_and_the_warmest_sensor() {
-        assert_eq!(
-            Reading::from_stats(&stats(Some(24.6))),
-            Reading {
-                cpu_percent: Some(25),
-                memory_percent: Some(75),
-                temperature_celsius: Some(47),
-            }
-        );
-        let first = Reading::from_stats(&stats(None));
-        assert_eq!(first.cpu_percent, None, "one reading: no load yet");
-        assert_eq!(first.memory_percent, Some(75));
-        assert!(
-            Reading::from_stats(&SystemStats::default()).is_empty(),
-            "left out"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_system_monitor_reads_the_machine_only_while_it_shows;
 
-    #[test]
-    fn readings_come_only_while_the_widget_shows() {
-        let mut source = Fake::default();
-        let mut monitor = Monitor::default();
-        assert!(!monitor.show(&mut source), "nothing arrived yet");
-        assert_eq!(source.started, 1, "showing subscribes");
-        source.queued = Some(stats(None));
-        assert!(monitor.show(&mut source));
-        assert_eq!(monitor.reading().cpu_percent, None);
-        source.queued = Some(stats(Some(40.0)));
-        assert!(monitor.show(&mut source));
-        assert_eq!(monitor.reading().cpu_percent, Some(40));
-        assert_eq!(source.started, 1, "one subscription while it shows");
-        monitor.pause(&mut source);
-        monitor.pause(&mut source);
-        assert_eq!(source.stopped, 1, "away: unsubscribed, once");
-        assert!(!monitor.is_showing());
+        phase the_reading_is_load_memory_and_the_warmest_sensor;
+        {
+            assert_eq!(
+                Reading::from_stats(&stats(Some(24.6))),
+                Reading {
+                    cpu_percent: Some(25),
+                    memory_percent: Some(75),
+                    temperature_celsius: Some(47),
+                }
+            );
+            let first = Reading::from_stats(&stats(None));
+            assert_eq!(first.cpu_percent, None, "one reading: no load yet");
+            assert_eq!(first.memory_percent, Some(75));
+            assert!(
+                Reading::from_stats(&SystemStats::default()).is_empty(),
+                "left out"
+            );
+        }
+
+        phase readings_come_only_while_the_widget_shows;
+        {
+            let mut source = Fake::default();
+            let mut monitor = Monitor::default();
+            assert!(!monitor.show(&mut source), "nothing arrived yet");
+            assert_eq!(source.started, 1, "showing subscribes");
+            source.queued = Some(stats(None));
+            assert!(monitor.show(&mut source));
+            assert_eq!(monitor.reading().cpu_percent, None);
+            source.queued = Some(stats(Some(40.0)));
+            assert!(monitor.show(&mut source));
+            assert_eq!(monitor.reading().cpu_percent, Some(40));
+            assert_eq!(source.started, 1, "one subscription while it shows");
+            monitor.pause(&mut source);
+            monitor.pause(&mut source);
+            assert_eq!(source.stopped, 1, "away: unsubscribed, once");
+            assert!(!monitor.is_showing());
+        }
     }
 }

@@ -144,72 +144,76 @@ mod tests {
         )
     }
 
-    /// A blocked member stays on record, so the model still holds the role they had. What a host
-    /// asks here is the role they act with, and that is none.
-    #[test]
-    fn a_member_blocked_while_still_on_record_has_no_role() {
-        let mut ws = ws_with_member(CapRole::Editor);
-        let peer = PEER.to_string();
-        assert_eq!(
-            WorkspaceAuthority::role_of(&ws, &peer),
-            Some(CapRole::Editor),
-            "a member in good standing has the role they were admitted with"
-        );
+    tilo_test_env::scenario! {
+        fn a_host_asks_authority_for_the_person_as_they_stand_now;
 
-        let block = ws.policy.block(PEER, Grantee::person(OWNER));
-        ws.grant(block);
-        assert!(ws.is_blocked(PEER), "the block is on the whole workspace");
-        assert_eq!(
-            Workspace::role_of(&ws, PEER),
-            Some(CapRole::Editor),
-            "the record still names the member"
-        );
-        assert_eq!(
-            WorkspaceAuthority::role_of(&ws, &peer),
-            None,
-            "a blocked member has no role to act with"
-        );
-        assert_eq!(
-            WorkspaceAuthority::role_of(&ws, &OWNER.to_string()),
-            Some(CapRole::Owner),
-            "blocking a member takes nothing from the owner"
-        );
-    }
-
-    /// Granting and revoking are the workspace's to govern: a viewer and a stranger record nothing
-    /// and take nothing back, and nobody takes back what is not there.
-    #[test]
-    fn who_may_not_govern_neither_grants_nor_revokes() {
-        let mut ws = ws_with_member(CapRole::Viewer);
-        let owner = OWNER.to_string();
-        for who in [PEER.to_string(), "stranger".to_string()] {
-            assert!(!ws.may_administer(&who), "{who} may not grant");
+        phase a_member_blocked_while_still_on_record_has_no_role;
+        // A blocked member stays on record, so the model still holds the role they had. What a host
+        // asks here is the role they act with, and that is none.
+        {
+            let mut ws = ws_with_member(CapRole::Editor);
+            let peer = PEER.to_string();
             assert_eq!(
-                ws.grant_as(&who, files_for_the_member()),
-                None,
-                "{who} grants nothing"
+                WorkspaceAuthority::role_of(&ws, &peer),
+                Some(CapRole::Editor),
+                "a member in good standing has the role they were admitted with"
             );
-            assert!(ws.sandbox.is_empty(), "{who} recorded nothing");
+
+            let block = ws.policy.block(PEER, Grantee::person(OWNER));
+            ws.grant(block);
+            assert!(ws.is_blocked(PEER), "the block is on the whole workspace");
+            assert_eq!(
+                Workspace::role_of(&ws, PEER),
+                Some(CapRole::Editor),
+                "the record still names the member"
+            );
+            assert_eq!(
+                WorkspaceAuthority::role_of(&ws, &peer),
+                None,
+                "a blocked member has no role to act with"
+            );
+            assert_eq!(
+                WorkspaceAuthority::role_of(&ws, &OWNER.to_string()),
+                Some(CapRole::Owner),
+                "blocking a member takes nothing from the owner"
+            );
         }
 
-        assert!(ws.may_administer(&owner), "the owner may grant");
-        let id = ws
-            .grant_as(&owner, files_for_the_member())
-            .expect("the owner grants");
-        assert_eq!(ws.sandbox.len(), 1, "the owner's grant is recorded");
-        for who in [PEER.to_string(), "stranger".to_string()] {
-            assert!(!ws.revoke_as(&who, &id), "{who} takes nothing back");
-            assert_eq!(ws.sandbox.len(), 1, "the grant stands after {who} asked");
+        phase who_may_not_govern_neither_grants_nor_revokes;
+        // Granting and revoking are the workspace's to govern: a viewer and a stranger record nothing
+        // and take nothing back, and nobody takes back what is not there.
+        {
+            let mut ws = ws_with_member(CapRole::Viewer);
+            let owner = OWNER.to_string();
+            for who in [PEER.to_string(), "stranger".to_string()] {
+                assert!(!ws.may_administer(&who), "{who} may not grant");
+                assert_eq!(
+                    ws.grant_as(&who, files_for_the_member()),
+                    None,
+                    "{who} grants nothing"
+                );
+                assert!(ws.sandbox.is_empty(), "{who} recorded nothing");
+            }
+
+            assert!(ws.may_administer(&owner), "the owner may grant");
+            let id = ws
+                .grant_as(&owner, files_for_the_member())
+                .expect("the owner grants");
+            assert_eq!(ws.sandbox.len(), 1, "the owner's grant is recorded");
+            for who in [PEER.to_string(), "stranger".to_string()] {
+                assert!(!ws.revoke_as(&who, &id), "{who} takes nothing back");
+                assert_eq!(ws.sandbox.len(), 1, "the grant stands after {who} asked");
+            }
+            assert!(
+                !ws.revoke_as(&owner, "no-such-capability"),
+                "there is nothing of that id to take back"
+            );
+            assert_eq!(ws.sandbox.len(), 1, "the grant stands");
+            assert!(
+                ws.revoke_as(&owner, &id),
+                "the owner takes back what they gave"
+            );
+            assert!(ws.sandbox.is_empty(), "and it is gone");
         }
-        assert!(
-            !ws.revoke_as(&owner, "no-such-capability"),
-            "there is nothing of that id to take back"
-        );
-        assert_eq!(ws.sandbox.len(), 1, "the grant stands");
-        assert!(
-            ws.revoke_as(&owner, &id),
-            "the owner takes back what they gave"
-        );
-        assert!(ws.sandbox.is_empty(), "and it is gone");
     }
 }

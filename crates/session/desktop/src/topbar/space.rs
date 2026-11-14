@@ -140,50 +140,54 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    #[test]
-    fn the_room_follows_the_bar_showing_over_a_window() {
-        let standing = Rc::new(Cell::new(TopBarPresence::Docked));
-        let read = standing.clone();
-        let mut space = BarSpace::new(Rc::new(move || read.get()));
-        let theme = Theme::default();
-        let mut taffy = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let node = space.build_layout(&mut taffy, &theme, &mut nodes);
-        let style = taffy.style(node).unwrap().clone();
-        assert_eq!(style.display, Display::Flex);
-        assert_eq!(
-            style.size.height,
-            Dimension::length(topbar_height(&theme)),
-            "docked, it takes the bar's strip"
-        );
-        assert!(!space.take_structure_dirty());
-        // Shown over a fullscreen window: the window keeps its whole size.
-        standing.set(TopBarPresence::Shown);
-        assert!(space.take_structure_dirty(), "showing moves the windows");
-        let node = space.build_layout(&mut taffy, &theme, &mut nodes);
-        assert_eq!(
-            taffy.style(node).unwrap().display,
-            Display::None,
-            "shown over the window, the strip is the window's"
-        );
-        standing.set(TopBarPresence::Hidden);
-        let node = space.build_layout(&mut taffy, &theme, &mut nodes);
-        assert_eq!(taffy.style(node).unwrap().display, Display::None);
-        standing.set(TopBarPresence::Docked);
-        let node = space.build_layout(&mut taffy, &theme, &mut nodes);
-        assert_eq!(taffy.style(node).unwrap().display, Display::Flex);
-    }
+    tilo_test_env::scenario! {
+        fn the_bars_room_follows_how_the_bar_stands;
 
-    #[test]
-    fn a_laid_out_room_asks_for_no_frame() {
-        let standing = Rc::new(Cell::new(TopBarPresence::Docked));
-        let mut space = BarSpace::new(Rc::new(move || standing.get()));
-        let mut taffy = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        space.build_layout(&mut taffy, &Theme::default(), &mut nodes);
-        assert!(
-            !(space.needs_redraw() || space.needs_animation_frame()),
-            "it draws nothing, so a settled desk has nothing to draw here"
-        );
+        phase the_room_follows_the_bar_showing_over_a_window;
+        {
+            let standing = Rc::new(Cell::new(TopBarPresence::Docked));
+            let read = standing.clone();
+            let mut space = BarSpace::new(Rc::new(move || read.get()));
+            let theme = Theme::default();
+            let mut taffy = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let node = space.build_layout(&mut taffy, &theme, &mut nodes);
+            let style = taffy.style(node).unwrap().clone();
+            assert_eq!(style.display, Display::Flex);
+            assert_eq!(
+                style.size.height,
+                Dimension::length(topbar_height(&theme)),
+                "docked, it takes the bar's strip"
+            );
+            assert!(!space.take_structure_dirty());
+            // Shown over a fullscreen window: the window keeps its whole size.
+            standing.set(TopBarPresence::Shown);
+            assert!(space.take_structure_dirty(), "showing moves the windows");
+            let node = space.build_layout(&mut taffy, &theme, &mut nodes);
+            assert_eq!(
+                taffy.style(node).unwrap().display,
+                Display::None,
+                "shown over the window, the strip is the window's"
+            );
+            standing.set(TopBarPresence::Hidden);
+            let node = space.build_layout(&mut taffy, &theme, &mut nodes);
+            assert_eq!(taffy.style(node).unwrap().display, Display::None);
+            standing.set(TopBarPresence::Docked);
+            let node = space.build_layout(&mut taffy, &theme, &mut nodes);
+            assert_eq!(taffy.style(node).unwrap().display, Display::Flex);
+        }
+
+        phase a_laid_out_room_asks_for_no_frame;
+        {
+            let standing = Rc::new(Cell::new(TopBarPresence::Docked));
+            let mut space = BarSpace::new(Rc::new(move || standing.get()));
+            let mut taffy = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            space.build_layout(&mut taffy, &Theme::default(), &mut nodes);
+            assert!(
+                !(space.needs_redraw() || space.needs_animation_frame()),
+                "it draws nothing, so a settled desk has nothing to draw here"
+            );
+        }
     }
 }

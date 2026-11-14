@@ -512,103 +512,212 @@ mod tests {
         menu
     }
 
-    #[test]
-    fn the_menu_lists_the_host_its_actions_overview_a_new_strip_and_leaving_last() {
-        let menu = opened(&model());
-        assert!(menu.is_open());
-        let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
-        assert_eq!(
-            labels,
-            [
-                "Hosted by tilo.sh",
-                "Join a workspace",
-                "Overview",
-                "New strip",
-                "Leave workspace",
-            ]
-        );
-        let deleting = opened(&WorkspaceMenuModel {
-            can_delete: true,
-            ..model()
-        });
-        let labels: Vec<String> = deleting.labels().into_iter().flatten().collect();
-        assert_eq!(
-            labels[labels.len() - 2..],
-            ["Leave workspace", "Delete workspace"],
-            "losing the workspace stands last, together"
-        );
-        assert!(
-            !labels.iter().any(|label| label == "Rename workspace"),
-            "no Rename for someone who may not"
-        );
-        // Going to another workspace is the overview's: the Tilo mark zooms out to all of them.
-        assert!(
-            !labels
-                .iter()
-                .any(|label| label == "Lounge" || label == "Home")
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_workspace_menu_and_the_desks_menu_list_what_may_be_done;
 
-    #[test]
-    fn rename_is_offered_to_whoever_may_rename() {
-        let menu = opened(&WorkspaceMenuModel {
-            can_rename: true,
-            ..model()
-        });
-        assert!(menu.labels().contains(&Some("Rename workspace".to_owned())));
-    }
-
-    #[test]
-    fn choosing_a_row_says_what_it_means_once_and_closes_the_menu() {
-        for (label, choice) in [
-            ("Overview", Some(WorkspaceMenuChoice::Overview)),
-            ("New strip", Some(WorkspaceMenuChoice::NewStrip)),
-            (
-                "Leave workspace",
-                Some(WorkspaceMenuChoice::Action("leave-workspace".into())),
-            ),
-        ] {
-            let mut menu = opened(&model());
-            assert!(menu.choose(label), "{label} is a row");
-            assert_eq!(menu.take_choice(), choice, "{label}");
-            assert_eq!(menu.take_choice(), None, "{label} is said once");
+        phase the_menu_lists_the_host_its_actions_overview_a_new_strip_and_leaving_last;
+        {
+            let menu = opened(&model());
+            assert!(menu.is_open());
+            let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
+            assert_eq!(
+                labels,
+                [
+                    "Hosted by tilo.sh",
+                    "Join a workspace",
+                    "Overview",
+                    "New strip",
+                    "Leave workspace",
+                ]
+            );
+            let deleting = opened(&WorkspaceMenuModel {
+                can_delete: true,
+                ..model()
+            });
+            let labels: Vec<String> = deleting.labels().into_iter().flatten().collect();
+            assert_eq!(
+                labels[labels.len() - 2..],
+                ["Leave workspace", "Delete workspace"],
+                "losing the workspace stands last, together"
+            );
+            assert!(
+                !labels.iter().any(|label| label == "Rename workspace"),
+                "no Rename for someone who may not"
+            );
+            // Going to another workspace is the overview's: the Tilo mark zooms out to all of them.
+            assert!(
+                !labels
+                    .iter()
+                    .any(|label| label == "Lounge" || label == "Home")
+            );
         }
-    }
 
-    #[test]
-    fn the_host_caption_is_not_a_command() {
-        let mut menu = opened(&model());
-        menu.choose("Hosted by tilo.sh");
-        assert_eq!(menu.take_choice(), None);
-    }
+        phase rename_is_offered_to_whoever_may_rename;
+        {
+            let menu = opened(&WorkspaceMenuModel {
+                can_rename: true,
+                ..model()
+            });
+            assert!(menu.labels().contains(&Some("Rename workspace".to_owned())));
+        }
 
-    #[test]
-    fn deleting_stands_last_and_after_leaving() {
-        let plain = opened(&model());
-        assert!(
-            !plain
-                .labels()
-                .contains(&Some("Delete workspace".to_owned())),
-            "nothing offers to delete a workspace that stays elsewhere"
-        );
-        let mut menu = opened(&WorkspaceMenuModel {
-            can_delete: true,
-            ..model()
-        });
-        let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
-        assert_eq!(labels.last().map(String::as_str), Some("Delete workspace"));
-        assert!(menu.choose("Delete workspace"));
-        assert_eq!(
-            menu.take_choice(),
-            Some(WorkspaceMenuChoice::Action("delete-workspace".into()))
-        );
-    }
+        phase choosing_a_row_says_what_it_means_once_and_closes_the_menu;
+        {
+            for (label, choice) in [
+                ("Overview", Some(WorkspaceMenuChoice::Overview)),
+                ("New strip", Some(WorkspaceMenuChoice::NewStrip)),
+                (
+                    "Leave workspace",
+                    Some(WorkspaceMenuChoice::Action("leave-workspace".into())),
+                ),
+            ] {
+                let mut menu = opened(&model());
+                assert!(menu.choose(label), "{label} is a row");
+                assert_eq!(menu.take_choice(), choice, "{label}");
+                assert_eq!(menu.take_choice(), None, "{label} is said once");
+            }
+        }
 
-    #[test]
-    fn toggling_again_closes() {
-        let mut menu = opened(&model());
-        menu.toggle(&model(), Rect::ZERO, Rect::new(0.0, 0.0, 800.0, 600.0));
-        assert!(!menu.is_open());
+        phase the_host_caption_is_not_a_command;
+        {
+            let mut menu = opened(&model());
+            menu.choose("Hosted by tilo.sh");
+            assert_eq!(menu.take_choice(), None);
+        }
+
+        phase deleting_stands_last_and_after_leaving;
+        {
+            let plain = opened(&model());
+            assert!(
+                !plain
+                    .labels()
+                    .contains(&Some("Delete workspace".to_owned())),
+                "nothing offers to delete a workspace that stays elsewhere"
+            );
+            let mut menu = opened(&WorkspaceMenuModel {
+                can_delete: true,
+                ..model()
+            });
+            let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
+            assert_eq!(labels.last().map(String::as_str), Some("Delete workspace"));
+            assert!(menu.choose("Delete workspace"));
+            assert_eq!(
+                menu.take_choice(),
+                Some(WorkspaceMenuChoice::Action("delete-workspace".into()))
+            );
+        }
+
+        phase toggling_again_closes;
+        {
+            let mut menu = opened(&model());
+            menu.toggle(&model(), Rect::ZERO, Rect::new(0.0, 0.0, 800.0, 600.0));
+            assert!(!menu.is_open());
+        }
+
+        phase a_press_on_the_desk_offers_the_place_and_keeps_the_workspace_in_a_submenu;
+        {
+            let menu = desk_opened();
+            assert!(menu.is_open());
+            let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
+            assert_eq!(
+                labels,
+                [
+                    "Verb 0",
+                    "Verb 1",
+                    "Verb 2",
+                    "Verb 3",
+                    "Verb 4",
+                    "Verb 5",
+                    "New strip",
+                    "Overview",
+                    "Workspace",
+                ],
+                "at most a menu's worth of the place's verbs, then what makes the place, \
+             and the workspace's own commands beside it"
+            );
+            assert!(
+                !labels.iter().any(|label| label == "Lounge"),
+                "the workspace the person is in is not a row of its own"
+            );
+        }
+
+        phase the_workspaces_submenu_keeps_leaving_last_and_apart;
+        {
+            let mut menu = opened(&WorkspaceMenuModel {
+                can_rename: true,
+                ..desk_model()
+            });
+            assert!(menu.choose_in("Workspace", "Join a workspace"));
+            assert_eq!(
+                menu.take_choice(),
+                Some(WorkspaceMenuChoice::Action("join-workspace".into()))
+            );
+
+            let menu = opened(&WorkspaceMenuModel {
+                can_rename: true,
+                ..desk_model()
+            });
+            let submenu = menu.menu.items().last().and_then(MenuItem::submenu_items);
+            let Some(submenu) = submenu else {
+                panic!("the desk menu offers the workspaces beside it");
+            };
+            let labels: Vec<Option<String>> = submenu
+                .iter()
+                .map(|item| item.label().map(str::to_owned))
+                .collect();
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter_map(|label| label.as_deref())
+                    .filter(|label| !label.is_empty())
+                    .collect::<Vec<_>>(),
+                [
+                    "Hosted by tilo.sh",
+                    "Join a workspace",
+                    "Rename workspace",
+                    "Leave workspace",
+                ]
+            );
+            assert_eq!(
+                labels.last().cloned(),
+                Some(Some("Leave workspace".to_owned())),
+                "leaving goes last"
+            );
+
+            let mut menu = opened(&desk_model());
+            assert!(menu.choose_in("Workspace", "Leave workspace"));
+            assert_eq!(
+                menu.take_choice(),
+                Some(WorkspaceMenuChoice::Action("leave-workspace".into()))
+            );
+        }
+
+        phase a_second_press_on_the_desk_closes_the_menu_it_opened;
+        {
+            let mut menu = desk_opened();
+            assert!(menu.choose("Verb 0"));
+            assert_eq!(
+                menu.take_choice(),
+                Some(WorkspaceMenuChoice::Action("launchpad-0".into()))
+            );
+            let desk = desk_model();
+            menu.open_at(
+                &desk,
+                Point::new(10.0, 10.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            assert!(menu.is_open(), "opening it again after choosing opens it");
+            menu.open_at(
+                &desk,
+                Point::new(10.0, 10.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            assert!(!menu.is_open(), "a second press on the desk closes it");
+        }
     }
 
     /// The menu a press on the desk opens: the place's own verbs, a new strip, the overview, and
@@ -637,106 +746,5 @@ mod tests {
             Rect::new(0.0, 0.0, 1280.0, 720.0),
         );
         menu
-    }
-
-    #[test]
-    fn a_press_on_the_desk_offers_the_place_and_keeps_the_workspace_in_a_submenu() {
-        let menu = desk_opened();
-        assert!(menu.is_open());
-        let labels: Vec<String> = menu.labels().into_iter().flatten().collect();
-        assert_eq!(
-            labels,
-            [
-                "Verb 0",
-                "Verb 1",
-                "Verb 2",
-                "Verb 3",
-                "Verb 4",
-                "Verb 5",
-                "New strip",
-                "Overview",
-                "Workspace",
-            ],
-            "at most a menu's worth of the place's verbs, then what makes the place, \
-             and the workspace's own commands beside it"
-        );
-        assert!(
-            !labels.iter().any(|label| label == "Lounge"),
-            "the workspace the person is in is not a row of its own"
-        );
-    }
-
-    #[test]
-    fn the_workspaces_submenu_keeps_leaving_last_and_apart() {
-        let mut menu = opened(&WorkspaceMenuModel {
-            can_rename: true,
-            ..desk_model()
-        });
-        assert!(menu.choose_in("Workspace", "Join a workspace"));
-        assert_eq!(
-            menu.take_choice(),
-            Some(WorkspaceMenuChoice::Action("join-workspace".into()))
-        );
-
-        let menu = opened(&WorkspaceMenuModel {
-            can_rename: true,
-            ..desk_model()
-        });
-        let submenu = menu.menu.items().last().and_then(MenuItem::submenu_items);
-        let Some(submenu) = submenu else {
-            panic!("the desk menu offers the workspaces beside it");
-        };
-        let labels: Vec<Option<String>> = submenu
-            .iter()
-            .map(|item| item.label().map(str::to_owned))
-            .collect();
-        assert_eq!(
-            labels
-                .iter()
-                .filter_map(|label| label.as_deref())
-                .filter(|label| !label.is_empty())
-                .collect::<Vec<_>>(),
-            [
-                "Hosted by tilo.sh",
-                "Join a workspace",
-                "Rename workspace",
-                "Leave workspace",
-            ]
-        );
-        assert_eq!(
-            labels.last().cloned(),
-            Some(Some("Leave workspace".to_owned())),
-            "leaving goes last"
-        );
-
-        let mut menu = opened(&desk_model());
-        assert!(menu.choose_in("Workspace", "Leave workspace"));
-        assert_eq!(
-            menu.take_choice(),
-            Some(WorkspaceMenuChoice::Action("leave-workspace".into()))
-        );
-    }
-
-    #[test]
-    fn a_second_press_on_the_desk_closes_the_menu_it_opened() {
-        let mut menu = desk_opened();
-        assert!(menu.choose("Verb 0"));
-        assert_eq!(
-            menu.take_choice(),
-            Some(WorkspaceMenuChoice::Action("launchpad-0".into()))
-        );
-        let desk = desk_model();
-        menu.open_at(
-            &desk,
-            Point::new(10.0, 10.0),
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-        assert!(menu.is_open(), "opening it again after choosing opens it");
-        menu.open_at(
-            &desk,
-            Point::new(10.0, 10.0),
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-        assert!(!menu.is_open(), "a second press on the desk closes it");
     }
 }

@@ -241,101 +241,105 @@ mod tests {
         }
     }
 
-    /// Arriving says who is here on the bar's own faces, in a few words beside them, never in a
-    /// surface of its own; then it lets go.
-    #[test]
-    fn arriving_slides_a_short_name_out_of_the_faces_for_a_moment() {
-        ui::i18n::I18nManager::init("en-US");
-        let tree = desk();
-        let chrome = FixtureChrome::new(tree.clone());
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-        bar.sync_from_tree(&tree);
-        let now = ui::time::now();
-        chrome.borrow_mut().arrived = Some(ArrivalNotice {
-            people: vec!["ada".into(), "bo".into()],
-            names: vec!["Ada Lovelace".into(), "Bo Brave".into()],
-            seen: None,
-            at: now,
-        });
-        let shown = bar.arrival_shown(now).expect("said");
-        assert_eq!(shown.text, "Ada and one other are here");
-        super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
-        let later = now.checked_add(ARRIVAL_NOTICE_FOR).unwrap();
-        assert_eq!(bar.arrival_notice_ends(now), Some(later));
-        assert_eq!(bar.arrival_shown(later), None, "it goes on its own");
-    }
+    tilo_test_env::scenario! {
+        fn the_bar_says_who_arrived_for_a_moment;
 
-    /// The status going changes the bar only where it stood: the bar's parts bound it there, so a
-    /// frame it fades or leaves in (a strip pan just after arriving) repaints that much of the bar,
-    /// not all of it.
-    #[test]
-    fn the_status_going_damages_only_where_it_stood() {
-        ui::i18n::I18nManager::init("en-US");
-        let tree = desk();
-        let chrome = FixtureChrome::new(tree.clone());
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-        bar.sync_from_tree(&tree);
-        chrome.borrow_mut().arrived = Some(ArrivalNotice {
-            people: vec!["ada".into(), "bo".into()],
-            names: vec!["Ada Lovelace".into(), "Bo Brave".into()],
-            seen: None,
-            at: ui::time::now(),
-        });
-        let _settled = ui::motion::testing::settled();
-        // One text renderer for both draws: its fonts are what the glyphs refer to.
-        let (theme, mut text) = (Theme::default(), TextRenderer::new());
-        super::super::tests::lay_out_and_draw_with_text(&mut bar, 1600.0, &theme, &mut text);
-        let status = bar.arrival_rect;
-        assert!(!status.is_zero_area(), "the status is up");
-        let shown = bar.cached.clone();
-        let shown_parts = bar.cached_parts.clone().expect("the bar is drawn in parts");
-        chrome.borrow_mut().arrived = None;
-        super::super::tests::lay_out_and_draw_with_text(&mut bar, 1600.0, &theme, &mut text);
-        let gone_parts = bar.cached_parts.clone().expect("the bar is drawn in parts");
-        let damage = ui::scene_parts::damage(&shown, &shown_parts, &bar.cached, &gone_parts)
-            .expect("the bar's parts bound the status going");
-        assert!(
-            damage.iter().any(|rect| rect.contains(status.center())),
-            "where it stood is repainted: {damage:?}"
-        );
-        // The part ends at the faces, a gap past the status.
-        let faces = status.x1 + f64::from(theme.tokens.spacing.s2);
-        for rect in &damage {
+        phase arriving_slides_a_short_name_out_of_the_faces_for_a_moment;
+        // Arriving says who is here on the bar's own faces, in a few words beside them, never in a
+        // surface of its own; then it lets go.
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let tree = desk();
+            let chrome = FixtureChrome::new(tree.clone());
+            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+            bar.sync_from_tree(&tree);
+            let now = ui::time::now();
+            chrome.borrow_mut().arrived = Some(ArrivalNotice {
+                people: vec!["ada".into(), "bo".into()],
+                names: vec!["Ada Lovelace".into(), "Bo Brave".into()],
+                seen: None,
+                at: now,
+            });
+            let shown = bar.arrival_shown(now).expect("said");
+            assert_eq!(shown.text, "Ada and one other are here");
+            super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
+            let later = now.checked_add(ARRIVAL_NOTICE_FOR).unwrap();
+            assert_eq!(bar.arrival_notice_ends(now), Some(later));
+            assert_eq!(bar.arrival_shown(later), None, "it goes on its own");
+        }
+
+        phase the_status_going_damages_only_where_it_stood;
+        // The status going changes the bar only where it stood: the bar's parts bound it there, so a
+        // frame it fades or leaves in (a strip pan just after arriving) repaints that much of the bar,
+        // not all of it.
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let tree = desk();
+            let chrome = FixtureChrome::new(tree.clone());
+            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+            bar.sync_from_tree(&tree);
+            chrome.borrow_mut().arrived = Some(ArrivalNotice {
+                people: vec!["ada".into(), "bo".into()],
+                names: vec!["Ada Lovelace".into(), "Bo Brave".into()],
+                seen: None,
+                at: ui::time::now(),
+            });
+            let _settled = ui::motion::testing::settled();
+            // One text renderer for both draws: its fonts are what the glyphs refer to.
+            let (theme, mut text) = (Theme::default(), TextRenderer::new());
+            super::super::tests::lay_out_and_draw_with_text(&mut bar, 1600.0, &theme, &mut text);
+            let status = bar.arrival_rect;
+            assert!(!status.is_zero_area(), "the status is up");
+            let shown = bar.cached.clone();
+            let shown_parts = bar.cached_parts.clone().expect("the bar is drawn in parts");
+            chrome.borrow_mut().arrived = None;
+            super::super::tests::lay_out_and_draw_with_text(&mut bar, 1600.0, &theme, &mut text);
+            let gone_parts = bar.cached_parts.clone().expect("the bar is drawn in parts");
+            let damage = ui::scene_parts::damage(&shown, &shown_parts, &bar.cached, &gone_parts)
+                .expect("the bar's parts bound the status going");
             assert!(
-                rect.x0 >= status.x0 - 4.0 && rect.x1 <= faces + 4.0,
-                "nothing else of the bar is: {rect:?} beside the status {status:?} in a bar {:?}",
-                bar.rect
+                damage.iter().any(|rect| rect.contains(status.center())),
+                "where it stood is repainted: {damage:?}"
+            );
+            // The part ends at the faces, a gap past the status.
+            let faces = status.x1 + f64::from(theme.tokens.spacing.s2);
+            for rect in &damage {
+                assert!(
+                    rect.x0 >= status.x0 - 4.0 && rect.x1 <= faces + 4.0,
+                    "nothing else of the bar is: {rect:?} beside the status {status:?} in a bar {:?}",
+                    bar.rect
+                );
+            }
+        }
+
+        phase what_the_people_here_see_opens_your_menu;
+        // The first time in a public workspace it says what its people see,
+        // and a press opens the person's own menu to choose otherwise.
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let tree = desk();
+            let chrome = FixtureChrome::new(tree.clone());
+            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+            bar.sync_from_tree(&tree);
+            chrome.borrow_mut().arrived = Some(ArrivalNotice {
+                people: vec!["ada".into()],
+                names: vec!["Ada Lovelace".into()],
+                seen: Some("They see you're here".into()),
+                at: ui::time::now(),
+            });
+            let _settled = ui::motion::testing::settled();
+            super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
+            let status = bar.arrival_rect;
+            assert!(!status.is_zero_area());
+            assert!(
+                status.x1 <= bar.avatar_stack_rect.x0 + 0.5,
+                "it comes out of the faces: {status:?} then {:?}",
+                bar.avatar_stack_rect
+            );
+            assert_eq!(
+                bar.arrival_intent_at(status.center()),
+                Some(ChromeIntent::ToggleProfile)
             );
         }
-    }
-
-    /// The first time in a public workspace it says what its people see,
-    /// and a press opens the person's own menu to choose otherwise.
-    #[test]
-    fn what_the_people_here_see_opens_your_menu() {
-        ui::i18n::I18nManager::init("en-US");
-        let tree = desk();
-        let chrome = FixtureChrome::new(tree.clone());
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-        bar.sync_from_tree(&tree);
-        chrome.borrow_mut().arrived = Some(ArrivalNotice {
-            people: vec!["ada".into()],
-            names: vec!["Ada Lovelace".into()],
-            seen: Some("They see you're here".into()),
-            at: ui::time::now(),
-        });
-        let _settled = ui::motion::testing::settled();
-        super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
-        let status = bar.arrival_rect;
-        assert!(!status.is_zero_area());
-        assert!(
-            status.x1 <= bar.avatar_stack_rect.x0 + 0.5,
-            "it comes out of the faces: {status:?} then {:?}",
-            bar.avatar_stack_rect
-        );
-        assert_eq!(
-            bar.arrival_intent_at(status.center()),
-            Some(ChromeIntent::ToggleProfile)
-        );
     }
 }

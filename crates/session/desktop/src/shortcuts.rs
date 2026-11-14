@@ -265,212 +265,216 @@ mod tests {
         configured_shortcut_action(&ShortcutConfig::default(), logical, state.into())
     }
 
-    /// The page and the native shell read one table: Super+Up maximizes and Ctrl+Super+Up goes to
-    /// the strip above in both, Super+3 shows the third strip, whether Super itself or the page's
-    /// stand-in is held.
-    #[test]
-    fn the_page_resolves_chords_as_the_native_shell_does() {
-        let sup = ModifiersState::SUPER;
-        let alt_shift = ModifiersState::ALT | ModifiersState::SHIFT;
-        let ctrl_opt = ModifiersState::CONTROL | ModifiersState::ALT;
-        let up = Key::Named(NamedKey::ArrowUp);
-        let cases = [
-            (up.clone(), Some(KeyCode::ArrowUp), ModifiersState::empty()),
-            (up, Some(KeyCode::ArrowUp), ModifiersState::CONTROL),
-            (
-                Key::Named(NamedKey::ArrowDown),
-                Some(KeyCode::ArrowDown),
-                ModifiersState::empty(),
-            ),
-            (
-                Key::Named(NamedKey::ArrowLeft),
-                Some(KeyCode::ArrowLeft),
-                ModifiersState::empty(),
-            ),
-            (
-                Key::Named(NamedKey::PageDown),
-                Some(KeyCode::PageDown),
-                ModifiersState::empty(),
-            ),
-            (
-                Key::Character("3".into()),
-                Some(KeyCode::Digit3),
-                ModifiersState::empty(),
-            ),
-            (
-                Key::Character("3".into()),
-                Some(KeyCode::Digit3),
-                ModifiersState::CONTROL,
-            ),
-        ];
-        for (key, code, extra) in cases {
-            let want = native(&key, sup | extra);
-            assert!(want.is_some(), "{key:?} with {extra:?} is a native chord");
-            assert_eq!(press(&key, code, sup | extra, false), want, "Super {key:?}");
-            // The stand-in's Shift turns 3 into #, which its place still reads.
-            let shifted = match &key {
-                Key::Character(_) => Key::Character("#".into()),
-                other => other.clone(),
-            };
-            assert_eq!(
-                press(&shifted, code, alt_shift | extra, false),
-                want,
-                "Alt+Shift {key:?} with {extra:?}"
-            );
-            if extra.is_empty() {
+    tilo_test_env::scenario! {
+        fn the_page_resolves_and_runs_chords_as_the_native_shell_does;
+
+        phase the_page_resolves_chords_as_the_native_shell_does;
+        // The page and the native shell read one table: Super+Up maximizes and Ctrl+Super+Up goes to
+        // the strip above in both, Super+3 shows the third strip, whether Super itself or the page's
+        // stand-in is held.
+        {
+            let sup = ModifiersState::SUPER;
+            let alt_shift = ModifiersState::ALT | ModifiersState::SHIFT;
+            let ctrl_opt = ModifiersState::CONTROL | ModifiersState::ALT;
+            let up = Key::Named(NamedKey::ArrowUp);
+            let cases = [
+                (up.clone(), Some(KeyCode::ArrowUp), ModifiersState::empty()),
+                (up, Some(KeyCode::ArrowUp), ModifiersState::CONTROL),
+                (
+                    Key::Named(NamedKey::ArrowDown),
+                    Some(KeyCode::ArrowDown),
+                    ModifiersState::empty(),
+                ),
+                (
+                    Key::Named(NamedKey::ArrowLeft),
+                    Some(KeyCode::ArrowLeft),
+                    ModifiersState::empty(),
+                ),
+                (
+                    Key::Named(NamedKey::PageDown),
+                    Some(KeyCode::PageDown),
+                    ModifiersState::empty(),
+                ),
+                (
+                    Key::Character("3".into()),
+                    Some(KeyCode::Digit3),
+                    ModifiersState::empty(),
+                ),
+                (
+                    Key::Character("3".into()),
+                    Some(KeyCode::Digit3),
+                    ModifiersState::CONTROL,
+                ),
+            ];
+            for (key, code, extra) in cases {
+                let want = native(&key, sup | extra);
+                assert!(want.is_some(), "{key:?} with {extra:?} is a native chord");
+                assert_eq!(press(&key, code, sup | extra, false), want, "Super {key:?}");
+                // The stand-in's Shift turns 3 into #, which its place still reads.
+                let shifted = match &key {
+                    Key::Character(_) => Key::Character("#".into()),
+                    other => other.clone(),
+                };
                 assert_eq!(
-                    press(&key, code, ctrl_opt, true),
+                    press(&shifted, code, alt_shift | extra, false),
                     want,
-                    "Ctrl+Option {key:?}"
+                    "Alt+Shift {key:?} with {extra:?}"
+                );
+                if extra.is_empty() {
+                    assert_eq!(
+                        press(&key, code, ctrl_opt, true),
+                        want,
+                        "Ctrl+Option {key:?}"
+                    );
+                }
+            }
+            assert_eq!(
+                native(&Key::Named(NamedKey::ArrowUp), sup),
+                Some(ShortcutAction::MaximizeWindow)
+            );
+            assert_eq!(
+                native(
+                    &Key::Named(NamedKey::ArrowUp),
+                    sup | ModifiersState::CONTROL
+                ),
+                Some(ShortcutAction::PreviousStrip)
+            );
+            assert_eq!(
+                native(&Key::Character("3".into()), sup).and_then(ShortcutAction::focus_strip_index),
+                Some(2)
+            );
+        }
+
+        phase a_mark_the_layout_types_with_shift_is_the_chord_the_guide_names;
+        // A mark the layout types with Shift is the mark the chord names, as the guide shows it: on a
+        // German keyboard Super with the keys that type `/` , `=` and `[` (Shift+7, Shift+0, AltGr+8)
+        // is Super+/ , Super+= and Super+[ . On a US keyboard Shift+/ types `?` and stays Shift+/ .
+        {
+            let sup = ModifiersState::SUPER;
+            let shift = ModifiersState::SHIFT;
+            let mark = |text: &str| Key::Character(text.into());
+            assert_eq!(
+                native(&mark("/"), sup | shift),
+                Some(ShortcutAction::SaySomething)
+            );
+            assert_eq!(
+                native(&mark("="), sup | shift),
+                Some(ShortcutAction::ResizeWider)
+            );
+            assert_eq!(
+                native(&mark("="), sup | shift | ModifiersState::ALT),
+                Some(ShortcutAction::MagnifierZoomIn)
+            );
+            assert_eq!(native(&mark("["), sup), Some(ShortcutAction::AttachTabLeft));
+            assert_eq!(
+                native(&mark("?"), sup | shift),
+                Some(ShortcutAction::ShortcutHelp)
+            );
+            assert_eq!(native(&mark("/"), sup), Some(ShortcutAction::SaySomething));
+            // A letter keeps its Shift: Super+Shift+S is the capture, not the strips.
+            assert_eq!(
+                fixed_shortcut_action(&mark("S"), (sup | shift).into()),
+                Some(FixedAction::CaptureScreenshot)
+            );
+            // A chord caught for a rebinding is the one the same keys press again.
+            assert_eq!(
+                shortcut_chord_from_event(&mark("/"), (sup | shift).into()),
+                KeyChord::parse("Super+/").ok()
+            );
+        }
+
+        phase o_opens_the_overview_and_plain_keys_are_no_chord;
+        // O stands in for Tab, so the overview opens where the browser keeps Super+Tab; without Super
+        // or the stand-in nothing is a chord.
+        {
+            assert_eq!(
+                press(
+                    &Key::Character("\u{f8}".into()),
+                    Some(KeyCode::KeyO),
+                    ModifiersState::CONTROL | ModifiersState::ALT,
+                    true,
+                ),
+                Some(ShortcutAction::WorkspaceOverview)
+            );
+            for state in [
+                ModifiersState::empty(),
+                ModifiersState::ALT,
+                ModifiersState::SHIFT,
+                ModifiersState::CONTROL | ModifiersState::ALT,
+            ] {
+                assert_eq!(
+                    press(
+                        &Key::Named(NamedKey::ArrowUp),
+                        Some(KeyCode::ArrowUp),
+                        state,
+                        false
+                    ),
+                    None,
+                    "{state:?}"
                 );
             }
         }
-        assert_eq!(
-            native(&Key::Named(NamedKey::ArrowUp), sup),
-            Some(ShortcutAction::MaximizeWindow)
-        );
-        assert_eq!(
-            native(
-                &Key::Named(NamedKey::ArrowUp),
-                sup | ModifiersState::CONTROL
-            ),
-            Some(ShortcutAction::PreviousStrip)
-        );
-        assert_eq!(
-            native(&Key::Character("3".into()), sup).and_then(ShortcutAction::focus_strip_index),
-            Some(2)
-        );
-    }
 
-    /// A mark the layout types with Shift is the mark the chord names, as the guide shows it: on a
-    /// German keyboard Super with the keys that type `/` , `=` and `[` (Shift+7, Shift+0, AltGr+8)
-    /// is Super+/ , Super+= and Super+[ . On a US keyboard Shift+/ types `?` and stays Shift+/ .
-    #[test]
-    fn a_mark_the_layout_types_with_shift_is_the_chord_the_guide_names() {
-        let sup = ModifiersState::SUPER;
-        let shift = ModifiersState::SHIFT;
-        let mark = |text: &str| Key::Character(text.into());
-        assert_eq!(
-            native(&mark("/"), sup | shift),
-            Some(ShortcutAction::SaySomething)
-        );
-        assert_eq!(
-            native(&mark("="), sup | shift),
-            Some(ShortcutAction::ResizeWider)
-        );
-        assert_eq!(
-            native(&mark("="), sup | shift | ModifiersState::ALT),
-            Some(ShortcutAction::MagnifierZoomIn)
-        );
-        assert_eq!(native(&mark("["), sup), Some(ShortcutAction::AttachTabLeft));
-        assert_eq!(
-            native(&mark("?"), sup | shift),
-            Some(ShortcutAction::ShortcutHelp)
-        );
-        assert_eq!(native(&mark("/"), sup), Some(ShortcutAction::SaySomething));
-        // A letter keeps its Shift: Super+Shift+S is the capture, not the strips.
-        assert_eq!(
-            fixed_shortcut_action(&mark("S"), (sup | shift).into()),
-            Some(FixedAction::CaptureScreenshot)
-        );
-        // A chord caught for a rebinding is the one the same keys press again.
-        assert_eq!(
-            shortcut_chord_from_event(&mark("/"), (sup | shift).into()),
-            KeyChord::parse("Super+/").ok()
-        );
-    }
-
-    /// O stands in for Tab, so the overview opens where the browser keeps Super+Tab; without Super
-    /// or the stand-in nothing is a chord.
-    #[test]
-    fn o_opens_the_overview_and_plain_keys_are_no_chord() {
-        assert_eq!(
-            press(
-                &Key::Character("\u{f8}".into()),
-                Some(KeyCode::KeyO),
-                ModifiersState::CONTROL | ModifiersState::ALT,
-                true,
-            ),
-            Some(ShortcutAction::WorkspaceOverview)
-        );
-        for state in [
-            ModifiersState::empty(),
-            ModifiersState::ALT,
-            ModifiersState::SHIFT,
-            ModifiersState::CONTROL | ModifiersState::ALT,
-        ] {
+        phase the_page_runs_the_fixed_chords_as_the_native_shell_does;
+        // The fixed chords Settings cannot rebind resolve on the page from the same table: Super
+        // itself or the page's stand-in for it, and a chord with no Super at all — F1 — as the browser
+        // reports it. A plain key is none of them.
+        {
+            let fixed = |logical: &Key, code: KeyCode, state: ModifiersState| {
+                page_fixed_action(logical, PhysicalKey::Code(code), state.into(), false)
+            };
+            let stand_in = ModifiersState::ALT | ModifiersState::SHIFT;
+            let chord = [
+                ("W", KeyCode::KeyW, FixedAction::CloseTab),
+                ("N", KeyCode::KeyN, FixedAction::NewWindow),
+                ("T", KeyCode::KeyT, FixedAction::DuplicateTab),
+                ("H", KeyCode::KeyH, FixedAction::WorkspaceHistory),
+            ];
+            for (letter, code, want) in chord {
+                // The stand-in's Shift types a capital; its place reads the letter.
+                assert_eq!(
+                    fixed(&Key::Character(letter.into()), code, stand_in),
+                    Some(want),
+                    "Alt+Shift+{letter}"
+                );
+                // Super itself.
+                assert_eq!(
+                    fixed(&Key::Character(letter.into()), code, ModifiersState::SUPER),
+                    Some(want),
+                    "Super+{letter}"
+                );
+                assert_eq!(
+                    fixed(
+                        &Key::Character(letter.to_lowercase().into()),
+                        code,
+                        ModifiersState::empty()
+                    ),
+                    None,
+                    "a bare {letter}"
+                );
+            }
+            // S alone with the stand-in is the strip switcher; with Super passed through, the chord
+            // that also holds Shift is the capture.
             assert_eq!(
-                press(
-                    &Key::Named(NamedKey::ArrowUp),
-                    Some(KeyCode::ArrowUp),
-                    state,
-                    false
-                ),
-                None,
-                "{state:?}"
-            );
-        }
-    }
-
-    /// The fixed chords Settings cannot rebind resolve on the page from the same table: Super
-    /// itself or the page's stand-in for it, and a chord with no Super at all — F1 — as the browser
-    /// reports it. A plain key is none of them.
-    #[test]
-    fn the_page_runs_the_fixed_chords_as_the_native_shell_does() {
-        let fixed = |logical: &Key, code: KeyCode, state: ModifiersState| {
-            page_fixed_action(logical, PhysicalKey::Code(code), state.into(), false)
-        };
-        let stand_in = ModifiersState::ALT | ModifiersState::SHIFT;
-        let chord = [
-            ("W", KeyCode::KeyW, FixedAction::CloseTab),
-            ("N", KeyCode::KeyN, FixedAction::NewWindow),
-            ("T", KeyCode::KeyT, FixedAction::DuplicateTab),
-            ("H", KeyCode::KeyH, FixedAction::WorkspaceHistory),
-        ];
-        for (letter, code, want) in chord {
-            // The stand-in's Shift types a capital; its place reads the letter.
-            assert_eq!(
-                fixed(&Key::Character(letter.into()), code, stand_in),
-                Some(want),
-                "Alt+Shift+{letter}"
-            );
-            // Super itself.
-            assert_eq!(
-                fixed(&Key::Character(letter.into()), code, ModifiersState::SUPER),
-                Some(want),
-                "Super+{letter}"
+                fixed(&Key::Character("S".into()), KeyCode::KeyS, stand_in),
+                Some(FixedAction::StripSwitcher)
             );
             assert_eq!(
                 fixed(
-                    &Key::Character(letter.to_lowercase().into()),
-                    code,
+                    &Key::Character("S".into()),
+                    KeyCode::KeyS,
+                    ModifiersState::SUPER | ModifiersState::SHIFT
+                ),
+                Some(FixedAction::CaptureScreenshot)
+            );
+            assert_eq!(
+                fixed(
+                    &Key::Named(NamedKey::F1),
+                    KeyCode::F1,
                     ModifiersState::empty()
                 ),
-                None,
-                "a bare {letter}"
+                Some(FixedAction::ShortcutGuide)
             );
         }
-        // S alone with the stand-in is the strip switcher; with Super passed through, the chord
-        // that also holds Shift is the capture.
-        assert_eq!(
-            fixed(&Key::Character("S".into()), KeyCode::KeyS, stand_in),
-            Some(FixedAction::StripSwitcher)
-        );
-        assert_eq!(
-            fixed(
-                &Key::Character("S".into()),
-                KeyCode::KeyS,
-                ModifiersState::SUPER | ModifiersState::SHIFT
-            ),
-            Some(FixedAction::CaptureScreenshot)
-        );
-        assert_eq!(
-            fixed(
-                &Key::Named(NamedKey::F1),
-                KeyCode::F1,
-                ModifiersState::empty()
-            ),
-            Some(FixedAction::ShortcutGuide)
-        );
     }
 }

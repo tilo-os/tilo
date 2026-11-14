@@ -1068,270 +1068,380 @@ fn draw_app_face(
 mod tests {
     use super::*;
 
-    /// A window with no live picture and no artwork shows its app's own symbol, so two apps'
-    /// windows look different, in either host.
-    #[test]
-    fn a_window_without_a_picture_shows_its_apps_symbol() {
-        let app = |app_id: &str| {
-            WindowApp::of(
-                &TileContent::LocalApp {
-                    app_id: app_id.into(),
-                    label: app_id.into(),
-                    note: String::new(),
-                },
-                &PlainWindows,
-            )
-        };
-        let (weather, chat, unknown) = (
-            app("so.tilo.weather"),
-            app("so.tilo.chat"),
-            app("org.example.unknown"),
-        );
-        assert_eq!(weather.glyph, Icon::Cloud);
-        assert_eq!(chat.glyph, Icon::MessageSquare);
-        assert_eq!(unknown.glyph, Icon::AppWindow, "no symbol: the kind's mark");
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_window_switchers_panel_and_cards;
 
-        let theme = Theme::dark();
-        let well = PreviewWell {
-            rect: Rect::new(0.0, 0.0, 160.0, 100.0),
-            radius: 8.0,
-            icon: 48.0,
-        };
-        let drawn = |app: &WindowApp| {
-            let mut scene = Scene::new();
-            draw_app_face(&mut scene, Affine::IDENTITY, well, app, theme.text_primary);
-            scene.encoding().path_data.clone()
-        };
-        assert!(!drawn(&weather).is_empty());
-        assert_ne!(drawn(&weather), drawn(&chat), "each app has its own face");
-        assert!(
-            !drawn(&unknown).is_empty(),
-            "an unknown app still has a mark"
-        );
-        // A window the desk names the same way wears the same face.
-        assert_eq!(WindowApp::named("so.tilo.weather").glyph, Icon::Cloud);
-    }
+        phase a_window_without_a_picture_shows_its_apps_symbol;
+        // A window with no live picture and no artwork shows its app's own symbol, so two apps'
+        // windows look different, in either host.
+        {
+            let app = |app_id: &str| {
+                WindowApp::of(
+                    &TileContent::LocalApp {
+                        app_id: app_id.into(),
+                        label: app_id.into(),
+                        note: String::new(),
+                    },
+                    &PlainWindows,
+                )
+            };
+            let (weather, chat, unknown) = (
+                app("so.tilo.weather"),
+                app("so.tilo.chat"),
+                app("org.example.unknown"),
+            );
+            assert_eq!(weather.glyph, Icon::Cloud);
+            assert_eq!(chat.glyph, Icon::MessageSquare);
+            assert_eq!(unknown.glyph, Icon::AppWindow, "no symbol: the kind's mark");
 
-    #[test]
-    fn cards_stay_inside_the_display_and_page_to_the_selection() {
-        let m = Metrics::from_theme(&Theme::dark());
-        let host = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let few = geometry(host, &view(3, 0), m);
-        assert_eq!(few.cards.len(), 3);
-        assert!(
-            few.cards
-                .iter()
-                .all(|(_, card)| few.panel.contains(card.center()))
-        );
-        let many = geometry(host, &view(200, 150), m);
-        assert!(many.cards.len() < 200, "not every window fits");
-        assert!(many.cards.iter().any(|(index, _)| *index == 150));
-        assert!(host.contains(many.panel.origin()));
-        assert!(many.panel.x1 <= host.x1 && many.panel.y1 <= host.y1);
-    }
+            let theme = Theme::dark();
+            let well = PreviewWell {
+                rect: Rect::new(0.0, 0.0, 160.0, 100.0),
+                radius: 8.0,
+                icon: 48.0,
+            };
+            let drawn = |app: &WindowApp| {
+                let mut scene = Scene::new();
+                draw_app_face(&mut scene, Affine::IDENTITY, well, app, theme.text_primary);
+                scene.encoding().path_data.clone()
+            };
+            assert!(!drawn(&weather).is_empty());
+            assert_ne!(drawn(&weather), drawn(&chat), "each app has its own face");
+            assert!(
+                !drawn(&unknown).is_empty(),
+                "an unknown app still has a mark"
+            );
+            // A window the desk names the same way wears the same face.
+            assert_eq!(WindowApp::named("so.tilo.weather").glyph, Icon::Cloud);
+        }
 
-    /// The panel and every card on it stay inside the display at every size, from a phone-class
-    /// window to the desktop, whatever the window count: a host too small for one full card gets a
-    /// smaller card, never a panel that runs off the screen.
-    #[test]
-    fn the_switcher_panel_fits_every_host() {
-        for theme in [Theme::dark(), Theme::dark().with_text_scale(1.5)] {
-            let m = Metrics::from_theme(&theme);
-            for (w, h) in [
-                (240.0, 160.0),
-                (320.0, 480.0),
-                (480.0, 300.0),
-                (640.0, 400.0),
-                (800.0, 600.0),
-                (1280.0, 800.0),
-                (1472.0, 920.0),
-            ] {
-                let host = Rect::new(0.0, 0.0, w, h);
-                for count in [1, 3, 12] {
-                    for selected in [0, count - 1] {
-                        let g = geometry(host, &view(count, selected), m);
-                        assert!(
-                            within(host, g.panel),
-                            "panel {:?} leaves {host:?} with {count} windows",
-                            g.panel
-                        );
-                        assert!(!g.cards.is_empty(), "a card is always on screen");
-                        assert!(
-                            g.cards.iter().any(|(index, _)| *index == selected),
-                            "the selected window is on the page"
-                        );
-                        for (index, card) in &g.cards {
+        phase cards_stay_inside_the_display_and_page_to_the_selection;
+        {
+            let m = Metrics::from_theme(&Theme::dark());
+            let host = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let few = geometry(host, &view(3, 0), m);
+            assert_eq!(few.cards.len(), 3);
+            assert!(
+                few.cards
+                    .iter()
+                    .all(|(_, card)| few.panel.contains(card.center()))
+            );
+            let many = geometry(host, &view(200, 150), m);
+            assert!(many.cards.len() < 200, "not every window fits");
+            assert!(many.cards.iter().any(|(index, _)| *index == 150));
+            assert!(host.contains(many.panel.origin()));
+            assert!(many.panel.x1 <= host.x1 && many.panel.y1 <= host.y1);
+        }
+
+        phase the_switcher_panel_fits_every_host;
+        // The panel and every card on it stay inside the display at every size, from a phone-class
+        // window to the desktop, whatever the window count: a host too small for one full card gets a
+        // smaller card, never a panel that runs off the screen.
+        {
+            for theme in [Theme::dark(), Theme::dark().with_text_scale(1.5)] {
+                let m = Metrics::from_theme(&theme);
+                for (w, h) in [
+                    (240.0, 160.0),
+                    (320.0, 480.0),
+                    (480.0, 300.0),
+                    (640.0, 400.0),
+                    (800.0, 600.0),
+                    (1280.0, 800.0),
+                    (1472.0, 920.0),
+                ] {
+                    let host = Rect::new(0.0, 0.0, w, h);
+                    for count in [1, 3, 12] {
+                        for selected in [0, count - 1] {
+                            let g = geometry(host, &view(count, selected), m);
                             assert!(
-                                g.panel.contains(card.origin())
-                                    && card.x1 <= g.panel.x1 + 1e-9
-                                    && card.y1 <= g.panel.y1 + 1e-9,
-                                "card {index} {card:?} leaves the panel {:?} on {host:?}",
+                                within(host, g.panel),
+                                "panel {:?} leaves {host:?} with {count} windows",
                                 g.panel
                             );
+                            assert!(!g.cards.is_empty(), "a card is always on screen");
+                            assert!(
+                                g.cards.iter().any(|(index, _)| *index == selected),
+                                "the selected window is on the page"
+                            );
+                            for (index, card) in &g.cards {
+                                assert!(
+                                    g.panel.contains(card.origin())
+                                        && card.x1 <= g.panel.x1 + 1e-9
+                                        && card.y1 <= g.panel.y1 + 1e-9,
+                                    "card {index} {card:?} leaves the panel {:?} on {host:?}",
+                                    g.panel
+                                );
+                            }
+                            assert_eq!(
+                                g.paged,
+                                g.cards.len() < count,
+                                "a page is reported only when the windows outnumber it"
+                            );
+                            assert!(
+                                g.footer.height() > 0.0 && within(g.panel, g.footer),
+                                "the keys stand under the cards inside the panel"
+                            );
                         }
-                        assert_eq!(
-                            g.paged,
-                            g.cards.len() < count,
-                            "a page is reported only when the windows outnumber it"
-                        );
-                        assert!(
-                            g.footer.height() > 0.0 && within(g.panel, g.footer),
-                            "the keys stand under the cards inside the panel"
-                        );
                     }
                 }
             }
         }
-    }
 
-    /// Every card takes the shape of the window it shows, at the one height the row shares: the
-    /// compositor's picture of the window then fills the card instead of standing in it with bare
-    /// bars at its sides.
-    #[test]
-    fn every_card_takes_its_windows_shape_at_the_rows_one_height() {
-        let theme = Theme::dark();
-        let mut shaped = view(4, 0);
-        let sizes = [(1600, 1000), (800, 1600), (1000, 1000), (1920, 1080)];
-        for (card, size) in shaped.cards.iter_mut().zip(sizes) {
-            card.size = Some(size);
-        }
-        let host = Rect::new(0.0, 0.0, 1472.0, 920.0);
-        let g = geometry(host, &shaped, Metrics::from_theme(&theme));
-        let heights: Vec<f64> = g.cards.iter().map(|(_, card)| card.height()).collect();
-        assert_eq!(heights.len(), 4, "a row of four");
-        assert!(
-            heights
-                .windows(2)
-                .all(|pair| (pair[0] - pair[1]).abs() < 1e-9),
-            "the row shares one height, so it reads as a row: {heights:?}"
-        );
-        for (index, card) in &g.cards {
-            let (width, height) = sizes[*index];
-            let aspect = f64::from(width) / f64::from(height);
-            let well = Switcher::well_of_rect(*card, g.metrics);
+        phase every_card_takes_its_windows_shape_at_the_rows_one_height;
+        // Every card takes the shape of the window it shows, at the one height the row shares: the
+        // compositor's picture of the window then fills the card instead of standing in it with bare
+        // bars at its sides.
+        {
+            let theme = Theme::dark();
+            let mut shaped = view(4, 0);
+            let sizes = [(1600, 1000), (800, 1600), (1000, 1000), (1920, 1080)];
+            for (card, size) in shaped.cards.iter_mut().zip(sizes) {
+                card.size = Some(size);
+            }
+            let host = Rect::new(0.0, 0.0, 1472.0, 920.0);
+            let g = geometry(host, &shaped, Metrics::from_theme(&theme));
+            let heights: Vec<f64> = g.cards.iter().map(|(_, card)| card.height()).collect();
+            assert_eq!(heights.len(), 4, "a row of four");
             assert!(
-                (well.width() / well.height() - aspect).abs() < 1e-6,
-                "card {index} keeps its window's shape: {well:?} against {width}x{height}",
+                heights
+                    .windows(2)
+                    .all(|pair| (pair[0] - pair[1]).abs() < 1e-9),
+                "the row shares one height, so it reads as a row: {heights:?}"
             );
-            assert!(
-                (well.width() - (card.width() - 2.0 * g.metrics.inset)).abs() < 1e-6,
-                "the window's picture fills the card across"
-            );
-            assert!(
-                (card.height() - (well.height() + g.metrics.text_part())).abs() < 1e-6,
-                "under the well only the title's room"
-            );
+            for (index, card) in &g.cards {
+                let (width, height) = sizes[*index];
+                let aspect = f64::from(width) / f64::from(height);
+                let well = Switcher::well_of_rect(*card, g.metrics);
+                assert!(
+                    (well.width() / well.height() - aspect).abs() < 1e-6,
+                    "card {index} keeps its window's shape: {well:?} against {width}x{height}",
+                );
+                assert!(
+                    (well.width() - (card.width() - 2.0 * g.metrics.inset)).abs() < 1e-6,
+                    "the window's picture fills the card across"
+                );
+                assert!(
+                    (card.height() - (well.height() + g.metrics.text_part())).abs() < 1e-6,
+                    "under the well only the title's room"
+                );
+            }
+            // A card the desk has no window to measure stands at the desk's own shape, so an unpictured
+            // window's app face is not squeezed either.
+            let mut standing = shaped.clone();
+            for card in &mut standing.cards {
+                card.size = None;
+            }
+            let g = geometry(host, &standing, Metrics::from_theme(&theme));
+            for (index, card) in &g.cards {
+                let well = Switcher::well_of_rect(*card, g.metrics);
+                assert!(
+                    (well.width() / well.height() - STANDING_ASPECT).abs() < 1e-6,
+                    "card {index} with no window to measure stands at 16:10"
+                );
+            }
         }
-        // A card the desk has no window to measure stands at the desk's own shape, so an unpictured
-        // window's app face is not squeezed either.
-        let mut standing = shaped.clone();
-        for card in &mut standing.cards {
-            card.size = None;
-        }
-        let g = geometry(host, &standing, Metrics::from_theme(&theme));
-        for (index, card) in &g.cards {
-            let well = Switcher::well_of_rect(*card, g.metrics);
-            assert!(
-                (well.width() / well.height() - STANDING_ASPECT).abs() < 1e-6,
-                "card {index} with no window to measure stands at 16:10"
-            );
-        }
-    }
 
-    /// A preview grows with the display it stands on: a handful of windows on a desktop show far
-    /// larger than the standing thumbnail, while a small display still stands the panel inside
-    /// itself.
-    #[test]
-    fn previews_grow_with_the_display_they_stand_on() {
-        let m = Metrics::from_theme(&Theme::dark());
-        let desktop = Rect::new(0.0, 0.0, 1472.0, 920.0);
-        let g = geometry(desktop, &view(3, 0), m);
-        assert!(
-            g.metrics.well_h > 2.0 * m.well_h,
-            "three windows on a desktop stand well over thumbnail size: {}",
-            g.metrics.well_h
-        );
-        assert_eq!(g.cards.len(), 3, "and all three stand on one line");
-        assert!(!g.paged);
-        let phone = Rect::new(0.0, 0.0, 320.0, 480.0);
-        let small = geometry(phone, &view(3, 0), m);
-        assert!(within(phone, small.panel), "the panel stays on a small one");
-        assert!(
-            small.metrics.well_h < g.metrics.well_h,
-            "and its previews are as large as that display affords"
-        );
-    }
-
-    /// The card the walk reached is lifted off the panel's own ground by the selection's full step
-    /// and ringed in the person's colour; the cards the walk has not reached are the panel itself,
-    /// unringed.
-    #[test]
-    fn the_walked_card_stands_off_the_panels_own_ground() {
-        for theme in [Theme::dark(), Theme::light()] {
-            let ground = ui::chrome::shell::panel_ground(&theme);
-            let rest =
-                Switcher::card_tier(&theme, ui::chrome::SelectionState::new(false, false, false));
-            assert_eq!(rest.fill.components[3], 0.0, "a card at rest is the panel");
-            assert!(rest.border.is_none() && rest.inner_glow.is_none());
-            let chosen =
-                Switcher::card_tier(&theme, ui::chrome::SelectionState::new(true, false, false));
+        phase previews_grow_with_the_display_they_stand_on;
+        // A preview grows with the display it stands on: a handful of windows on a desktop show far
+        // larger than the standing thumbnail, while a small display still stands the panel inside
+        // itself.
+        {
+            let m = Metrics::from_theme(&Theme::dark());
+            let desktop = Rect::new(0.0, 0.0, 1472.0, 920.0);
+            let g = geometry(desktop, &view(3, 0), m);
             assert!(
-                ui::chrome::lightness_step(chosen.fill, ground) >= ui::chrome::SELECTION_MIN_STEP,
-                "the walked card reads as lifted: {:?} on {ground:?}",
-                chosen.fill
+                g.metrics.well_h > 2.0 * m.well_h,
+                "three windows on a desktop stand well over thumbnail size: {}",
+                g.metrics.well_h
             );
-            assert!(chosen.border.is_some(), "and holds the lift at its edge");
-            assert_eq!(
-                theme.border_focus, theme.tokens.colors.intent.accent_ink,
-                "the walk's ring is the person's own colour"
+            assert_eq!(g.cards.len(), 3, "and all three stand on one line");
+            assert!(!g.paged);
+            let phone = Rect::new(0.0, 0.0, 320.0, 480.0);
+            let small = geometry(phone, &view(3, 0), m);
+            assert!(within(phone, small.panel), "the panel stays on a small one");
+            assert!(
+                small.metrics.well_h < g.metrics.well_h,
+                "and its previews are as large as that display affords"
             );
         }
-    }
 
-    /// The keys the walk answers to stand under the cards in the person's words, and a reader hears
-    /// them there too, after the windows.
-    #[test]
-    fn the_panel_names_the_keys_under_its_cards() {
-        let switcher = Switcher::default();
-        switcher.set(Some(view(2, 0)));
-        let root = switcher.accessibility().expect("the panel reads");
-        let keys = root
-            .children
-            .iter()
-            .find(|child| child.role == Role::StaticText)
-            .expect("the keys are read under the windows");
-        let spoken = keys.name.as_deref().expect("the keys are named");
-        let said = KeyHintsFace::new(&Switcher::hints(false))
-            .spoken()
-            .join(", ");
-        assert_eq!(spoken, said);
-        for (key, word) in [
-            ("Alt + Tab", t("window-switcher-hint-walk")),
-            ("Enter", t("window-switcher-hint-go")),
-            ("Esc", t("window-switcher-hint-stay")),
-        ] {
+        phase the_walked_card_stands_off_the_panels_own_ground;
+        // The card the walk reached is lifted off the panel's own ground by the selection's full step
+        // and ringed in the person's colour; the cards the walk has not reached are the panel itself,
+        // unringed.
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                let ground = ui::chrome::shell::panel_ground(&theme);
+                let rest =
+                    Switcher::card_tier(&theme, ui::chrome::SelectionState::new(false, false, false));
+                assert_eq!(rest.fill.components[3], 0.0, "a card at rest is the panel");
+                assert!(rest.border.is_none() && rest.inner_glow.is_none());
+                let chosen =
+                    Switcher::card_tier(&theme, ui::chrome::SelectionState::new(true, false, false));
+                assert!(
+                    ui::chrome::lightness_step(chosen.fill, ground) >= ui::chrome::SELECTION_MIN_STEP,
+                    "the walked card reads as lifted: {:?} on {ground:?}",
+                    chosen.fill
+                );
+                assert!(chosen.border.is_some(), "and holds the lift at its edge");
+                assert_eq!(
+                    theme.border_focus, theme.tokens.colors.intent.accent_ink,
+                    "the walk's ring is the person's own colour"
+                );
+            }
+        }
+
+        phase the_panel_names_the_keys_under_its_cards;
+        // The keys the walk answers to stand under the cards in the person's words, and a reader hears
+        // them there too, after the windows.
+        {
+            let switcher = Switcher::default();
+            switcher.set(Some(view(2, 0)));
+            let root = switcher.accessibility().expect("the panel reads");
+            let keys = root
+                .children
+                .iter()
+                .find(|child| child.role == Role::StaticText)
+                .expect("the keys are read under the windows");
+            let spoken = keys.name.as_deref().expect("the keys are named");
+            let said = KeyHintsFace::new(&Switcher::hints(false))
+                .spoken()
+                .join(", ");
+            assert_eq!(spoken, said);
+            for (key, word) in [
+                ("Alt + Tab", t("window-switcher-hint-walk")),
+                ("Enter", t("window-switcher-hint-go")),
+                ("Esc", t("window-switcher-hint-stay")),
+            ] {
+                assert!(
+                    spoken.contains(&format!("{key}: {word}")),
+                    "{key} is spoken with its word: {spoken}"
+                );
+            }
+            // The app's walk answers to the key above Tab, and says so.
+            let mut app = view(2, 0);
+            app.app_scope = true;
+            switcher.set(Some(app));
+            let spoken = switcher
+                .accessibility()
+                .expect("the panel reads")
+                .children
+                .iter()
+                .find(|child| child.role == Role::StaticText)
+                .and_then(|keys| keys.name.clone())
+                .expect("the keys are read");
             assert!(
-                spoken.contains(&format!("{key}: {word}")),
-                "{key} is spoken with its word: {spoken}"
+                spoken.starts_with("Alt + `: "),
+                "the app's own chord: {spoken}"
+            );
+            assert!(!spoken.contains("Alt + Tab"));
+        }
+
+        phase the_panel_hands_the_compositor_each_windows_place_on_the_desk;
+        // The panel names each window it shows where its well stands, in the desk's coordinates, so
+        // the compositor can draw the window itself there.
+        {
+            let switcher = Switcher::default();
+            assert!(!switcher.is_up());
+            assert!(switcher.set(Some(view(2, 0))));
+            assert!(switcher.is_up());
+            assert!(switcher.needs_redraw(), "a new panel owes a frame");
+            assert!(
+                !switcher.set(Some(view(2, 0))),
+                "the same panel is no new frame"
+            );
+            let theme = Theme::dark();
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            switcher.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                Rect::new(0.0, 0.0, 1280.0, 800.0),
+            );
+            assert!(!switcher.needs_redraw(), "drawn");
+            let pictures = switcher.pictures();
+            assert_eq!(pictures.len(), 2);
+            let panel = switcher.panel_rect();
+            assert!(panel.width() > 0.0);
+            for picture in &pictures {
+                let well = picture.rect;
+                assert!(
+                    well.x0 >= panel.x0 && well.y0 >= panel.y0,
+                    "a well is inside the panel"
+                );
+                assert!(well.width() > 0.0 && well.height() > 0.0);
+            }
+            // The pointer finds the card it is on, and only the panel's cards.
+            let first = switcher
+                .pictures()
+                .first()
+                .map(|picture| picture.rect)
+                .expect("a picture");
+            let point = first.center();
+            assert_eq!(switcher.card_at(point), Some(0));
+            assert!(switcher.on_panel(switcher.panel_rect().center()));
+            assert!(
+                switcher.card_at(Point::new(-10.0, -10.0)).is_none(),
+                "nothing is off the panel"
+            );
+            assert!(switcher.clear());
+            assert!(
+                switcher.pictures().is_empty(),
+                "a closed panel pictures nothing"
             );
         }
-        // The app's walk answers to the key above Tab, and says so.
-        let mut app = view(2, 0);
-        app.app_scope = true;
-        switcher.set(Some(app));
-        let spoken = switcher
-            .accessibility()
-            .expect("the panel reads")
-            .children
-            .iter()
-            .find(|child| child.role == Role::StaticText)
-            .and_then(|keys| keys.name.clone())
-            .expect("the keys are read");
-        assert!(
-            spoken.starts_with("Alt + `: "),
-            "the app's own chord: {spoken}"
-        );
-        assert!(!spoken.contains("Alt + Tab"));
+
+        phase a_card_without_a_window_shows_its_apps_face;
+        // A window whose app holds secrets has no picture: its card says so with the app's face, and
+        // the compositor is asked for nothing.
+        {
+            let switcher = Switcher::default();
+            let mut hidden = view(1, 0);
+            hidden.cards[0].window = None;
+            switcher.set(Some(hidden));
+            let mut scene = Scene::new();
+            let theme = Theme::dark();
+            switcher.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                Rect::new(0.0, 0.0, 1280.0, 800.0),
+            );
+            assert!(switcher.pictures().is_empty());
+            assert!(
+                !scene.encoding().path_data.is_empty(),
+                "the card still draws its material and its app's face"
+            );
+        }
+
+        phase the_panel_reads_as_a_list_of_windows_with_the_reached_one_chosen;
+        // A reader meets the windows as a list of choices, the one the walk reached chosen and
+        // focused.
+        {
+            let switcher = Switcher::default();
+            assert!(
+                switcher.accessibility().is_none(),
+                "no panel, nothing to read"
+            );
+            switcher.set(Some(view(3, 1)));
+            let root = switcher.accessibility().expect("the panel reads");
+            assert_eq!(root.role, Role::Dialog);
+            let list = root.children.first().expect("one list");
+            assert_eq!(list.role, Role::List);
+            assert_eq!(list.children.len(), 3);
+            let chosen = &list.children[1];
+            assert_eq!(chosen.role, Role::ListItem);
+            assert!(chosen.state.selected, "the one the walk reached");
+            assert!(chosen.state.focused);
+            assert!(!list.children[0].state.selected);
+        }
     }
 
     fn card(title: &str, window: Option<u64>) -> SwitcherCard {
@@ -1357,107 +1467,5 @@ mod tests {
             selected,
             app_scope: false,
         }
-    }
-
-    /// The panel names each window it shows where its well stands, in the desk's coordinates, so
-    /// the compositor can draw the window itself there.
-    #[test]
-    fn the_panel_hands_the_compositor_each_windows_place_on_the_desk() {
-        let switcher = Switcher::default();
-        assert!(!switcher.is_up());
-        assert!(switcher.set(Some(view(2, 0))));
-        assert!(switcher.is_up());
-        assert!(switcher.needs_redraw(), "a new panel owes a frame");
-        assert!(
-            !switcher.set(Some(view(2, 0))),
-            "the same panel is no new frame"
-        );
-        let theme = Theme::dark();
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        switcher.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            Rect::new(0.0, 0.0, 1280.0, 800.0),
-        );
-        assert!(!switcher.needs_redraw(), "drawn");
-        let pictures = switcher.pictures();
-        assert_eq!(pictures.len(), 2);
-        let panel = switcher.panel_rect();
-        assert!(panel.width() > 0.0);
-        for picture in &pictures {
-            let well = picture.rect;
-            assert!(
-                well.x0 >= panel.x0 && well.y0 >= panel.y0,
-                "a well is inside the panel"
-            );
-            assert!(well.width() > 0.0 && well.height() > 0.0);
-        }
-        // The pointer finds the card it is on, and only the panel's cards.
-        let first = switcher
-            .pictures()
-            .first()
-            .map(|picture| picture.rect)
-            .expect("a picture");
-        let point = first.center();
-        assert_eq!(switcher.card_at(point), Some(0));
-        assert!(switcher.on_panel(switcher.panel_rect().center()));
-        assert!(
-            switcher.card_at(Point::new(-10.0, -10.0)).is_none(),
-            "nothing is off the panel"
-        );
-        assert!(switcher.clear());
-        assert!(
-            switcher.pictures().is_empty(),
-            "a closed panel pictures nothing"
-        );
-    }
-
-    /// A window whose app holds secrets has no picture: its card says so with the app's face, and
-    /// the compositor is asked for nothing.
-    #[test]
-    fn a_card_without_a_window_shows_its_apps_face() {
-        let switcher = Switcher::default();
-        let mut hidden = view(1, 0);
-        hidden.cards[0].window = None;
-        switcher.set(Some(hidden));
-        let mut scene = Scene::new();
-        let theme = Theme::dark();
-        switcher.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            Rect::new(0.0, 0.0, 1280.0, 800.0),
-        );
-        assert!(switcher.pictures().is_empty());
-        assert!(
-            !scene.encoding().path_data.is_empty(),
-            "the card still draws its material and its app's face"
-        );
-    }
-
-    /// A reader meets the windows as a list of choices, the one the walk reached chosen and
-    /// focused.
-    #[test]
-    fn the_panel_reads_as_a_list_of_windows_with_the_reached_one_chosen() {
-        let switcher = Switcher::default();
-        assert!(
-            switcher.accessibility().is_none(),
-            "no panel, nothing to read"
-        );
-        switcher.set(Some(view(3, 1)));
-        let root = switcher.accessibility().expect("the panel reads");
-        assert_eq!(root.role, Role::Dialog);
-        let list = root.children.first().expect("one list");
-        assert_eq!(list.role, Role::List);
-        assert_eq!(list.children.len(), 3);
-        let chosen = &list.children[1];
-        assert_eq!(chosen.role, Role::ListItem);
-        assert!(chosen.state.selected, "the one the walk reached");
-        assert!(chosen.state.focused);
-        assert!(!list.children[0].state.selected);
     }
 }

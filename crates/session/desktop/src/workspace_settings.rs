@@ -1029,49 +1029,93 @@ mod members_tests {
         ) == Answer::Allow
     }
 
-    #[test]
-    fn people_are_named_as_the_roster_names_them() {
-        use crate::people::{PeopleNames, roster_rows_named};
-        let owner_key = "fa4834147f".repeat(6) + "0123";
-        let mut ws = Workspace::new(WorkspaceSlot::from(9), "Studio");
-        ws.set_owner(owner_key.as_str());
-        assert!(
-            set_member_role(&mut ws, &owner_key, &"ada".to_string(), CapRole::Editor)
-                .is_ok_and(|edit| !edit.is_empty())
-        );
-        // The roster knows Ada from presence; the workspace's own record of her has no name.
-        let mut listed = ws.clone();
-        listed.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
-        let desktop = tilo_desktop_model::DesktopTree {
-            active: listed.slot,
-            workspaces: vec![listed],
-            ..tilo_desktop_model::DesktopTree::default()
-        };
-        let names = PeopleNames::of(&desktop, &owner_key, Some("Robin"));
-        let (roster, own) = roster_rows_named(&desktop, &owner_key, Some("Robin"));
-        let roster_ada = roster
-            .iter()
-            .find(|row| row.id == "ada")
-            .map(|row| row.label.clone());
-        assert_eq!(
-            Some(member_row_name(&names, &ws, &owner_key, "ada")),
-            roster_ada,
-            "the same name, cased the same, as the roster"
-        );
-        let owner_name = member_row_name(&names, &ws, &owner_key, &owner_key);
-        assert_eq!(Some(owner_name.clone()), own);
-        assert_eq!(owner_name, "Robin", "the owner by their name");
-        assert!(!owner_name.contains("fa48"), "never their key");
+    tilo_test_env::scenario! {
+        fn members_are_named_and_removed_as_the_roster_holds_them;
 
-        assert_eq!(
-            members_authority_note(true),
-            None,
-            "the owner is not told only the owner may"
-        );
-        assert_eq!(
-            members_authority_note(false).as_deref(),
-            Some("Only the workspace owner can change permissions.")
-        );
+        phase people_are_named_as_the_roster_names_them;
+        {
+            use crate::people::{PeopleNames, roster_rows_named};
+            let owner_key = "fa4834147f".repeat(6) + "0123";
+            let mut ws = Workspace::new(WorkspaceSlot::from(9), "Studio");
+            ws.set_owner(owner_key.as_str());
+            assert!(
+                set_member_role(&mut ws, &owner_key, &"ada".to_string(), CapRole::Editor)
+                    .is_ok_and(|edit| !edit.is_empty())
+            );
+            // The roster knows Ada from presence; the workspace's own record of her has no name.
+            let mut listed = ws.clone();
+            listed.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
+            let desktop = tilo_desktop_model::DesktopTree {
+                active: listed.slot,
+                workspaces: vec![listed],
+                ..tilo_desktop_model::DesktopTree::default()
+            };
+            let names = PeopleNames::of(&desktop, &owner_key, Some("Robin"));
+            let (roster, own) = roster_rows_named(&desktop, &owner_key, Some("Robin"));
+            let roster_ada = roster
+                .iter()
+                .find(|row| row.id == "ada")
+                .map(|row| row.label.clone());
+            assert_eq!(
+                Some(member_row_name(&names, &ws, &owner_key, "ada")),
+                roster_ada,
+                "the same name, cased the same, as the roster"
+            );
+            let owner_name = member_row_name(&names, &ws, &owner_key, &owner_key);
+            assert_eq!(Some(owner_name.clone()), own);
+            assert_eq!(owner_name, "Robin", "the owner by their name");
+            assert!(!owner_name.contains("fa48"), "never their key");
+
+            assert_eq!(
+                members_authority_note(true),
+                None,
+                "the owner is not told only the owner may"
+            );
+            assert_eq!(
+                members_authority_note(false).as_deref(),
+                Some("Only the workspace owner can change permissions.")
+            );
+        }
+
+        phase member_removal_takes_back_what_the_member_held;
+        {
+            let mut ws = ws_with_two_members();
+            let cap = CapOverride::grant(
+                Grantee::person(PEER),
+                Scope::FsPath("/var/workspace".into()),
+                Access::Write,
+            );
+            ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
+            let notes = Grant::new(
+                "peer-notes",
+                tilo_action_policy::Grantee::person(PEER),
+                ws.node().app("so.tilo.notes"),
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                tilo_action_policy::Grantee::person(OWNER),
+            );
+            ws.govern_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
+                .expect("owner shares an app");
+
+            let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string())
+                .expect("the owner may remove a member");
+            assert_eq!(edit.members, vec![PEER.to_string()]);
+            assert_eq!(edit.revoked.len(), 1, "the app grant");
+            assert_eq!(edit.sandbox_revoked.len(), 1, "the file grant");
+            assert_eq!(ws.role_of(PEER), None);
+            assert!(
+                !ws.allows(
+                    &ws.acting_for_person(&PEER.to_string()),
+                    &collab_types::caps::ResourceRef::FsPath("/var/workspace/notes".into()),
+                    Access::Write
+                ),
+                "removing a member must revoke what they held, not just hide them"
+            );
+
+            let refusal = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
+            assert!(refusal.is_err(), "the owner cannot be removed");
+            assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
+        }
     }
 
     #[test]
@@ -1190,46 +1234,6 @@ mod members_tests {
             assert_eq!(ws.policy, before);
             assert!(ws.may_administer(&PEER.to_string()));
         }
-    }
-
-    #[test]
-    fn member_removal_takes_back_what_the_member_held() {
-        let mut ws = ws_with_two_members();
-        let cap = CapOverride::grant(
-            Grantee::person(PEER),
-            Scope::FsPath("/var/workspace".into()),
-            Access::Write,
-        );
-        ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
-        let notes = Grant::new(
-            "peer-notes",
-            tilo_action_policy::Grantee::person(PEER),
-            ws.node().app("so.tilo.notes"),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            tilo_action_policy::Grantee::person(OWNER),
-        );
-        ws.govern_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
-            .expect("owner shares an app");
-
-        let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string())
-            .expect("the owner may remove a member");
-        assert_eq!(edit.members, vec![PEER.to_string()]);
-        assert_eq!(edit.revoked.len(), 1, "the app grant");
-        assert_eq!(edit.sandbox_revoked.len(), 1, "the file grant");
-        assert_eq!(ws.role_of(PEER), None);
-        assert!(
-            !ws.allows(
-                &ws.acting_for_person(&PEER.to_string()),
-                &collab_types::caps::ResourceRef::FsPath("/var/workspace/notes".into()),
-                Access::Write
-            ),
-            "removing a member must revoke what they held, not just hide them"
-        );
-
-        let refusal = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
-        assert!(refusal.is_err(), "the owner cannot be removed");
-        assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
     }
 }
 
@@ -1873,52 +1877,56 @@ mod permissions_tests {
         }
     }
 
-    #[test]
-    fn a_resource_is_picked_by_the_title_its_app_publishes() {
-        struct Titles;
-        impl AppDirectory for Titles {
-            fn app_display_name(&self, _app_id: &str) -> Option<String> {
-                None
+    tilo_test_env::scenario! {
+        fn a_grant_names_its_resource_and_reads_back_as_the_workspace_holds_it;
+
+        phase a_resource_is_picked_by_the_title_its_app_publishes;
+        {
+            struct Titles;
+            impl AppDirectory for Titles {
+                fn app_display_name(&self, _app_id: &str) -> Option<String> {
+                    None
+                }
+                fn titled_resources(&self) -> Vec<TitledResource> {
+                    vec![TitledResource {
+                        app: "so.tilo.notes".into(),
+                        kind: "notes.notebook.pages".into(),
+                        resource: "q3".into(),
+                        title: "Q3 plan".into(),
+                    }]
+                }
             }
-            fn titled_resources(&self) -> Vec<TitledResource> {
-                vec![TitledResource {
-                    app: "so.tilo.notes".into(),
-                    kind: "notes.notebook.pages".into(),
-                    resource: "q3".into(),
-                    title: "Q3 plan".into(),
-                }]
-            }
+
+            let mut ws = ws_with_grants();
+            let draft = draft_for(&ws, "app:firefox", "microphone", "never").expect("a draft");
+            let mut ws2 = ws.clone();
+            apply_grant_draft(&mut ws2, &OWNER.to_string(), &draft).expect("owner grants");
+            ws = ws2;
+            let rows = listed_permissions(&ws, &Titles, VIEWER);
+            assert!(
+                rows.iter().all(|row| !row.allows.contains("q3")),
+                "a printed permission names what it opens, never a bare id"
+            );
         }
 
-        let mut ws = ws_with_grants();
-        let draft = draft_for(&ws, "app:firefox", "microphone", "never").expect("a draft");
-        let mut ws2 = ws.clone();
-        apply_grant_draft(&mut ws2, &OWNER.to_string(), &draft).expect("owner grants");
-        ws = ws2;
-        let rows = listed_permissions(&ws, &Titles, VIEWER);
-        assert!(
-            rows.iter().all(|row| !row.allows.contains("q3")),
-            "a printed permission names what it opens, never a bare id"
-        );
-    }
-
-    #[test]
-    fn a_grant_set_reads_back_as_the_grants_the_workspace_holds() {
-        let mut ws = ws_with_grants();
-        let draft = draft_for(&ws, "app:firefox", "microphone", "never").expect("a draft");
-        let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("owner grants");
-        assert_eq!(edit.sandbox_granted.len(), 1);
-        let rows = listed(&ws);
-        assert_eq!(
-            rows.len(),
-            ws.sandbox
-                .iter()
-                .filter(|c| c.effect == Effect::Grant)
-                .count(),
-            "every live grant is listed once"
-        );
-        for row in &rows {
-            assert!(ws.sandbox.iter().any(|cap| cap.id == row.id));
+        phase a_grant_set_reads_back_as_the_grants_the_workspace_holds;
+        {
+            let mut ws = ws_with_grants();
+            let draft = draft_for(&ws, "app:firefox", "microphone", "never").expect("a draft");
+            let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("owner grants");
+            assert_eq!(edit.sandbox_granted.len(), 1);
+            let rows = listed(&ws);
+            assert_eq!(
+                rows.len(),
+                ws.sandbox
+                    .iter()
+                    .filter(|c| c.effect == Effect::Grant)
+                    .count(),
+                "every live grant is listed once"
+            );
+            for row in &rows {
+                assert!(ws.sandbox.iter().any(|cap| cap.id == row.id));
+            }
         }
     }
 }

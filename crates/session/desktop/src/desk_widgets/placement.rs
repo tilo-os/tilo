@@ -335,153 +335,157 @@ mod tests {
     const AREA: Rect = Rect::new(0.0, 32.0, 1600.0, 900.0);
     const PILL: Size = Size::new(240.0, 40.0);
 
-    #[test]
-    fn a_place_round_trips_and_keeps_to_its_edge_on_another_resolution() {
-        for at in [(0.0, 0.0), (1.0, 1.0), (0.3, 0.7), (1.0, 0.5)] {
-            let rect = rect_at(AREA, PILL, at);
-            let back = fractions(AREA, rect);
-            assert!((back.0 - at.0).abs() < 1e-9 && (back.1 - at.1).abs() < 1e-9);
-        }
-        let corner = rect_at(AREA, PILL, (1.0, 1.0));
-        assert_eq!(corner.x1, AREA.x1 - MARGIN);
-        assert_eq!(corner.y1, AREA.y1 - MARGIN);
-        let bigger = Rect::new(0.0, 32.0, 2560.0, 1440.0);
-        let there = rect_at(bigger, PILL, fractions(AREA, corner));
-        assert_eq!(
-            (there.x1, there.y1),
-            (bigger.x1 - MARGIN, bigger.y1 - MARGIN)
-        );
-    }
+    tilo_test_env::scenario! {
+        fn a_desk_widgets_place_rests_drops_and_throws;
 
-    #[test]
-    fn an_open_card_grows_toward_the_middle_and_back() {
-        let open = Size::new(320.0, 200.0);
-        for at in [(1.0, 1.0), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (0.7, 0.2)] {
-            let glance = rect_at(AREA, PILL, at);
-            let card = open_rect(AREA, glance, open);
-            assert!(AREA.contains(card.origin()) && AREA.contains(Point::new(card.x1, card.y1)));
-            let (right, bottom) = anchor(at);
-            if right {
-                assert_eq!(card.x1, glance.x1, "{at:?}");
-            } else {
-                assert_eq!(card.x0, glance.x0, "{at:?}");
+        phase a_place_round_trips_and_keeps_to_its_edge_on_another_resolution;
+        {
+            for at in [(0.0, 0.0), (1.0, 1.0), (0.3, 0.7), (1.0, 0.5)] {
+                let rect = rect_at(AREA, PILL, at);
+                let back = fractions(AREA, rect);
+                assert!((back.0 - at.0).abs() < 1e-9 && (back.1 - at.1).abs() < 1e-9);
             }
-            if bottom {
-                assert_eq!(card.y1, glance.y1, "{at:?}");
-            } else {
-                assert_eq!(card.y0, glance.y0, "{at:?}");
-            }
-            let back = glance_in(AREA, card, PILL);
-            assert!(
-                (back.origin() - glance.origin()).hypot() < 0.5 && back.size() == PILL,
-                "{at:?}: the card folds to where it grew from: {back:?}"
+            let corner = rect_at(AREA, PILL, (1.0, 1.0));
+            assert_eq!(corner.x1, AREA.x1 - MARGIN);
+            assert_eq!(corner.y1, AREA.y1 - MARGIN);
+            let bigger = Rect::new(0.0, 32.0, 2560.0, 1440.0);
+            let there = rect_at(bigger, PILL, fractions(AREA, corner));
+            assert_eq!(
+                (there.x1, there.y1),
+                (bigger.x1 - MARGIN, bigger.y1 - MARGIN)
             );
         }
-    }
 
-    #[test]
-    fn widgets_resting_together_step_apart_and_past_a_call() {
-        let mut rects = vec![
-            rect_at(AREA, PILL, (1.0, 1.0)),
-            rect_at(AREA, PILL, (1.0, 1.0)),
-        ];
-        let call = Rect::new(1300.0, 700.0, 1590.0, 890.0);
-        resolve(AREA, &mut rects, &[call]);
-        for (k, rect) in rects.iter().enumerate() {
-            assert!(!rect.overlaps(call), "{k} {rect:?}");
+        phase an_open_card_grows_toward_the_middle_and_back;
+        {
+            let open = Size::new(320.0, 200.0);
+            for at in [(1.0, 1.0), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (0.7, 0.2)] {
+                let glance = rect_at(AREA, PILL, at);
+                let card = open_rect(AREA, glance, open);
+                assert!(AREA.contains(card.origin()) && AREA.contains(Point::new(card.x1, card.y1)));
+                let (right, bottom) = anchor(at);
+                if right {
+                    assert_eq!(card.x1, glance.x1, "{at:?}");
+                } else {
+                    assert_eq!(card.x0, glance.x0, "{at:?}");
+                }
+                if bottom {
+                    assert_eq!(card.y1, glance.y1, "{at:?}");
+                } else {
+                    assert_eq!(card.y0, glance.y0, "{at:?}");
+                }
+                let back = glance_in(AREA, card, PILL);
+                assert!(
+                    (back.origin() - glance.origin()).hypot() < 0.5 && back.size() == PILL,
+                    "{at:?}: the card folds to where it grew from: {back:?}"
+                );
+            }
         }
-        assert!(!rects[0].overlaps(rects[1]), "{rects:?}");
-        for rect in &rects {
-            assert_eq!(clamp(AREA, *rect), *rect, "kept on the display");
+
+        phase widgets_resting_together_step_apart_and_past_a_call;
+        {
+            let mut rects = vec![
+                rect_at(AREA, PILL, (1.0, 1.0)),
+                rect_at(AREA, PILL, (1.0, 1.0)),
+            ];
+            let call = Rect::new(1300.0, 700.0, 1590.0, 890.0);
+            resolve(AREA, &mut rects, &[call]);
+            for (k, rect) in rects.iter().enumerate() {
+                assert!(!rect.overlaps(call), "{k} {rect:?}");
+            }
+            assert!(!rects[0].overlaps(rects[1]), "{rects:?}");
+            for rect in &rects {
+                assert_eq!(clamp(AREA, *rect), *rect, "kept on the display");
+            }
         }
-    }
 
-    #[test]
-    fn the_reach_zone_runs_to_the_edges_it_rests_against() {
-        let corner = rect_at(AREA, PILL, (1.0, 1.0));
-        let zone = reach_zone(AREA, corner);
-        assert_eq!((zone.x1, zone.y1), (AREA.x1, AREA.y1));
-        let free = Rect::from_origin_size((600.0, 400.0), PILL);
-        assert_eq!(reach_zone(AREA, free), free.inflate(REACH_PAD, REACH_PAD));
-    }
+        phase the_reach_zone_runs_to_the_edges_it_rests_against;
+        {
+            let corner = rect_at(AREA, PILL, (1.0, 1.0));
+            let zone = reach_zone(AREA, corner);
+            assert_eq!((zone.x1, zone.y1), (AREA.x1, AREA.y1));
+            let free = Rect::from_origin_size((600.0, 400.0), PILL);
+            assert_eq!(reach_zone(AREA, free), free.inflate(REACH_PAD, REACH_PAD));
+        }
 
-    #[test]
-    fn a_drop_lands_where_it_was_let_go_unless_near_an_edge_or_neighbour() {
-        let free = Rect::from_origin_size((600.0, 400.0), PILL);
-        assert_eq!(magnet(AREA, free, &[]), free, "in the open: exactly there");
-        let near_right =
-            Rect::from_origin_size((AREA.x1 - MARGIN - PILL.width - 20.0, 300.0), PILL);
-        assert_eq!(
-            magnet(AREA, near_right, &[]).x1,
-            AREA.x1 - MARGIN,
-            "drawn to the edge"
-        );
-        let near_corner =
-            Rect::from_origin_size((14.0, AREA.y1 - MARGIN - PILL.height - 10.0), PILL);
-        let snapped = magnet(AREA, near_corner, &[]);
-        assert_eq!(
-            (snapped.x0, snapped.y1),
-            (AREA.x0 + MARGIN, AREA.y1 - MARGIN)
-        );
-        let neighbour = Rect::from_origin_size((600.0, 400.0), PILL);
-        let under = Rect::from_origin_size((605.0, 452.0), PILL);
-        let snapped = magnet(AREA, under, &[neighbour]);
-        assert_eq!(snapped.y0, neighbour.y1 + MARGIN, "stacks under it");
-        assert_eq!(snapped.x0, neighbour.x0, "in line with it");
-        let off = Rect::from_origin_size((AREA.x1 - 30.0, 300.0), PILL);
-        assert!(
-            AREA.contains(magnet(AREA, off, &[]).origin()),
-            "kept on the display"
-        );
-    }
+        phase a_drop_lands_where_it_was_let_go_unless_near_an_edge_or_neighbour;
+        {
+            let free = Rect::from_origin_size((600.0, 400.0), PILL);
+            assert_eq!(magnet(AREA, free, &[]), free, "in the open: exactly there");
+            let near_right =
+                Rect::from_origin_size((AREA.x1 - MARGIN - PILL.width - 20.0, 300.0), PILL);
+            assert_eq!(
+                magnet(AREA, near_right, &[]).x1,
+                AREA.x1 - MARGIN,
+                "drawn to the edge"
+            );
+            let near_corner =
+                Rect::from_origin_size((14.0, AREA.y1 - MARGIN - PILL.height - 10.0), PILL);
+            let snapped = magnet(AREA, near_corner, &[]);
+            assert_eq!(
+                (snapped.x0, snapped.y1),
+                (AREA.x0 + MARGIN, AREA.y1 - MARGIN)
+            );
+            let neighbour = Rect::from_origin_size((600.0, 400.0), PILL);
+            let under = Rect::from_origin_size((605.0, 452.0), PILL);
+            let snapped = magnet(AREA, under, &[neighbour]);
+            assert_eq!(snapped.y0, neighbour.y1 + MARGIN, "stacks under it");
+            assert_eq!(snapped.x0, neighbour.x0, "in line with it");
+            let off = Rect::from_origin_size((AREA.x1 - 30.0, 300.0), PILL);
+            assert!(
+                AREA.contains(magnet(AREA, off, &[]).origin()),
+                "kept on the display"
+            );
+        }
 
-    #[test]
-    fn a_throw_carries_and_a_throw_off_the_screen_removes() {
-        let motion = EffectiveMotion::new(ui::tokens::Motion::default(), false);
-        let rect = Rect::from_origin_size((600.0, 400.0), PILL);
-        assert_eq!(
-            landing(rect, Vec2::new(20.0, 0.0), motion),
-            rect,
-            "a push stays"
-        );
-        let thrown = landing(rect, Vec2::new(2000.0, 0.0), motion);
-        assert!(thrown.x0 > rect.x0 + 100.0, "a throw carries: {thrown:?}");
-        let displays = [AREA];
-        assert!(!thrown_off(&displays, rect, Vec2::ZERO, motion));
-        let edge = Rect::from_origin_size((1500.0, 400.0), PILL);
-        assert!(thrown_off(&displays, edge, Vec2::new(4000.0, 0.0), motion));
-        assert!(
-            !thrown_off(&displays, edge, Vec2::new(-4000.0, 0.0), motion),
-            "thrown inward"
-        );
-        let samples = [
-            (0.0, Point::new(0.0, 0.0)),
-            (0.5, Point::new(10.0, 0.0)),
-            (0.54, Point::new(50.0, 0.0)),
-            (0.58, Point::new(90.0, 0.0)),
-        ];
-        let v = release_velocity(&samples);
-        assert!((v.x - 1000.0).abs() < 1.0, "{v:?}");
-        let rested = [(0.0, Point::new(0.0, 0.0)), (0.5, Point::new(90.0, 0.0))];
-        assert_eq!(
-            release_velocity(&rested),
-            Vec2::ZERO,
-            "stopped before letting go"
-        );
-    }
+        phase a_throw_carries_and_a_throw_off_the_screen_removes;
+        {
+            let motion = EffectiveMotion::new(ui::tokens::Motion::default(), false);
+            let rect = Rect::from_origin_size((600.0, 400.0), PILL);
+            assert_eq!(
+                landing(rect, Vec2::new(20.0, 0.0), motion),
+                rect,
+                "a push stays"
+            );
+            let thrown = landing(rect, Vec2::new(2000.0, 0.0), motion);
+            assert!(thrown.x0 > rect.x0 + 100.0, "a throw carries: {thrown:?}");
+            let displays = [AREA];
+            assert!(!thrown_off(&displays, rect, Vec2::ZERO, motion));
+            let edge = Rect::from_origin_size((1500.0, 400.0), PILL);
+            assert!(thrown_off(&displays, edge, Vec2::new(4000.0, 0.0), motion));
+            assert!(
+                !thrown_off(&displays, edge, Vec2::new(-4000.0, 0.0), motion),
+                "thrown inward"
+            );
+            let samples = [
+                (0.0, Point::new(0.0, 0.0)),
+                (0.5, Point::new(10.0, 0.0)),
+                (0.54, Point::new(50.0, 0.0)),
+                (0.58, Point::new(90.0, 0.0)),
+            ];
+            let v = release_velocity(&samples);
+            assert!((v.x - 1000.0).abs() < 1.0, "{v:?}");
+            let rested = [(0.0, Point::new(0.0, 0.0)), (0.5, Point::new(90.0, 0.0))];
+            assert_eq!(
+                release_velocity(&rested),
+                Vec2::ZERO,
+                "stopped before letting go"
+            );
+        }
 
-    #[test]
-    fn a_drop_belongs_to_the_display_under_it_or_the_nearest() {
-        let displays = [
-            Rect::new(0.0, 0.0, 1472.0, 920.0),
-            Rect::new(1472.0, 0.0, 3392.0, 1080.0),
-        ];
-        assert_eq!(display_at(&displays, Point::new(100.0, 100.0)), Some(0));
-        assert_eq!(display_at(&displays, Point::new(2000.0, 1000.0)), Some(1));
-        assert_eq!(
-            display_at(&displays, Point::new(700.0, 1000.0)),
-            Some(0),
-            "below the panel"
-        );
+        phase a_drop_belongs_to_the_display_under_it_or_the_nearest;
+        {
+            let displays = [
+                Rect::new(0.0, 0.0, 1472.0, 920.0),
+                Rect::new(1472.0, 0.0, 3392.0, 1080.0),
+            ];
+            assert_eq!(display_at(&displays, Point::new(100.0, 100.0)), Some(0));
+            assert_eq!(display_at(&displays, Point::new(2000.0, 1000.0)), Some(1));
+            assert_eq!(
+                display_at(&displays, Point::new(700.0, 1000.0)),
+                Some(0),
+                "below the panel"
+            );
+        }
     }
 }

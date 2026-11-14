@@ -1364,75 +1364,219 @@ mod tests {
         Pill::layout(band(), &Theme::dark(), &mut TextRenderer::new(), osd)
     }
 
-    #[test]
-    fn a_level_names_its_device_and_the_level_is_the_bar() {
-        ui::i18n::I18nManager::init("en-US");
-        let pill = pill(&volume(0.65));
-        // The device is named above the bar, with the device's own glyph.
-        assert_eq!(pill.name_text, "Studio headphones");
-        assert_eq!(
-            volume(0.65).glyph(),
-            (ui::icons::Icon::Headphones, GlyphTone::On)
-        );
-        assert_eq!(pill.value_text, "65%");
-        // The bar spans the content under the name, and the value ends it.
-        let bar = pill.bar.expect("a level has a bar");
-        let value = pill.value.expect("a level has a value");
-        assert_eq!(bar.width(), value.x1 - bar.x0);
-        assert!(bar.y0 > pill.name.y1, "the bar stands under the device");
-        assert!(bar.height() >= 6.0, "a bar, not a hairline");
-        // The glyph leads, a square, and the content follows it.
-        assert_eq!(pill.glyph.x0, pill.rect.x0 + 16.0);
-        assert_eq!(pill.glyph.width(), pill.glyph.height());
-        assert!(pill.name.x0 > pill.glyph.x1);
-        // A level's pill is taller than a hint's, and rests on the same line.
-        assert!(pill.rect.height() > f64::from(OSD_ROW_HEIGHT));
-        assert_eq!(pill.rect.y1, band().y1 - f64::from(OSD_MARGIN));
-        assert_eq!(pill.rect.center().x, 640.0);
-        assert_eq!(
-            volume(0.65).caption(),
-            "Studio headphones, 65%",
-            "a person who cannot see it hears the device and the level"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_on_screen_display_reads_out_levels_and_hints;
 
-    #[test]
-    fn the_pill_is_as_wide_as_what_it_reads() {
-        ui::i18n::I18nManager::init("en-US");
-        let level = |name: &str, glyph| {
-            Osd::from(Level {
-                kind: OsdKind::Volume,
-                level: 0.1,
-                on: true,
-                device: Some(Device::new(name, glyph)),
-            })
-        };
-        let short = level("Buds", DeviceGlyph::Headphones);
-        let long = level("Studio monitoring headphones", DeviceGlyph::Headphones);
-        assert!(
-            pill(&long).rect.width() > pill(&short).rect.width(),
-            "a longer device name makes a wider pill"
-        );
-        // Its reading may change without the pill changing shape: the value slot fits the widest
-        // reading, so the bar keeps its length.
-        let wide = pill(&volume(0.65)).rect.width();
-        let muted = Osd::from(Level {
-            kind: OsdKind::Volume,
-            level: 0.65,
-            on: false,
-            device: Some(Device::new("Studio headphones", DeviceGlyph::Headphones)),
-        });
-        for other in [volume(0.05), volume(1.0), muted] {
+        phase a_level_names_its_device_and_the_level_is_the_bar;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let pill = pill(&volume(0.65));
+            // The device is named above the bar, with the device's own glyph.
+            assert_eq!(pill.name_text, "Studio headphones");
             assert_eq!(
-                pill(&other).rect.width(),
-                wide,
-                "{other:?} resized the pill"
+                volume(0.65).glyph(),
+                (ui::icons::Icon::Headphones, GlyphTone::On)
+            );
+            assert_eq!(pill.value_text, "65%");
+            // The bar spans the content under the name, and the value ends it.
+            let bar = pill.bar.expect("a level has a bar");
+            let value = pill.value.expect("a level has a value");
+            assert_eq!(bar.width(), value.x1 - bar.x0);
+            assert!(bar.y0 > pill.name.y1, "the bar stands under the device");
+            assert!(bar.height() >= 6.0, "a bar, not a hairline");
+            // The glyph leads, a square, and the content follows it.
+            assert_eq!(pill.glyph.x0, pill.rect.x0 + 16.0);
+            assert_eq!(pill.glyph.width(), pill.glyph.height());
+            assert!(pill.name.x0 > pill.glyph.x1);
+            // A level's pill is taller than a hint's, and rests on the same line.
+            assert!(pill.rect.height() > f64::from(OSD_ROW_HEIGHT));
+            assert_eq!(pill.rect.y1, band().y1 - f64::from(OSD_MARGIN));
+            assert_eq!(pill.rect.center().x, 640.0);
+            assert_eq!(
+                volume(0.65).caption(),
+                "Studio headphones, 65%",
+                "a person who cannot see it hears the device and the level"
             );
         }
-        // A hint is one row, and narrows to its words.
-        let hint = pill(&night_light(true));
-        assert!(hint.bar.is_none());
-        assert!(hint.rect.height() < pill(&volume(0.65)).rect.height());
+
+        phase the_pill_is_as_wide_as_what_it_reads;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let level = |name: &str, glyph| {
+                Osd::from(Level {
+                    kind: OsdKind::Volume,
+                    level: 0.1,
+                    on: true,
+                    device: Some(Device::new(name, glyph)),
+                })
+            };
+            let short = level("Buds", DeviceGlyph::Headphones);
+            let long = level("Studio monitoring headphones", DeviceGlyph::Headphones);
+            assert!(
+                pill(&long).rect.width() > pill(&short).rect.width(),
+                "a longer device name makes a wider pill"
+            );
+            // Its reading may change without the pill changing shape: the value slot fits the widest
+            // reading, so the bar keeps its length.
+            let wide = pill(&volume(0.65)).rect.width();
+            let muted = Osd::from(Level {
+                kind: OsdKind::Volume,
+                level: 0.65,
+                on: false,
+                device: Some(Device::new("Studio headphones", DeviceGlyph::Headphones)),
+            });
+            for other in [volume(0.05), volume(1.0), muted] {
+                assert_eq!(
+                    pill(&other).rect.width(),
+                    wide,
+                    "{other:?} resized the pill"
+                );
+            }
+            // A hint is one row, and narrows to its words.
+            let hint = pill(&night_light(true));
+            assert!(hint.bar.is_none());
+            assert!(hint.rect.height() < pill(&volume(0.65)).rect.height());
+        }
+
+        phase a_hint_says_the_mode_in_words_and_keeps_its_chord;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let hint = night_light(true);
+            assert_eq!(hint.caption(), "Night light on");
+            let pill = pill(&hint);
+            assert_eq!(pill.name_text, "Night light on");
+            assert_eq!(
+                pill.chord.as_ref().map(|(chord, _)| chord.as_str()),
+                Some("⌃⌥N")
+            );
+            // Every mode a person cannot see says what changed.
+            for (kind, on, words) in [
+                (OsdKind::DoNotDisturb, true, "Do not disturb on"),
+                (OsdKind::DoNotDisturb, false, "Do not disturb off"),
+                (OsdKind::Magnifier, true, "Magnifier on"),
+                (OsdKind::NightLight, false, "Night light off"),
+                (OsdKind::CapturedKeys, true, "Keys captured"),
+                (OsdKind::PointerReleased, true, "Pointer released"),
+                (OsdKind::Touchpad, false, "Touchpad off"),
+            ] {
+                assert_eq!(
+                    Osd::from(Hint {
+                        kind,
+                        on,
+                        chord: None,
+                        name: None,
+                    })
+                    .caption(),
+                    words
+                );
+            }
+        }
+
+        phase a_transport_hint_names_the_song_it_acted_on;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let named = |kind, song: Option<&str>| {
+                Osd::from(Hint {
+                    kind,
+                    on: true,
+                    chord: None,
+                    name: song.map(str::to_owned),
+                })
+                .caption()
+            };
+            // A pause says what stopped, so the person knows which of the players in the room went
+            // quiet; without a song it says what the key does.
+            assert_eq!(
+                named(OsdKind::Play, Some("Glasslight")),
+                "Playing Glasslight"
+            );
+            assert_eq!(
+                named(OsdKind::Pause, Some("Glasslight")),
+                "Paused Glasslight"
+            );
+            assert_eq!(named(OsdKind::Play, None), "Play");
+            assert_eq!(named(OsdKind::Pause, Some("")), "Pause");
+        }
+
+        phase every_kind_has_a_glyph_and_says_something;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            for kind in OsdKind::ALL {
+                let hint = Osd::from(Hint {
+                    kind,
+                    on: true,
+                    chord: None,
+                    name: None,
+                });
+                let (_, tone) = hint.glyph();
+                assert!(matches!(
+                    tone,
+                    GlyphTone::On | GlyphTone::Off | GlyphTone::Warn
+                ));
+                assert!(!hint.caption().is_empty(), "{kind:?} says nothing");
+            }
+            assert!(OsdKind::Volume.has_level());
+            assert!(!OsdKind::NightLight.has_level());
+            assert_eq!(
+                DeviceGlyph::of_sink("Studio headphones"),
+                DeviceGlyph::Headphones
+            );
+            assert_eq!(DeviceGlyph::of_sink("Built-in Audio"), DeviceGlyph::Speaker);
+        }
+
+        phase the_level_follows_on_a_spring_and_a_reverse_turns_from_where_it_is;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let mut slab = OsdSlab::new();
+            slab.show(volume(0.2));
+            let pressed = ui::time::now();
+            slab.show(volume(0.8));
+            // Thirty milliseconds after the second press the bar is on its way,
+            // not already there: the level is a spring, never a jump.
+            let early_at = pressed.checked_add(Duration::from_millis(30)).unwrap();
+            let early = slab.level_at(early_at);
+            assert!((0.2..0.8).contains(&early), "the bar moved to {early}");
+            let later = pressed.checked_add(Duration::from_millis(60)).unwrap();
+            assert!(slab.level_at(later) > early, "the bar keeps moving");
+            let settled_at = pressed.checked_add(Duration::from_millis(600)).unwrap();
+            assert!((slab.level_at(settled_at) - 0.8).abs() < 1e-3);
+            assert!(slab.openness_at(early_at) > 0.0, "the readout is up");
+            // Pressing it down again turns the bar back from where it is drawn,
+            // never cutting to the new reading.
+            let before = slab.level_at(ui::time::now());
+            slab.show(volume(0.1));
+            let after = ui::time::now()
+                .checked_add(Duration::from_millis(2))
+                .unwrap();
+            assert!(before > 0.2, "the bar had started to rise: {before}");
+            assert!(
+                slab.level_at(after) > before - 0.05,
+                "it turned from where it was drawn"
+            );
+        }
+
+        phase a_readout_takes_itself_away_on_the_spring_that_brought_it;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let mut slab = OsdSlab::new();
+            slab.show(volume(0.5));
+            let up = ui::time::now();
+            assert!(slab.needs_redraw());
+            assert!(slab.openness_at(up) > 0.0, "it is up");
+            // Its hold runs, and then it goes: the openness falls on the same spring the coming used,
+            // rather than being cut off.
+            let leaving = up
+                .checked_add(OSD_HOLD)
+                .and_then(|at| at.checked_add(Duration::from_millis(20)))
+                .unwrap();
+            slab.follow(leaving);
+            let falling = leaving.checked_add(Duration::from_millis(120)).unwrap();
+            assert!(slab.openness_at(falling) < 0.5, "it is on its way out");
+            let gone = leaving.checked_add(Duration::from_millis(600)).unwrap();
+            slab.follow(gone);
+            assert!(slab.raised.is_none(), "it has gone, and asks for no frame");
+            assert!(!slab.needs_redraw());
+        }
     }
 
     #[test]
@@ -1504,92 +1648,6 @@ mod tests {
         assert_eq!(level(2.0, true).filled(), 1.0);
         assert_eq!(level(-1.0, true).filled(), 0.0);
         assert_eq!(level(0.37, false).value_text(), "Muted");
-    }
-
-    #[test]
-    fn a_hint_says_the_mode_in_words_and_keeps_its_chord() {
-        ui::i18n::I18nManager::init("en-US");
-        let hint = night_light(true);
-        assert_eq!(hint.caption(), "Night light on");
-        let pill = pill(&hint);
-        assert_eq!(pill.name_text, "Night light on");
-        assert_eq!(
-            pill.chord.as_ref().map(|(chord, _)| chord.as_str()),
-            Some("⌃⌥N")
-        );
-        // Every mode a person cannot see says what changed.
-        for (kind, on, words) in [
-            (OsdKind::DoNotDisturb, true, "Do not disturb on"),
-            (OsdKind::DoNotDisturb, false, "Do not disturb off"),
-            (OsdKind::Magnifier, true, "Magnifier on"),
-            (OsdKind::NightLight, false, "Night light off"),
-            (OsdKind::CapturedKeys, true, "Keys captured"),
-            (OsdKind::PointerReleased, true, "Pointer released"),
-            (OsdKind::Touchpad, false, "Touchpad off"),
-        ] {
-            assert_eq!(
-                Osd::from(Hint {
-                    kind,
-                    on,
-                    chord: None,
-                    name: None,
-                })
-                .caption(),
-                words
-            );
-        }
-    }
-
-    #[test]
-    fn a_transport_hint_names_the_song_it_acted_on() {
-        ui::i18n::I18nManager::init("en-US");
-        let named = |kind, song: Option<&str>| {
-            Osd::from(Hint {
-                kind,
-                on: true,
-                chord: None,
-                name: song.map(str::to_owned),
-            })
-            .caption()
-        };
-        // A pause says what stopped, so the person knows which of the players in the room went
-        // quiet; without a song it says what the key does.
-        assert_eq!(
-            named(OsdKind::Play, Some("Glasslight")),
-            "Playing Glasslight"
-        );
-        assert_eq!(
-            named(OsdKind::Pause, Some("Glasslight")),
-            "Paused Glasslight"
-        );
-        assert_eq!(named(OsdKind::Play, None), "Play");
-        assert_eq!(named(OsdKind::Pause, Some("")), "Pause");
-    }
-
-    #[test]
-    fn every_kind_has_a_glyph_and_says_something() {
-        ui::i18n::I18nManager::init("en-US");
-        for kind in OsdKind::ALL {
-            let hint = Osd::from(Hint {
-                kind,
-                on: true,
-                chord: None,
-                name: None,
-            });
-            let (_, tone) = hint.glyph();
-            assert!(matches!(
-                tone,
-                GlyphTone::On | GlyphTone::Off | GlyphTone::Warn
-            ));
-            assert!(!hint.caption().is_empty(), "{kind:?} says nothing");
-        }
-        assert!(OsdKind::Volume.has_level());
-        assert!(!OsdKind::NightLight.has_level());
-        assert_eq!(
-            DeviceGlyph::of_sink("Studio headphones"),
-            DeviceGlyph::Headphones
-        );
-        assert_eq!(DeviceGlyph::of_sink("Built-in Audio"), DeviceGlyph::Speaker);
     }
 
     #[test]
@@ -1669,59 +1727,5 @@ mod tests {
             slab.current().map(|osd| osd.caption()),
             Some("Night light on".to_owned())
         );
-    }
-
-    #[test]
-    fn the_level_follows_on_a_spring_and_a_reverse_turns_from_where_it_is() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut slab = OsdSlab::new();
-        slab.show(volume(0.2));
-        let pressed = ui::time::now();
-        slab.show(volume(0.8));
-        // Thirty milliseconds after the second press the bar is on its way,
-        // not already there: the level is a spring, never a jump.
-        let early_at = pressed.checked_add(Duration::from_millis(30)).unwrap();
-        let early = slab.level_at(early_at);
-        assert!((0.2..0.8).contains(&early), "the bar moved to {early}");
-        let later = pressed.checked_add(Duration::from_millis(60)).unwrap();
-        assert!(slab.level_at(later) > early, "the bar keeps moving");
-        let settled_at = pressed.checked_add(Duration::from_millis(600)).unwrap();
-        assert!((slab.level_at(settled_at) - 0.8).abs() < 1e-3);
-        assert!(slab.openness_at(early_at) > 0.0, "the readout is up");
-        // Pressing it down again turns the bar back from where it is drawn,
-        // never cutting to the new reading.
-        let before = slab.level_at(ui::time::now());
-        slab.show(volume(0.1));
-        let after = ui::time::now()
-            .checked_add(Duration::from_millis(2))
-            .unwrap();
-        assert!(before > 0.2, "the bar had started to rise: {before}");
-        assert!(
-            slab.level_at(after) > before - 0.05,
-            "it turned from where it was drawn"
-        );
-    }
-
-    #[test]
-    fn a_readout_takes_itself_away_on_the_spring_that_brought_it() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut slab = OsdSlab::new();
-        slab.show(volume(0.5));
-        let up = ui::time::now();
-        assert!(slab.needs_redraw());
-        assert!(slab.openness_at(up) > 0.0, "it is up");
-        // Its hold runs, and then it goes: the openness falls on the same spring the coming used,
-        // rather than being cut off.
-        let leaving = up
-            .checked_add(OSD_HOLD)
-            .and_then(|at| at.checked_add(Duration::from_millis(20)))
-            .unwrap();
-        slab.follow(leaving);
-        let falling = leaving.checked_add(Duration::from_millis(120)).unwrap();
-        assert!(slab.openness_at(falling) < 0.5, "it is on its way out");
-        let gone = leaving.checked_add(Duration::from_millis(600)).unwrap();
-        slab.follow(gone);
-        assert!(slab.raised.is_none(), "it has gone, and asks for no frame");
-        assert!(!slab.needs_redraw());
     }
 }

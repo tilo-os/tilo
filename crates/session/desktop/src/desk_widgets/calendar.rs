@@ -78,41 +78,45 @@ mod tests {
         NaiveDate::from_ymd_opt(y, m, d).unwrap()
     }
 
-    #[test]
-    fn a_month_starts_under_its_weekday_and_marks_today() {
-        // 1 October 2026 is a Thursday.
-        let month = Month::around(day(2026, 10, 17), Weekday::Mon);
-        assert_eq!(
-            month.weeks[0],
-            [None, None, None, Some(1), Some(2), Some(3), Some(4)]
-        );
-        assert_eq!(month.today_cell(), Some((2, 5)), "Saturday the 17th");
-        let last = month.weeks.iter().flatten().flatten().max();
-        assert_eq!(last, Some(&31));
-    }
+    tilo_test_env::scenario! {
+        fn a_month_lays_out_on_the_calendars_grid;
 
-    /// The grid starts its weeks on the day the person chose.
-    #[test]
-    fn a_month_lays_out_from_the_chosen_first_weekday() {
-        let month = Month::around(day(2026, 10, 17), Weekday::Sun);
-        assert_eq!(month.columns[0], Weekday::Sun);
-        assert_eq!(month.columns[6], Weekday::Sat);
-        // 1 October 2026, a Thursday, is the fifth column from Sunday.
-        assert_eq!(
-            month.weeks[0],
-            [None, None, None, None, Some(1), Some(2), Some(3)]
-        );
-        assert_eq!(month.today_cell(), Some((2, 6)), "Saturday the 17th");
-    }
+        phase a_month_starts_under_its_weekday_and_marks_today;
+        {
+            // 1 October 2026 is a Thursday.
+            let month = Month::around(day(2026, 10, 17), Weekday::Mon);
+            assert_eq!(
+                month.weeks[0],
+                [None, None, None, Some(1), Some(2), Some(3), Some(4)]
+            );
+            assert_eq!(month.today_cell(), Some((2, 5)), "Saturday the 17th");
+            let last = month.weeks.iter().flatten().flatten().max();
+            assert_eq!(last, Some(&31));
+        }
 
-    #[test]
-    fn february_and_six_week_months_fit_the_grid() {
-        assert_eq!(days_in_month(day(2028, 2, 1)), 29, "leap year");
-        assert_eq!(days_in_month(day(2026, 2, 1)), 28);
-        assert_eq!(days_in_month(day(2026, 12, 1)), 31);
-        // August 2026 starts on a Saturday and needs all six rows.
-        let month = Month::around(day(2026, 8, 31), Weekday::Mon);
-        assert_eq!(month.weeks[5][0], Some(31));
-        assert_eq!(month.today_cell(), Some((5, 0)));
+        phase a_month_lays_out_from_the_chosen_first_weekday;
+        // The grid starts its weeks on the day the person chose.
+        {
+            let month = Month::around(day(2026, 10, 17), Weekday::Sun);
+            assert_eq!(month.columns[0], Weekday::Sun);
+            assert_eq!(month.columns[6], Weekday::Sat);
+            // 1 October 2026, a Thursday, is the fifth column from Sunday.
+            assert_eq!(
+                month.weeks[0],
+                [None, None, None, None, Some(1), Some(2), Some(3)]
+            );
+            assert_eq!(month.today_cell(), Some((2, 6)), "Saturday the 17th");
+        }
+
+        phase february_and_six_week_months_fit_the_grid;
+        {
+            assert_eq!(days_in_month(day(2028, 2, 1)), 29, "leap year");
+            assert_eq!(days_in_month(day(2026, 2, 1)), 28);
+            assert_eq!(days_in_month(day(2026, 12, 1)), 31);
+            // August 2026 starts on a Saturday and needs all six rows.
+            let month = Month::around(day(2026, 8, 31), Weekday::Mon);
+            assert_eq!(month.weeks[5][0], Some(31));
+            assert_eq!(month.today_cell(), Some((5, 0)));
+        }
     }
 }

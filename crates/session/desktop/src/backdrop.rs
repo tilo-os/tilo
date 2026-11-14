@@ -620,19 +620,23 @@ mod tests {
         assert_eq!(backdrop.noise.image.height, NOISE_SIZE);
     }
 
-    /// The noise should actually have some non-zero alpha pixels; a buffer of all zeros would
-    /// render nothing and silently regress the overlay without tripping the size assertion above.
-    #[test]
-    fn noise_buffer_has_nonzero_alpha() {
-        let bytes = generate_noise_bytes();
-        let any_visible = bytes.chunks_exact(4).any(|px| px[3] > 0);
-        assert!(any_visible, "generated noise has no visible specks");
-    }
+    tilo_test_env::scenario! {
+        fn the_backdrops_noise_is_opaque_and_deterministic;
 
-    /// The PRNG must be deterministic — regenerating must produce the same bytes. Keeps headless
-    /// render snapshots stable.
-    #[test]
-    fn noise_generation_is_deterministic() {
-        assert_eq!(generate_noise_bytes(), generate_noise_bytes());
+        phase noise_buffer_has_nonzero_alpha;
+        // The noise should actually have some non-zero alpha pixels; a buffer of all zeros would
+        // render nothing and silently regress the overlay without tripping the size assertion above.
+        {
+            let bytes = generate_noise_bytes();
+            let any_visible = bytes.chunks_exact(4).any(|px| px[3] > 0);
+            assert!(any_visible, "generated noise has no visible specks");
+        }
+
+        phase noise_generation_is_deterministic;
+        // The PRNG must be deterministic — regenerating must produce the same bytes. Keeps headless
+        // render snapshots stable.
+        {
+            assert_eq!(generate_noise_bytes(), generate_noise_bytes());
+        }
     }
 }

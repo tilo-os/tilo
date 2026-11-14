@@ -360,115 +360,119 @@ mod tests {
         identify.cards().to_vec()
     }
 
-    #[test]
-    fn every_display_says_its_number_and_name_then_goes_on_its_own() {
-        let t0 = Instant::now();
-        let mut identify = DisplayIdentify::default();
-        assert!(!identify.is_up(t0), "nothing is said before Identify");
+    tilo_test_env::scenario! {
+        fn the_displays_say_their_number_and_name_when_asked;
 
-        identify.follow(Some(asked(7)), t0);
-        assert!(identify.is_up(t0), "Identify says it at once");
-        assert_eq!(
-            identify.next_wake_deadline(t0),
-            Some(ms(t0, 3_000)),
-            "a frame is owed when the cards go"
-        );
+        phase every_display_says_its_number_and_name_then_goes_on_its_own;
+        {
+            let t0 = Instant::now();
+            let mut identify = DisplayIdentify::default();
+            assert!(!identify.is_up(t0), "nothing is said before Identify");
 
-        let cards = painted(&mut identify, t0);
-        assert_eq!(cards.len(), 2, "one card per display: {cards:?}");
-        let builtin = &cards[0];
-        assert_eq!(
-            (builtin.number, builtin.name.as_str()),
-            (1, "Built-in display")
-        );
-        assert!(
-            LEFT.contains(builtin.rect.center()),
-            "the card stands on its own display: {:?}",
-            builtin.rect
-        );
-        assert!(
-            builtin.rect.y0 > LEFT.center().y && builtin.rect.x0 > LEFT.x0,
-            "in a corner, clear of what the person arranges: {:?}",
-            builtin.rect
-        );
-        let external = &cards[1];
-        assert_eq!(
-            (external.number, external.name.as_str()),
-            (2, "Dell U2724DE")
-        );
-        assert!(
-            RIGHT.contains(external.rect.center()) && external.rect.x0 >= RIGHT.x0,
-            "the second display says its own number: {:?}",
-            external.rect
-        );
+            identify.follow(Some(asked(7)), t0);
+            assert!(identify.is_up(t0), "Identify says it at once");
+            assert_eq!(
+                identify.next_wake_deadline(t0),
+                Some(ms(t0, 3_000)),
+                "a frame is owed when the cards go"
+            );
 
-        assert!(
-            identify.is_up(ms(t0, 2_900)),
-            "the cards stay up long enough to look from the canvas"
-        );
-        assert!(
-            !identify.is_up(ms(t0, 3_000)),
-            "and are gone after three seconds"
-        );
-    }
+            let cards = painted(&mut identify, t0);
+            assert_eq!(cards.len(), 2, "one card per display: {cards:?}");
+            let builtin = &cards[0];
+            assert_eq!(
+                (builtin.number, builtin.name.as_str()),
+                (1, "Built-in display")
+            );
+            assert!(
+                LEFT.contains(builtin.rect.center()),
+                "the card stands on its own display: {:?}",
+                builtin.rect
+            );
+            assert!(
+                builtin.rect.y0 > LEFT.center().y && builtin.rect.x0 > LEFT.x0,
+                "in a corner, clear of what the person arranges: {:?}",
+                builtin.rect
+            );
+            let external = &cards[1];
+            assert_eq!(
+                (external.number, external.name.as_str()),
+                (2, "Dell U2724DE")
+            );
+            assert!(
+                RIGHT.contains(external.rect.center()) && external.rect.x0 >= RIGHT.x0,
+                "the second display says its own number: {:?}",
+                external.rect
+            );
 
-    #[test]
-    fn asking_again_starts_the_cards_over() {
-        let t0 = Instant::now();
-        let mut identify = DisplayIdentify::default();
-        identify.follow(Some(asked(7)), t0);
-        identify.follow(Some(asked(7)), ms(t0, 1_000));
-        assert_eq!(
-            identify.next_wake_deadline(ms(t0, 1_000)),
-            Some(ms(t0, 3_000)),
-            "the same request answers once: its cards do not start over"
-        );
-        identify.follow(Some(asked(8)), ms(t0, 2_000));
-        assert_eq!(
-            identify.next_wake_deadline(ms(t0, 2_000)),
-            Some(ms(t0, 5_000)),
-            "a second press of Identify shows the cards again"
-        );
-    }
+            assert!(
+                identify.is_up(ms(t0, 2_900)),
+                "the cards stay up long enough to look from the canvas"
+            );
+            assert!(
+                !identify.is_up(ms(t0, 3_000)),
+                "and are gone after three seconds"
+            );
+        }
 
-    #[test]
-    fn a_display_the_desk_does_not_show_gets_no_card() {
-        let t0 = Instant::now();
-        let mut identify = DisplayIdentify::default();
-        let ask = Ask {
-            id: 3,
-            labels: vec![
-                Label {
-                    monitor: "eDP-1".to_owned(),
-                    number: 1,
-                    name: "Built-in display".to_owned(),
-                },
-                Label {
-                    monitor: "HDMI-A-1".to_owned(),
-                    number: 2,
-                    name: "External display".to_owned(),
-                },
-            ],
-        };
-        identify.follow(Some(ask), t0);
-        let cards = painted(&mut identify, t0);
-        assert_eq!(cards.len(), 1, "only the display that is there: {cards:?}");
-        assert_eq!(cards[0].name, "Built-in display");
-    }
+        phase asking_again_starts_the_cards_over;
+        {
+            let t0 = Instant::now();
+            let mut identify = DisplayIdentify::default();
+            identify.follow(Some(asked(7)), t0);
+            identify.follow(Some(asked(7)), ms(t0, 1_000));
+            assert_eq!(
+                identify.next_wake_deadline(ms(t0, 1_000)),
+                Some(ms(t0, 3_000)),
+                "the same request answers once: its cards do not start over"
+            );
+            identify.follow(Some(asked(8)), ms(t0, 2_000));
+            assert_eq!(
+                identify.next_wake_deadline(ms(t0, 2_000)),
+                Some(ms(t0, 5_000)),
+                "a second press of Identify shows the cards again"
+            );
+        }
 
-    #[test]
-    fn what_the_cards_say_is_read_once_and_takes_no_pointer() {
-        let t0 = Instant::now();
-        let mut identify = DisplayIdentify::default();
-        identify.follow(Some(asked(7)), t0);
-        painted(&mut identify, t0);
-        let node = identify
-            .accessibility(t0)
-            .expect("the cards are announced while they stand");
-        assert_eq!(
-            node.value.as_deref(),
-            Some("1 Built-in display, 2 Dell U2724DE")
-        );
-        assert!(identify.accessibility(ms(t0, 3_000)).is_none());
+        phase a_display_the_desk_does_not_show_gets_no_card;
+        {
+            let t0 = Instant::now();
+            let mut identify = DisplayIdentify::default();
+            let ask = Ask {
+                id: 3,
+                labels: vec![
+                    Label {
+                        monitor: "eDP-1".to_owned(),
+                        number: 1,
+                        name: "Built-in display".to_owned(),
+                    },
+                    Label {
+                        monitor: "HDMI-A-1".to_owned(),
+                        number: 2,
+                        name: "External display".to_owned(),
+                    },
+                ],
+            };
+            identify.follow(Some(ask), t0);
+            let cards = painted(&mut identify, t0);
+            assert_eq!(cards.len(), 1, "only the display that is there: {cards:?}");
+            assert_eq!(cards[0].name, "Built-in display");
+        }
+
+        phase what_the_cards_say_is_read_once_and_takes_no_pointer;
+        {
+            let t0 = Instant::now();
+            let mut identify = DisplayIdentify::default();
+            identify.follow(Some(asked(7)), t0);
+            painted(&mut identify, t0);
+            let node = identify
+                .accessibility(t0)
+                .expect("the cards are announced while they stand");
+            assert_eq!(
+                node.value.as_deref(),
+                Some("1 Built-in display, 2 Dell U2724DE")
+            );
+            assert!(identify.accessibility(ms(t0, 3_000)).is_none());
+        }
     }
 }

@@ -397,43 +397,47 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn a_hold_shows_the_glance_then_owes_the_whole_card_and_letting_go_takes_it_away() {
-        let peek = SuperPeek::default();
-        let now = ui::time::now();
-        assert!(!peek.is_up());
-        assert!(!peek.needs_redraw(now), "nothing is owed before a hold");
-        peek.show(groups());
-        let now = ui::time::now();
-        assert!(peek.is_up());
-        assert!(peek.needs_redraw(now), "the glance is owed a frame");
-        let due = peek
-            .next_wake_deadline(now)
-            .expect("the whole card is due later");
-        assert!(due > now && Some(due) <= now.checked_add(GROW));
-        assert_eq!(peek.groups().map(|groups| groups.len()), Some(2));
-        let said = peek.accessibility().expect("it speaks while up");
-        assert!(
-            said.value
-                .as_deref()
-                .is_some_and(|value| value.contains("Search everywhere"))
-        );
+    tilo_test_env::scenario! {
+        fn the_super_peek_shows_the_glance_while_held;
 
-        peek.hide();
-        assert!(!peek.is_up());
-        assert_eq!(
-            peek.next_wake_deadline(now),
-            None,
-            "nothing grows once it goes"
-        );
-        assert!(peek.accessibility().is_none());
-    }
+        phase a_hold_shows_the_glance_then_owes_the_whole_card_and_letting_go_takes_it_away;
+        {
+            let peek = SuperPeek::default();
+            let now = ui::time::now();
+            assert!(!peek.is_up());
+            assert!(!peek.needs_redraw(now), "nothing is owed before a hold");
+            peek.show(groups());
+            let now = ui::time::now();
+            assert!(peek.is_up());
+            assert!(peek.needs_redraw(now), "the glance is owed a frame");
+            let due = peek
+                .next_wake_deadline(now)
+                .expect("the whole card is due later");
+            assert!(due > now && Some(due) <= now.checked_add(GROW));
+            assert_eq!(peek.groups().map(|groups| groups.len()), Some(2));
+            let said = peek.accessibility().expect("it speaks while up");
+            assert!(
+                said.value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("Search everywhere"))
+            );
 
-    #[test]
-    fn a_second_show_while_up_keeps_what_the_hold_began_with() {
-        let peek = SuperPeek::default();
-        peek.show(groups());
-        peek.show(Vec::new());
-        assert_eq!(peek.groups().map(|groups| groups.len()), Some(2));
+            peek.hide();
+            assert!(!peek.is_up());
+            assert_eq!(
+                peek.next_wake_deadline(now),
+                None,
+                "nothing grows once it goes"
+            );
+            assert!(peek.accessibility().is_none());
+        }
+
+        phase a_second_show_while_up_keeps_what_the_hold_began_with;
+        {
+            let peek = SuperPeek::default();
+            peek.show(groups());
+            peek.show(Vec::new());
+            assert_eq!(peek.groups().map(|groups| groups.len()), Some(2));
+        }
     }
 }

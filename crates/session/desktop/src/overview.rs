@@ -554,53 +554,57 @@ mod press_tests {
     use super::*;
     use vello::kurbo::Point;
 
-    #[test]
-    fn a_press_is_a_tap_until_it_travels_past_the_slop() {
-        let start = Point::new(100.0, 100.0);
-        let mut click = OverviewPress::new(PressSource::Mouse, Some(7), start);
-        click.moved(Point::new(102.0, 100.0));
-        assert!(!click.is_dragging());
-        assert_eq!(
-            click.release(Point::new(102.0, 101.0)),
-            PressEnd::Tap {
-                tab: Some(7),
-                at: Point::new(102.0, 101.0)
-            }
-        );
+    tilo_test_env::scenario! {
+        fn a_press_on_the_overview_is_a_tap_until_it_drags;
 
-        let mut drag = OverviewPress::new(PressSource::Mouse, Some(7), start);
-        drag.moved(Point::new(140.0, 180.0));
-        assert!(drag.is_dragging());
-        drag.moved(start);
-        assert!(drag.is_dragging(), "coming back does not undo a drag");
-        assert_eq!(drag.release(start), PressEnd::Drop { tab: 7, at: start });
-    }
+        phase a_press_is_a_tap_until_it_travels_past_the_slop;
+        {
+            let start = Point::new(100.0, 100.0);
+            let mut click = OverviewPress::new(PressSource::Mouse, Some(7), start);
+            click.moved(Point::new(102.0, 100.0));
+            assert!(!click.is_dragging());
+            assert_eq!(
+                click.release(Point::new(102.0, 101.0)),
+                PressEnd::Tap {
+                    tab: Some(7),
+                    at: Point::new(102.0, 101.0)
+                }
+            );
 
-    #[test]
-    fn a_finger_gets_the_wider_touch_slop() {
-        let start = Point::new(0.0, 0.0);
-        let wobble = Point::new(10.0, 0.0);
-        let mut finger = OverviewPress::new(PressSource::Touch(3), Some(7), start);
-        finger.moved(wobble);
-        assert!(!finger.is_dragging(), "a finger's wobble is still a tap");
-        let mut mouse = OverviewPress::new(PressSource::Mouse, Some(7), start);
-        mouse.moved(wobble);
-        assert!(mouse.is_dragging());
-    }
+            let mut drag = OverviewPress::new(PressSource::Mouse, Some(7), start);
+            drag.moved(Point::new(140.0, 180.0));
+            assert!(drag.is_dragging());
+            drag.moved(start);
+            assert!(drag.is_dragging(), "coming back does not undo a drag");
+            assert_eq!(drag.release(start), PressEnd::Drop { tab: 7, at: start });
+        }
 
-    #[test]
-    fn a_drag_that_carries_nothing_does_nothing() {
-        let start = Point::new(0.0, 0.0);
-        let press = OverviewPress::new(PressSource::Touch(1), None, start);
-        assert_eq!(press.release(Point::new(90.0, 0.0)), PressEnd::Nothing);
-        let press = OverviewPress::new(PressSource::Touch(1), None, start);
-        assert_eq!(
-            press.release(start),
-            PressEnd::Tap {
-                tab: None,
-                at: start
-            }
-        );
+        phase a_finger_gets_the_wider_touch_slop;
+        {
+            let start = Point::new(0.0, 0.0);
+            let wobble = Point::new(10.0, 0.0);
+            let mut finger = OverviewPress::new(PressSource::Touch(3), Some(7), start);
+            finger.moved(wobble);
+            assert!(!finger.is_dragging(), "a finger's wobble is still a tap");
+            let mut mouse = OverviewPress::new(PressSource::Mouse, Some(7), start);
+            mouse.moved(wobble);
+            assert!(mouse.is_dragging());
+        }
+
+        phase a_drag_that_carries_nothing_does_nothing;
+        {
+            let start = Point::new(0.0, 0.0);
+            let press = OverviewPress::new(PressSource::Touch(1), None, start);
+            assert_eq!(press.release(Point::new(90.0, 0.0)), PressEnd::Nothing);
+            let press = OverviewPress::new(PressSource::Touch(1), None, start);
+            assert_eq!(
+                press.release(start),
+                PressEnd::Tap {
+                    tab: None,
+                    at: start
+                }
+            );
+        }
     }
 }
 

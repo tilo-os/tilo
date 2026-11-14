@@ -143,84 +143,88 @@ fn desk(read: &DoorRead) -> TiloDesk {
     }
 }
 
-#[test]
-fn the_doors_answer_becomes_the_overviews_agents_rows() {
-    en();
-    let host = DoorHost::with(vec![working()]);
-    let mut read = DoorRead::default();
-    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-    assert!(read.follow(&host, &caller(), &wake), "the first answer");
-    assert!(
-        !read.follow(&host, &caller(), &wake),
-        "the same answer again"
-    );
+tilo_test_env::scenario! {
+    fn the_agent_door_feeds_the_overviews_agents_rows;
 
-    let rows = rows(&desk(&read));
-    let agent = items(&rows)[0];
-    assert_eq!(agent.title, "Claude Code", "whose grant it is");
-    assert_eq!(
-        facts(agent),
-        ["All your workspaces", "Working now"],
-        "what it may reach, and that it works"
-    );
-    assert_eq!(
-        agent.action,
-        Some(("Revoke".to_owned(), OverviewPick::RevokeGrant("g1".into()))),
-        "the row is the person's say over it"
-    );
-}
+    phase the_doors_answer_becomes_the_overviews_agents_rows;
+    {
+        en();
+        let host = DoorHost::with(vec![working()]);
+        let mut read = DoorRead::default();
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        assert!(read.follow(&host, &caller(), &wake), "the first answer");
+        assert!(
+            !read.follow(&host, &caller(), &wake),
+            "the same answer again"
+        );
 
-#[test]
-fn an_agent_at_rest_says_where_it_reaches_and_nothing_of_work() {
-    en();
-    let at_rest = agent_door::Grant {
-        runs: Vec::new(),
-        reach: agent_door::Reach::Workspace {
-            id: "ws-build".into(),
-            name: "Build".into(),
-        },
-        ..working()
-    };
-    let host = DoorHost::with(vec![at_rest]);
-    let mut read = DoorRead::default();
-    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-    assert!(read.follow(&host, &caller(), &wake));
-    let rows = rows(&desk(&read));
-    assert_eq!(facts(items(&rows)[0]), ["Build"]);
-}
+        let rows = rows(&desk(&read));
+        let agent = items(&rows)[0];
+        assert_eq!(agent.title, "Claude Code", "whose grant it is");
+        assert_eq!(
+            facts(agent),
+            ["All your workspaces", "Working now"],
+            "what it may reach, and that it works"
+        );
+        assert_eq!(
+            agent.action,
+            Some(("Revoke".to_owned(), OverviewPick::RevokeGrant("g1".into()))),
+            "the row is the person's say over it"
+        );
+    }
 
-/// A row's Revoke is the grant's, asked of the door the page serves: the
-/// person's root signs the device's revocation from there, as the card's
-/// Revoke does.
-#[test]
-fn a_rows_revoke_reaches_the_door() {
-    en();
-    let host = DoorHost::with(vec![working()]);
-    let mut read = DoorRead::default();
-    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-    assert!(read.follow(&host, &caller(), &wake));
-    let action = items(&rows(&desk(&read)))[0].action.clone();
-    let Some((label, OverviewPick::RevokeGrant(grant))) = action else {
-        panic!("the agents' row offers to take its grant back");
-    };
-    assert_eq!(label, "Revoke");
-    DoorRead::revoke(&host, &caller(), &grant);
-    assert_eq!(*host.revoked.borrow(), [grant], "the door took it back");
-}
+    phase an_agent_at_rest_says_where_it_reaches_and_nothing_of_work;
+    {
+        en();
+        let at_rest = agent_door::Grant {
+            runs: Vec::new(),
+            reach: agent_door::Reach::Workspace {
+                id: "ws-build".into(),
+                name: "Build".into(),
+            },
+            ..working()
+        };
+        let host = DoorHost::with(vec![at_rest]);
+        let mut read = DoorRead::default();
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        assert!(read.follow(&host, &caller(), &wake));
+        let rows = rows(&desk(&read));
+        assert_eq!(facts(items(&rows)[0]), ["Build"]);
+    }
 
-#[test]
-fn a_door_with_no_grants_leaves_the_overview_without_agents() {
-    en();
-    let host = DoorHost::default();
-    let mut read = DoorRead::default();
-    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-    assert!(read.follow(&host, &caller(), &wake), "it answered, empty");
-    assert_eq!(read.door().map(|door| door.grants.len()), Some(0));
-    let rows = rows(&desk(&read));
-    assert!(
-        !rows
-            .iter()
-            .any(|row| matches!(row, TiloRow::Caption(caption) if caption == "Agents")),
-        "no agents, no section"
-    );
+    phase a_rows_revoke_reaches_the_door;
+    // A row's Revoke is the grant's, asked of the door the page serves: the
+    // person's root signs the device's revocation from there, as the card's
+    // Revoke does.
+    {
+        en();
+        let host = DoorHost::with(vec![working()]);
+        let mut read = DoorRead::default();
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        assert!(read.follow(&host, &caller(), &wake));
+        let action = items(&rows(&desk(&read)))[0].action.clone();
+        let Some((label, OverviewPick::RevokeGrant(grant))) = action else {
+            panic!("the agents' row offers to take its grant back");
+        };
+        assert_eq!(label, "Revoke");
+        DoorRead::revoke(&host, &caller(), &grant);
+        assert_eq!(*host.revoked.borrow(), [grant], "the door took it back");
+    }
+
+    phase a_door_with_no_grants_leaves_the_overview_without_agents;
+    {
+        en();
+        let host = DoorHost::default();
+        let mut read = DoorRead::default();
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        assert!(read.follow(&host, &caller(), &wake), "it answered, empty");
+        assert_eq!(read.door().map(|door| door.grants.len()), Some(0));
+        let rows = rows(&desk(&read));
+        assert!(
+            !rows
+                .iter()
+                .any(|row| matches!(row, TiloRow::Caption(caption) if caption == "Agents")),
+            "no agents, no section"
+        );
+    }
 }

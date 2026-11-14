@@ -496,21 +496,148 @@ impl Widget for TiloMenu {
 mod tests {
     use super::*;
 
-    #[test]
-    fn empty_or_non_web_links_are_not_offered() {
-        ui::i18n::I18nManager::init("en-US");
-        let links = AboutLinks::new(" https://example.org/notify ", "", "javascript:alert(1)");
-        assert_eq!(links.notify.as_deref(), Some("https://example.org/notify"));
-        assert_eq!(links.source, None);
-        assert_eq!(links.community, None);
-        assert_eq!(
-            links.shown(),
-            vec![(
-                t("tilo-about-link-notify"),
-                "https://example.org/notify".to_owned()
-            )]
-        );
-        assert!(AboutLinks::new("", "", "").shown().is_empty());
+    tilo_test_env::scenario! {
+        fn the_tilo_menu_opens_about_and_carries_the_sessions_actions;
+
+        phase empty_or_non_web_links_are_not_offered;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let links = AboutLinks::new(" https://example.org/notify ", "", "javascript:alert(1)");
+            assert_eq!(links.notify.as_deref(), Some("https://example.org/notify"));
+            assert_eq!(links.source, None);
+            assert_eq!(links.community, None);
+            assert_eq!(
+                links.shown(),
+                vec![(
+                    t("tilo-about-link-notify"),
+                    "https://example.org/notify".to_owned()
+                )]
+            );
+            assert!(AboutLinks::new("", "", "").shown().is_empty());
+        }
+
+        phase the_browser_says_it_runs_in_the_browser;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let browser = about_copy(AboutVariant::Browser);
+            let native = about_copy(AboutVariant::Native);
+            assert_eq!(browser.lead, native.lead);
+            assert!(browser.lead.contains("Tilo"), "{}", browser.lead);
+            assert!(browser.body.contains("browser"), "{}", browser.body);
+            assert!(!native.body.contains("browser"), "{}", native.body);
+            // A browser tab is not "this computer".
+            for words in [&browser.title, &browser.menu, &browser.body] {
+                assert!(
+                    !words.contains("computer") || words.contains("own computer"),
+                    "{words}"
+                );
+            }
+            assert!(browser.title.contains("Tilo"), "{}", browser.title);
+            assert!(native.title.contains("computer"), "{}", native.title);
+            // Both say which Tilo this is, and where to find it on the web; the browser says that is
+            // where to get it.
+            for copy in [&browser, &native] {
+                assert!(
+                    copy.version.contains(env!("CARGO_PKG_VERSION")),
+                    "{}",
+                    copy.version
+                );
+            }
+            assert!(browser.home.contains("Get"), "{}", browser.home);
+            assert_eq!(native.home, "tilo.so");
+        }
+
+        phase about_takes_the_menu_away_at_once;
+        // Choosing About takes the menu away at once: a menu still fading out showed through the
+        // sheet's scrim, over the window it dims.
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let mut menu = TiloMenu::new(AboutVariant::Browser, &AboutLinks::default());
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            ui::time::testing::with_monotonic_time(ui::time::now(), || {
+                menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
+                assert!(menu.menu.is_drawn());
+                menu.menu.click_item(0);
+                assert!(menu.settle());
+                assert!(menu.is_about_open());
+                assert!(
+                    !menu.menu.is_drawn(),
+                    "nothing of the menu paints under the sheet"
+                );
+            });
+        }
+
+        phase the_menu_opens_about_and_the_sheet_closes_on_dismiss;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let mut menu = TiloMenu::new(AboutVariant::Browser, &AboutLinks::default());
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let anchor = Rect::new(8.0, 4.0, 40.0, 36.0);
+            menu.toggle(anchor, viewport);
+            assert!(menu.is_menu_open());
+            menu.toggle(anchor, viewport);
+            assert!(!menu.is_open());
+            menu.toggle(anchor, viewport);
+            menu.menu.click_item(0);
+            assert!(menu.settle());
+            assert!(menu.is_about_open() && !menu.is_menu_open());
+            menu.dismissed.set(true);
+            assert!(menu.settle());
+            assert!(!menu.is_open());
+            assert!(
+                !menu.take_feedback(),
+                "a menu without feedback never asks for it"
+            );
+        }
+
+        phase session_actions_lead_the_menu_and_come_back_by_id;
+        // The session's own rows lead, About and Feedback follow behind a separator, and choosing one
+        // hands its id back once.
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let mut menu = TiloMenu::new(AboutVariant::Native, &AboutLinks::default());
+            let lock = TiloMenuAction {
+                id: "session-lock".to_owned(),
+                label: "Lock".to_owned(),
+            };
+            let restart = TiloMenuAction {
+                id: "session-restart".to_owned(),
+                label: "Restart".to_owned(),
+            };
+            menu.set_actions(vec![lock, restart]);
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
+            menu.menu.click_item(0);
+            assert!(menu.settle());
+            assert!(!menu.is_open(), "choosing an action takes the menu away");
+            assert_eq!(menu.take_action().as_deref(), Some("session-lock"));
+            assert!(
+                menu.take_action().is_none(),
+                "an action is carried out once"
+            );
+            // About follows the actions and the separator after them.
+            menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
+            menu.menu.click_item(3);
+            assert!(menu.settle());
+            assert!(menu.is_about_open());
+            assert!(menu.take_action().is_none(), "About is not an action");
+        }
+
+        phase choosing_feedback_closes_the_menu_and_asks_the_host_once;
+        {
+            ui::i18n::I18nManager::init("en-US");
+            let mut menu = TiloMenu::new(AboutVariant::Browser, &AboutLinks::default()).with_feedback();
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
+            menu.menu.click_item(1);
+            assert!(menu.settle());
+            assert!(
+                !menu.is_open(),
+                "feedback opens as a window, not over the menu"
+            );
+            assert!(menu.take_feedback());
+            assert!(!menu.take_feedback());
+        }
     }
 
     #[test]
@@ -528,128 +655,5 @@ mod tests {
         );
         let none: AboutLinks = serde_json::from_str("{}").expect("no about settings");
         assert_eq!(none, AboutLinks::default());
-    }
-
-    #[test]
-    fn the_browser_says_it_runs_in_the_browser() {
-        ui::i18n::I18nManager::init("en-US");
-        let browser = about_copy(AboutVariant::Browser);
-        let native = about_copy(AboutVariant::Native);
-        assert_eq!(browser.lead, native.lead);
-        assert!(browser.lead.contains("Tilo"), "{}", browser.lead);
-        assert!(browser.body.contains("browser"), "{}", browser.body);
-        assert!(!native.body.contains("browser"), "{}", native.body);
-        // A browser tab is not "this computer".
-        for words in [&browser.title, &browser.menu, &browser.body] {
-            assert!(
-                !words.contains("computer") || words.contains("own computer"),
-                "{words}"
-            );
-        }
-        assert!(browser.title.contains("Tilo"), "{}", browser.title);
-        assert!(native.title.contains("computer"), "{}", native.title);
-        // Both say which Tilo this is, and where to find it on the web; the browser says that is
-        // where to get it.
-        for copy in [&browser, &native] {
-            assert!(
-                copy.version.contains(env!("CARGO_PKG_VERSION")),
-                "{}",
-                copy.version
-            );
-        }
-        assert!(browser.home.contains("Get"), "{}", browser.home);
-        assert_eq!(native.home, "tilo.so");
-    }
-
-    /// Choosing About takes the menu away at once: a menu still fading out showed through the
-    /// sheet's scrim, over the window it dims.
-    #[test]
-    fn about_takes_the_menu_away_at_once() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut menu = TiloMenu::new(AboutVariant::Browser, &AboutLinks::default());
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        ui::time::testing::with_monotonic_time(ui::time::now(), || {
-            menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
-            assert!(menu.menu.is_drawn());
-            menu.menu.click_item(0);
-            assert!(menu.settle());
-            assert!(menu.is_about_open());
-            assert!(
-                !menu.menu.is_drawn(),
-                "nothing of the menu paints under the sheet"
-            );
-        });
-    }
-
-    #[test]
-    fn the_menu_opens_about_and_the_sheet_closes_on_dismiss() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut menu = TiloMenu::new(AboutVariant::Browser, &AboutLinks::default());
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let anchor = Rect::new(8.0, 4.0, 40.0, 36.0);
-        menu.toggle(anchor, viewport);
-        assert!(menu.is_menu_open());
-        menu.toggle(anchor, viewport);
-        assert!(!menu.is_open());
-        menu.toggle(anchor, viewport);
-        menu.menu.click_item(0);
-        assert!(menu.settle());
-        assert!(menu.is_about_open() && !menu.is_menu_open());
-        menu.dismissed.set(true);
-        assert!(menu.settle());
-        assert!(!menu.is_open());
-        assert!(
-            !menu.take_feedback(),
-            "a menu without feedback never asks for it"
-        );
-    }
-
-    /// The session's own rows lead, About and Feedback follow behind a separator, and choosing one
-    /// hands its id back once.
-    #[test]
-    fn session_actions_lead_the_menu_and_come_back_by_id() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut menu = TiloMenu::new(AboutVariant::Native, &AboutLinks::default());
-        let lock = TiloMenuAction {
-            id: "session-lock".to_owned(),
-            label: "Lock".to_owned(),
-        };
-        let restart = TiloMenuAction {
-            id: "session-restart".to_owned(),
-            label: "Restart".to_owned(),
-        };
-        menu.set_actions(vec![lock, restart]);
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
-        menu.menu.click_item(0);
-        assert!(menu.settle());
-        assert!(!menu.is_open(), "choosing an action takes the menu away");
-        assert_eq!(menu.take_action().as_deref(), Some("session-lock"));
-        assert!(
-            menu.take_action().is_none(),
-            "an action is carried out once"
-        );
-        // About follows the actions and the separator after them.
-        menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
-        menu.menu.click_item(3);
-        assert!(menu.settle());
-        assert!(menu.is_about_open());
-        assert!(menu.take_action().is_none(), "About is not an action");
-    }
-
-    #[test]
-    fn choosing_feedback_closes_the_menu_and_asks_the_host_once() {
-        ui::i18n::I18nManager::init("en-US");
-        let mut menu = TiloMenu::new(AboutVariant::Browser, &AboutLinks::default()).with_feedback();
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        menu.toggle(Rect::new(8.0, 4.0, 40.0, 36.0), viewport);
-        menu.menu.click_item(1);
-        assert!(menu.settle());
-        assert!(
-            !menu.is_open(),
-            "feedback opens as a window, not over the menu"
-        );
-        assert!(menu.take_feedback());
-        assert!(!menu.take_feedback());
     }
 }
