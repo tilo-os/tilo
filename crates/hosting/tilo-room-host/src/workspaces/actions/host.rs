@@ -707,7 +707,9 @@ impl Workspaces {
         {
             return Err(refused(&NOT_YOUR_OWN));
         }
-        let making = own.making.lock().await;
+        let making = own
+            .making(moving.map_or_else(|| hex::encode(person), str::to_owned))
+            .await;
         let mine = own.of(&person);
         let theirs = moving.filter(|moving| mine.iter().any(|own| own == moving));
         let summary = if let Some(moving) = theirs {

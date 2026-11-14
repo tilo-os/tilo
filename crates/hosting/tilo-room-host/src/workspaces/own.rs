@@ -98,9 +98,9 @@ pub(super) struct OwnWorkspaces {
     plans: std::sync::Mutex<BTreeMap<String, PlanOffer>>,
     /// Each own workspace's measured size, and when it was measured.
     measured: std::sync::Mutex<HashMap<String, (u64, Instant)>>,
-    /// Held while a person's workspace is made, so two of their devices
-    /// asking at once are answered in the order they were recorded.
-    pub(super) making: tokio::sync::Mutex<()>,
+    /// Held while a workspace is made under one name ([`Self::making`]),
+    /// by that name.
+    making: std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     /// The site's home workspace: the one whose door, or an invitation into
     /// it, lets a person in to keep workspaces of their own here
     /// ([`Workspaces::admit_own_through`]). Until it is named, only the
@@ -141,9 +141,31 @@ impl OwnWorkspaces {
             labels_path,
             plans: std::sync::Mutex::default(),
             measured: std::sync::Mutex::default(),
-            making: tokio::sync::Mutex::new(()),
+            making: std::sync::Mutex::default(),
             home: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Wait until nothing else is making a workspace under `name`, and hold
+    /// it while this one is made: the workspace's id when the ask names one
+    /// (a retried create waits for the first and answers the workspace it
+    /// made), else the person (two of their devices asking for their
+    /// workspace at once are answered in the order they were recorded).
+    /// Workspaces under other names are made side by side: a backend making
+    /// hundreds at once waits for none but its own retries.
+    pub(super) async fn making(&self, name: String) -> tokio::sync::OwnedMutexGuard<()> {
+        let held = {
+            let mut making = self.making.lock_recover();
+            making.retain(|_, held| held.strong_count() > 0);
+            if let Some(held) = making.get(&name).and_then(std::sync::Weak::upgrade) {
+                held
+            } else {
+                let held = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+                making.insert(name, std::sync::Arc::downgrade(&held));
+                held
+            }
+        };
+        held.lock_owned().await
     }
 
     pub(super) const fn offer(&self) -> &OwnWorkspaceOffer {
