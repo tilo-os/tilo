@@ -19,6 +19,13 @@ pub mod billing;
 pub mod bluetooth;
 #[cfg(feature = "tilo-os")]
 pub mod device_mesh;
+// The pane waits on a read only the device answers, so a build without the
+// device's own panes shows where it is instead of the pane itself; its model
+// stays compiled for the captures that show it.
+#[cfg_attr(
+    not(feature = "tilo-os"),
+    allow(dead_code, reason = "the pane is shown only on the device")
+)]
 pub mod devices_access;
 #[cfg(feature = "tilo-os")]
 pub mod disk_unlock;
@@ -119,10 +126,27 @@ pub(crate) fn view(
         #[cfg(feature = "tilo-os")]
         crate::categories::Category::AgentModels => agent_models::view(cx, app),
         crate::categories::Category::Billing => billing::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::DevicesAccess => devices_access::view(cx, app),
+        // A browser holds no devices or agents of the person's to list or
+        // take back: the page says where they are instead of waiting for a
+        // read its host never answers.
+        #[cfg(not(feature = "tilo-os"))]
+        crate::categories::Category::DevicesAccess => Some(elsewhere(category)),
         #[cfg(not(feature = "tilo-os"))]
         _ => None,
     }
+}
+
+/// A page that only the device Tilo runs on can fill, as this build says it:
+/// where it is, and why it is not here.
+pub(crate) fn elsewhere(category: crate::categories::Category) -> ui::widget::Element {
+    provider_settings_ui::widgets::page(vec![provider_settings_ui::widgets::section(
+        &category.label(),
+        provider_settings_ui::widgets::rows(vec![provider_settings_ui::widgets::note(
+            &crate::i18n::t("settings-pane-elsewhere"),
+        )]),
+    )])
 }
 
 #[cfg(feature = "tilo-os")]

@@ -524,8 +524,12 @@ fn pane_body(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>, category: Category) -
             )]),
         )]);
     }
-    crate::panes::view(cx, app, category)
-        .unwrap_or_else(|| provider_settings_ui::widgets::page(Vec::new()))
+    crate::panes::view(cx, app, category).unwrap_or_else(|| {
+        // A page this build does not carry (a browser has no displays,
+        // power or hardware to change): say where it is rather than open an
+        // empty window a link named.
+        crate::panes::elsewhere(category)
+    })
 }
 
 pub struct Inspected {

@@ -65,8 +65,11 @@ pub fn tool_effect(intent: &os_actions::ToolIntent) -> Result<SettingsEffect, St
 }
 
 pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
+    // The page opens a Settings page by the resource a person's own card
+    // names (`settings.section:<slug>`), as links do by `settings://`.
     let rest = uri
-        .strip_prefix("settings://")
+        .strip_prefix("settings.section:")
+        .or_else(|| uri.strip_prefix("settings://"))
         .or_else(|| uri.strip_prefix("settings:"))
         .ok_or_else(|| "not a Settings link".to_string())?;
     if let Some(id) = rest.strip_prefix("models/") {
@@ -101,7 +104,7 @@ pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
         .into());
     }
     let pane = pane_alias(pane);
-    let category = Category::from_slug(pane).ok_or("unknown Settings pane in link")?;
+    let category = Category::from_any_slug(pane).ok_or("unknown Settings pane in link")?;
     Ok(NavigationEffect::OpenPane {
         pane: category.slug().to_owned(),
     }
@@ -361,5 +364,98 @@ mod tests {
             .map(|page| page.slug)
             .collect();
         assert_eq!(slugs, index);
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(feature = "tilo-os"))]
+mod web_tests {
+    use super::*;
+
+    /// The page a person's own card opens a Settings page with is the
+    /// resource `settings.section:<slug>`, not a link: it selects the page
+    /// as `settings://<slug>` does.
+    #[test]
+    fn a_page_resource_opens_its_page() {
+        assert_eq!(
+            parse_settings_uri("settings.section:devices_access"),
+            Ok(NavigationEffect::OpenPane {
+                pane: "devices_access".into(),
+            }
+            .into())
+        );
+    }
+
+    /// The names every widget in the window carries.
+    fn names(app: &mut ui::framework::testing::TestApp<super::SettingsShell>) -> Vec<String> {
+        fn walk(widget: &dyn ui::widget::Widget, lines: &mut Vec<String>) {
+            if let Some(node) = widget.accessibility()
+                && let Some(name) = node.name
+            {
+                lines.push(name);
+            }
+            widget.for_each_child(&mut |child| walk(child, lines));
+        }
+        let mut lines = Vec::new();
+        walk(app.harness().root_widget(), &mut lines);
+        lines
+    }
+
+    /// A page only the device carries still opens on the page that says
+    /// where it is: the window is never blank because a link named pages a
+    /// browser cannot fill.
+    #[test]
+    fn a_page_this_build_lacks_opens_where_it_is() {
+        let mut app = ui::framework::testing::TestApp::<super::SettingsShell>::launched(&[
+            "settings://external_accounts",
+        ])
+        .expect("the framework launch");
+        assert_eq!(
+            app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
+            Some(Category::ExternalAccounts),
+            "the link opens the page it names"
+        );
+        let lines = names(&mut app);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("device you run Tilo on")),
+            "the page says where it is: {lines:?}"
+        );
+    }
+
+    /// The page a person's own card opens for their devices and agents waits
+    /// on a read only the device answers: on the web it says where it is
+    /// instead of waiting for ever.
+    #[test]
+    fn devices_and_access_says_where_it_is_on_the_web() {
+        let mut app = ui::framework::testing::TestApp::<super::SettingsShell>::launched(&[
+            "settings://devices_access",
+        ])
+        .expect("the framework launch");
+        assert_eq!(
+            app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
+            Some(Category::DevicesAccess)
+        );
+        let lines = names(&mut app);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("device you run Tilo on")),
+            "{lines:?}"
+        );
+    }
+
+    /// Every page Settings knows has one slug, whether or not this build
+    /// carries it.
+    #[test]
+    fn every_page_is_named_by_one_slug() {
+        for page in settings_store::index::PAGES {
+            assert!(
+                Category::from_any_slug(page.slug).is_some(),
+                "{} names a page Settings knows",
+                page.slug
+            );
+        }
     }
 }

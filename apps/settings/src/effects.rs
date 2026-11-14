@@ -582,7 +582,7 @@ fn answer_navigation(
 ) -> EffectAnswer {
     match effect {
         NavigationEffect::OpenPane { pane } => {
-            let category = Category::from_slug(&pane)
+            let category = Category::from_any_slug(&pane)
                 .ok_or_else(|| format!("Settings has no pane `{pane}`"))?;
             app.request_pane(category);
             Ok(ui::framework::Effected::done())

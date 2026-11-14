@@ -432,6 +432,7 @@ speakers-run-waiting-for-microphones = Approve on each device that asks, or canc
 # Navigation: sidebar sections, categories and the page heading
 settings-nav-name = Settings categories
 settings-pane-reading = Reading this device…
+settings-pane-elsewhere = This page is on the device you run Tilo on. A browser has no displays, power or hardware to change.
 settings-found-title = Matching settings
 settings-found-open = Open
 settings-found-show = Show

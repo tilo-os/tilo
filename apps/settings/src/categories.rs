@@ -256,6 +256,45 @@ impl Category {
             .find(|category| category.slug() == slug)
     }
 
+    /// The page `slug` names, whether or not this build carries it: a link
+    /// to a page only the device has still opens Settings on that page, which
+    /// says where it is instead of opening nothing.
+    pub fn from_any_slug(slug: &str) -> Option<Self> {
+        const EVERY: &[Category] = &[
+            Category::Network,
+            Category::Bluetooth,
+            Category::DeviceMesh,
+            Category::Sound,
+            Category::Speakers,
+            Category::Displays,
+            Category::Keyboard,
+            Category::Pointing,
+            Category::Spelling,
+            Category::KeyboardShortcuts,
+            Category::TimeDate,
+            Category::Users,
+            Category::Printers,
+            Category::Power,
+            Category::Appearance,
+            Category::Accessibility,
+            Category::Notifications,
+            Category::DefaultApps,
+            Category::Storage,
+            Category::ExternalAccounts,
+            Category::AgentModels,
+            Category::RegionFormats,
+            Category::Permissions,
+            Category::Updates,
+            Category::About,
+            Category::Billing,
+            Category::DevicesAccess,
+        ];
+        EVERY
+            .iter()
+            .copied()
+            .find(|category| category.slug() == slug)
+    }
+
     pub fn slug(self) -> &'static str {
         match self {
             Category::Network => "network",
