@@ -285,7 +285,7 @@ mod tests {
         let home = SiteWorkspace {
             entry: site.clone(),
             name: "tilo.sh".into(),
-            admission: Some(url::Url::parse("https://rooms.tilo.sh/").unwrap()),
+            admission: Some(url::Url::parse("https://workspaces.tilo.sh/").unwrap()),
         };
         let listed = home_listing(&site, &home);
         assert!(listed.entry.community);

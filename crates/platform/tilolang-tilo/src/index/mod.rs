@@ -423,9 +423,8 @@ pub fn file_of(dir: &Path, app: &str) -> PathBuf {
 }
 
 /// The directory of the indexes of the workspace `workspace` (the workspace a window's launch names),
-/// under `base`: known before the workspace's record is, so a window opens over them first. Spelled
-/// `rooms` because that is the directory an installed machine already keeps its indexes in; the
-/// indexes are derived from the records, so a build that wrote them elsewhere rebuilds them here.
+/// under `base`: known before the workspace's record is, so a window opens over them first. The
+/// indexes are derived from the records, so they are rebuilt wherever this names.
 #[must_use]
 pub fn workspace_dir(base: &Path, workspace: &str) -> PathBuf {
     let name: String = workspace
@@ -438,7 +437,7 @@ pub fn workspace_dir(base: &Path, workspace: &str) -> PathBuf {
             }
         })
         .collect();
-    base.join("rooms").join(name)
+    base.join("workspaces").join(name)
 }
 
 /// The directory of the indexes of the record `record` of the workspace `workspace` under `base`: the

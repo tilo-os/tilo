@@ -72,8 +72,8 @@ test('an app\'s ban becomes the workspace\'s membership request and answers with
     {Invoke:{invocation, target:target('ban'), argument:{Json:{person:'bb'.repeat(32)}}}},
     {Invoke:{invocation:'other', target:{provider:'so.tilo.chat', address:{resource:'x', action:'ban'}}}},
   ];
-  const rooms = {ban:async person=>{calls.push(person); return {};}};
-  const bridge = createNativeCatalogueBridge({current:()=>true, actions:()=>undefined, membership:()=>rooms,
+  const membership = {ban:async person=>{calls.push(person); return {};}};
+  const bridge = createNativeCatalogueBridge({current:()=>true, actions:()=>undefined, membership:()=>membership,
     take:()=>requests.splice(0), deliver:reply=>replies.push(reply)});
   bridge.pump();
   await new Promise(done=>setImmediate(done));
@@ -81,7 +81,7 @@ test('an app\'s ban becomes the workspace\'s membership request and answers with
   assert.deepEqual(replies[0], {Receipt:{invocation:'other', status:{Rejected:{error:{Unavailable:{
     reason:'Only the workspace\'s host runs another app\'s actions here'}}}}}});
   assert.deepEqual(replies[1], {Receipt:{invocation, status:{Completed:{output:{}}}}});
-  rooms.ban = async () => { throw Error('a Moderator cannot do this to a Moderator'); };
+  membership.ban = async () => { throw Error('a Moderator cannot do this to a Moderator'); };
   requests.push({Invoke:{invocation, target:target('ban'), argument:{Json:{person:'cc'.repeat(32)}}}});
   bridge.pump();
   await new Promise(done=>setImmediate(done));

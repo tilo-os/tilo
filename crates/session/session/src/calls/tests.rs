@@ -452,7 +452,7 @@ fn carrier(client: &Client, keys: &KeyProvider, heard_on: Option<Arc<Plane>>) ->
         calls: Arc::clone(&calls),
         endpoint: Some(client.endpoint_handle()),
         keys: Some(keys.clone()),
-        roster: Some(Arc::new(move |_room: &str| devices.clone())),
+        roster: Some(Arc::new(move |_workspace: &str| devices.clone())),
         questions: None,
         audio: Audio::Software,
         person: None,

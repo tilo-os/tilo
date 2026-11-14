@@ -135,7 +135,7 @@ impl WorkspaceService {
             )
             .env("TILO_WORKSPACES_ROOT_FILE", &root_file)
             .env("TILO_WORKSPACES_FEEDBACK_CHANNEL", "feedback")
-            // The listeners, on loopback, each on a port the kernel picks as it binds: two rooms on
+            // The listeners, on loopback, each on a port the kernel picks as it binds: two workspaces on
             // one machine take the ports they are given, and the service announces the ones it bound.
             .env(
                 "TILO_WORKSPACES_STATE",
@@ -844,7 +844,7 @@ fn invite(service: &WorkspaceService, member_page: &Link, person: [u8; 32]) -> S
 /// workspace out through the same shared-desktop write a page makes, and the joining session shows
 /// what they laid out and draws their pointer where they put it.
 #[test]
-fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
+fn a_computer_joins_the_lounge_through_its_workspace_services_own_door() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");

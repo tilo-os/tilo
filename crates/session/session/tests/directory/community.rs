@@ -76,7 +76,7 @@ fn community_lounge(
                 serde_json::json!({
                     "home": {
                         "name": name,
-                        "host": { "origin": "https://rooms.tilo.sh/" },
+                        "host": { "origin": "https://workspaces.tilo.sh/" },
                         "admission": format!("/directory/{COMMUNITY_WORKSPACE}/"),
                     },
                 })

@@ -53,17 +53,17 @@ impl Default for Invites {
 }
 
 impl Invites {
-    /// The link to the workspace `room` on `origin`, through the site `site`, as the person
+    /// The link to the workspace `workspace` on `origin`, through the site `site`, as the person
     /// `person` whose device a newcomer becomes: the one open, or a fresh one when it ran out.
     ///
     /// # Errors
     ///
-    /// `room` is no workspace id, or `site` or `origin` is no web address a link may name.
+    /// `workspace` is no workspace id, or `site` or `origin` is no web address a link may name.
     pub fn at(
         &mut self,
         site: &str,
         origin: &str,
-        room: &str,
+        workspace: &str,
         person: &[u8; 32],
         now_ms: u64,
     ) -> Result<Shown, String> {
@@ -82,7 +82,7 @@ impl Invites {
         let mut secret = String::with_capacity(96);
         secret.push_str(&hex::encode(person));
         secret.push_str(&hex::encode(invite));
-        let link = link(site, origin, room, &secret)?;
+        let link = link(site, origin, workspace, &secret)?;
         let expires_at_ms =
             now_ms.saturating_add(u64::try_from(self.ttl.as_millis()).unwrap_or(u64::MAX));
         self.open = Some(Open {
@@ -105,11 +105,12 @@ fn fresh_invite() -> Result<[u8; 16], String> {
     Ok(invite)
 }
 
-/// The workspace link to `room` on `origin`, through `site`, carrying `secret` as its pairing.
-fn link(site: &str, origin: &str, room: &str, secret: &str) -> Result<String, String> {
+/// The workspace link to `workspace` on `origin`, through `site`, carrying `secret` as its
+/// pairing.
+fn link(site: &str, origin: &str, workspace: &str, secret: &str) -> Result<String, String> {
     let entry = WebEntry::new(site).map_err(|error| error.to_string())?;
     let host = HostOrigin::new(origin).map_err(|error| error.to_string())?;
-    let id = room
+    let id = workspace
         .parse()
         .map_err(|_| "that workspace is not one a link can name".to_owned())?;
     let scope = Scope::Workspace {

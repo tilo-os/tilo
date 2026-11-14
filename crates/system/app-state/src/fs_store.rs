@@ -3,7 +3,7 @@
 //! Keys map onto the same files the canonical record owner has always used,
 //! so existing profiles open unchanged:
 //!
-//! - a record is `<root>/<app>/rooms/<workspace>/records/<record>/`
+//! - a record is `<root>/<app>/workspaces/<workspace>/records/<record>/`
 //!   holding `state.automerge`, the writer identity in `actor` and the
 //!   single-owner gate `canonical.lock`;
 //! - a view is `<root>/instance-views/<hex device>/<hex workspace>/<n>.postcard`.

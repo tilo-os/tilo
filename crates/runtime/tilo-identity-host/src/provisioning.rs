@@ -438,9 +438,9 @@ pub struct JoinedDeviceLayout<'a> {
     pub local_system: &'a IdentityPaths,
     /// This machine's home-peer registry, copied when it is present.
     pub local_home_peers: &'a Path,
-    /// This machine's exported personal room list, copied when the file
+    /// This machine's exported personal workspace list, copied when the file
     /// exists; the shell publishes it under that name.
-    pub local_rooms: &'a Path,
+    pub local_workspaces: &'a Path,
 }
 
 /// Certify a new device onto `layout.target_root` and make both sides accept it.
@@ -571,7 +571,7 @@ fn install_joined_device_presented(
         cert.device_public_key,
     )?;
     // Beside the peer lists the shell reads it with.
-    let rooms_dest = tilo_relay_protocol::home_peer_registry_path(
+    let workspaces_dest = tilo_relay_protocol::home_peer_registry_path(
         target_system
             .user_pubkey
             .parent()
@@ -583,8 +583,8 @@ fn install_joined_device_presented(
                 )
             })?,
     )
-    .with_file_name("personal-rooms.json");
-    copy_personal_rooms(layout.local_rooms, &rooms_dest)?;
+    .with_file_name("personal-workspaces.json");
+    copy_personal_workspaces(layout.local_workspaces, &workspaces_dest)?;
     Ok(cert)
 }
 
@@ -702,7 +702,7 @@ fn valid_workspace_id(value: &str) -> bool {
     }) && parts.next().is_none()
 }
 
-fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
+fn copy_personal_workspaces(source: &Path, dest: &Path) -> io::Result<()> {
     let bytes = match fs::read(source) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -731,8 +731,8 @@ fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
 /// Where this session publishes the workspaces a newly enrolled device should
 /// join. Absent when the process has no home or state directory.
 #[must_use]
-pub fn personal_rooms_export_path() -> Option<PathBuf> {
-    Some(tilo_paths::xdg::state_home()?.join("tilo/personal-rooms.json"))
+pub fn personal_workspaces_export_path() -> Option<PathBuf> {
+    Some(tilo_paths::xdg::state_home()?.join("tilo/personal-workspaces.json"))
 }
 
 fn copy_home_peers(
@@ -1873,7 +1873,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            dir.path().join("personal-rooms.json"),
+            dir.path().join("personal-workspaces.json"),
             br#"["11111111-1111-4111-8111-111111111111"]"#,
         )
         .unwrap();
@@ -1885,7 +1885,7 @@ mod tests {
                 local_identity_dir: &dir.path().join("local-identity"),
                 local_system: &local_system,
                 local_home_peers: &peers,
-                local_rooms: &dir.path().join("personal-rooms.json"),
+                local_workspaces: &dir.path().join("personal-workspaces.json"),
             },
             user,
             "Ada",
@@ -1976,7 +1976,7 @@ mod tests {
         let rooms: Vec<String> = serde_json::from_slice(
             &std::fs::read(
                 tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
-                    .with_file_name("personal-rooms.json"),
+                    .with_file_name("personal-workspaces.json"),
             )
             .unwrap(),
         )
@@ -2061,7 +2061,7 @@ mod tests {
                 local_identity_dir: &local_identity,
                 local_system: &local_system,
                 local_home_peers: &peers,
-                local_rooms: &dir.path().join("missing-rooms.json"),
+                local_workspaces: &dir.path().join("missing-workspaces.json"),
             },
             "Ada",
             "orange-pi",

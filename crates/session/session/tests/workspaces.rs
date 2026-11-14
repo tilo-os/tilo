@@ -299,7 +299,7 @@ fn note_kept(data: &Path, workspace: &str, body: &str) -> std::path::PathBuf {
     let directory = data
         .join("tilo-workspaces")
         .join(workspace)
-        .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
+        .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
         .join(workspace)
         .join("records/uuid-plan");
     std::fs::create_dir_all(&directory).expect("the note's directory");
@@ -463,7 +463,7 @@ fn what_the_branch_keeps(data: &Path, source: &str, kept: &Path, branch: &str) {
     let copied = data
         .join("tilo-workspaces")
         .join(branch)
-        .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
+        .join("so.tilo.notes/.local/share/so.tilo.notes/workspaces")
         .join(branch)
         .join("records/uuid-plan/state.automerge");
     let read = |path: &Path| {

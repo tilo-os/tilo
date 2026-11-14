@@ -3,7 +3,7 @@
 //! one change appended, history bytes, memory).
 //!
 //! A storage unit today is one record: one file of Automerge changes under
-//! `<root>/<package>/rooms/<workspace>/records/<record>/state.automerge`, one
+//! `<root>/<package>/workspaces/<workspace>/records/<record>/state.automerge`, one
 //! route in the workspace, one index row. The fixed cost of a unit is what a
 //! workspace pays per record before it holds anything; the document curve is
 //! what a unit costs once it does, and is the input to choosing how many

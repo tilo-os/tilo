@@ -101,7 +101,7 @@ impl TileSource for Source {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
         self.resolver
             .resolve(TileRequest {
-                room: workspace.id(),
+                workspace: workspace.id(),
                 tab,
             })
             .mount(&mut self.failures, std::sync::Arc::clone(&self.wake))

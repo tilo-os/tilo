@@ -236,9 +236,9 @@ impl DurablePeerStore {
             workspaces_key: durable_store::StorageKey::document(
                 PEER_PACKAGE,
                 crate::storage::PROFILE_WORKSPACE,
-                format!("{}.rooms", hex::encode(user_public_key)),
+                format!("{}.workspaces", hex::encode(user_public_key)),
             ),
-            runs_prefix: format!("{}.rooms.", hex::encode(user_public_key)),
+            runs_prefix: format!("{}.workspaces.", hex::encode(user_public_key)),
             channel_vault,
         })
     }

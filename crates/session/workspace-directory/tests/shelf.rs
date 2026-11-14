@@ -30,7 +30,7 @@ fn a_link_awaited_from_a_store_no_loop_reads_arrives() {
                     b"the signed invitation".to_vec(),
                     u64::MAX,
                     &site_url,
-                    Some("https://rooms.tilo.test"),
+                    Some("https://workspaces.tilo.test"),
                 ),
             )
             .await

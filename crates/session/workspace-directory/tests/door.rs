@@ -38,7 +38,7 @@ fn entry(name: &str) -> DirectoryEntry {
 #[test]
 fn a_door_join_enters_the_workspace_its_path_names_and_asks_nothing() {
     for door in [
-        format!("https://rooms.tilo.test/peer/v1/directory/{WORKSPACE}/"),
+        format!("https://workspaces.tilo.test/peer/v1/directory/{WORKSPACE}/"),
         format!("https://tilo.test/directory/{WORKSPACE}/"),
     ] {
         let door = url::Url::parse(&door).expect("the door's address");
@@ -70,8 +70,8 @@ fn a_site_says_its_home_workspace_and_its_directory() {
             serde_json::json!({
                 "home": {
                     "name": "tilo.sh",
-                    "host": { "origin": "https://rooms.tilo.sh/" },
-                    "admission": "https://rooms.tilo.sh/",
+                    "host": { "origin": "https://workspaces.tilo.sh/" },
+                    "admission": "https://workspaces.tilo.sh/",
                 },
                 "directory": "directory",
             })
@@ -97,7 +97,7 @@ fn a_site_says_its_home_workspace_and_its_directory() {
     assert_eq!(home.name, "tilo.sh");
     assert_eq!(
         home.admission.as_ref().map(url::Url::as_str),
-        Some("https://rooms.tilo.sh/")
+        Some("https://workspaces.tilo.sh/")
     );
     let directory = read.directory.expect("the site's directory");
     let page = tilo_rt::block_on(fetch_directory(&client, &directory))

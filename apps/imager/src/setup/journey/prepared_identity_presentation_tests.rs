@@ -7,10 +7,10 @@ struct OpenWorkspace(tilo_desktop_model::Workspace);
 impl tilo_identity_host::broker::WorkspaceMembership for OpenWorkspace {
     fn with_workspace(
         &self,
-        room: &tilo_desktop_model::WorkspaceId,
+        workspace: &tilo_desktop_model::WorkspaceId,
         read: &mut dyn FnMut(&tilo_desktop_model::Workspace),
     ) {
-        if &self.0.id() == room {
+        if &self.0.id() == workspace {
             read(&self.0);
         }
     }
@@ -53,10 +53,10 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
         Some(photo.clone()),
     )
     .unwrap();
-    let room = tilo_desktop_model::WorkspaceId::new();
-    let mut open = tilo_desktop_model::Workspace::new(room, "Home");
+    let workspace = tilo_desktop_model::WorkspaceId::new();
+    let mut open = tilo_desktop_model::Workspace::new(workspace, "Home");
     open.policy.owner = Some(
-        tilo_identity_host::registry::identity_for_workspace(&room.to_string())
+        tilo_identity_host::registry::identity_for_workspace(&workspace.to_string())
             .unwrap()
             .expect("this device has the person it signs as")
             .person_id(),
@@ -78,7 +78,7 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
         .unwrap();
     let handshake = runtime_identity::wire::PresentationHandshake {
         handshake: runtime_identity::wire::Handshake {
-            workspace_id: room.to_string(),
+            workspace_id: workspace.to_string(),
             app_id: "so.tilo.imager".into(),
             surface: None,
         },

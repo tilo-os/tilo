@@ -104,7 +104,7 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
         let apps = tilo_render_protocol::shm::sealed_blob("tilolang-apps", &encoded)?;
         let request = runtime_portal::tilolang_host::TaskRequest {
             task: task.to_owned(),
-            room: workspace.to_owned(),
+            workspace: workspace.to_owned(),
             person: self.person.lock_recover().clone(),
             apps_len: encoded.len() as u64,
             records_under,

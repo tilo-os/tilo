@@ -267,7 +267,7 @@ test('a host this browser set up or joined as its person is reconnected to, and 
 });
 
 test('a guest ticket is redeemed where the web host says, and a pairing link pairs this browser', async () => {
-  const tickets = 'https://workspaces.example/rooms/';
+  const tickets = 'https://workspaces.example/workspaces/';
   const ticket = doors();
   assert.deepEqual(await admit({scope: target, secrets: {ticket: 't1'}, tickets, runtime: rules(['ticket']).runtime, deps: ticket.deps}),
     {peer: {admission: 'ticket'}});

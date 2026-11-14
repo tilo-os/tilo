@@ -203,9 +203,9 @@ test('the entry is the page’s directory, with the home workspace the web host 
   const fetch = async url => ({ok: String(url) === 'https://workspaces.example/open/entry.json', json: async () => ({home})});
   assert.deepEqual(await readEntry({mode: 'app', location: {href: 'https://workspaces.example/open/app/?embed=1#/so.tilo.chat'}, fetch}),
     {base: 'https://workspaces.example/open/', home});
-  const tickets = async () => ({ok: true, json: async () => ({tickets: 'https://tilo.so/rooms/', home: {name: 'no host'}})});
+  const tickets = async () => ({ok: true, json: async () => ({tickets: 'https://tilo.so/workspaces/', home: {name: 'no host'}})});
   assert.deepEqual(await readEntry({mode: 'desktop', location: {href: 'https://tilo.so/'}, fetch: tickets}),
-    {base: 'https://tilo.so/', tickets: 'https://tilo.so/rooms/'});
+    {base: 'https://tilo.so/', tickets: 'https://tilo.so/workspaces/'});
   assert.deepEqual(await readEntry({mode: 'desktop', location: {href: 'https://tilo.so/#/me'}, fetch: async () => ({ok: false})}),
     {base: 'https://tilo.so/'});
 });

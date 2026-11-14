@@ -15,7 +15,7 @@ fn two_windows_of_one_app_in_a_host_share_one_index_and_both_read_it() {
         .path()
         .join(APP)
         .join("indexes")
-        .join("rooms")
+        .join("workspaces")
         .join(&workspace);
     let old_copy = record_dir.join("instance-1");
     std::fs::create_dir_all(&old_copy).unwrap();

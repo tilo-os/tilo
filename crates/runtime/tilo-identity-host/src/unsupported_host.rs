@@ -41,7 +41,7 @@ pub mod provisioning {
         pub local_home_peers: &'a Path,
         /// The setup machine's exported personal room list; the shell
         /// publishes it under that name.
-        pub local_rooms: &'a Path,
+        pub local_workspaces: &'a Path,
     }
 
     pub fn collaboration_identity_paths() -> IdentityPaths {
@@ -52,7 +52,7 @@ pub mod provisioning {
         IdentityPaths::under(root)
     }
 
-    pub fn personal_rooms_export_path() -> Option<PathBuf> {
+    pub fn personal_workspaces_export_path() -> Option<PathBuf> {
         None
     }
 
