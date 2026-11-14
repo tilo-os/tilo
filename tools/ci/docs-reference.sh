@@ -12,12 +12,14 @@
 # on sys.path: they add their own directory, which is why these run as files of
 # that directory rather than as installed tools.
 #
-# usage: docs-reference.sh [output directory]
+# usage: docs-reference.sh [output directory [tilo binary [tilo-runtime-mcp binary]]]
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 out=${1:-/target/docs/generated}
+tilo=${2:-/target/debug/tilo}
+mcp=${3:-/target/debug/tilo-runtime-mcp}
 mkdir -p "$out"
 python3 -I "$root/tools/docs/reference/openapi.py" --root "$root" --spec "$root/docs/api/openapi.json" --out "$out/rest-api.md"
 python3 -I "$root/tools/docs/reference/python_sdk.py" --root "$root" --out "$out/python-sdk.md"
-python3 -I "$root/tools/docs/reference/cli.py" --root "$root" --out "$out/cli.md"
-python3 -I "$root/tools/docs/reference/mcp_tools.py" --root "$root" --out "$out/mcp-tools.md"
+python3 -I "$root/tools/docs/reference/cli.py" --root "$root" --out "$out/cli.md" --tilo "$tilo"
+python3 -I "$root/tools/docs/reference/mcp_tools.py" --root "$root" --out "$out/mcp-tools.md" --mcp "$mcp"

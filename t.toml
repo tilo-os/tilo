@@ -502,12 +502,22 @@ fix = "python3 -I tools/docs/codemap.py"
 name = "docs-reference"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/docs-reference.sh"
+needs = ["docs-reference-bins"]
 outputs = [
   "/target/docs/generated/rest-api.md",
   "/target/docs/generated/python-sdk.md",
   "/target/docs/generated/cli.md",
   "/target/docs/generated/mcp-tools.md",
 ]
+
+# The two commands the reference pages run: built once here, so the pages
+# check reads what they print instead of building them again.
+[[check]]
+name = "docs-reference-bins"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "cargo build --locked -p tilo-cli -p tilo-runtime --bin tilo --bin tilo-runtime-mcp\n"
+outputs = ["/target/debug/tilo", "/target/debug/tilo-runtime-mcp"]
+default = false
 
 # The same for the TypeScript SDK, whose page is read with the TypeScript
 # compiler API: it needs bun and the SDK's locked packages, which the ci-sdk
