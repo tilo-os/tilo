@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
 };
-use tilo_desktop_model::{DesktopTree, WorkspaceId};
+use tilo_desktop_model::{Layout, WorkspaceId};
 
 pub mod describer;
 pub mod index;
@@ -23,7 +23,7 @@ pub use pane::{
 
 /// A causal document paired with its admitted desktop projection. Implementors retain native
 /// mutation/persistence authority; the default snapshot is read-only.
-pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
+pub trait ActivityTree: Clone + Deref<Target = Layout> + DerefMut {
     fn document(&self) -> &AutoCommit;
     fn document_mut(&mut self) -> &mut AutoCommit;
     /// Rebuild the desktop projection from the causal document.
@@ -52,14 +52,14 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
 }
 
 /// What takes the desk a committing snapshot wrote back to where it is kept.
-type Commit = std::rc::Rc<dyn Fn(&DesktopTree)>;
+type Commit = std::rc::Rc<dyn Fn(&Layout)>;
 
 /// Read-only admitted history of the desk. Construct from the actual admitted owner document, never
 /// from a re-encoded desktop cache. The supplied document is owned so `HistorySource` 's
 /// `AutoCommit` cursor cannot touch the live owner.
 #[derive(Clone)]
 pub struct ActivitySnapshot {
-    pub desktop: DesktopTree,
+    pub desktop: Layout,
     pub doc: AutoCommit,
     /// The workspace whose document this is, or `None` when the document is the desk's own.
     workspace: Option<tilo_desktop_model::WorkspaceId>,
@@ -86,7 +86,7 @@ enum Shape {
 
 impl ActivitySnapshot {
     /// Snapshot the active workspace of `desktop` from its admitted owner document.
-    pub fn new(desktop: DesktopTree, doc: AutoCommit) -> Result<Self, String> {
+    pub fn new(desktop: Layout, doc: AutoCommit) -> Result<Self, String> {
         let workspace = desktop
             .active_workspace()
             .ok_or("active workspace unavailable")?
@@ -111,7 +111,7 @@ impl ActivitySnapshot {
     /// Snapshot the whole desk of `desktop` from the device's own document of it: every workspace,
     /// in the one document this device keeps, whose changes are what the desk did and who did it.
     #[must_use]
-    pub fn of_desktop(desktop: DesktopTree, doc: AutoCommit) -> Self {
+    pub fn of_desktop(desktop: Layout, doc: AutoCommit) -> Self {
         let mut snapshot = Self {
             desktop,
             doc,
@@ -129,7 +129,7 @@ impl ActivitySnapshot {
     /// windows it holds, and the changes of it a history lists.
     #[must_use]
     pub fn of_layout(
-        desktop: DesktopTree,
+        desktop: Layout,
         workspace_id: tilo_desktop_model::WorkspaceId,
         doc: AutoCommit,
     ) -> Self {
@@ -150,7 +150,7 @@ impl ActivitySnapshot {
     /// host that keeps the workspace's layout writes it back, so undoing or restoring a change
     /// reaches the desk itself.
     #[must_use]
-    pub fn committing(mut self, commit: std::rc::Rc<dyn Fn(&DesktopTree)>) -> Self {
+    pub fn committing(mut self, commit: std::rc::Rc<dyn Fn(&Layout)>) -> Self {
         self.commit = Some(commit);
         self
     }
@@ -164,13 +164,13 @@ impl ActivitySnapshot {
     }
 }
 impl Deref for ActivitySnapshot {
-    type Target = DesktopTree;
-    fn deref(&self) -> &DesktopTree {
+    type Target = Layout;
+    fn deref(&self) -> &Layout {
         &self.desktop
     }
 }
 impl DerefMut for ActivitySnapshot {
-    fn deref_mut(&mut self) -> &mut DesktopTree {
+    fn deref_mut(&mut self) -> &mut Layout {
         &mut self.desktop
     }
 }
@@ -431,7 +431,7 @@ mod admitted_history_tests {
         strips[0].window_groups[0].tabs[0].title = "After".into();
         write(&mut doc, &strips);
         let mut snapshot = ActivitySnapshot::new(
-            DesktopTree {
+            Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()

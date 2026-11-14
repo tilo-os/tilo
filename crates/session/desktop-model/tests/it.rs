@@ -17,8 +17,8 @@ pub mod closed_tabs;
 pub mod commands;
 #[path = "history.rs"]
 pub mod history;
-#[path = "one_desk.rs"]
-pub mod one_desk;
+#[path = "one_layout.rs"]
+pub mod one_layout;
 #[path = "peer_window_merge.rs"]
 pub mod peer_window_merge;
 #[path = "portable_state.rs"]

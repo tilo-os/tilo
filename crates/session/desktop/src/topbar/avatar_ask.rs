@@ -501,8 +501,8 @@ mod tests {
     use std::rc::Rc;
     use tilo_desktop_model::commands::DesktopCommand;
     use tilo_desktop_model::{
-        AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-        Workspace, WorkspaceId,
+        AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+        WorkspaceId,
     };
     use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
     use ui::headless::Framed;
@@ -526,7 +526,7 @@ mod tests {
     }
 
     impl DesktopRules for Rules {
-        fn tree(&self) -> DesktopTree {
+        fn tree(&self) -> Layout {
             self.handle.read(Clone::clone)
         }
 
@@ -546,7 +546,7 @@ mod tests {
     /// A host with an ask waiting on the person's avatar, answering the bar's intents about it as a
     /// page does.
     struct Asking {
-        tree: DesktopTree,
+        tree: Layout,
         ask: RefCell<Option<AvatarAsk>>,
         intents: RefCell<Vec<ChromeIntent>>,
     }
@@ -565,7 +565,7 @@ mod tests {
                 ..DesktopChromeSnapshot::default()
             }
         }
-        fn tree(&self) -> DesktopTree {
+        fn tree(&self) -> Layout {
             self.tree.clone()
         }
         fn intent(&self, intent: ChromeIntent) -> bool {
@@ -589,7 +589,7 @@ mod tests {
         }
     }
 
-    fn tree() -> DesktopTree {
+    fn tree() -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
         workspace.strips = vec![Strip {
             id: StripId(2),
@@ -613,10 +613,10 @@ mod tests {
                 focus_history: Vec::new(),
             }],
         }];
-        DesktopTree {
+        Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         }
     }
 
@@ -628,7 +628,7 @@ mod tests {
     /// The real chrome over `tree` , at `viewport` , the ask open.
     fn asking_desktop_over(
         viewport: (u32, u32),
-        tree: &DesktopTree,
+        tree: &Layout,
     ) -> (Framed<DesktopChrome>, Rc<Asking>) {
         ui::i18n::I18nManager::init("en-US");
         let host = Rc::new(Asking {

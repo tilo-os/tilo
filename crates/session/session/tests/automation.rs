@@ -31,7 +31,7 @@ use tilo_automation::{
     ShortcutChange, TriggerSpec,
 };
 use tilo_compositor::InputEvent;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
 use tilo_peer_state::owner::{self, NativeWorkspaceOwner};
@@ -254,7 +254,7 @@ fn session_launching(
 /// Put `workspace` on the session's desk, in place of the one it showed for the same workspace.
 fn show(session: &Session, workspace: Workspace) {
     let id = workspace.id();
-    let mut tree: DesktopTree = session.handle().read(Clone::clone);
+    let mut tree: Layout = session.handle().read(Clone::clone);
     tree.workspaces.retain(|held| held.id() != id);
     tree.active = workspace.id();
     tree.workspaces.push(workspace);

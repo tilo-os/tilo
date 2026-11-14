@@ -209,7 +209,7 @@ pub fn desktop_acknowledge(id: u64, text: &str) -> Result<(), JsValue> {
     })
 }
 
-/// Changes whenever the desktop tree or what the desktop presents beside it
+/// Changes whenever the layout or what the desktop presents beside it
 /// (pan, scroll, history, activity) does, so the page republishes
 /// navigation only when something moved. `0` for a single application.
 ///

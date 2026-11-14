@@ -11,17 +11,17 @@ mod workspace_activity {
         AutoCommit, ROOT,
         transaction::{CommitOptions, Transactable},
     };
-    use tilo_desktop_model::{DesktopTree, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    use tilo_desktop_model::{Layout, StripId, Tab, TileContent, WindowGroup, WindowWidth};
     use ui::record::RecordStore;
 
     fn causal_workspace() -> ActivitySnapshot {
-        let mut desktop = DesktopTree {
+        let mut desktop = Layout {
             workspaces: vec![tilo_desktop_model::Workspace::new(
                 tilo_desktop_model::WorkspaceId::from_u128(1),
                 "Home",
             )],
             active: tilo_desktop_model::WorkspaceId::from_u128(1),
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         desktop.workspaces[0]
             .strips

@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
-    DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace, WorkspaceId,
+    Display, GroupId, IdMinter, Layout, Tab, TabId, TileContent, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
 use tilo_desktop_surface::outcome::{Closed, Outcome};
@@ -70,7 +70,7 @@ pub type LaunchWorkspaces = Rc<dyn Fn(u32, &str) -> Option<String>>;
 
 /// Where the windows are as of the surface's last layout pass.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Layout {
+pub struct Placement {
     /// Each window shown, front tab of its group on the shown strip, and the
     /// rect its content fills, in surface coordinates.
     pub shown: Vec<(u64, Rect)>,
@@ -446,7 +446,7 @@ impl DesktopPolicy {
     /// a kept tree carries no range of its own (it is not written to the
     /// file), so the device whose session builds the desk says which it is.
     #[must_use]
-    pub fn with_tree(tree: DesktopTree, salt: u16) -> (Self, DesktopSurface) {
+    pub fn with_tree(tree: Layout, salt: u16) -> (Self, DesktopSurface) {
         let mut tree = tree;
         tree.salt = salt;
         let arriving = Arriving::default();
@@ -698,7 +698,12 @@ impl DesktopPolicy {
     /// not.
     #[must_use]
     pub fn shows(&self, app: &str) -> bool {
-        let shown: BTreeSet<u64> = self.layout().shown.into_iter().map(|(id, _)| id).collect();
+        let shown: BTreeSet<u64> = self
+            .placement()
+            .shown
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         self.handle.read(|tree| {
             tabs(tree)
                 .filter(|tab| foreign(tab).is_some_and(|window| shown.contains(&window)))
@@ -1432,7 +1437,7 @@ impl DesktopPolicy {
 
     /// Where the windows are as of the surface's last layout pass.
     #[must_use]
-    pub fn layout(&self) -> Layout {
+    pub fn placement(&self) -> Placement {
         let shown: Vec<(u64, Rect)> = self.handle.read(|tree| {
             self.handle
                 .shown_tabs()
@@ -1480,7 +1485,7 @@ impl DesktopPolicy {
                 None => hidden.push(dialog),
             }
         }
-        Layout {
+        Placement {
             fullscreen: self.handle.read(covering_window),
             covers: self.float_covers(),
             shown,
@@ -1539,7 +1544,7 @@ impl DesktopPolicy {
 }
 
 /// Every window the tree holds a tab of, in tree order.
-fn windows(tree: &DesktopTree) -> Vec<u64> {
+fn windows(tree: &Layout) -> Vec<u64> {
     tabs(tree).filter_map(foreign).collect()
 }
 
@@ -1602,7 +1607,7 @@ fn tab_title(names: &AppNames, app_id: &str, title: Option<&str>) -> String {
     }
 }
 
-fn tabs(tree: &DesktopTree) -> impl Iterator<Item = &Tab> {
+fn tabs(tree: &Layout) -> impl Iterator<Item = &Tab> {
     tree.workspaces
         .iter()
         .flat_map(|workspace| &workspace.strips)
@@ -1610,7 +1615,7 @@ fn tabs(tree: &DesktopTree) -> impl Iterator<Item = &Tab> {
         .flat_map(|group| &group.tabs)
 }
 
-fn tabs_mut(tree: &mut DesktopTree) -> impl Iterator<Item = &mut Tab> {
+fn tabs_mut(tree: &mut Layout) -> impl Iterator<Item = &mut Tab> {
     tree.workspaces
         .iter_mut()
         .flat_map(|workspace| &mut workspace.strips)
@@ -1625,13 +1630,13 @@ fn foreign(tab: &Tab) -> Option<u64> {
     }
 }
 
-fn window_of(tree: &DesktopTree, tab: TabId) -> Option<u64> {
+fn window_of(tree: &Layout, tab: TabId) -> Option<u64> {
     tabs(tree).find(|t| t.id == tab).and_then(foreign)
 }
 
 /// The window covering the display the person works on, if one is: the tab
 /// in front of the group the desk took full screen there.
-fn covering_window(tree: &DesktopTree) -> Option<u64> {
+fn covering_window(tree: &Layout) -> Option<u64> {
     let group = tree.fullscreen_group()?;
     tree.workspaces
         .iter()
@@ -1641,13 +1646,13 @@ fn covering_window(tree: &DesktopTree) -> Option<u64> {
         .and_then(|group| window_of(tree, group.active_tab))
 }
 
-fn tab_of(tree: &DesktopTree, window: u64) -> Option<TabId> {
+fn tab_of(tree: &Layout, window: u64) -> Option<TabId> {
     tabs(tree)
         .find(|tab| foreign(tab) == Some(window))
         .map(|tab| tab.id)
 }
 
-fn tab_mut(tree: &mut DesktopTree, window: u64) -> Option<&mut Tab> {
+fn tab_mut(tree: &mut Layout, window: u64) -> Option<&mut Tab> {
     tree.workspaces
         .iter_mut()
         .flat_map(|workspace| &mut workspace.strips)
@@ -1674,7 +1679,7 @@ pub fn app_ids_match(announced: &str, asked: &str) -> bool {
 }
 
 /// Where `tab` sits, for the command naming it.
-fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
+fn route_of(tree: &Layout, tab: TabId) -> Option<RouteIds> {
     tree.workspaces.iter().find_map(|workspace| {
         workspace.strips.iter().find_map(|strip| {
             let group = strip
@@ -1694,7 +1699,7 @@ fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
 /// The tab of `app` a request from it answers to, with its group and place:
 /// the focused tab when it shows `app`, else the app's first tab in the
 /// workspace in front.
-fn anchor_for(tree: &DesktopTree, app: &str) -> Option<(TabId, GroupId, usize)> {
+fn anchor_for(tree: &Layout, app: &str) -> Option<(TabId, GroupId, usize)> {
     let workspace = tree.active_workspace()?;
     let focused = tilo_desktop_surface::navigation::active_route(tree).map(|ids| ids.tab);
     let tabs: Vec<(TabId, GroupId, usize)> = workspace

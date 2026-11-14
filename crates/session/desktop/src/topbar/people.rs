@@ -602,26 +602,23 @@ impl TopBarChrome {
 mod tests {
     use super::super::fixture::FixtureChrome;
     use super::*;
-    use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceId};
+    use tilo_desktop_model::{Layout, Member, Workspace, WorkspaceId};
 
-    fn desk(people: &[(&str, &str)]) -> DesktopTree {
+    fn desk(people: &[(&str, &str)]) -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
         workspace.members_here(people.iter().map(|(id, name)| Member::keyed(id, *name)));
         // The device a member is here through is what a face is pressed by.
         for (here, member) in workspace.present.iter_mut().zip(&workspace.members) {
             here.device.clone_from(&member.id.id().to_owned());
         }
-        DesktopTree {
+        Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         }
     }
 
-    fn bar_over(
-        tree: &DesktopTree,
-        can_invite: bool,
-    ) -> (TopBarChrome, std::rc::Rc<FixtureChrome>) {
+    fn bar_over(tree: &Layout, can_invite: bool) -> (TopBarChrome, std::rc::Rc<FixtureChrome>) {
         let chrome = FixtureChrome::new(tree.clone());
         chrome.borrow_mut().can_invite = can_invite;
         let mut bar = TopBarChrome::from_tree(tree).with_chrome(chrome.clone());
@@ -852,7 +849,7 @@ mod tests {
 
     /// A bar as the hosted page stands it on a phone: the Tilo mark, the workspace's name, the
     /// person's own avatar and the bell, so the room left for who is here is the page's.
-    fn phone_bar(tree: &DesktopTree, width: f32) -> (TopBarChrome, std::rc::Rc<FixtureChrome>) {
+    fn phone_bar(tree: &Layout, width: f32) -> (TopBarChrome, std::rc::Rc<FixtureChrome>) {
         let chrome = FixtureChrome::new(tree.clone());
         chrome.borrow_mut().can_invite = true;
         chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
@@ -868,7 +865,7 @@ mod tests {
         (bar, chrome)
     }
 
-    fn agent_and_person() -> DesktopTree {
+    fn agent_and_person() -> Layout {
         desk(&[("ada", "Ada Lovelace"), ("agent:cc", "Claude Code")])
     }
 

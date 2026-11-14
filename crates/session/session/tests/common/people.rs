@@ -370,7 +370,7 @@ impl Site {
 
     /// The workspace's shared desktop as the site keeps it now: its strips and windows, or nothing
     /// while the workspace holds no desk of its own.
-    pub fn desktop(&self) -> Option<tilo_desktop_model::DesktopTree> {
+    pub fn desktop(&self) -> Option<tilo_desktop_model::Layout> {
         let bytes = self.record(
             tilo_desktop_model::ownership::DESKTOP_APP,
             tilo_desktop_model::ownership::DESKTOP_RECORD,
@@ -455,7 +455,7 @@ pub fn show(device: &Device, site: &Site) {
 /// the workspace.
 pub fn titles_on(device: &Device, site: &Site) -> Vec<String> {
     let state = device.state();
-    let tree: tilo_desktop_model::DesktopTree =
+    let tree: tilo_desktop_model::Layout =
         serde_json::from_value(state["state"]["workspace_tree"].clone()).unwrap_or_else(|error| {
             panic!("{}'s desk does not read: {error}\n{state}", device.label)
         });
@@ -1487,7 +1487,10 @@ impl Device {
         let peers = &self.state()["state"]["peers"];
         let Some(members) = peers["workspaces"]
             .as_array()
-            .and_then(|held| held.iter().find(|held| held["workspace"] == json!(workspace)))
+            .and_then(|held| {
+                held.iter()
+                    .find(|held| held["workspace"] == json!(workspace))
+            })
             .and_then(|held| held["members"].as_array())
         else {
             return Vec::new();

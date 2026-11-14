@@ -11,7 +11,7 @@
 
 use neighbour_wire::NeighbourMsg;
 use tilo_action_policy::{ActionKind, Answer, TreePath, roles::COMMENTS_FIELD};
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 
 /// What a workspace message is: the node below the workspace it acts at, and the kind of action it
 /// is.
@@ -21,7 +21,7 @@ pub type WorkspaceAction = (TreePath, ActionKind);
 /// at `now` (Unix seconds). A desk that holds no such workspace admits
 /// nothing: there is no policy here to ask.
 pub fn allows(
-    tree: &DesktopTree,
+    tree: &Layout,
     workspace: &str,
     person: &str,
     required: &WorkspaceAction,

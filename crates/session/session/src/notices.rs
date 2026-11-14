@@ -615,7 +615,7 @@ pub(crate) fn desk_not_shared_notice(
 /// Tell the person what the workspace did not take of their shared desk, naming it and why.
 pub(crate) fn tell_desk_not_taken(
     notifications: &std::cell::RefCell<crate::notifications::SessionNotifications>,
-    tree: &tilo_desktop_model::DesktopTree,
+    tree: &tilo_desktop_model::Layout,
     (room, why): (tilo_desktop_model::WorkspaceId, String),
 ) {
     let workspace = tree

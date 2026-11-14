@@ -1,6 +1,6 @@
 //! Pure rearrangements of the window topology.
 //!
-//! Each operation edits the [`DesktopTree`] cache only and reports what it
+//! Each operation edits the [`Layout`] cache only and reports what it
 //! did, so a host can mirror the same change into its replication document
 //! and roll both back together if the mirror is refused.
 
@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crate::closed_tabs::Leaving;
 use crate::ids::{GroupId, MintIds, StripId, TabId};
 use crate::layout::{Tab, WindowGroup};
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::width::WindowWidth;
 
 /// Where a dragged tab lands within a strip: at an exact index in an
@@ -45,7 +45,7 @@ fn single_tab_group(id: GroupId, tab: Tab) -> WindowGroup {
     }
 }
 
-impl DesktopTree {
+impl Layout {
     /// Move `tab_id` out of `src_strip_id` and into `dest_strip_id` at
     /// `target` — the tree side of a cross-strip tab drop. The source group
     /// is removed if it empties; if the moved tab was its active tab, the
@@ -234,7 +234,7 @@ impl DesktopTree {
         let emptied = group.tabs.is_empty();
         if emptied {
             strip.window_groups.remove(group_idx);
-            // The window left the desk here: its place and its float go with it, so the space it
+            // The window left the layout here: its place and its float go with it, so the space it
             // stood in is free for the next window.
             for workspace in &mut self.workspaces {
                 workspace.forget_gone_places();
@@ -402,7 +402,7 @@ impl DesktopTree {
     }
 }
 
-impl DesktopTree {
+impl Layout {
     /// Remove `tab_id` from whichever group holds it. If the removed tab was
     /// active, the tab now at its index (or the group's last) becomes active; a group left empty is removed,
     /// and if it was its strip's active group the group now at its index (or
@@ -492,7 +492,7 @@ impl DesktopTree {
     }
 }
 
-impl DesktopTree {
+impl Layout {
     /// The index, in `strip_id`, of the group holding `tab_id`.
     fn group_index_holding(&self, strip_id: StripId, tab_id: TabId) -> Option<usize> {
         self.workspaces
@@ -546,7 +546,7 @@ impl DesktopTree {
     }
 }
 
-/// What [`DesktopTree::remove_tab`] took out of the tree.
+/// What [`Layout::remove_tab`] took out of the tree.
 #[derive(Clone, Debug)]
 pub struct RemovedTab {
     pub strip: StripId,

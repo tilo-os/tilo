@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::serde_ids::deserialize_id_btree_map;
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::width::WindowWidth;
 
 /// The record of [`crate::ownership::DESKTOP_APP`] holding `person`'s view of a workspace's
@@ -72,7 +72,7 @@ pub struct PersonView {
 impl PersonView {
     /// What the workspace `id` of `tree` shows the person looking at it.
     #[must_use]
-    pub fn of(tree: &DesktopTree, id: WorkspaceId) -> Self {
+    pub fn of(tree: &Layout, id: WorkspaceId) -> Self {
         let mut view = Self {
             front_strip: tree.active_strip.get(&id).copied(),
             ..Self::default()
@@ -97,7 +97,7 @@ impl PersonView {
 
     /// Show the workspace `id` of `tree` as this view says. A strip, a group or a tab the view names and the
     /// layout no longer holds is left out: what it named is gone. Whether anything changed.
-    pub fn applied(&self, tree: &mut DesktopTree, id: WorkspaceId) -> bool {
+    pub fn applied(&self, tree: &mut Layout, id: WorkspaceId) -> bool {
         let mut changed = false;
         let Some(workspace) = tree.workspaces.iter_mut().find(|held| held.id() == id) else {
             return false;
@@ -281,12 +281,12 @@ mod tests {
     }
 
     /// The layout the workspace shares, as its record gives it back.
-    fn layout() -> DesktopTree {
+    fn layout() -> Layout {
         let mut doc = AutoCommit::new();
         let shared = SharedDesktop {
-            tree: DesktopTree {
+            tree: Layout {
                 workspaces: vec![workspace()],
-                ..DesktopTree::default()
+                ..Layout::default()
             },
             ..SharedDesktop::default()
         };

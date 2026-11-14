@@ -68,11 +68,11 @@ impl Grants for Workspace {
 }
 #[derive(Clone, Default)]
 pub struct WorkspaceTree {
-    pub desktop: tilo_desktop_model::DesktopTree,
+    pub desktop: tilo_desktop_model::Layout,
     pub persist_path: Option<std::path::PathBuf>,
 }
 impl std::ops::Deref for WorkspaceTree {
-    type Target = tilo_desktop_model::DesktopTree;
+    type Target = tilo_desktop_model::Layout;
     fn deref(&self) -> &Self::Target {
         &self.desktop
     }
@@ -117,10 +117,7 @@ impl WorkspaceAuthority for WorkspaceTreeHandle {
         crate::services::workspace_in(&self.read().desktop, workspace)
             .map(|_| tilo_user_identity::RevocationList::new())
     }
-    fn with_tree(
-        &self,
-        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
-    ) -> Result<(), String> {
+    fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
         read(&self.read().desktop);
         Ok(())
     }

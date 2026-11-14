@@ -31,7 +31,7 @@ use runtime_portal::environment_door::{self, Request};
 use serde_json::{Map, Value, json};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::{Dialog, PortalEffect};
@@ -301,7 +301,7 @@ impl Environment {
 
 /// A desk with three workspaces: the person's Studio and Garden, Garden in front, and one they
 /// are no member of.
-fn desk() -> DesktopTree {
+fn desk() -> Layout {
     let workspace = |id: &str, name: &str, owner: &str| {
         let id = WorkspaceId::parse(id).expect("a workspace id");
         let mut workspace = Workspace::new(id, name);
@@ -309,14 +309,14 @@ fn desk() -> DesktopTree {
         workspace
     };
     let garden = workspace(GARDEN, "Garden", PERSON);
-    DesktopTree {
+    Layout {
         active: garden.id(),
         workspaces: vec![
             workspace(STUDIO, "Studio", PERSON),
             garden,
             workspace(ELSEWHERE, "Elsewhere", "someone-else"),
         ],
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 

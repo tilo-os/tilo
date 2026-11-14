@@ -16,10 +16,7 @@ const NS: u64 = 1_000_000_000;
 struct Announcing(crate::test_support::WorkspaceTreeHandle);
 
 impl crate::services::WorkspaceAuthority for Announcing {
-    fn with_tree(
-        &self,
-        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
-    ) -> Result<(), String> {
+    fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
         read(&self.0.read().desktop);
         Ok(())
     }

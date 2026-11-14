@@ -1431,10 +1431,10 @@ fn shared_desktop(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
         workspace.strips.push(strip);
     }
     SharedDesktop {
-        tree: tilo_desktop_model::DesktopTree {
+        tree: tilo_desktop_model::Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..tilo_desktop_model::DesktopTree::default()
+            ..tilo_desktop_model::Layout::default()
         },
         records: Vec::new(),
         authors,

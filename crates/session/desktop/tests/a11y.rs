@@ -18,7 +18,7 @@ use tilo_desktop::desktop_host::{
 use tilo_desktop::emoji::{EmojiLink, EmojiPlace};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, HostAction, HostActionSource};
 use ui::a11y::Action;
@@ -45,7 +45,7 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
 }
 
 /// A desk of two strips: "Main" holds a window, "Reading" is empty.
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let tabs = vec![window(20, "Notes", "so.tilo.notes")];
     let group = WindowGroup {
         id: 3,
@@ -68,7 +68,7 @@ fn desk_tree() -> DesktopTree {
             window_groups: Vec::new(),
         },
     ];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()

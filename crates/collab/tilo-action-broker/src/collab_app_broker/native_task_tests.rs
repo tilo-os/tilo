@@ -35,7 +35,7 @@ struct Native {
     key: SigningKey,
     certificate: tilo_user_identity::DeviceCert,
     origin: PolicyOrigin,
-    cached_projection: Mutex<Option<tilo_desktop_model::DesktopTree>>,
+    cached_projection: Mutex<Option<tilo_desktop_model::Layout>>,
     capped_connection: std::sync::atomic::AtomicBool,
     spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
     /// The tracker's runs, as the person approves, steers and stops them.
@@ -86,16 +86,13 @@ impl crate::services::AgentRoster for Native {
 }
 
 impl WorkspaceAuthority for Native {
-    fn with_tree(
-        &self,
-        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
-    ) -> Result<(), String> {
+    fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
         let tree = WorkspaceAuthority::snapshot(self)?;
         read(&tree);
         Ok(())
     }
 
-    fn snapshot(&self) -> Result<tilo_desktop_model::DesktopTree, String> {
+    fn snapshot(&self) -> Result<tilo_desktop_model::Layout, String> {
         let cached = self.cached_projection.lock().unwrap().clone();
         if let Some(cached) = cached {
             return Ok(cached);
@@ -113,7 +110,7 @@ impl WorkspaceAuthority for Native {
                 .policy
                 .grants
                 .retain(|grant| !self.spent_grants.lock().unwrap().contains(&grant.id));
-            let mut tree = tilo_desktop_model::DesktopTree {
+            let mut tree = tilo_desktop_model::Layout {
                 active: workspace.id(),
                 ..Default::default()
             };

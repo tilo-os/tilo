@@ -112,7 +112,7 @@ fn a_window_waits_in_its_place_until_it_shows_a_buffer() {
     // Laid out again before its first buffer: the compositor lists no
     // window yet, and the place stays.
     policy.arrange(&[], &outputs).unwrap();
-    let tabs = || host.with_policy(|policy| policy.layout().shown.len());
+    let tabs = || host.with_policy(|policy| policy.placement().shown.len());
     assert_eq!(tabs(), 1, "the pending window keeps its tab");
     let at = policy.place(&first, size, &outputs);
     assert!(at.x >= 0, "placed where it waited: {at:?}");
@@ -127,7 +127,7 @@ fn a_window_waits_in_its_place_until_it_shows_a_buffer() {
             &outputs,
         )
         .unwrap();
-    let layout = host.with_policy(|policy| policy.layout());
+    let layout = host.with_policy(|policy| policy.placement());
     assert!(
         !layout.shown.iter().any(|(id, _)| *id == 2) && !layout.hidden.contains(&2),
         "{layout:?}"
@@ -229,7 +229,7 @@ fn a_window_that_asks_to_cover_the_screen_fills_its_strip_and_gives_it_back() {
             })
         })
     };
-    let covering = || host.with_policy(|policy| policy.layout().fullscreen);
+    let covering = || host.with_policy(|policy| policy.placement().fullscreen);
     assert!(!maximized(), "a window opens at its width");
     assert!(
         !policy.request(&first, &WindowRequest::Maximize(true)),

@@ -45,8 +45,8 @@ use tilo_compositor::{Compositor, InputEvent, OutputConfig, Selection};
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, WINDOW_KIND, tab_resource_id};
 use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
-    DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId,
+    GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId,
 };
 use tilo_network_actor::WorkspaceId as Topic;
 use tilo_window_share::streaming::InputEvent as SharedInput;
@@ -166,7 +166,7 @@ fn workspace_id() -> WorkspaceId {
 
 /// A desk with one workspace, its one tab showing `tile` : what a session shares a window of, or
 /// shows another member's window in.
-fn desk(tile: TileContent, tab: u64) -> DesktopTree {
+fn desk(tile: TileContent, tab: u64) -> Layout {
     let workspace_id = workspace_id();
     let mut workspace = Workspace::new(workspace_id, "Desk");
     let mut strip = Strip::new(StripId::from(1), "Main");
@@ -186,15 +186,15 @@ fn desk(tile: TileContent, tab: u64) -> DesktopTree {
         focus_history: Vec::new(),
     });
     workspace.strips.push(strip);
-    DesktopTree {
+    Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 
 /// A desk whose one visible window is this app's own.
-fn own_desk() -> DesktopTree {
+fn own_desk() -> Layout {
     desk(
         TileContent::LocalApp {
             app_id: APP.to_owned(),
@@ -207,7 +207,7 @@ fn own_desk() -> DesktopTree {
 
 /// A desk showing another device's window of `app_id` in `tab` : the tab the host shows that window
 /// in, as the workspace's shared layout names it.
-fn showing(host: EndpointId, app_id: &str, tab: u64) -> DesktopTree {
+fn showing(host: EndpointId, app_id: &str, tab: u64) -> Layout {
     desk(
         TileContent::HostedWindow {
             app_id: app_id.to_owned(),
@@ -221,7 +221,7 @@ fn showing(host: EndpointId, app_id: &str, tab: u64) -> DesktopTree {
 
 /// A desk showing another device's windows of `apps` , one per group, in `tabs` : what a member
 /// viewing two shared windows holds.
-fn showing_both(host: EndpointId, first: (&str, u64), second: (&str, u64)) -> DesktopTree {
+fn showing_both(host: EndpointId, first: (&str, u64), second: (&str, u64)) -> Layout {
     let mut tree = showing(host, first.0, first.1);
     let strip = &mut tree.workspaces[0].strips[0];
     let tab = TabId::from(second.1);
@@ -250,7 +250,7 @@ fn showing_both(host: EndpointId, first: (&str, u64), second: (&str, u64)) -> De
 
 /// `desk` under the governance the workspace's devices agree on: `owner` owns its workspace, and
 /// each of `members` holds their role there — the policy every member's messages are admitted by.
-fn governed(mut desk: DesktopTree, owner: &str, members: &[(String, Role)]) -> DesktopTree {
+fn governed(mut desk: Layout, owner: &str, members: &[(String, Role)]) -> Layout {
     for workspace in &mut desk.workspaces {
         workspace.policy.owner = Some(owner.to_owned());
         for (person, role) in members {
@@ -267,25 +267,25 @@ struct Member {
     said: UnboundedReceiver<Cmd>,
 }
 
-fn member(seed: u8, desk: DesktopTree) -> Member {
+fn member(seed: u8, desk: Layout) -> Member {
     member_as(seed, desk, Options::default().salt, None)
 }
 
 /// One device of the workspace whose plane takes part as the person its certificate names: a member
 /// whose messages the workspace's policy is asked about.
-fn member_of(seed: u8, desk: DesktopTree) -> Member {
+fn member_of(seed: u8, desk: Layout) -> Member {
     member_as(seed, desk, Options::default().salt, Some(person(seed)))
 }
 
 /// One device of the workspace whose ids are minted under `salt` : a session with an identity mints
 /// under the salt its own key derives.
-fn member_minting_under(seed: u8, desk: DesktopTree, salt: u16) -> Member {
+fn member_minting_under(seed: u8, desk: Layout, salt: u16) -> Member {
     member_as(seed, desk, salt, None)
 }
 
 /// One device of the workspace, taking part as `person` (their root key, hex) when it says one:
 /// what a session with a device identity is on this plane.
-fn member_as(seed: u8, desk: DesktopTree, salt: u16, person: Option<String>) -> Member {
+fn member_as(seed: u8, desk: Layout, salt: u16, person: Option<String>) -> Member {
     member_on(
         seed,
         desk,
@@ -298,7 +298,7 @@ fn member_as(seed: u8, desk: DesktopTree, salt: u16, person: Option<String>) -> 
 /// One device of the workspace whose desk spreads over `outputs` .
 fn member_on(
     seed: u8,
-    desk: DesktopTree,
+    desk: Layout,
     salt: u16,
     person: Option<String>,
     outputs: &[OutputConfig],

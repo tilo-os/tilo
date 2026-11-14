@@ -4,7 +4,7 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use tilo_desktop_model::{AppKind, DesktopTree, GroupId, StripId, TabId, TileContent, WorkspaceId};
+use tilo_desktop_model::{AppKind, GroupId, Layout, StripId, TabId, TileContent, WorkspaceId};
 
 use tilo_app::feedback::{Composer, DurableStore, Error, Outbox, StorageKey};
 pub use tilo_app::feedback::{Control, Destination, FeedbackHost, ShownRecord, Subject};
@@ -139,7 +139,7 @@ pub enum Focused {
 
 /// The window in front of `tree` . `name` is an app's own display name by id, where the host knows
 /// one; a tile's label is not used, since it can be a window title, which may be private.
-pub fn focused(tree: &DesktopTree, name: impl Fn(&str) -> Option<String>) -> Focused {
+pub fn focused(tree: &Layout, name: impl Fn(&str) -> Option<String>) -> Focused {
     match front_tab(tree).map(|tab| &tab.tile) {
         None => Focused::Nothing,
         Some(tile) if is_composer(tile) => Focused::Composer,
@@ -159,11 +159,11 @@ pub fn picked_subject(draft: &tilo_app::feedback::ReportDraft, front: Focused) -
 }
 
 /// The window in front of `tree` , by its tab.
-pub fn focused_tab(tree: &DesktopTree) -> Option<TabId> {
+pub fn focused_tab(tree: &Layout) -> Option<TabId> {
     front_tab(tree).map(|tab| tab.id)
 }
 
-fn front_tab(tree: &DesktopTree) -> Option<&tilo_desktop_model::Tab> {
+fn front_tab(tree: &Layout) -> Option<&tilo_desktop_model::Tab> {
     let workspace = tree.active_workspace()?;
     tree.active_strip
         .get(&workspace.id())
@@ -180,7 +180,7 @@ fn front_tab(tree: &DesktopTree) -> Option<&tilo_desktop_model::Tab> {
 /// The app the window `tab` shows, as a report names it; `None` for a tab that is not in `tree` or
 /// shows no app.
 pub fn tab_subject(
-    tree: &DesktopTree,
+    tree: &Layout,
     tab: TabId,
     name: impl Fn(&str) -> Option<String>,
 ) -> Option<Subject> {
@@ -211,7 +211,7 @@ pub fn is_composer(tile: &TileContent) -> bool {
 }
 
 /// Where the composer is open, if anywhere: there is only ever one.
-pub fn composer_tab(tree: &DesktopTree) -> Option<(WorkspaceId, StripId, GroupId, TabId)> {
+pub fn composer_tab(tree: &Layout) -> Option<(WorkspaceId, StripId, GroupId, TabId)> {
     tree.workspaces.iter().find_map(|workspace| {
         workspace.strips.iter().find_map(|strip| {
             strip.window_groups.iter().find_map(|group| {
@@ -320,7 +320,7 @@ mod focus_tests {
     use super::*;
     use tilo_desktop_model::{Strip, Tab, WindowGroup, WindowWidth, Workspace};
 
-    fn tree(tiles: Vec<TileContent>) -> DesktopTree {
+    fn tree(tiles: Vec<TileContent>) -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Here");
         let mut strip = Strip::new(StripId(2), "Main");
         for (index, tile) in tiles.into_iter().enumerate() {
@@ -342,10 +342,10 @@ mod focus_tests {
             });
         }
         workspace.strips.push(strip);
-        DesktopTree {
+        Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         }
     }
 

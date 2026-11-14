@@ -11,7 +11,7 @@
 //! [`StripFrame`], read from its own state each time, and turns the
 //! returned [`StripNavigation`] into changes on its desktop.
 
-use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId};
+use tilo_desktop_model::{GroupId, Layout, StripId, TabId};
 use ui::chrome::shell::{StripRail, StripRibbon};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -89,7 +89,7 @@ impl StripFrame {
     /// workspace's strips, the shown strip's windows, and which of them are on screen (`shown`:
     /// each window's active tab and where it was laid out). Offered unless `covered` .
     pub fn of_tree(
-        tree: &DesktopTree,
+        tree: &Layout,
         content: Rect,
         (shown, scroll_x): (&[(TabId, Rect)], f64),
         covered: bool,
@@ -211,7 +211,7 @@ impl StripNavigator {
     }
 
     /// The labels' model for `tree` as `viewer` sees it.
-    pub fn model_of(tree: &DesktopTree, viewer: &Viewer<'_>) -> SwitcherModel {
+    pub fn model_of(tree: &Layout, viewer: &Viewer<'_>) -> SwitcherModel {
         SwitcherModel {
             can_add: viewer.may_add,
             ..SwitcherModel::of(tree, viewer.local_user, viewer.own_id, viewer.may_rename)
@@ -788,15 +788,15 @@ mod tests {
         }
     }
 
-    fn tree() -> DesktopTree {
+    fn tree() -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
         let mut main = Strip::new(StripId(10), "Main");
         main.window_groups = vec![group(1), group(2), group(3)];
         workspace.strips = vec![main, Strip::new(StripId(11), "Later")];
-        let mut tree = DesktopTree {
+        let mut tree = Layout {
             workspaces: vec![workspace],
             active: WorkspaceId::from_u128(1),
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         tree.active_strip
             .insert(WorkspaceId::from_u128(1), StripId(10));
@@ -812,11 +812,11 @@ mod tests {
         }
     }
 
-    fn frame(tree: &DesktopTree, shown: &[(TabId, Rect)], scroll: f64) -> StripFrame {
+    fn frame(tree: &Layout, shown: &[(TabId, Rect)], scroll: f64) -> StripFrame {
         StripFrame::of_tree(tree, CONTENT, (shown, scroll), false)
     }
 
-    fn navigator(tree: &DesktopTree, t: Instant) -> (StripNavigator, StripFrame) {
+    fn navigator(tree: &Layout, t: Instant) -> (StripNavigator, StripFrame) {
         let mut nav = StripNavigator::default();
         nav.set_model(StripNavigator::model_of(tree, &viewer(&|_| true)));
         let frame = frame(tree, &[(1001, Rect::new(40.0, 60.0, 600.0, 780.0))], 0.0);

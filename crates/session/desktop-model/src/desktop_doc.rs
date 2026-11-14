@@ -1,7 +1,7 @@
-//! A desk kept as one document: every workspace a host holds, its strips, groups and windows, and
-//! how that host showed it. A native session keeps no such document — its desk is the workspaces'
-//! layout records, which every member shows — and a page keeps its own copy of the desk here.
-//! This module is the only definition of the shape: [`seed`] writes it from a [`DesktopTree`],
+//! A layout kept as one document: every workspace a host holds, its strips, groups and windows, and
+//! how that host showed it. A native session keeps no such document — its layout is the workspaces'
+//! layout records, which every member shows — and a page keeps its own copy of the layout here.
+//! This module is the only definition of the shape: [`seed`] writes it from a [`Layout`],
 //! [`rebuild`] reads it back. Topology is [`crate::topology`]'s; the host owns the document, decides
 //! when to commit, and stamps history.
 //! Shape: `{ active: workspace id, authors_v1?: {actor → author},
@@ -16,8 +16,8 @@
 //! floats_v1?: {group id → json float}, local_v1?: json,
 //! strips: [ { id, name, window_groups: [ { id, tabs: [ { id, title, app_title?, tile_json } ] } ] } ] } ] }`.
 //! Canvas places and floats are the workspace's arrangement, `local_v1` is what only
-//! this device reads, and `view_v1` is how this device shows the desk; none reaches
-//! another device, all are here because it is the one store of the desk.
+//! this device reads, and `view_v1` is how this device shows the layout; none reaches
+//! another device, all are here because it is the one store of the layout.
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
@@ -38,7 +38,7 @@ use crate::projection::{
 };
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::serde_ids::deserialize_id_map;
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::width::WindowWidth;
 use crate::workspace::{UserId, Workspace};
 
@@ -406,10 +406,10 @@ fn read_local(doc: &AutoCommit, entry: &ObjId) -> Option<Local> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// How this device shows the desk: which strip and group are in front in each
+/// How this device shows the layout: which strip and group are in front in each
 /// workspace, how wide each group is, whether it is maximized, which of its tabs is
 /// in front, and which display it is on.
-/// The device's own, but kept in this document all the same: a desk reopened without
+/// The device's own, but kept in this document all the same: a layout reopened without
 /// it puts every window back at a default width, and a version restored from the
 /// history could not put the layout back with the windows.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -440,7 +440,7 @@ struct Look {
 }
 
 impl View {
-    fn of(desktop: &DesktopTree) -> Self {
+    fn of(desktop: &Layout) -> Self {
         let mut groups = HashMap::new();
         for workspace in &desktop.workspaces {
             for strip in &workspace.strips {
@@ -508,14 +508,14 @@ fn default_apps_unset(defaults: &desktop_policy::WorkspaceDefaults) -> bool {
 /// its history and any concurrent edit; a rename is one write to `name`. An entry the
 /// tree no longer holds is deleted. Best-effort: a failed write skips what is nested
 /// under it.
-pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
+pub fn seed(doc: &mut AutoCommit, desktop: &Layout) {
     let _ = seed_of_the_view(doc, desktop);
 }
 
-/// [`seed`], saying whether all it wrote was how this device shows the desk. A host
-/// that keeps every change of the desk as its history uses this to write a drag once
+/// [`seed`], saying whether all it wrote was how this device shows the layout. A host
+/// that keeps every change of the layout as its history uses this to write a drag once
 /// it is over: a resize writes the view on every frame.
-pub fn seed_of_the_view(doc: &mut AutoCommit, desktop: &DesktopTree) -> bool {
+pub fn seed_of_the_view(doc: &mut AutoCommit, desktop: &Layout) -> bool {
     let before = doc.pending_ops();
     let active = desktop.active.to_string();
     let _ = doc.put_str_if_changed(&ROOT, ACTIVE_KEY, &active);
@@ -656,7 +656,7 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 /// tree had them ([`rebuild_view`] reads that). Each workspace keeps its existing
 /// strips by id, then the document's topology and tabs are folded in, and a group
 /// seen for the first time gets local defaults.
-pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
+pub fn rebuild(doc: &AutoCommit, desktop: &mut Layout) {
     if let Some(active) = doc
         .str_at(&ROOT, ACTIVE_KEY)
         .and_then(|text| WorkspaceId::parse(&text))
@@ -712,7 +712,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             continue;
         };
         rebuild_strips(doc, &entry, ws);
-        // A place whose window the record no longer holds stands for nothing: a desk written by a
+        // A place whose window the record no longer holds stands for nothing: a layout written by a
         // build that left them behind reads back without them, so the first window opened on it is
         // not pushed past a hole.
         ws.forget_gone_places();
@@ -732,7 +732,7 @@ fn rebuild_strips(doc: &AutoCommit, entry: &ObjId, ws: &mut Workspace) {
         let Some(strip_id) = doc.uint_at(&strip_entry, "id").map(StripId::from) else {
             continue;
         };
-        // A strip is kept even with no window on it: the desk has it, and it
+        // A strip is kept even with no window on it: the layout has it, and it
         // is named as the person left it.
         let name = doc.str_at(&strip_entry, "name");
         let at = ws.strips.iter().position(|s| s.id == strip_id);
@@ -765,11 +765,11 @@ fn rebuild_strips(doc: &AutoCommit, entry: &ObjId, ws: &mut Workspace) {
     }
 }
 
-/// Read how this device showed the desk from `doc` into `desktop`. [`rebuild`] leaves
+/// Read how this device showed the layout from `doc` into `desktop`. [`rebuild`] leaves
 /// those on the tree it is given, because a host that holds its own view is the one
 /// that knows them; a reader that keeps no view of its own calls this after
-/// [`rebuild`] and takes the desk back exactly as it was left.
-pub fn rebuild_view(doc: &AutoCommit, desktop: &mut DesktopTree) {
+/// [`rebuild`] and takes the layout back exactly as it was left.
+pub fn rebuild_view(doc: &AutoCommit, desktop: &mut Layout) {
     let Some(view) = view_of(doc) else {
         return;
     };
@@ -890,7 +890,7 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[DocTab]) {
 }
 
 /// The names this document's changes are known by, by actor (hex), when a
-/// host recorded them: a desk read into this document from one that named its
+/// host recorded them: a layout read into this document from one that named its
 /// changes' authors keeps the names people already saw.
 pub fn author_names(doc: &AutoCommit) -> std::collections::BTreeMap<String, String> {
     doc.bytes_at(&ROOT, AUTHORS_KEY)
@@ -903,9 +903,9 @@ pub fn set_author_names(doc: &mut AutoCommit, names: &std::collections::BTreeMap
     put_json_if_changed(doc, &ROOT, AUTHORS_KEY, names);
 }
 
-/// Whether `doc` holds the desk this module writes: a root holding the
+/// Whether `doc` holds the layout this module writes: a root holding the
 /// workspace list. A document of another shape — a workspace document, or a
-/// shared desktop record written entry by entry before the desk was one
+/// shared desktop record written entry by entry before the layout was one
 /// document — is not one.
 #[must_use]
 pub fn holds(doc: &impl ReadDoc) -> bool {
@@ -962,7 +962,7 @@ pub fn set_records(doc: &mut AutoCommit, records: &[(TabId, String)]) {
 }
 
 /// Who made each strip and opened each window, by strip or tab id, as person
-/// ids: who may close, move or rename what is on a desk a workspace shares
+/// ids: who may close, move or rename what is on a layout a workspace shares
 /// ([`crate::ownership`]). Each entry is its own, so the people writing
 /// their own windows at once keep what each of them said.
 #[must_use]
@@ -993,7 +993,7 @@ pub fn set_window_authors(doc: &mut AutoCommit, authors: &crate::ownership::Auth
 }
 
 /// The agent run that opened each window an agent opened, by tab
-/// ([`crate::ownership::OpenedBy`]), for the windows still on the desk.
+/// ([`crate::ownership::OpenedBy`]), for the windows still on the layout.
 #[must_use]
 pub fn opened_by(
     doc: &AutoCommit,
@@ -1001,7 +1001,7 @@ pub fn opened_by(
     let Some(map) = obj(doc, &ROOT, OPENED_BY_KEY) else {
         return std::collections::BTreeMap::new();
     };
-    let mut tree = DesktopTree::default();
+    let mut tree = Layout::default();
     rebuild(doc, &mut tree);
     doc.keys(&map)
         .filter_map(|key| {
@@ -1013,7 +1013,7 @@ pub fn opened_by(
 }
 
 /// Note who opened the windows `opened` names, and forget it for windows
-/// the desk no longer holds. A window's run is never cleared while the
+/// the layout no longer holds. A window's run is never cleared while the
 /// window stays, so a writer that knows nothing of it keeps it. Whether the
 /// document changed.
 pub fn note_opened_by(
@@ -1033,7 +1033,7 @@ pub fn note_opened_by(
             let _ = doc.put_str_if_changed(&map, tab.to_string(), &text);
         }
     }
-    let mut tree = DesktopTree::default();
+    let mut tree = Layout::default();
     rebuild(doc, &mut tree);
     let gone: Vec<String> = doc
         .keys(&map)
@@ -1050,15 +1050,15 @@ pub fn note_opened_by(
 }
 
 /// The root keys a workspace's desktop record kept when every window was its own
-/// entry there, before the desk was one document.
+/// entry there, before the layout was one document.
 const RECORD_KEYS: [&str; 3] = ["strips", "groups", "windows"];
 
 /// Write a shared desktop — its workspaces, the record each window shows and who made
-/// each strip and opened each window — into `doc`. A document that kept the desk the
-/// old way becomes the desk document here. Returns whether it wrote anything.
+/// each strip and opened each window — into `doc`. A document that kept the layout the
+/// old way becomes the layout document here. Returns whether it wrote anything.
 pub fn write_shared(
     doc: &mut AutoCommit,
-    tree: &DesktopTree,
+    tree: &Layout,
     records: &[(TabId, String)],
     authors: &crate::ownership::Authors,
 ) -> bool {

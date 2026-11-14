@@ -38,10 +38,10 @@ fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
     }
     workspace.strips.push(strip);
     SharedDesktop {
-        tree: DesktopTree {
+        tree: Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         },
         authors: windows
             .iter()
@@ -210,16 +210,16 @@ tilo_test_env::scenario! {
             .retain(|group| group.id != 200);
         closed.records.retain(|(tab, _)| *tab != 2);
         closed.authors.remove(&2);
-        // As entries, then as the desk's own document, each rewritten by a page
+        // As entries, then as the layout's own document, each rewritten by a page
         // that knows nothing of who opened what.
-        let mut desk = AutoCommit::new();
-        crate::desktop_doc::seed(&mut desk, &page.tree);
-        for (shape, mut doc) in [AutoCommit::new(), desk].into_iter().enumerate() {
+        let mut layout = AutoCommit::new();
+        crate::desktop_doc::seed(&mut layout, &page.tree);
+        for (shape, mut doc) in [AutoCommit::new(), layout].into_iter().enumerate() {
             write(&mut doc, &opened).unwrap();
             write(&mut doc, &page).unwrap();
             assert!(
                 !write(&mut doc, &opened).unwrap(),
-                "{shape}: an unchanged desk writes nothing"
+                "{shape}: an unchanged layout writes nothing"
             );
             assert_eq!(read(&doc, None).unwrap().opened_by.get(&2), Some(&run));
             // Its window closes: what opened it goes with it.
@@ -340,10 +340,10 @@ fn fresh(strip: u64, name: &str) -> SharedDesktop {
     let mut fresh = Workspace::new(WorkspaceId::from_u128(1), name);
     fresh.strips.push(Strip::new(StripId(strip), "Main"));
     SharedDesktop {
-        tree: DesktopTree {
+        tree: Layout {
             active: fresh.id(),
             workspaces: vec![fresh],
-            ..DesktopTree::default()
+            ..Layout::default()
         },
         ..SharedDesktop::default()
     }
@@ -489,7 +489,7 @@ tilo_test_env::scenario! {
     phase a_window_kept_a_sliver_wide_reads_back_a_window;
     // Every member writes the record, a person's page or an agent arranging the workspace, and one
     // that kept a window a sliver wide (a float or a canvas place two pixels across) left it a stray
-    // line on everyone's desk. Read back, each is a window again, at least a window's least size, and
+    // line on everyone's layout. Read back, each is a window again, at least a window's least size, and
     // the next write keeps that.
     {
         use crate::arrangement::{WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH};
@@ -539,7 +539,7 @@ tilo_test_env::scenario! {
             "a canvas place two pixels wide reads back a window's size, from where it stood"
         );
 
-        // The desk that read it writes the window back whole, for every member.
+        // The layout that read it writes the window back whole, for every member.
         assert!(write(&mut doc, &back).unwrap(), "the sliver is mended");
         doc.commit();
         let again = read(&doc, None).unwrap();

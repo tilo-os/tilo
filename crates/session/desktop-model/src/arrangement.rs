@@ -137,7 +137,7 @@ impl CanvasPlace {
 /// design language's `group` rhythm.
 pub const CANVAS_GAP: u32 = 24;
 
-/// The window a group the desk opened takes on the canvas when nobody named a place for it:
+/// The window a group the shell opened takes on the canvas when nobody named a place for it:
 /// the framed canvas's window, in canvas pixels, which is what the arrangement's own place
 /// action defaults to for a place a person types at.
 const MISSING_PLACE_WIDTH: u32 = 720;
@@ -281,19 +281,19 @@ impl FloatPlace {
         // A window's least size, unless the work area itself is smaller.
         let width = self.width.max(WINDOW_MIN_WIDTH).min(area.width.max(1));
         let height = self.height.max(WINDOW_MIN_HEIGHT).min(area.height.max(1));
-        let room = |total: u32, size: u32| i32::try_from(total.saturating_sub(size)).unwrap_or(0);
-        let dx = self.dx.max(0).min(room(area.width, width));
-        let dy = self.dy.max(0).min(room(area.height, height));
+        let spare = |total: u32, size: u32| i32::try_from(total.saturating_sub(size)).unwrap_or(0);
+        let dx = self.dx.max(0).min(spare(area.width, width));
+        let dy = self.dy.max(0).min(spare(area.height, height));
         let x = if self.corner.is_right() {
             area.x
-                .saturating_add(room(area.width, width))
+                .saturating_add(spare(area.width, width))
                 .saturating_sub(dx)
         } else {
             area.x.saturating_add(dx)
         };
         let y = if self.corner.is_bottom() {
             area.y
-                .saturating_add(room(area.height, height))
+                .saturating_add(spare(area.height, height))
                 .saturating_sub(dy)
         } else {
             area.y.saturating_add(dy)
@@ -378,7 +378,7 @@ pub struct Arrangement {
     )]
     pub places: BTreeMap<GroupId, CanvasPlace>,
     /// Where each floated window stands: a window the person lifted off the
-    /// grid, over it and on every member's desk. The group keeps its strip
+    /// grid, over it and on every member's screen. The group keeps its strip
     /// and order, so snapping it back returns it exactly where it was.
     #[serde(
         default,
@@ -650,8 +650,8 @@ impl Arrangement {
 
     /// Stand every group `strips` hold that has no place yet, and keep every place that
     /// is there: the framed canvas, the spaces canvas and the traditional desktop draw a
-    /// group by its place, so a window the desk opened and nobody placed stands on none of
-    /// them, and a desk a person opened an app on looks empty.
+    /// group by its place, so a window the shell opened and nobody placed stands on none of
+    /// them, and a layout a person opened an app on looks empty.
     ///
     /// The groups of a strip stand in a row from the strip's corner (`canvas.md` §6), so the
     /// next one goes just past the last one that stands; a strip whose windows none stand yet
@@ -686,9 +686,9 @@ impl Arrangement {
 }
 
 impl crate::workspace::Workspace {
-    /// Every place stands for a window on the desk: one that left it takes its place and its float
+    /// Every place stands for a window on the layout: one that left it takes its place and its float
     /// with it, so the next window stands in the room it left instead of beside a hole. Called
-    /// wherever a group can go — a close, a command, a desk read back from its record.
+    /// wherever a group can go — a close, a command, a layout read back from its record.
     pub fn forget_gone_places(&mut self) {
         let live: std::collections::BTreeSet<GroupId> = self
             .strips
@@ -902,7 +902,7 @@ mod tests {
 
         phase a_stored_workspace_keeps_its_canvas;
         {
-            let mut workspace = crate::Workspace::new(crate::WorkspaceId::new(), "Desk");
+            let mut workspace = crate::Workspace::new(crate::WorkspaceId::new(), "Work");
             workspace.arrangement = canvas(&[(920_001, CanvasPlace::new(40, -8, 400, 300))]);
             let json = serde_json::to_string(&workspace).expect("serialises");
             let back: crate::Workspace = serde_json::from_str(&json).expect("reads back");

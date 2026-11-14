@@ -31,7 +31,7 @@ use automerge::transaction::Transactable as _;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, OpenedBy};
 use tilo_desktop_model::person_view::{self, PersonView};
 use tilo_desktop_model::shared_record::{self, device};
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, peer_salt_of};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId, peer_salt_of};
 use ui::permissions::UserId;
 use ui::state::UndoLog;
 
@@ -484,7 +484,7 @@ impl SharedDesktops {
     /// Whether every workspace `tree` holds has had its records read here, and neither the engine at
     /// revision `revision` nor this desk has moved since: nothing of them can have changed, so no
     /// record is read or written again. Notes what was looked at.
-    pub(crate) fn settled(&self, revision: u64, tree: &DesktopTree) -> bool {
+    pub(crate) fn settled(&self, revision: u64, tree: &Layout) -> bool {
         // A write under way is taken first, and while it is no record is read or written.
         if !self.settle_publishing() {
             return true;
@@ -531,7 +531,7 @@ impl SharedDesktops {
     /// where, and what this device decides alone kept. `device` is this device's publisher, which
     /// resolves a window that runs here to the window it shows here. Returns whether anything
     /// changed.
-    pub(crate) fn follow(&self, engine: &Engine, device: &str, tree: &mut DesktopTree) -> bool {
+    pub(crate) fn follow(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
         let changed = self.follow_layout(engine, device, tree) | self.follow_view(engine, tree);
         if self.device.borrow().as_str() != device {
             device.clone_into(&mut self.device.borrow_mut());
@@ -545,7 +545,7 @@ impl SharedDesktops {
     pub(crate) fn finish_writes(
         &self,
         engine: &Arc<Engine>,
-        tree: &DesktopTree,
+        tree: &Layout,
         patience: std::time::Duration,
     ) {
         self.wait_writes(patience);
@@ -629,7 +629,7 @@ impl SharedDesktops {
     }
 
     /// Fold the layout of every workspace in the engine's copy into `tree`.
-    fn follow_layout(&self, engine: &Engine, device: &str, tree: &mut DesktopTree) -> bool {
+    fn follow_layout(&self, engine: &Engine, device: &str, tree: &mut Layout) -> bool {
         let salt = tree.salt;
         let mut changed = false;
         for workspace in &mut tree.workspaces {
@@ -700,7 +700,7 @@ impl SharedDesktops {
         &self,
         workspace_id: WorkspaceId,
         doc: &automerge::AutoCommit,
-        desk: &DesktopTree,
+        desk: &Layout,
         workspace: &mut Workspace,
         salt: u16,
         device: &str,
@@ -745,7 +745,7 @@ impl SharedDesktops {
     }
 
     /// Show every workspace in `tree` as the person here last left it.
-    fn follow_view(&self, engine: &Engine, tree: &mut DesktopTree) -> bool {
+    fn follow_view(&self, engine: &Engine, tree: &mut Layout) -> bool {
         let Some(person) = self.person.borrow().clone() else {
             return false;
         };
@@ -828,7 +828,7 @@ impl SharedDesktops {
     /// workspace's layout, and the person's view of every workspace into theirs, and publish them:
     /// the strips and windows it makes and arranges, and where the person here is looking. Returns
     /// whether this look published the view.
-    pub(crate) fn capture(&self, engine: &Arc<Engine>, tree: &DesktopTree) -> bool {
+    pub(crate) fn capture(&self, engine: &Arc<Engine>, tree: &Layout) -> bool {
         let Some(person) = self.person.borrow().clone() else {
             return false;
         };
@@ -844,7 +844,7 @@ impl SharedDesktops {
         &self,
         engine: &Arc<Engine>,
         person: &str,
-        tree: &DesktopTree,
+        tree: &Layout,
         acted: Option<Acted>,
     ) {
         let Some(workspace) = tree.workspaces.iter().find(|held| held.id() == tree.active) else {
@@ -1240,8 +1240,8 @@ impl SharedDesktops {
     /// taken back from, and the windows it placed show the records they name.
     pub(crate) fn performed(
         &self,
-        before: &DesktopTree,
-        tree: &DesktopTree,
+        before: &Layout,
+        tree: &Layout,
         asked: &str,
         action: &tilo_session_core::arrangement::ArrangementAction,
         shows: &[(tilo_desktop_model::TabId, String)],
@@ -1349,13 +1349,7 @@ impl SharedDesktops {
     /// Write the person here's view of every workspace whose view they changed into that
     /// workspace's record of it.
     /// `now`: the view is written as it stands, without waiting for it to rest.
-    fn capture_view(
-        &self,
-        engine: &Arc<Engine>,
-        person: &str,
-        tree: &DesktopTree,
-        now: bool,
-    ) -> bool {
+    fn capture_view(&self, engine: &Arc<Engine>, person: &str, tree: &Layout, now: bool) -> bool {
         let route = Route::view(person);
         let mut wrote = false;
         for workspace in &tree.workspaces {
@@ -1896,7 +1890,7 @@ fn rested(held: &mut Held, view: &PersonView, now: bool) -> Option<PersonView> {
 }
 
 /// Every window `desk`, a record's layout, holds.
-fn tabs_of(desk: &DesktopTree) -> BTreeSet<u64> {
+fn tabs_of(desk: &Layout) -> BTreeSet<u64> {
     desk.workspaces.iter().flat_map(windows_of).collect()
 }
 
@@ -1926,7 +1920,7 @@ impl LayoutHistory {
         }
     }
 
-    fn workspace_of(tree: &DesktopTree, workspace_id: WorkspaceId) -> Option<WorkspaceId> {
+    fn workspace_of(tree: &Layout, workspace_id: WorkspaceId) -> Option<WorkspaceId> {
         (!workspace_id.is_nil() && tree.workspaces.iter().any(|held| held.id() == workspace_id))
             .then_some(workspace_id)
     }
@@ -1935,7 +1929,7 @@ impl LayoutHistory {
 impl crate::activity::DeskHistory for LayoutHistory {
     fn history(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace_id: WorkspaceId,
     ) -> Option<tilo_desktop_surface::activity::ActivitySnapshot> {
         Self::workspace_of(tree, workspace_id)?;
@@ -1951,7 +1945,7 @@ impl crate::activity::DeskHistory for LayoutHistory {
         })
     }
 
-    fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceId, automerge::AutoCommit)> {
+    fn documents(&self, tree: &Layout) -> Vec<(WorkspaceId, automerge::AutoCommit)> {
         tree.workspaces
             .iter()
             .filter_map(|workspace| Some((workspace.id(), self.layouts.layout(workspace.id())?)))
@@ -1960,7 +1954,7 @@ impl crate::activity::DeskHistory for LayoutHistory {
 
     fn describe(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace_id: WorkspaceId,
         write: &mut dyn FnMut(&mut automerge::AutoCommit) -> bool,
     ) -> bool {
@@ -2025,8 +2019,8 @@ impl tilo_session_core::arrangement::Layouts for Steps {
 
     fn acted(
         &self,
-        before: &DesktopTree,
-        tree: &DesktopTree,
+        before: &Layout,
+        tree: &Layout,
         asked: &str,
         action: &tilo_session_core::arrangement::ArrangementAction,
         shows: &[(tilo_desktop_model::TabId, String)],
@@ -2177,10 +2171,10 @@ mod tests {
         let mut workspace = Workspace::new(workspace_id(), "Desk");
         workspace.strips = strips;
         let desktop = tilo_desktop_model::ownership::SharedDesktop {
-            tree: DesktopTree {
+            tree: Layout {
                 active: workspace_id(),
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             },
             ..tilo_desktop_model::ownership::SharedDesktop::default()
         };
@@ -2461,11 +2455,11 @@ mod tests {
             focus_history: Vec::new(),
         });
         workspace_view.strips = vec![strip_view];
-        let tree = DesktopTree {
+        let tree = Layout {
             workspaces: vec![workspace_view],
             active: workspace,
             salt,
-            ..DesktopTree::default()
+            ..Layout::default()
         };
 
         let (wake, heard) = woken();

@@ -168,7 +168,7 @@ impl Session {
 /// and what the window is called (the note's title, the sheet's name): where an agent at work in
 /// that app is, and the record it says it works in.
 fn app_window(
-    tree: &tilo_desktop_model::DesktopTree,
+    tree: &tilo_desktop_model::Layout,
     notes: &crate::continuations::Continuations,
     workspace: &str,
     app: &str,
@@ -208,7 +208,7 @@ struct Focus<'a> {
 /// work in — the layout of `area`, the screen's content, by the rule native shells and pages both
 /// place by. `None` while the desk shows no screen to place anything on.
 fn shell(
-    tree: &tilo_desktop_model::DesktopTree,
+    tree: &tilo_desktop_model::Layout,
     notes: &crate::continuations::Continuations,
     shown: &[(tilo_desktop_model::TabId, ui::kurbo::Rect)],
     area: Option<ui::kurbo::Rect>,
@@ -261,7 +261,7 @@ mod tests {
     use collab_types::PeerPresencePayload;
     use collab_types::presence::{Payload, Presence};
     use tilo_desktop_model::{
-        DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
+        GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
         Workspace, WorkspaceId,
     };
     use tilo_relay_protocol::live::LiveRecord;
@@ -282,7 +282,7 @@ mod tests {
     }
 
     /// A desk showing one workspace, with one window called Notes showing [`RECORD`].
-    fn desk() -> DesktopTree {
+    fn desk() -> Layout {
         let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
         let mut workspace = Workspace::new(workspace, "Desk");
         let mut strip = Strip::new(StripId::from(1), "Main");
@@ -306,10 +306,10 @@ mod tests {
             focus_history: Vec::new(),
         });
         workspace.strips.push(strip);
-        DesktopTree {
+        Layout {
             workspaces: vec![workspace.clone()],
             active: workspace.id(),
-            ..DesktopTree::default()
+            ..Layout::default()
         }
     }
 

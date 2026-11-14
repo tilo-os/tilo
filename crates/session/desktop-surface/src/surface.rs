@@ -17,7 +17,7 @@ use std::rc::Rc;
 use shown::ShownTabs;
 
 use tilo_desktop_model::{
-    DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, TileContent, WindowWidth,
+    GroupId, GroupShape, IdMinter, Layout, StripId, Tab, TabId, TileContent, WindowWidth,
     Workspace, WorkspaceId,
 };
 use ui::automerge::ObjId;
@@ -196,7 +196,7 @@ pub trait TileSource {
 }
 
 struct Shared {
-    tree: DesktopTree,
+    tree: Layout,
     /// The floating windows this device stands in the floating layer's column, and where the
     /// layer put each ([`DesktopHandle::docked_cards`], [`DesktopHandle::dock_at`]).
     dock: floats::Dock,
@@ -378,7 +378,7 @@ impl DesktopHandle {
         shared.revision.wrapping_add(shared.presented)
     }
 
-    pub fn read<R>(&self, read: impl FnOnce(&DesktopTree) -> R) -> R {
+    pub fn read<R>(&self, read: impl FnOnce(&Layout) -> R) -> R {
         read(&self.shared.borrow().tree)
     }
 
@@ -587,9 +587,9 @@ impl DesktopHandle {
     /// with it: tabs still present keep their running content, new tabs get content from the host's
     /// [`TileSource`], and removed tabs' applications close. Queued commands stay queued and are
     /// re-checked against the new tree when applied. A tree changed elsewhere is a desk that moved
-    /// ([`DesktopTree::external_revision`]): a window filling the tab held for it, or a window's new
+    /// ([`Layout::external_revision`]): a window filling the tab held for it, or a window's new
     /// title, reaches the workspace's shared desktop as any other change does.
-    pub fn replace_tree(&self, mut tree: DesktopTree) {
+    pub fn replace_tree(&self, mut tree: Layout) {
         let mut shared = self.shared.borrow_mut();
         observe_ids(&mut shared.minter, &tree);
         tree.external_revision = shared.tree.external_revision.wrapping_add(1);
@@ -603,14 +603,14 @@ impl DesktopHandle {
 
     /// The workspace snapshot, excluding process-local stream proxies and device presentation.
     /// Durable profile saves still use the full tree.
-    pub fn shared_tree(&self) -> DesktopTree {
+    pub fn shared_tree(&self) -> Layout {
         self.read(|tree| crate::shared_tree::projection(tree.clone()))
     }
 
     /// Apply workspace topology without replacing this device's stream bindings
     /// or focus. Only `local_tabs` survive omission from the shared snapshot;
     /// removed workspaces and strips still retire their contents.
-    pub fn replace_shared_tree(&self, tree: DesktopTree, local_tabs: &[TabId]) {
+    pub fn replace_shared_tree(&self, tree: Layout, local_tabs: &[TabId]) {
         let (tree, opened) = self.read(|local| {
             let tree = crate::shared_tree::receive(local, tree, local_tabs);
             let opened = arrivals::opened_elsewhere(local, &tree, local_tabs);
@@ -792,7 +792,7 @@ fn unavailable(requests: &ActivityRequests) {
     requests.serve(&mut Unkept);
 }
 
-fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
+fn route_of(tree: &Layout, tab: TabId) -> Option<RouteIds> {
     tree.workspaces.iter().find_map(|workspace| {
         workspace.strips.iter().find_map(|strip| {
             strip.window_groups.iter().find_map(|group| {
@@ -960,7 +960,7 @@ struct Swipe {
 
 impl DesktopSurface {
     /// Present `tree` . `salt` is this device's peer salt for new ids.
-    pub fn new(tree: DesktopTree, salt: u16, tiles: Box<dyn TileSource>) -> (Self, DesktopHandle) {
+    pub fn new(tree: Layout, salt: u16, tiles: Box<dyn TileSource>) -> (Self, DesktopHandle) {
         let mut minter = IdMinter::new(salt);
         observe_ids(&mut minter, &tree);
         let search: Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>> =

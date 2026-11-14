@@ -15,7 +15,7 @@ use crate::overview_panel::OverviewPick;
 use crate::overview_tilo::TiloDesk;
 use crate::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
@@ -24,7 +24,7 @@ fn en() {
     ui::i18n::I18nManager::init("en-US");
 }
 
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let tabs = vec![Tab {
         id: 20,
         title: "Notes".into(),
@@ -51,7 +51,7 @@ fn desk_tree() -> DesktopTree {
         name: "Main".into(),
         window_groups: vec![group],
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
@@ -169,7 +169,7 @@ fn a_workspace_put_on_the_desk_in_the_background_leaves_the_person_where_they_ar
 fn a_workspace_arriving_on_a_desk_that_shows_none_is_shown() {
     en();
     let (mut chrome, handle) = chrome_over_a_desk();
-    handle.replace_tree(DesktopTree::default());
+    handle.replace_tree(Layout::default());
     let arrived = WorkspaceId::new();
     assert_eq!(
         chrome.perform(&ChromeEffect::NewWorkspace {

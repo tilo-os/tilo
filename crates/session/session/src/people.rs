@@ -20,7 +20,7 @@ use tilo_desktop::people::{PeopleHit, PeopleModel, PeopleOverlay, RosterRow, ros
 use tilo_desktop::profile_card::{
     LazyProfileCard, OtherPerson, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect};
 use tilo_desktop_surface::{DesktopHandle, HostAction};
 use tilo_session_core::door::{Look, Published};
@@ -560,7 +560,7 @@ pub struct Given {
     /// faces are drawn from, so the roster they open lists the same people. A host that hears
     /// some of them on a track of its own (the runs a workspace's host speaks for) writes them
     /// in here as it does for the bar.
-    pub here: Rc<dyn Fn(&mut DesktopTree)>,
+    pub here: Rc<dyn Fn(&mut Layout)>,
     /// Where the chrome takes the intents the roster raises.
     pub intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// Whether the person may invite someone into the workspace in front.
@@ -651,7 +651,7 @@ struct Panel {
     sync: Option<Rc<crate::sync::Client>>,
     /// Who is here, written into the desk's member rows as the bar's faces read them
     /// ([`Given::here`]).
-    here: Rc<dyn Fn(&mut DesktopTree)>,
+    here: Rc<dyn Fn(&mut Layout)>,
     /// What each window of the desk shows, by its tab: where a person's record stands, so the
     /// roster places them in the window they work in.
     notes: WindowRecords,

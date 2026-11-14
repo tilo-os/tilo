@@ -2,7 +2,7 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop::activity::{ActivitySnapshot, WorkspaceActivityPane};
 use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 
 tilo_test_env::scenario! {
     fn workspace_activity_reads_the_admitted_workspace_document;
@@ -20,7 +20,7 @@ tilo_test_env::scenario! {
         doc.put(ROOT, "name", "Design review").unwrap();
         doc.commit();
         let mut tree = ActivitySnapshot::new(
-            DesktopTree {
+            Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
@@ -111,7 +111,7 @@ tilo_test_env::scenario! {
         doc.delete(&groups, "0001000000000004").unwrap();
         stamp(&mut doc, 4);
         let mut tree = ActivitySnapshot::new(
-            DesktopTree {
+            Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
@@ -164,7 +164,7 @@ tilo_test_env::scenario! {
             .unwrap();
         doc.commit();
         let mut tree = ActivitySnapshot::new(
-            DesktopTree {
+            Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
@@ -246,7 +246,7 @@ tilo_test_env::scenario! {
             .unwrap();
         doc.commit();
         let mut tree = ActivitySnapshot::new(
-            DesktopTree {
+            Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
@@ -329,7 +329,7 @@ tilo_test_env::scenario! {
             .unwrap();
         doc.commit();
         let mut tree = ActivitySnapshot::new(
-            DesktopTree {
+            Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
@@ -429,7 +429,7 @@ tilo_test_env::scenario! {
             stamp(&mut doc, at);
         }
         let mut tree = ActivitySnapshot::new(
-            DesktopTree {
+            Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()

@@ -6,7 +6,7 @@
 use super::fixture::FixtureChrome;
 use super::*;
 use crate::chrome::AvatarAsk;
-use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Member, Workspace, WorkspaceId};
 use ui::widget::DrawChild;
 
 /// This person, as their own avatar names them.
@@ -37,7 +37,7 @@ fn ask() -> AvatarAsk {
     }
 }
 
-fn tree(others: &[(&str, &str, bool)]) -> DesktopTree {
+fn tree(others: &[(&str, &str, bool)]) -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Studio");
     // The host lists this person among who is here too, as a roster of everyone does.
     workspace.members_here(
@@ -51,10 +51,10 @@ fn tree(others: &[(&str, &str, bool)]) -> DesktopTree {
             },
         )),
     );
-    DesktopTree {
+    Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 

@@ -11,7 +11,7 @@ use std::{
 use tilo_action_broker::services::{
     LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
 };
-use tilo_desktop_model::{DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceId};
+use tilo_desktop_model::{IdMinter, Layout, Strip, StripId, Workspace, WorkspaceId};
 use tilo_identity_host::broker::WorkspaceMembership;
 
 /// The desktop session's workspace file. Read, never written, here: its
@@ -25,7 +25,7 @@ pub(super) const INVOCATION_JOURNAL: &str = "invocations";
 /// The profile's committed workspace tree.
 pub(super) struct ProfileWorkspace {
     root: PathBuf,
-    tree: RwLock<DesktopTree>,
+    tree: RwLock<Layout>,
     /// Where this host keeps the tree; `None` when the desktop session's
     /// file is authoritative and read only.
     path: Option<PathBuf>,
@@ -131,7 +131,7 @@ impl ProfileWorkspace {
     /// Apply `change` to this host's own tree and persist it. `None`, with
     /// the tree unchanged, when this host does not govern it, `change`
     /// declines, or the result cannot be saved.
-    fn update<R>(&self, change: impl FnOnce(&mut DesktopTree) -> Option<R>) -> Option<R> {
+    fn update<R>(&self, change: impl FnOnce(&mut Layout) -> Option<R>) -> Option<R> {
         let path = self.path.as_ref()?;
         let mut tree = self.tree.write().ok()?;
         let before = tree.clone();
@@ -154,7 +154,7 @@ impl ProfileWorkspace {
     fn record(
         &self,
         workspace: &str,
-        change: impl FnOnce(&mut DesktopTree, WorkspaceId) -> Option<()>,
+        change: impl FnOnce(&mut Layout, WorkspaceId) -> Option<()>,
     ) -> Result<(), String> {
         if !self.governs() {
             return Err("the desktop session's workspace is read only in the runtime".into());
@@ -304,7 +304,7 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
 }
 
 impl WorkspaceAuthority for ProfileWorkspace {
-    fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
+    fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
         let tree = self
             .tree
             .read()
@@ -330,11 +330,11 @@ impl WorkspaceMembership for ProfileWorkspace {
     }
 }
 
-fn parse_tree(bytes: &[u8]) -> io::Result<DesktopTree> {
+fn parse_tree(bytes: &[u8]) -> io::Result<Layout> {
     serde_json::from_slice(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-pub(super) fn read_tree(path: &Path) -> io::Result<DesktopTree> {
+pub(super) fn read_tree(path: &Path) -> io::Result<Layout> {
     let tree = parse_tree(&std::fs::read(path)?)?;
     if tree.schema_version > tilo_desktop_model::STATE_SCHEMA_VERSION {
         return Err(io::Error::new(
@@ -350,7 +350,7 @@ pub(super) fn read_tree(path: &Path) -> io::Result<DesktopTree> {
 }
 
 /// One empty home workspace with one strip, as a new desktop starts.
-pub(super) fn bootstrap() -> DesktopTree {
+pub(super) fn bootstrap() -> Layout {
     let mut ids = IdMinter::default();
     let workspace = WorkspaceId::new();
     let strip = StripId(ids.mint());
@@ -365,10 +365,10 @@ pub(super) fn bootstrap() -> DesktopTree {
         }];
         workspace
     };
-    DesktopTree {
+    Layout {
         workspaces: vec![home],
         active: workspace,
         active_strip: std::iter::once((workspace, strip)).collect(),
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }

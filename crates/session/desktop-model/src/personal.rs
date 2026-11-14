@@ -1,11 +1,11 @@
-//! Windows that are a person's own, whatever desk they open on.
+//! Windows that are a person's own, whatever layout they open on.
 //!
 //! Some apps show a person's own things rather than a workspace's: Settings
 //! holds their appearance, their devices and access, their keys and billing,
 //! kept in their own records whichever workspace the window opens in. A window
 //! of such an app belongs to the person who opened it. It stands on their own
-//! desk, and a workspace's shared desktop never holds it: nobody else in the
-//! workspace sees it, opens it, or finds it on their desk later.
+//! layout, and a workspace's shared desktop never holds it: nobody else in the
+//! workspace sees it, opens it, or finds it on their layout later.
 //!
 //! The rule holds on both sides of a shared desktop: what a device writes into
 //! a workspace's layout leaves these windows out, and what it reads from one
@@ -14,7 +14,7 @@
 
 use crate::layout::{Tab, TileContent};
 use crate::ownership::SharedDesktop;
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 
 /// The apps whose windows are a person's own: their profile, devices and
 /// access, keys and billing are pages of Settings.
@@ -45,7 +45,7 @@ impl Tab {
 
 /// The ids of every personal window `tree` holds.
 #[must_use]
-pub fn personal_tabs(tree: &DesktopTree) -> Vec<crate::TabId> {
+pub fn personal_tabs(tree: &Layout) -> Vec<crate::TabId> {
     tree.tabs()
         .filter(|tab| tab.is_personal())
         .map(|tab| tab.id)
@@ -53,7 +53,7 @@ pub fn personal_tabs(tree: &DesktopTree) -> Vec<crate::TabId> {
 }
 
 /// `tree` without its personal windows: a group left empty goes with them.
-pub fn leave_out_of_tree(tree: &mut DesktopTree) {
+pub fn leave_out_of_tree(tree: &mut Layout) {
     for tab in personal_tabs(tree) {
         tree.remove_tab(tab);
     }
@@ -113,10 +113,10 @@ mod tests {
         }
         workspace.strips.push(strip);
         SharedDesktop {
-            tree: DesktopTree {
+            tree: Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             },
             records: vec![(1, String::new()), (2, "settings-of-ada".into())],
             authors: [(1, "ada".to_owned()), (2, "ada".to_owned())].into(),

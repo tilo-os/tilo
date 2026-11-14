@@ -561,7 +561,7 @@ impl ShortcutLibraryServices for ShortcutLibrary {
 /// from its own thread. The loop publishes a copy when the desk it shows
 /// moved, and the broker reads the copy.
 pub struct DeskAuthority {
-    tree: Mutex<tilo_desktop_model::DesktopTree>,
+    tree: Mutex<tilo_desktop_model::Layout>,
     /// Counts the desk's publications, so a reader that only cares whether
     /// the desk changed since it last looked asks one number, and one that
     /// waits for a change hears it ([`Self::until`]).
@@ -591,7 +591,7 @@ impl DeskAuthority {
     /// session that keeps no state).
     #[must_use]
     pub fn new(
-        tree: tilo_desktop_model::DesktopTree,
+        tree: tilo_desktop_model::Layout,
         revocations: crate::engine::Revocations,
         journal: Option<std::path::PathBuf>,
         names: Names,
@@ -627,7 +627,7 @@ impl DeskAuthority {
     }
 
     /// Write who is here into each workspace of `tree` presence names people in.
-    fn seat_people(&self, tree: &mut tilo_desktop_model::DesktopTree) {
+    fn seat_people(&self, tree: &mut tilo_desktop_model::Layout) {
         let people = self.people.lock_recover();
         for workspace in &mut tree.workspaces {
             if let Some(here) = people.get(&workspace.id().to_string()) {
@@ -645,7 +645,7 @@ impl DeskAuthority {
 
     /// The desk as the loop shows it now, for the broker's next decision, which re-checks what
     /// it holds on the announcement rather than on a clock.
-    pub fn publish(&self, mut tree: tilo_desktop_model::DesktopTree) {
+    pub fn publish(&self, mut tree: tilo_desktop_model::Layout) {
         claim_earlier_owners(&mut tree, &self.names);
         self.seat_people(&mut tree);
         *self.tree.lock_recover() = tree;
@@ -655,7 +655,7 @@ impl DeskAuthority {
     /// Wait until the desk, as the loop publishes it, satisfies `held`: a
     /// change written where the loop takes it from, such as a workspace's
     /// governance, is in force for the broker from then on.
-    pub async fn until(&self, held: impl Fn(&tilo_desktop_model::DesktopTree) -> bool) {
+    pub async fn until(&self, held: impl Fn(&tilo_desktop_model::Layout) -> bool) {
         let mut published = self.generation.subscribe();
         while !self.holds(&held) {
             if published.changed().await.is_err() {
@@ -664,7 +664,7 @@ impl DeskAuthority {
         }
     }
 
-    fn holds(&self, held: &impl Fn(&tilo_desktop_model::DesktopTree) -> bool) -> bool {
+    fn holds(&self, held: &impl Fn(&tilo_desktop_model::Layout) -> bool) -> bool {
         held(&self.tree.lock_recover())
     }
 
@@ -679,7 +679,7 @@ impl DeskAuthority {
 /// identity is theirs as the person they are now: the desk claims it ([`crate::Shared`]'s
 /// `own_workspaces`) and so does the copy the broker decides against, in the same moment, so their
 /// own action in it is never refused for the id their own workspace was founded under.
-fn claim_earlier_owners(tree: &mut tilo_desktop_model::DesktopTree, names: &Names) {
+fn claim_earlier_owners(tree: &mut tilo_desktop_model::Layout, names: &Names) {
     if names.earlier.is_empty() {
         return;
     }
@@ -710,10 +710,7 @@ impl tilo_identity_host::broker::WorkspaceMembership for DeskAuthority {
 }
 
 impl WorkspaceAuthority for DeskAuthority {
-    fn with_tree(
-        &self,
-        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
-    ) -> Result<(), String> {
+    fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
         read(&self.tree.lock_recover());
         Ok(())
     }
@@ -847,7 +844,7 @@ impl SessionGrants {
     /// Whether the desk the broker decides against shows `grant` in
     /// `workspace`.
     fn shown(
-        tree: &tilo_desktop_model::DesktopTree,
+        tree: &tilo_desktop_model::Layout,
         workspace: &str,
         grant: &tilo_action_policy::GrantId,
     ) -> bool {
@@ -1588,7 +1585,7 @@ mod tests {
             content,
             records: None,
             desk: std::sync::Arc::new(DeskAuthority::new(
-                tilo_desktop_model::DesktopTree::default(),
+                tilo_desktop_model::Layout::default(),
                 crate::engine::revocations_of(None),
                 None,
                 Names::default(),

@@ -46,7 +46,7 @@ use tilo_compositor::{Compositor, InputEvent, Selection};
 use tilo_desktop::chrome::ActiveExposure;
 use tilo_desktop_model::window_share::{window_node, window_share_id, window_shares};
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, peer_salt_of,
+    Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, peer_salt_of,
 };
 use tilo_desktop_surface::i18n::t;
 use tilo_desktop_surface::{DesktopHandle, PeerStreamStart};
@@ -549,7 +549,7 @@ impl WindowShares {
         &mut self,
         compositor: &mut Compositor,
         desk: &DesktopHandle,
-        tree: &DesktopTree,
+        tree: &Layout,
         sync: &Client,
         pages: &Rc<RefCell<crate::page_track::PageTracks>>,
         now: Instant,
@@ -749,7 +749,7 @@ impl WindowShares {
     }
 
     /// The windows another device shares in `tree` 's workspaces, as their governance names them.
-    fn shared_in(&self, tree: &DesktopTree, sync: &Client) -> Vec<Shared> {
+    fn shared_in(&self, tree: &Layout, sync: &Client) -> Vec<Shared> {
         let now_ms = tilo_clock::unix_now_ms();
         let mut shared = Vec::new();
         for held in &tree.workspaces {
@@ -783,7 +783,7 @@ impl WindowShares {
     fn take_ended(
         &mut self,
         desk: &DesktopHandle,
-        tree: &mut DesktopTree,
+        tree: &mut Layout,
         live: &BTreeSet<TabId>,
     ) -> bool {
         let ended: Vec<TabId> = self
@@ -807,7 +807,7 @@ impl WindowShares {
 
     /// Add the tab of `shared` 's window to `tree` at the end of its workspace's last strip, and
     /// watch it from the device the governance says hosts it. Answers whether `tree` changed.
-    fn show_shared(&mut self, tree: &mut DesktopTree, shared: &Shared, now: Instant) -> bool {
+    fn show_shared(&mut self, tree: &mut Layout, shared: &Shared, now: Instant) -> bool {
         let Shared {
             tab,
             app_id,
@@ -1372,7 +1372,7 @@ impl WindowShares {
     /// Share the windows a session that exists only to be seen runs: a hosted browser environment
     /// nobody works at shares its windows with the workspace's members the moment they open, since
     /// the whole point of it is that they watch and drive it.
-    fn share_environment_windows(&mut self, compositor: &Compositor, tree: &DesktopTree) {
+    fn share_environment_windows(&mut self, compositor: &Compositor, tree: &Layout) {
         if !self.share_by_default {
             return;
         }
@@ -2038,7 +2038,7 @@ const fn video_codec(codec: StreamCodec) -> tilo_live::video::Codec {
 /// The stream a shared window's keyframe `object` starts, as the tile in `tab` decodes it: `None`
 /// for a codec no decoder here takes.
 fn picture_start(
-    tree: &DesktopTree,
+    tree: &Layout,
     local_peer: PeerId,
     peer: PeerId,
     tab: TabId,
@@ -2126,7 +2126,7 @@ fn view_size(compositor: &Compositor) -> (u32, u32) {
 
 /// What the desk calls the window shown in `tab` , and the device it says hosts it: empty when the
 /// desk shows no such tab.
-fn tab_title(tree: &DesktopTree, tab: TabId) -> (String, String) {
+fn tab_title(tree: &Layout, tab: TabId) -> (String, String) {
     shown_tab(tree, tab)
         .map(|shown| {
             let sharer = match &shown.tile {
@@ -2148,7 +2148,7 @@ fn land_displays(desk: &DesktopHandle, displays: &crate::displays::Displays) {
 }
 
 /// The tab `tab` as the desk shows it.
-fn shown_tab(tree: &DesktopTree, tab: TabId) -> Option<&Tab> {
+fn shown_tab(tree: &Layout, tab: TabId) -> Option<&Tab> {
     tree.workspaces
         .iter()
         .flat_map(|workspace| &workspace.strips)
@@ -2158,7 +2158,7 @@ fn shown_tab(tree: &DesktopTree, tab: TabId) -> Option<&Tab> {
 }
 
 /// The window of another device shown in `tab` : its host's key and app.
-fn hosted_window(tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
+fn hosted_window(tree: &Layout, tab: TabId) -> Option<(String, String)> {
     shown_tab(tree, tab).and_then(|shown| match &shown.tile {
         TileContent::HostedWindow { host, app_id, .. } => Some((host.clone(), app_id.clone())),
         _ => None,
@@ -2178,7 +2178,7 @@ fn device_key(host: &str) -> Option<EndpointId> {
 }
 
 /// Whether the desk shows the tab `tab` anywhere.
-fn shown(tree: &DesktopTree, tab: TabId) -> bool {
+fn shown(tree: &Layout, tab: TabId) -> bool {
     shown_tab(tree, tab).is_some()
 }
 
@@ -2202,7 +2202,7 @@ fn owners_of(
 
 /// The desk without the tab `tab` , and without the strip `strip` when that was made for it and
 /// holds nothing else.
-fn remove_governed_tile(tree: &mut DesktopTree, tab: TabId, strip: Option<StripId>) {
+fn remove_governed_tile(tree: &mut Layout, tab: TabId, strip: Option<StripId>) {
     for workspace in &mut tree.workspaces {
         for held in &mut workspace.strips {
             held.window_groups.retain_mut(|group| {

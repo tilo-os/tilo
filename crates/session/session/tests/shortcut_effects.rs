@@ -23,7 +23,7 @@ use tilo_compositor::{InputEvent, OutputConfig};
 const HOST_SEARCH: &str = "tilo.host:search";
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, SEARCH_RESOURCE};
 use tilo_desktop_model::{
-    AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
 };
 use tilo_session::shell::state::WINDOW_MENU;
@@ -78,7 +78,7 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
 }
 
 /// The desk the session starts on: one strip of two windows, the first with two tabs.
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let first = WindowGroup {
         id: 3,
         active_tab: 20,
@@ -104,7 +104,7 @@ fn desk_tree() -> DesktopTree {
         name: "Main".into(),
         window_groups: vec![first, second],
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
@@ -129,11 +129,11 @@ fn panel_environment() -> ScopedEnv {
     environment
 }
 
-fn session_with(tree: DesktopTree) -> Session {
+fn session_with(tree: Layout) -> Session {
     session_with_config(tree, SessionConfig::default())
 }
 
-fn session_with_config(tree: DesktopTree, config: SessionConfig) -> Session {
+fn session_with_config(tree: Layout, config: SessionConfig) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
         Options {

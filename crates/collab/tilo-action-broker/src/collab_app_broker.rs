@@ -143,7 +143,7 @@ use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHan
 use collab_types::Role as CapRole;
 #[cfg(test)]
 use tilo_action_policy::Grantee;
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AuthorizedDocumentRoute {
@@ -443,7 +443,7 @@ impl AdmittedJoinIdentity {
 
     fn with_authority<T>(
         &self,
-        tree: Option<&DesktopTree>,
+        tree: Option<&Layout>,
         workspace_id: &str,
         decide: impl FnOnce(&Authority<'_>) -> T,
     ) -> Result<T, String> {
@@ -492,7 +492,7 @@ fn confirmation_satisfied(
 
 #[cfg(test)]
 fn admit_verified_join(
-    tree: &DesktopTree,
+    tree: &Layout,
     route: &CrdtRoute,
     verified: VerifiedJoinIdentity,
 ) -> Result<AdmittedJoinIdentity, String> {
@@ -13918,7 +13918,7 @@ pub mod tests {
     #[cfg(test)]
     #[derive(Clone)]
     struct CountingCatalogueAuthority {
-        tree: Arc<Mutex<tilo_desktop_model::DesktopTree>>,
+        tree: Arc<Mutex<tilo_desktop_model::Layout>>,
         calls: Arc<std::sync::atomic::AtomicUsize>,
         failed: Arc<std::sync::atomic::AtomicBool>,
     }
@@ -13929,7 +13929,7 @@ pub mod tests {
         /// counts once.
         fn with_tree(
             &self,
-            read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+            read: &mut dyn FnMut(&tilo_desktop_model::Layout),
         ) -> Result<(), String> {
             self.calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -14058,7 +14058,7 @@ pub mod tests {
     #[cfg(test)]
     struct CountingCatalogueFixture {
         state: Arc<AppBrokerState>,
-        tree: Arc<Mutex<tilo_desktop_model::DesktopTree>>,
+        tree: Arc<Mutex<tilo_desktop_model::Layout>>,
         calls: Arc<std::sync::atomic::AtomicUsize>,
         failed: Arc<std::sync::atomic::AtomicBool>,
         cluster: String,
@@ -14072,7 +14072,7 @@ pub mod tests {
         );
         workspace.set_owner(owner);
         let cluster = workspace.id().to_string();
-        let mut tree = tilo_desktop_model::DesktopTree::default();
+        let mut tree = tilo_desktop_model::Layout::default();
         tree.workspaces.push(workspace);
         let tree = Arc::new(Mutex::new(tree));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));

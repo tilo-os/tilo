@@ -13,7 +13,7 @@ use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use tilo_session_core::surface::SurfaceHost as _;
@@ -21,7 +21,7 @@ use tilo_surface_host::{Placement, WidgetHost};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
 
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let tabs = vec![Tab {
         id: 20,
         title: "Notes".into(),
@@ -48,7 +48,7 @@ fn desk_tree() -> DesktopTree {
         name: "Main".into(),
         window_groups: vec![group],
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()

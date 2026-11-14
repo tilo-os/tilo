@@ -28,7 +28,7 @@ use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::i18n::{t, t_args};
-use tilo_desktop_model::{DesktopTree, StripId};
+use tilo_desktop_model::{Layout, StripId};
 use tilo_desktop_surface::names;
 use ui::widget::DrawChild;
 
@@ -128,7 +128,7 @@ impl SwitcherModel {
     /// it: the strips of the active workspace with the others on each. `may_rename` says which
     /// strips this machine names.
     pub fn of(
-        desktop: &DesktopTree,
+        desktop: &Layout,
         local_user: &str,
         own_id: &str,
         may_rename: impl Fn(StripId) -> bool,
@@ -192,7 +192,7 @@ impl SwitcherModel {
 
 /// The strip of the active workspace that `participant_id` has open, from the tab their presence
 /// names.
-fn strip_of(desktop: &DesktopTree, participant_id: &str) -> Option<StripId> {
+fn strip_of(desktop: &Layout, participant_id: &str) -> Option<StripId> {
     let workspace = desktop.active_workspace()?;
     let tab = workspace
         .present
@@ -283,7 +283,7 @@ struct Opened {
 
 /// Where everything in the open switcher sits.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Layout {
+pub struct Placement {
     /// Every label and the ribbon band: the pointer on this (with `GRACE` ) keeps the labels up.
     pub bounds: Rect,
     /// Each label's pointer row: from the label's left edge to the screen edge, as tall as its
@@ -294,7 +294,7 @@ pub struct Layout {
     pub labels: Vec<(Row, Rect)>,
 }
 
-impl Layout {
+impl Placement {
     /// Lay the labels out beside `ribbon` , each centred on its segment, right edges aligned a gap
     /// from the marks; `width` is each label's painted width. `focus` is where the ribbon's long
     /// segment is drawn while it slides to another strip; the labels stay level with their segments
@@ -415,7 +415,7 @@ pub struct StripSwitcher {
     focus: Option<f64>,
     /// Each label's measured width, by row, as of the last paint.
     widths: Vec<(Row, f64)>,
-    layout: Layout,
+    layout: Placement,
     /// The labels fading in (`ui::motion::Ambient`): nothing in them moves,
     /// so the label under the pointer stays level with its mark.
     fade: ui::motion::Presence,
@@ -481,7 +481,7 @@ impl StripSwitcher {
         let Some(ribbon) = self.ribbon else {
             return;
         };
-        self.layout = Layout::beside(&self.model, &ribbon, self.focus, |row| {
+        self.layout = Placement::beside(&self.model, &ribbon, self.focus, |row| {
             self.label_width(row)
         });
     }
@@ -563,7 +563,7 @@ impl StripSwitcher {
         out
     }
 
-    pub fn layout(&self) -> &Layout {
+    pub fn layout(&self) -> &Placement {
         &self.layout
     }
 

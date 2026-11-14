@@ -25,7 +25,7 @@ use crate::common::{BTN_LEFT, HEIGHT, WIDTH, changed, shot, until};
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_desktop::window_switcher::SwitcherView;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_session::{Options, Session};
 use tilo_session_core::shell::DeskReading;
@@ -74,7 +74,7 @@ fn group(id: u64, tab: Tab) -> WindowGroup {
 /// The desk the session starts on: two strips and three windows in the workspace in front — two of
 /// the notes app, one of the mail app — and a window of another workspace, which the walk never
 /// crosses.
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let mut work = Workspace::new(WorkspaceId::from_u128(1), "Work");
     work.strips = vec![
         Strip {
@@ -97,7 +97,7 @@ fn desk_tree() -> DesktopTree {
         name: "Main".into(),
         window_groups: vec![group(13, window(23, "Away", "so.tilo.mail"))],
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: work.id(),
         workspaces: vec![work, elsewhere],
         ..Default::default()

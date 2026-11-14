@@ -50,7 +50,7 @@ const STRIPPED_ENV: &[&str] = &[
 /// Which service draws the apps of `workspace` : the person's own when nobody else may read it, and
 /// one of its own otherwise.
 pub(crate) fn render_key(
-    tree: &tilo_desktop_model::DesktopTree,
+    tree: &tilo_desktop_model::Layout,
     person: &str,
     workspace: Option<&str>,
 ) -> String {
@@ -217,7 +217,7 @@ impl Broker {
             let mut live = self.inner.live.lock_recover();
             live.retain(|connection, channel| {
                 let mut key = channel.key.clone();
-                let mut read = |tree: &tilo_desktop_model::DesktopTree| {
+                let mut read = |tree: &tilo_desktop_model::Layout| {
                     key = render_key(tree, &self.inner.person, channel.workspace.as_deref());
                 };
                 let _ = desk.with_tree(&mut read);
@@ -291,7 +291,7 @@ impl Inner {
     fn connect(self: &Arc<Self>, handshake: &wire::Handshake) -> Result<(u64, Channel), String> {
         let mut key = PRIVATE.to_owned();
         if let Some(desk) = &self.desk {
-            let mut read = |tree: &tilo_desktop_model::DesktopTree| {
+            let mut read = |tree: &tilo_desktop_model::Layout| {
                 key = render_key(tree, &self.person, handshake.workspace_id.as_deref());
             };
             let _ = desk.with_tree(&mut read);
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn workspaces_render_in_the_private_service_only_while_nobody_else_is_in_them() {
         let person = "person-at-this-device";
-        let mut tree = tilo_desktop_model::DesktopTree::default();
+        let mut tree = tilo_desktop_model::Layout::default();
         let mut workspace =
             tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Notes");
         workspace.set_owner(person.to_owned());

@@ -1,9 +1,9 @@
-//! Snapshot compatibility for hosts whose workspace carries a desktop tree. Stream bindings and
+//! Snapshot compatibility for hosts whose workspace carries a layout. Stream bindings and
 //! presentation belong to the receiving device, and a person's own windows
 //! ([`tilo_desktop_model::personal`]) to the desk they were opened on.
-use tilo_desktop_model::{DesktopTree, OutputPartition, TabId, WindowWidth, WorkspaceId};
+use tilo_desktop_model::{Layout, OutputPartition, TabId, WindowWidth, WorkspaceId};
 
-pub(crate) fn projection(mut tree: DesktopTree) -> DesktopTree {
+pub(crate) fn projection(mut tree: Layout) -> Layout {
     let local: Vec<_> = tree
         .workspaces
         .iter()
@@ -36,11 +36,7 @@ pub(crate) fn projection(mut tree: DesktopTree) -> DesktopTree {
     tree
 }
 
-pub(crate) fn receive(
-    local: &DesktopTree,
-    incoming: DesktopTree,
-    local_tabs: &[TabId],
-) -> DesktopTree {
+pub(crate) fn receive(local: &Layout, incoming: Layout, local_tabs: &[TabId]) -> Layout {
     // Old senders also send their stream proxies. Those process-local bindings have no meaning
     // here, even when their ids happen to match.
     let mut incoming = projection(incoming);

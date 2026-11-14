@@ -5,8 +5,8 @@
 )]
 
 use tilo_desktop_model::{
-    CanvasPlace, DesktopTree, DropTarget, FloatCorner, FloatPlace, GroupShape, IdMinter, Strip,
-    StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    CanvasPlace, DropTarget, FloatCorner, FloatPlace, GroupShape, IdMinter, Layout, Strip, StripId,
+    Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 
 fn tab(id: u64) -> Tab {
@@ -36,21 +36,21 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 }
 
 /// Strip 1 holds groups 10 [100, 101] and 11 [110]; strip 2 holds 20 [200].
-fn tree() -> DesktopTree {
-    let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Desk");
+fn tree() -> Layout {
+    let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Work");
     let mut a = Strip::new(StripId(1), "A");
     a.window_groups = vec![group(10, &[100, 101]), group(11, &[110])];
     let mut b = Strip::new(StripId(2), "B");
     b.window_groups = vec![group(20, &[200])];
     ws.strips = vec![a, b];
-    DesktopTree {
+    Layout {
         workspaces: vec![ws],
         active: WorkspaceId::from_u128(1),
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 
-fn layout(tree: &DesktopTree, strip: u64) -> Vec<(u64, Vec<u64>)> {
+fn layout(tree: &Layout, strip: u64) -> Vec<(u64, Vec<u64>)> {
     tree.workspaces[0]
         .strips
         .iter()
@@ -292,7 +292,7 @@ tilo_test_env::scenario! {
                 .insert(11, CanvasPlace::new(744, 0, 720, 520));
         }
         tree.close_tab(110).unwrap();
-        // A window opened on the desk after the close, placed as the desk places one.
+        // A window opened on the layout after the close, placed as the layout places one.
         let ws = &mut tree.workspaces[0];
         ws.strips[0].window_groups.push(group(12, &[120]));
         let strips = ws.strips.clone();

@@ -3,12 +3,12 @@
 //! native and in the browser alike.
 //!
 //! A workspace belongs to whoever governs it, its owner and moderators:
-//! they name it and manage its strips (desks). Everyone who writes in the
+//! they name it and manage its strips. Everyone who writes in the
 //! workspace opens windows, and closes, moves and arranges the windows they
 //! opened and the strips they made; what someone else made is theirs, or a
 //! moderator's, to change ([`crate::ownership`]). A public workspace is no
 //! different: its guests write in it as members do, so they open and close
-//! their own windows, and leave its name and desks to whoever governs it.
+//! their own windows, and leave its name and strips to whoever governs it.
 //!
 //! Commands outside the workspace's topology (shortcuts, grant sets,
 //! receipts, namespace claims) are decided by their own governance checks
@@ -55,7 +55,7 @@ pub enum Governed {
     Name,
     /// Its strips: adding them, and renaming, moving or removing the ones
     /// nobody here made themselves.
-    Desks,
+    Strips,
     /// More workspaces: adding another beside this one.
     Workspaces,
 }
@@ -78,8 +78,8 @@ impl std::fmt::Display for Refusal {
             Self::Governed(Governed::Name) => {
                 "Only the workspace's owner and moderators can rename it"
             }
-            Self::Governed(Governed::Desks) => {
-                "Only the workspace's owner and moderators manage its desks"
+            Self::Governed(Governed::Strips) => {
+                "Only the workspace's owner and moderators manage its strips"
             }
             Self::Governed(Governed::Workspaces) => {
                 "Only the workspace's owner and moderators add workspaces"
@@ -149,12 +149,12 @@ pub fn may_manage_strip(
     {
         Ok(())
     } else {
-        govern(standing, Governed::Desks)
+        govern(standing, Governed::Strips)
     }
 }
 
 /// Whether `standing` may add a workspace beside this one: whoever governs it,
-/// as for its desks.
+/// as for its strips.
 ///
 /// # Errors
 ///
@@ -179,9 +179,9 @@ pub fn may_command(
     match command {
         DesktopCommand::RenameWorkspace { .. } => govern(standing, Governed::Name),
         // How the workspace lays out its windows is everyone's: as much
-        // the workspace's arrangement as its desks.
+        // the workspace's arrangement as its strips.
         DesktopCommand::CreateStrip { .. } | DesktopCommand::SetArrangement { .. } => {
-            govern(standing, Governed::Desks)
+            govern(standing, Governed::Strips)
         }
         DesktopCommand::RenameStrip { strip, .. }
         | DesktopCommand::RemoveStrip { strip }
@@ -342,11 +342,11 @@ mod tests {
             for command in [&add, &rename, &remove] {
                 assert_eq!(
                     asks(&GUEST, command),
-                    Err(Refusal::Governed(Governed::Desks))
+                    Err(Refusal::Governed(Governed::Strips))
                 );
                 assert_eq!(
                     asks(&MEMBER, command),
-                    Err(Refusal::Governed(Governed::Desks))
+                    Err(Refusal::Governed(Governed::Strips))
                 );
                 assert_eq!(asks(&MODERATOR, command), Ok(()));
                 assert_eq!(asks(&OWNER, command), Ok(()));
@@ -466,7 +466,7 @@ mod tests {
         {
             for refusal in [
                 Refusal::Governed(Governed::Name),
-                Refusal::Governed(Governed::Desks),
+                Refusal::Governed(Governed::Strips),
                 Refusal::Governed(Governed::Workspaces),
                 Refusal::Others { id: 2, owner: None },
                 Refusal::ReadOnly,

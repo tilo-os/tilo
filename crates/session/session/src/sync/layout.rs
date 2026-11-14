@@ -12,7 +12,7 @@ use ui::record::RecordId;
 /// names the people it reads by them the way a session does.
 #[must_use]
 pub fn bindings_of(
-    tree: &tilo_desktop_model::DesktopTree,
+    tree: &tilo_desktop_model::Layout,
     windows: &[(tilo_desktop_model::TabId, Option<String>, String)],
 ) -> Vec<(tilo_desktop_model::TabId, String, String)> {
     windows
@@ -56,7 +56,7 @@ pub fn placed(
 /// The app is said by whoever knows it: a window drawn by its app's own surface names no app in
 /// the desk's tree, and its app is what told the session what it shows.
 pub(crate) fn live_record_as(
-    tree: &tilo_desktop_model::DesktopTree,
+    tree: &tilo_desktop_model::Layout,
     tab: tilo_desktop_model::TabId,
     record: &str,
     app: Option<&str>,

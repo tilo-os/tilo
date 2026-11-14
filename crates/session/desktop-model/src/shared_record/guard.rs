@@ -94,7 +94,7 @@ pub enum DesktopRefusal {
     Rebound { writer: String, window: TabId },
     /// It places a person's own window ([`crate::personal`]) on the workspace's desktop.
     #[error(
-        "{writer} may not place window {window} on the shared desktop: it is a person's own and stays on their desk"
+        "{writer} may not place window {window} on the shared desktop: it is a person's own and stays on their layout"
     )]
     Personal { writer: String, window: TabId },
     /// It is not a desktop, or not one that can be read.

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 
 mod own_device;
 mod task_execution;
@@ -74,7 +74,7 @@ pub trait WorkspaceAuthority: Send + Sync {
     /// # Errors
     ///
     /// A message when the committed authority cannot be read; `read` is then not called.
-    fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String>;
+    fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String>;
 
     /// As [`Self::with_tree`], for exactly `workspace` (`None` when this host has none). A host
     /// whose workspaces are not one tree overrides it to look up only that one.
@@ -88,7 +88,7 @@ pub trait WorkspaceAuthority: Send + Sync {
 
     /// An owned copy of the committed workspace tree, for the few callers
     /// that must keep one past the read. Never on an admission path.
-    fn snapshot(&self) -> Result<DesktopTree, String> {
+    fn snapshot(&self) -> Result<Layout, String> {
         let mut copy = None;
         self.with_tree(&mut |tree| copy = Some(tree.clone()))?;
         copy.ok_or_else(|| UNANSWERED.to_owned())
@@ -132,7 +132,7 @@ pub trait WorkspaceAuthority: Send + Sync {
 const UNANSWERED: &str = "workspace authority did not answer";
 
 #[must_use]
-pub fn workspace_in<'a>(tree: &'a DesktopTree, workspace_id: &str) -> Option<&'a Workspace> {
+pub fn workspace_in<'a>(tree: &'a Layout, workspace_id: &str) -> Option<&'a Workspace> {
     tree.workspaces
         .iter()
         .find(|workspace| workspace.id().to_string() == workspace_id)
@@ -141,7 +141,7 @@ pub fn workspace_in<'a>(tree: &'a DesktopTree, workspace_id: &str) -> Option<&'a
 impl dyn WorkspaceAuthority {
     /// One policy sample of the whole tree: `decide` runs once on the
     /// borrowed committed tree and its answer is returned.
-    pub fn decide_in_tree<R>(&self, decide: impl FnOnce(&DesktopTree) -> R) -> Result<R, String> {
+    pub fn decide_in_tree<R>(&self, decide: impl FnOnce(&Layout) -> R) -> Result<R, String> {
         let mut decide = Some(decide);
         let mut answer = None;
         self.with_tree(&mut |tree| {

@@ -16,7 +16,7 @@ pub struct Overlays {
     pub ws_settings: bool,
 }
 pub struct State {
-    pub tree: DesktopTree,
+    pub tree: Layout,
     pub overlays: Overlays,
     pub glance: ActivityGlance,
     /// The activities the bar's pill names, each with the app that shows it: an activity's id is
@@ -61,7 +61,7 @@ impl State {
 }
 pub struct FixtureChrome(RefCell<State>);
 impl FixtureChrome {
-    pub fn new(tree: DesktopTree) -> Rc<Self> {
+    pub fn new(tree: Layout) -> Rc<Self> {
         Rc::new(Self(RefCell::new(State {
             tree,
             overlays: Overlays::default(),
@@ -89,7 +89,7 @@ impl FixtureChrome {
     }
 }
 impl DesktopChromeSource for FixtureChrome {
-    fn tree(&self) -> DesktopTree {
+    fn tree(&self) -> Layout {
         self.0.borrow().tree.clone()
     }
     fn snapshot(&self) -> DesktopChromeSnapshot {

@@ -15,7 +15,7 @@
 
 use std::rc::Rc;
 
-use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, TileContent};
+use tilo_desktop_model::{GroupId, Layout, StripId, TabId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
 use tilo_desktop_search::{LaunchPlace, SearchData, Target};
 use ui::automerge::AutoCommit;
@@ -46,7 +46,7 @@ pub(super) enum SearchRequest {
 /// show there, a window's search control (or an app's own search button) asks what that window
 /// shows, narrowed to the app that window has in front.
 pub(super) fn search_asked(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     strip: StripId,
     new_tab: Option<GroupId>,
     search_in: Option<(GroupId, ui::search::SearchRequest)>,
@@ -622,7 +622,7 @@ pub fn is_escape(event: &WindowEvent) -> bool {
 /// Every open window as search lists it: called by what it shows and the app it shows it in
 /// (`Groceries — Notes`), with the app for its glyph. Only windows called alike say more: where
 /// each of them is, or which of them it is, counted left to right.
-fn window_app(tree: &DesktopTree, group: GroupId) -> Option<String> {
+fn window_app(tree: &Layout, group: GroupId) -> Option<String> {
     let window = tree
         .workspaces
         .iter()
@@ -637,7 +637,7 @@ fn window_app(tree: &DesktopTree, group: GroupId) -> Option<String> {
 }
 
 fn windows(
-    tree: &DesktopTree,
+    tree: &Layout,
     holders: &std::collections::HashMap<TabId, ui::widget::TabHolder>,
 ) -> Vec<WindowEntry> {
     let mut out = Vec::new();
@@ -713,7 +713,7 @@ fn windows(
 
 /// The workspace that holds `strip`, as search names it: where a window's search reads what its
 /// app published.
-fn workspace_holding(tree: &DesktopTree, strip: StripId) -> Option<String> {
+fn workspace_holding(tree: &Layout, strip: StripId) -> Option<String> {
     tree.workspaces
         .iter()
         .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
@@ -722,7 +722,7 @@ fn workspace_holding(tree: &DesktopTree, strip: StripId) -> Option<String> {
 
 /// The people in the active workspace, as search finds them, and its workspace.
 fn people(
-    tree: &DesktopTree,
+    tree: &Layout,
 ) -> (
     String,
     Vec<tilo_desktop_search::providers::people::PersonEntry>,
@@ -754,11 +754,7 @@ fn people(
 /// the other workspaces. Each row says whether it may stand there with nothing typed: closing a
 /// window or moving to another workspace is something a person goes looking for, and typing still
 /// finds every one of them.
-fn commands(
-    tree: &DesktopTree,
-    host: &[HostAction],
-    held: &dyn Fn(TabId) -> bool,
-) -> Vec<CommandSpec> {
+fn commands(tree: &Layout, host: &[HostAction], held: &dyn Fn(TabId) -> bool) -> Vec<CommandSpec> {
     let mut out: Vec<CommandSpec> = host
         .iter()
         .map(|action| CommandSpec {
@@ -1525,7 +1521,7 @@ impl DesktopSurface {
 
 /// The ids of the commands search offers over `tree` , with the windows `held` by someone else.
 #[cfg(test)]
-pub(super) fn offered_commands(tree: &DesktopTree, held: &dyn Fn(TabId) -> bool) -> Vec<String> {
+pub(super) fn offered_commands(tree: &Layout, held: &dyn Fn(TabId) -> bool) -> Vec<String> {
     commands(tree, &[], held)
         .into_iter()
         .map(|spec| spec.id)

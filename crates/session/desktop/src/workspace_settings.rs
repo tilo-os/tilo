@@ -1045,10 +1045,10 @@ mod members_tests {
             // The roster knows Ada from presence; the workspace's own record of her has no name.
             let mut listed = ws.clone();
             listed.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
-            let desktop = tilo_desktop_model::DesktopTree {
+            let desktop = tilo_desktop_model::Layout {
                 active: listed.id(),
                 workspaces: vec![listed],
-                ..tilo_desktop_model::DesktopTree::default()
+                ..tilo_desktop_model::Layout::default()
             };
             let names = PeopleNames::of(&desktop, &owner_key, Some("Robin"));
             let (roster, own) = roster_rows_named(&desktop, &owner_key, Some("Robin"));

@@ -22,13 +22,13 @@ fn topic(workspace: &str) -> WorkspaceId {
 }
 
 /// A desktop showing one workspace, in `workspace` .
-fn desk(workspace: &str) -> DesktopTree {
+fn desk(workspace: &str) -> Layout {
     let workspace = ModelWorkspaceId::parse(workspace).expect("a workspace id");
     let workspace = Workspace::new(workspace, "Desk");
-    DesktopTree {
+    Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 
@@ -1014,7 +1014,7 @@ fn changing_what_this_person_says_is_said_again() {
 fn leaving_a_workspace_leaves_its_topic() {
     let (sync, mut said) = session("Quinten", None);
     sent(&mut said);
-    sync.follow_desktop(&DesktopTree::default());
+    sync.follow_desktop(&Layout::default());
     assert!(matches!(sent(&mut said)[0], Cmd::Leave(ws) if ws == topic(WORKSPACE)));
 }
 

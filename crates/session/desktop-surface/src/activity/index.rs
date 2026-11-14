@@ -27,7 +27,7 @@ pub const MAX_INDEXED_RECORDS: usize = 512;
 /// Which collaborative document produced a history row.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HistoryOrigin {
-    DesktopTree,
+    Layout,
     AppRecord {
         app: String,
         id: RecordId,
@@ -38,7 +38,7 @@ pub enum HistoryOrigin {
 impl HistoryOrigin {
     pub fn key(&self) -> String {
         match self {
-            Self::DesktopTree => "workspace-tree".to_string(),
+            Self::Layout => "workspace-tree".to_string(),
             // A tuple of strings always encodes; the empty fallback is unreachable.
             Self::AppRecord { app, id, kind } => format!(
                 "app-record:{}",
@@ -50,14 +50,14 @@ impl HistoryOrigin {
     /// The record this row came from, if it is not the workspace document.
     pub fn record(&self) -> Option<&RecordId> {
         match self {
-            Self::DesktopTree => None,
+            Self::Layout => None,
             Self::AppRecord { id, .. } => Some(id),
         }
     }
 
     pub fn label(&self) -> String {
         match self {
-            Self::DesktopTree => crate::i18n::t("activity-source-workspace"),
+            Self::Layout => crate::i18n::t("activity-source-workspace"),
             Self::AppRecord { app, id, .. } => format!("{app}: {id}"),
         }
     }
@@ -180,7 +180,7 @@ impl WorkspaceSeenFrontier {
         }
         if workspace_scoped {
             for row in &index.entries {
-                if row.id.origin == HistoryOrigin::DesktopTree {
+                if row.id.origin == HistoryOrigin::Layout {
                     self.acknowledge(&row.id);
                 }
             }
@@ -212,7 +212,7 @@ impl WorkspaceHistoryEntry {
         // Collaborative named ranges live in the workspace tree and address its native ids.
         // Preserve those ids so adding record rows cannot detach an existing name from its band.
         // Only foreign document ids need projection into the shared widget namespace.
-        if self.id.origin == HistoryOrigin::DesktopTree {
+        if self.id.origin == HistoryOrigin::Layout {
             return projected;
         }
         let mut hasher = blake3::Hasher::new();
@@ -402,7 +402,7 @@ impl WorkspaceHistoryIndex {
         };
         let mut documents = BTreeMap::new();
         if !coverage.pending_tree {
-            insert_rows(&mut by_id, &HistoryOrigin::DesktopTree, tree_rows.to_vec());
+            insert_rows(&mut by_id, &HistoryOrigin::Layout, tree_rows.to_vec());
             documents.insert("workspace-tree".into(), tree.document_mut().get_heads());
         }
         let mut ordered = records.iter_mut().collect::<Vec<_>>();

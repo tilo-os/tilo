@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use crate::platform::surfaces::DesktopHost;
 use tilo_app_launch::Launch;
-use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceId};
+use tilo_desktop_model::{Layout, TabId, TileContent, WorkspaceId};
 
 use crate::apps::{self, Apps};
 use crate::i18n::t_args;
@@ -69,7 +69,7 @@ impl Restore {
     /// workspaces' layouts: every window that opens again, the ones on the desk in front first, then
     /// the rest in the order the person left them. Whether this is that first time, in which case
     /// what it took is all of them and no window is one that arrived.
-    pub(crate) fn start(&mut self, before: &DesktopTree, tree: &mut DesktopTree) -> bool {
+    pub(crate) fn start(&mut self, before: &Layout, tree: &mut Layout) -> bool {
         if self.seeded {
             return false;
         }
@@ -99,7 +99,7 @@ impl Restore {
 
     /// Ask, after what is waiting already, for the windows of the workspace `workspace_id` of `tree` that
     /// wait for their apps: a workspace put on the desk with windows to open, as a branch is.
-    pub(crate) fn add(&mut self, tree: &DesktopTree, workspace_id: WorkspaceId) {
+    pub(crate) fn add(&mut self, tree: &Layout, workspace_id: WorkspaceId) {
         self.waiting.extend(
             waiting_in(tree, |workspace| workspace == workspace_id)
                 .into_iter()
@@ -110,7 +110,7 @@ impl Restore {
     /// Ask, after what is waiting already, for the windows `after` waits for that `before` did
     /// not: the windows someone else in a workspace opened, which this device opens its own
     /// instance of, each in the tab the workspace put it in.
-    pub(crate) fn arrived(&mut self, before: &DesktopTree, after: &DesktopTree) {
+    pub(crate) fn arrived(&mut self, before: &Layout, after: &Layout) {
         let known: std::collections::HashSet<TabId> = waiting_in(before, |_| true)
             .into_iter()
             .map(|(_, saved)| saved.tab)
@@ -275,7 +275,7 @@ impl Restore {
 /// by the next start, so nothing is on its way to those any more: they are not windows the person
 /// had open, and a start that kept them would show the remains of a launch that ended — one more of
 /// them with every restart, since each is written down with the desk.
-pub(crate) fn without_unfilled(tree: &mut DesktopTree) {
+pub(crate) fn without_unfilled(tree: &mut Layout) {
     let unfilled: Vec<TabId> = tree
         .workspaces
         .iter()
@@ -315,10 +315,7 @@ fn workspace_holding<T>(
 
 /// The windows of the workspaces of `tree` that `wanted` names, each waiting for its app to open
 /// it, by the workspace it stands in.
-fn waiting_in(
-    tree: &DesktopTree,
-    wanted: impl Fn(WorkspaceId) -> bool,
-) -> Vec<(WorkspaceId, Saved)> {
+fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(WorkspaceId, Saved)> {
     let mut saved = Vec::new();
     for workspace in tree
         .workspaces
@@ -377,14 +374,13 @@ fn did_not_open(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use tilo_desktop_model::{
-        DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-        WorkspaceId,
+        Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
     };
 
     use super::Restore;
 
     /// A desk of one workspace whose one window group holds `tabs`.
-    fn desk(tabs: Vec<Tab>) -> DesktopTree {
+    fn desk(tabs: Vec<Tab>) -> Layout {
         let mut workspace = Workspace::new(
             WorkspaceId::parse("3024f582-9315-461d-a32f-2c67269385e1").unwrap(),
             "Shared",
@@ -399,10 +395,10 @@ mod tests {
             focus_history: Vec::new(),
         });
         workspace.strips.push(strip);
-        DesktopTree {
+        Layout {
             active: WorkspaceId::from_u128(1),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         }
     }
 

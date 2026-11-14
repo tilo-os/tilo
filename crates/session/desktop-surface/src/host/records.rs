@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 
 use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::{DesktopTree, TabId, TileContent};
+use tilo_desktop_model::{Layout, TabId, TileContent};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
 
 /// The record `id` travels under on the workspace's shared desk: its route, empty for the
@@ -25,7 +25,7 @@ pub fn wire_record(id: &RecordId) -> &str {
 
 /// The application `tab` of `tree` runs, or `None` for a window that is not an application's.
 #[must_use]
-pub fn app_of(tree: &DesktopTree, tab: TabId) -> Option<&str> {
+pub fn app_of(tree: &Layout, tab: TabId) -> Option<&str> {
     match &tree.tab(tab)?.tile {
         TileContent::LocalApp { app_id, .. } => Some(app_id),
         _ => None,
@@ -36,7 +36,7 @@ pub fn app_of(tree: &DesktopTree, tab: TabId) -> Option<&str> {
 /// ([`wire_record`]), or `None` for a window no component bound a record to yet.
 #[must_use]
 pub fn of_window<S: BuildHasher>(
-    tree: &DesktopTree,
+    tree: &Layout,
     bindings: &HashMap<TabId, RecordCheckout, S>,
     tab: TabId,
 ) -> Option<(String, String)> {
@@ -51,7 +51,7 @@ pub fn of_window<S: BuildHasher>(
 pub fn live<S: BuildHasher>(
     bindings: &HashMap<TabId, RecordCheckout, S>,
     held: &HashMap<TabId, String, S>,
-    tree: &DesktopTree,
+    tree: &Layout,
 ) -> Vec<(TabId, String)> {
     let live: HashSet<TabId> = tree.tabs().map(|tab| tab.id).collect();
     let mut records: Vec<(TabId, String)> = bindings
@@ -142,10 +142,10 @@ mod tests {
         }
         workspace.strips.push(strip);
         SharedDesktop {
-            tree: DesktopTree {
+            tree: Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             },
             records: windows
                 .iter()

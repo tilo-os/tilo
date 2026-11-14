@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::notifications::NotificationIconKind;
 use tilo_files::native::tree::{Copied, Strategy, clone_tree};
@@ -835,7 +835,7 @@ impl crate::Shared {
         (workspace, name): (WorkspaceId, &str),
         branched: &Branched,
     ) {
-        let mut tree: DesktopTree = self.handle.read(Clone::clone);
+        let mut tree: Layout = self.handle.read(Clone::clone);
         let files = Places::here().files;
         let made = tree
             .workspaces

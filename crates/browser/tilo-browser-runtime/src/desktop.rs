@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionHost as _;
 use tilo_app::linked_accounts::ActionAnswer;
-use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspace};
+use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_lock::MutexRecover as _;
@@ -606,7 +606,7 @@ impl Shared {
     /// window nobody opened is the workspace's, named `workspace`.
     pub fn holders(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         me: &str,
         workspace: &str,
         person: &mut dyn FnMut(&str) -> PersonIdentity,
@@ -641,7 +641,7 @@ impl Shared {
     /// The record each window of `tree` shows, in the spelling links and the shared desk use
     /// (empty for the app's primary record): bound, or still waiting for the record a link or a
     /// window named.
-    pub fn window_records(&self, tree: &DesktopTree) -> Vec<(TabId, String)> {
+    pub fn window_records(&self, tree: &Layout) -> Vec<(TabId, String)> {
         tilo_desktop_surface::host::records::live(
             &self.records.borrow(),
             &self.unbound.borrow(),
@@ -661,7 +661,7 @@ impl Shared {
     /// its window names it: what a recording of the window records.
     pub fn shown_record(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         tab: TabId,
     ) -> Option<tilo_desktop::feedback::ShownRecord> {
         if self.window_capture_protected(tree, tab) {
@@ -674,7 +674,7 @@ impl Shared {
 
     /// Whether the app window `tab` shows declares itself withheld from what
     /// leaves the device.
-    pub fn window_capture_protected(&self, tree: &DesktopTree, tab: TabId) -> bool {
+    pub fn window_capture_protected(&self, tree: &Layout, tab: TabId) -> bool {
         self.live_record_of(tree, tab)
             .is_some_and(|(app, _)| crate::capture_declarations::declared(&app))
     }
@@ -682,7 +682,7 @@ impl Shared {
     /// The record `tab` shows as the workspace's live layer names it: its
     /// application and the record id, empty for the package's primary
     /// record.
-    pub fn live_record_of(&self, tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
+    pub fn live_record_of(&self, tree: &Layout, tab: TabId) -> Option<(String, String)> {
         tilo_desktop_surface::host::records::of_window(tree, &self.records.borrow(), tab)
     }
 

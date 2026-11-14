@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::layout::{Tab, WindowGroup};
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::width::WindowWidth;
 use crate::workspace::Workspace;
 
@@ -223,7 +223,7 @@ impl Workspace {
     }
 }
 
-impl DesktopTree {
+impl Layout {
     /// Put the window closed most recently in `workspace` back where it was
     /// and focus it, as the person's reopen does: the workspace shows the
     /// strip it lands in, and that strip its group. `None`, changing

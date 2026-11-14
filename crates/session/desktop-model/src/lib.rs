@@ -59,7 +59,7 @@ pub use present::{Present, Status};
 pub use receipt::WorkspaceEffectReceipt;
 pub use shared_surfaces::SharedSurfaces;
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
-pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};
+pub use tree::{Layout, STATE_SCHEMA_VERSION};
 pub use width::WindowWidth;
 pub use workspace::{
     APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, PresetMutationError, UserId,

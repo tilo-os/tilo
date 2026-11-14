@@ -41,9 +41,7 @@ use tilo_callstream::surface_decoder::{DecodedFrame, DecodedPixels, VideoDecoder
 use tilo_color_pipeline::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
 pub use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_color_pipeline::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
-use tilo_desktop_model::{
-    DesktopTree, Tab, TabId, TileContent as ModelTile, Workspace, WorkspaceId,
-};
+use tilo_desktop_model::{Layout, Tab, TabId, TileContent as ModelTile, Workspace, WorkspaceId};
 pub use tilo_media::realtime::PictureWake;
 use tilo_window_share::streaming::{InputEvent, ShareRegistry, StreamingShare};
 use ui::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
@@ -1049,7 +1047,7 @@ impl PeerSurfaces {
     /// Show the surface `start` announces in the tab that holds its window: the tab the sender
     /// names, else the first tab showing another device's window of that app. `None` when this
     /// desktop has no such tab.
-    pub fn start(&mut self, tree: &DesktopTree, start: &PeerStreamStart) -> Option<TabId> {
+    pub fn start(&mut self, tree: &Layout, start: &PeerStreamStart) -> Option<TabId> {
         let tab = {
             let tiles = &self.tiles;
             stream_tab_in(tree, &start.app_id, start.tab, |tab| {
@@ -1177,7 +1175,7 @@ impl PeerSurfaces {
 /// tab shows a window that runs on another device, else the first such tab of its app in the active workspace
 /// that `unclaimed` says holds no other stream.
 fn stream_tab_in(
-    tree: &DesktopTree,
+    tree: &Layout,
     app_id: &str,
     tab: TabId,
     unclaimed: impl Fn(TabId) -> bool,

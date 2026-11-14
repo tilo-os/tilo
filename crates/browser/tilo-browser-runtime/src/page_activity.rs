@@ -97,7 +97,7 @@ pub(super) struct PageDesk(pub(super) Rc<tilo_session_core::desk::Desk>);
 impl tilo_session::activity::DeskHistory for PageDesk {
     fn history(
         &self,
-        tree: &tilo_desktop_model::DesktopTree,
+        tree: &tilo_desktop_model::Layout,
         workspace_id: tilo_desktop_model::WorkspaceId,
     ) -> Option<tilo_desktop_surface::activity::ActivitySnapshot> {
         Some(tilo_desktop_surface::activity::ActivitySnapshot::of_layout(
@@ -109,7 +109,7 @@ impl tilo_session::activity::DeskHistory for PageDesk {
 
     fn documents(
         &self,
-        tree: &tilo_desktop_model::DesktopTree,
+        tree: &tilo_desktop_model::Layout,
     ) -> Vec<(tilo_desktop_model::WorkspaceId, ui::automerge::AutoCommit)> {
         tree.active_workspace()
             .map(|workspace| vec![(workspace.id(), self.0.document())])
@@ -118,7 +118,7 @@ impl tilo_session::activity::DeskHistory for PageDesk {
 
     fn describe(
         &self,
-        tree: &tilo_desktop_model::DesktopTree,
+        tree: &tilo_desktop_model::Layout,
         workspace_id: tilo_desktop_model::WorkspaceId,
         write: &mut dyn FnMut(&mut ui::automerge::AutoCommit) -> bool,
     ) -> bool {

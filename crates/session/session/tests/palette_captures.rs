@@ -30,7 +30,7 @@ use runtime_collab::{CollabClient, Invocation};
 use tilo_actions::ResourceSpec;
 use tilo_actions::remote::InvokeArgument;
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
@@ -126,14 +126,14 @@ fn principal(root: &[u8; 32]) -> String {
 }
 
 /// A desk showing the workspace, known by its id, owned by the person.
-fn desk(fixture: &Fixture) -> DesktopTree {
+fn desk(fixture: &Fixture) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let mut workspace = Workspace::new(workspace, "Desk");
     workspace.set_owner(principal(&fixture.cert.user_public_key));
-    DesktopTree {
+    Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 

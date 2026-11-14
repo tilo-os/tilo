@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
-use tilo_desktop_model::{DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Strip, StripId, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer, names};
 use tilo_resource::Effect;
@@ -1359,7 +1359,7 @@ impl DesktopChrome {
     /// workspace goes to the one it gets whatever `go` says: there is nowhere else to stay.
     fn open_workspace(
         &self,
-        mut tree: DesktopTree,
+        mut tree: Layout,
         mut workspace: Workspace,
         fresh_strip: bool,
         go: bool,

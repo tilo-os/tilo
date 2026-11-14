@@ -81,7 +81,7 @@ pub trait WindowSource {
     }
 }
 
-/// A host that knows nothing beyond the desktop tree.
+/// A host that knows nothing beyond the layout.
 pub struct PlainWindows;
 
 impl WindowSource for PlainWindows {}

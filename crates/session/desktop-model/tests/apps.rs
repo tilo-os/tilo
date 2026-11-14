@@ -4,8 +4,8 @@ use automerge::AutoCommit;
 use tilo_desktop_model::apps::{canonical_app_id, record_routes};
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{
-    AppId, AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId, compose_id, shared_record,
+    AppId, AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId, compose_id, shared_record,
 };
 
 #[test]
@@ -55,10 +55,10 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
         });
         workspace.strips.push(strip);
         let mut desktop = SharedDesktop {
-            tree: DesktopTree {
+            tree: Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             },
             ..SharedDesktop::default()
         };

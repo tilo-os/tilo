@@ -3,7 +3,7 @@
 //! stream it handed out and stops answering the app's next ask. Neither closes the app: it loses
 //! the stream, not its window.
 
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_portal::capture_broker::CaptureKind;
 
 /// The device a workspace capability names for a capture kind, or `None` for a kind no workspace
@@ -22,7 +22,7 @@ pub(crate) fn device_scope(kind: CaptureKind) -> Option<&'static str> {
 /// names it), may still capture `kind` at `now` .
 #[must_use]
 pub(crate) fn still_allowed(
-    tree: &DesktopTree,
+    tree: &Layout,
     app_id: &str,
     workspace: &str,
     kind: CaptureKind,
@@ -51,12 +51,12 @@ mod tests {
     use tilo_action_policy::Grantee;
     use tilo_desktop_model::Workspace;
 
-    fn desk(grant: CapOverride) -> DesktopTree {
+    fn desk(grant: CapOverride) -> Layout {
         let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Studio");
         workspace.sandbox.push(grant);
-        DesktopTree {
+        Layout {
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         }
     }
 

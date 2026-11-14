@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::ResourceSpec;
-use tilo_desktop_model::{DesktopTree, GroupId, Tab, TabId, TileContent};
+use tilo_desktop_model::{GroupId, Layout, Tab, TabId, TileContent};
 
 use super::{Names, Target};
 /// A workspace the person's desk shows, as their arrangement names it.
@@ -207,7 +207,7 @@ const SHELL: &str = "so.tilo.shell.strips";
 /// group and every window, each as the desk has it, with what each window shows (`records`) and
 /// what the resource it shows is called (`catalog`).
 pub(super) fn reading_of(
-    tree: &DesktopTree,
+    tree: &Layout,
     records: &BTreeMap<TabId, String>,
     catalog: &Catalog,
     names: &Names,

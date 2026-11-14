@@ -96,14 +96,14 @@ pub fn share_beside(
 ) -> Option<(WindowWidth, WindowWidth)> {
     let usable = strip_usable_px.max(1.0);
     let beside = neighbour.resolve(usable);
-    let room = usable - gap_px - beside;
-    if room >= opened.resolve(usable) {
+    let spare = usable - gap_px - beside;
+    if spare >= opened.resolve(usable) {
         return None;
     }
     // Floored so that rounding never pushes the pair a pixel past the edge.
     let fitting = |px: f64| WindowWidth::Fraction(floor_permille(px, usable));
-    if room >= SIDE_BY_SIDE_MIN_PX {
-        return Some((neighbour, fitting(room)));
+    if spare >= SIDE_BY_SIDE_MIN_PX {
+        return Some((neighbour, fitting(spare)));
     }
     let half = (usable - gap_px) / 2.0;
     // Whether the display is worth splitting is a question about the
@@ -116,7 +116,7 @@ pub fn share_beside(
     (screen_half >= SIDE_BY_SIDE_MIN_PX).then(|| (fitting(half), fitting(half)))
 }
 
-/// The widths a window opened over the desk takes beside the window it
+/// The widths a window opened over the layout takes beside the window it
 /// opened next to: the card it draws at — the window, the band of its own
 /// ground round it and the focus ring outside that — is `card_px` wide, and
 /// the window beside it gives up exactly that much of the strip, the two
@@ -539,7 +539,7 @@ mod tests {
             };
             let mut strip = Strip {
                 id: StripId(1),
-                name: "Desk".into(),
+                name: "Work".into(),
                 window_groups: vec![
                     group(1, WindowWidth::Narrow),
                     group(2, WindowWidth::Wide),

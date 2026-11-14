@@ -10,8 +10,8 @@ use tilo_desktop_model::width::{
     WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
 };
 use tilo_desktop_model::{
-    Capability, DesktopTree, Display, GRANT_ALWAYS, Strip, StripId, TabId, TileContent,
-    WindowWidth, Workspace, WorkspaceId,
+    Capability, Display, GRANT_ALWAYS, Layout, Strip, StripId, TabId, TileContent, WindowWidth,
+    Workspace, WorkspaceId,
 };
 use ui::widget::TabHolder;
 use ui::window_share::OpenWindow;
@@ -78,7 +78,7 @@ fn tab_at(handle: &DesktopHandle, group: usize) -> TabId {
 }
 
 /// The group at `route` , as the tree holds it.
-fn group_at(tree: &DesktopTree, route: RouteIds) -> tilo_desktop_model::WindowGroup {
+fn group_at(tree: &Layout, route: RouteIds) -> tilo_desktop_model::WindowGroup {
     tree.workspaces
         .iter()
         .flat_map(|workspace| &workspace.strips)
@@ -240,7 +240,7 @@ fn the_full_screen_row_covers_the_display_and_gives_it_back() {
     let mut frame = present(surface);
     let route = first_route(&handle);
     let covering =
-        |handle: &DesktopHandle| handle.read(tilo_desktop_model::DesktopTree::fullscreen_group);
+        |handle: &DesktopHandle| handle.read(tilo_desktop_model::Layout::fullscreen_group);
     assert_eq!(covering(&handle), None);
     assert!(row(&handle.window_menu(route.tab), FULLSCREEN).is_some());
 

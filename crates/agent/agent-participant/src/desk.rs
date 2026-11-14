@@ -21,9 +21,7 @@ use tilo_desktop_model::commands::{
     DesktopCommand, OpenContext, apply_command, namespace_counter, open_app_placement,
 };
 use tilo_desktop_model::ownership::{OpenedBy, SharedDesktop};
-use tilo_desktop_model::{
-    DesktopTree, IdMinter, TileContent, Workspace, WorkspaceId, shared_record,
-};
+use tilo_desktop_model::{IdMinter, Layout, TileContent, Workspace, WorkspaceId, shared_record};
 
 pub(crate) struct View<'a> {
     pub app_id: &'a str,
@@ -114,10 +112,10 @@ fn fresh(workspace: &str, name: &str) -> Option<SharedDesktop> {
     let identity = WorkspaceId::parse(workspace)?;
     let desk = Workspace::new(identity, name);
     Some(SharedDesktop {
-        tree: DesktopTree {
+        tree: Layout {
             active: desk.id(),
             workspaces: vec![desk],
-            ..DesktopTree::default()
+            ..Layout::default()
         },
         ..SharedDesktop::default()
     })
@@ -257,9 +255,9 @@ mod tests {
             },
         ];
         let desktop = SharedDesktop {
-            tree: tilo_desktop_model::DesktopTree {
+            tree: tilo_desktop_model::Layout {
                 workspaces: vec![workspace],
-                ..tilo_desktop_model::DesktopTree::default()
+                ..tilo_desktop_model::Layout::default()
             },
             records: vec![(21, "chat-record".into()), (31, "notes-record".into())],
             authors: std::collections::BTreeMap::new(),
@@ -336,9 +334,9 @@ mod tests {
             window_groups: vec![group(20, tab(21, "so.tilo.notes"))],
         }];
         let desktop = SharedDesktop {
-            tree: tilo_desktop_model::DesktopTree {
+            tree: tilo_desktop_model::Layout {
                 workspaces: vec![workspace],
-                ..tilo_desktop_model::DesktopTree::default()
+                ..tilo_desktop_model::Layout::default()
             },
             records: vec![(21, String::new())],
             authors: std::collections::BTreeMap::new(),
@@ -382,9 +380,9 @@ mod tests {
             window_groups: vec![group(20, tab(21, "so.tilo.notes"))],
         }];
         let desktop = SharedDesktop {
-            tree: tilo_desktop_model::DesktopTree {
+            tree: tilo_desktop_model::Layout {
                 workspaces: vec![workspace],
-                ..tilo_desktop_model::DesktopTree::default()
+                ..tilo_desktop_model::Layout::default()
             },
             records: Vec::new(),
             authors: std::collections::BTreeMap::new(),

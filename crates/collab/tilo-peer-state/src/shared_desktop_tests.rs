@@ -10,9 +10,7 @@ use automerge::AutoCommit;
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_KIND, DESKTOP_RECORD, SharedDesktop};
-use tilo_desktop_model::{
-    DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId, shared_record,
-};
+use tilo_desktop_model::{Layout, StripId, WindowWidth, Workspace, WorkspaceId, shared_record};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -55,10 +53,10 @@ fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
     }
     workspace.strips.push(strip);
     SharedDesktop {
-        tree: DesktopTree {
+        tree: Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         },
         records: Vec::new(),
         authors: windows
@@ -356,7 +354,7 @@ fn drawn(desk: &DesktopHandle, peer: &StatePeer) -> Vec<Drawn> {
 fn another_devices_page_reaches_the_desk_and_its_rename_follows() {
     let (mut peer, owner, key, guest) = workspace_with(Role::Editor);
     let person = hex::encode(guest.user_public_key);
-    let (_surface, desk) = DesktopSurface::new(DesktopTree::default(), 7, Box::new(Notices));
+    let (_surface, desk) = DesktopSurface::new(Layout::default(), 7, Box::new(Notices));
 
     let opened = write(
         &peer,

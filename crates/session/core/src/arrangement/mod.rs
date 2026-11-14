@@ -21,7 +21,7 @@ use tilo_actions::{
     OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
 use tilo_desktop_model::{
-    ArrangementKind, DesktopTree, FloatCorner, FloatPlace, GroupId, Strip, StripId, Tab, TabId,
+    ArrangementKind, FloatCorner, FloatPlace, GroupId, Layout, Strip, StripId, Tab, TabId,
     TileContent, WindowGroup, WindowWidth, WorkspaceId,
 };
 use tilo_desktop_surface::DesktopHandle;
@@ -544,8 +544,8 @@ pub trait Layouts {
     /// by.
     fn acted(
         &self,
-        before: &DesktopTree,
-        tree: &DesktopTree,
+        before: &Layout,
+        tree: &Layout,
         asked: &str,
         action: &ArrangementAction,
         shows: &[(TabId, String)],
@@ -561,7 +561,7 @@ pub enum Stepped {
     /// The step was taken, and the host shows what it came to itself.
     Taken,
     /// The step was taken, and this is the desk it left.
-    Desk(Box<DesktopTree>),
+    Desk(Box<Layout>),
 }
 
 impl Layouts for Desk {
@@ -583,8 +583,8 @@ impl Layouts for Desk {
 
     fn acted(
         &self,
-        _before: &DesktopTree,
-        tree: &DesktopTree,
+        _before: &Layout,
+        tree: &Layout,
         asked: &str,
         action: &ArrangementAction,
         shows: &[(TabId, String)],
@@ -1483,7 +1483,7 @@ pub fn step_context(asked: &str, action: &ArrangementAction) -> tilo_actions::Ac
 /// asked for it: an agent's move leaves a place the person pinned where it is. Whether anything
 /// changed.
 fn change(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     action: &ArrangementAction,
     by_the_person: bool,
     catalog: &Rc<RefCell<Catalog>>,
@@ -1563,7 +1563,7 @@ fn change(
 
 /// Give the strip `strip` the width `permille` of the workspace asks for. Whether the desk
 /// changed.
-fn resize(tree: &mut DesktopTree, strip: GroupId, permille: u32) -> bool {
+fn resize(tree: &mut Layout, strip: GroupId, permille: u32) -> bool {
     let Some(group) = group_mut(tree, strip) else {
         return false;
     };
@@ -1575,7 +1575,7 @@ fn resize(tree: &mut DesktopTree, strip: GroupId, permille: u32) -> bool {
 
 /// Maximize the strip `strip` (`maximized`), or restore it beside its row's other windows.
 /// Whether the desk changed.
-fn maximize(tree: &mut DesktopTree, strip: GroupId, maximized: bool) -> Result<bool, String> {
+fn maximize(tree: &mut Layout, strip: GroupId, maximized: bool) -> Result<bool, String> {
     let group =
         group_mut(tree, strip).ok_or_else(|| "that strip is not in the arrangement".to_owned())?;
     let changed = group.maximized != maximized;
@@ -1584,7 +1584,7 @@ fn maximize(tree: &mut DesktopTree, strip: GroupId, maximized: bool) -> Result<b
 }
 
 /// Close the place `place`; its window goes with it. Whether the desk changed.
-fn close(tree: &mut DesktopTree, place: u64) -> Result<bool, String> {
+fn close(tree: &mut Layout, place: u64) -> Result<bool, String> {
     if tree.close_tab(place).is_some() {
         Ok(true)
     } else {
@@ -1594,7 +1594,7 @@ fn close(tree: &mut DesktopTree, place: u64) -> Result<bool, String> {
 
 /// Bring the place `place` in front of the strip it stands in, as choosing its tab does. Whether
 /// the desk changed.
-fn activate(tree: &mut DesktopTree, place: u64) -> Result<bool, String> {
+fn activate(tree: &mut Layout, place: u64) -> Result<bool, String> {
     let Some(held) = group_holding(tree, place) else {
         return Err("that place is not in the arrangement".into());
     };
@@ -1607,7 +1607,7 @@ fn activate(tree: &mut DesktopTree, place: u64) -> Result<bool, String> {
 
 /// Pin the place `place` (`pinned`), so an agent's arrangement leaves it alone, or unpin it.
 /// Whether the desk changed.
-fn pin(tree: &mut DesktopTree, place: u64, pinned: bool) -> Result<bool, String> {
+fn pin(tree: &mut Layout, place: u64, pinned: bool) -> Result<bool, String> {
     let Some(tab) = group_holding(tree, place)
         .and_then(|held| held.tabs.iter_mut().find(|tab| tab.id == place))
     else {
@@ -1619,7 +1619,7 @@ fn pin(tree: &mut DesktopTree, place: u64, pinned: bool) -> Result<bool, String>
 }
 
 /// Move the place `place` to `(x, y)` on its workspace's canvas. Whether the desk changed.
-fn position(tree: &mut DesktopTree, place: u64, x: i32, y: i32) -> Result<bool, String> {
+fn position(tree: &mut Layout, place: u64, x: i32, y: i32) -> Result<bool, String> {
     let Some((workspace, row, group, _)) = locate(tree, place) else {
         return Err("that place is not in the arrangement".into());
     };
@@ -1639,7 +1639,7 @@ fn position(tree: &mut DesktopTree, place: u64, x: i32, y: i32) -> Result<bool, 
 }
 
 /// Float the place `place` above its workspace's windows at `float` .
-fn float_place(tree: &mut DesktopTree, place: u64, float: FloatPlace) -> Result<bool, String> {
+fn float_place(tree: &mut Layout, place: u64, float: FloatPlace) -> Result<bool, String> {
     let Some((workspace, row, group, _)) = locate(tree, place) else {
         return Err("that place is not in the arrangement".into());
     };
@@ -1661,7 +1661,7 @@ fn float_place(tree: &mut DesktopTree, place: u64, float: FloatPlace) -> Result<
 /// moving it into `row` before `before` when a drop named one; left out, it
 /// returns to the strip it stands in, unchanged. Whether the desk changed.
 fn snap_back(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     place: u64,
     row: Option<u64>,
     before: Option<u64>,
@@ -1691,7 +1691,7 @@ fn snap_back(
 
 /// The window `place` and where it stands in `tree`: its workspace, its row,
 /// its group and its index in that group.
-fn locate(tree: &DesktopTree, place: u64) -> Option<(usize, usize, usize, usize)> {
+fn locate(tree: &Layout, place: u64) -> Option<(usize, usize, usize, usize)> {
     tree.workspaces
         .iter()
         .enumerate()
@@ -1712,7 +1712,7 @@ fn locate(tree: &DesktopTree, place: u64) -> Option<(usize, usize, usize, usize)
 }
 
 /// The group holding the window `place` of `tree` , wherever it stands.
-fn group_holding(tree: &mut DesktopTree, place: u64) -> Option<&mut WindowGroup> {
+fn group_holding(tree: &mut Layout, place: u64) -> Option<&mut WindowGroup> {
     tree.workspaces
         .iter_mut()
         .flat_map(|workspace| &mut workspace.strips)
@@ -1721,7 +1721,7 @@ fn group_holding(tree: &mut DesktopTree, place: u64) -> Option<&mut WindowGroup>
 }
 
 /// The group `id` of `tree` , wherever it stands.
-fn group_mut(tree: &mut DesktopTree, id: GroupId) -> Option<&mut WindowGroup> {
+fn group_mut(tree: &mut Layout, id: GroupId) -> Option<&mut WindowGroup> {
     tree.workspaces
         .iter_mut()
         .flat_map(|workspace| &mut workspace.strips)
@@ -1735,7 +1735,7 @@ fn group_mut(tree: &mut DesktopTree, id: GroupId) -> Option<&mut WindowGroup> {
 /// window becomes a tab of it, in front (which is how a strip of several places is made: shell.md
 /// §2). A window the person pinned stays where it is unless they moved it themselves.
 fn move_place(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     place: u64,
     row: StripId,
     before: Option<u64>,
@@ -1851,7 +1851,7 @@ struct Placed<'a> {
 /// rather than in a strip of its own: how a person, an agent and the REPL open
 /// something as a tab of the strip they are in. Whether the desk changed.
 fn place_at(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     catalog: &Rc<RefCell<Catalog>>,
     asked: Placed<'_>,
 ) -> Result<bool, String> {
@@ -1977,7 +1977,7 @@ fn place_at(
 /// back. Whether the desk changed; a place already showing that resource through that view is
 /// no change.
 fn show_at(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     catalog: &Rc<RefCell<Catalog>>,
     place: u64,
     resource: &str,

@@ -5,7 +5,7 @@
 use super::{joined::Joined, workspace::ProfileWorkspace};
 use std::sync::Arc;
 use tilo_action_broker::services::WorkspaceAuthority;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_identity_host::broker::WorkspaceMembership;
 
 pub(super) struct Workspaces {
@@ -27,7 +27,7 @@ impl WorkspaceAuthority for Workspaces {
     /// governance describes it. Joined workspaces are never written to the
     /// profile's workspace file, so a profile that joined any workspace reads
     /// a merged copy; one that joined none borrows its own tree.
-    fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
+    fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
         if self.joined.is_empty() {
             return self.profile.with_tree(read);
         }

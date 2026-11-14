@@ -14,14 +14,14 @@
 use collab_types::MemberId;
 use collab_types::caps::{Access, Effect, Scope};
 use collab_types::role::Role as CapRole;
-use tilo_desktop_model::{DesktopTree, GroupId, StripId, TabId, UserId, Workspace, WorkspaceId};
+use tilo_desktop_model::{GroupId, Layout, StripId, TabId, UserId, Workspace, WorkspaceId};
 use tilo_sort::CompactSort as _;
 
 use crate::i18n::{t, t_args};
 use crate::window_switcher::{WindowApp, WindowSource};
 use tilo_desktop_surface::names;
 
-/// What the overview needs from its host beyond the desktop tree.
+/// What the overview needs from its host beyond the layout.
 pub trait OverviewHost: WindowSource {
     /// The person at this device.
     fn local_user(&self) -> &str;
@@ -56,8 +56,8 @@ impl OverviewView {
         }
     }
 
-    /// Rebuild the card cache from the desktop tree.
-    pub fn sync(&mut self, tree: &DesktopTree) {
+    /// Rebuild the card cache from the layout.
+    pub fn sync(&mut self, tree: &Layout) {
         self.cards = tree
             .workspaces
             .iter()
@@ -217,7 +217,7 @@ impl WorkspaceCard {
 
 /// Falls back to the principal itself rather than a placeholder — a row labelled "Unknown" tells
 /// the reader nothing, while the raw subject is both true and the value a revoke would name.
-fn display_name(id: &UserId, ws: &Workspace, _tree: &DesktopTree) -> String {
+fn display_name(id: &UserId, ws: &Workspace, _tree: &Layout) -> String {
     let wanted = MemberId::person(id.clone());
     ws.members
         .iter()
@@ -228,7 +228,7 @@ fn display_name(id: &UserId, ws: &Workspace, _tree: &DesktopTree) -> String {
 /// Everyone who may be in `ws` at unix time `now` , and whether they are here now.
 pub fn workspace_people(
     ws: &Workspace,
-    tree: &DesktopTree,
+    tree: &Layout,
     host: &dyn OverviewHost,
     now: u64,
 ) -> Vec<WorkspacePerson> {
@@ -267,7 +267,7 @@ pub fn workspace_people(
 /// are one share with two holders.
 pub fn workspace_shares(
     ws: &Workspace,
-    tree: &DesktopTree,
+    tree: &Layout,
     host: &dyn OverviewHost,
     now: u64,
 ) -> Vec<WorkspaceShare> {
@@ -340,11 +340,7 @@ pub fn workspace_shares(
 }
 
 /// Every workspace as the overview shows it at unix time `now` .
-pub fn workspace_cards(
-    tree: &DesktopTree,
-    host: &dyn OverviewHost,
-    now: u64,
-) -> Vec<WorkspaceCard> {
+pub fn workspace_cards(tree: &Layout, host: &dyn OverviewHost, now: u64) -> Vec<WorkspaceCard> {
     tree.workspaces
         .iter()
         .map(|ws| WorkspaceCard {
@@ -361,7 +357,7 @@ pub fn workspace_cards(
 
 fn overview_strips(
     ws: &Workspace,
-    tree: &DesktopTree,
+    tree: &Layout,
     host: &dyn OverviewHost,
     now: u64,
 ) -> Vec<OverviewStrip> {
@@ -638,7 +634,7 @@ mod workspace_tests {
         }
     }
 
-    fn workspace_cards(tree: &DesktopTree) -> Vec<WorkspaceCard> {
+    fn workspace_cards(tree: &Layout) -> Vec<WorkspaceCard> {
         super::workspace_cards(tree, &Host, NOW)
     }
 
@@ -653,12 +649,12 @@ mod workspace_tests {
         w
     }
 
-    fn tree_with(workspaces: Vec<Workspace>) -> DesktopTree {
+    fn tree_with(workspaces: Vec<Workspace>) -> Layout {
         let active = workspaces
             .first()
             .map(tilo_desktop_model::Workspace::id)
             .unwrap_or_default();
-        DesktopTree {
+        Layout {
             workspaces,
             active,
             ..Default::default()

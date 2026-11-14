@@ -9,7 +9,7 @@ use ui::automerge::{AutoCommit, ObjId};
 use ui::search::Scope;
 use ui::widget::Widget as _;
 
-use tilo_desktop_model::{DesktopTree, WindowWidth};
+use tilo_desktop_model::{Layout, WindowWidth};
 
 use crate::navigation::{self, Admitted, RouteIds};
 
@@ -60,8 +60,7 @@ impl DesktopSurface {
                 };
                 // Admission ran at dispatch; an earlier command in this batch may since have
                 // removed the target.
-                let live =
-                    |tree: &DesktopTree, ids: RouteIds| navigation::locate(tree, ids).is_some();
+                let live = |tree: &Layout, ids: RouteIds| navigation::locate(tree, ids).is_some();
                 match command {
                     Admitted::Select(ids) if live(&shared.tree, ids) => {
                         let tree = &mut shared.tree;

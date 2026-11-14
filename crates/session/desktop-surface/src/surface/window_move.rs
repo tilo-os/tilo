@@ -5,13 +5,13 @@
 //! person sees it arrive; let go where no strip lies, it stays where it was.
 
 use super::Shared;
-use tilo_desktop_model::{DesktopTree, DropTarget, StripId, WorkspaceId};
+use tilo_desktop_model::{DropTarget, Layout, StripId, WorkspaceId};
 use ui::widget::GroupRow;
 
 /// The strip a window dragged out of `strip` lands in: the next one below it when `down` , else the
 /// one above, appended at its end. `None` when the workspace has no strip that way.
 fn strip_that_way(
-    tree: &DesktopTree,
+    tree: &Layout,
     strip: StripId,
     down: bool,
 ) -> Option<(WorkspaceId, StripId, usize)> {

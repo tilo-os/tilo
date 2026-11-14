@@ -1,5 +1,5 @@
 use super::*;
-use tilo_desktop_model::{DesktopTree, Member, Present};
+use tilo_desktop_model::{Layout, Member, Present};
 
 /// Everything a reader is told of `node` and its children: names and descriptions both.
 fn spoken(node: &ui::a11y::AccessNode, said: &mut Vec<String>) {
@@ -443,10 +443,10 @@ tilo_test_env::scenario! {
             workspace.present[0].tab.is_none(),
             "a headless agent names no window"
         );
-        let desktop = DesktopTree {
+        let desktop = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         let rows = roster_rows(&desktop, "local");
         let agent = rows.iter().find(|row| row.id == "claude").unwrap();
@@ -563,10 +563,10 @@ tilo_test_env::scenario! {
         });
         let ada = Member::keyed("ada", "Ada");
         workspace.member_here(ada);
-        let desktop = DesktopTree {
+        let desktop = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
 
         let rows = roster_rows(&desktop, "local");
@@ -597,10 +597,10 @@ tilo_test_env::scenario! {
             device: agent.id.key(),
             ..Present::of(agent.id)
         });
-        let desktop = DesktopTree {
+        let desktop = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         let rows = roster_rows(&desktop, "local");
         assert_eq!(rows.len(), 1);
@@ -636,10 +636,10 @@ tilo_test_env::scenario! {
             device: "scribe".into(),
             ..Present::of(agent.id)
         });
-        let desktop = DesktopTree {
+        let desktop = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
 
         let rows = roster_rows(&desktop, "local");
@@ -715,10 +715,10 @@ tilo_test_env::scenario! {
             }),
             ..Present::of(claude.id)
         };
-        let desktop = DesktopTree {
+        let desktop = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
 
         let rows = roster_rows(&desktop, "local");

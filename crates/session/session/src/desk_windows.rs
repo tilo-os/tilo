@@ -3,7 +3,7 @@
 //! resource publishes these readings, and the switcher's panel shows the walk over them.
 
 use serde::{Deserialize, Serialize};
-use tilo_desktop_model::{DesktopTree, Strip, Tab, WindowGroup, Workspace};
+use tilo_desktop_model::{Layout, Strip, Tab, WindowGroup, Workspace};
 use tilo_desktop_surface::DesktopHandle;
 
 /// The desk's windows as `session:windows` publishes them.
@@ -147,7 +147,7 @@ fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> Window
 /// their order. Each window says where it stands (`place`), the workspace, strip and group it is
 /// in, its tab's place in the group and the share of the strip it keeps, so a picture can be drawn
 /// where the window stands.
-pub(crate) fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<Window> {
+pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
     let Some(front) = tree.active_workspace() else {
         return Vec::new();
     };
@@ -301,7 +301,7 @@ pub(crate) fn reaching(overlays: &crate::overlays::Overlays, windows: &[Window])
 }
 
 /// Each window's client, by the tab it is: what the compositor pictures where a card shows it.
-pub(crate) fn window_surfaces(tree: &DesktopTree) -> std::collections::HashMap<u64, u64> {
+pub(crate) fn window_surfaces(tree: &Layout) -> std::collections::HashMap<u64, u64> {
     use tilo_desktop_model::TileContent;
     tree.workspaces
         .iter()

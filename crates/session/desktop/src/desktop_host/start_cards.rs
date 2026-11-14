@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_desktop_surface::DesktopHandle;
 use ui::presence::PresenceCtx;
 use ui::search::Scope;
@@ -84,7 +84,7 @@ impl EmptyWorkspace {
     /// What each display's pad should show now: on a desk spanning several displays, one pad per
     /// display in reading order, shown while the strip that display shows has no window homed
     /// there; on a desk of one display, one pad over the whole desk while it has no window.
-    pub(super) fn wants(tree: &DesktopTree) -> Vec<PadWant> {
+    pub(super) fn wants(tree: &Layout) -> Vec<PadWant> {
         if !tree.is_partitioned() {
             return vec![PadWant {
                 display: None,
@@ -345,15 +345,15 @@ mod tests {
     }
 
     /// A workspace of two strips: Main holding one window, Games empty.
-    fn desk() -> DesktopTree {
+    fn desk() -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Home");
         let mut main = Strip::new(StripId(10), "Main");
         main.window_groups = vec![group(1)];
         workspace.strips = vec![main, Strip::new(StripId(11), "Games")];
-        let mut tree = DesktopTree {
+        let mut tree = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         tree.active_strip
             .insert(WorkspaceId::from_u128(1), StripId(10));

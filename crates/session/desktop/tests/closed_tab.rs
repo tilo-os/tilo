@@ -13,7 +13,7 @@ use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::navigation::DeskEffect;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
@@ -49,14 +49,14 @@ fn group(id: u64, tabs: Vec<Tab>) -> WindowGroup {
     }
 }
 
-fn desk_tree(groups: Vec<WindowGroup>) -> DesktopTree {
+fn desk_tree(groups: Vec<WindowGroup>) -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = vec![Strip {
         id: StripId(2),
         name: "Main".into(),
         window_groups: groups,
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
@@ -69,7 +69,7 @@ fn desk_tree(groups: Vec<WindowGroup>) -> DesktopTree {
 
 /// The desk with `tree` on it and the chrome that carries the desktop's chords over it: the desk
 /// and the chrome are the two layers the session hosts, both driving the one desktop.
-fn desk_and_chrome(tree: &DesktopTree) -> (FrameHarness, FrameHarness, DesktopHandle) {
+fn desk_and_chrome(tree: &Layout) -> (FrameHarness, FrameHarness, DesktopHandle) {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
     desk.relayout();

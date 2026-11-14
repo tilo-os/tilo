@@ -525,7 +525,7 @@ impl Apps {
     /// when nothing is known about what is in view.
     pub fn windows_in_view(&self) -> Option<Vec<u64>> {
         let desktop = self.desktop.borrow().clone()?;
-        let layout = desktop.with_policy(|policy| policy.layout());
+        let layout = desktop.with_policy(|policy| policy.placement());
         Some(
             layout
                 .shown

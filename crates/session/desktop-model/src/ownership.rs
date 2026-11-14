@@ -29,7 +29,7 @@ use tilo_action_policy::roles::MODERATION_FIELD;
 use tilo_action_policy::{Level, TreePath};
 
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 
 /// The app a workspace's shared desktop is published under.
 pub const DESKTOP_APP: &str = "so.tilo.browser-desktop";
@@ -42,7 +42,7 @@ pub const DESKTOP_KIND: &str = "tilo.desktop";
 /// or tab id, as person ids.
 pub type Authors = BTreeMap<u64, String>;
 
-/// The agent run that opened a window on a person's behalf: what a desk says
+/// The agent run that opened a window on a person's behalf: what the shell says
 /// beside the window, so everyone sees whose agent put it there and in which
 /// run. The window stays the person's ([`Authors`]): the run is who opened it,
 /// not who may close it.
@@ -61,8 +61,8 @@ pub struct OpenedBy {
 /// A shared desktop as a workspace holds it: the tree and who made what.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SharedDesktop {
-    #[serde(deserialize_with = "DesktopTree::deserialize_via_json")]
-    pub tree: DesktopTree,
+    #[serde(deserialize_with = "Layout::deserialize_via_json")]
+    pub tree: Layout,
     /// The record each window shows, by tab, for the windows bound to one.
     #[serde(default)]
     pub records: Vec<(TabId, String)>,
@@ -174,7 +174,7 @@ struct Index {
     strips: HashMap<StripId, String>,
 }
 
-fn index(tree: &DesktopTree) -> Index {
+fn index(tree: &Layout) -> Index {
     let mut tabs = HashMap::new();
     let mut strips = HashMap::new();
     for workspace in &tree.workspaces {
@@ -433,10 +433,10 @@ mod tests {
         let mut lounge = Strip::new(StripId(10), "Lounge");
         lounge.window_groups = vec![group(100, &[1]), group(200, &[2]), group(300, &[3])];
         workspace.strips = vec![lounge, Strip::new(StripId(20), "Ada's")];
-        let tree = DesktopTree {
+        let tree = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         let authors = [(1, ADA), (2, BEN), (3, BEN), (20, ADA)]
             .into_iter()

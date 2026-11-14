@@ -303,7 +303,7 @@ impl TopBarChrome {
         })
     }
 
-    pub(super) fn sharing_target_labels(tree: &DesktopTree, surfaces: Vec<u64>) -> Vec<String> {
+    pub(super) fn sharing_target_labels(tree: &Layout, surfaces: Vec<u64>) -> Vec<String> {
         surfaces
             .into_iter()
             .map(|surface| {

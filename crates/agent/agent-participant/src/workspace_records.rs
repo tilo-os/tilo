@@ -489,9 +489,9 @@ mod tests {
         });
         workspace.strips.push(strip);
         let desktop = tilo_desktop_model::ownership::SharedDesktop {
-            tree: tilo_desktop_model::DesktopTree {
+            tree: tilo_desktop_model::Layout {
                 workspaces: vec![workspace],
-                ..tilo_desktop_model::DesktopTree::default()
+                ..tilo_desktop_model::Layout::default()
             },
             records: (0..20_u64)
                 .map(|id| {

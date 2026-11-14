@@ -8,7 +8,7 @@ use crate::ids::StripId;
 use crate::width::WindowWidth;
 
 const LAPTOP: &str = "aa";
-const DESK: &str = "bb";
+const PC: &str = "bb";
 const PERSON: &str = "ada";
 
 /// What the device numbered `actor` mints: ids `actor * 1000 + n`.
@@ -213,7 +213,7 @@ const LATER_NOTES: u64 = minted(1, 102);
 fn two_devices() -> (Device, Device) {
     let identity = WorkspaceId::new();
     let mut laptop = Device::new(LAPTOP, identity, 1);
-    let mut desk = Device::new(DESK, identity, 2);
+    let mut pc = Device::new(PC, identity, 2);
     laptop.change(|w| {
         let mut main = Strip::new(StripId(MAIN), "Main");
         main.window_groups
@@ -227,8 +227,8 @@ fn two_devices() -> (Device, Device) {
             .push(group(LATER_GROUP, vec![notes(LATER_NOTES)]));
         w.strips.push(later);
     });
-    desk.hear(&mut laptop);
-    (laptop, desk)
+    pc.hear(&mut laptop);
+    (laptop, pc)
 }
 
 tilo_test_env::scenario! {
@@ -236,23 +236,23 @@ tilo_test_env::scenario! {
 
     phase a_move_made_while_the_window_s_device_is_offline_sticks_and_applies_on_reconnect;
     {
-        let (mut laptop, mut desk) = two_devices();
-        assert_eq!(desk.places(), laptop.places());
+        let (mut laptop, mut pc) = two_devices();
+        assert_eq!(pc.places(), laptop.places());
 
-        // The laptop is away. At the desk the person moves the laptop's editor
+        // The laptop is away. At the pc the person moves the laptop's editor
         // into a group of its own on the other strip, and closes a laptop window.
         let moved_to = minted(2, 1);
-        desk.change(|w| {
+        pc.change(|w| {
             move_tab(w, EDITOR, LATER, moved_to);
             close(w, LATER_NOTES);
         });
-        let at_desk = vec![(MAIN, NOTES_GROUP, NOTES), (LATER, moved_to, EDITOR)];
-        assert_eq!(desk.places(), at_desk);
-        // Nothing the desk folds back while the laptop stays away undoes it.
+        let at_pc = vec![(MAIN, NOTES_GROUP, NOTES), (LATER, moved_to, EDITOR)];
+        assert_eq!(pc.places(), at_pc);
+        // Nothing the pc folds back while the laptop stays away undoes it.
         fold(
-            &desk.doc.clone(),
-            &mut desk.workspace,
-            DESK,
+            &pc.doc.clone(),
+            &mut pc.workspace,
+            PC,
             &Kept {
                 mine: &|id| id / 1000 == 2,
                 private: &|_| false,
@@ -260,47 +260,47 @@ tilo_test_env::scenario! {
                 writing: false,
             },
         );
-        assert_eq!(desk.places(), at_desk);
+        assert_eq!(pc.places(), at_pc);
 
         // Meanwhile the laptop, offline too, opens a window of its own.
         let opened = minted(1, 103);
         laptop.change(|w| w.strips[0].window_groups[0].tabs.push(notes(opened)));
 
         // Back online: each takes in what the other did.
-        desk.hear(&mut laptop);
-        laptop.hear(&mut desk);
+        pc.hear(&mut laptop);
+        laptop.hear(&mut pc);
         let merged = vec![
             (MAIN, NOTES_GROUP, NOTES),
             (MAIN, NOTES_GROUP, opened),
             (LATER, moved_to, EDITOR),
         ];
-        assert_eq!(desk.places(), merged);
+        assert_eq!(pc.places(), merged);
         assert_eq!(laptop.places(), merged);
 
-        // The laptop shows its own editor live where the desk put it.
+        // The laptop shows its own editor live where the pc put it.
         assert!(matches!(
             laptop.tab(EDITOR).tile,
             TileContent::Foreign { surface_id: 77, .. }
         ));
         // Writing again after the merge changes nothing on either device.
         assert!(!laptop.write());
-        assert!(!desk.write());
+        assert!(!pc.write());
     }
 
     phase a_window_a_device_closed_is_not_folded_back_from_the_record;
     {
-        let (mut laptop, mut desk) = two_devices();
+        let (mut laptop, mut pc) = two_devices();
         // The record as the laptop last wrote it, before the close: it holds the notes window.
         let before_the_close = laptop.doc.clone();
         // The laptop closes its notes window.
         laptop.change(|w| close(w, NOTES));
-        desk.hear(&mut laptop);
+        pc.hear(&mut laptop);
         assert!(
-            !desk.places().iter().any(|(_, _, tab)| *tab == NOTES),
-            "the window went on the desk that heard the close"
+            !pc.places().iter().any(|(_, _, tab)| *tab == NOTES),
+            "the window went on the pc that heard the close"
         );
         // The record still held the window when this device's last write was made, so folding it into
-        // the desk lays the window back: a slot nothing fills.
+        // the pc lays the window back: a place nothing fills.
         let mut laid_back = laptop.workspace.clone();
         fold(&before_the_close, &mut laid_back, LAPTOP, &Kept::NOTHING);
         assert!(
@@ -330,7 +330,7 @@ tilo_test_env::scenario! {
                 .window_groups
                 .iter()
                 .any(|group| group.tabs.iter().any(|tab| tab.id == NOTES))),
-            "a window this device closed is not laid back into its desk"
+            "a window this device closed is not laid back into its pc"
         );
         assert_eq!(
             laid_out
@@ -344,37 +344,37 @@ tilo_test_env::scenario! {
                 .iter()
                 .flat_map(|strip| &strip.window_groups)
                 .count(),
-            "the windows the desk does hold are still there"
+            "the windows the pc does hold are still there"
         );
     }
 
     phase concurrent_moves_of_one_window_settle_in_one_place_on_every_device;
     {
         for order in [false, true] {
-            let (mut laptop, mut desk) = two_devices();
+            let (mut laptop, mut pc) = two_devices();
             let mut phone = Device::new("cc", laptop.workspace.id(), 3);
             phone.hear(&mut laptop);
 
             // All offline: each moves the notes window somewhere else.
             laptop.change(|w| move_tab(w, NOTES, MAIN, minted(1, 20)));
-            desk.change(|w| move_tab(w, NOTES, LATER, LATER_GROUP));
+            pc.change(|w| move_tab(w, NOTES, LATER, LATER_GROUP));
             phone.change(|w| move_tab(w, NOTES, LATER, minted(3, 30)));
 
             // They meet in different orders.
             if order {
-                laptop.hear(&mut desk);
+                laptop.hear(&mut pc);
                 laptop.hear(&mut phone);
-                desk.hear(&mut phone);
-                desk.hear(&mut laptop);
+                pc.hear(&mut phone);
+                pc.hear(&mut laptop);
                 phone.hear(&mut laptop);
             } else {
-                phone.hear(&mut desk);
+                phone.hear(&mut pc);
                 phone.hear(&mut laptop);
                 laptop.hear(&mut phone);
-                desk.hear(&mut laptop);
+                pc.hear(&mut laptop);
             }
             let places = laptop.places();
-            assert_eq!(desk.places(), places);
+            assert_eq!(pc.places(), places);
             assert_eq!(phone.places(), places);
             assert_eq!(
                 places.iter().filter(|(_, _, tab)| *tab == NOTES).count(),
@@ -389,12 +389,12 @@ tilo_test_env::scenario! {
 
     phase a_close_wins_over_a_concurrent_move;
     {
-        let (mut laptop, mut desk) = two_devices();
+        let (mut laptop, mut pc) = two_devices();
         laptop.change(|w| move_tab(w, LATER_NOTES, MAIN, NOTES_GROUP));
-        desk.change(|w| close(w, LATER_NOTES));
-        laptop.hear(&mut desk);
-        desk.hear(&mut laptop);
-        assert_eq!(laptop.places(), desk.places());
+        pc.change(|w| close(w, LATER_NOTES));
+        laptop.hear(&mut pc);
+        pc.hear(&mut laptop);
+        assert_eq!(laptop.places(), pc.places());
         assert!(
             !laptop
                 .places()
@@ -405,11 +405,11 @@ tilo_test_env::scenario! {
 
     phase a_window_runs_on_its_device_and_is_shown_there_wherever_it_is_placed;
     {
-        let (mut laptop, mut desk) = two_devices();
+        let (mut laptop, mut pc) = two_devices();
         // Everywhere else the laptop's editor is that window running on the
         // laptop, never a copy started there.
         assert_eq!(
-            desk.tab(EDITOR).tile,
+            pc.tab(EDITOR).tile,
             TileContent::HostedWindow {
                 app_id: "org.gnome.TextEditor".into(),
                 label: "Text Editor".into(),
@@ -418,12 +418,12 @@ tilo_test_env::scenario! {
             }
         );
         // A Tilo app opens its own instance everywhere.
-        assert!(matches!(desk.tab(NOTES).tile, TileContent::LocalApp { .. }));
+        assert!(matches!(pc.tab(NOTES).tile, TileContent::LocalApp { .. }));
 
-        // The desk puts the editor beside the notes on the other strip; the
+        // The pc puts the editor beside the notes on the other strip; the
         // laptop shows its live surface there.
-        desk.change(|w| move_tab(w, EDITOR, LATER, LATER_GROUP));
-        laptop.hear(&mut desk);
+        pc.change(|w| move_tab(w, EDITOR, LATER, LATER_GROUP));
+        laptop.hear(&mut pc);
         assert_eq!(
             laptop.places(),
             vec![
@@ -442,32 +442,32 @@ tilo_test_env::scenario! {
 
     phase what_each_device_decides_alone_survives_a_fold;
     {
-        let (mut laptop, mut desk) = two_devices();
-        desk.workspace.strips[0].window_groups[0].width = WindowWidth::Wide;
-        desk.workspace.strips[0].window_groups[0].maximized = true;
+        let (mut laptop, mut pc) = two_devices();
+        pc.workspace.strips[0].window_groups[0].width = WindowWidth::Wide;
+        pc.workspace.strips[0].window_groups[0].maximized = true;
         laptop.change(|w| {
             w.strips[0].window_groups[0]
                 .tabs
                 .push(notes(minted(1, 103)));
         });
-        desk.hear(&mut laptop);
-        let group = &desk.workspace.strips[0].window_groups[0];
+        pc.hear(&mut laptop);
+        let group = &pc.workspace.strips[0].window_groups[0];
         assert_eq!(group.width, WindowWidth::Wide);
         assert!(group.maximized);
         assert_eq!(group.active_tab, NOTES);
         // And none of it reached the record.
-        assert!(!desk.write());
-        let mut fresh = Workspace::new(desk.workspace.id(), "Home");
-        fold(&desk.doc, &mut fresh, "dd", &Kept::NOTHING);
+        assert!(!pc.write());
+        let mut fresh = Workspace::new(pc.workspace.id(), "Home");
+        fold(&pc.doc, &mut fresh, "dd", &Kept::NOTHING);
         assert_eq!(fresh.strips[0].window_groups[0].width, WindowWidth::Normal);
         assert!(!fresh.strips[0].window_groups[0].maximized);
     }
 
     phase a_window_renamed_on_another_device_takes_the_name_everywhere;
     {
-        let (mut laptop, mut desk) = two_devices();
-        desk.change(|w| w.strips[0].window_groups[0].tabs[0].title = "Plans".into());
-        laptop.hear(&mut desk);
+        let (mut laptop, mut pc) = two_devices();
+        pc.change(|w| w.strips[0].window_groups[0].tabs[0].title = "Plans".into());
+        laptop.hear(&mut pc);
         assert_eq!(laptop.tab(NOTES).title, "Plans");
         // The laptop keeps its live instance of the renamed window.
         assert_eq!(laptop.tab(NOTES).tile, notes(NOTES).tile);
@@ -475,24 +475,24 @@ tilo_test_env::scenario! {
 
     phase a_device_adds_only_what_it_made_and_what_it_made_is_the_person_s;
     {
-        let (mut laptop, mut desk) = two_devices();
-        // The laptop closes a window while the desk is away; the desk, not yet
-        // knowing, writes again: the window stays closed, and the desk's own
+        let (mut laptop, mut pc) = two_devices();
+        // The laptop closes a window while the pc is away; the pc, not yet
+        // knowing, writes again: the window stays closed, and the pc's own
         // new window is added as the person's.
         laptop.change(|w| close(w, LATER_NOTES));
         let own = minted(2, 5);
-        desk.change(|w| w.strips[0].window_groups[0].tabs.push(notes(own)));
-        laptop.hear(&mut desk);
-        desk.hear(&mut laptop);
-        assert!(!desk.places().iter().any(|(_, _, tab)| *tab == LATER_NOTES));
-        assert_eq!(laptop.places(), desk.places());
-        let shared = crate::shared_record::read(&desk.doc, None).unwrap();
+        pc.change(|w| w.strips[0].window_groups[0].tabs.push(notes(own)));
+        laptop.hear(&mut pc);
+        pc.hear(&mut laptop);
+        assert!(!pc.places().iter().any(|(_, _, tab)| *tab == LATER_NOTES));
+        assert_eq!(laptop.places(), pc.places());
+        let shared = crate::shared_record::read(&pc.doc, None).unwrap();
         assert_eq!(shared.authors.get(&own).map(String::as_str), Some(PERSON));
 
         // A window some other device made that the record lacks is not added.
         let stranger = minted(9, 1);
-        desk.change(|w| w.strips[0].window_groups[0].tabs.push(notes(stranger)));
-        let shared = crate::shared_record::read(&desk.doc, None).unwrap();
+        pc.change(|w| w.strips[0].window_groups[0].tabs.push(notes(stranger)));
+        let shared = crate::shared_record::read(&pc.doc, None).unwrap();
         assert!(
             !shared.tree.workspaces[0].strips[0].window_groups[0]
                 .tabs
@@ -503,18 +503,18 @@ tilo_test_env::scenario! {
 
     phase withdrawing_takes_out_only_what_the_device_made;
     {
-        let (mut laptop, mut desk) = two_devices();
+        let (mut laptop, mut pc) = two_devices();
         let own = minted(2, 5);
-        desk.change(|w| {
+        pc.change(|w| {
             w.strips[0].window_groups[0].tabs.push(notes(own));
-            w.strips.push(Strip::new(StripId(minted(2, 6)), "Desk"));
+            w.strips.push(Strip::new(StripId(minted(2, 6)), "Work"));
             w.strips[2]
                 .window_groups
                 .push(group(minted(2, 7), vec![notes(minted(2, 8))]));
         });
-        assert!(withdraw(&mut desk.doc, &|id| id / 1000 == 2).unwrap());
-        desk.doc.commit();
-        laptop.hear(&mut desk);
+        assert!(withdraw(&mut pc.doc, &|id| id / 1000 == 2).unwrap());
+        pc.doc.commit();
+        laptop.hear(&mut pc);
         assert_eq!(
             laptop.places(),
             vec![
@@ -543,42 +543,42 @@ tilo_test_env::scenario! {
 
     phase a_window_notes_the_record_it_shows_on_every_device;
     {
-        let (mut laptop, mut desk) = two_devices();
+        let (mut laptop, mut pc) = two_devices();
         assert!(noted(&laptop.doc).is_empty(), "nothing noted yet");
 
         // The notes window on the laptop shows the workspace's notebook.
         laptop.notes.insert(NOTES, NOTEBOOK.into());
         assert!(laptop.write());
         assert_eq!(noted(&laptop.doc), vec![(NOTES, NOTEBOOK.to_owned())]);
-        desk.hear(&mut laptop);
+        pc.hear(&mut laptop);
         assert_eq!(
-            noted(&desk.doc),
+            noted(&pc.doc),
             vec![(NOTES, NOTEBOOK.to_owned())],
-            "the desk knows which record the laptop's window is on"
+            "the pc knows which record the laptop's window is on"
         );
 
         // Writing the same note again changes nothing.
         assert!(!laptop.write());
         assert_eq!(noted(&laptop.doc), vec![(NOTES, NOTEBOOK.to_owned())]);
 
-        // The desk lays the window out elsewhere, noting nothing of its own:
+        // The pc lays the window out elsewhere, noting nothing of its own:
         // what the laptop noted stays.
-        desk.change(|w| move_tab(w, NOTES, LATER, LATER_GROUP));
-        assert_eq!(noted(&desk.doc), vec![(NOTES, NOTEBOOK.to_owned())]);
-        laptop.hear(&mut desk);
+        pc.change(|w| move_tab(w, NOTES, LATER, LATER_GROUP));
+        assert_eq!(noted(&pc.doc), vec![(NOTES, NOTEBOOK.to_owned())]);
+        laptop.hear(&mut pc);
         assert_eq!(noted(&laptop.doc), vec![(NOTES, NOTEBOOK.to_owned())]);
     }
 
     phase a_window_that_closes_takes_its_note_out_of_the_record;
     {
-        let (mut laptop, mut desk) = two_devices();
+        let (mut laptop, mut pc) = two_devices();
         laptop.notes.insert(NOTES, NOTEBOOK.into());
         laptop.write();
-        desk.hear(&mut laptop);
+        pc.hear(&mut laptop);
 
-        desk.change(|w| close(w, NOTES));
-        assert!(noted(&desk.doc).is_empty(), "no window, no note");
-        laptop.hear(&mut desk);
+        pc.change(|w| close(w, NOTES));
+        assert!(noted(&pc.doc).is_empty(), "no window, no note");
+        laptop.hear(&mut pc);
         assert!(noted(&laptop.doc).is_empty());
     }
 }
@@ -593,11 +593,11 @@ fn float_of(doc: &AutoCommit, group: u64) -> Option<FloatPlace> {
         .find_map(|workspace| workspace.arrangement.float_of(group))
 }
 
-/// The desk as `kept` folds `doc` into it.
+/// The device's workspace with `doc` folded in as `kept`.
 fn folded(device: &Device, doc: &AutoCommit, kept: &Kept<'_>) -> Workspace {
-    let mut desk = device.workspace.clone();
-    fold(doc, &mut desk, device.key, kept);
-    desk
+    let mut workspace = device.workspace.clone();
+    fold(doc, &mut workspace, device.key, kept);
+    workspace
 }
 
 tilo_test_env::scenario! {
@@ -605,45 +605,45 @@ tilo_test_env::scenario! {
 
     phase a_float_is_the_record_s_so_every_device_sees_it_and_snapping_back_clears_it;
     {
-        let (mut laptop, mut desk) = two_devices();
+        let (mut laptop, mut pc) = two_devices();
         let float = FloatPlace::new(FloatCorner::TopRight, 40, 24, 640, 480);
 
-        // A window the laptop floats is written floating, and the desk hears it
+        // A window the laptop floats is written floating, and the pc hears it
         // wherever it shows that window.
         laptop.change(|w| {
             assert!(w.arrangement.set_float(NOTES_GROUP, Some(float)));
         });
         assert_eq!(float_of(&laptop.doc, NOTES_GROUP), Some(float));
-        desk.hear(&mut laptop);
-        assert_eq!(float_of(&desk.doc, NOTES_GROUP), Some(float));
+        pc.hear(&mut laptop);
+        assert_eq!(float_of(&pc.doc, NOTES_GROUP), Some(float));
         assert_eq!(
-            desk.workspace.arrangement.float_of(NOTES_GROUP),
+            pc.workspace.arrangement.float_of(NOTES_GROUP),
             Some(float)
         );
 
-        // Snapped back at the desk: the write says so, and the laptop puts it
+        // Snapped back at the pc: the write says so, and the laptop puts it
         // back in its strip, as a float the record says nothing about is the
         // record's to drop.
-        desk.change(|w| {
+        pc.change(|w| {
             assert!(w.arrangement.set_float(NOTES_GROUP, None));
         });
-        assert_eq!(float_of(&desk.doc, NOTES_GROUP), None);
-        laptop.hear(&mut desk);
+        assert_eq!(float_of(&pc.doc, NOTES_GROUP), None);
+        laptop.hear(&mut pc);
         assert_eq!(laptop.workspace.arrangement.float_of(NOTES_GROUP), None);
         assert_eq!(float_of(&laptop.doc, NOTES_GROUP), None);
     }
 
     phase the_fold_a_write_makes_lays_down_the_floats_of_the_device_writing;
     {
-        let (mut laptop, mut desk) = two_devices();
+        let (mut laptop, mut pc) = two_devices();
         let float = FloatPlace::new(FloatCorner::BottomLeft, 8, 16, 320, 200);
         laptop.change(|w| {
             w.arrangement.set_float(NOTES_GROUP, Some(float));
         });
-        desk.hear(&mut laptop);
+        pc.hear(&mut laptop);
 
         // The laptop floats a window it had in its strip: the fold its write
-        // makes lays the float down, so the write records it, and the desk hears.
+        // makes lays the float down, so the write records it, and the pc hears.
         laptop.workspace.arrangement.set_float(NOTES_GROUP, None);
         let floated = FloatPlace::new(FloatCorner::TopLeft, 12, 6, 500, 400);
         laptop.change(|w| {
@@ -661,22 +661,22 @@ tilo_test_env::scenario! {
         );
         assert_eq!(writing.arrangement.float_of(EDITOR_GROUP), Some(floated));
         assert_eq!(float_of(&laptop.doc, EDITOR_GROUP), Some(floated));
-        desk.hear(&mut laptop);
+        pc.hear(&mut laptop);
         assert_eq!(
-            desk.workspace.arrangement.float_of(EDITOR_GROUP),
+            pc.workspace.arrangement.float_of(EDITOR_GROUP),
             Some(floated)
         );
 
         // A viewer folds what the record says: a float it can not account for is
         // the record's to drop.
-        desk.workspace.arrangement.set_float(EDITOR_GROUP, None);
-        let reading = folded(&desk, &laptop.doc, &Kept::NOTHING);
+        pc.workspace.arrangement.set_float(EDITOR_GROUP, None);
+        let reading = folded(&pc, &laptop.doc, &Kept::NOTHING);
         assert_eq!(reading.arrangement.float_of(EDITOR_GROUP), Some(floated));
         laptop.doc.rollback();
         laptop.change(|w| {
             w.arrangement.set_float(EDITOR_GROUP, None);
         });
-        let reading = folded(&desk, &laptop.doc, &Kept::NOTHING);
+        let reading = folded(&pc, &laptop.doc, &Kept::NOTHING);
         assert_eq!(reading.arrangement.float_of(EDITOR_GROUP), None);
     }
 

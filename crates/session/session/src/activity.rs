@@ -18,7 +18,7 @@ use ui::time::Instant;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use serde_json::Value;
-use tilo_desktop_model::{DesktopTree, TabId, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::HistorySource;
 use tilo_desktop_surface::activity::describer::{Describer, Job};
 use tilo_desktop_surface::activity::{
@@ -68,13 +68,13 @@ type ToldRefusal = (String, [u8; 32], neighbour_wire::RefusalReason);
 /// workspaces' layout records.
 pub trait DeskHistory {
     /// The history of the desk in the workspace `workspace_id` of `tree`.
-    fn history(&self, tree: &DesktopTree, workspace_id: WorkspaceId) -> Option<ActivitySnapshot>;
+    fn history(&self, tree: &Layout, workspace_id: WorkspaceId) -> Option<ActivitySnapshot>;
     /// The layout of each workspace `tree` shows, as this host holds it.
-    fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceId, automerge::AutoCommit)>;
+    fn documents(&self, tree: &Layout) -> Vec<(WorkspaceId, automerge::AutoCommit)>;
     /// Write what `write` changes in the layout of `workspace_id`. Whether anything was written.
     fn describe(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace_id: WorkspaceId,
         write: &mut dyn FnMut(&mut automerge::AutoCommit) -> bool,
     ) -> bool;
@@ -153,7 +153,7 @@ struct Inner {
     /// person has not been shown asks for the frame that shows it.
     seen: Cell<(u64, u64)>,
     /// The desk a change the model wrote back leaves, for the next pass.
-    restored: RefCell<Option<DesktopTree>>,
+    restored: RefCell<Option<Layout>>,
     /// The resources the person opened from the history.
     openings: RefCell<Vec<(WorkspaceId, ui::HistoryResourceTarget)>>,
     /// The windows' end of what they ask of the activity, and what they follow.
@@ -443,18 +443,18 @@ impl Activity {
 
     /// Show what this device left in `tree`: the workspace in front and the displays' partition.
     /// Whether anything changed.
-    pub fn show(&self, tree: &mut DesktopTree) -> bool {
+    pub fn show(&self, tree: &mut Layout) -> bool {
         self.0.shown.applied(tree)
     }
 
     /// Keep what `tree` shows of this device: the workspace in front and the displays' partition.
     /// Read at `revision` of the desk, so a desk that did not move is not read.
-    pub fn keep_shown(&self, revision: Option<u64>, tree: impl FnOnce() -> DesktopTree) -> bool {
+    pub fn keep_shown(&self, revision: Option<u64>, tree: impl FnOnce() -> Layout) -> bool {
         self.0.shown.keep(revision, tree)
     }
 
     /// The workspace a change the model wrote back leaves the desk at, if one is waiting.
-    pub fn take_restored(&self) -> Option<DesktopTree> {
+    pub fn take_restored(&self) -> Option<Layout> {
         self.0.restored.borrow_mut().take()
     }
 
@@ -480,7 +480,7 @@ impl Activity {
 
     /// Say what the desk's changes were when the desk moved: one request at a time, off the desk's
     /// thread. Whether a layout changed.
-    pub fn describe(&self, tree: &DesktopTree) -> bool {
+    pub fn describe(&self, tree: &Layout) -> bool {
         let mut wrote = false;
         let answers = std::mem::take(&mut *self.0.described.lock_recover());
         {
@@ -551,7 +551,7 @@ impl Activity {
     }
 
     /// The `WorkspaceId` of `workspace` , as `tree` holds it.
-    fn id_of(tree: &DesktopTree, workspace: WorkspaceId) -> Option<WorkspaceId> {
+    fn id_of(tree: &Layout, workspace: WorkspaceId) -> Option<WorkspaceId> {
         tree.workspaces
             .iter()
             .find(|held| held.id() == workspace)
@@ -653,14 +653,14 @@ impl Activity {
 impl HistorySource for Activity {
     fn workspace_history(
         &mut self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace: WorkspaceId,
     ) -> Option<ActivitySnapshot> {
         Self::id_of(tree, workspace)?;
         let mut snapshot = self.0.layouts.history(tree, workspace)?;
         snapshot.desktop.active = workspace;
         let restored = Rc::downgrade(&self.0);
-        let commit = Rc::new(move |tree: &DesktopTree| {
+        let commit = Rc::new(move |tree: &Layout| {
             let Some(inner) = restored.upgrade() else {
                 return;
             };
@@ -671,7 +671,7 @@ impl HistorySource for Activity {
 
     fn record_histories(
         &mut self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace: WorkspaceId,
     ) -> Vec<DetachedRecordHistory> {
         let mut records = Vec::new();
@@ -742,7 +742,7 @@ impl HistorySource for Activity {
     /// The person opened a resource from the history: its app opens on the next pass.
     fn resource_tab(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         target: &ui::HistoryResourceTarget,
     ) -> Option<tilo_desktop_model::TabId> {
         // No app holds the person's own record of what their devices answered: its rows are read in
@@ -867,7 +867,7 @@ impl ActivityHost for Host {
 
     /// The desk's own layout is this session's to write; a record's history is its app's.
     fn writable(&self, origin: &HistoryOrigin) -> bool {
-        matches!(origin, HistoryOrigin::DesktopTree)
+        matches!(origin, HistoryOrigin::Layout)
     }
 
     #[cfg(target_os = "linux")]
@@ -1026,7 +1026,7 @@ impl Activity {
     )]
     pub fn own_actions(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace: WorkspaceId,
         author: &str,
         since_ms: u64,
@@ -1477,10 +1477,10 @@ mod tests {
             use tilo_desktop_model::shared_record;
             use ui::automerge::ReadDoc as _;
             let layout = tilo_desktop_model::ownership::SharedDesktop {
-                tree: DesktopTree {
+                tree: Layout {
                     workspaces: vec![workspace.clone()],
                     active: workspace.id(),
-                    ..DesktopTree::default()
+                    ..Layout::default()
                 },
                 ..Default::default()
             };
@@ -1543,11 +1543,7 @@ mod tests {
     }
 
     impl DeskHistory for Records {
-        fn history(
-            &self,
-            tree: &DesktopTree,
-            workspace_id: WorkspaceId,
-        ) -> Option<ActivitySnapshot> {
+        fn history(&self, tree: &Layout, workspace_id: WorkspaceId) -> Option<ActivitySnapshot> {
             let kept = self.0.borrow().get(&workspace_id)?.clone();
             Some(
                 ActivitySnapshot::of_layout(tree.clone(), workspace_id, kept.layout)
@@ -1555,7 +1551,7 @@ mod tests {
             )
         }
 
-        fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceId, ui::automerge::AutoCommit)> {
+        fn documents(&self, tree: &Layout) -> Vec<(WorkspaceId, ui::automerge::AutoCommit)> {
             tree.workspaces
                 .iter()
                 .filter_map(|workspace| Some((workspace.id(), self.of(workspace.id())?)))
@@ -1564,7 +1560,7 @@ mod tests {
 
         fn describe(
             &self,
-            _tree: &DesktopTree,
+            _tree: &Layout,
             workspace_id: WorkspaceId,
             write: &mut dyn FnMut(&mut ui::automerge::AutoCommit) -> bool,
         ) -> bool {
@@ -1607,7 +1603,7 @@ mod tests {
         }
 
         /// A desk seeded by `seed` , given its minter and the Notes window it shows.
-        fn seeded(seed: impl FnOnce(&mut IdMinter, Tab) -> DesktopTree) -> Self {
+        fn seeded(seed: impl FnOnce(&mut IdMinter, Tab) -> Layout) -> Self {
             let mut minter = IdMinter::new(7);
             let notes = Tab {
                 id: minter.mint(),
@@ -2074,7 +2070,7 @@ mod tests {
     }
 
     /// Every window `tree` holds.
-    fn windows(tree: &DesktopTree) -> usize {
+    fn windows(tree: &Layout) -> usize {
         tree.workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)

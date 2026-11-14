@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use collab_types::presence::identity_rgb;
 use collab_types::{Member, MemberId};
-use tilo_desktop_model::{DesktopTree, Present, Workspace};
+use tilo_desktop_model::{Layout, Present, Workspace};
 use vello::peniko::Color;
 
 use crate::i18n::{t, t_args};
@@ -16,14 +16,14 @@ use crate::i18n::{t, t_args};
 use super::{LineSource, RosterRow, RosterStatus, doing_line};
 
 /// Every member of the active workspace who is here now, as the roster lists them.
-pub fn roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<RosterRow> {
+pub fn roster_rows(desktop: &Layout, local_user: &str) -> Vec<RosterRow> {
     roster_rows_named(desktop, local_user, None).0
 }
 
 /// [`roster_rows`], with people who share a name numbered ([`ui::presence::ParticipantLabels`]) —
 /// `own_name`, this person's own, among them — and what this person is shown as.
 pub fn roster_rows_named(
-    desktop: &DesktopTree,
+    desktop: &Layout,
     local_user: &str,
     own_name: Option<&str>,
 ) -> (Vec<RosterRow>, Option<String>) {
@@ -80,7 +80,7 @@ impl PeopleNames {
     /// The roster's names for the active workspace of `desktop`, as `local_user` (named
     /// `own_name`) sees it.
     #[must_use]
-    pub fn of(desktop: &DesktopTree, local_user: &str, own_name: Option<&str>) -> Self {
+    pub fn of(desktop: &Layout, local_user: &str, own_name: Option<&str>) -> Self {
         let Some(workspace) = desktop.active_workspace() else {
             return Self::default();
         };

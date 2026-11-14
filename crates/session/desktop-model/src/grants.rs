@@ -11,10 +11,10 @@ use tilo_sort::CompactSort as _;
 
 use crate::ids::WorkspaceId;
 use crate::receipt::WorkspaceEffectReceipt;
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::workspace::{UserId, WORKSPACE_GOVERNANCE_APP_ID};
 
-impl DesktopTree {
+impl Layout {
     /// Grant `grant` in `workspace_id` at `now`, as `grantor` who must be allowed to
     /// grant in the workspace: the grant as stored, or why it was refused (the
     /// workspace is gone, the grantor may not grant, or not this much). The
@@ -126,14 +126,14 @@ mod tests {
     use crate::workspace::{Workspace, preset_assign_node};
     use tilo_actions::{EffectReceiptStatus, InvocationId};
 
-    fn tree() -> (DesktopTree, WorkspaceId) {
+    fn tree() -> (Layout, WorkspaceId) {
         let id = WorkspaceId::from_u128(1);
         let mut workspace = Workspace::new(id, "Home");
         workspace.set_owner("owner");
         (
-            DesktopTree {
+            Layout {
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             },
             id,
         )

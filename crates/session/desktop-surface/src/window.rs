@@ -16,7 +16,7 @@
 use tilo_actions::{
     ActionArgs, ActionKind, ActionSpec, Audience, EncodedAction, OperationKind, ResultSpec,
 };
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_desktop_model::layout::TileContent;
 
 /// `look` 's operation type: the window as a picture.
@@ -57,7 +57,7 @@ pub struct ShownWindow {
 /// The window the desk shows in tab `tab` , when it is one this session does not run — a foreign
 /// X11 or Wayland window — which the desk publishes the read actions of.
 #[must_use]
-pub fn shown(tree: &DesktopTree, tab: u64) -> Option<ShownWindow> {
+pub fn shown(tree: &Layout, tab: u64) -> Option<ShownWindow> {
     tree.workspaces.iter().find_map(|workspace| {
         let found = workspace
             .strips

@@ -26,8 +26,8 @@ use tilo_actions::remote::RemoteActionTarget;
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_model::{
-    DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId,
+    GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId,
 };
 use tilo_desktop_search::SHOW_PEOPLE;
 use tilo_desktop_search::providers::PublishedActions;
@@ -53,7 +53,7 @@ fn workspace_id() -> WorkspaceId {
 
 /// A desk showing one workspace it takes part in, with one window called Notes: where the other
 /// person is working.
-fn desk() -> DesktopTree {
+fn desk() -> Layout {
     let workspace = workspace_id();
     let mut workspace = Workspace::new(workspace, "Desk");
     let tab = Tab {
@@ -78,10 +78,10 @@ fn desk() -> DesktopTree {
         focus_history: Vec::new(),
     });
     workspace.strips.push(strip);
-    DesktopTree {
+    Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 
@@ -224,7 +224,7 @@ fn session_over(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>) -> Session 
 }
 
 /// A session taking part in the workspace through `sync` , showing `tree` .
-fn showing(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>, tree: DesktopTree) -> Session {
+fn showing(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>, tree: Layout) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
@@ -244,7 +244,7 @@ fn showing(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>, tree: DesktopTre
 const CHAT_TAB: u64 = 9;
 
 /// [`desk`], with Chat in front of Notes.
-fn desk_of_two() -> DesktopTree {
+fn desk_of_two() -> Layout {
     let mut tree = desk();
     let workspace = tree.workspaces.first_mut().expect("a workspace");
     workspace.strips[0].window_groups.push(WindowGroup {

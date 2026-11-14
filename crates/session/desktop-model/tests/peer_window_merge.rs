@@ -14,7 +14,7 @@ use automerge::AutoCommit;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::shared_record::{self, device};
 use tilo_desktop_model::{
-    AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
 };
 
@@ -62,10 +62,10 @@ fn record(identity: WorkspaceId, tab: Tab) -> AutoCommit {
     shared_record::write(
         &mut doc,
         &SharedDesktop {
-            tree: DesktopTree {
+            tree: Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             },
             ..SharedDesktop::default()
         },

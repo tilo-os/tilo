@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_sheets::Seat as _;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
@@ -889,7 +889,7 @@ impl Personal {
 
 /// Put `tree` 's workspaces in the order `wanted` names: those it names, in its order, then the
 /// rest as they were. Whether they moved.
-fn reorder(tree: &mut DesktopTree, wanted: &[WorkspaceId]) -> bool {
+fn reorder(tree: &mut Layout, wanted: &[WorkspaceId]) -> bool {
     let before: Vec<WorkspaceId> = tree
         .workspaces
         .iter()

@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::layout::TileContent;
-use tilo_desktop_model::{DesktopTree, TabId};
+use tilo_desktop_model::{Layout, TabId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::DeskEffect;
 use tilo_resource::Effect;
@@ -61,7 +61,7 @@ pub use testing::{NoticeTiles, PermissiveRules};
 /// beside others with windows is as blank as a new workspace, and the launchpad is the way in from
 /// either.
 #[must_use]
-pub fn desk_is_empty(tree: &DesktopTree) -> bool {
+pub fn desk_is_empty(tree: &Layout) -> bool {
     tree.active_workspace().is_some_and(|workspace| {
         tilo_desktop_surface::navigation::active_strip(tree, workspace)
             .and_then(|id| workspace.strips.iter().find(|strip| strip.id == id))

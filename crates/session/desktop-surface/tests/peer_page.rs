@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent as ModelTile, Workspace};
+use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent as ModelTile, Workspace};
 use tilo_desktop_surface::page_view::PageStream;
 use tilo_desktop_surface::{
     NeighbourMsg, PeerId, PeerStreamStart, PeerSurfaces, SurfaceId, TileSource, seed_tree,
@@ -87,7 +87,7 @@ fn announcement(tab: TabId) -> NeighbourMsg {
 }
 
 /// A desk with one window another device shows.
-fn desk(minter: &mut IdMinter) -> (DesktopTree, TabId) {
+fn desk(minter: &mut IdMinter) -> (Layout, TabId) {
     let tab = Tab {
         id: minter.mint(),
         title: "Browser".into(),

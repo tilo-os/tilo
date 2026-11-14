@@ -809,12 +809,12 @@ mod tests {
     use std::io::Read as _;
     use std::os::fd::IntoRawFd;
     use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-    use tilo_desktop_model::{DesktopTree, WorkspaceId};
+    use tilo_desktop_model::{Layout, WorkspaceId};
 
     /// A host's committed workspaces, as the tests mutate them between requests.
     #[derive(Default)]
     struct WorkspaceTree {
-        desktop: DesktopTree,
+        desktop: Layout,
     }
     impl WorkspaceTree {
         fn shared(self) -> SharedTree {

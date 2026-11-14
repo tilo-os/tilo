@@ -26,7 +26,7 @@ use tilo_app::tilo_workspace_agent::{
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
-use tilo_desktop_model::{DesktopTree, UserId, Workspace};
+use tilo_desktop_model::{Layout, UserId, Workspace};
 use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_resource::Id;
 use tilo_sheets::workspace_settings as sheet;
@@ -105,7 +105,7 @@ impl Agents {
     /// may do.
     pub(crate) fn pane(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         person: &UserId,
         names: &PeopleNames,
         apps: &dyn domain::AppDirectory,
@@ -376,7 +376,7 @@ impl Agents {
 
     /// Whether the tab would show something else now: the record moved. `false` while the record is
     /// not open, which the tab does when it is first shown.
-    pub(crate) fn moved(&self, tree: &DesktopTree, person: &UserId) -> bool {
+    pub(crate) fn moved(&self, tree: &Layout, person: &UserId) -> bool {
         let Some(workspace) = tree.active_workspace() else {
             return false;
         };
@@ -442,7 +442,7 @@ impl Agents {
     ///
     /// Nothing happens until the tab opened the record here: no other tab
     /// reads it.
-    pub(crate) fn settle(&self, tree: &DesktopTree, person: &UserId) {
+    pub(crate) fn settle(&self, tree: &Layout, person: &UserId) {
         let Some(workspace) = tree.active_workspace() else {
             return;
         };

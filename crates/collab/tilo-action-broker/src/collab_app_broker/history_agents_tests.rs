@@ -12,10 +12,7 @@ struct Verified {
 }
 
 impl crate::services::WorkspaceAuthority for Verified {
-    fn with_tree(
-        &self,
-        read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
-    ) -> Result<(), String> {
+    fn with_tree(&self, read: &mut dyn FnMut(&tilo_desktop_model::Layout)) -> Result<(), String> {
         read(&self.tree.read().desktop);
         Ok(())
     }

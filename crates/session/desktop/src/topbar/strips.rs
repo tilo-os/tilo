@@ -15,7 +15,7 @@ use ui::widget::DrawChild;
 static STRIP_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::ChevronRight];
 
 use crate::text_entry::{self, Edit, Mods};
-use tilo_desktop_model::{DesktopTree, StripId};
+use tilo_desktop_model::{Layout, StripId};
 use tilo_desktop_surface::names;
 use ui::text_render::TextStyle;
 use ui::text_selection::Selection;
@@ -67,7 +67,7 @@ impl TopBarChrome {
             .then_some(self.strips.field_rect)
     }
 
-    pub(super) fn sync_strips(&mut self, tree: &DesktopTree) {
+    pub(super) fn sync_strips(&mut self, tree: &Layout) {
         let workspace = tree.workspaces.iter().find(|w| w.id() == tree.active);
         self.strips.strips = workspace
             .map(|w| {
@@ -461,7 +461,7 @@ mod tests {
     use ui::headless::Framed;
 
     struct Host {
-        tree: RefCell<DesktopTree>,
+        tree: RefCell<Layout>,
         intents: RefCell<Vec<ChromeIntent>>,
     }
 
@@ -469,7 +469,7 @@ mod tests {
         fn snapshot(&self) -> DesktopChromeSnapshot {
             DesktopChromeSnapshot::default()
         }
-        fn tree(&self) -> DesktopTree {
+        fn tree(&self) -> Layout {
             self.tree.borrow().clone()
         }
         fn intent(&self, intent: ChromeIntent) -> bool {
@@ -500,7 +500,7 @@ mod tests {
     }
 
     /// A workspace of three named strips, the first shown, with people on the other two.
-    fn tree() -> DesktopTree {
+    fn tree() -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Home");
         let mut games = Strip::new(StripId(11), "Games");
         games.window_groups = vec![group(1)];
@@ -512,17 +512,17 @@ mod tests {
         workspace.members_here([ada, bo]);
         workspace.present[0].tab = Some(1001);
         workspace.present[1].tab = Some(1002);
-        let mut tree = DesktopTree {
+        let mut tree = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         tree.active_strip
             .insert(WorkspaceId::from_u128(1), StripId(10));
         tree
     }
 
-    fn bar(tree: &DesktopTree, width: u32) -> (Framed<TopBarChrome>, Rc<Host>) {
+    fn bar(tree: &Layout, width: u32) -> (Framed<TopBarChrome>, Rc<Host>) {
         let chrome = Rc::new(Host {
             tree: RefCell::new(tree.clone()),
             intents: RefCell::default(),

@@ -40,7 +40,7 @@ pub type GroupId = u64;
 pub type TabId = u64;
 pub type FileId = u64;
 
-/// Snapshot of the focused tab, cloned out of the desktop tree so callers
+/// Snapshot of the focused tab, cloned out of the layout so callers
 /// can release whatever guards it before using the values.
 #[derive(Clone, Debug)]
 pub struct TabRef {

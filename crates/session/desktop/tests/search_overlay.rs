@@ -14,7 +14,7 @@ use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, SearchHost, SearchHostFeed};
 use ui::headless::FrameHarness;
@@ -38,7 +38,7 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
     }
 }
 
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let tabs = vec![window(20, "Notes", "so.tilo.notes")];
     let group = WindowGroup {
         id: 3,
@@ -54,7 +54,7 @@ fn desk_tree() -> DesktopTree {
         name: "Main".into(),
         window_groups: vec![group],
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
@@ -74,14 +74,14 @@ struct Session {
 
 /// The desk and the chrome over it, with `host` answering for what lies beyond the desk, as the
 /// session's own search host does.
-fn session(tree: &DesktopTree, size: (u32, u32), host: Option<Rc<dyn SearchHost>>) -> Session {
+fn session(tree: &Layout, size: (u32, u32), host: Option<Rc<dyn SearchHost>>) -> Session {
     session_parts(tree, size, host, false)
 }
 
 /// [`session`], with the chrome recording the damage parts a host that keeps its frame compares
 /// (the web page's shell tracks them).
 fn session_parts(
-    tree: &DesktopTree,
+    tree: &Layout,
     size: (u32, u32),
     host: Option<Rc<dyn SearchHost>>,
     track_parts: bool,
@@ -590,7 +590,7 @@ fn a_search_still_filling_in_asks_for_frames_before_the_bar_ticks() {
 }
 
 /// A desk whose shown strip holds `n` windows, all at rest.
-fn desk_tree_with(n: u64) -> DesktopTree {
+fn desk_tree_with(n: u64) -> Layout {
     let groups: Vec<WindowGroup> = (0..n)
         .map(|i| {
             let tab = window(
@@ -614,7 +614,7 @@ fn desk_tree_with(n: u64) -> DesktopTree {
         name: "Main".into(),
         window_groups: groups,
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()

@@ -14,7 +14,7 @@ use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
-use tilo_desktop_model::{DesktopTree, UserId, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, UserId, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_sheets::Seat as _;
@@ -814,7 +814,7 @@ fn move_workspace(handle: &DesktopHandle, step: i32) {
 
 /// Everything the sheet shows of `tree` for `person` .
 fn settings(
-    tree: &DesktopTree,
+    tree: &Layout,
     person: &UserId,
     lists: &AppLists,
     tab: sheet::Tab,
@@ -868,7 +868,7 @@ fn settings(
 /// A workspace that is not the person's own has no devices to show it on: it is theirs only while
 /// they are in it.
 fn general(
-    tree: &DesktopTree,
+    tree: &Layout,
     person: &UserId,
     personal: Option<&RefCell<Personal>>,
     engine: Option<&Engine>,
@@ -975,7 +975,7 @@ struct Going {
     decision: sheet::Decision,
 }
 
-fn going(tree: &DesktopTree, engine: Option<&Engine>) -> Going {
+fn going(tree: &Layout, engine: Option<&Engine>) -> Going {
     let workspace = tree.active_workspace();
     let sole_member = workspace.is_some_and(|workspace| workspace.roster().len() <= 1);
     let delete_note = workspace.filter(|_| sole_member).and_then(|workspace| {

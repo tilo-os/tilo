@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use serde_json::{Map, Value};
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_desktop_model::ids::WorkspaceId;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::warmth::WindowWarmth;
@@ -122,7 +122,7 @@ impl Windows {
 /// Where the workspace `app` 's window stands with its peers, and whether that window may write it:
 /// the same answer that opened the app writable.
 fn workspace_sync(
-    tree: &DesktopTree,
+    tree: &Layout,
     app: &str,
     person: &str,
     persons: &RefCell<HashMap<WorkspaceId, String>>,

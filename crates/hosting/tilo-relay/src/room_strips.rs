@@ -6,9 +6,7 @@
 //! its name is missing; everything people made, strips and windows alike,
 //! is kept.
 
-use tilo_desktop_model::{
-    DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceId, shared_record,
-};
+use tilo_desktop_model::{IdMinter, Layout, Strip, StripId, Workspace, WorkspaceId, shared_record};
 
 /// The workspace record members' pages keep the shared desktop in.
 pub(crate) const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
@@ -76,7 +74,7 @@ struct Minter {
 }
 
 impl Minter {
-    fn new(workspace: &str, tree: &DesktopTree) -> Self {
+    fn new(workspace: &str, tree: &Layout) -> Self {
         // The salt's derivation keeps the bytes it was first derived with.
         let hash = blake3::hash(format!("room strips {workspace}").as_bytes());
         let [a, b, ..] = *hash.as_bytes();
@@ -142,7 +140,7 @@ mod tests {
             let mut doc = automerge::AutoCommit::new();
             assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Games"])).unwrap());
             assert_eq!(strips(&doc), ["Main", "Games"]);
-            let tree: DesktopTree = desktop(&doc).tree;
+            let tree: Layout = desktop(&doc).tree;
             assert_eq!(tree.workspaces[0].name, "Hangout");
             assert_eq!(tree.workspaces[0].id().to_string(), ROOM);
             assert_eq!(tree.active, tree.workspaces[0].id());

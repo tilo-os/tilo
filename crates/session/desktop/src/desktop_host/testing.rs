@@ -2,7 +2,7 @@
 //! looks at the desk's layers rather than at an application.
 
 use tilo_desktop_model::commands::DesktopCommand;
-use tilo_desktop_model::{DesktopTree, Tab, Workspace};
+use tilo_desktop_model::{Layout, Tab, Workspace};
 use tilo_desktop_surface::{DesktopHandle, TileSource};
 
 use crate::host_contract::DesktopRules;
@@ -22,7 +22,7 @@ impl PermissiveRules {
 }
 
 impl DesktopRules for PermissiveRules {
-    fn tree(&self) -> DesktopTree {
+    fn tree(&self) -> Layout {
         self.handle.read(Clone::clone)
     }
 

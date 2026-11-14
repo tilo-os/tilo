@@ -18,7 +18,7 @@
     reason = "a benchmark reports to stdout and treats a failed setup as fatal"
 )]
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, System};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -27,7 +27,7 @@ use tilo_desktop::resolver::{
     ApplicationCatalogTileResolver, ComponentContextSource, TileRequest, TileResolver,
 };
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopSurface, TileSource};
 use ui::application::{
@@ -55,7 +55,7 @@ static ALLOCATOR: Counting = Counting;
 // SAFETY: every operation delegates to `System` with the caller's own layout
 // and pointers; the counters are relaxed atomics that never affect them.
 unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() && MEASURING.load(Ordering::Relaxed) {
             ALLOCS.fetch_add(1, Ordering::Relaxed);
@@ -67,11 +67,11 @@ unsafe impl GlobalAlloc for Counting {
         ptr
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
         unsafe { System.dealloc(ptr, layout) };
     }
 
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
         let new = unsafe { System.realloc(ptr, layout, new_size) };
         if !new.is_null() && MEASURING.load(Ordering::Relaxed) {
             ALLOCS.fetch_add(1, Ordering::Relaxed);
@@ -185,7 +185,7 @@ fn fixture(
     profile: Profile,
     tabs_per_window: usize,
 ) -> (
-    DesktopTree,
+    Layout,
     ApplicationCatalogTileResolver<Host>,
     Vec<RecordStore>,
 ) {
@@ -267,7 +267,7 @@ fn fixture(
         workspace.strips = strips;
         workspaces.push(workspace);
     }
-    let tree = DesktopTree {
+    let tree = Layout {
         active: workspaces[0].id(),
         workspaces,
         ..Default::default()

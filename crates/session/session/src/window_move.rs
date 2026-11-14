@@ -19,7 +19,7 @@ use collab_types::handoff::{HandoffReport, HandoffRequest, Successor};
 use tilo_action_broker::collab_broker::SessionFollowDispatcher;
 use tilo_app_launch::Launch;
 use tilo_compositor::Compositor;
-use tilo_desktop_model::{DesktopTree, TabId, TileContent, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, TabId, TileContent, Workspace, WorkspaceId};
 use ui::record::RecordId;
 use ui::record::transfer::{Origin, Retirement, TransferError};
 
@@ -1042,7 +1042,7 @@ struct Standing {
 }
 
 /// The tile `tab` holds, as the desk has it.
-fn tab_tile(tree: &DesktopTree, tab: TabId) -> Option<&TileContent> {
+fn tab_tile(tree: &Layout, tab: TabId) -> Option<&TileContent> {
     tree.workspaces
         .iter()
         .flat_map(|workspace| &workspace.strips)
@@ -1054,7 +1054,7 @@ fn tab_tile(tree: &DesktopTree, tab: TabId) -> Option<&TileContent> {
 
 /// The window `tab` shows and the workspace the tab stands in; `None` when the tab is not on the
 /// desk or holds no window of an app this device started.
-fn standing(tree: &DesktopTree, tab: TabId, person: &str, earlier: &[String]) -> Option<Standing> {
+fn standing(tree: &Layout, tab: TabId, person: &str, earlier: &[String]) -> Option<Standing> {
     let TileContent::Foreign { app_id, surface_id } = tab_tile(tree, tab)? else {
         return None;
     };
@@ -1074,7 +1074,7 @@ fn standing(tree: &DesktopTree, tab: TabId, person: &str, earlier: &[String]) ->
 }
 
 fn workspace_at(
-    tree: &DesktopTree,
+    tree: &Layout,
     id: WorkspaceId,
     person: &str,
     earlier: &[String],
@@ -1416,13 +1416,13 @@ mod tests {
 
     /// The desk the person is at: the workspace in front, with a strip the app's window takes, and
     /// one behind it.
-    fn two_workspaces() -> DesktopTree {
+    fn two_workspaces() -> Layout {
         let mut home = Workspace::new(WorkspaceId::from_u128(1), "Home");
         home.strips = vec![Strip::new(StripId(1), "Main")];
-        let mut tree = DesktopTree {
+        let mut tree = Layout {
             active: home.id(),
             workspaces: vec![home],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         tree.active_strip
             .insert(WorkspaceId::from_u128(1), StripId(1));

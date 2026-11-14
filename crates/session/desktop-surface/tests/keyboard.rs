@@ -17,9 +17,7 @@ use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::DesktopCommand;
-use tilo_desktop_model::{
-    DesktopTree, IdMinter, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-};
+use tilo_desktop_model::{IdMinter, Layout, Tab, TileContent, WindowGroup, WindowWidth, Workspace};
 use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, HostAction, SearchHost, SearchHostFeed, TileSource, seed_tree,
 };
@@ -740,7 +738,7 @@ struct ChromeRules {
 }
 
 impl DesktopRules for ChromeRules {
-    fn tree(&self) -> DesktopTree {
+    fn tree(&self) -> Layout {
         self.handle.read(Clone::clone)
     }
 
@@ -764,7 +762,7 @@ struct Desk {
     tabs: Vec<u64>,
     root: std::path::PathBuf,
     /// The tree the desk shows, as the chrome over it reads it.
-    tree: DesktopTree,
+    tree: Layout,
     /// The chrome the session draws over the windows, holding search's card,
     /// made when a test first reaches it.
     chrome: Option<ui::headless::FrameHarness>,

@@ -3,7 +3,7 @@
 //! and typed chrome requests. No system probing or effects.
 use std::cell::{Cell, RefCell};
 
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_model::{StripId, WorkspaceId};
@@ -417,7 +417,7 @@ pub struct AvatarAsk {
 
 pub trait DesktopChromeSource {
     fn snapshot(&self) -> DesktopChromeSnapshot;
-    fn tree(&self) -> DesktopTree;
+    fn tree(&self) -> Layout;
     /// Where each display's bar goes. A host that cannot tell its displays apart answers none, and
     /// the desk carries one full bar across it.
     fn bars(&self) -> Placement {
@@ -464,7 +464,7 @@ pub trait ChromeSource {
         0
     }
     /// Place who is here in `tree`, as the active workspace's members and their presence.
-    fn place_people(&self, _tree: &mut DesktopTree) {}
+    fn place_people(&self, _tree: &mut Layout) {}
     /// Ask `answer` what this person may change here, as this host knows their standing.
     fn with_standing<R>(&self, answer: impl FnOnce(&Standing<'_>) -> R) -> R;
     /// Ask `answer` who made each strip and opened each window here.
@@ -650,7 +650,7 @@ impl<S: ChromeSource + ?Sized> DesktopChromeSource for HostChrome<S> {
         snapshot
     }
 
-    fn tree(&self) -> DesktopTree {
+    fn tree(&self) -> Layout {
         let mut tree = self.source.handle().read(Clone::clone);
         self.source.place_people(&mut tree);
         tree
@@ -684,7 +684,7 @@ impl<S: ChromeSource + ?Sized> DesktopChromeSource for HostChrome<S> {
 }
 
 impl<S: ChromeSource + ?Sized> DesktopRules for HostChrome<S> {
-    fn tree(&self) -> DesktopTree {
+    fn tree(&self) -> Layout {
         DesktopChromeSource::tree(self)
     }
 
@@ -776,7 +776,7 @@ impl Placement {
     /// A desk showing a single display carries no bars here: one bar across the desk needs no
     /// placing, and the bar's own layout already stands it there.
     #[must_use]
-    pub fn of(tree: &DesktopTree, fullscreen: &[String]) -> Self {
+    pub fn of(tree: &Layout, fullscreen: &[String]) -> Self {
         let displays = &tree.outputs.displays;
         let group = tree
             .fullscreen_group()

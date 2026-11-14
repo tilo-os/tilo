@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::partition::OutputPartition;
-use tilo_desktop_model::{DesktopTree, GroupId, Workspace, WorkspaceId};
+use tilo_desktop_model::{GroupId, Layout, Workspace, WorkspaceId};
 
 /// The file this device's state is kept in, under `state`.
 pub(crate) const FILE: &str = "shown.json";
@@ -45,7 +45,7 @@ pub(crate) struct ShownWorkspace {
 
 impl Shown {
     /// What `tree` shows.
-    pub(crate) fn of(tree: &DesktopTree) -> Self {
+    pub(crate) fn of(tree: &Layout) -> Self {
         Self {
             workspaces: tree
                 .workspaces
@@ -65,7 +65,7 @@ impl Shown {
     /// Show this in `tree`, a desk being opened, as the person left it: the workspaces it showed,
     /// whose layouts their records hold, the one in front where the desk still holds it, and the
     /// display partition. Whether anything changed.
-    pub(crate) fn applied(&self, tree: &mut DesktopTree) -> bool {
+    pub(crate) fn applied(&self, tree: &mut Layout) -> bool {
         let mut changed = false;
         if !self.workspaces.is_empty() {
             let mut opened = std::mem::take(&mut tree.workspaces);
@@ -135,14 +135,14 @@ impl DeviceState {
     }
 
     /// Show what this device left in `tree`. Whether anything changed.
-    pub(crate) fn applied(&self, tree: &mut DesktopTree) -> bool {
+    pub(crate) fn applied(&self, tree: &mut Layout) -> bool {
         self.kept.borrow().applied(tree)
     }
 
     /// Keep what `tree` shows, read at `revision` of the desk: a pass that finds the desk where
     /// the last one left it keeps nothing. `None` reads it now, whatever moved. Whether it changed
     /// since it was last kept.
-    pub(crate) fn keep(&self, revision: Option<u64>, tree: impl FnOnce() -> DesktopTree) -> bool {
+    pub(crate) fn keep(&self, revision: Option<u64>, tree: impl FnOnce() -> Layout) -> bool {
         if let Some(revision) = revision {
             if self.seen.get() == Some(revision) {
                 return false;
@@ -204,13 +204,13 @@ mod tests {
     use super::*;
     use tilo_desktop_model::{Strip, StripId};
 
-    fn desk(id: u128) -> DesktopTree {
+    fn desk(id: u128) -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(id), "Garden");
         workspace.strips.push(Strip::new(StripId(2), "Main"));
-        DesktopTree {
+        Layout {
             workspaces: vec![workspace],
             active: WorkspaceId::from_u128(id),
-            ..DesktopTree::default()
+            ..Layout::default()
         }
     }
 

@@ -678,7 +678,7 @@ mod tests {
         .unwrap();
         doc.commit();
         let mut tree = crate::activity::ActivitySnapshot::new(
-            tilo_desktop_model::DesktopTree {
+            tilo_desktop_model::Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
@@ -733,7 +733,7 @@ mod tests {
         .unwrap();
         doc.commit();
         let mut tree = crate::activity::ActivitySnapshot::new(
-            tilo_desktop_model::DesktopTree {
+            tilo_desktop_model::Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()

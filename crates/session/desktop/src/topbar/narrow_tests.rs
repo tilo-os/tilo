@@ -6,10 +6,10 @@ fn fixture_bar() -> TopBarChrome {
         tilo_desktop_model::WorkspaceId::from_u128(1),
         "Design review",
     );
-    let tree = DesktopTree {
+    let tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
-        ..DesktopTree::default()
+        ..Layout::default()
     };
     let mut bar = TopBarChrome::from_tree_with_local_user(&tree, "fixture-person".into());
     bar.clock = ClockSnapshot {

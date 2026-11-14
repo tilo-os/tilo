@@ -17,8 +17,8 @@ use tilo_desktop::control_hints::{ControlHints, HINTS, HintFrame, HintsFeed};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, FloatCorner, FloatPlace, Strip, StripId, Tab, TileContent, WindowGroup,
-    WindowWidth, Workspace, WorkspaceId,
+    FloatCorner, FloatPlace, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+    Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::control_hints::Learned;
@@ -44,7 +44,7 @@ fn window(id: u64, title: &str) -> Tab {
 
 /// A strip holding `windows` windows, side by side: the move and resize hints are about a strip
 /// holding two.
-fn desk_tree(windows: u64) -> DesktopTree {
+fn desk_tree(windows: u64) -> Layout {
     let groups: Vec<WindowGroup> = (0..windows)
         .map(|id| {
             let tab = window(20_u64.saturating_add(id), "Notes");
@@ -64,7 +64,7 @@ fn desk_tree(windows: u64) -> DesktopTree {
         name: "Main".into(),
         window_groups: groups,
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
@@ -81,16 +81,12 @@ fn chrome_with_hints(windows: u64, feed: &HintsFeed) -> FrameHarness {
 }
 
 /// The chrome over `tree`, lent `feed`, and the desk itself.
-fn chrome_over(tree: &DesktopTree, feed: &HintsFeed) -> (FrameHarness, DesktopHandle) {
+fn chrome_over(tree: &Layout, feed: &HintsFeed) -> (FrameHarness, DesktopHandle) {
     chrome_over_at(tree, feed, 1280)
 }
 
 /// [`chrome_over`] on a screen `width` logical pixels across.
-fn chrome_over_at(
-    tree: &DesktopTree,
-    feed: &HintsFeed,
-    width: u32,
-) -> (FrameHarness, DesktopHandle) {
+fn chrome_over_at(tree: &Layout, feed: &HintsFeed, width: u32) -> (FrameHarness, DesktopHandle) {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (width, 800));
     desk.relayout();
@@ -216,7 +212,7 @@ fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrom
 
 /// A strip of `windows` windows with the window `group` lifted as a card over the desk, at `dx`
 /// from the left of the work area.
-fn desk_with_card(windows: u64, group: u64, dx: i32) -> DesktopTree {
+fn desk_with_card(windows: u64, group: u64, dx: i32) -> Layout {
     let mut tree = desk_tree(windows);
     tree.workspaces[0].arrangement.set_float(
         group,
@@ -308,7 +304,7 @@ fn no_hint_points_at_a_card_nor_covers_one() {
 }
 
 /// A desk whose bar is busy: a long workspace name on its left and many people on its right.
-fn busy_desk() -> DesktopTree {
+fn busy_desk() -> Layout {
     let mut tree = desk_tree(2);
     tree.workspaces[0].name = "Customer support and escalations for the whole team".into();
     for person in 0..6 {
@@ -321,7 +317,7 @@ fn busy_desk() -> DesktopTree {
 }
 
 /// A desk of `windows` windows with the first of them maximized.
-fn maximised(windows: u64) -> DesktopTree {
+fn maximised(windows: u64) -> Layout {
     let mut tree = desk_tree(windows);
     if let Some(group) = tree.workspaces[0].strips[0].window_groups.first_mut() {
         group.maximized = true;
@@ -332,7 +328,7 @@ fn maximised(windows: u64) -> DesktopTree {
 /// The desk over `tree` on a screen `width` across, with the bar's band over its top edge, and the
 /// strip's row as it lays out: every window stands clear of the bar, the way the desktop stands
 /// them while its bar shows.
-fn desk_below_the_bar(tree: &DesktopTree, width: u32) -> (FrameHarness, ui::widget::HintPlaces) {
+fn desk_below_the_bar(tree: &Layout, width: u32) -> (FrameHarness, ui::widget::HintPlaces) {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     // Windows come to rest below the bar at once, as they do when the person asks for less motion:
     // the slide down to it is motion, not geometry, and a hint is placed against the geometry.
@@ -363,7 +359,7 @@ fn draw_desk(desk: &mut FrameHarness) {
 
 /// The desktop's own bar laid out over `tree`: the room it keeps beside its clock for a control
 /// hint, and the rects it draws there itself, which no hint may cover.
-fn bar_geometry(tree: &DesktopTree, width: u32) -> (Option<Rect>, Vec<(String, Rect)>) {
+fn bar_geometry(tree: &Layout, width: u32) -> (Option<Rect>, Vec<(String, Rect)>) {
     let feed = HintsFeed::default();
     let (mut frame, _handle) = chrome_over_at(tree, &feed, width);
     let chrome = frame.root_mut::<DesktopChrome>();
@@ -381,7 +377,7 @@ fn bar_geometry(tree: &DesktopTree, width: u32) -> (Option<Rect>, Vec<(String, R
 /// they are noted here, after the desk's own frames have drawn, since a frame of the chrome reads
 /// and keeps what was noted before it.
 fn painted_hint(
-    tree: &DesktopTree,
+    tree: &Layout,
     unlearned: &str,
     cues: &[Performed],
     wait: ui::time::Duration,

@@ -1,13 +1,11 @@
 //! The desk a host starts from when it has no stored one: one workspace,
 //! one strip, and a window group per tab.
 
-use tilo_desktop_model::{
-    DesktopTree, IdMinter, StripId, Tab, WindowWidth, Workspace, WorkspaceId,
-};
+use tilo_desktop_model::{IdMinter, Layout, StripId, Tab, WindowWidth, Workspace, WorkspaceId};
 
 /// The in-memory desktop a host starts from when it has no stored one: one workspace, one strip,
 /// and a window group per tab in `tabs` .
-pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) -> DesktopTree {
+pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) -> Layout {
     seed_tree_in(minter, WorkspaceId::new(), workspace_name, tabs)
 }
 
@@ -19,7 +17,7 @@ pub fn seed_tree_in(
     identity: WorkspaceId,
     workspace_name: &str,
     tabs: Vec<Tab>,
-) -> DesktopTree {
+) -> Layout {
     let mut workspace = Workspace::new(identity, workspace_name);
     // A strip no one has named keeps no name: the desk names it by its place, in the language of
     // whoever reads it.
@@ -38,12 +36,12 @@ pub fn seed_tree_in(
     let first_group = strip.window_groups.first().map(|g| g.id);
     let strip_id = strip.id;
     workspace.strips = vec![strip];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         // Every id above is the minter's, so the desk's own range is too: what a record of this
         // desk shares is this device's to write.
         salt: minter.salt(),
-        ..DesktopTree::default()
+        ..Layout::default()
     };
     tree.active_strip.insert(workspace.id(), strip_id);
     if let Some(group) = first_group {

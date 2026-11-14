@@ -464,7 +464,7 @@ impl AppTabs {
         // app.
         let shown: BTreeSet<u64> = desktop.with_policy(|policy| {
             policy
-                .layout()
+                .placement()
                 .shown
                 .into_iter()
                 .map(|(window, _)| window)

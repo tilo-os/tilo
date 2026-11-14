@@ -347,7 +347,7 @@ fn a_window_becomes_a_tab_of_the_strip_and_shows_where_the_strip_lays_it_out() {
         tab.actions.iter().any(|action| action.id == "close-tab"),
         "a window's tab can be closed by its address"
     );
-    let layout = session.desktop().with_policy(|policy| policy.layout());
+    let layout = session.desktop().with_policy(|policy| policy.placement());
     let (_, shown) = layout
         .shown
         .iter()

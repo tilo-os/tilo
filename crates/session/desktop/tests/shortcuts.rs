@@ -17,7 +17,7 @@ use tilo_desktop::desk_verbs::chrome_resource;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::headless::FrameHarness;
@@ -53,10 +53,10 @@ fn group(id: u64, tabs: Vec<Tab>) -> WindowGroup {
     }
 }
 
-fn desk_tree(strips: Vec<Strip>) -> DesktopTree {
+fn desk_tree(strips: Vec<Strip>) -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = strips;
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
@@ -70,7 +70,7 @@ fn desk_tree(strips: Vec<Strip>) -> DesktopTree {
 }
 
 /// One strip with two windows of two tabs each.
-fn two_windows() -> DesktopTree {
+fn two_windows() -> Layout {
     desk_tree(vec![Strip {
         id: StripId(2),
         name: "Main".into(),
@@ -90,7 +90,7 @@ fn two_windows() -> DesktopTree {
 /// A desk every place a chord reaches exists on: nine strips, the shown one holding nine windows,
 /// so numbering a strip or a window lands somewhere and moving to the strip above or below does
 /// too.
-fn every_place() -> DesktopTree {
+fn every_place() -> Layout {
     let groups: Vec<WindowGroup> = (0..9_u64)
         .map(|index| {
             let id = index + 1;
@@ -126,7 +126,7 @@ fn every_place() -> DesktopTree {
 }
 
 /// The desk with `tree` on it and the chrome that carries the desktop's chords over it.
-fn desk_and_chrome(tree: &DesktopTree) -> (FrameHarness, FrameHarness, DesktopHandle) {
+fn desk_and_chrome(tree: &Layout) -> (FrameHarness, FrameHarness, DesktopHandle) {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 800));
     desk.relayout();

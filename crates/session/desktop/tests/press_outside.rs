@@ -13,7 +13,7 @@ use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop::overlays::{POPOVER_MARGIN, POPOVER_WIDTH, Target};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::notifications::Notification;
 use tilo_desktop_surface::{DesktopNotifications, DesktopSurface};
@@ -22,7 +22,7 @@ use ui::kurbo::Rect;
 
 const DISPLAY: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let tabs = vec![Tab {
         id: 20,
         title: "Notes".into(),
@@ -49,7 +49,7 @@ fn desk_tree() -> DesktopTree {
         name: "Main".into(),
         window_groups: vec![group],
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()

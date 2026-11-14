@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use tilo_desktop_model::{CanvasPlace, DesktopTree, FloatPlace, StripId, TabId, Workspace};
+use tilo_desktop_model::{CanvasPlace, FloatPlace, Layout, StripId, TabId, Workspace};
 use ui::kurbo::{Point, Rect};
 use ui::num::{f64_of_i64, i32_of_f64, u32_of_f64};
 use ui::widget::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FloatAsk, GroupRow, Widget};
@@ -41,7 +41,7 @@ pub(super) fn rect_of(at: CanvasPlace) -> Rect {
     )
 }
 
-fn workspace_with(tree: &DesktopTree, strip: StripId) -> Option<&Workspace> {
+fn workspace_with(tree: &Layout, strip: StripId) -> Option<&Workspace> {
     tree.workspaces
         .iter()
         .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))

@@ -18,7 +18,7 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable as _;
 use tilo_actions::ActionContext;
 use tilo_desktop_model::ownership::Authors;
-use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION, TabId, desktop_doc, shared_record};
+use tilo_desktop_model::{Layout, STATE_SCHEMA_VERSION, TabId, desktop_doc, shared_record};
 use ui::permissions::UserId;
 use ui::state::UndoLog;
 
@@ -34,7 +34,7 @@ pub trait Store {
 
 /// `desktop` as the document keeps it: every window in the form that opens it again, and no window
 /// that opens again in no way.
-pub fn relaunchable(desktop: &DesktopTree) -> DesktopTree {
+pub fn relaunchable(desktop: &Layout) -> Layout {
     let mut desktop = desktop.clone();
     desktop.schema_version = STATE_SCHEMA_VERSION;
     for workspace in &mut desktop.workspaces {
@@ -109,9 +109,9 @@ impl Desk {
     }
 
     /// The desk the document holds.
-    pub fn tree(&self) -> Option<DesktopTree> {
+    pub fn tree(&self) -> Option<Layout> {
         let doc = self.doc.borrow();
-        let mut tree = DesktopTree::default();
+        let mut tree = Layout::default();
         desktop_doc::rebuild(&doc, &mut tree);
         desktop_doc::rebuild_view(&doc, &mut tree);
         (!tree.workspaces.is_empty()).then_some(tree)
@@ -125,7 +125,7 @@ impl Desk {
     /// changes of the desk.
     pub fn record(
         &self,
-        desktop: &DesktopTree,
+        desktop: &Layout,
         time: i64,
         records: &[(TabId, String)],
         authors: Option<&Authors>,
@@ -137,7 +137,7 @@ impl Desk {
     /// next one starts from.
     pub fn record_now(
         &self,
-        desktop: &DesktopTree,
+        desktop: &Layout,
         time: i64,
         records: &[(TabId, String)],
         authors: Option<&Authors>,
@@ -151,7 +151,7 @@ impl Desk {
     /// written as it is made. Whether the desk changed at all.
     pub fn record_action(
         &self,
-        desktop: &DesktopTree,
+        desktop: &Layout,
         time: i64,
         asked: &ActionContext,
         records: &[(TabId, String)],
@@ -162,7 +162,7 @@ impl Desk {
     /// Record how this device shows `desktop` alone: a host whose workspace holds the desk itself
     /// keeps only the view here, so a reload opens the desk as the workspace has it. Whether
     /// anything was written.
-    pub fn record_view(&self, desktop: &DesktopTree, time: i64) -> bool {
+    pub fn record_view(&self, desktop: &Layout, time: i64) -> bool {
         let mut doc = self.doc.borrow_mut();
         desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop));
         if doc.pending_ops() == 0 {
@@ -176,7 +176,7 @@ impl Desk {
     /// Record `desktop`, and that the windows in `records` show the records they name.
     fn write(
         &self,
-        desktop: &DesktopTree,
+        desktop: &Layout,
         time: i64,
         wait_out_a_drag: bool,
         asked: Option<&ActionContext>,
@@ -312,7 +312,7 @@ impl Desk {
 /// Who made each strip and opened each window still on `desktop`: what a window or a strip no
 /// longer there did is no longer anyone's.
 #[must_use]
-pub fn authors_on(desktop: &DesktopTree, authors: &Authors) -> Authors {
+pub fn authors_on(desktop: &Layout, authors: &Authors) -> Authors {
     let live: BTreeSet<u64> = desktop
         .workspaces
         .iter()

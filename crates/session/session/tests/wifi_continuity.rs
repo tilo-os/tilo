@@ -19,7 +19,7 @@ use ed25519_dalek::Signer as _;
 use runtime_collab::{
     CollabClient, PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Options, Session};
@@ -82,14 +82,14 @@ fn principal(root: &[u8; 32]) -> String {
 }
 
 /// A desk showing the workspace, known by its id, owned by the person.
-fn desk(person: &Person) -> DesktopTree {
+fn desk(person: &Person) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let mut workspace = Workspace::new(workspace, "Desk");
     workspace.set_owner(principal(&person.cert.user_public_key));
-    DesktopTree {
+    Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 

@@ -2,7 +2,7 @@
 
 use super::fixture::FixtureChrome;
 use super::*;
-use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Member, Workspace, WorkspaceId};
 use ui::composition::{Composed, Own};
 
 fn bar_of(people: &[(&str, &str)]) -> TopBarChrome {
@@ -12,10 +12,10 @@ fn bar_of(people: &[(&str, &str)]) -> TopBarChrome {
     for (here, member) in workspace.present.iter_mut().zip(&workspace.members) {
         here.device.clone_from(&member.id.id().to_owned());
     }
-    let tree = DesktopTree {
+    let tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
-        ..DesktopTree::default()
+        ..Layout::default()
     };
     let chrome = FixtureChrome::new(tree.clone());
     chrome.borrow_mut().can_invite = true;

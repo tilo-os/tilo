@@ -2,7 +2,7 @@
 use serde_json::json;
 use tilo_desktop_model::DropTarget;
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
-use tilo_desktop_model::{AppKind, DesktopTree, IdMinter, StripId, WindowWidth, WorkspaceId};
+use tilo_desktop_model::{AppKind, IdMinter, Layout, StripId, WindowWidth, WorkspaceId};
 
 fn gap(gap_index: usize) -> DropTarget {
     DropTarget::GroupGap { gap_index }
@@ -11,7 +11,7 @@ fn gap(gap_index: usize) -> DropTarget {
 // Captures the native persisted contract, including an id beyond
 // JavaScript's exact numeric range. This fixture is not generated
 // by the model under test.
-fn persisted_tree() -> DesktopTree {
+fn persisted_tree() -> Layout {
     serde_json::from_value(json!({
         "schema_version": 1,
         "workspaces": [{
@@ -82,7 +82,7 @@ tilo_test_env::scenario! {
     phase reordering_keeps_tab_identity_selection_and_geometry;
     {
         let mut tree = persisted_tree();
-        let reorder = |tree: &mut DesktopTree, tab: u64| {
+        let reorder = |tree: &mut Layout, tab: u64| {
             apply_command(
                 &mut tree.workspaces[0],
                 &DesktopCommand::ReorderTab {
@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
         #[derive(serde::Serialize, serde::Deserialize)]
         struct Host {
             #[serde(flatten)]
-            desktop: DesktopTree,
+            desktop: Layout,
         }
         let mut desktop = persisted_tree();
         desktop.set_active_group(StripId(11), 12);
@@ -163,8 +163,8 @@ tilo_test_env::scenario! {
         // fields, and reads it with the tree's one shared deserializer.
         #[derive(serde::Deserialize)]
         struct Stored {
-            #[serde(deserialize_with = "DesktopTree::deserialize_via_json")]
-            tree: DesktopTree,
+            #[serde(deserialize_with = "Layout::deserialize_via_json")]
+            tree: Layout,
             records: Vec<(u64, String)>,
         }
         let bytes = serde_json::to_vec(&json!({

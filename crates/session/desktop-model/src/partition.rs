@@ -95,7 +95,7 @@ pub struct OutputPartition {
     /// The strip each monitor shows, per workspace: every display shows a
     /// strip of its own, so moving between strips on one leaves the others
     /// where they are. The focused display shows the workspace's active
-    /// strip whatever this says (see `DesktopTree::strip_shown_on`); not
+    /// strip whatever this says (see `Layout::strip_shown_on`); not
     /// persisted.
     #[serde(skip)]
     pub shown: BTreeMap<(String, WorkspaceId), StripId>,
@@ -422,7 +422,7 @@ mod tests {
     }
 
     fn workspace(ids: &[GroupId]) -> Vec<Workspace> {
-        let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Desk");
+        let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Work");
         let mut strip = Strip::new(StripId(1), "S");
         strip.window_groups = ids.iter().map(|id| group(*id)).collect();
         ws.strips = vec![strip];
@@ -622,7 +622,7 @@ mod tests {
             let mut below = Strip::new(StripId(2), "Below");
             below.window_groups = vec![group(3), group(4)];
             ws.strips.push(below);
-            let mut tree = crate::tree::DesktopTree {
+            let mut tree = crate::tree::Layout {
                 active: ws.id(),
                 workspaces: vec![ws.clone()],
                 ..Default::default()
@@ -650,13 +650,13 @@ mod tests {
         }
 
         phase a_monitor_plugged_in_while_the_desk_runs_takes_a_group_and_hands_its_groups_on_when_it_goes;
-        // A monitor is unplugged and plugged back in while the desk runs, as a
+        // A monitor is unplugged and plugged back in while the session runs, as a
         // docked laptop's is: what it held moves to the display left and
         // returns with it, a group opened on it is homed to it, and the strip
         // it shows follows the displays it has.
         {
             let ws = workspace(&[1, 2]).remove(0);
-            let mut tree = crate::tree::DesktopTree {
+            let mut tree = crate::tree::Layout {
                 active: ws.id(),
                 workspaces: vec![ws],
                 ..Default::default()
@@ -665,7 +665,7 @@ mod tests {
             assert!(tree.reconcile_displays(&docked()));
             home(&mut tree.outputs, &[(1, 0), (2, 1)]);
 
-            // The cable is pulled: its group moves to the panel, and the desk
+            // The cable is pulled: its group moves to the panel, and the shell
             // remembers it came from the monitor.
             assert!(tree.reconcile_displays(&docked()[..1]));
             assert!(!tree.is_partitioned(), "one display shows one strip");
@@ -676,7 +676,7 @@ mod tests {
             );
 
             // Plugged back in mid-run, the monitor is a display again and the
-            // group it held is back on it, on the strip the desk shows there.
+            // group it held is back on it, on the strip the layout shows there.
             assert!(tree.reconcile_displays(&docked()));
             assert!(tree.is_partitioned());
             assert_eq!(tree.strip_shown_on(1), tree.active_strip_id());

@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use tilo_desktop_model::{DesktopTree, Display, GroupId, Strip, StripId, TabId};
+use tilo_desktop_model::{Display, GroupId, Layout, Strip, StripId, TabId};
 use ui::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceCtx;
 use ui::taffy::NodeId;
@@ -43,7 +43,7 @@ pub(crate) enum Step {
 /// the focused display's windows and, past its first or last, crosses to the neighbouring display,
 /// landing on the window nearest the seam.
 pub(crate) fn step(
-    tree: &DesktopTree,
+    tree: &Layout,
     strip: &Strip,
     from: Option<(GroupId, TabId)>,
     steps: i32,
@@ -137,8 +137,8 @@ pub(crate) struct StripPlan {
 
 /// Which strip each display shows in the active workspace, one plan per strip with the displays
 /// showing it. Every display shows one, and the display focus is on shows the active strip
-/// ([`DesktopTree::strip_shown_on`]).
-pub(crate) fn display_strips(tree: &DesktopTree) -> Vec<StripPlan> {
+/// ([`Layout::strip_shown_on`]).
+pub(crate) fn display_strips(tree: &Layout) -> Vec<StripPlan> {
     let mut plans: Vec<StripPlan> = Vec::new();
     for display in &tree.outputs.displays {
         let Some(strip) = tree.strip_shown_on(display.id) else {
@@ -656,8 +656,8 @@ fn put_in_lane_order(row: &mut GroupRow, groups: &[GroupId]) {
 mod tests {
     use super::*;
     use tilo_desktop_model::{
-        AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-        Workspace, WorkspaceId,
+        AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+        WorkspaceId,
     };
 
     fn group(id: GroupId) -> WindowGroup {
@@ -695,15 +695,15 @@ mod tests {
     }
 
     /// A tree whose one strip holds groups `ids` , the first `left` of them on the left display.
-    fn docked(ids: &[GroupId], left: usize) -> DesktopTree {
+    fn docked(ids: &[GroupId], left: usize) -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Desk");
         let mut strip = Strip::new(StripId(1), "S");
         strip.window_groups = ids.iter().map(|id| group(*id)).collect();
         workspace.strips = vec![strip];
-        let mut tree = DesktopTree {
+        let mut tree = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         assert!(tree.reconcile_displays(&[display(0, 0.0), display(1, 800.0)]));
         for (i, id) in ids.iter().enumerate() {
@@ -713,7 +713,7 @@ mod tests {
         tree
     }
 
-    fn strip(tree: &DesktopTree) -> &Strip {
+    fn strip(tree: &Layout) -> &Strip {
         &tree.workspaces[0].strips[0]
     }
 
@@ -723,10 +723,10 @@ mod tests {
         let mut s = Strip::new(StripId(1), "S");
         s.window_groups = vec![group(1), group(2)];
         workspace.strips = vec![s];
-        let tree = DesktopTree {
+        let tree = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         let strip = strip(&tree);
         assert_eq!(

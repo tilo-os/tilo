@@ -39,7 +39,7 @@ use tilo_desktop::profile_card::{
     LazyProfileCard, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_desktop_model::commands::Standing;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
@@ -166,14 +166,14 @@ pub(crate) struct HostOffers {
     /// read one from.
     pub directory: Option<crate::directory::PageDirectoryConfig>,
     /// How the page lays the desktop out.
-    pub layout: Layout,
+    pub layout: Front,
 }
 
 /// How the page lays the desktop out. Both are the same desktop, session and
 /// windows; they differ only in what is in front when the page opens.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum Layout {
+pub(crate) enum Front {
     /// The desktop: the bar over the strips.
     #[default]
     Desktop,
@@ -227,7 +227,7 @@ impl ChromeSource for PageChrome {
         self.here.borrow().revision()
     }
 
-    fn place_people(&self, tree: &mut DesktopTree) {
+    fn place_people(&self, tree: &mut Layout) {
         let people = self.people(tree);
         // Whom this page follows, as its own presence says: the bar keeps that face when it has
         // room for only one.
@@ -324,7 +324,7 @@ impl ChromeSource for PageChrome {
 
 impl PageChrome {
     /// Who is here, as the page's roster and the bar's faces list them.
-    fn people(&self, tree: &DesktopTree) -> Vec<tilo_desktop::here::Person> {
+    fn people(&self, tree: &Layout) -> Vec<tilo_desktop::here::Person> {
         here_people(&self.here, &self.shared, tree)
     }
 }
@@ -411,7 +411,7 @@ fn mount_people(
             // also holds the runs the workspace's host speaks for on a track of its own.
             here: {
                 let chrome = Rc::clone(chrome);
-                Rc::new(move |tree: &mut DesktopTree| chrome.place_people(tree))
+                Rc::new(move |tree: &mut Layout| chrome.place_people(tree))
             },
             intents: Rc::clone(intents),
             invitable,
@@ -437,7 +437,7 @@ pub(crate) fn own_identity(here: &tilo_desktop::here::HereState) -> (String, (u8
 pub(crate) fn here_people(
     here: &tilo_desktop::here::Here,
     shared: &crate::desktop::Shared,
-    tree: &DesktopTree,
+    tree: &Layout,
 ) -> Vec<tilo_desktop::here::Person> {
     let records = tilo_session::sync::layout::bindings_of(tree, &shared.shown_records());
     let app_name = |app: &str| crate::desktop::known_application(app).map(str::to_owned);
@@ -549,7 +549,7 @@ pub(crate) struct BrowserShell {
     hints: tilo_desktop::control_hints::HintsFeed,
     hints_settings: Option<settings_store::SettingsStamp>,
     /// The console the page holds in front, while it does
-    /// ([`Layout::Console`]).
+    /// ([`Front::Console`]).
     console: Option<console::ConsoleHold>,
 }
 
@@ -558,7 +558,7 @@ pub(crate) struct BrowserShell {
 /// a window's menu.
 const SHEETS: usize = 5;
 
-/// What the top bar's chrome reads from the page besides the desktop tree.
+/// What the top bar's chrome reads from the page besides the layout.
 pub struct ChromeSources {
     pub here: tilo_desktop::here::Here,
     pub shared: crate::desktop::Shared,
@@ -759,7 +759,7 @@ impl BrowserShell {
             picker: crate::feedback_pick::PagePicker::default(),
             hints,
             hints_settings: settings_store::stamp(),
-            console: (offers_layout == Layout::Console).then(console::ConsoleHold::default),
+            console: (offers_layout == Front::Console).then(console::ConsoleHold::default),
         }
     }
 
@@ -2261,7 +2261,7 @@ mod tests {
 
     /// The public Lounge as a page holds it: one strip the workspace lists, a
     /// window the guest opened and one another guest opened.
-    fn lounge() -> (DesktopTree, BTreeMap<u64, String>) {
+    fn lounge() -> (Layout, BTreeMap<u64, String>) {
         let mut minter = IdMinter::new(3);
         let tabs = ["so.tilo.notes", "so.tilo.chat"]
             .into_iter()
@@ -2300,7 +2300,7 @@ mod tests {
     fn offered_edits(
         standing: &Standing<'_>,
         authors: &BTreeMap<u64, String>,
-        tree: &DesktopTree,
+        tree: &Layout,
     ) -> OfferedEdits {
         let Some(workspace) = tree.active_workspace() else {
             return OfferedEdits::default();

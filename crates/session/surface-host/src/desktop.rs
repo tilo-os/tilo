@@ -243,7 +243,7 @@ impl Desk {
         }
         let (_, area) = self
             .policy
-            .layout()
+            .placement()
             .floating
             .into_iter()
             .find(|(id, _)| *id == window)?;
@@ -258,7 +258,7 @@ impl Desk {
     fn shown(&self, window: u64) -> Option<LayoutRect> {
         let (ox, oy) = self.host.placement().origin;
         self.policy
-            .layout()
+            .placement()
             .shown
             .into_iter()
             .find(|(id, _)| *id == window)

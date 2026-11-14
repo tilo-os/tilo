@@ -251,7 +251,7 @@ impl super::DesktopSurface {
         &mut self,
         before: Option<StripId>,
         after: Option<StripId>,
-        tree: &tilo_desktop_model::DesktopTree,
+        tree: &tilo_desktop_model::Layout,
     ) {
         let (kind, toward, steps) = Self::change_of(before, after, tree);
         let motion = self.motion;
@@ -290,7 +290,7 @@ impl super::DesktopSurface {
     pub(crate) fn change_of(
         before: Option<StripId>,
         after: Option<StripId>,
-        tree: &tilo_desktop_model::DesktopTree,
+        tree: &tilo_desktop_model::Layout,
     ) -> (SlideKind, f64, f64) {
         let (Some(from), Some(to)) = (before, after) else {
             // A workspace with no strip at all, or one appearing: a whole-view change either way.

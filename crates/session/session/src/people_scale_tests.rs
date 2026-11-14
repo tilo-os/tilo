@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::platform::surfaces::{Heard, Layer, Placement, Surfaces};
-use tilo_desktop_model::{DesktopTree, Member, Tab, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Member, Tab, Workspace, WorkspaceId};
 use tilo_desktop_surface::{DesktopSurface, TileSource};
 use ui::widget::{TileContent, TileHost};
 
@@ -103,10 +103,10 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
     let mut desk = Workspace::new(here, "Desk");
     desk.member_here(Member::keyed("ada", "Ada"));
     let (_desk, handle) = DesktopSurface::new(
-        DesktopTree {
+        Layout {
             active: desk.id(),
             workspaces: vec![desk],
-            ..DesktopTree::default()
+            ..Layout::default()
         },
         7,
         Box::new(Blank),
@@ -121,7 +121,7 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
             apps: None,
             handle,
             sync: None,
-            here: Rc::new(|_: &mut DesktopTree| {}),
+            here: Rc::new(|_: &mut Layout| {}),
             intents: Rc::default(),
             invitable: Rc::new(Cell::new(false)),
         },
@@ -226,10 +226,10 @@ fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless:
     let here = WorkspaceId::new();
     let desk = Workspace::new(here, "Desk");
     let (_desk, handle) = DesktopSurface::new(
-        DesktopTree {
+        Layout {
             active: desk.id(),
             workspaces: vec![desk],
-            ..DesktopTree::default()
+            ..Layout::default()
         },
         7,
         Box::new(Blank),
@@ -248,7 +248,7 @@ fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless:
                 iroh::SecretKey::from_bytes(&[0x51; 32]).public(),
                 crate::sync::OwnPresence::default(),
             ))),
-            here: Rc::new(|tree: &mut DesktopTree| {
+            here: Rc::new(|tree: &mut Layout| {
                 if let Some(workspace) = tree.workspaces.first_mut() {
                     let agent = Member::keyed("agent:run", "Claude Code");
                     workspace.member_here(agent.clone());

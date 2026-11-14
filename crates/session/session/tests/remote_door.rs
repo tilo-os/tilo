@@ -32,7 +32,7 @@ use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use serde_json::{Value, json};
 use tilo_actions::remote::PendingPoll;
 use tilo_actions::remote::workspace_activity as wire;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
 use tilo_runtime::remote_door::{ALPN, PersonalDevices, agent_id, open};
@@ -587,14 +587,14 @@ fn workspace_held_here(
 }
 
 /// A desk showing the workspace `workspace`, known by its id, owned by `person`.
-fn desk(workspace: &str, person: &str) -> DesktopTree {
+fn desk(workspace: &str, person: &str) -> Layout {
     let id = WorkspaceId::parse(workspace).expect("a workspace id");
     let mut held = Workspace::new(id, "Desk");
     held.set_owner(person);
-    DesktopTree {
+    Layout {
         workspaces: vec![held.clone()],
         active: held.id(),
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 

@@ -17,7 +17,7 @@ mod native_history {
     /// model writes back, and who the changes are by.
     type NativeHistory = (
         crate::activity::ActivitySnapshot,
-        Rc<RefCell<Option<tilo_desktop_model::DesktopTree>>>,
+        Rc<RefCell<Option<tilo_desktop_model::Layout>>>,
         std::collections::BTreeMap<String, String>,
     );
 
@@ -30,7 +30,7 @@ mod native_history {
 
     /// Write the desk as it stands into `doc` and stamp it at `time`: one
     /// change of the desk, as a session records each pass.
-    fn stamp(doc: &mut automerge::AutoCommit, tree: &tilo_desktop_model::DesktopTree, time: i64) {
+    fn stamp(doc: &mut automerge::AutoCommit, tree: &tilo_desktop_model::Layout, time: i64) {
         tilo_desktop_model::desktop_doc::seed(doc, tree);
         doc.commit_with(automerge::transaction::CommitOptions::default().with_time(time));
     }
@@ -39,7 +39,7 @@ mod native_history {
     /// Grace renaming it to "Plans", Ada then closing Notes.
     fn native_history() -> NativeHistory {
         use crate::activity::ActivitySnapshot;
-        use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TileContent};
+        use tilo_desktop_model::{IdMinter, Layout, Tab, TileContent};
 
         let mut minter = IdMinter::new(7);
         let notes = Tab {
@@ -75,10 +75,10 @@ mod native_history {
 
         // The desk the host keeps: what the model writes back reaches it,
         // and the session applies it on its next pass.
-        let written: Rc<RefCell<Option<DesktopTree>>> = Rc::new(RefCell::new(None));
+        let written: Rc<RefCell<Option<Layout>>> = Rc::new(RefCell::new(None));
         let desk = Rc::clone(&written);
         let snapshot = ActivitySnapshot::of_desktop(tree, doc).committing(Rc::new(
-            move |restored: &DesktopTree| {
+            move |restored: &Layout| {
                 *desk.borrow_mut() = Some(restored.clone());
             },
         ));
@@ -125,7 +125,7 @@ mod native_history {
     #[test]
     fn a_version_restored_from_the_native_history_is_written_back() {
         use tilo_actions::remote::workspace_activity as wire;
-        use tilo_desktop_model::DesktopTree;
+        use tilo_desktop_model::Layout;
 
         let (mut snapshot, written, authors) = native_history();
         let mut pane = native_pane();
@@ -150,7 +150,7 @@ mod native_history {
             .serve_action(wire::RESTORE, &arguments, &mut snapshot)
             .expect("the history takes the restore");
         assert!(outcome.reverted, "the restore wrote");
-        let restored: DesktopTree = written
+        let restored: Layout = written
             .borrow_mut()
             .take()
             .expect("the desk is written back");

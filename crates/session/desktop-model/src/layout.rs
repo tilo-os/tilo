@@ -85,7 +85,7 @@ enum TileRecord {
         #[serde(default)]
         note: String,
     },
-    /// Another device's window, as a desk held it before it opened its own instance of the
+    /// Another device's window, as this device held it before it opened its own instance of the
     /// app: read as that app's window ([`TileContent::LocalApp`]), never written.
     PeerWindow {
         app_id: String,
@@ -217,11 +217,11 @@ fn is_unpinned(pinned: &bool) -> bool {
 
 impl Tab {
     /// The window is called `title` now: its own title, or, while its app
-    /// names what the window shows, that name — the desk resolves the two.
+    /// names what the window shows, that name — the shell resolves the two.
     /// While a person's name stands, it is kept for when the name is cleared,
     /// and the tab goes on showing the name. A window that names nothing
     /// keeps the name it has: a bar with no title names nothing to the
-    /// person looking at the desk. Returns whether anything changed: a window
+    /// person looking at the layout. Returns whether anything changed: a window
     /// sending the same title again (terminals do, continuously) is no
     /// change.
     pub fn set_window_title(&mut self, title: &str) -> bool {
@@ -528,7 +528,7 @@ mod tile_record_tests {
                     app_id: "xterm".into(),
                     label: "xterm".into(),
                     host: "ab12".into(),
-                    host_label: "Desk".into(),
+                    host_label: "Work".into(),
                 },
             ];
             for tile in tiles {

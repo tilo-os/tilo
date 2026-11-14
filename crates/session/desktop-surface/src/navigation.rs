@@ -7,9 +7,7 @@
 //! `desktop_navigation.rs`) onto `tilo-desktop-model`.
 use crate::i18n::t;
 use serde::{Deserialize, Serialize};
-use tilo_desktop_model::{
-    DesktopTree, GroupId, StripId, TabId, WindowGroup, Workspace, WorkspaceId,
-};
+use tilo_desktop_model::{GroupId, Layout, StripId, TabId, WindowGroup, Workspace, WorkspaceId};
 use tilo_resource::Effect;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -920,7 +918,7 @@ pub const MAX_NAME_CHARS: usize = 200;
 /// # Errors
 /// Refuses an id that is not decimal text, or a group the tree does not
 /// hold with a tab to focus.
-pub fn group_route(tree: &DesktopTree, group: &str) -> Result<RouteIds, String> {
+pub fn group_route(tree: &Layout, group: &str) -> Result<RouteIds, String> {
     let group = id(group)?;
     for workspace in &tree.workspaces {
         for strip in &workspace.strips {
@@ -943,7 +941,7 @@ pub fn group_route(tree: &DesktopTree, group: &str) -> Result<RouteIds, String> 
 /// window already: there is nothing to split, close or group beside it, and a split asked of it is
 /// answered rather than done.
 #[must_use]
-pub fn has_a_second_tab(tree: &DesktopTree, ids: &RouteIds) -> bool {
+pub fn has_a_second_tab(tree: &Layout, ids: &RouteIds) -> bool {
     tree.workspaces
         .iter()
         .flat_map(|workspace| &workspace.strips)
@@ -956,7 +954,7 @@ pub fn has_a_second_tab(tree: &DesktopTree, ids: &RouteIds) -> bool {
 ///
 /// # Errors
 /// Refuses an id that is not decimal text, or a tab the tree does not hold.
-pub fn tab_route(tree: &DesktopTree, tab: &str) -> Result<RouteIds, String> {
+pub fn tab_route(tree: &Layout, tab: &str) -> Result<RouteIds, String> {
     let tab = id(tab)?;
     for workspace in &tree.workspaces {
         for strip in &workspace.strips {
@@ -977,7 +975,7 @@ pub fn tab_route(tree: &DesktopTree, tab: &str) -> Result<RouteIds, String> {
 
 /// A person's name for the window at `ids` : trimmed, within the length a name may be, and refused
 /// for a window the tree no longer holds.
-fn named(ids: RouteIds, name: &str, tree: &DesktopTree) -> Result<Admitted, String> {
+fn named(ids: RouteIds, name: &str, tree: &Layout) -> Result<Admitted, String> {
     if name.chars().count() > MAX_NAME_CHARS {
         return Err("Window name too long".into());
     }
@@ -991,7 +989,7 @@ fn named(ids: RouteIds, name: &str, tree: &DesktopTree) -> Result<Admitted, Stri
 /// # Errors
 /// Refuses a malformed or absent identity, one the tree does not hold, or a
 /// verb this surface does not carry out.
-pub fn admit(verb: &Verb, tree: &DesktopTree) -> Result<Admitted, String> {
+pub fn admit(verb: &Verb, tree: &Layout) -> Result<Admitted, String> {
     admit_with(verb, tree, &CAPABILITIES)
 }
 
@@ -1012,7 +1010,7 @@ fn admit_activity(
 /// The workspace whose closes a `reopen` undoes: the one the surface shows.
 /// The closes a workspace remembers belong to the device the person closed them on, so what can be
 /// reopened is read when the command applies; here the shown workspace is all there is to check.
-fn admit_reopen(tree: &DesktopTree) -> Result<Admitted, String> {
+fn admit_reopen(tree: &Layout) -> Result<Admitted, String> {
     tree.active_workspace()
         .map(|workspace| Admitted::Reopen(workspace.id()))
         .ok_or_else(|| "Workspace unavailable".into())
@@ -1024,7 +1022,7 @@ fn admit_reopen(tree: &DesktopTree) -> Result<Admitted, String> {
 /// As [`admit`].
 pub fn admit_with(
     verb: &Verb,
-    tree: &DesktopTree,
+    tree: &Layout,
     capabilities: &Capabilities,
 ) -> Result<Admitted, String> {
     match verb {
@@ -1035,7 +1033,7 @@ pub fn admit_with(
 
 /// The desk's own verbs, as the surface carries them out: the ones a page dispatches to move around
 /// the windows it shows.
-fn admit_desk(verb: &DeskEffect, tree: &DesktopTree) -> Result<Admitted, String> {
+fn admit_desk(verb: &DeskEffect, tree: &Layout) -> Result<Admitted, String> {
     match verb {
         DeskEffect::CloseTab { tab } => tab_route(tree, tab).map(Admitted::Close),
         DeskEffect::Focus { tab } => tab_route(tree, tab).map(Admitted::Select),
@@ -1063,7 +1061,7 @@ fn admit_desk(verb: &DeskEffect, tree: &DesktopTree) -> Result<Admitted, String>
 )]
 fn admit_chrome(
     verb: &ChromeEffect,
-    tree: &DesktopTree,
+    tree: &Layout,
     capabilities: &Capabilities,
 ) -> Result<Admitted, String> {
     let workspace = |value: &str| -> Result<WorkspaceId, String> {
@@ -1239,7 +1237,7 @@ fn admit_chrome(
 
 /// A launch of `app`, checked against the desktop it opens on: in the shown
 /// strip, or over the desk beside the place it opens into when `float` .
-fn admit_launch(tree: &DesktopTree, app: &str, float: bool) -> Result<Admitted, String> {
+fn admit_launch(tree: &Layout, app: &str, float: bool) -> Result<Admitted, String> {
     // A workspace may hold no strip yet: the first window opened in it makes
     // the strip it goes in.
     tree.active_workspace().ok_or("Workspace unavailable")?;
@@ -1258,7 +1256,7 @@ fn admit_beside(ids: RouteIds, app: &str, background: bool) -> Result<Admitted, 
 }
 
 /// Where a window goes: the destination one of `to` 's ids names, checked against the tree.
-fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Admitted, String> {
+fn admit_move(ids: RouteIds, to: &Destination, tree: &Layout) -> Result<Admitted, String> {
     if let Some(group) = &to.group {
         let target: GroupId = id(group)?;
         let there = tree
@@ -1314,7 +1312,7 @@ fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Adm
     Err("The surface carries a tab to a strip, workspace, display or window only".into())
 }
 
-fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
+fn admit_open(tree: &Layout, app: &str) -> Result<Admitted, String> {
     let workspace = tree.active_workspace().ok_or("Workspace unavailable")?;
     let strip = active_strip(tree, workspace).ok_or("Strip unavailable")?;
     if app.is_empty() {
@@ -1344,7 +1342,7 @@ fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
 
 /// What [`Admitted::Open`] of `app` does on `tree` now: select the shown strip's window of it, or
 /// launch one.
-pub(crate) fn resolve_open(tree: &DesktopTree, app: &str) -> Admitted {
+pub(crate) fn resolve_open(tree: &Layout, app: &str) -> Admitted {
     match admit_open(tree, app) {
         Ok(Admitted::Select(ids)) => Admitted::Select(ids),
         _ => Admitted::Launch(app.to_owned(), false),
@@ -1354,7 +1352,7 @@ pub(crate) fn resolve_open(tree: &DesktopTree, app: &str) -> Admitted {
 /// A window of `app` in the active workspace, the shown strip's first:
 /// where choosing the app should take a person who already has it open,
 /// rather than to a second copy that splits their place in it.
-pub fn window_of_app(tree: &DesktopTree, app: &str) -> Option<RouteIds> {
+pub fn window_of_app(tree: &Layout, app: &str) -> Option<RouteIds> {
     let workspace = tree.active_workspace()?;
     let shown = active_strip(tree, workspace);
     let strips = workspace
@@ -1394,7 +1392,7 @@ fn admit_notifications(open: bool, capabilities: &Capabilities) -> Result<Admitt
         .ok_or_else(|| "Notifications are unavailable on this desktop".into())
 }
 
-fn active_workspace(tree: &DesktopTree, value: &str) -> Result<WorkspaceId, String> {
+fn active_workspace(tree: &Layout, value: &str) -> Result<WorkspaceId, String> {
     let workspace = workspace_id(value)?;
     if !tree.workspaces.iter().any(|w| w.id() == workspace) {
         return Err("Workspace unavailable".into());
@@ -1404,7 +1402,7 @@ fn active_workspace(tree: &DesktopTree, value: &str) -> Result<WorkspaceId, Stri
         .ok_or_else(|| "Workspace is no longer active".into())
 }
 
-fn admit_pan(tree: &DesktopTree, strip: &str, offset: f64) -> Result<Admitted, String> {
+fn admit_pan(tree: &Layout, strip: &str, offset: f64) -> Result<Admitted, String> {
     if !offset.is_finite() {
         return Err("Invalid pan offset".into());
     }
@@ -1419,7 +1417,7 @@ fn admit_pan(tree: &DesktopTree, strip: &str, offset: f64) -> Result<Admitted, S
 }
 
 /// The group `ids` names, if the tab is still in it.
-pub fn locate(tree: &DesktopTree, ids: RouteIds) -> Option<&WindowGroup> {
+pub fn locate(tree: &Layout, ids: RouteIds) -> Option<&WindowGroup> {
     tree.workspaces
         .iter()
         .find(|w| w.id() == ids.workspace)?
@@ -1433,7 +1431,7 @@ pub fn locate(tree: &DesktopTree, ids: RouteIds) -> Option<&WindowGroup> {
 }
 
 /// The strip a workspace shows: its recorded active strip, else its first.
-pub fn active_strip(tree: &DesktopTree, workspace: &Workspace) -> Option<StripId> {
+pub fn active_strip(tree: &Layout, workspace: &Workspace) -> Option<StripId> {
     tree.active_strip
         .get(&workspace.id())
         .copied()
@@ -1442,7 +1440,7 @@ pub fn active_strip(tree: &DesktopTree, workspace: &Workspace) -> Option<StripId
 }
 
 /// The focused window of the active workspace.
-pub fn active_route(tree: &DesktopTree) -> Option<RouteIds> {
+pub fn active_route(tree: &Layout) -> Option<RouteIds> {
     let workspace = tree.active_workspace()?;
     let strip = active_strip(tree, workspace)?;
     let group_id = tree.resolve_active_group(strip, |_| false)?;
@@ -1602,14 +1600,14 @@ pub struct Snapshot {
     pub notifications: Option<NotificationsState>,
 }
 
-pub fn snapshot(tree: &DesktopTree, generation: &str, applications: Vec<Application>) -> Snapshot {
+pub fn snapshot(tree: &Layout, generation: &str, applications: Vec<Application>) -> Snapshot {
     snapshot_with(tree, generation, applications, &Presentation::default())
 }
 
 /// [`snapshot`] with what the surface presents beside the tree. Stale presentation (another strip,
 /// workspace or window) is left out.
 pub fn snapshot_with(
-    tree: &DesktopTree,
+    tree: &Layout,
     generation: &str,
     applications: Vec<Application>,
     presentation: &Presentation,
@@ -1702,7 +1700,7 @@ mod tests {
     use super::*;
     use tilo_desktop_model::{Strip, Tab, TileContent, WindowWidth};
 
-    fn tree() -> DesktopTree {
+    fn tree() -> Layout {
         let mut workspace = Workspace::new(WorkspaceId::from_u128(u128::MAX), "Desk");
         let mut strip = Strip::new(StripId(9_007_199_254_740_993), "Main");
         strip.window_groups = vec![WindowGroup {
@@ -1725,10 +1723,10 @@ mod tests {
             focus_history: Vec::new(),
         }];
         workspace.strips = vec![strip];
-        DesktopTree {
+        Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         }
     }
 
@@ -1750,7 +1748,7 @@ mod tests {
         Verb::Chrome(decode(effect, args).unwrap())
     }
 
-    fn admitted(tree: &DesktopTree, verb: &Verb) -> Result<Admitted, String> {
+    fn admitted(tree: &Layout, verb: &Verb) -> Result<Admitted, String> {
         admit(verb, tree)
     }
 

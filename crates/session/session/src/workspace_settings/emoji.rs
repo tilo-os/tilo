@@ -19,7 +19,7 @@ use tilo_app::tilo_workspace_emoji::{
 };
 use tilo_desktop::people::PeopleNames;
 use tilo_desktop::workspace_settings::{self as domain, emoji_pane};
-use tilo_desktop_model::{DesktopTree, UserId, Workspace};
+use tilo_desktop_model::{Layout, UserId, Workspace};
 use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerSeat, FileRequest, FileType};
@@ -124,7 +124,7 @@ impl Emoji {
     /// and what each person is called.
     pub(crate) fn pane(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         person: &UserId,
         names: &PeopleNames,
     ) -> sheet::EmojiPane {
@@ -211,7 +211,7 @@ impl Emoji {
     /// Whether the tab would show something else now: the record moved, or
     /// what this says of it changed. `false` while the record is not open,
     /// which the tab does when it is first shown.
-    pub(crate) fn moved(&self, tree: &DesktopTree, person: &UserId) -> bool {
+    pub(crate) fn moved(&self, tree: &Layout, person: &UserId) -> bool {
         let Some(workspace) = tree.active_workspace() else {
             return false;
         };
@@ -292,7 +292,7 @@ impl Emoji {
     pub(crate) fn asked(
         &self,
         effect: &sheet::WorkspaceSettingsEffect,
-        tree: &DesktopTree,
+        tree: &Layout,
         person: &UserId,
         picker: Option<&FilePickerSeat>,
     ) {
@@ -380,12 +380,7 @@ impl Emoji {
 
     /// Take up what came of the chooser, and the pictures that waited for the image tools: each one
     /// added, or the tab saying why not.
-    pub(crate) fn settle(
-        &self,
-        tree: &DesktopTree,
-        person: &UserId,
-        picker: Option<&FilePickerSeat>,
-    ) {
+    pub(crate) fn settle(&self, tree: &Layout, person: &UserId, picker: Option<&FilePickerSeat>) {
         let workspace = tree.active_workspace();
         self.answer(workspace, person, picker);
         self.retry(workspace, person);

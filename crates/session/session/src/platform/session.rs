@@ -958,7 +958,7 @@ impl Session {
                 here: {
                     let sync = sync.clone();
                     let notes = std::sync::Arc::clone(&notes);
-                    Rc::new(move |tree: &mut tilo_desktop_model::DesktopTree| {
+                    Rc::new(move |tree: &mut tilo_desktop_model::Layout| {
                         if let Some(sync) = &sync {
                             sync.show(tree, &notes, &|app: &str| {
                                 Some(crate::app_names::app_name(app))

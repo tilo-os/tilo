@@ -20,8 +20,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_desktop_model::{
-    DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId,
+    GroupId, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId,
 };
 use tilo_desktop_policy::Window;
 use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
@@ -61,7 +61,7 @@ impl Seat {
 }
 
 /// `tree` with every strip, group and window numbered as `seat` numbers what it makes.
-fn salted(seat: &Seat, tree: &DesktopTree) -> DesktopTree {
+fn salted(seat: &Seat, tree: &Layout) -> Layout {
     let mut tree = tree.clone();
     for strip in tree
         .workspaces
@@ -94,7 +94,7 @@ fn salted(seat: &Seat, tree: &DesktopTree) -> DesktopTree {
 /// ([`salted`]): the first of `tree`'s workspaces is the one the session opened, the others are
 /// put beside it, each is laid out as `tree` does, and a workspace's layout is written while it is
 /// in front. The ids the desk gave `tree`'s workspaces, in order.
-fn save_desk(seat: &Seat, tree: &DesktopTree) -> Vec<WorkspaceId> {
+fn save_desk(seat: &Seat, tree: &Layout) -> Vec<WorkspaceId> {
     let tree = salted(seat, tree);
     let mut session = session_keeping(&seat.state, None);
     session.step(Duration::from_millis(1)).expect("step");
@@ -180,13 +180,13 @@ fn group(id: u64, tabs: Vec<Tab>, front: u64, width: WindowWidth) -> WindowGroup
 }
 
 /// The one workspace `strips` make up, in front.
-fn on_desk(strips: Vec<Strip>) -> DesktopTree {
+fn on_desk(strips: Vec<Strip>) -> Layout {
     let mut home = Workspace::new(WorkspaceId::from_u128(1), "Home");
     home.strips = strips;
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: home.id(),
         workspaces: vec![home],
-        ..DesktopTree::default()
+        ..Layout::default()
     };
     tree.active_strip
         .insert(WorkspaceId::from_u128(1), StripId(1));
@@ -196,7 +196,7 @@ fn on_desk(strips: Vec<Strip>) -> DesktopTree {
 
 /// A desk with two strips of two groups in one workspace, and a second workspace behind it: each
 /// strip and group carrying what the person chose.
-fn wide_desk() -> DesktopTree {
+fn wide_desk() -> Layout {
     let mut writing = Strip::new(StripId(1), "Writing");
     writing.window_groups = vec![
         group(
@@ -230,7 +230,7 @@ fn wide_desk() -> DesktopTree {
 }
 
 /// A desk holding one saved window of `app` , alone in its group.
-fn one_window(app: &str, label: &str) -> DesktopTree {
+fn one_window(app: &str, label: &str) -> Layout {
     let mut strip = Strip::new(StripId(1), "Windows");
     strip.window_groups = vec![group(
         10,
@@ -782,7 +782,7 @@ fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
     });
 }
 
-fn two_workspaces() -> DesktopTree {
+fn two_workspaces() -> Layout {
     let mut away = Workspace::new(WorkspaceId::from_u128(2), "Away");
     away.strips = vec![Strip::new(StripId(3), "Later")];
     let mut tree = on_desk(vec![Strip::new(StripId(1), "Main")]);

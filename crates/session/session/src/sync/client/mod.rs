@@ -22,7 +22,7 @@ use neighbour_wire::NeighbourMsg;
 use tilo_desktop::here::Person;
 use tilo_desktop::here::{Here, LiveMember};
 #[cfg(target_os = "linux")]
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 #[cfg(target_os = "linux")]
 use tilo_desktop_surface::DesktopHandle;
 #[cfg(target_os = "linux")]
@@ -949,7 +949,7 @@ impl Roster {
     #[must_use]
     pub(crate) fn people(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
@@ -975,7 +975,7 @@ impl Roster {
     /// surface that lists people reads.
     pub(crate) fn show(
         &self,
-        tree: &mut DesktopTree,
+        tree: &mut Layout,
         notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
@@ -1802,7 +1802,7 @@ impl Client {
     #[must_use]
     pub(crate) fn people(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
@@ -1813,7 +1813,7 @@ impl Client {
     /// Who is here, written into `tree`'s active workspace as its members.
     pub(crate) fn show(
         &self,
-        tree: &mut DesktopTree,
+        tree: &mut Layout,
         notes: &crate::continuations::Continuations,
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {

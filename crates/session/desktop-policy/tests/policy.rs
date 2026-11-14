@@ -13,7 +13,7 @@ use std::time::Duration;
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{GroupId, TileContent};
 use tilo_desktop_policy::displays::Output;
-use tilo_desktop_policy::{DesktopPolicy, Layout, Window};
+use tilo_desktop_policy::{DesktopPolicy, Placement, Window};
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
 use ui::kurbo::Rect;
 
@@ -81,7 +81,7 @@ fn map(driver: &mut ui::headless::FrameHarness, policy: &mut DesktopPolicy, id: 
     settle(driver);
 }
 
-fn shown(layout: &Layout) -> Vec<u64> {
+fn shown(layout: &Placement) -> Vec<u64> {
     layout.shown.iter().map(|(id, _)| *id).collect()
 }
 
@@ -101,12 +101,12 @@ fn tabs(policy: &DesktopPolicy) -> Vec<(u64, TileContent)> {
 #[test]
 fn a_mapped_window_opens_focused_and_in_view_beside_the_last() {
     let (mut driver, mut policy) = mount();
-    assert_eq!(policy.layout(), Layout::default());
+    assert_eq!(policy.placement(), Placement::default());
     map(&mut driver, &mut policy, 10, "org.gnome.Terminal");
     map(&mut driver, &mut policy, 11, "org.mozilla.firefox");
 
     assert_eq!(policy.focused(), Some(11));
-    let layout = policy.layout();
+    let layout = policy.placement();
     let (_, rect) = layout.shown.iter().find(|(id, _)| *id == 11).unwrap();
     assert!(
         rect.x0 >= 0.0 && rect.x1 <= WIDTH + 0.5 && rect.width() > 0.0 && rect.height() > 0.0,
@@ -133,11 +133,11 @@ fn focus_brings_a_window_forward_and_unmap_gives_focus_back() {
     assert!(policy.focus(1));
     settle(&mut driver);
     assert_eq!(policy.focused(), Some(1));
-    assert!(shown(&policy.layout()).contains(&1));
+    assert!(shown(&policy.placement()).contains(&1));
 
     policy.unmap(1);
     settle(&mut driver);
-    let layout = policy.layout();
+    let layout = policy.placement();
     assert!(!shown(&layout).contains(&1) && !layout.hidden.contains(&1));
     assert!(policy.focused().is_some_and(|id| id != 1));
     assert!(!policy.focus(1), "a window gone has nothing to focus");
@@ -175,7 +175,7 @@ fn windows_on_a_strip_not_shown_are_hidden() {
     settle(&mut driver);
     map(&mut driver, &mut policy, 2, "b");
 
-    let layout = policy.layout();
+    let layout = policy.placement();
     assert_eq!(shown(&layout), [2]);
     assert_eq!(layout.hidden, [1]);
     assert_eq!(policy.focused(), Some(2));
@@ -385,7 +385,7 @@ fn an_apps_next_window_lands_right_after_its_own() {
         "the second window is the app's next tab, in front"
     );
     assert_eq!(policy.focused(), Some(11));
-    let layout = policy.layout();
+    let layout = policy.placement();
     assert_eq!(shown(&layout), [11], "the window in front is drawn");
     assert_eq!(layout.hidden, [10], "the tab behind it is not");
 }
@@ -412,7 +412,7 @@ fn a_window_placed_behind_takes_no_focus() {
         "the window the person worked in keeps the keyboard"
     );
     assert!(
-        policy.layout().hidden.contains(&11),
+        policy.placement().hidden.contains(&11),
         "a tab opened behind is not drawn"
     );
 }
@@ -487,7 +487,7 @@ fn each_display_holds_the_windows_opened_while_it_had_focus() {
     settle(&mut driver);
     map(&mut driver, &mut policy, 2, "b");
     assert_eq!(policy.display_of(2), Some(order[1]));
-    let layout = policy.layout();
+    let layout = policy.placement();
     let place = |id| layout.shown.iter().find(|(w, _)| *w == id).unwrap().1;
     assert!(place(1).x1 <= WIDTH / 2.0 + 0.5, "{layout:?}");
     assert!(place(2).x0 >= WIDTH / 2.0, "{layout:?}");
@@ -506,7 +506,7 @@ fn a_window_taken_full_screen_covers_its_display() {
     let (mut driver, mut policy) = mount();
     map(&mut driver, &mut policy, 1, "a");
     map(&mut driver, &mut policy, 2, "b");
-    let place = |layout: &Layout, id: u64| {
+    let place = |layout: &Placement, id: u64| {
         layout
             .shown
             .iter()
@@ -514,16 +514,16 @@ fn a_window_taken_full_screen_covers_its_display() {
             .unwrap()
             .1
     };
-    let before = place(&policy.layout(), 1);
+    let before = place(&policy.placement(), 1);
     assert!(
         before.width() < WIDTH - 0.5,
         "two windows share the strip: {before:?}"
     );
-    assert_eq!(policy.layout().fullscreen, None);
+    assert_eq!(policy.placement().fullscreen, None);
 
     assert!(policy.set_fullscreen(1, true), "the desktop holds it");
     frames(&mut driver, 30);
-    let layout = policy.layout();
+    let layout = policy.placement();
     assert_eq!(layout.fullscreen, Some(1), "the desk says which one covers");
     let cover = place(&layout, 1);
     assert!(
@@ -536,7 +536,7 @@ fn a_window_taken_full_screen_covers_its_display() {
 
     assert!(policy.set_fullscreen(1, false));
     frames(&mut driver, 30);
-    let layout = policy.layout();
+    let layout = policy.placement();
     assert_eq!(layout.fullscreen, None, "the display is given back");
     let back = place(&layout, 1);
     assert!(
@@ -558,7 +558,7 @@ fn a_dialog_floats_over_its_parent_and_answers_for_it() {
         .unwrap();
     settle(&mut driver);
     assert!(policy.is_floating(2));
-    let layout = policy.layout();
+    let layout = policy.placement();
     assert_eq!(shown(&layout), [1], "a dialog takes no tab");
     let parent = layout.shown[0].1;
     assert_eq!(layout.floating, [(2, parent)], "over its parent");
@@ -567,14 +567,14 @@ fn a_dialog_floats_over_its_parent_and_answers_for_it() {
 
     policy.unmap(1);
     settle(&mut driver);
-    let layout = policy.layout();
+    let layout = policy.placement();
     assert_eq!(
         layout.floating,
         [(2, Rect::new(0.0, 0.0, WIDTH / 2.0, 800.0))],
         "its parent gone, it floats on the display in use"
     );
     policy.unmap(2);
-    assert!(policy.layout().floating.is_empty());
+    assert!(policy.placement().floating.is_empty());
 }
 
 #[test]
@@ -603,8 +603,8 @@ fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
         "a launch is handed over once"
     );
     assert_eq!(
-        policy.layout(),
-        Layout::default(),
+        policy.placement(),
+        Placement::default(),
         "nothing appeared before the app did"
     );
 }
@@ -643,8 +643,8 @@ fn a_desk_launch_holds_the_tab_the_apps_window_takes() {
         "the tab opens with the app's name, never with its id"
     );
     assert_eq!(
-        policy.layout(),
-        Layout::default(),
+        policy.placement(),
+        Placement::default(),
         "and no window is here before the app's is"
     );
 }
@@ -788,7 +788,7 @@ fn a_floated_windows_cover_is_where_the_desk_draws_it() {
         "the whole of its bar and body and the lift it stands on, as the desk draws it: {cover:?}"
     );
     assert!(
-        policy.layout().covers == covers,
+        policy.placement().covers == covers,
         "the layout a surface publishes carries the covers"
     );
 }
@@ -841,7 +841,7 @@ fn a_launch_that_opens_no_window_takes_its_held_tab_back() {
     policy.release_tab(tab);
     settle(&mut driver);
     assert!(tabs(&policy).is_empty(), "the held tab is not left behind");
-    assert_eq!(policy.layout(), Layout::default());
+    assert_eq!(policy.placement(), Placement::default());
     assert!(
         policy.take_launches().is_empty(),
         "and nothing is started for it again"
@@ -882,7 +882,11 @@ fn an_app_that_did_not_start_says_why_in_its_tab_and_tries_again() {
         "{texts:?}"
     );
     assert_eq!(tabs(&policy).len(), 1, "the tab the person opened stays");
-    assert_eq!(policy.layout(), Layout::default(), "no window is here");
+    assert_eq!(
+        policy.placement(),
+        Placement::default(),
+        "no window is here"
+    );
 
     // Trying again asks for the app with the answer's own tab as its place,
     // so a window that comes fills it rather than opening a second one.
@@ -974,7 +978,7 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
 /// and a second launch of the same app in front finds no window of it there to raise.
 #[test]
 fn a_window_launched_into_another_workspace_opens_there() {
-    use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+    use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
     let (seeded, _) = DesktopPolicy::new(7);
     let mut tree = seeded.handle().read(Clone::clone);
     tree.workspaces
@@ -1037,7 +1041,7 @@ fn a_window_launched_into_another_workspace_opens_there() {
         "launched into the one in front: opens in front"
     );
     assert_eq!(
-        policy.handle().read(|tree: &DesktopTree| tree.active),
+        policy.handle().read(|tree: &Layout| tree.active),
         front,
         "the person stays"
     );

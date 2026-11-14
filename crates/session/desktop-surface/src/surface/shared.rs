@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_desktop_model::{DesktopTree, IdMinter};
+use tilo_desktop_model::{IdMinter, Layout};
 
 use super::shown::ShownTabs;
 use super::{Presentation, Shared};
@@ -28,7 +28,7 @@ impl Shared {
     /// The desk's shared state at the start: the tree it presents, the minter for this device's new
     /// ids, and the search it answers in.
     pub(super) fn new(
-        tree: DesktopTree,
+        tree: Layout,
         minter: IdMinter,
         search: &Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
     ) -> Self {

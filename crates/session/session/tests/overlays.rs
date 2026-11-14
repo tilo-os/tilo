@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_session::shell::state::{FOCUS, WINDOW_MENU};
 use tilo_session::surfaces::Surface;
@@ -78,7 +78,7 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
 }
 
 /// The desk the session starts on: one window, in front, on one strip.
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let tabs = vec![window(20, "Notes", "so.tilo.notes")];
     let group = WindowGroup {
         id: 3,
@@ -94,7 +94,7 @@ fn desk_tree() -> DesktopTree {
         name: "Main".into(),
         window_groups: vec![group],
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
@@ -106,7 +106,7 @@ fn desk_tree() -> DesktopTree {
 }
 
 /// A headless session showing `tree` , with a turn taken so its desk has laid the windows out.
-fn session_with(tree: DesktopTree, panel: Option<Surface>) -> Session {
+fn session_with(tree: Layout, panel: Option<Surface>) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {

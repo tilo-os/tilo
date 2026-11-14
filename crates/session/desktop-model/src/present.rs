@@ -23,14 +23,14 @@ pub struct Status {
     pub automatic: bool,
 }
 
-/// One member's presence on this desk.
+/// One member's presence in this session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Present {
     pub member: MemberId,
     /// The live publisher the member is here through, hex: the device or the
     /// agent's own key. What a wave, a follow or a call is addressed to.
     pub device: String,
-    /// The window of the record they focus, when this desk shows it.
+    /// The window of the record they focus, when this session shows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab: Option<TabId>,
     /// The app of the record they focus, as their presence names it: where
@@ -46,7 +46,7 @@ pub struct Present {
     /// The live session their device is here through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<u64>,
-    /// This desk follows their view: the bar keeps that face when it is too
+    /// This session follows their view: the bar keeps that face when it is too
     /// narrow to show everyone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub followed: bool,

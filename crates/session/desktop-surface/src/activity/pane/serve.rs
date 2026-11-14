@@ -765,7 +765,7 @@ impl WorkspaceActivityPane {
                     .get(&id)
                     .cloned()
                     .unwrap_or(WorkspaceHistoryId {
-                        origin: crate::activity::index::HistoryOrigin::DesktopTree,
+                        origin: crate::activity::index::HistoryOrigin::Layout,
                         change: id,
                     }),
             );

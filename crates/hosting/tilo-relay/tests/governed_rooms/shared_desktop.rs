@@ -7,9 +7,7 @@ use std::time::Duration;
 
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
 use tilo_desktop_model::ownership::{Authors, DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
-use tilo_desktop_model::{
-    DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId, shared_record,
-};
+use tilo_desktop_model::{Layout, StripId, WindowWidth, Workspace, WorkspaceId, shared_record};
 use tilo_relay::workspaces::SetMemberRoleRequest;
 use tilo_relay::{CoeditPayload, RelayClient};
 
@@ -46,10 +44,10 @@ fn desktop(windows: &[(u64, u64, String)]) -> SharedDesktop {
         }
     }
     workspace.strips.push(strip);
-    let tree = DesktopTree {
+    let tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
-        ..DesktopTree::default()
+        ..Layout::default()
     };
     let authors: Authors = windows
         .iter()

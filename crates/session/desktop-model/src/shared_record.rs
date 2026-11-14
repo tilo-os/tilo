@@ -30,7 +30,7 @@ use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace, FloatPlace};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, WindowGroup};
 use crate::ownership::SharedDesktop;
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::width::WindowWidth;
 use crate::workspace::Workspace;
 
@@ -186,7 +186,7 @@ struct Placed {
     order: Option<f64>,
 }
 
-// Through `serde_json::Value`, the input `DesktopTree::from_json` reads: one
+// Through `serde_json::Value`, the input `Layout::from_json` reads: one
 // copy of the workspace and window deserializers serves both. Not generic, so
 // every reader of the record shares these instead of instantiating its own.
 fn workspace_from(value: serde_json::Value) -> Option<Workspace> {
@@ -424,10 +424,10 @@ impl Parts {
         }
         self.records.compact_sort();
         Some(SharedDesktop {
-            tree: DesktopTree {
+            tree: Layout {
                 workspaces: self.workspaces,
                 active: first_workspace,
-                ..DesktopTree::default()
+                ..Layout::default()
             },
             records: self.records,
             authors: self.authors,
@@ -447,20 +447,20 @@ pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesk
     Some(desktop)
 }
 
-/// The desk `doc` holds, every window as kept, a person's own windows included: for the copy of a
-/// desk no workspace shares, which is that person's alone. A workspace's desk is read with
+/// The layout `doc` holds, every window as kept, a person's own windows included: for the copy of a
+/// layout no workspace shares, which is that person's alone. A workspace's layout is read with
 /// [`read`].
 #[must_use]
 pub fn read_as_kept(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
     let mut desktop = if crate::desktop_doc::holds(doc) {
-        desk_of(doc, heads)?
+        layout_of(doc, heads)?
     } else {
         Parts::of(held(doc, heads)).assemble()?
     };
     for (_, record) in &mut desktop.records {
         if record == LEGACY_PRIMARY_RECORD {
             // The same record as the primary's route, which is empty: one
-            // window has one record, so its route is what the desk holds.
+            // window has one record, so its route is what the layout holds.
             record.clear();
         }
     }
@@ -468,37 +468,37 @@ pub fn read_as_kept(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<Sh
 }
 
 /// The custody key of a package's primary record, as a page that predates
-/// routes wrote it where a window's route belongs: not a route, so a desk
+/// routes wrote it where a window's route belongs: not a route, so a layout
 /// holding it holds the primary under a spelling that names nothing.
 const LEGACY_PRIMARY_RECORD: &str = "@tilo:package-primary";
 
-/// The desk the desk's own document ([`crate::desktop_doc`]) holds at
+/// The layout the layout's own document ([`crate::desktop_doc`]) holds at
 /// `heads`, as [`read`] gives a record: read with the document's own reader,
-/// so a record that became the desk's document loses nothing of the desk.
+/// so a record that became the layout's document loses nothing of the layout.
 ///
-/// A workspace's record is the record this module writes until a desk kept as one
+/// A workspace's record is the record this module writes until a layout kept as one
 /// document is published over it, and every change after that builds on the
 /// document.
-fn desk_of(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
-    let desk = match heads {
+fn layout_of(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
+    let layout_doc = match heads {
         Some(heads) => as_of(doc, heads),
         None => doc.clone(),
     };
-    let mut tree = DesktopTree::default();
-    crate::desktop_doc::rebuild(&desk, &mut tree);
+    let mut tree = Layout::default();
+    crate::desktop_doc::rebuild(&layout_doc, &mut tree);
     if tree.workspaces.is_empty() {
         return None;
     }
     Some(SharedDesktop {
         tree,
-        records: crate::desktop_doc::records(&desk),
-        authors: crate::desktop_doc::window_authors(&desk),
-        opened_by: crate::desktop_doc::opened_by(&desk),
+        records: crate::desktop_doc::records(&layout_doc),
+        authors: crate::desktop_doc::window_authors(&layout_doc),
+        opened_by: crate::desktop_doc::opened_by(&layout_doc),
     })
 }
 
 /// `doc`'s changes up to `heads` as a document of their own, so that the
-/// desk's own reader can read the desk as it was then.
+/// layout's own reader can read the layout as it was then.
 fn as_of(doc: &AutoCommit, heads: &[ChangeHash]) -> AutoCommit {
     let mut wanted: Vec<automerge::Change> = Vec::new();
     let mut pending: Vec<ChangeHash> = heads.to_vec();
@@ -570,8 +570,8 @@ fn rising(values: &[Option<f64>]) -> Vec<usize> {
     for (index, value) in values.iter().enumerate() {
         let Some(value) = value else { continue };
         let at = tails.partition_point(|&t| value_at(t) < *value);
-        if let Some(slot) = previous.get_mut(index) {
-            *slot = at
+        if let Some(entry) = previous.get_mut(index) {
+            *entry = at
                 .checked_sub(1)
                 .and_then(|before| tails.get(before).copied());
         }
@@ -623,13 +623,13 @@ fn orders<K: Eq + std::hash::Hash>(ids: &[K], held: &HashMap<K, f64>) -> Vec<f64
             (None, None) => (0.0, count + 1.0),
         };
         let step = (high - low) / (count + 1.0);
-        for (offset, slot) in out
+        for (offset, entry) in out
             .iter_mut()
             .skip(start)
             .take(end.saturating_sub(start))
             .enumerate()
         {
-            *slot = Some(low + step * (float(offset) + 1.0));
+            *entry = Some(low + step * (float(offset) + 1.0));
         }
         start = end;
     }
@@ -668,14 +668,14 @@ pub fn write(
     doc: &mut AutoCommit,
     desktop: &SharedDesktop,
 ) -> Result<bool, automerge::AutomergeError> {
-    // A person's own windows stay on their desk ([`crate::personal`]), and one the record holds
+    // A person's own windows stay on their layout ([`crate::personal`]), and one the record holds
     // from an older build is taken out.
     let mut shared = desktop.clone();
     crate::personal::leave_out(&mut shared);
     let desktop = &shared;
-    // A record that became the desk's own document
-    // ([`crate::desktop_doc`]) keeps the same desk, so a writer that knows
-    // only this shape — a build from before the desk was one document —
+    // A record that became the layout's own document
+    // ([`crate::desktop_doc`]) keeps the same layout, so a writer that knows
+    // only this shape — a build from before the layout was one document —
     // writes into it rather than beside it.
     if crate::desktop_doc::holds(doc) {
         let wrote = crate::desktop_doc::write_shared(
@@ -1204,7 +1204,7 @@ pub fn step_message(person: &str) -> String {
     .unwrap_or_else(|| tilo_actions::FrameworkChange::Native.change_message())
 }
 
-/// `person`'s change of the record that is nobody's step: what it shows, or the desk it was
+/// `person`'s change of the record that is nobody's step: what it shows, or the layout it was
 /// founded on.
 #[must_use]
 pub fn housekeeping_message(person: &str) -> String {
@@ -1226,8 +1226,8 @@ pub fn change_author(message: Option<&str>) -> Option<String> {
 }
 
 /// Commit what `doc` holds as one change, by `author` at `time` (seconds since the epoch), so the
-/// desk's history says who did it and when. An `action` names what they did, as the change's own
-/// entry; without one the change is the author's edit of the desk.
+/// layout's history says who did it and when. An `action` names what they did, as the change's own
+/// entry; without one the change is the author's edit of the layout.
 pub fn commit_change(
     doc: &mut AutoCommit,
     author: &str,

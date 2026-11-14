@@ -114,15 +114,15 @@ mod tests {
     use super::super::fixture::FixtureChrome;
     use super::*;
     use crate::chrome::WaveNotice;
-    use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+    use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 
     fn bar_waved_at_by(from: &str, at: Instant) -> TopBarChrome {
         ui::i18n::I18nManager::init("en-US");
         let workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
-        let tree = DesktopTree {
+        let tree = Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         let chrome = FixtureChrome::new(tree.clone());
         chrome.borrow_mut().waved = Some(WaveNotice {
@@ -140,10 +140,10 @@ mod tests {
         {
             ui::i18n::I18nManager::init("en-US");
             let workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
-            let tree = DesktopTree {
+            let tree = Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             };
             let chrome = FixtureChrome::new(tree.clone());
             let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());

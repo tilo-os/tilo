@@ -14,8 +14,7 @@ use tilo_desktop_model::commands::{
     apply_to_active_workspace, open_app_placement, resolve_open_app,
 };
 use tilo_desktop_model::{
-    AppKind, DesktopTree, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId,
+    AppKind, Layout, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 
 fn notes() -> TileContent {
@@ -135,9 +134,9 @@ tilo_test_env::scenario! {
     }
 
     phase an_opened_window_takes_a_place_the_canvas_can_draw_where_none_was_named;
-    // A window the desk opens takes a place on the canvas without anyone naming one: the framed
+    // A window the layout opens takes a place on the canvas without anyone naming one: the framed
     // canvas, the spaces canvas and the traditional desktop draw a window group by its place, so
-    // a group with none stands on none of them and a desk a person opened an app on looks empty.
+    // a group with none stands on none of them and a layout a person opened an app on looks empty.
     // The place runs on from the strip's windows, and a place already given is kept.
     {
         let mut workspace = workspace_with_group();
@@ -157,7 +156,7 @@ tilo_test_env::scenario! {
         let place = workspace
             .arrangement
             .place_of(opened)
-            .expect("the window the desk opened stands on the canvas");
+            .expect("the window the layout opened stands on the canvas");
         assert!(place.width > 0 && place.height > 0, "{place:?}");
         // The group that was there took one too, at the strip's first point.
         let first = workspace
@@ -167,10 +166,10 @@ tilo_test_env::scenario! {
         assert_eq!((first.x, first.y), (0, 0), "a strip starts at its corner");
         assert!(
             i64::from(place.x) >= first.right(),
-            "the window the desk opened runs on from the one before it: {place:?} after {first:?}"
+            "the window the layout opened runs on from the one before it: {place:?} after {first:?}"
         );
 
-        // A place someone gave is never moved: the desk only fills in what none stands on.
+        // A place someone gave is never moved: the layout only fills in what none stands on.
         let given = tilo_desktop_model::arrangement::CanvasPlace::new(-400, 250, 640, 480);
         apply_command(
             &mut workspace,
@@ -366,7 +365,7 @@ tilo_test_env::scenario! {
             assert_eq!(
                 layout(&workspace),
                 untouched,
-                "{stale:?} must leave the desk alone"
+                "{stale:?} must leave the layout alone"
             );
         }
         apply_command(
@@ -395,13 +394,13 @@ tilo_test_env::scenario! {
     // A window sent to another workspace keeps being the same window, lands on
     // the strip that workspace shows and where the person is stays put.
     {
-        let mut tree = DesktopTree {
+        let mut tree = Layout {
             workspaces: vec![
                 workspace_with_group(),
                 Workspace::new(WorkspaceId::from_u128(2), "Other"),
             ],
             active: WorkspaceId::from_u128(1),
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         let mut mint = minter(800);
         let moved = 31;
@@ -469,13 +468,13 @@ tilo_test_env::scenario! {
     // names through this one path, so a name one refuses the other refuses
     // too, and a new strip is shown wherever it was made.
     {
-        let mut tree = DesktopTree {
+        let mut tree = Layout {
             workspaces: vec![
                 workspace_with_group(),
                 Workspace::new(WorkspaceId::from_u128(2), "Other"),
             ],
             active: WorkspaceId::from_u128(1),
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         let mut mint = minter(800);
         let made = apply_to_active_workspace(

@@ -2238,9 +2238,7 @@ mod transfers_between_devices {
         NearbyTransferSnapshot, NearbyTransferStatus,
     };
     use tilo_action_broker::services::{NearbyTransferRequestContext, NearbyTransferServices as _};
-    use tilo_desktop_model::{
-        Capability, DesktopTree, FsMode, GRANT_SESSION, Workspace, WorkspaceId,
-    };
+    use tilo_desktop_model::{Capability, FsMode, GRANT_SESSION, Layout, Workspace, WorkspaceId};
     use tilo_network_actor::HostIdentity;
     use tilo_user_identity::DeviceCapabilities;
 
@@ -2308,11 +2306,11 @@ mod transfers_between_devices {
 
     /// The desk this device decides against: one workspace, whose Files grant is `folder` .
     struct Desk {
-        tree: DesktopTree,
+        tree: Layout,
     }
 
     impl tilo_broker_core::services::WorkspaceAuthority for Desk {
-        fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
+        fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
             read(&self.tree);
             Ok(())
         }
@@ -2332,10 +2330,10 @@ mod transfers_between_devices {
             },
         );
         Desk {
-            tree: DesktopTree {
+            tree: Layout {
                 workspaces: vec![workspace],
                 active: workspace_id,
-                ..DesktopTree::default()
+                ..Layout::default()
             },
         }
     }

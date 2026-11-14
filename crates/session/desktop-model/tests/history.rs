@@ -21,14 +21,14 @@ fn receipt(n: u128) -> WorkspaceEffectReceipt {
 }
 
 /// A desktop whose one workspace has `receipts` effect receipts.
-fn desktop(receipts: u128) -> DesktopTree {
+fn desktop(receipts: u128) -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Home");
     workspace.set_owner("owner");
     workspace.strips.push(Strip::new(StripId(7), "Main"));
     workspace.effect_receipts = (0..receipts).map(receipt).collect();
-    DesktopTree {
+    Layout {
         workspaces: vec![workspace],
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 

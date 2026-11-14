@@ -11,7 +11,7 @@ use std::rc::Rc;
 use collab_types::presence::{Presence as Frame, ShellPresence};
 use iroh_base::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 
 use crate::Enrolled;
 use crate::plane::{Cmd, Device, Event, Outbox, Topic, Transport, topic_of};
@@ -198,7 +198,7 @@ impl Client {
 
     /// Follow `tree`'s workspaces: take part in each, leave the ones gone, and remember which is in
     /// front. Whether that changed anything.
-    pub fn follow_desktop(&self, tree: &DesktopTree) -> bool {
+    pub fn follow_desktop(&self, tree: &Layout) -> bool {
         let live: Vec<(Topic, String)> = tree
             .workspaces
             .iter()

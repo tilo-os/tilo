@@ -238,9 +238,8 @@ fn dragging_the_edge_of_a_window_with_a_checked_component_resizes_it() {
     let mut minter = IdMinter::new(29);
     let tabs = vec![tab(&mut minter), tab(&mut minter)];
     let tree = seed_tree(&mut minter, "Desk", tabs);
-    let width_of = |tree: &tilo_desktop_model::DesktopTree| {
-        tree.workspaces[0].strips[0].window_groups[0].width
-    };
+    let width_of =
+        |tree: &tilo_desktop_model::Layout| tree.workspaces[0].strips[0].window_groups[0].width;
     let before = width_of(&tree);
     let queue = OwnerWakeQueue::default();
     let source = Source {

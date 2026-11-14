@@ -3,12 +3,12 @@
 use std::collections::HashMap;
 
 use tilo_desktop_model::{
-    DesktopTree, GroupId, Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    GroupId, Layout, Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 
 /// A single-workspace, single-strip tree carrying `n` empty window groups
 /// with ids `1..=n`.
-fn tree_with_n_groups(n: u64) -> (DesktopTree, StripId, Vec<GroupId>) {
+fn tree_with_n_groups(n: u64) -> (Layout, StripId, Vec<GroupId>) {
     let workspace_id = WorkspaceId::from_u128(100);
     let strip_id = StripId(200);
     let group_ids: Vec<GroupId> = (1..=n).collect();
@@ -28,11 +28,11 @@ fn tree_with_n_groups(n: u64) -> (DesktopTree, StripId, Vec<GroupId>) {
     ws.strips.push(strip);
     let mut active_strip = HashMap::new();
     active_strip.insert(workspace_id, strip_id);
-    let tree = DesktopTree {
+    let tree = Layout {
         workspaces: vec![ws],
         active: workspace_id,
         active_strip,
-        ..DesktopTree::default()
+        ..Layout::default()
     };
     (tree, strip_id, group_ids)
 }
@@ -199,7 +199,7 @@ fn window_group_json_round_trips() {
         group.maximized = true;
 
         let json = serde_json::to_string(&tree).unwrap();
-        let round: DesktopTree = serde_json::from_str(&json).unwrap();
+        let round: Layout = serde_json::from_str(&json).unwrap();
         assert!(round.workspaces[0].strips[0].window_groups[0].maximized);
     }
 }

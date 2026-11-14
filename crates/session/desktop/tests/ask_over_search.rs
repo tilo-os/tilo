@@ -19,7 +19,7 @@ use tilo_desktop::chrome::{
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::headless::FrameHarness;
@@ -43,7 +43,7 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
     }
 }
 
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let tabs = vec![window(20, "Notes", "so.tilo.notes")];
     let group = WindowGroup {
         id: 3,
@@ -59,7 +59,7 @@ fn desk_tree() -> DesktopTree {
         name: "Main".into(),
         window_groups: vec![group],
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
@@ -73,7 +73,7 @@ fn desk_tree() -> DesktopTree {
 /// A host with an ask waiting on the person's avatar, which arrives when a test says so, and which
 /// answers the bar's intents about it as a page does.
 struct Asking {
-    tree: DesktopTree,
+    tree: Layout,
     ask: RefCell<Option<AvatarAsk>>,
     intents: RefCell<Vec<ChromeIntent>>,
 }
@@ -89,7 +89,7 @@ impl DesktopChromeSource for Asking {
             ..DesktopChromeSnapshot::default()
         }
     }
-    fn tree(&self) -> DesktopTree {
+    fn tree(&self) -> Layout {
         self.tree.clone()
     }
     fn intent(&self, intent: ChromeIntent) -> bool {

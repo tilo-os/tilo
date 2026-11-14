@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime};
 use ed25519_dalek::SigningKey;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::OutputConfig;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::i18n::t;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
@@ -100,14 +100,14 @@ fn principal(root: &[u8; 32]) -> String {
 }
 
 /// A desk showing the workspace, known by its id, owned by the person.
-fn desk(root: &[u8; 32]) -> DesktopTree {
+fn desk(root: &[u8; 32]) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let mut workspace = Workspace::new(workspace, "Desk");
     workspace.set_owner(principal(root));
-    DesktopTree {
+    Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 

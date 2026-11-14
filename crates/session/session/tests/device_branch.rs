@@ -559,7 +559,7 @@ fn show_held(device: &Device, workspace: &str) {
 /// The window titles `device` 's desk shows in the workspace `workspace` (its id).
 fn titles_in(device: &Device, workspace: &str) -> Vec<String> {
     let state = device.state();
-    let tree: tilo_desktop_model::DesktopTree =
+    let tree: tilo_desktop_model::Layout =
         serde_json::from_value(state["state"]["workspace_tree"].clone()).unwrap_or_default();
     tree.workspaces
         .iter()

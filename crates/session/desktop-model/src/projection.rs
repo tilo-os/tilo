@@ -20,7 +20,7 @@ use tilo_sort::CompactSort as _;
 use crate::ids::WorkspaceId;
 use crate::layout::TileContent;
 use crate::receipt::WorkspaceEffectReceipt;
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::workspace::Workspace;
 
 /// Key naming the workspace a document describes (a UUID string).
@@ -525,7 +525,7 @@ pub fn declared_workspace(candidate: &AutoCommit) -> Option<WorkspaceId> {
 /// A description when the document does not declare exactly `identity`, or
 /// another workspace already holds the id derived from it.
 pub fn apply_admitted_workspace(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     identity: WorkspaceId,
     doc: &AutoCommit,
 ) -> Result<bool, String> {

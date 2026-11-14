@@ -1001,7 +1001,7 @@ mod owner_commit_tests {
         impl crate::services::WorkspaceAuthority for CurrentOwner {
             fn with_tree(
                 &self,
-                read: &mut dyn FnMut(&tilo_desktop_model::DesktopTree),
+                read: &mut dyn FnMut(&tilo_desktop_model::Layout),
             ) -> Result<(), String> {
                 let guard = self.0.lock().map_err(|_| "owner authority unavailable")?;
                 let peer = guard.as_ref().ok_or("owner authority unavailable")?;
@@ -1016,7 +1016,7 @@ mod owner_commit_tests {
                     name.unwrap_or_else(|| "Owner workspace".into()),
                 );
                 workspace.policy = policy;
-                let mut tree = tilo_desktop_model::DesktopTree::default();
+                let mut tree = tilo_desktop_model::Layout::default();
                 tree.workspaces.push(workspace);
                 read(&tree);
                 Ok(())

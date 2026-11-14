@@ -12,7 +12,7 @@ use std::time::Duration;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
 use tilo_desktop::topbar::TopBarChrome;
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_surface::DesktopHandle;
 
@@ -27,7 +27,7 @@ struct ChromeRules {
 }
 
 impl DesktopRules for ChromeRules {
-    fn tree(&self) -> DesktopTree {
+    fn tree(&self) -> Layout {
         self.handle.read(Clone::clone)
     }
 

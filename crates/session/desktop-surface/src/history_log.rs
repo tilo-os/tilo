@@ -21,7 +21,7 @@ fn desktop_of(value: &serde_json::Value) -> Option<SharedDesktop> {
         return serde_json::from_value(value.clone()).ok();
     }
     Some(SharedDesktop {
-        tree: tilo_desktop_model::DesktopTree::from_json(value.clone()).ok()?,
+        tree: tilo_desktop_model::Layout::from_json(value.clone()).ok()?,
         ..SharedDesktop::default()
     })
 }
@@ -242,7 +242,7 @@ mod tests {
     use super::*;
     use crate::activity::{ActivitySnapshot, WorkspaceActivityPane};
     use tilo_automerge::ApplyIncoming as _;
-    use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TileContent};
+    use tilo_desktop_model::{IdMinter, Layout, Tab, TileContent};
 
     fn app(minter: &mut IdMinter, title: &str) -> Tab {
         Tab {
@@ -259,13 +259,13 @@ mod tests {
         }
     }
 
-    fn stored(tree: &DesktopTree) -> serde_json::Value {
+    fn stored(tree: &Layout) -> serde_json::Value {
         serde_json::json!({ "tree": tree, "records": [] })
     }
 
     /// A desktop opened with Notes, then Sheets opened beside it by someone else, then Notes
     /// closed; focus moved in between.
-    fn log() -> (AutoCommit, DesktopTree) {
+    fn log() -> (AutoCommit, Layout) {
         let mut minter = IdMinter::new(7);
         let notes = app(&mut minter, "Notes");
         let mut tree = crate::seed_tree(&mut minter, "Studio", vec![notes]);
@@ -371,13 +371,13 @@ mod tests {
         );
 
         // What the document holds is the desk the log last made.
-        let mut rebuilt = DesktopTree::default();
+        let mut rebuilt = Layout::default();
         desktop_doc::rebuild(&doc, &mut rebuilt);
         assert_eq!(rebuilt.active, tree.active);
         assert_eq!(rebuilt.workspaces.len(), tree.workspaces.len());
         assert_eq!(rebuilt.workspaces[0].name, tree.workspaces[0].name);
         assert_eq!(rebuilt.workspaces[0].id(), tree.workspaces[0].id());
-        let windows = |desk: &DesktopTree| -> Vec<(u64, String)> {
+        let windows = |desk: &Layout| -> Vec<(u64, String)> {
             desk.tabs().map(|tab| (tab.id, tab.title.clone())).collect()
         };
         assert_eq!(windows(&rebuilt), windows(&tree));

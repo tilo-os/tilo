@@ -23,7 +23,7 @@ use collab_types::Role;
 use collab_types::caps::{Access, CapOverride, FsAuthority, Scope};
 use collab_types::crypto::Ed25519PublicKey;
 use tilo_action_policy::{Acting, Grantee, MemberId};
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_lock::MutexRecover as _;
 
 /// The program that signs a list this desktop cannot sign itself. Absent where the daemon holds the
@@ -41,7 +41,7 @@ const LAST_RETRY: Duration = Duration::from_secs(5);
 /// person's key and once by this device's, which is the identity the mount itself authenticates as,
 /// so translation can never widen a grant and a revoked one takes both away.
 #[must_use]
-pub(crate) fn list(tree: &DesktopTree, person: &str, device: Option<[u8; 32]>) -> FsAuthority {
+pub(crate) fn list(tree: &Layout, person: &str, device: Option<[u8; 32]>) -> FsAuthority {
     let acting = person_key(person).map(|key| Acting::person(hex::encode(key.0)));
     let mut capabilities = Vec::new();
     for workspace in &tree.workspaces {
@@ -401,12 +401,12 @@ mod tests {
     const PERSON: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const FOLDER: &str = "/var/workspace/brief";
 
-    fn tree_with(grant: CapOverride) -> DesktopTree {
+    fn tree_with(grant: CapOverride) -> Layout {
         let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Home");
         workspace.sandbox.push(grant);
-        DesktopTree {
+        Layout {
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         }
     }
 

@@ -35,7 +35,7 @@ use tilo_desktop_model::width::{
     WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE, equalize_widths,
 };
 use tilo_desktop_model::{
-    DesktopTree, GroupId, StripId, Tab, TabId, TileContent, WindowGroup, Workspace, WorkspaceId,
+    GroupId, Layout, StripId, Tab, TabId, TileContent, WindowGroup, Workspace, WorkspaceId,
 };
 use ui::icons::Icon;
 
@@ -253,7 +253,7 @@ fn move_to_display_id(display: u32) -> String {
 
 /// The menu rows that apply to the window at `route` , in the order to show them, as `facts`
 /// describes the window beyond its place in the tree.
-pub fn rows(tree: &DesktopTree, route: &RouteIds, facts: &Facts) -> Vec<Row> {
+pub fn rows(tree: &Layout, route: &RouteIds, facts: &Facts) -> Vec<Row> {
     let Some(group) = group_at(tree, route) else {
         return Vec::new();
     };
@@ -370,7 +370,7 @@ fn covering_rows(group: &WindowGroup, fullscreen: bool) -> Vec<Row> {
 }
 
 /// Whether the workspace holds the window `group` floating above the desk.
-fn floating(tree: &DesktopTree, group: GroupId) -> bool {
+fn floating(tree: &Layout, group: GroupId) -> bool {
     tree.workspaces
         .iter()
         .any(|workspace| workspace.arrangement.float_of(group).is_some())
@@ -398,7 +398,7 @@ fn float_rows(floating: bool) -> Vec<Row> {
 /// What the window shows: another tab of its app, its name, a split of a tab out, and a window of
 /// its own — each offered to the owner alone.
 fn show_rows(
-    tree: &DesktopTree,
+    tree: &Layout,
     route: &RouteIds,
     tab: &Tab,
     own: bool,
@@ -436,7 +436,7 @@ fn show_rows(
 }
 
 /// What closing offers: the tab alone, while the window has another, and the window itself.
-fn closing_rows(tree: &DesktopTree, route: &RouteIds, own: bool, held: Option<String>) -> Vec<Row> {
+fn closing_rows(tree: &Layout, route: &RouteIds, own: bool, held: Option<String>) -> Vec<Row> {
     let mut rows = Vec::new();
     if crate::navigation::has_a_second_tab(tree, route) {
         rows.push(
@@ -498,7 +498,7 @@ fn step(id: &str, label: &str, steps: bool, reason: &str) -> Row {
 
 /// The rows carrying the window to another strip, workspace or display, each place by its name; a
 /// place with nowhere to go offers no submenu at all.
-fn move_rows(tree: &DesktopTree, route: &RouteIds) -> Vec<Row> {
+fn move_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
     let mut rows = Vec::new();
     let strips: Vec<Row> = workspace_at(tree, route)
         .map(|workspace| {
@@ -576,7 +576,7 @@ fn place_number_of(index: usize) -> i64 {
 
 /// The verb row `id` of the window at `route` means; `name` is what the person typed for
 /// [`RENAME`]. `None` for a row that does not apply here.
-pub fn command(tree: &DesktopTree, route: &RouteIds, id: &str, name: Option<&str>) -> Option<Verb> {
+pub fn command(tree: &Layout, route: &RouteIds, id: &str, name: Option<&str>) -> Option<Verb> {
     let group = group_at(tree, route)?;
     let tab = group.tabs.iter().find(|tab| tab.id == route.tab)?;
     let group_id = route.group.to_string();
@@ -702,7 +702,7 @@ fn may_rename(tab: &Tab) -> bool {
 }
 
 /// Whether the window at `route` runs an app that controls this desktop beyond its own window now.
-fn controls_desktop(tree: &DesktopTree, route: &RouteIds) -> bool {
+fn controls_desktop(tree: &Layout, route: &RouteIds) -> bool {
     let Some((workspace, app)) = holder_of(tree, route) else {
         return false;
     };
@@ -710,21 +710,21 @@ fn controls_desktop(tree: &DesktopTree, route: &RouteIds) -> bool {
 }
 
 /// The workspace holding the window at `route` , and the app it runs.
-fn holder_of<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<(&'a Workspace, String)> {
+fn holder_of<'a>(tree: &'a Layout, route: &RouteIds) -> Option<(&'a Workspace, String)> {
     let group = group_at(tree, route)?;
     let tab = group.tabs.iter().find(|tab| tab.id == route.tab)?;
     Some((workspace_at(tree, route)?, app_of(tab)?))
 }
 
 /// The workspace at `route` , while the tree still holds it.
-fn workspace_at<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<&'a Workspace> {
+fn workspace_at<'a>(tree: &'a Layout, route: &RouteIds) -> Option<&'a Workspace> {
     tree.workspaces
         .iter()
         .find(|workspace| workspace.id() == route.workspace)
 }
 
 /// The window group at `route` , while the tree still holds it.
-fn group_at<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<&'a WindowGroup> {
+fn group_at<'a>(tree: &'a Layout, route: &RouteIds) -> Option<&'a WindowGroup> {
     workspace_at(tree, route)
         .and_then(|workspace| {
             workspace

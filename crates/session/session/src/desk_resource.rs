@@ -11,7 +11,7 @@ use tilo_actions::remote::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
+use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_peer_state::join::Role;
@@ -627,7 +627,7 @@ impl Desk {
     /// lifts nothing either.
     fn windows_reaching(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         now: std::time::Instant,
     ) -> Vec<crate::desk_windows::Window> {
         let mut windows = windows(tree, &self.handle);
@@ -731,7 +731,7 @@ impl Desk {
 }
 
 /// The name of the workspace in front, as every reading of a workspace names it.
-fn workspace_in_front(tree: &DesktopTree) -> String {
+fn workspace_in_front(tree: &Layout) -> String {
     tree.active_workspace().map_or_else(
         || tilo_desktop_surface::names::workspace(""),
         |workspace| tilo_desktop_surface::names::workspace(&workspace.name),
@@ -740,7 +740,7 @@ fn workspace_in_front(tree: &DesktopTree) -> String {
 
 /// The name of the strip in front in the workspace in front, as the strip switcher names it: what
 /// the bar names after the workspace.
-fn strip_in_front(tree: &DesktopTree) -> String {
+fn strip_in_front(tree: &Layout) -> String {
     let Some(workspace) = tree.active_workspace() else {
         return String::new();
     };

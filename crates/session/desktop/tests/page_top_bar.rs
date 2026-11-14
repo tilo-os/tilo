@@ -19,7 +19,7 @@ use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::Standing;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
@@ -31,7 +31,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const PERSON: &str = "ada";
 
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let tabs = vec![Tab {
         id: 20,
         title: "Notes".into(),
@@ -58,7 +58,7 @@ fn desk_tree() -> DesktopTree {
         name: "Main".into(),
         window_groups: vec![group],
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()

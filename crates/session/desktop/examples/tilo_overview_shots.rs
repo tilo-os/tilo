@@ -34,7 +34,7 @@ use tilo_desktop::overview_tilo::TiloDesk;
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop::window_flight::WindowFlight;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::DesktopSurface;
 use ui::headless::FrameHarness;
@@ -75,7 +75,7 @@ fn workspace(id: u64, strip: u64, name: &str, apps: &[(u64, &str, &str)]) -> Wor
     workspace
 }
 
-fn desk_tree() -> DesktopTree {
+fn desk_tree() -> Layout {
     let work = workspace(
         1,
         10,
@@ -83,7 +83,7 @@ fn desk_tree() -> DesktopTree {
         &[(20, "so.tilo.notes", "Notes"), (21, "so.tilo.chat", "Chat")],
     );
     let build = workspace(2, 20, "Build box", &[(30, "so.tilo.terminal", "Terminal")]);
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: work.id(),
         workspaces: vec![work, build],
         ..Default::default()

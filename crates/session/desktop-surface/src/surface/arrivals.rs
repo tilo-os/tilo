@@ -10,7 +10,7 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
-use tilo_desktop_model::{DesktopTree, TabId};
+use tilo_desktop_model::{Layout, TabId};
 use ui::TextRole;
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::presence::PresenceCtx;
@@ -60,12 +60,8 @@ struct Hint {
 
 /// The windows `tree` has in strips `before` already had, which neither `before` nor this page
 /// (`local`) holds: what someone else just opened.
-pub(super) fn opened_elsewhere(
-    before: &DesktopTree,
-    tree: &DesktopTree,
-    local: &[TabId],
-) -> Vec<TabId> {
-    let strips = |tree: &DesktopTree| -> HashMap<u64, HashSet<TabId>> {
+pub(super) fn opened_elsewhere(before: &Layout, tree: &Layout, local: &[TabId]) -> Vec<TabId> {
+    let strips = |tree: &Layout| -> HashMap<u64, HashSet<TabId>> {
         tree.workspaces
             .iter()
             .flat_map(|w| &w.strips)
@@ -445,7 +441,7 @@ impl DesktopSurface {
 }
 
 /// The title of the window showing `tab` .
-fn title_of(tree: &DesktopTree, tab: TabId) -> Option<String> {
+fn title_of(tree: &Layout, tab: TabId) -> Option<String> {
     tree.workspaces
         .iter()
         .flat_map(|w| &w.strips)

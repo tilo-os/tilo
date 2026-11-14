@@ -30,7 +30,7 @@ use crate::chrome::{
     TopBarPresence,
 };
 use crate::i18n::{t, t_args};
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_desktop_surface::names;
 use ui::TextRole;
 use ui::presence::PresenceCtx;
@@ -327,7 +327,7 @@ enum BarVariant {
 
 pub use tilo_desktop_surface::host::chrome::{BarPlace, Placement};
 
-/// `DesktopTree` , not `TopBar` , lets `build_tilo_root` stay a pure function of the tree and
+/// `Layout` , not `TopBar` , lets `build_tilo_root` stay a pure function of the tree and
 /// avoids a circular borrow against the shell's owned logical `TopBar` .
 #[allow(
     clippy::struct_excessive_bools,
@@ -526,15 +526,15 @@ pub struct TopBarChrome {
 }
 
 impl TopBarChrome {
-    pub fn from_tree(tree: &DesktopTree) -> Self {
+    pub fn from_tree(tree: &Layout) -> Self {
         Self::from_tree_with_identity(tree, None)
     }
 
-    pub fn from_tree_with_local_user(tree: &DesktopTree, local: String) -> Self {
+    pub fn from_tree_with_local_user(tree: &Layout, local: String) -> Self {
         Self::from_tree_with_identity(tree, Some(local))
     }
 
-    fn from_tree_with_identity(tree: &DesktopTree, explicit_local_user: Option<String>) -> Self {
+    fn from_tree_with_identity(tree: &Layout, explicit_local_user: Option<String>) -> Self {
         let mut this = Self {
             explicit_local_user,
             rect: Rect::ZERO,
@@ -1016,7 +1016,7 @@ impl TopBarChrome {
             .filter(|identity| !identity.is_empty())
     }
 
-    pub fn sync_from_tree(&mut self, tree: &DesktopTree) {
+    pub fn sync_from_tree(&mut self, tree: &Layout) {
         self.workspace_total = tree.workspaces.len().max(1);
         let active_ws = tree.workspaces.iter().find(|w| w.id() == tree.active);
         let (idx, name) = tree

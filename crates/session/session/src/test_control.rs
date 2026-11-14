@@ -2655,8 +2655,8 @@ mod tests {
     #[test]
     fn a_window_row_says_the_window_and_where_its_frame_draws_it() {
         use tilo_desktop_model::{
-            DesktopTree, Strip, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
-            ids::StripId, width::WindowWidth,
+            Layout, Strip, Tab, TileContent, WindowGroup, Workspace, WorkspaceId, ids::StripId,
+            width::WindowWidth,
         };
         let tab = |id: u64, title: &str, tile: TileContent| Tab {
             id,
@@ -2695,10 +2695,10 @@ mod tests {
         }];
         let mut home = Workspace::new(WorkspaceId::from_u128(1), "Home");
         home.strips = vec![strip];
-        let mut tree = DesktopTree {
+        let mut tree = Layout {
             active: home.id(),
             workspaces: vec![home],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         tree.active_strip
             .insert(WorkspaceId::from_u128(1), StripId(1));

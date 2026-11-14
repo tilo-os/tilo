@@ -1,10 +1,10 @@
-//! A workspace's desk is one document: the record an older build wrote opens as
+//! A workspace's layout is one document: the record an older build wrote opens as
 //! that document, a build that knows only the old record keeps writing into
-//! it, and peers that each change the desk keep both changes.
+//! it, and peers that each change the layout keep both changes.
 //!
 //! Asserted through [`shared_record::read`], the function native and pages
-//! both read a workspace's desk with, and [`desktop_doc::rebuild`], what the
-//! desk's own document projects.
+//! both read a workspace's layout with, and [`desktop_doc::rebuild`], what the
+//! layout's own document projects.
 
 #![allow(
     clippy::expect_used,
@@ -18,7 +18,7 @@ use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::shared_record;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 
 fn identity() -> WorkspaceId {
@@ -55,22 +55,22 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 }
 
 /// One workspace with strip 1 holding group 10 [100, 101].
-fn desk() -> DesktopTree {
+fn layout() -> Layout {
     let mut workspace = Workspace::new(identity(), "Studio");
     workspace.set_owner("ada");
     let mut strip = Strip::new(StripId(1), "A");
     strip.window_groups = vec![group(10, &[100, 101])];
     workspace.strips = vec![strip];
-    DesktopTree {
+    Layout {
         workspaces: vec![workspace],
         active: WorkspaceId::from_u128(1),
-        ..DesktopTree::default()
+        ..Layout::default()
     }
 }
 
-/// The desk as a workspace holds it, with one window on a record and two people
+/// The layout as a workspace holds it, with one window on a record and two people
 /// who opened windows of it.
-fn shared(tree: DesktopTree) -> SharedDesktop {
+fn shared(tree: Layout) -> SharedDesktop {
     SharedDesktop {
         tree,
         records: vec![(100, "notes".into())],
@@ -80,7 +80,7 @@ fn shared(tree: DesktopTree) -> SharedDesktop {
 }
 
 /// The windows of the first workspace, as `(title, tab)`.
-fn windows(tree: &DesktopTree) -> Vec<(u64, String)> {
+fn windows(tree: &Layout) -> Vec<(u64, String)> {
     tree.workspaces[0]
         .strips
         .iter()
@@ -90,14 +90,14 @@ fn windows(tree: &DesktopTree) -> Vec<(u64, String)> {
         .collect()
 }
 
-fn read_back(doc: &AutoCommit) -> DesktopTree {
-    let mut fresh = DesktopTree::default();
+fn read_back(doc: &AutoCommit) -> Layout {
+    let mut fresh = Layout::default();
     desktop_doc::rebuild(doc, &mut fresh);
     fresh
 }
 
 fn opened(doc: &AutoCommit) -> SharedDesktop {
-    shared_record::read(doc, None).expect("a desk")
+    shared_record::read(doc, None).expect("a layout")
 }
 
 tilo_test_env::scenario! {
@@ -105,13 +105,13 @@ tilo_test_env::scenario! {
 
     phase an_old_shared_record_opens_as_the_desks_own_document;
     // The record older builds wrote — a workspace, strip, group and window as
-    // an entry each at the record's root — opens as the desk's one document
+    // an entry each at the record's root — opens as the layout's one document
     // with its windows, records and people, and the entries it wrote stop
     // being what the record holds.
     {
-        let desk = shared(desk());
+        let held = shared(layout());
         let mut doc = AutoCommit::new();
-        assert!(shared_record::write(&mut doc, &desk).expect("written"));
+        assert!(shared_record::write(&mut doc, &held).expect("written"));
         doc.commit();
         assert!(
             !desktop_doc::holds(&doc),
@@ -119,9 +119,9 @@ tilo_test_env::scenario! {
         );
 
         let as_written = opened(&doc);
-        assert_eq!(windows(&as_written.tree), windows(&desk.tree));
-        assert_eq!(as_written.records, desk.records);
-        assert_eq!(as_written.authors, desk.authors);
+        assert_eq!(windows(&as_written.tree), windows(&held.tree));
+        assert_eq!(as_written.records, held.records);
+        assert_eq!(as_written.authors, held.authors);
 
         assert!(desktop_doc::write_shared(
             &mut doc,
@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
             &as_written.authors
         ));
         doc.commit();
-        assert!(desktop_doc::holds(&doc), "the desk's own document now");
+        assert!(desktop_doc::holds(&doc), "the layout's own document now");
         for key in ["strips", "groups", "windows"] {
             assert!(
                 doc.get(automerge::ROOT, key).ok().flatten().is_none(),
@@ -139,26 +139,26 @@ tilo_test_env::scenario! {
         }
 
         let reopened = opened(&doc);
-        assert_eq!(windows(&reopened.tree), windows(&desk.tree));
-        assert_eq!(reopened.records, desk.records);
-        assert_eq!(reopened.authors, desk.authors);
+        assert_eq!(windows(&reopened.tree), windows(&held.tree));
+        assert_eq!(reopened.records, held.records);
+        assert_eq!(reopened.authors, held.authors);
         assert_eq!(
             reopened.tree.workspaces[0].owner().map(String::as_str),
             Some("ada"),
             "who owns the workspace came with it"
         );
-        assert_eq!(windows(&read_back(&doc)), windows(&desk.tree));
+        assert_eq!(windows(&read_back(&doc)), windows(&held.tree));
 
-        // Read as of an earlier change, the desk is the desk as it was then:
+        // Read as of an earlier change, the layout is the layout as it was then:
         // what the activity pane steps back through.
         let then = doc.get_heads();
-        let mut renamed = desk.tree.clone();
+        let mut renamed = held.tree.clone();
         renamed.workspaces[0].name = "Studio · renamed".into();
         assert!(shared_record::write(&mut doc, &shared(renamed)).expect("written"));
         doc.commit();
         assert_eq!(
             shared_record::read(&doc, Some(&then))
-                .expect("the desk then")
+                .expect("the layout then")
                 .tree
                 .workspaces[0]
                 .name,
@@ -167,27 +167,27 @@ tilo_test_env::scenario! {
         assert_eq!(
             opened(&doc).tree.workspaces[0].name,
             "Studio · renamed",
-            "and now it is the desk as it is"
+            "and now it is the layout as it is"
         );
     }
 
     phase a_build_from_before_writes_into_the_desk_document;
-    // A peer that knows only the old record — a build from before the desk was
-    // one document — writes into the desk's document rather than beside it, so
-    // both keep working on the same desk.
+    // A peer that knows only the old record — a build from before the layout was
+    // one document — writes into the layout's document rather than beside it, so
+    // both keep working on the same layout.
     {
-        let desk = shared(desk());
+        let held = shared(layout());
         let mut doc = AutoCommit::new();
-        assert!(shared_record::write(&mut doc, &desk).expect("written"));
+        assert!(shared_record::write(&mut doc, &held).expect("written"));
         assert!(desktop_doc::write_shared(
             &mut doc,
-            &desk.tree,
-            &desk.records,
-            &desk.authors
+            &held.tree,
+            &held.records,
+            &held.authors
         ));
         doc.commit();
 
-        let mut older = desk.clone();
+        let mut older = held.clone();
         older.tree.workspaces[0].strips[0]
             .window_groups
             .push(group(11, &[110]));
@@ -196,7 +196,7 @@ tilo_test_env::scenario! {
         assert!(shared_record::write(&mut doc, &older).expect("written"));
         doc.commit();
 
-        assert!(desktop_doc::holds(&doc), "still the desk's own document");
+        assert!(desktop_doc::holds(&doc), "still the layout's own document");
         let held = opened(&doc);
         assert_eq!(windows(&held.tree), windows(&older.tree));
         assert_eq!(held.records, older.records);
@@ -204,27 +204,27 @@ tilo_test_env::scenario! {
     }
 
     phase two_peers_each_change_the_desk_and_keep_both_changes;
-    // Two peers each change the desk and merge: the desk holds both changes,
-    // by both of them, and each peer reads the same desk.
+    // Two peers each change the layout and merge: the layout holds both changes,
+    // by both of them, and each peer reads the same layout.
     {
-        let desk = shared(desk());
+        let held = shared(layout());
         let mut local = AutoCommit::new();
-        assert!(shared_record::write(&mut local, &desk).expect("written"));
+        assert!(shared_record::write(&mut local, &held).expect("written"));
         assert!(desktop_doc::write_shared(
             &mut local,
-            &desk.tree,
-            &desk.records,
-            &desk.authors
+            &held.tree,
+            &held.records,
+            &held.authors
         ));
         local.commit();
         let mut peer = local.fork();
 
-        let mut mine = desk.clone();
+        let mut mine = held.clone();
         mine.tree.workspaces[0].name = "Studio · mine".into();
         assert!(shared_record::write(&mut local, &mine).expect("written"));
         local.commit();
 
-        let mut theirs = desk.clone();
+        let mut theirs = held.clone();
         theirs.tree.workspaces[0].strips[0]
             .window_groups
             .push(group(11, &[110]));
@@ -234,14 +234,14 @@ tilo_test_env::scenario! {
 
         local.merge_incoming(&mut peer).expect("merged");
         peer.merge_incoming(&mut local).expect("merged");
-        for desk in [opened(&local), opened(&peer)] {
+        for held in [opened(&local), opened(&peer)] {
             assert_eq!(
-                desk.tree.workspaces[0].name, "Studio · mine",
-                "the rename both peers made is one desk"
+                held.tree.workspaces[0].name, "Studio · mine",
+                "the rename both peers made is one layout"
             );
-            assert_eq!(windows(&desk.tree), windows(&theirs.tree));
+            assert_eq!(windows(&held.tree), windows(&theirs.tree));
             assert_eq!(
-                desk.authors.get(&110).map(String::as_str),
+                held.authors.get(&110).map(String::as_str),
                 Some("grace"),
                 "who opened the window came with it"
             );

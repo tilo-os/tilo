@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use tilo_compositor::KeyRepeat;
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_service::Service as _;
 use tilo_session::shell::state::WINDOW_MENU;
@@ -592,7 +592,7 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
 }
 
 /// A desk of one strip holding `windows`, each in a group of its own, the last in front.
-fn desk(windows: &[(u64, &str)]) -> DesktopTree {
+fn desk(windows: &[(u64, &str)]) -> Layout {
     let groups: Vec<WindowGroup> = windows
         .iter()
         .enumerate()
@@ -612,7 +612,7 @@ fn desk(windows: &[(u64, &str)]) -> DesktopTree {
         name: "Main".into(),
         window_groups: groups,
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
@@ -624,7 +624,7 @@ fn desk(windows: &[(u64, &str)]) -> DesktopTree {
 }
 
 /// A desk of one window holding `tabs`, the last of them in front.
-fn tabbed(tabs: &[(u64, &str)]) -> DesktopTree {
+fn tabbed(tabs: &[(u64, &str)]) -> Layout {
     let front = tabs.last().map(|(id, _)| *id).expect("a tab");
     let group = WindowGroup {
         id: 100,
@@ -643,7 +643,7 @@ fn tabbed(tabs: &[(u64, &str)]) -> DesktopTree {
         name: "Main".into(),
         window_groups: vec![group],
     }];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
@@ -667,7 +667,7 @@ fn active_tab(session: &Session, group: u64) -> Option<u64> {
 }
 
 /// A headless session that shows `tree` and answers on the test-control `socket`.
-fn session_showing(tree: DesktopTree, socket: &Path) -> Session {
+fn session_showing(tree: Layout, socket: &Path) -> Session {
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         collab: false,

@@ -5,10 +5,10 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::ids::WorkspaceId;
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::workspace::Workspace;
 
-impl DesktopTree {
+impl Layout {
     /// The salt replication treats as this tree's own — the id range this
     /// tree mints in, writes and sweeps: [`Self::salt`].
     pub const fn local_salt(&self) -> u16 {
@@ -83,17 +83,17 @@ mod tests {
     use crate::workspace::Workspace;
 
     tilo_test_env::scenario! {
-        fn a_desktop_trees_local_view;
+        fn a_layouts_local_view;
 
         phase switching_walks_workspaces_and_clamps_at_the_ends;
         {
-            let mut tree = DesktopTree {
+            let mut tree = Layout {
                 workspaces: vec![
                     Workspace::new(WorkspaceId::from_u128(1), "A"),
                     Workspace::new(WorkspaceId::from_u128(2), "B"),
                 ],
                 active: WorkspaceId::from_u128(1),
-                ..DesktopTree::default()
+                ..Layout::default()
             };
             assert!(!tree.switch_up());
             assert!(tree.switch_down());
@@ -106,7 +106,7 @@ mod tests {
 
         phase workspace_records_report_only_news;
         {
-            let mut tree = DesktopTree::default();
+            let mut tree = Layout::default();
             let identity = WorkspaceId::new();
             let held = BTreeMap::from([("r".to_owned(), "doc".to_owned())]);
             assert!(tree.set_workspace_records(identity, held.clone()));

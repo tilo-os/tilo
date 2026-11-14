@@ -5,20 +5,20 @@
 use super::*;
 use crate::services::WorkspaceAuthority;
 use crate::test_support::{Workspace, WorkspaceId};
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, System};
 use std::cell::Cell;
 use std::sync::atomic::AtomicUsize;
 use tilo_actions::remote::{
     Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
 };
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 
-type Revision = Box<dyn FnOnce(&mut DesktopTree) + Send>;
+type Revision = Box<dyn FnOnce(&mut Layout) + Send>;
 
 /// A committed authority that counts every sample and every owned snapshot,
 /// and can change policy just before a chosen sample reads it.
 struct SampledAuthority {
-    tree: Mutex<DesktopTree>,
+    tree: Mutex<Layout>,
     samples: AtomicUsize,
     owned_snapshots: AtomicUsize,
     /// Applied to the tree immediately before the numbered (1-based) sample.
@@ -26,7 +26,7 @@ struct SampledAuthority {
 }
 
 impl SampledAuthority {
-    fn new(tree: DesktopTree) -> Arc<Self> {
+    fn new(tree: Layout) -> Arc<Self> {
         Arc::new(Self {
             tree: Mutex::new(tree),
             samples: AtomicUsize::new(0),
@@ -54,7 +54,7 @@ impl SampledAuthority {
 }
 
 impl WorkspaceAuthority for SampledAuthority {
-    fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
+    fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
         let sample = self
             .samples
             .fetch_add(1, Ordering::SeqCst)
@@ -71,7 +71,7 @@ impl WorkspaceAuthority for SampledAuthority {
         Ok(())
     }
 
-    fn snapshot(&self) -> Result<DesktopTree, String> {
+    fn snapshot(&self) -> Result<Layout, String> {
         self.owned_snapshots.fetch_add(1, Ordering::SeqCst);
         let mut copy = None;
         self.with_tree(&mut |tree| copy = Some(tree.clone()))?;
@@ -102,18 +102,18 @@ fn metered(bytes: usize) {
 // SAFETY: forwards the exact System allocation contracts; the bookkeeping
 // uses a fixed thread-local Cell and never changes pointers or sizes.
 unsafe impl GlobalAlloc for Meter {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         metered(layout.size());
         unsafe { System.alloc(layout) }
     }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
         metered(layout.size());
         unsafe { System.alloc_zeroed(layout) }
     }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
         unsafe { System.dealloc(ptr, layout) }
     }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
         metered(size);
         unsafe { System.realloc(ptr, layout, size) }
     }
@@ -149,7 +149,7 @@ fn owner() -> String {
     "a1".repeat(32)
 }
 
-fn owned_workspace() -> (DesktopTree, String) {
+fn owned_workspace() -> (Layout, String) {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(91), "Sampled authority");
     workspace.set_owner(owner());
     workspace.effect_receipts = (0..RECEIPTS)
@@ -162,10 +162,10 @@ fn owned_workspace() -> (DesktopTree, String) {
         })
         .collect();
     let workspace_id = workspace.id().to_string();
-    let tree = DesktopTree {
+    let tree = Layout {
         active: WorkspaceId::from_u128(91),
         workspaces: vec![workspace],
-        ..DesktopTree::default()
+        ..Layout::default()
     };
     (tree, workspace_id)
 }

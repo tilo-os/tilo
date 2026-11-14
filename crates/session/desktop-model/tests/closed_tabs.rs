@@ -12,7 +12,7 @@
 
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::{
-    CLOSED_TABS_PER_WORKSPACE, DesktopTree, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
+    CLOSED_TABS_PER_WORKSPACE, Layout, Strip, StripId, Tab, TabId, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId,
 };
 
@@ -57,9 +57,9 @@ fn group(id: u64, width: WindowWidth, tabs: Vec<Tab>) -> WindowGroup {
     }
 }
 
-/// A desk of two strips: the first holds two windows, the second one, and
+/// A layout of two strips: the first holds two windows, the second one, and
 /// the workspace shows the first.
-fn desk() -> DesktopTree {
+fn layout() -> Layout {
     let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = vec![
         Strip {
@@ -88,10 +88,10 @@ fn desk() -> DesktopTree {
             )],
         },
     ];
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         active: workspace.id(),
         workspaces: vec![workspace],
-        ..DesktopTree::default()
+        ..Layout::default()
     };
     tree.active_strip
         .insert(WorkspaceId::from_u128(1), StripId(10));
@@ -99,7 +99,7 @@ fn desk() -> DesktopTree {
     tree
 }
 
-fn ids(tree: &DesktopTree, group_id: u64) -> Vec<TabId> {
+fn ids(tree: &Layout, group_id: u64) -> Vec<TabId> {
     tree.workspaces
         .iter()
         .flat_map(|workspace| &workspace.strips)
@@ -109,7 +109,7 @@ fn ids(tree: &DesktopTree, group_id: u64) -> Vec<TabId> {
         .unwrap_or_default()
 }
 
-fn groups(tree: &DesktopTree, strip_id: StripId) -> Vec<u64> {
+fn groups(tree: &Layout, strip_id: StripId) -> Vec<u64> {
     tree.workspaces
         .iter()
         .flat_map(|workspace| &workspace.strips)
@@ -118,7 +118,7 @@ fn groups(tree: &DesktopTree, strip_id: StripId) -> Vec<u64> {
         .unwrap_or_default()
 }
 
-fn closes(tree: &DesktopTree) -> usize {
+fn closes(tree: &Layout) -> usize {
     tree.active_workspace().unwrap().closed_tabs().len()
 }
 
@@ -129,7 +129,7 @@ tilo_test_env::scenario! {
     // A window comes back into its group at the index it had, and the newest
     // close is the one that comes back first.
     {
-        let mut tree = desk();
+        let mut tree = layout();
         assert!(tree.close_tab(31).is_some());
         assert!(tree.close_tab(32).is_some());
         assert_eq!(ids(&tree, 20), [30]);
@@ -158,7 +158,7 @@ tilo_test_env::scenario! {
     // close, so the tab comes back as the app that opens it again, under the
     // same identity and the same title.
     {
-        let mut tree = desk();
+        let mut tree = layout();
         let workspace = tree.active_workspace_mut().unwrap();
         workspace.strips[0].window_groups[0].tabs[1] = window(31, "~/src", "org.example.Editor");
         tree.close_tab(31).unwrap();
@@ -192,7 +192,7 @@ tilo_test_env::scenario! {
     // A window that was its group's only one takes the group with it; a reopen
     // makes the group again where it stood, as wide as it was.
     {
-        let mut tree = desk();
+        let mut tree = layout();
         tree.close_tab(40).unwrap();
         assert_eq!(groups(&tree, StripId(10)), [20]);
 
@@ -208,7 +208,7 @@ tilo_test_env::scenario! {
     // A close whose strip is gone comes back in the strip the workspace shows,
     // in the place its group had.
     {
-        let mut tree = desk();
+        let mut tree = layout();
         tree.close_tab(50).unwrap();
         tree.workspaces[0].strips.remove(1);
         assert_eq!(
@@ -222,7 +222,7 @@ tilo_test_env::scenario! {
     // Each workspace remembers a bounded number of closes: the oldest are
     // forgotten, and a close is taken off the stack the one time it is undone.
     {
-        let mut tree = desk();
+        let mut tree = layout();
         let many: Vec<Tab> = (0..CLOSED_TABS_PER_WORKSPACE + 10)
             .map(|i| app(100 + i as TabId, "Term", "so.tilo.terminal"))
             .collect();
@@ -262,7 +262,7 @@ tilo_test_env::scenario! {
     // a workspace that is no longer there, and another workspace's closes are
     // untouched.
     {
-        let mut tree = desk();
+        let mut tree = layout();
         let mut other = Workspace::new(WorkspaceId::from_u128(2), "Other");
         other.strips = vec![Strip {
             id: StripId(12),
@@ -287,7 +287,7 @@ tilo_test_env::scenario! {
     // A window a peer's layout brought back has had its close undone already:
     // reopening it again would make a second window under one identity.
     {
-        let mut tree = desk();
+        let mut tree = layout();
         let window = tree.workspaces[0].strips[0].window_groups[0].tabs[1].clone();
         tree.close_tab(31).unwrap();
         tree.workspaces[0].strips[0].window_groups[0]
@@ -303,7 +303,7 @@ tilo_test_env::scenario! {
     // holds only a workspace puts its last close back at the strip the caller
     // names when the one it remembers is gone.
     {
-        let mut workspace = desk().workspaces.remove(0);
+        let mut workspace = layout().workspaces.remove(0);
         let mut mint = || Ok(999);
         let mut create = |_: &str, _: u64| Err("a reopen opens no record".to_owned());
         let close = DesktopCommand::CloseTab {

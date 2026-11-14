@@ -91,7 +91,7 @@ impl Layer for RefCell<WidgetHost> {
 
 impl Desk for DesktopHost {
     fn shown(&self) -> Vec<(u64, ui::kurbo::Rect)> {
-        self.with_policy(|policy| policy.layout().shown)
+        self.with_policy(|policy| policy.placement().shown)
     }
 
     fn origin(&self) -> (i32, i32) {

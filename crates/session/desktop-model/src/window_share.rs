@@ -484,7 +484,7 @@ mod tests {
         phase closing_a_window_ends_the_shares_it_showed;
         {
             use crate::commands::{DesktopCommand, TabLocation, apply_command};
-            use crate::tree::DesktopTree;
+            use crate::tree::Layout;
 
             let (mut workspace, owners) = shared_windows();
             let shared = |workspace: &Workspace| {
@@ -535,10 +535,10 @@ mod tests {
             // The window reopens where it was without the share that went: a
             // window comes back, its share does not, and nobody shares it again
             // but the person.
-            let mut tree = DesktopTree {
+            let mut tree = Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             };
             let active = tree.active;
             assert_eq!(

@@ -12,7 +12,7 @@
 use std::rc::Rc;
 
 use serde_json::{Map, Value};
-use tilo_desktop_model::{DesktopTree, TabId, WorkspaceId};
+use tilo_desktop_model::{Layout, TabId, WorkspaceId};
 
 use crate::activity::{
     ActivityHost, ActivitySnapshot, ActivityView as PaneView, DetachedRecordHistory,
@@ -28,7 +28,7 @@ pub trait HistorySource {
     /// changes are its history. `None` when the host retains none for it.
     fn workspace_history(
         &mut self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace: WorkspaceId,
     ) -> Option<ActivitySnapshot>;
 
@@ -36,7 +36,7 @@ pub trait HistorySource {
     /// history.
     fn record_histories(
         &mut self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace: WorkspaceId,
     ) -> Vec<DetachedRecordHistory>;
 
@@ -53,11 +53,7 @@ pub trait HistorySource {
     fn register_authors(&self, _authors: &mut ui::AuthorDirectory) {}
 
     /// The window showing `target` , focused when the person opens it from the history.
-    fn resource_tab(
-        &self,
-        _tree: &DesktopTree,
-        _target: &ui::HistoryResourceTarget,
-    ) -> Option<TabId> {
+    fn resource_tab(&self, _tree: &Layout, _target: &ui::HistoryResourceTarget) -> Option<TabId> {
         None
     }
 
@@ -87,7 +83,7 @@ pub enum ActivityPaneCode {
 
 /// [`open_activity`]'s signature, for a host that hands it over at run time.
 pub type OpenActivity =
-    fn(&mut dyn HistorySource, &DesktopTree, u64, WorkspaceId) -> Option<ActivityModel>;
+    fn(&mut dyn HistorySource, &Layout, u64, WorkspaceId) -> Option<ActivityModel>;
 
 /// An open activity model, as [`open_activity`] hands it to the surface.
 pub struct ActivityModel(pub(super) Box<dyn Served>);
@@ -96,7 +92,7 @@ pub struct ActivityModel(pub(super) Box<dyn Served>);
 /// `revision` . `None` when `source` retains no history for that workspace.
 pub fn open_activity(
     source: &mut dyn HistorySource,
-    tree: &DesktopTree,
+    tree: &Layout,
     revision: u64,
     workspace: WorkspaceId,
 ) -> Option<ActivityModel> {
@@ -110,7 +106,7 @@ pub(super) trait Served: ActivityReads {
     /// The workspace whose history the model holds.
     fn workspace(&self) -> WorkspaceId;
     /// Read the history again when the desktop or a record changed since.
-    fn follow(&mut self, source: &mut dyn HistorySource, tree: &DesktopTree, revision: u64);
+    fn follow(&mut self, source: &mut dyn HistorySource, tree: &Layout, revision: u64);
     /// Run write `action` with `arguments` ; the record it opens, if any.
     fn act(
         &mut self,
@@ -150,7 +146,7 @@ struct WorkspaceActivity {
 impl WorkspaceActivity {
     fn open(
         source: &mut dyn HistorySource,
-        tree: &DesktopTree,
+        tree: &Layout,
         revision: u64,
         workspace: WorkspaceId,
     ) -> Option<Self> {
@@ -168,7 +164,7 @@ impl WorkspaceActivity {
         Some(model)
     }
 
-    fn read_records(&mut self, source: &mut dyn HistorySource, tree: &DesktopTree) {
+    fn read_records(&mut self, source: &mut dyn HistorySource, tree: &Layout) {
         let records = source.record_histories(tree, self.workspace);
         source.register_authors(self.pane.authors_mut());
         self.pane.refresh(&mut self.snapshot);
@@ -196,7 +192,7 @@ impl Served for WorkspaceActivity {
         self.workspace
     }
 
-    fn follow(&mut self, source: &mut dyn HistorySource, tree: &DesktopTree, revision: u64) {
+    fn follow(&mut self, source: &mut dyn HistorySource, tree: &Layout, revision: u64) {
         let now = (revision, source.revision());
         if now == self.read {
             return;

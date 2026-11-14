@@ -3,7 +3,7 @@
 //! carry out.
 
 use tilo_desktop_model::commands::DesktopCommand;
-use tilo_desktop_model::{DesktopTree, StripId, TabId, WorkspaceId};
+use tilo_desktop_model::{Layout, StripId, TabId, WorkspaceId};
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
 use crate::host::chrome::ChromeIntent;
@@ -54,7 +54,7 @@ pub const REPORT_PROBLEM: &str = "session-report-problem";
 pub trait DesktopRules {
     /// The tree as the chrome shows it: the surface's, with who is here as the active workspace's
     /// members.
-    fn tree(&self) -> DesktopTree;
+    fn tree(&self) -> Layout;
 
     /// Changes whenever who is here does, beyond the tree.
     fn people_revision(&self) -> u64 {

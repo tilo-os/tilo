@@ -23,7 +23,7 @@ use crate::workspace::Workspace;
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DesktopTree {
+pub struct Layout {
     /// Which version of the on-disk shape the file describes. Read back to
     /// decide whether this build may touch the file at all.
     pub schema_version: u32,
@@ -55,10 +55,10 @@ pub struct DesktopTree {
     /// The window group covering its display on this device, with the bar
     /// stepped aside, while the strip it stands in is the one shown. What
     /// the person is looking at rather than part of the desktop: persisted
-    /// with this device's desk, so a session starts where the person left
+    /// with this device's layout, so a session starts where the person left
     /// it, and never sent to the workspace's peers, whose windows lie
     /// elsewhere.
-    /// Written only by [`DesktopTree::set_fullscreen`].
+    /// Written only by [`Layout::set_fullscreen`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fullscreen: Option<GroupId>,
     /// Mirror of each workspace's record index (record id → kind), pushed by
@@ -73,7 +73,7 @@ pub struct DesktopTree {
     pub salt: u16,
 }
 
-impl Default for DesktopTree {
+impl Default for Layout {
     fn default() -> Self {
         Self {
             schema_version: STATE_SCHEMA_VERSION,
@@ -91,7 +91,7 @@ impl Default for DesktopTree {
     }
 }
 
-impl DesktopTree {
+impl Layout {
     /// Read a tree from its JSON value.
     ///
     /// Readers in other crates go through this function instead of calling
@@ -103,7 +103,7 @@ impl DesktopTree {
     }
 
     /// Deserialize a tree field through [`Self::from_json`], for
-    /// `#[serde(deserialize_with = "DesktopTree::deserialize_via_json")]`.
+    /// `#[serde(deserialize_with = "Layout::deserialize_via_json")]`.
     pub fn deserialize_via_json<'de, D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Self, D::Error> {
@@ -122,13 +122,13 @@ impl DesktopTree {
         self.workspaces.iter().find(|w| w.id() == self.active)
     }
 
-    /// Every window of the desk, in the tree's order: workspace by workspace, strip by strip,
+    /// Every window of the layout, in the tree's order: workspace by workspace, strip by strip,
     /// group by group.
     pub fn tabs(&self) -> impl Iterator<Item = &Tab> {
         self.workspaces.iter().flat_map(Workspace::tabs)
     }
 
-    /// The window `id` shows, wherever on the desk it is.
+    /// The window `id` shows, wherever on the layout it is.
     #[must_use]
     pub fn tab(&self, id: crate::TabId) -> Option<&Tab> {
         self.tabs().find(|tab| tab.id == id)

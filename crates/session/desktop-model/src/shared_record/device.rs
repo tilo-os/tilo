@@ -19,7 +19,7 @@ use crate::ids::{TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::ownership::SharedDesktop;
 use crate::projection::localise_tile;
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::workspace::Workspace;
 
 /// What every device sees of a tile: device-local handles and labels left
@@ -204,7 +204,7 @@ pub fn write(
         .flat_map(|strip| &strip.window_groups)
         .map(|group| group.id)
         .collect();
-    // A group this desk has no place for keeps the one the record gives it: the desk may not
+    // A group this layout has no place for keeps the one the record gives it: the layout may not
     // have laid it out yet.
     let mut places = of_written(&shared.arrangement.places, &written);
     places.extend(of_written(&workspace.arrangement.places, &written));
@@ -219,10 +219,10 @@ pub fn write(
     authors.retain(|id, _| live.contains(id));
     let records = noted_records(held_records, &live, writer.records);
     let desktop = SharedDesktop {
-        tree: DesktopTree {
+        tree: Layout {
             active: shared.id(),
             workspaces: vec![shared],
-            ..DesktopTree::default()
+            ..Layout::default()
         },
         records,
         authors,
@@ -355,10 +355,10 @@ pub struct Kept<'a> {
     pub private: &'a dyn Fn(u64) -> bool,
     /// Whether this device closed `id` since it last wrote the record: the
     /// window's entry there goes when it writes again, and until then the
-    /// record's copy is not laid back into this desk, where no window fills
+    /// record's copy is not laid back into this layout, where no window fills
     /// it.
     pub closed: &'a dyn Fn(u64) -> bool,
-    /// Whether the fold lays down the desk of the device that writes it:
+    /// Whether the fold lays down the layout of the device that writes it:
     /// which of its windows float is then what the write records, so its
     /// floats stay as this device has them.
     pub writing: bool,
@@ -457,7 +457,7 @@ pub fn fold(doc: &AutoCommit, workspace: &mut Workspace, device: &str, kept: &Ke
         }
     }
     if kept.writing {
-        // A window this device's desk floats still floats in what its write
+        // A window this device's layout floats still floats in what its write
         // records, and one it put back in its strip no longer does: the
         // write carries this device's word either way.
         arrangement.floats.clone_from(&workspace.arrangement.floats);

@@ -1,7 +1,7 @@
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::ownership::{Act, Authors, SharedDesktop};
 use crate::shared_record;
-use crate::{DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId};
+use crate::{Layout, StripId, WindowWidth, Workspace, WorkspaceId};
 
 use super::*;
 
@@ -48,10 +48,10 @@ fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
         .map(|(id, _, who)| (*id, (*who).to_owned()))
         .collect();
     SharedDesktop {
-        tree: DesktopTree {
+        tree: Layout {
             active: workspace.id(),
             workspaces: vec![workspace],
-            ..DesktopTree::default()
+            ..Layout::default()
         },
         authors,
         records: Vec::new(),
@@ -344,7 +344,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_member_who_joins_a_shared_desk_opens_a_window_on_top_of_its_records;
-    // Two people open one shared desk: Ben joins, takes the records the desk
+    // Two people open one shared layout: Ben joins, takes the records the layout
     // shows for its windows, opens one of his own, and writes it back. The
     // window Ada opened arrives with its record, and both can keep working.
     {
@@ -361,10 +361,10 @@ tilo_test_env::scenario! {
         let seen = shared_record::read(guard.doc(), None).unwrap();
         assert_eq!(
             seen.records, adopted.records,
-            "the desk holds each window's record as it showed it"
+            "the layout holds each window's record as it showed it"
         );
 
-        // Ada's page, joining on the desk Ben left, writes her own change.
+        // Ada's page, joining on the layout Ben left, writes her own change.
         let mut ada = Page::of(&guard, 1);
         let mut adopted = shared_record::read(guard.doc(), None).unwrap();
         adopted.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "Lounge renamed".into();
@@ -396,14 +396,14 @@ tilo_test_env::scenario! {
     }
 
     phase a_desk_holding_the_primarys_custody_key_reads_and_heals_to_its_route;
-    // A desk written before pages named records by their route holds the package
+    // A layout written before pages named records by their route holds the package
     // primary's custody key for it. It reads as the primary's route, so the page
-    // that writes the desk next restates the same record instead of rebinding it.
+    // that writes the layout next restates the same record instead of rebinding it.
     {
         let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
-        let mut desk = desktop(&[(1, 100, ADA)]);
-        desk.records = vec![(1, "@tilo:package-primary".into())];
-        shared_record::write(&mut doc, &desk).unwrap();
+        let mut layout = desktop(&[(1, 100, ADA)]);
+        layout.records = vec![(1, "@tilo:package-primary".into())];
+        shared_record::write(&mut doc, &layout).unwrap();
         doc.commit();
         let mut guard = DesktopGuard::new(doc);
         let mut ada = Page::of(&guard, 1);
@@ -440,13 +440,13 @@ fn open_window(desktop: &mut SharedDesktop, id: u64, who: &str, record: &str) {
     desktop.records.push((id, record.to_owned()));
 }
 
-/// A desk holding Ada's window 1 on the package primary (`""`, the primary
+/// A layout holding Ada's window 1 on the package primary (`""`, the primary
 /// record's route).
 fn primary_workspace() -> DesktopGuard {
     let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
-    let mut desk = desktop(&[(1, 100, ADA)]);
-    desk.records = vec![(1, String::new())];
-    shared_record::write(&mut doc, &desk).unwrap();
+    let mut layout = desktop(&[(1, 100, ADA)]);
+    layout.records = vec![(1, String::new())];
+    shared_record::write(&mut doc, &layout).unwrap();
     doc.commit();
     DesktopGuard::new(doc)
 }
@@ -494,7 +494,7 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(windows(&guard), vec![1, 2], "the writer left it out");
 
-        // A page that writes the desk's document itself, with Settings in it.
+        // A page that writes the layout's document itself, with Settings in it.
         let mut doc = guard
             .doc()
             .clone()
@@ -526,7 +526,7 @@ tilo_test_env::scenario! {
         let read = shared_record::read(guard.doc(), None).unwrap();
         assert!(!read.authors.contains_key(&3) && read.records.iter().all(|(tab, _)| *tab != 3));
 
-        // Ben, who never made it, writes the desk as he reads it: Settings goes from the record.
+        // Ben, who never made it, writes the layout as he reads it: Settings goes from the record.
         let mut ben = Page::of(&guard, 2);
         let cleans = ben.write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (4, 400, BEN)]));
         guard

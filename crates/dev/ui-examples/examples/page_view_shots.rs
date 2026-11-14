@@ -110,7 +110,7 @@ fn announcement(tab: TabId) -> NeighbourMsg {
 }
 
 /// A desk with one window another device hosts, its tab in the workspace.
-fn desk_tree() -> (tilo_desktop_model::DesktopTree, TabId) {
+fn desk_tree() -> (tilo_desktop_model::Layout, TabId) {
     let mut minter = IdMinter::new(7);
     let tab = Tab {
         id: minter.mint(),

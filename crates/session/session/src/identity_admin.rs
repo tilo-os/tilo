@@ -1099,10 +1099,10 @@ mod tests {
     fn desk_with(workspace: tilo_desktop_model::Workspace) -> crate::plane::DeskAuthority {
         let active = workspace.id();
         crate::plane::DeskAuthority::new(
-            tilo_desktop_model::DesktopTree {
+            tilo_desktop_model::Layout {
                 workspaces: vec![workspace],
                 active,
-                ..tilo_desktop_model::DesktopTree::default()
+                ..tilo_desktop_model::Layout::default()
             },
             crate::engine::revocations_of(None),
             None,

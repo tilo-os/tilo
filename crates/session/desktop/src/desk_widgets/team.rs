@@ -16,7 +16,7 @@
 //! too.
 
 use crate::people::{LineSource, RosterRow, RosterStatus};
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use ui::presence::PresenceCtx;
 use ui::time::SystemTime;
 
@@ -56,7 +56,7 @@ impl Place {
 /// status line and place.
 #[must_use]
 pub fn members(
-    desktop: &DesktopTree,
+    desktop: &Layout,
     local_user: &str,
     own_id: &str,
     presence: &PresenceCtx,
@@ -80,7 +80,7 @@ pub fn members(
 /// The roster rows the Team card lists, in the order it lists them, before presence adds what each
 /// person is doing.
 #[must_use]
-pub fn rows(desktop: &DesktopTree, local_user: &str, own_id: &str) -> Vec<RosterRow> {
+pub fn rows(desktop: &Layout, local_user: &str, own_id: &str) -> Vec<RosterRow> {
     let mut rows: Vec<RosterRow> = crate::people::roster_rows(desktop, local_user)
         .into_iter()
         .filter(|row| row.id != own_id && row.id != local_user)
@@ -141,7 +141,7 @@ pub fn presence_id(
 
 /// The strip and window `participant_id` is on in the active workspace.
 #[must_use]
-pub fn place_of(desktop: &DesktopTree, participant_id: &str) -> Option<Place> {
+pub fn place_of(desktop: &Layout, participant_id: &str) -> Option<Place> {
     let workspace = desktop.active_workspace()?;
     let tab_id = workspace
         .present

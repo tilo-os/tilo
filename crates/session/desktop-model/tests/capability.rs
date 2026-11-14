@@ -196,9 +196,9 @@ tilo_test_env::scenario! {
         second.grant(member("sooner", Some(SOON)));
         assert_eq!(first.next_grant_expiry_after(NOW), Some(LATER));
         assert_eq!(second.next_grant_expiry_after(NOW), Some(SOON));
-        let tree = DesktopTree {
+        let tree = Layout {
             workspaces: vec![first, second],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         assert_eq!(tree.next_grant_expiry_after(NOW), Some(SOON));
         assert_eq!(tree.next_grant_expiry_after(SOON), Some(LATER));
@@ -210,7 +210,7 @@ tilo_test_env::scenario! {
     // app's other grants are none of its business.
     {
         const TERMINAL: &str = "org.example.terminal";
-        let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Desk");
+        let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Work");
         assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
         assert!(!ws.stop_desktop_control(TERMINAL), "nothing to take back");
         ws.grant_app(

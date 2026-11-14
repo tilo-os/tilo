@@ -15,7 +15,7 @@ use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
 use tilo_desktop::launchpad::LaunchpadAction;
 use tilo_desktop::overlays::{Overlays, Slot, Target};
 use tilo_desktop::topbar::{Placement, TopBarChrome};
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_desktop_model::commands::Standing;
 use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::DesktopHandle;
@@ -498,7 +498,7 @@ impl ChromeSource for SessionChrome {
         self.sync.as_ref().map_or(0, |sync| sync.people_revision())
     }
 
-    fn place_people(&self, tree: &mut DesktopTree) {
+    fn place_people(&self, tree: &mut Layout) {
         if let Some(sync) = &self.sync {
             sync.show(tree, &self.notes, &|app: &str| {
                 Some(crate::app_names::app_name(app))

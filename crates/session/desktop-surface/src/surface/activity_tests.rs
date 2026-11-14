@@ -18,7 +18,7 @@ const WORKSPACE: &str = "workspace-a";
 
 /// Write the desk as it stands into `doc` and commit it at `time` , as a page records each pass:
 /// one change of the desk, by its person.
-fn stamp(doc: &mut AutoCommit, tree: &DesktopTree, time: i64) {
+fn stamp(doc: &mut AutoCommit, tree: &Layout, time: i64) {
     tilo_desktop_model::desktop_doc::seed(doc, tree);
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
@@ -63,7 +63,7 @@ struct RetainedHistory {
 impl HistorySource for RetainedHistory {
     fn workspace_history(
         &mut self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace: WorkspaceId,
     ) -> Option<crate::activity::ActivitySnapshot> {
         let mut desktop = tree.clone();
@@ -76,7 +76,7 @@ impl HistorySource for RetainedHistory {
 
     fn record_histories(
         &mut self,
-        _: &DesktopTree,
+        _: &Layout,
         _: WorkspaceId,
     ) -> Vec<crate::activity::DetachedRecordHistory> {
         Vec::new()
@@ -104,7 +104,7 @@ struct DeferredHistory {
 impl HistorySource for DeferredHistory {
     fn workspace_history(
         &mut self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace: WorkspaceId,
     ) -> Option<crate::activity::ActivitySnapshot> {
         self.retained.workspace_history(tree, workspace)
@@ -112,7 +112,7 @@ impl HistorySource for DeferredHistory {
 
     fn record_histories(
         &mut self,
-        tree: &DesktopTree,
+        tree: &Layout,
         workspace: WorkspaceId,
     ) -> Vec<crate::activity::DetachedRecordHistory> {
         self.retained.record_histories(tree, workspace)
@@ -134,7 +134,7 @@ struct Served {
     handle: DesktopHandle,
     session: Arc<crate::session::DesktopSession>,
     document: Rc<std::cell::RefCell<AutoCommit>>,
-    tree: DesktopTree,
+    tree: Layout,
 }
 
 impl Served {

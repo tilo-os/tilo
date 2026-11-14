@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::hash::Hash as _;
 
 use serde_json::{Value as Json, json};
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 
 use super::{Context, Desk, Gate, Scope, Slot};
 
@@ -78,7 +78,7 @@ fn in_scope(row: &Json, scope: &Scope) -> bool {
 }
 
 /// `tree` with every workspace but the one `scope` holds left out.
-pub(super) fn within(tree: &DesktopTree, scope: &Scope) -> DesktopTree {
+pub(super) fn within(tree: &Layout, scope: &Scope) -> Layout {
     let mut tree = tree.clone();
     tree.workspaces
         .retain(|workspace| workspace.id().to_string() == scope.workspace);
@@ -97,7 +97,7 @@ fn locked_in(dump: &Json) -> bool {
 /// The desk as it is now: its tree without its history, the workspaces this computer holds, what
 /// stands over it, and whether the screen is locked — the shape the tools that drive a desktop
 /// read, and the line a `watch` streams as it changes.
-pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
+pub(super) fn state_dump(tree: &Layout, desk: &Desk<'_>) -> Json {
     let held: BTreeSet<String> = desk
         .engine
         .map(|engine| {
@@ -112,9 +112,7 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
         .workspaces
         .iter()
         .filter(|workspace| held.contains(&workspace.id().to_string()))
-        .map(|workspace| {
-            json!({"workspace": workspace.id()})
-        })
+        .map(|workspace| json!({"workspace": workspace.id()}))
         .collect();
     let mut open = serde_json::Map::new();
     for slot in Slot::ALL {
@@ -192,7 +190,7 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
 /// host's name as its person gave it, whether this computer is the host, and whether it still
 /// waits for the host. A socket sees what [`shown`] lets it see of the desk: an app its own
 /// workspace, and nothing of a locked desk but through a development socket.
-pub(super) fn workspace_hosts(tree: &DesktopTree, desk: &Desk<'_>, ctx: &Context) -> Json {
+pub(super) fn workspace_hosts(tree: &Layout, desk: &Desk<'_>, ctx: &Context) -> Json {
     let rows: Vec<Json> = if ctx.gate != Gate::Dev && desk.locked {
         Vec::new()
     } else {
@@ -279,7 +277,7 @@ pub(super) fn presence_stamp(desk: &Desk<'_>, hash: &mut impl std::hash::Hasher)
 /// many frames the window's client committed: a window showing the same thing keeps its count,
 /// so two reads that agree say it drew nothing between them.
 pub(super) fn window_rows(
-    tree: &DesktopTree,
+    tree: &Layout,
     rect_of: impl Fn(u64) -> Option<(i32, i32, i32, i32)>,
     frames_of: impl Fn(u64) -> u64,
 ) -> Vec<Json> {

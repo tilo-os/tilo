@@ -1795,9 +1795,9 @@ fn a_grant_the_person_gives_is_in_force_once_the_desk_carries_it() {
     let person = engine
         .owner_of(WORKSPACE)
         .expect("the workspace's owner here");
-    let tree = |workspace: &Workspace| tilo_desktop_model::DesktopTree {
+    let tree = |workspace: &Workspace| tilo_desktop_model::Layout {
         workspaces: vec![workspace.clone()],
-        ..tilo_desktop_model::DesktopTree::default()
+        ..tilo_desktop_model::Layout::default()
     };
     let desk = std::sync::Arc::new(crate::plane::DeskAuthority::new(
         tree(&workspace),

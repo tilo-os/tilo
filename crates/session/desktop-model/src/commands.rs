@@ -15,7 +15,7 @@ use crate::closed_tabs::Leaving;
 use crate::ids::{MintIds, StripId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::topology::DropTarget;
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::width::WindowWidth;
 use crate::workspace::Workspace;
 
@@ -63,7 +63,7 @@ impl std::error::Error for DesktopCommandError {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandSource {
-    #[serde(rename = "workspace", alias = "room")]
+    #[serde(rename = "workspace")]
     pub workspace: String,
     /// Exact admitted Automerge heads observed by the initiating desktop.
     pub heads: Vec<[u8; 32]>,
@@ -724,9 +724,9 @@ fn move_tab(
             *anchor,
             |window| window.id,
         )?;
-        let mut tree = DesktopTree {
+        let mut tree = Layout {
             workspaces: vec![workspace.clone()],
-            ..DesktopTree::default()
+            ..Layout::default()
         };
         let moved = if *strip == at.strip {
             tree.split_tab_into_new_group(
@@ -772,9 +772,9 @@ fn split_tab(
     let destination = before
         .and_then(|id| groups.iter().position(|window| window.id == id))
         .unwrap_or(groups.len());
-    let mut tree = DesktopTree {
+    let mut tree = Layout {
         workspaces: vec![workspace.clone()],
-        ..DesktopTree::default()
+        ..Layout::default()
     };
     tree.split_tab_into_new_group(StripId(at.strip), at.tab, destination, &mut Reserved(id))
         .ok_or("native topology rejected the tab split")?;
@@ -979,7 +979,7 @@ fn float_group(
 /// created strip becomes the workspace's shown strip and is returned; a
 /// removed strip that was shown hands that to the workspace's first.
 pub fn apply_to_active_workspace(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     command: &DesktopCommand,
     mint: &mut impl FnMut() -> Result<u64, String>,
 ) -> Result<Option<StripId>, String> {
@@ -994,7 +994,7 @@ pub fn apply_to_active_workspace(
 ///
 /// As [`apply_to_active_workspace`], or the workspace is gone.
 pub fn apply_to_workspace(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     id: crate::ids::WorkspaceId,
     command: &DesktopCommand,
     mint: &mut impl FnMut() -> Result<u64, String>,
@@ -1048,7 +1048,7 @@ pub fn apply_to_workspace(
 /// strip and group it lands on are the ones `to` shows next time it is
 /// entered.
 pub fn move_tab_to_workspace(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     tab: u64,
     to: WorkspaceId,
     mint: &mut impl FnMut() -> Result<u64, String>,

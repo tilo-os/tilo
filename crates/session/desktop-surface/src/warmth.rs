@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::Layout;
 use tilo_desktop_model::ids::WorkspaceId;
 use ui::Theme;
 use ui::WindowAppearance;
@@ -132,7 +132,7 @@ impl WindowWarmth {
     /// in (the active one while the tree does not hold it yet), the person's colour, and the
     /// window's own corner radius from `theme` .
     #[must_use]
-    pub fn appearance_of(&self, tree: &DesktopTree, app: &str, theme: &Theme) -> WindowAppearance {
+    pub fn appearance_of(&self, tree: &Layout, app: &str, theme: &Theme) -> WindowAppearance {
         let mut appearance = self.in_workspace(
             tree.workspace_holding_app(app)
                 .map(tilo_desktop_model::Workspace::id),

@@ -15,7 +15,7 @@ use tilo_sort::CompactSort as _;
 
 use collab_types::presence::{PresenceHue, Shown};
 use collab_types::{Member, MemberId, PersonId, assigned_colour};
-use tilo_desktop_model::{DesktopTree, Present, Status, TabId, TileContent, Workspace};
+use tilo_desktop_model::{Layout, Present, Status, TabId, TileContent, Workspace};
 use ui::permissions::UserId;
 use ui::presence::{PresenceCtx, PresenceKey};
 
@@ -1056,7 +1056,7 @@ impl HereState {
     /// app by its id, for where someone is.
     pub fn people(
         &self,
-        tree: &DesktopTree,
+        tree: &Layout,
         records: &[(TabId, String, String)],
         app_name: &dyn Fn(&str) -> Option<String>,
     ) -> Vec<Person> {
@@ -1265,11 +1265,7 @@ fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8,
 pub use ui::presence::guest_label;
 
 /// The window showing `focus` : the record's window, else the first window of its app.
-fn window_of(
-    tree: &DesktopTree,
-    records: &[(TabId, String, String)],
-    focus: &Focus,
-) -> Option<TabId> {
+fn window_of(tree: &Layout, records: &[(TabId, String, String)], focus: &Focus) -> Option<TabId> {
     let shown: HashSet<TabId> = tree
         .active_workspace()
         .into_iter()
@@ -1289,7 +1285,7 @@ fn window_of(
 /// `status` does not already say it ("Main · Chat" over "Working in Chat" says Chat twice). `None`
 /// when that leaves nothing.
 fn worded_place(
-    tree: &DesktopTree,
+    tree: &Layout,
     tab: TabId,
     focus_app: Option<&str>,
     app_name: &dyn Fn(&str) -> Option<String>,
@@ -1363,7 +1359,7 @@ fn names(text: &str, name: &str) -> bool {
 /// `people` written into `tree` as the bar reads who is here: the active workspace's member rows,
 /// each in the colour it wears everywhere, and everyone's presence. `tree` is the copy the bar
 /// paints, never the workspace's document.
-pub fn place_here(tree: &mut DesktopTree, people: &[Person], following: Option<&str>) {
+pub fn place_here(tree: &mut Layout, people: &[Person], following: Option<&str>) {
     let active = tree.active;
     let now = tilo_clock::unix_now();
     let Some(workspace) = tree
@@ -1541,7 +1537,7 @@ mod tests {
                     },
                 ]),
             );
-            let people = here.people(&DesktopTree::default(), &[], &|_| None);
+            let people = here.people(&Layout::default(), &[], &|_| None);
             let ids: Vec<&str> = people.iter().map(|p| p.id.as_str()).collect();
             assert_eq!(
                 ids,
@@ -1923,10 +1919,10 @@ mod tests {
             });
             let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Design");
             workspace.strips = vec![main];
-            let mut tree = DesktopTree {
+            let mut tree = Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             };
             let app = |id: &str| (id == "so.tilo.chat").then(|| "Chat".to_owned());
             let status = |text: &str| Line {
@@ -1934,7 +1930,7 @@ mod tests {
                 source: crate::people::LineSource::Observed,
             };
             let place =
-                |tree: &DesktopTree, line: Option<&Line>| worded_place(tree, 7, None, &app, line);
+                |tree: &Layout, line: Option<&Line>| worded_place(tree, 7, None, &app, line);
             assert_eq!(
                 place(&tree, None),
                 Some("Chat".into()),
@@ -1992,7 +1988,7 @@ mod tests {
             );
             assert_eq!(first.colors(), second.colors(), "every page settles alike");
             assert_eq!(first.own_rgb(), Some(second.colors()["visitor-0"]));
-            let tree = DesktopTree::default();
+            let tree = Layout::default();
             let shown = first.people(&tree, &[], &|_| None);
             assert_eq!(shown[0].rgb, second.own_rgb().expect("own colour"));
         }
@@ -2097,7 +2093,7 @@ mod tests {
             let mut here = HereState::default();
             here.set_members(Some(me), Some(vec![agent]));
 
-            let tree = DesktopTree::default();
+            let tree = Layout::default();
             let people = here.people(&tree, &[], &|_| None);
             let listed = people
                 .iter()
@@ -2118,9 +2114,9 @@ mod tests {
 
             // The bar and the People list read the workspace's rows, which this page fills from its
             // board: the same colour again.
-            let mut tree = DesktopTree {
+            let mut tree = Layout {
                 workspaces: vec![Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Desk")],
-                ..DesktopTree::default()
+                ..Layout::default()
             };
             tree.active = tree.workspaces[0].id();
             place_here(&mut tree, &people, None);
@@ -2201,7 +2197,7 @@ mod tests {
                 Some(me.clone()),
                 Some(vec![me, member("ben-tab", "person", "Ben")]),
             );
-            let tree = DesktopTree::default();
+            let tree = Layout::default();
             let shown = |here: &mut HereState| {
                 let people = here.people(&tree, &[], &|_| None);
                 let mut presence = PresenceCtx::empty();
@@ -2257,7 +2253,7 @@ mod tests {
             );
             let colors = here.colors();
             assert_eq!(colors["ada-laptop"], colors["ada-phone"]);
-            let tree = DesktopTree::default();
+            let tree = Layout::default();
             let people = here.people(&tree, &[], &|_| None);
             let mut presence = PresenceCtx::empty();
             here.register_windows(&people, &mut presence);
@@ -2291,7 +2287,7 @@ mod tests {
             cy.activity = Some("Working in Chat".into());
             cy.automatic = true;
             here.set_members(Some(member("me", "person", "Me")), Some(vec![ada, cy]));
-            let people = here.people(&DesktopTree::default(), &[], &|_| None);
+            let people = here.people(&Layout::default(), &[], &|_| None);
             let said: Vec<(&str, LineSource)> = people
                 .iter()
                 .filter_map(|person| person.status.as_ref())
@@ -2371,7 +2367,7 @@ mod tests {
                     },
                 ]),
             );
-            let tree = DesktopTree::default();
+            let tree = Layout::default();
             let people = here.people(&tree, &[], &|_| None);
             let ids: Vec<_> = people.iter().map(|p| p.id.as_str()).collect();
             assert_eq!(
@@ -2397,7 +2393,7 @@ mod tests {
         // through a second publisher is not drawn twice; a second session of the client stays its own
         // row.
         {
-            let tree = DesktopTree::default();
+            let tree = Layout::default();
             let live_agent = |publisher: &str, label: &str| LiveMember {
                 user: Some("ann-root".into()),
                 activity: Some("Looking at the apps".into()),
@@ -2477,7 +2473,7 @@ mod tests {
                     certified("phone", "Phone"),
                 ]),
             );
-            let people = here.people(&DesktopTree::default(), &[], &|_| None);
+            let people = here.people(&Layout::default(), &[], &|_| None);
             assert_eq!(people.len(), 1, "two devices of one person are one face");
             assert_eq!(people[0].user.as_deref(), Some("ann-root"));
             assert_eq!(people[0].label, "Framework 16");
@@ -2514,7 +2510,7 @@ mod tests {
                 ]),
             );
             let app = |id: &str| (id == "so.tilo.notes").then(|| "Notes".to_owned());
-            let people = here.people(&DesktopTree::default(), &[], &app);
+            let people = here.people(&Layout::default(), &[], &app);
             let place = |id: &str| {
                 people
                     .iter()
@@ -2557,10 +2553,10 @@ mod tests {
             });
             let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Design");
             workspace.strips = vec![strip];
-            let tree = DesktopTree {
+            let tree = Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             };
             let mut here = HereState::default();
             here.set_members(
@@ -2604,10 +2600,10 @@ mod tests {
                 workspace.policy.joined.insert(person.into(), admitted);
                 workspace.member_here(Member::keyed(person, "Alex"));
             }
-            let tree = DesktopTree {
+            let tree = Layout {
                 active: workspace.id(),
                 workspaces: vec![workspace],
-                ..DesktopTree::default()
+                ..Layout::default()
             };
             // When the workspace admitted each of its people, as the host hands it over.
             let joined: BTreeMap<String, u64> = tree
@@ -2684,7 +2680,7 @@ mod tests {
                 on("ben-tab", "12"),
                 member("bot", "agent", "Scribe"),
             ];
-            let tree = DesktopTree::default();
+            let tree = Layout::default();
 
             // Ben sees Ada once, in the order she arrived.
             let mut ben = HereState::default();
@@ -2746,7 +2742,7 @@ mod tests {
                     },
                 ]),
             );
-            let people = here.people(&DesktopTree::default(), &[], &|_| None);
+            let people = here.people(&Layout::default(), &[], &|_| None);
             let ada = people
                 .iter()
                 .find(|person| person.id == "ada-laptop")
@@ -2782,7 +2778,7 @@ mod tests {
         // Whose view this desk follows is said on their row and no other's, each frame: the bar keeps
         // that face when it has room for only one.
         {
-            let mut tree = DesktopTree::default();
+            let mut tree = Layout::default();
             let workspace = tilo_desktop_model::WorkspaceId::nil();
             tree.workspaces
                 .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
@@ -2832,7 +2828,7 @@ mod tests {
         // already holds and on one it writes now: an agent whose work the bar shows is never a name
         // with nothing under it.
         {
-            let mut tree = DesktopTree::default();
+            let mut tree = Layout::default();
             let workspace = tilo_desktop_model::WorkspaceId::nil();
             tree.workspaces
                 .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
@@ -2890,7 +2886,7 @@ mod tests {
         // An agent presence names is software on its row from the first frame: its member key says
         // so, never a marker a later frame has to correct.
         {
-            let mut tree = DesktopTree::default();
+            let mut tree = Layout::default();
             let workspace_id = tilo_desktop_model::WorkspaceId::nil();
             tree.workspaces
                 .push(tilo_desktop_model::Workspace::new(workspace_id, "Design"));

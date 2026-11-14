@@ -1,9 +1,9 @@
 //! Finding a desk's windows and ids in its tree.
 
-use tilo_desktop_model::{DesktopTree, GroupId, IdMinter, StripId, Tab, TabId, Workspace};
+use tilo_desktop_model::{GroupId, IdMinter, Layout, StripId, Tab, TabId, Workspace};
 
 /// Note every id `tree` holds, so the desk never mints one of them again.
-pub(super) fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
+pub(super) fn observe_ids(minter: &mut IdMinter, tree: &Layout) {
     for workspace in &tree.workspaces {
         for strip in &workspace.strips {
             minter.observe(strip.id.0);
@@ -18,11 +18,7 @@ pub(super) fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
 }
 
 /// The tab `tab` of the strip `strip`, with the workspace it is in.
-pub(super) fn find_tab(
-    tree: &DesktopTree,
-    strip: StripId,
-    tab: TabId,
-) -> Option<(&Workspace, &Tab)> {
+pub(super) fn find_tab(tree: &Layout, strip: StripId, tab: TabId) -> Option<(&Workspace, &Tab)> {
     tree.workspaces.iter().find_map(|workspace| {
         let strip = workspace.strips.iter().find(|s| s.id == strip)?;
         strip
@@ -36,7 +32,7 @@ pub(super) fn find_tab(
 
 /// The window group `group` of the strip `strip`, to change.
 pub(super) fn find_group(
-    tree: &mut DesktopTree,
+    tree: &mut Layout,
     strip: StripId,
     group: GroupId,
 ) -> Option<&mut tilo_desktop_model::WindowGroup> {

@@ -23,7 +23,7 @@
 
 use super::TabPlacement;
 use crate::ids::{GroupId, StripId};
-use crate::tree::DesktopTree;
+use crate::tree::Layout;
 use crate::workspace::Workspace;
 
 /// One group's horizontal extent, in the strip's **unscrolled canvas
@@ -120,11 +120,7 @@ pub struct OpenContext<'a> {
 impl<'a> OpenContext<'a> {
     /// The active workspace's focus in `tree`: its active strip (else its
     /// first) and that strip's selected group.
-    pub fn focused(
-        tree: &DesktopTree,
-        intent: OpenIntent,
-        viewport: Option<&'a StripViewport>,
-    ) -> Self {
+    pub fn focused(tree: &Layout, intent: OpenIntent, viewport: Option<&'a StripViewport>) -> Self {
         let strip = tree.active_workspace().and_then(|ws| {
             tree.active_strip
                 .get(&ws.id())

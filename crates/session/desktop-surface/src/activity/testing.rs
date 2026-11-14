@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::{
-    AppKind, DesktopTree, Strip, StripId, Tab, TileContent, UserId, WindowGroup, WindowWidth,
-    Workspace, WorkspaceEffectReceipt, WorkspaceId,
+    AppKind, Layout, Strip, StripId, Tab, TileContent, UserId, WindowGroup, WindowWidth, Workspace,
+    WorkspaceEffectReceipt, WorkspaceId,
 };
 
 /// The local user every [`TestHost`] answers for.
@@ -47,7 +47,7 @@ fn empty_workspace(workspace_id: WorkspaceId, name: &str, strips: Vec<Strip>) ->
 
 #[derive(Clone, Default)]
 pub(crate) struct TestTree {
-    pub desktop: DesktopTree,
+    pub desktop: Layout,
     /// The layout of the workspace in front, as its record holds it.
     pub doc: AutoCommit,
     /// Each workspace's own document: what it governs, and never a device's copy of it.
@@ -55,14 +55,14 @@ pub(crate) struct TestTree {
 }
 
 impl std::ops::Deref for TestTree {
-    type Target = DesktopTree;
-    fn deref(&self) -> &DesktopTree {
+    type Target = Layout;
+    fn deref(&self) -> &Layout {
         &self.desktop
     }
 }
 
 impl std::ops::DerefMut for TestTree {
-    fn deref_mut(&mut self) -> &mut DesktopTree {
+    fn deref_mut(&mut self) -> &mut Layout {
         &mut self.desktop
     }
 }
@@ -74,11 +74,11 @@ impl TestTree {
         let strip_id = StripId(next_id());
         let home = empty_workspace(workspace_id, "Home", vec![Strip::new(strip_id, "Main")]);
         let mut tree = Self {
-            desktop: DesktopTree {
+            desktop: Layout {
                 workspaces: vec![home],
                 active: workspace_id,
                 active_strip: HashMap::from([(workspace_id, strip_id)]),
-                ..DesktopTree::default()
+                ..Layout::default()
             },
             ..Self::default()
         };
@@ -121,12 +121,12 @@ impl TestTree {
         let mut home = empty_workspace(workspace_id, "Home", vec![strip]);
         home.members_here([tilo_desktop_model::Member::keyed("alice", "Alice")]);
         let mut tree = Self {
-            desktop: DesktopTree {
+            desktop: Layout {
                 workspaces: vec![home],
                 active: workspace_id,
                 active_strip: HashMap::from([(workspace_id, strip_id)]),
                 active_group: HashMap::from([(strip_id, group_id)]),
-                ..DesktopTree::default()
+                ..Layout::default()
             },
             ..Self::default()
         };

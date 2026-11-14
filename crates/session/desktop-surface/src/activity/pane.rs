@@ -9,7 +9,7 @@ pub use serve::{ServedTree, is_document_write, is_personal, is_read, refused_to_
 // Workspace activity — everything that has happened to this workspace, by
 // everyone, in one filterable pane.
 //
-// The workspace's state lives in [`DesktopTree::doc`], a tree-wide
+// The workspace's state lives in [`Layout::doc`], a tree-wide
 // automerge document holding every workspace on this machine, so
 // [`WorkspaceScope`] decides which workspaces' changes are shown — a pane
 // titled with one workspace's name must never render another's governance.
@@ -62,7 +62,7 @@ fn away_recap_is_due(departed_at_secs: u64, now: SystemTime) -> bool {
         .is_ok_and(|elapsed| elapsed >= AWAY_RECAP_AFTER)
 }
 
-fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model::DesktopTree) {
+fn seed_roster_colours(authors: &mut AuthorDirectory, tree: &tilo_desktop_model::Layout) {
     let members = tree
         .workspaces
         .iter()
@@ -756,7 +756,7 @@ impl WorkspaceActivityPane {
         let was_viewed = |entry: &HistoryEntry| {
             viewed.contains(&self.projected_origins.get(&entry.id).cloned().unwrap_or(
                 WorkspaceHistoryId {
-                    origin: super::index::HistoryOrigin::DesktopTree,
+                    origin: super::index::HistoryOrigin::Layout,
                     change: entry.id,
                 },
             ))
@@ -814,7 +814,7 @@ impl WorkspaceActivityPane {
             return rows.to_vec();
         };
         let id = |entry: &HistoryEntry| WorkspaceHistoryId {
-            origin: super::index::HistoryOrigin::DesktopTree,
+            origin: super::index::HistoryOrigin::Layout,
             change: entry.id,
         };
         if self.persistent_frontiers
@@ -848,7 +848,7 @@ impl WorkspaceActivityPane {
             let origin = self
                 .projected_origins
                 .get(id)
-                .map_or(super::index::HistoryOrigin::DesktopTree, |address| {
+                .map_or(super::index::HistoryOrigin::Layout, |address| {
                     address.origin.clone()
                 });
             self.host.writable(&origin)
@@ -864,7 +864,7 @@ impl WorkspaceActivityPane {
             let next = self
                 .projected_origins
                 .get(id)
-                .map_or(super::index::HistoryOrigin::DesktopTree, |address| {
+                .map_or(super::index::HistoryOrigin::Layout, |address| {
                     address.origin.clone()
                 });
             if matches!(next, super::index::HistoryOrigin::AppRecord { .. }) {
@@ -1415,7 +1415,7 @@ impl WorkspaceActivityPane {
                     .get(&entry.id)
                     .cloned()
                     .unwrap_or(WorkspaceHistoryId {
-                        origin: super::index::HistoryOrigin::DesktopTree,
+                        origin: super::index::HistoryOrigin::Layout,
                         change: entry.id,
                     })
             })
@@ -1429,7 +1429,7 @@ impl WorkspaceActivityPane {
         }
         let ids: Vec<HistoryEntryId> = addresses.iter().map(|address| address.change).collect();
         match &first.origin {
-            super::index::HistoryOrigin::DesktopTree => {
+            super::index::HistoryOrigin::Layout => {
                 ui::compare_entries(tree.document_mut(), &ids).ok()
             }
             super::index::HistoryOrigin::AppRecord { .. } => {
@@ -1979,7 +1979,7 @@ impl WorkspaceActivityPane {
             .filter(|entry| {
                 !self.history_index.entries().is_empty()
                     || !self.catchup_frontier.acknowledged(&WorkspaceHistoryId {
-                        origin: super::index::HistoryOrigin::DesktopTree,
+                        origin: super::index::HistoryOrigin::Layout,
                         change: entry.id,
                     })
             })
@@ -2323,7 +2323,7 @@ impl WorkspaceActivityPane {
                 let origin = self
                     .projected_origins
                     .get(&entry.id)
-                    .map_or(super::index::HistoryOrigin::DesktopTree, |address| {
+                    .map_or(super::index::HistoryOrigin::Layout, |address| {
                         address.origin.clone()
                     });
                 if expected.as_ref().is_some_and(|value| value != &origin) {
@@ -2338,7 +2338,7 @@ impl WorkspaceActivityPane {
             (Some(first), Some(last)) if first.origin == last.origin => {
                 let run = ChangeRun::new(first.change, last.change);
                 match first.origin {
-                    super::index::HistoryOrigin::DesktopTree => {
+                    super::index::HistoryOrigin::Layout => {
                         let Ok(outcome) =
                             ui::revert_run(tree.document_mut(), &run, None, self.source.authors())
                         else {
