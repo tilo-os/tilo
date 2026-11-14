@@ -245,7 +245,6 @@ tilo_test_env::scenario! {
         let approver = cert(1, DeviceCapabilities::primary(), &root);
         let sibling = cert(2, DeviceCapabilities::member(), &root);
         let revoked = cert(3, DeviceCapabilities::member(), &root);
-        let host = cert(4, DeviceCapabilities::member(), &root);
         let administrator = cert(5, DeviceCapabilities::administrator(), &root);
         let foreign_root = cert(6, DeviceCapabilities::member(), &stranger);
         let mut forged = cert(7, DeviceCapabilities::member(), &root);
@@ -269,7 +268,6 @@ tilo_test_env::scenario! {
                 approver.clone(),
                 sibling.clone(),
                 revoked.clone(),
-                host.clone(),
                 administrator.clone(),
                 foreign_root.clone(),
                 expired.clone(),
