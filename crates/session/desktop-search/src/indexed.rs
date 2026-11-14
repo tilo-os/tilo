@@ -310,22 +310,10 @@ pub fn parse_entry_id(id: &str) -> Option<(SlotKey, &str)> {
     ))
 }
 
-/// What running `entry` of `slot` invokes: the entry's own action, else
-/// the app's `open` at the entry's resource. An `open` of another resource
-/// (the record holding the entry's item) is told the entry's resource as
-/// the item to show, which no window of the app may show yet.
+/// What running `entry` of `slot` invokes ([`crate::model::entry_opening`]).
 #[must_use]
 pub fn opening(slot: &SlotKey, entry: &IndexEntry) -> InvokeTarget {
-    match &entry.action {
-        Some(action) if action.action == OPEN_ACTION && action.resource != entry.resource => {
-            InvokeTarget::action(&slot.app, &slot.workspace, &action.resource, &action.action)
-                .with_argument(OPEN_ANCHOR, entry.resource.clone())
-        }
-        Some(action) => {
-            InvokeTarget::action(&slot.app, &slot.workspace, &action.resource, &action.action)
-        }
-        None => InvokeTarget::open(&slot.app, &slot.workspace, &entry.resource),
-    }
+    crate::model::entry_opening(&slot.app, &slot.workspace, entry)
 }
 
 /// What apps hold, from the session's index ([`AppContentIndex`]).

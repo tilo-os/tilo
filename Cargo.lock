@@ -21668,6 +21668,7 @@ dependencies = [
  "launcher",
  "libc",
  "neighbour-wire",
+ "notes",
  "os-actions",
  "package-store",
  "pollster",

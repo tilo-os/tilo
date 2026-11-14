@@ -306,6 +306,7 @@ async fn indexed(
                     package: route.app_id.clone(),
                     here: true,
                     workspace: None,
+                    contents: std::sync::Arc::from([]),
                 },
             )
             .collect();

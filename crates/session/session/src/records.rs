@@ -50,6 +50,9 @@ struct Held {
     package: String,
     /// Every workspace whose index names it.
     workspaces: Vec<String>,
+    /// What it holds as its app tells search, where this host reads that here
+    /// ([`Records::over`]); empty otherwise.
+    contents: Arc<[ui::search::index_publication::IndexEntry]>,
 }
 
 /// The device's record indexes, as search offers them.
@@ -90,7 +93,9 @@ impl Records {
         Self {
             _followed: crate::platform::records::follow(&root, &changes),
             root: Some(root),
-            ..Self::read(store, changes)
+            // The session's index of what apps hold answers for their content
+            // ([`crate::record_index`]): the records are offered by name.
+            ..Self::read(store, changes, false)
         }
     }
 
@@ -98,16 +103,20 @@ impl Records {
     /// again whenever `changes` says one moved: a page's, whose replication writes the store and
     /// notes each record it takes in. What it holds is the one workspace's, so nothing of another
     /// is brought here.
+    ///
+    /// Such a host keeps no index of what its apps hold, so each record is also read for what its
+    /// app tells search it holds ([`tilo_app::framework::record_index::hosted_entries`]): a note is found
+    /// by its title and its words, and opens itself, whether or not a window has its notebook open.
     #[must_use]
     pub fn over(store: Store, changes: crate::platform::records::Changes) -> Self {
-        Self::read(store, changes)
+        Self::read(store, changes, true)
     }
 
-    fn read(store: Store, changes: crate::platform::records::Changes) -> Self {
+    fn read(store: Store, changes: crate::platform::records::Changes, contents: bool) -> Self {
         // What the indexes name is read again whenever a record of this device moves: an app of a
         // workspace naming one writes the store this stream hears, in this process or its own, and
         // so does this session.
-        let reading = reading(store.clone(), &changes);
+        let reading = reading(store.clone(), &changes, contents);
         Self {
             #[cfg(target_os = "linux")]
             root: None,
@@ -162,6 +171,7 @@ impl Records {
                             .find(|(named, _)| named == held_in)
                             .map(|(_, name)| name.clone())
                     }),
+                contents: Arc::clone(&record.contents),
             })
             .collect()
     }
@@ -236,25 +246,37 @@ fn name_in(root: &Path, workspace: &str, package: &str, record: RecordCheckout) 
 
 /// The indexes in `store` , read now and again whenever the records of this device move.
 #[cfg(target_os = "linux")]
-fn reading(store: Store, changes: &crate::platform::records::Changes) -> Reading<Vec<Held>> {
+fn reading(
+    store: Store,
+    changes: &crate::platform::records::Changes,
+    contents: bool,
+) -> Reading<Vec<Held>> {
     Reading::start(
         "tilo-search-records",
         changes.clone(),
         Watch::Any,
-        move || read_indexes(store.as_ref()),
+        move || read_indexes(store.as_ref(), contents),
         || {},
     )
 }
 
-/// [`reading`] where this host has one thread: read now, and again as the stream says they moved.
+/// [`reading`] where this host has one thread: read when search asks, if the stream says they
+/// moved since.
 #[cfg(not(target_os = "linux"))]
-fn reading(store: Store, changes: &crate::platform::records::Changes) -> Reading<Vec<Held>> {
-    Reading::read(changes, &Watch::Any, move || read_indexes(store.as_ref()))
+fn reading(
+    store: Store,
+    changes: &crate::platform::records::Changes,
+    contents: bool,
+) -> Reading<Vec<Held>> {
+    Reading::read(changes, &Watch::Any, move || {
+        read_indexes(store.as_ref(), contents)
+    })
 }
 
-/// Every record the indexes in `store` name, by id, with the workspaces that name it. A record
-/// two workspaces hold is one entry here: it is one record.
-fn read_indexes(store: &dyn DurableStore) -> Vec<Held> {
+/// Every record the indexes in `store` name, by id, with the workspaces that name it, and with
+/// what each holds as its app tells search where `contents` asks for it. A record two workspaces
+/// hold is one entry here: it is one record.
+fn read_indexes(store: &dyn DurableStore, contents: bool) -> Vec<Held> {
     let indexes = match store.workspace_indexes() {
         Ok(indexes) => indexes,
         Err(error) => {
@@ -275,6 +297,7 @@ fn read_indexes(store: &dyn DurableStore) -> Vec<Held> {
                     name: None,
                     package: package.clone(),
                     workspaces: Vec::new(),
+                    contents: Arc::from([]),
                 });
             if entry.name.is_none() {
                 entry.name = name;
@@ -284,7 +307,31 @@ fn read_indexes(store: &dyn DurableStore) -> Vec<Held> {
             }
         }
     }
-    held.into_values().collect()
+    let mut held: Vec<Held> = held.into_values().collect();
+    if contents {
+        for record in &mut held {
+            record.contents = record_contents(store, record).into();
+        }
+    }
+    held
+}
+
+/// What `record` holds as its app tells search, read from its document as the first workspace
+/// naming it keeps it: nothing for a record whose document is not here yet, or whose app this
+/// host does not have.
+fn record_contents(
+    store: &dyn DurableStore,
+    record: &Held,
+) -> Vec<ui::search::index_publication::IndexEntry> {
+    let Some(id) = ui::record::RecordId::parse(&record.id) else {
+        return Vec::new();
+    };
+    let Some(workspace) = record.workspaces.first() else {
+        return Vec::new();
+    };
+    crate::platform::records::document(store, &record.package, workspace, &id.storage_key())
+        .map(|doc| tilo_app::framework::record_index::hosted_entries(&record.package, &doc))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

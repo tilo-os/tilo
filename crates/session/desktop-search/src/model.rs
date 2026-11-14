@@ -320,6 +320,26 @@ impl InvokeTarget {
     }
 }
 
+/// What running `entry`, which `app` publishes to the search index in `workspace`, invokes: the
+/// entry's own action, else the app's `open` at the entry's resource. An `open` of another resource
+/// (the record holding the entry's item) is told the entry's resource as the item to show, which
+/// no window of the app may show yet.
+#[must_use]
+pub fn entry_opening(
+    app: &str,
+    workspace: &str,
+    entry: &ui::search::index_publication::IndexEntry,
+) -> InvokeTarget {
+    match &entry.action {
+        Some(action) if action.action == OPEN_ACTION && action.resource != entry.resource => {
+            InvokeTarget::action(app, workspace, &action.resource, &action.action)
+                .with_argument(OPEN_ANCHOR, entry.resource.clone())
+        }
+        Some(action) => InvokeTarget::action(app, workspace, &action.resource, &action.action),
+        None => InvokeTarget::open(app, workspace, &entry.resource),
+    }
+}
+
 /// One row a source offers for a needle. `score` is on the source's own
 /// scale, topped by [`Source::max_score`].
 #[derive(Clone, Debug, PartialEq)]

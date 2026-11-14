@@ -68,6 +68,11 @@ tilo-secrets.workspace = true
 # A joined workspace's records are untrusted bytes: a worker process of this
 # executable decodes them, and `main` serves that worker.
 tilo-resource = { path = "../../sdk/tilo-resource" }
+# The records' framework as an app window opens one: the workspace's emoji is
+# Chat's record, and the settings tab reads and changes it the same way; a
+# page reads each record it holds for what its app tells search
+# (`record_index::hosted_entries`).
+tilo-app = { path = "../../sdk/tilo-app" }
 tilo-desktop = { path = "../desktop" }
 # The participant's own client of the collaboration plane: the boards of who is here and this
 # device's own word, which this session hosts with its own endpoint.
@@ -200,9 +205,6 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-e
 # what names an agent as the cause of the writes Files made for a person.
 runtime-fs = { package = "tilo-fs-client", version = "0.1.0", path = "../../runtime/tilo-fs-client" }
 tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
-# The records' framework as an app window opens one: the workspace's emoji is
-# Chat's record, and the settings tab reads and changes it the same way.
-tilo-app = { path = "../../sdk/tilo-app" }
 # The conversations this session's agents answer in: what Chat keeps of a
 # workspace, read here the way the app reads it, so this session runs an agent
 # on a turn a person's message started.
@@ -428,6 +430,9 @@ pollster.workspace = true
 # A Rust app's views, drawn by the shell as it draws a tilolang app's (one-app-model.md §2):
 # the sample catalogue's channels and videos, never the live worker.
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"] }
+# A notebook as a page's store holds it, read for what Notes tells search it holds: the page's
+# search finds a note by its title and its words.
+notes = { path = "../../../apps/notes" }
 # A development session's tilolang apps, built into signed `.tapp`s the tests install into
 # their own app store: the same packages `dist/dev/shell-run.sh` installs. `tilolang-cli` and
 # `package-store`'s writer are normal dependencies of the session (a person's own desk style is

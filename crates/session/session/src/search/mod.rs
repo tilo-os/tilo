@@ -1902,6 +1902,211 @@ mod tests {
         );
     }
 
+    /// A page's action host that carries out every invocation a row runs, as the page's own
+    /// opens the app's window and shows what the row names there: what was asked, by provider,
+    /// resource, action and arguments.
+    #[allow(
+        clippy::type_complexity,
+        reason = "one recorded invocation, its parts in the order a target names them"
+    )]
+    struct Revealing(
+        Rc<
+            std::cell::RefCell<
+                Vec<(
+                    String,
+                    String,
+                    String,
+                    serde_json::Map<String, serde_json::Value>,
+                )>,
+            >,
+        >,
+    );
+
+    impl AppActions for Revealing {
+        fn performs(&self, target: &Target) -> bool {
+            matches!(target, Target::Invoke(_))
+        }
+
+        fn published(&self, _: &str) -> Vec<PublishedActions> {
+            Vec::new()
+        }
+
+        fn jobs(&self) -> Vec<JobEntry> {
+            Vec::new()
+        }
+
+        fn invoke(
+            &self,
+            target: RemoteActionTarget,
+            arguments: serde_json::Map<String, serde_json::Value>,
+        ) -> Result<(), DoorError> {
+            self.0.borrow_mut().push((
+                target.provider,
+                target.address.resource,
+                target.address.action,
+                arguments,
+            ));
+            Ok(())
+        }
+
+        fn cancel(&self, _: &str, _: &str, _: &str) -> Result<(), DoorError> {
+            Err(unsupported())
+        }
+
+        fn open_uri(&self, _: &str, _: &str) -> Result<(), DoorError> {
+            Err(unsupported())
+        }
+
+        fn start_host_app(&self, _: &str) -> Result<(), DoorError> {
+            Err(unsupported())
+        }
+    }
+
+    /// A page's store holding a notebook of Notes in `workspace`, as the page's replication took it
+    /// in, named by the workspace's index, and the ids of its two notes: one a person wrote in, and
+    /// a file that landed as a note named by its path.
+    fn a_page_s_notebook(
+        home: &tilo_test_env::TestHome,
+        workspace: &str,
+    ) -> (crate::platform::Store, String, String) {
+        const NOTEBOOK: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000bb";
+        // The page links Notes, as its bundle does.
+        let kind = notes::definition().record_kind.clone();
+        let mut notebook = tilo_resource::Replica::<notes::notebook::Notebook>::new();
+        let mut write = |title: &str, text: &str| {
+            let page = uuid::Uuid::new_v4();
+            notebook
+                .apply_action(&notes::actions::create_page_action(page, None, title))
+                .expect("a note");
+            let body = [ui::widget::BlockContent::paragraph("", text)];
+            let written = notes::actions::write_body_action(page, &body);
+            notebook
+                .apply(tilo_resource::Invoke::apply(&written).expect("a body"))
+                .expect("the body is written");
+            notes::actions::page_resource_id(page)
+        };
+        let hello = write("Hello from Claude Code", "Payment terms: net 30.");
+        let handbook = write("files/notes/handbook.md", "Welcome to the team.");
+        let store: crate::platform::Store =
+            std::sync::Arc::new(app_state::FsStore::new(home.data()));
+        let record = ui::record::RecordId::parse(NOTEBOOK).expect("a record id");
+        let mut index = automerge::AutoCommit::new();
+        assert!(ui::record::index::reference(&mut index, &record, &kind));
+        for (key, bytes) in [
+            (
+                durable_store::StorageKey::workspace_index(NOTES_APP, workspace),
+                index.save(),
+            ),
+            (
+                durable_store::StorageKey::document(NOTES_APP, workspace, record.storage_key()),
+                notebook.save(),
+            ),
+        ] {
+            let lease = store.lease(&key).expect("the key is this test's");
+            store
+                .write(&key, durable_store::WriteOp::Replace(bytes), None)
+                .expect("the document is written");
+            store.flush(Some(&key)).expect("the document is kept");
+            drop(lease);
+        }
+        (store, hello, handbook)
+    }
+
+    /// Notes, as the page's bundle registers it.
+    const NOTES_APP: &str = "so.tilo.notes";
+
+    /// The page's search over the notebook its store holds, as the page's replication took it in
+    /// and with no window of Notes open: a note is offered by its title, and by what is written in
+    /// it, within a moment, and choosing it opens that very note in Notes.
+    #[test]
+    fn a_page_s_search_finds_a_note_by_its_title_and_its_words_and_opens_that_note() {
+        let _settled = ui::motion::testing::settled();
+        let mut minter = tilo_desktop_model::IdMinter::new(7);
+        let tree = tilo_desktop_surface::seed_tree(&mut minter, "My workspace", Vec::new());
+        let workspace = tree
+            .active_workspace()
+            .map(|held| held.id().to_string())
+            .expect("the desk shows a workspace");
+        let home = tilo_test_env::TestHome::new().expect("a home");
+        let (store, hello, handbook) = a_page_s_notebook(&home, &workspace);
+
+        let invoked = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let search = Rc::new(SessionSearch::new(
+            SearchOptions {
+                records: Some(crate::records::Records::over(
+                    store,
+                    crate::platform::records::Changes::default(),
+                )),
+                ..SearchOptions::default()
+            },
+            None,
+            "ada",
+            Some(Rc::new(Revealing(Rc::clone(&invoked))) as Rc<dyn AppActions>),
+            None,
+            None,
+        ));
+        let (surface, handle) = tilo_desktop_surface::DesktopSurface::new(
+            tree,
+            7,
+            Box::new(RecordWindows(Rc::new(std::cell::RefCell::new(Vec::new())))),
+        );
+        handle.set_viewport_width(1200.0);
+        handle.set_search_host(Rc::clone(&search) as Rc<dyn SearchHost>);
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            surface,
+            (1200, 800),
+            ui::Theme::dark(),
+        );
+
+        for (query, title, note) in [
+            ("net 30", "Hello from Claude Code", &hello),
+            ("handbook", "files/notes/handbook.md", &handbook),
+        ] {
+            handle.open_search(Scope::Workspace, Some(query.into()));
+            let started = Instant::now();
+            let at = loop {
+                frame.relayout();
+                let (_, rows) = handle.search_rows();
+                if let Some(at) = rows.iter().position(|row| row.title == title) {
+                    break at;
+                }
+                assert!(
+                    started.elapsed() < tilo_test_env::hang_bound(),
+                    "{query:?} offers the note {title:?}: {rows:?}"
+                );
+                std::thread::park_timeout(Duration::from_millis(5));
+            };
+            let took = started.elapsed();
+            assert!(
+                took < Duration::from_secs(1),
+                "{query:?} offered {title:?} only after {took:?}"
+            );
+            handle.choose_search_row(at, None);
+            for _ in 0..3 {
+                frame.relayout();
+            }
+            assert!(
+                search.perform_choices(&handle, &mut |_| Ok(())).is_empty(),
+                "the row runs"
+            );
+            let (provider, resource, action, _) = invoked
+                .borrow_mut()
+                .pop()
+                .unwrap_or_else(|| panic!("choosing {title:?} opens something"));
+            assert_eq!(
+                tilo_actions::remote::application_provider(&provider).map(|(_, app)| app),
+                Some(NOTES_APP),
+                "{title:?} opens in Notes"
+            );
+            assert_eq!(
+                (resource.as_str(), action.as_str()),
+                (note.as_str(), "open"),
+                "{title:?} opens that note"
+            );
+        }
+    }
+
     /// A record kept as a file is brought here and opened: the row a person chose in search leaves
     /// the workspace naming the record *and* shows them the document, in the app that takes its
     /// type.

@@ -18,9 +18,13 @@
 //! the list a host collected, so it never reads a workspace's state itself.
 
 use ui::record::{RecordCheckout, RecordId, RecordKind};
+use ui::search::FieldWeight;
+use ui::search::index_publication::{IndexEntry, IndexWeight};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
-use crate::model::{DESKTOP_APP, Hit, InvokeTarget, LaunchPlace, Source, Target, record_launch};
+use crate::model::{
+    DESKTOP_APP, Hit, InvokeTarget, LaunchPlace, Source, Target, entry_opening, record_launch,
+};
 
 /// The resource the session answers for the records it holds, and the
 /// action in it naming `record` as held by the workspace it runs in.
@@ -58,6 +62,12 @@ pub struct HeldRecord {
     /// The name of the workspace holding it, when that is another one; a
     /// record of a workspace this device no longer shows has no name.
     pub workspace: Option<String>,
+    /// What the record holds, as its app tells search: the entries it
+    /// publishes to the search index, one per resource of the record (a
+    /// note by its title and its paragraphs), each a row that opens that
+    /// resource. Empty where a host reads no record's content here, since
+    /// its own index of what apps hold answers for it.
+    pub contents: std::sync::Arc<[IndexEntry]>,
 }
 
 impl HeldRecord {
@@ -195,6 +205,34 @@ impl Records {
         })
     }
 
+    /// The row of `entry`, a resource `record` holds as its app tells search, ranked `score`:
+    /// it opens that resource in the record's app, as the app's own published entry does.
+    fn content_hit(&self, record: &HeldRecord, entry: &IndexEntry, score: i32) -> Hit {
+        Hit {
+            row: None,
+            preview: None,
+            faces: Vec::new(),
+            outcome: None,
+            kind: ResourceKind::Record,
+            provider: self.id().into(),
+            id: format!("{}\u{1f}{}", record.id, entry.key),
+            title: entry.title.clone(),
+            subtitle: entry
+                .subtitle
+                .clone()
+                .or_else(|| entry.group.clone())
+                .or_else(|| Some(record.title())),
+            facts: Vec::new(),
+            score,
+            icon: entry.icon.as_deref().and_then(ui::icons::Icon::from_name),
+            target: Target::Invoke(Box::new(entry_opening(
+                &record.package,
+                &self.workspace,
+                entry,
+            ))),
+        }
+    }
+
     /// The records of the other workspaces, each saying where it lives, in
     /// the order a person reads them: first those of a workspace this desk
     /// shows, by name, then those whose workspace it cannot name. They stand
@@ -250,9 +288,43 @@ impl Source for Records {
                 self.hit(record, score)
             })
             .collect();
+        // What the records of this workspace hold, by every text their apps say it by: a note
+        // by its title and by its words, opening that note.
+        let held: Vec<(&HeldRecord, &IndexEntry)> = self
+            .held
+            .iter()
+            .filter(|record| record.here)
+            .flat_map(|record| record.contents.iter().map(move |entry| (record, entry)))
+            .collect();
+        let rows: Vec<Vec<(String, FieldWeight)>> = held
+            .iter()
+            .map(|(_, entry)| {
+                entry
+                    .searchable()
+                    .map(|(text, weight)| (text.to_owned(), field_weight(weight)))
+                    .collect()
+            })
+            .collect();
+        let ranks = crate::rank::rank_rows(&ui::search::ListIndex::default(), needle, &rows);
+        for ((record, entry), score) in held.into_iter().zip(ranks) {
+            if let Some(score) = score {
+                hits.push(self.content_hit(record, entry, score));
+            }
+        }
         hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
         hits.truncate(MAX_RESULTS);
         hits
+    }
+}
+
+/// The ranker's weight for a field an index entry ranks as `weight`.
+const fn field_weight(weight: IndexWeight) -> FieldWeight {
+    match weight {
+        IndexWeight::Title => FieldWeight::TITLE,
+        IndexWeight::Identity => FieldWeight::IDENTITY,
+        IndexWeight::Subtitle => FieldWeight::SUBTITLE,
+        IndexWeight::Metadata => FieldWeight::METADATA,
+        IndexWeight::Body => FieldWeight::BODY,
     }
 }
 
@@ -268,6 +340,7 @@ mod tests {
             package: "so.tilo.notes".into(),
             here,
             workspace: workspace.map(str::to_owned),
+            contents: std::sync::Arc::from([]),
         }
     }
 
