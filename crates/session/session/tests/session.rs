@@ -2447,11 +2447,15 @@ fn the_next_session_comes_up_where_this_one_was() {
     };
 
     let mut second = session_keeping(state.path());
-    second.step(Duration::from_millis(1)).unwrap();
-    assert_eq!(
-        workspaces(&second),
-        home,
-        "the workspaces and their strips came back"
+    // The workspaces' layouts are the workspaces' own records, which reach this session after
+    // its first pass: the desk it shows is the one they hold once they arrive.
+    let came_back = crate::common::wait_maybe(&mut second, |session| {
+        (workspaces(session) == home).then_some(())
+    });
+    assert!(
+        came_back.is_some(),
+        "the workspaces and their strips came back: it shows {:?}, not {home:?}",
+        workspaces(&second)
     );
     let open = active_workspace(&second).expect("a workspace is open");
     let index = second.handle().read(|tree| {
