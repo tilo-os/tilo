@@ -149,16 +149,22 @@ fn settle(session: &mut Session) {
 }
 
 /// Who `owner` 's copy of `workspace` has in it, by person, in the part each holds.
-fn members(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<(String, Role)> {
+fn members(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<(String, Option<Role>)> {
     owner
         .with_current(workspace, |view| {
             let members = view
                 .peer()
                 .governance()
-                .governed_members(SystemTime::now())?;
+                .governed_members(SystemTime::now())?
+                .members;
             Ok(members
                 .into_iter()
-                .map(|member| (hex::encode(member.user_public_key), member.role))
+                .map(|member| {
+                    (
+                        member.id.person_id().unwrap_or_default().to_owned(),
+                        member.role,
+                    )
+                })
                 .collect())
         })
         .expect("the workspace's people are readable")
@@ -522,7 +528,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
             .iter()
             .find(|(who, _)| *who == hex::encode(her.user_public_key))
             .map(|(_, role)| *role),
-        Some(Role::Editor),
+        Some(Some(Role::Editor)),
         "in the part the sheet asked for: {people:?}"
     );
 

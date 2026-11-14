@@ -1560,11 +1560,11 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
         .expect("the lounge's people are known here");
     let member = people
         .iter()
-        .find(|member| member.person == hex::encode(person))
+        .find(|member| member.id.person_id() == Some(hex::encode(person).as_str()))
         .expect("the lounge is shared with this person");
     assert_eq!(
         member.role,
-        tilo_workspace_join::Role::Editor,
+        Some(tilo_workspace_join::Role::Editor),
         "in the part the invitation gave them"
     );
     assert!(!member.removed, "and the lounge has not removed them");
@@ -1635,7 +1635,7 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
                 && session.people(&lounge.workspace).is_ok_and(|people| {
                     people
                         .iter()
-                        .any(|member| member.person == hex::encode(person))
+                        .any(|member| member.id.person_id() == Some(hex::encode(person).as_str()))
                 })
         },
     );
@@ -1644,11 +1644,11 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
         .expect("the linked workspace's people are known here");
     let member = people
         .iter()
-        .find(|member| member.person == hex::encode(person))
+        .find(|member| member.id.person_id() == Some(hex::encode(person).as_str()))
         .expect("the linked workspace is shared with this person");
     assert_eq!(
         member.role,
-        tilo_workspace_join::Role::Editor,
+        Some(tilo_workspace_join::Role::Editor),
         "in the part the invitation gave them"
     );
     assert!(!member.removed, "and the workspace has not removed them");
@@ -2026,9 +2026,9 @@ fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
             let people = session.people(&lounge.workspace);
             (held.iter().any(|workspace| workspace == &lounge.workspace)
                 && people.as_ref().is_ok_and(|people| {
-                    people
-                        .iter()
-                        .any(|member| member.person == hex::encode(lounge.person))
+                    people.iter().any(|member| {
+                        member.id.person_id() == Some(hex::encode(lounge.person).as_str())
+                    })
                 }))
             .then_some(())
         });

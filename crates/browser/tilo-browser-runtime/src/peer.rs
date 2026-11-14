@@ -1700,7 +1700,7 @@ fn set_member_name(handle: &Link, workspace: &str, name: &str) {
 
 impl WasmPeer {
     /// Ask the host `request`, and resolve to its answer.
-    pub(crate) async fn rooms_request(
+    pub(crate) async fn workspaces_request(
         &self,
         request: tilo_relay_protocol::workspaces::WorkspacesRequest,
     ) -> Result<tilo_relay_protocol::workspaces::WorkspacesReply, JsError> {
@@ -1988,12 +1988,12 @@ impl WasmPeer {
         if options.label.trim().is_empty() {
             return Err(js_error("a pre-admission needs a label"));
         }
-        let seconds = crate::rooms::seconds(Some(options.expires_in_seconds))?;
+        let seconds = crate::workspaces::seconds(Some(options.expires_in_seconds))?;
         let root = PageSigner::from_js(&root)?;
         let now_ns = ui::time::unix_now_ns();
         let mut grant = tilo_relay_protocol::workspaces::PreAdmission {
             workspace: options.workspace,
-            role: crate::rooms::wire_role(&options.role)?,
+            role: crate::workspaces::wire_role(&options.role)?,
             token_sha256: device_key(&options.token_sha256)?,
             label: options.label,
             expires_at_ns: now_ns.saturating_add(seconds.saturating_mul(1_000_000_000)),
@@ -2005,7 +2005,7 @@ impl WasmPeer {
             .await
             .map_err(|error| js_error(error.0))?;
         let reply = self
-            .rooms_request(
+            .workspaces_request(
                 tilo_relay_protocol::workspaces::WorkspacesRequest::PreAdmit {
                     request_id: request_id(&options.request_id)?,
                     grant,
@@ -2013,7 +2013,7 @@ impl WasmPeer {
                 },
             )
             .await?;
-        crate::rooms::invitation_text(reply)
+        crate::workspaces::invitation_text(reply)
     }
 
     /// Say this page's `value` of itself in `workspace` (the live layer's

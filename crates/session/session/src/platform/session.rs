@@ -33,7 +33,6 @@ pub use crate::controls::{
     SESSION_RESOURCE, SessionCommand,
 };
 pub use crate::devices::RESOURCE as DEVICES_RESOURCE;
-pub use crate::engine::Person;
 pub use crate::env::SessionEnvironment;
 pub use crate::keys::{Invocation, QUICK_SETTINGS};
 pub use crate::launches::Launches;

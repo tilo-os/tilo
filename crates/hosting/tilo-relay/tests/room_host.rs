@@ -234,12 +234,10 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
         .summary(&room.workspace)
         .await
         .unwrap()
-        .members;
+        .devices;
     for device in [bobs_phone.device_pubkey(), phone.device_pubkey()] {
         assert!(
-            members
-                .iter()
-                .any(|member| member.active_device_keys.contains(&device)),
+            members.values().any(|devices| devices.contains(&device)),
             "{members:?}"
         );
     }

@@ -337,8 +337,9 @@ fn is_administrator(
         .governance()
         .governed_members(system_time(now))
         .map_err(CollaborationError::new)?
+        .members
         .iter()
-        .any(|member| member.user_public_key == user_public_key && member.administrator))
+        .any(|member| member.root() == Some(user_public_key) && member.administrator))
 }
 
 #[cfg(test)]

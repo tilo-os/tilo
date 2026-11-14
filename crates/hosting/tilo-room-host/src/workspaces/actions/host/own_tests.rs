@@ -153,8 +153,8 @@ async fn standing(
         .find(|summary| summary.workspace == workspace)?
         .members
         .into_iter()
-        .find(|member| member.user_public_key == person)
-        .map(|member| (member.role, member.administrator))
+        .find(|member| member.root() == Some(person))
+        .and_then(|member| Some((member.role?, member.administrator)))
 }
 
 #[tokio::test]
@@ -1747,7 +1747,7 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
     assert_eq!(
         members
             .iter()
-            .filter(|member| member.user_public_key == later.user_public_key)
+            .filter(|member| member.root() == Some(later.user_public_key))
             .count(),
         1,
         "one person, on both tabs"

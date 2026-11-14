@@ -27,7 +27,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     RemoteActionTarget,
 };
-use tilo_workspace_join::{GovernedMember, Role};
+use tilo_workspace_join::{Member, MemberId, Role};
 
 use crate::client::RelayClient;
 use crate::transport::Envelope;
@@ -504,7 +504,9 @@ pub struct WorkspaceSummary {
     pub generation: u64,
     /// Every person the workspace has — its owner and everyone its governance
     /// admitted — removed ones included.
-    pub members: Vec<GovernedMember>,
+    pub members: Vec<Member>,
+    /// The devices each member holds now.
+    pub devices: std::collections::BTreeMap<MemberId, Vec<[u8; 32]>>,
 }
 
 impl WorkspaceSummary {

@@ -83,7 +83,7 @@ impl<'a> Membership<'a> {
             .is_ok_and(|people| {
                 people
                     .iter()
-                    .any(|held| held.person == person && !held.removed)
+                    .any(|held| held.id.person_id() == Some(person) && !held.removed)
             })
     }
 

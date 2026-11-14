@@ -146,7 +146,6 @@ pub struct Face {
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryEntry {
     /// The workspace's UUID.
-    #[serde(rename = "room")]
     pub workspace: String,
     pub name: String,
     /// What it is.
@@ -521,7 +520,7 @@ mod tests {
         {
             let page: DirectoryPage = serde_json::from_value(serde_json::json!({
                 "workspaces": [{
-                    "room": "r", "name": "Coffee", "defaultRole": "editor", "door": "https://tilo.sh/",
+                    "workspace": "r", "name": "Coffee", "defaultRole": "editor", "door": "https://tilo.sh/",
                     "community": true, "hereCount": 12
                 }]
             }))

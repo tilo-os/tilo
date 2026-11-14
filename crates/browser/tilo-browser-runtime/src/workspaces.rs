@@ -10,7 +10,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tilo_relay_protocol::workspaces::{
-    PendingInvite, WaitListEntry, Workspace, WorkspaceMember, WorkspacesReply, WorkspacesRequest,
+    Member, PendingInvite, WaitListEntry, Workspace, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_workspace_join::encode_invitation_text;
 use wasm_bindgen::prelude::*;
@@ -28,7 +28,7 @@ const MAX_INVITATION_SECONDS: u64 = 30 * 24 * 60 * 60;
 /// are the sheet's.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-struct RoomsArgs {
+struct WorkspacesArgs {
     workspace: String,
     name: String,
     role: String,
@@ -54,7 +54,7 @@ fn named_key(key: Option<&String>, what: &str) -> Result<[u8; 32], JsError> {
     device_key(key)
 }
 
-impl RoomsArgs {
+impl WorkspacesArgs {
     fn role(&self) -> Result<Role, JsError> {
         wire_role(&self.role)
     }
@@ -122,13 +122,13 @@ fn millis(nanoseconds: u64) -> u64 {
     nanoseconds / 1_000_000
 }
 
-fn member(value: &WorkspaceMember) -> Value {
-    json!({"userPublicKey": hex::encode(value.user_public_key), "name": value.name,
-        "role": value.role.key(), "owner": value.owner, "removed": value.removed})
+fn member(value: &Member) -> Value {
+    json!({"member": value.id.key(), "name": value.name,
+        "role": value.role.map(Role::key), "removed": value.removed})
 }
 
 fn workspace(value: &Workspace) -> Value {
-    json!({"room": value.workspace, "name": value.name, "generation": value.generation,
+    json!({"workspace": value.workspace, "name": value.name, "generation": value.generation,
         "members": value.members.iter().map(member).collect::<Vec<_>>()})
 }
 
@@ -206,40 +206,42 @@ fn new_request_id() -> Result<[u8; 32], JsError> {
 #[wasm_bindgen]
 impl WasmPeer {
     /// Administer the host's workspaces as this device: `op` names the call and
-    /// `args` is its JSON ([`RoomsArgs`]); resolves to the page's shape as JSON.
+    /// `args` is its JSON ([`WorkspacesArgs`]); resolves to the page's shape as JSON.
     ///
     /// # Errors
     ///
     /// Throws for malformed arguments, when the host refuses, or when the
     /// session closed before it answered.
-    pub async fn rooms(&self, op: &str, args: String) -> Result<String, JsError> {
-        let args: RoomsArgs =
+    pub async fn workspaces(&self, op: &str, args: String) -> Result<String, JsError> {
+        let args: WorkspacesArgs =
             serde_json::from_str(if args.is_empty() { "{}" } else { &args }).map_err(js_error)?;
-        let room = args.workspace.clone();
+        let id = args.workspace.clone();
         let answer = match op {
             "workspaces" => Value::Array(
-                governed(self.rooms_request(WorkspacesRequest::List).await?)?
+                governed(self.workspaces_request(WorkspacesRequest::List).await?)?
                     .iter()
                     .map(workspace)
                     .collect(),
             ),
             "create" => one(self
-                .rooms_request(WorkspacesRequest::Create {
+                .workspaces_request(WorkspacesRequest::Create {
                     name: args.name.clone(),
                 })
                 .await?)?,
             "enter" => one(self
-                .rooms_request(WorkspacesRequest::Enter {
-                    workspace: room.clone(),
+                .workspaces_request(WorkspacesRequest::Enter {
+                    workspace: id.clone(),
                 })
                 .await?)?,
             "invite" => {
-                let reply = self.rooms_request(args.invitation(room.clone())?).await?;
+                let reply = self
+                    .workspaces_request(args.invitation(id.clone())?)
+                    .await?;
                 Value::String(invitation_text(reply)?)
             }
             "list" => {
-                let list = governed(self.rooms_request(WorkspacesRequest::List).await?)?;
-                match list.iter().find(|held| held.workspace == room) {
+                let list = governed(self.workspaces_request(WorkspacesRequest::List).await?)?;
+                match list.iter().find(|held| held.workspace == id) {
                     Some(held) => workspace(held),
                     None => return Err(js_error("the host does not govern this workspace")),
                 }
@@ -248,12 +250,12 @@ impl WasmPeer {
             // governance decides inviting by, asked before anything only an inviter may see.
             "mayInvite" => {
                 let node = tilo_action_policy::roles::governance_action(
-                    &room,
+                    &id,
                     tilo_action_policy::roles::governance::INVITE,
                 );
                 Value::Bool(answered(
-                    self.rooms_request(WorkspacesRequest::Permits {
-                        workspace: room.clone(),
+                    self.workspaces_request(WorkspacesRequest::Permits {
+                        workspace: id.clone(),
                         node: node.to_string(),
                     })
                     .await?,
@@ -264,21 +266,21 @@ impl WasmPeer {
                 )?)
             }
             "waitList" => entries(
-                self.rooms_request(WorkspacesRequest::WaitList { workspace: room })
+                self.workspaces_request(WorkspacesRequest::WaitList { workspace: id })
                     .await?,
                 "wait list",
             )?,
             "unlist" => entries(
-                self.rooms_request(WorkspacesRequest::Unlist {
-                    workspace: room.clone(),
+                self.workspaces_request(WorkspacesRequest::Unlist {
+                    workspace: id.clone(),
                     request_id: named_key(args.request_id.as_ref(), "wait-list entry")?,
                 })
                 .await?,
                 "wait list",
             )?,
             "mailInvite" => entries(
-                self.rooms_request(WorkspacesRequest::MailInvite {
-                    workspace: room.clone(),
+                self.workspaces_request(WorkspacesRequest::MailInvite {
+                    workspace: id.clone(),
                     wait_list_entry: named_key(args.request_id.as_ref(), "wait-list entry")?,
                     link: args.link.clone(),
                 })
@@ -286,19 +288,19 @@ impl WasmPeer {
                 "wait list",
             )?,
             "setRole" => one(self
-                .rooms_request(WorkspacesRequest::SetRole {
-                    workspace: room.clone(),
+                .workspaces_request(WorkspacesRequest::SetRole {
+                    workspace: id.clone(),
                     request_id: new_request_id()?,
                     user_public_key: named_key(args.user_public_key.as_ref(), "person")?,
                     role: args.role()?,
                 })
                 .await?)?,
             "remove" | "ban" | "unban" => one(self
-                .rooms_request(args.about_member(op, room.clone())?)
+                .workspaces_request(args.about_member(op, id.clone())?)
                 .await?)?,
             "cancel" => entries(
-                self.rooms_request(WorkspacesRequest::Cancel {
-                    workspace: room.clone(),
+                self.workspaces_request(WorkspacesRequest::Cancel {
+                    workspace: id.clone(),
                     request_id: new_request_id()?,
                     invite_id: named_key(args.invite_id.as_ref(), "invitation")?,
                 })

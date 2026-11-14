@@ -4,8 +4,8 @@
 //! person and the apps meet of it: which workspaces reached this computer, who is in them, and what
 //! they hold.
 
-use crate::Person;
 use crate::Session;
+use collab_types::Member;
 
 impl Session {
     /// The workspaces this device holds: those whose content reached this computer, joined ones
@@ -32,7 +32,7 @@ impl Session {
     ///
     /// # Errors
     /// The workspace is not held here, or its governance cannot be read.
-    pub fn people(&self, workspace: &str) -> Result<Vec<Person>, String> {
+    pub fn people(&self, workspace: &str) -> Result<Vec<Member>, String> {
         self.shared
             .engine
             .as_ref()

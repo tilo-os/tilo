@@ -826,7 +826,7 @@ try {
   let lounge;
   for (const deadline = Date.now() + stepLimit(4); ;) {
     listed = await directory();
-    lounge = listed.workspaces?.find(workspace => workspace.room === keptA.room);
+    lounge = listed.workspaces?.find(workspace => workspace.workspace === keptA.room);
     if ((lounge && counted(lounge)) || Date.now() > deadline) break;
     await sleep(500);
   }
@@ -1632,7 +1632,7 @@ try {
 
     // The workspace as the invitation describes it, before this person joins:
     // the name and how many people it has, which the host counts itself.
-    const listedNow = (await directory()).workspaces?.find(workspace => workspace.room === keptA.room);
+    const listedNow = (await directory()).workspaces?.find(workspace => workspace.workspace === keptA.room);
     if (!listedNow) await failed('the directory stopped listing the workspace', a.tab);
     const ownName = (await snapshot(a.tab)).names
       .find(name => / \(you\): your profile$/.test(name))?.replace(/ \(you\): your profile$/, '') ?? null;
@@ -1655,7 +1655,7 @@ try {
     // The Lounge is shared with the run's other flows, whose people come and
     // go meanwhile, so the card's number is held to the host's count before
     // the link was opened and after the card showed, not to one of them.
-    const listedAfter = (await directory()).workspaces?.find(workspace => workspace.room === keptA.room);
+    const listedAfter = (await directory()).workspaces?.find(workspace => workspace.workspace === keptA.room);
     const counted = Number(c.card.match(/\b(\d+) people\b/)?.[1] ?? (/\b1 person\b/.test(c.card) ? 1 : NaN));
     const fewest = Math.min(listedNow.members, listedAfter?.members ?? listedNow.members);
     const most = Math.max(listedNow.members, listedAfter?.members ?? listedNow.members);

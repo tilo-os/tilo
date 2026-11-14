@@ -114,7 +114,7 @@ expected = {
     "description": "The Tilo community: chat, notes and a shared desktop",
     "defaultRole": "Editor",
     "door": f"directory/{room}/",
-    "room": room,
+    "workspace": room,
 }
 wrong = {field: listing.get(field) for field, want in expected.items() if listing.get(field) != want}
 if wrong:

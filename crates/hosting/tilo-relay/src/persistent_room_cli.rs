@@ -381,16 +381,21 @@ pub(crate) fn check_stored_root(
 
 pub(crate) fn newly_removed(
     seen: &mut BTreeSet<[u8; 32]>,
-    members: &[tilo_peer_state::GovernedMember],
+    members: &[tilo_peer_state::Member],
 ) -> Vec<[u8; 32]> {
     // Someone admitted again since is a member: a later removal is new.
     for member in members.iter().filter(|member| !member.removed) {
-        seen.remove(&member.user_public_key);
+        if let Some(root) = member.root() {
+            seen.remove(&root);
+        }
     }
     members
         .iter()
-        .filter(|member| member.removed && seen.insert(member.user_public_key))
-        .map(|member| member.user_public_key)
+        .filter_map(|member| {
+            member
+                .root()
+                .filter(|root| member.removed && seen.insert(*root))
+        })
         .collect()
 }
 
@@ -574,11 +579,11 @@ struct RemovalState {
 impl Removals {
     /// The removals of a workspace whose members are `members` now: everyone
     /// listed as removed is accounted for.
-    fn load(members: &[tilo_peer_state::GovernedMember]) -> Self {
+    fn load(members: &[tilo_peer_state::Member]) -> Self {
         let seen = members
             .iter()
             .filter(|member| member.removed)
-            .map(|member| member.user_public_key)
+            .filter_map(tilo_peer_state::Member::root)
             .collect();
         Self {
             state: Arc::new(std::sync::Mutex::new(RemovalState { seen })),
@@ -593,7 +598,7 @@ impl Removals {
 
     /// The people moderation removed since the last call, noted as removed
     /// now.
-    fn taken_in(&self, members: &[tilo_peer_state::GovernedMember]) -> Vec<[u8; 32]> {
+    fn taken_in(&self, members: &[tilo_peer_state::Member]) -> Vec<[u8; 32]> {
         newly_removed(&mut self.lock().seen, members)
     }
 }
@@ -1828,15 +1833,13 @@ mod tests {
         tilo_secrets::SecretStore::memory(SECRET_APP)
     }
 
-    fn member(key: u8, administrator: bool) -> tilo_peer_state::GovernedMember {
-        tilo_peer_state::GovernedMember {
-            user_public_key: [key; 32],
-            role: tilo_peer_state::join::Role::Editor,
-            display_name: None,
-            active_device_keys: Vec::new(),
-            removed: false,
-            administrator,
-        }
+    fn member(key: u8, administrator: bool) -> tilo_peer_state::Member {
+        let mut row = tilo_peer_state::Member::of_person(
+            &tilo_peer_state::join::Person::new(hex::encode([key; 32]), ""),
+            Some(tilo_peer_state::join::Role::Editor),
+        );
+        row.administrator = administrator;
+        row
     }
 
     tilo_test_env::scenario! {
@@ -1948,7 +1951,7 @@ mod tests {
 
     #[test]
     fn removals_are_reported_once_and_only_for_newly_removed_people() {
-        let removed = |key: u8, removed: bool| tilo_peer_state::GovernedMember {
+        let removed = |key: u8, removed: bool| tilo_peer_state::Member {
             removed,
             ..member(key, false)
         };
@@ -1963,7 +1966,7 @@ mod tests {
 
     #[test]
     fn someone_admitted_again_is_reported_when_removed_again() {
-        let listed = |removed: bool| tilo_peer_state::GovernedMember {
+        let listed = |removed: bool| tilo_peer_state::Member {
             removed,
             ..member(4, false)
         };
@@ -2316,7 +2319,7 @@ mod tests {
         assert!(
             members
                 .iter()
-                .any(|member| member.user_public_key == owner.1.user_public_key
+                .any(|member| member.root() == Some(owner.1.user_public_key)
                     && member.administrator
                     && !member.removed),
             "the declared owner governs the workspace once their device is in"
@@ -2406,9 +2409,9 @@ mod tests {
         );
         let members = workspaces.summary(&workspace).await.unwrap().members;
         assert!(
-            members.iter().any(
-                |member| member.user_public_key == stranger.1.user_public_key && !member.removed
-            ),
+            members
+                .iter()
+                .any(|member| member.root() == Some(stranger.1.user_public_key) && !member.removed),
             "the invited stranger is a member"
         );
 

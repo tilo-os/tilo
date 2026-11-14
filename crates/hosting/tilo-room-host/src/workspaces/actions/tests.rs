@@ -510,7 +510,7 @@ async fn destructive_governance_waits_for_the_person() {
     assert!(
         members
             .iter()
-            .any(|member| member.user_public_key == ada.user_public_key && !member.removed),
+            .any(|member| member.root() == Some(ada.user_public_key) && !member.removed),
         "{members:?}"
     );
 
@@ -555,7 +555,7 @@ async fn the_owners_own_request_confirms_removing_a_member() {
     assert!(
         members
             .iter()
-            .any(|member| member.user_public_key == ada.user_public_key && member.removed),
+            .any(|member| member.root() == Some(ada.user_public_key) && member.removed),
         "{members:?}"
     );
     relay.shutdown().await;

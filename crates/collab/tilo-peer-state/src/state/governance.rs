@@ -2,9 +2,10 @@
 //! grants, delegations and revocations as the workspace document records them.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
-    BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, GovernedMember, Grant,
-    GrantId, Grantee, MembershipError, ROOT, ReadDoc, RevocationList, Role, Standing, SystemTime,
-    Transactable, administrator_grant_id, err, governed_map, now_ns, person_of, workspace,
+    BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, Grant, GrantId, Grantee,
+    Member, MemberId, MemberList, MembershipError, Person, ROOT, ReadDoc, RevocationList, Role,
+    Standing, SystemTime, Transactable, administrator_grant_id, err, governed_map, now_ns,
+    person_of, workspace,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
@@ -245,9 +246,10 @@ impl PeerGovernance<'_> {
         }
         Ok(said)
     }
-    /// Authority-authored member projection. The structural owner is
-    /// exposed separately by [`PeerGovernance::owner_user_public_key`].
-    pub fn governed_members(self, now: SystemTime) -> Result<Vec<GovernedMember>, String> {
+    /// Authority-authored member list: the workspace's rows and the devices
+    /// each member holds now. The structural owner is exposed separately by
+    /// [`PeerGovernance::owner_user_public_key`].
+    pub fn governed_members(self, now: SystemTime) -> Result<MemberList, String> {
         let doc = self
             .peer
             .core
@@ -260,7 +262,8 @@ impl PeerGovernance<'_> {
         // a change left as it was.
         let names = &doc.policy().names;
         let certificates = doc.identity_certificates();
-        let mut rows: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
+        let mut rows: BTreeMap<[u8; 32], Member> = BTreeMap::new();
+        let mut devices: BTreeMap<MemberId, Vec<[u8; 32]>> = BTreeMap::new();
         // The name each person goes by here, which one of their own devices
         // says and no key of theirs does ([`Naming`]).
         let mut naming: BTreeMap<[u8; 32], Naming> = BTreeMap::new();
@@ -288,16 +291,17 @@ impl PeerGovernance<'_> {
                 identity.delegate.is_none(),
                 names.get(id).map(String::as_str),
             );
-            let row = rows.entry(root).or_insert_with(|| GovernedMember {
-                user_public_key: root,
-                role: active_role.unwrap_or(receipt.role),
-                display_name: None,
-                active_device_keys: Vec::new(),
-                removed: active_role.is_none(),
-                administrator,
+            let row = rows.entry(root).or_insert_with(|| {
+                let mut row = Member::of_person(
+                    &Person::new(person.clone(), ""),
+                    Some(active_role.unwrap_or(receipt.role)),
+                );
+                row.removed = active_role.is_none();
+                row.administrator = administrator;
+                row
             });
             if let Some(role) = active_role {
-                row.role = role;
+                row.role = Some(role);
                 row.removed = false;
                 let cert = &identity.device_cert;
                 if certificates
@@ -305,7 +309,10 @@ impl PeerGovernance<'_> {
                     .is_some_and(|verified| verified.current_typed(now_ns(now)).is_ok())
                     && !self.peer.core.revocations.refuses(cert)
                 {
-                    row.active_device_keys.push(cert.device_public_key);
+                    devices
+                        .entry(row.id.clone())
+                        .or_default()
+                        .push(cert.device_public_key);
                 }
             }
         }
@@ -325,38 +332,31 @@ impl PeerGovernance<'_> {
                 continue;
             };
             let id = administrator_grant_id(root);
-            rows.insert(
-                root,
-                GovernedMember {
-                    user_public_key: root,
-                    role,
-                    display_name: None,
-                    active_device_keys: Vec::new(),
-                    removed: false,
-                    administrator: workspace_policy.grants.iter().any(|grant| grant.id == id),
-                },
-            );
+            let mut row = Member::of_person(&Person::new(person.clone(), ""), Some(role));
+            row.administrator = workspace_policy.grants.iter().any(|grant| grant.id == id);
+            rows.insert(root, row);
         }
-        let mut rows = rows.into_values().collect::<Vec<_>>();
-        for row in &mut rows {
-            row.active_device_keys.sort_unstable();
-            row.active_device_keys.dedup();
+        for (root, row) in &mut rows {
             // The name the person goes by here: the one the workspace keeps
             // under their root, which names them before any device of theirs
             // arrived and wherever they last renamed themselves, else the one
             // their own oldest device says.
-            row.display_name = names
-                .get(&hex::encode(row.user_public_key))
+            let kept = names
+                .get(&hex::encode(root))
                 .filter(|name| !name.trim().is_empty())
-                .cloned()
-                .or_else(|| {
-                    naming
-                        .get(&row.user_public_key)
-                        .and_then(Naming::name)
-                        .map(str::to_owned)
-                });
+                .map(String::as_str);
+            if let Some(name) = kept.or_else(|| naming.get(root).and_then(Naming::name)) {
+                name.clone_into(&mut row.name);
+            }
         }
-        Ok(rows)
+        for keys in devices.values_mut() {
+            keys.sort_unstable();
+            keys.dedup();
+        }
+        Ok(MemberList {
+            members: rows.into_values().collect(),
+            devices,
+        })
     }
     pub fn owner_user_public_key(self) -> [u8; 32] {
         self.peer.core.owner

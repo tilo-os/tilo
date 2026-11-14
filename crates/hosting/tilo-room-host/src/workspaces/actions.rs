@@ -1358,10 +1358,10 @@ impl Workspaces {
                     .filter(|member| !member.removed)
                     .map(|member| {
                         json!({
-                            "person": hex::encode(member.user_public_key),
-                            "name": member.display_name,
-                            "role": member.role.key(),
-                            "owner": member.user_public_key == owner,
+                            "person": member.id.key(),
+                            "name": (!member.name.is_empty()).then_some(&member.name),
+                            "role": member.role.map(Role::key),
+                            "owner": member.root() == Some(owner),
                             "administrator": member.administrator,
                         })
                     })

@@ -337,7 +337,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     assert!(
         members
             .iter()
-            .all(|member| member.user_public_key != cert.user_public_key),
+            .all(|member| member.root() != Some(cert.user_public_key)),
         "a stranger whose entry never proved itself is a member"
     );
 

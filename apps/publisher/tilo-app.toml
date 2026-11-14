@@ -38,8 +38,8 @@ hosts = ["apps.tilo.so"]
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@24"
-tilo-fs = "optional@24"
+collab = "optional@25"
+tilo-fs = "optional@25"
 
 [entrypoint]
 bin = "bin/publisher"

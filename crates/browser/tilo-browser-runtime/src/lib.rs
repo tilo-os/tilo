@@ -254,7 +254,7 @@ mod replication;
 mod replicated;
 // The workspaces a host governs, as the page administers them.
 #[cfg(target_arch = "wasm32")]
-mod rooms;
+mod workspaces;
 // The workspaces this browser entered, by the rules every device keeps them by.
 #[cfg(target_arch = "wasm32")]
 mod entered;

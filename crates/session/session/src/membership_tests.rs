@@ -174,8 +174,8 @@ fn role_of(engine: &Engine, person: &str) -> Option<Role> {
         .people(WORKSPACE)
         .expect("the workspace's people")
         .into_iter()
-        .find(|held| held.person == person && !held.removed)
-        .map(|held| held.role)
+        .find(|held| held.id.person_id() == Some(person) && !held.removed)
+        .and_then(|held| held.role)
 }
 
 /// Two devices of one workspace: the owner's, which signs for the workspace, and this desk's,
@@ -1357,8 +1357,8 @@ fn her_device_takes(
     hers.people(&workspace_id.to_string())
         .expect("the workspace's people")
         .into_iter()
-        .find(|held| held.person == person && !held.removed)
-        .map(|held| held.role)
+        .find(|held| held.id.person_id() == Some(person) && !held.removed)
+        .and_then(|held| held.role)
 }
 
 /// A person's own device changes a workspace's people through the session this computer runs:
@@ -1527,7 +1527,7 @@ fn an_agent_cannot_change_a_workspaces_people() {
         mine.people(&workspace_id.to_string())
             .expect("the workspace's people")
             .iter()
-            .all(|held| held.person != hex::encode(stranger)),
+            .all(|held| held.id.person_id() != Some(hex::encode(stranger).as_str())),
         "the agent's change is not the workspace's"
     );
 }

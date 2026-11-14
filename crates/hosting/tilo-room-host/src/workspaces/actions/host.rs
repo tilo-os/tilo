@@ -770,9 +770,10 @@ impl Workspaces {
             .governance()
             .governed_members(crate::workspaces::system_time(now))
             .ok()?
+            .members
             .into_iter()
-            .find(|member| member.user_public_key == person && !member.removed)
-            .map(|member| member.role)
+            .find(|member| member.root() == Some(person) && !member.removed)
+            .and_then(|member| member.role)
     }
 
     /// Answer `summary` with an invitation for its `person` as `role`, until

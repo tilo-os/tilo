@@ -117,6 +117,14 @@ pub struct Member {
     /// Whether this row is the reader's own.
     #[serde(default)]
     pub is_self: bool,
+    /// Whether the workspace removed them: the row is kept so their name and
+    /// role still read where a change of theirs is shown.
+    #[serde(default)]
+    pub removed: bool,
+    /// Whether the workspace's members made them an administrator
+    /// ([`crate::role::Role::Owner`] is the owner's alone).
+    #[serde(default)]
+    pub administrator: bool,
 }
 
 impl Member {
@@ -143,6 +151,8 @@ impl Member {
             colour: person.colour,
             joined_at: None,
             is_self: false,
+            removed: false,
+            administrator: false,
         }
     }
 
@@ -162,6 +172,8 @@ impl Member {
             avatar: None,
             joined_at: None,
             is_self: false,
+            removed: false,
+            administrator: false,
         }
     }
 
@@ -181,6 +193,14 @@ impl Member {
     pub fn with_avatar(mut self, avatar: AvatarBytes) -> Self {
         self.avatar = Some(avatar);
         self
+    }
+
+    /// Their root key, when they are a person: the hex of their id, decoded.
+    #[must_use]
+    pub fn root(&self) -> Option<[u8; 32]> {
+        let mut root = [0; 32];
+        hex::decode_to_slice(self.id.person_id()?, &mut root).ok()?;
+        Some(root)
     }
 
     /// [`Self::colour`] as a roster's wire carries it: the sRGB colour packed

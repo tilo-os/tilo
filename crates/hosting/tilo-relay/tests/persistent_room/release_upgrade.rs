@@ -285,10 +285,9 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
         .expect("the owner lists the Lounge");
     for member in &governed.members {
         eprintln!(
-            "release upgrade: {} {:?}{}{}",
-            hex::encode(member.user_public_key),
+            "release upgrade: {} {:?}{}",
+            member.id.key(),
             member.role,
-            if member.owner { ", owner" } else { "" },
             if member.removed { ", removed" } else { "" }
         );
     }
@@ -296,14 +295,14 @@ async fn the_owner_governs_it(plain: std::net::SocketAddr, seed: &Seed) {
         governed
             .members
             .iter()
-            .find(|member| member.user_public_key == person.root() && !member.removed)
+            .find(|member| member.root() == Some(person.root()) && !member.removed)
             .unwrap_or_else(|| panic!("{} is no longer a member", person.name))
             .role
     };
     role_of(&seed.declared_owner);
-    assert_eq!(role_of(&seed.declared_moderator), Role::Moderator);
+    assert_eq!(role_of(&seed.declared_moderator), Some(Role::Moderator));
     for member in &seed.members {
-        assert_eq!(role_of(member), Role::Editor, "{}", member.name);
+        assert_eq!(role_of(member), Some(Role::Editor), "{}", member.name);
     }
 
     let reply = administer(

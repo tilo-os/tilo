@@ -1464,7 +1464,9 @@ mod tests {
         assert_eq!(engine.owner_of(TO), Ok(person.clone()));
         let people = engine.people(TO).unwrap();
         assert!(
-            people.iter().all(|member| member.person == person),
+            people
+                .iter()
+                .all(|member| member.id.person_id() == Some(person.as_str())),
             "nobody but the person: {people:?}"
         );
         assert!(

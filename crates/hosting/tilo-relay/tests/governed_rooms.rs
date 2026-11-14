@@ -528,7 +528,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
         restored
             .members
             .iter()
-            .any(|member| member.user_public_key == bob.user_pk && member.removed),
+            .any(|member| member.root() == Some(bob.user_pk) && member.removed),
         "{:?}",
         restored.members
     );
@@ -878,7 +878,7 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
     let seated = |person: [u8; 32]| {
         members
             .iter()
-            .any(|member| member.user_public_key == person && !member.removed)
+            .any(|member| member.root() == Some(person) && !member.removed)
     };
     assert!(!seated(guests[0].0.user_pk) && !seated(guests[1].0.user_pk));
     assert!(

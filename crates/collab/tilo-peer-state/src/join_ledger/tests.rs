@@ -140,12 +140,13 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
         .governance()
         .governed_members(now)
         .unwrap()
+        .members
         .into_iter()
-        .find(|member| member.user_public_key == guest_cert.user_public_key)
+        .find(|member| member.root() == Some(guest_cert.user_public_key))
         .unwrap();
     assert_eq!(
-        guest_member.display_name.as_deref(),
-        Some("Calm Owl"),
+        guest_member.name.as_str(),
+        "Calm Owl",
         "the workspace names the guest as they named themself, not by their device"
     );
     let host_cert = candidate.owner_certificates()[0].clone();
@@ -325,12 +326,13 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
             .governance()
             .governed_members(now)
             .unwrap()
+            .members
             .into_iter()
-            .find(|member| member.user_public_key == root.verifying_key().to_bytes())
+            .find(|member| member.root() == Some(root.verifying_key().to_bytes()))
             .unwrap()
-            .display_name
+            .name
     };
-    assert_eq!(named(&joined_ada).as_deref(), Some("Ada"));
+    assert_eq!(named(&joined_ada), "Ada");
     // A key made to act for her joins too, saying what the key goes by, as
     // the door hands it over: it names the key, never Ada.
     let backend_key = SigningKey::from_bytes(&[53; 32]);
@@ -362,8 +364,8 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
         now_ns,
     );
     assert_eq!(
-        named(&joined_both).as_deref(),
-        Some("Ada"),
+        named(&joined_both),
+        "Ada",
         "a key of hers names its key, never the person it acts for"
     );
 }

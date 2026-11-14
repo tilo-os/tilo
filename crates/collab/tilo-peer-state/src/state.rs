@@ -8,7 +8,7 @@ use crate::verified_certificate::VerifiedCertificate;
 use crate::{NeighbourMsg, workspace};
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::{
-    ArtifactKind, DocumentMutation, Ed25519PublicKey, InboundState, OpKind, Role, SignedOp,
+    ArtifactKind, DocumentMutation, Ed25519PublicKey, InboundState, OpKind, Person, Role, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ use tilo_action_policy::{
 };
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
-pub use tilo_workspace_join::{DocumentRow, GovernedMember};
+pub use tilo_workspace_join::{DocumentRow, Member, MemberId, MemberList};
 use web_time::{Duration, SystemTime};
 mod backend;
 mod document_capture;

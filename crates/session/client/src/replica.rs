@@ -309,20 +309,24 @@ impl Replicas {
         workspace_id: WorkspaceId,
     ) -> Option<BTreeMap<String, String>> {
         self.with_workspace(workspace_id, |view| {
-            let members = view
+            let list = view
                 .peer()
                 .governance()
                 .governed_members(tilo_clock::wall())?;
-            Ok(members
-                .into_iter()
+            Ok(list
+                .members
+                .iter()
                 .filter(|member| !member.removed)
-                .flat_map(|member| {
-                    let person = hex::encode(member.user_public_key);
-                    member
-                        .active_device_keys
-                        .into_iter()
-                        .map(move |device| (hex::encode(device), person.clone()))
+                .filter_map(|member| {
+                    let person = member.id.person_id()?.to_owned();
+                    let devices = list.devices.get(&member.id)?;
+                    Some(
+                        devices
+                            .iter()
+                            .map(move |device| (hex::encode(device), person.clone())),
+                    )
                 })
+                .flatten()
                 .collect())
         })?
         .ok()

@@ -29,6 +29,8 @@ pub mod sealed;
 pub mod task_delegation;
 mod workspace_text;
 
+use std::collections::BTreeMap;
+
 use base64::Engine as _;
 pub use collab_types::WorkspaceId;
 use ed25519_dalek::Verifier as _;
@@ -37,6 +39,7 @@ use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
 /// What a member may do in a workspace.
 pub use collab_types::Role;
+pub use collab_types::{Member, MemberId, Person};
 
 /// The invitation whose grant names its workspace by its [`WorkspaceId`]
 /// alone and no authority: an invitation is issued by a device of a member,
@@ -89,20 +92,23 @@ pub struct DocumentRow {
     pub heads: Vec<String>,
 }
 
-/// One person in a governed workspace, as the governance document lists them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GovernedMember {
-    pub user_public_key: [u8; 32],
-    pub role: Role,
-    pub display_name: Option<String>,
-    pub active_device_keys: Vec<[u8; 32]>,
-    pub removed: bool,
-    /// Made an administrator by the workspace's members: `role` is then
-    /// [`Role::Editor`] holding every governance action of the
-    /// workspace, bounded by that role
-    /// (`tilo_action_policy::roles::administrator_grant`).
-    #[serde(default)]
-    pub administrator: bool,
+/// A workspace's member list, and the devices each member holds now.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberList {
+    pub members: Vec<Member>,
+    /// The device keys of each member, by the member whose root certified them.
+    pub devices: BTreeMap<MemberId, Vec<[u8; 32]>>,
+}
+
+impl MemberList {
+    /// The member whose device `device` is.
+    #[must_use]
+    pub fn member_of(&self, device: &[u8; 32]) -> Option<&Member> {
+        self.devices
+            .iter()
+            .find(|(_, devices)| devices.contains(device))
+            .and_then(|(id, _)| self.members.iter().find(|member| &member.id == id))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

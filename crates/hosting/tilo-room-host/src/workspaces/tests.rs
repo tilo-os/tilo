@@ -133,7 +133,7 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
     let members: Vec<_> = summary
         .members
         .iter()
-        .map(|member| member.user_public_key)
+        .filter_map(tilo_peer_state::Member::root)
         .collect();
     for person in people.iter().take(5) {
         assert!(members.contains(person));
@@ -144,12 +144,9 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
         let member = summary
             .members
             .iter()
-            .find(|member| member.user_public_key == *person)
+            .find(|member| member.root() == Some(*person))
             .unwrap();
-        assert_eq!(
-            member.display_name.as_deref(),
-            Some(format!("Guest {index}").as_str())
-        );
+        assert_eq!(member.name, format!("Guest {index}"));
     }
     relay.shutdown().await;
 }
@@ -1983,7 +1980,7 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
     assert!(
         members
             .iter()
-            .all(|member| member.user_public_key != guest.user_public_key || member.removed),
+            .all(|member| member.root() != Some(guest.user_public_key) || member.removed),
         "{members:?}"
     );
     assert!(
@@ -2780,7 +2777,7 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
         assert!(
             members
                 .iter()
-                .any(|member| member.user_public_key == device.user_public_key),
+                .any(|member| member.root() == Some(device.user_public_key)),
             "an arrival is a member of the room"
         );
     }
@@ -2927,16 +2924,16 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let workspace = workspaces.create("Plans").await.unwrap().workspace;
-    let live = |members: &[tilo_peer_state::GovernedMember], person: [u8; 32]| {
+    let live = |members: &[tilo_peer_state::Member], person: [u8; 32]| {
         members
             .iter()
-            .any(|member| member.user_public_key == person && !member.removed)
+            .any(|member| member.root() == Some(person) && !member.removed)
     };
     let members = workspaces.summary(&workspace).await.unwrap().members;
     assert!(
         members
             .iter()
-            .all(|member| member.user_public_key == cert.user_public_key || member.removed),
+            .all(|member| member.root() == Some(cert.user_public_key) || member.removed),
         "a new workspace is its owner's alone: {members:?}"
     );
 

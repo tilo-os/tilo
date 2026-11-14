@@ -519,7 +519,7 @@ mod tests {
             .unwrap()
             .members
             .iter()
-            .find(|member| member.user_public_key == person && !member.removed)
+            .find(|member| member.root() == Some(person) && !member.removed)
             .map(|member| format!("{:?}", member.role))
     }
 

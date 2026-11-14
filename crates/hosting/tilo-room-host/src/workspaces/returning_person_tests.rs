@@ -148,7 +148,7 @@ async fn a_new_tab_comes_back_at_the_part_they_hold(
     assert_eq!(
         members
             .iter()
-            .filter(|member| member.user_public_key == person)
+            .filter(|member| member.root() == Some(person))
             .count(),
         1,
         "one person, on whichever device they came back"

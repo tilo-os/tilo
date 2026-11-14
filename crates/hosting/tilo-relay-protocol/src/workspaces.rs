@@ -20,36 +20,22 @@ use collab_types::WorkspaceId;
 use serde::{Deserialize, Serialize};
 
 /// What a member may do in a workspace.
-pub use collab_types::Role;
-
-/// A person governance records in a workspace.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceMember {
-    /// The person's user root.
-    pub user_public_key: [u8; 32],
-    /// How the person is named: their recorded name, else their device's
-    /// label.
-    pub name: Option<String>,
-    /// Their role.
-    pub role: Role,
-    pub owner: bool,
-    /// They were removed.
-    pub removed: bool,
-}
+pub use collab_types::{Member, Role};
 
 /// A governed workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
     /// The workspace's UUID.
-    #[serde(rename = "room")]
     pub workspace: String,
     /// The relay workspace carrying it.
     pub workspace_id: WorkspaceId,
     pub name: String,
     /// Its committed governance generation.
     pub generation: u64,
-    /// Every person governance records, removed ones included.
-    pub members: Vec<WorkspaceMember>,
+    /// Every person governance records, removed ones included: a person's
+    /// name is their recorded one, else their device's label; the owner's
+    /// role is [`Role::Owner`].
+    pub members: Vec<Member>,
 }
 
 /// The person who sent an invitation, as the host signed it into the

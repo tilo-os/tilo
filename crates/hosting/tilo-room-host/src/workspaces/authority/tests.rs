@@ -730,22 +730,23 @@ async fn a_declared_owner_carries_the_name_they_were_declared_with() {
         .set_member_administrator(&workspace, &owner, rand::random(), root, Some("Quinten"))
         .await
         .unwrap();
-    let named = |members: &[tilo_peer_state::GovernedMember]| {
+    let named = |members: &[tilo_peer_state::Member]| {
         members
             .iter()
-            .find(|member| member.user_public_key == root && !member.removed)
+            .find(|member| member.root() == Some(root) && !member.removed)
             .unwrap_or_else(|| panic!("the declared owner is a member: {members:?}"))
-            .display_name
+            .name
             .clone()
     };
-    let members = workspaces.summary(&workspace).await.unwrap().members;
-    assert_eq!(named(&members).as_deref(), Some("Quinten"));
+    let summary = workspaces.summary(&workspace).await.unwrap();
+    assert_eq!(named(&summary.members), "Quinten");
     assert!(
-        members
-            .iter()
-            .find(|member| member.user_public_key == root)
-            .is_some_and(|member| member.active_device_keys.is_empty()),
-        "no device of theirs has arrived yet: {members:?}"
+        summary
+            .devices
+            .get(&tilo_peer_state::MemberId::person(hex::encode(root)))
+            .is_none_or(Vec::is_empty),
+        "no device of theirs has arrived yet: {:?}",
+        summary.devices
     );
 
     // A key of theirs names them without one, as their Tilo on the web would,
@@ -765,7 +766,7 @@ async fn a_declared_owner_carries_the_name_they_were_declared_with() {
         .await
         .unwrap();
     let members = workspaces.summary(&workspace).await.unwrap().members;
-    assert_eq!(named(&members).as_deref(), Some("Quinten Wolff"));
+    assert_eq!(named(&members), "Quinten Wolff");
 
     // Their first device joins, admitted through the owner's pre-admission
     // under another name: the name they chose is the one the workspace keeps.
@@ -794,7 +795,7 @@ async fn a_declared_owner_carries_the_name_they_were_declared_with() {
         .await;
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
     let members = workspaces.summary(&workspace).await.unwrap().members;
-    assert_eq!(named(&members).as_deref(), Some("Quinten Wolff"));
+    assert_eq!(named(&members), "Quinten Wolff");
 
     // The invitation their device makes says who asked them in.
     let issued = workspaces

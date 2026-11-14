@@ -34,7 +34,7 @@ blake3.workspace = true
 # A workspace id is a canonical UUID; a transport hint's payload is JSON.
 uuid.workspace = true
 serde_json.workspace = true
-# A member role maps onto the collaboration role.
+# A member row and its role are the collaboration types'.
 collab-types = { version = "0.1.0", path = "../collab-types" }
 tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
 # A sealed invitation is an at-rest envelope under the key its link carries.

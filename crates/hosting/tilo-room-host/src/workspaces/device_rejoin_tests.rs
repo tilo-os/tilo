@@ -134,7 +134,7 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
     assert_eq!(
         members
             .iter()
-            .filter(|member| member.user_public_key == root.verifying_key().to_bytes())
+            .filter(|member| member.root() == Some(root.verifying_key().to_bytes()))
             .count(),
         1,
         "one person, whatever devices they came with"

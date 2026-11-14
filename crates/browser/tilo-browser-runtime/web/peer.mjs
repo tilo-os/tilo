@@ -1043,34 +1043,34 @@ async function connect({
   }
   signal?.addEventListener('abort', dispose, {once: true});
 
-  /** One workspace request, in the shape the page draws (`rooms.rs`). */
-  const rooms = async (op, args) => JSON.parse(await peer.rooms(op, JSON.stringify(args ?? {})));
+  /** One workspace request, in the shape the page draws (`workspaces.rs`). */
+  const ask = async (op, args) => JSON.parse(await peer.workspaces(op, JSON.stringify(args ?? {})));
   const membership = {
     createInvitation: ({role = 'editor', expiresIn = 7 * 86_400, waitListEntry = null} = {}) =>
-      rooms('invite', {workspace, role, expiresInSeconds: Math.floor(expiresIn), inviterName: displayName,
+      ask('invite', {workspace, role, expiresInSeconds: Math.floor(expiresIn), inviterName: displayName,
         ...(waitListEntry ? {waitListEntry} : {})}),
     preAdmit: options => {
       if (!identity) throw new Error('pre-admitting needs the owner\'s unlocked identity');
       return peer.preAdmit(identity, JSON.stringify(options));
     },
-    list: () => rooms('list', {workspace}),
-    mayInvite: () => rooms('mayInvite', {workspace}),
-    waitList: () => rooms('waitList', {workspace}),
-    unlist: requestId => rooms('unlist', {workspace, requestId}),
-    mailInvite: (requestId, link) => rooms('mailInvite', {workspace, requestId, link: String(link)}),
-    setRole: (userPublicKey, role) => rooms('setRole', {workspace, userPublicKey, role}),
-    remove: userPublicKey => rooms('remove', {workspace, userPublicKey}),
-    ban: userPublicKey => rooms('ban', {workspace, userPublicKey}),
-    unban: userPublicKey => rooms('unban', {workspace, userPublicKey}),
-    cancelInvitation: inviteId => rooms('cancel', {workspace, inviteId}),
+    list: () => ask('list', {workspace}),
+    mayInvite: () => ask('mayInvite', {workspace}),
+    waitList: () => ask('waitList', {workspace}),
+    unlist: requestId => ask('unlist', {workspace, requestId}),
+    mailInvite: (requestId, link) => ask('mailInvite', {workspace, requestId, link: String(link)}),
+    setRole: (userPublicKey, role) => ask('setRole', {workspace, userPublicKey, role}),
+    remove: userPublicKey => ask('remove', {workspace, userPublicKey}),
+    ban: userPublicKey => ask('ban', {workspace, userPublicKey}),
+    unban: userPublicKey => ask('unban', {workspace, userPublicKey}),
+    cancelInvitation: inviteId => ask('cancel', {workspace, inviteId}),
   };
   const governed = {
-    list: () => rooms('workspaces'),
+    list: () => ask('workspaces'),
     create: name => {
       if (typeof name !== 'string' || !name.trim()) throw new TypeError('a workspace needs a name');
-      return rooms('create', {name: name.trim()});
+      return ask('create', {name: name.trim()});
     },
-    enter: room => rooms('enter', {workspace: room}),
+    enter: workspace => ask('enter', {workspace}),
   };
   const certifiedPeer = {
     get host() { return host; },
@@ -1097,7 +1097,7 @@ async function connect({
       try { return peer?.workspaceName?.() ?? admittedName ?? undefined; } catch { return admittedName ?? undefined; }
     },
     setDisplayName: name => rename(name),
-    /** Issue an invitation to the workspace (`rooms.rs`): resolves to its
+    /** Issue an invitation to the workspace (`workspaces.rs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
     /** Answer what this person's agents on the host ask them, as the root
@@ -1116,10 +1116,10 @@ async function connect({
      * typed it (`HostRefusal`: `code`, and `refusal` where the host gave one). */
     enterOwnWorkspace: async ({name = null, room = null, entered = () => false} = {}) => JSON.parse(
       await peer.enterOwnWorkspace(name, room, fitDisplayName(displayName || label), entered)),
-    /** Who is in the workspace, for its owner (`rooms.rs`): `list()`,
+    /** Who is in the workspace, for its owner (`workspaces.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },
-    /** The workspaces the host governs (`rooms.rs`): `list()`,
+    /** The workspaces the host governs (`workspaces.rs`): `list()`,
      * `create(name)`, `enter(workspace)`; needs no workspace. */
     workspaces: governed,
     getSnapshot: () => snapshot,

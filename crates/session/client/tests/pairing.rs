@@ -641,16 +641,17 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
     let bobs: Vec<_> = summary
         .members
         .iter()
-        .filter(|member| member.user_public_key == user)
+        .filter(|member| member.root() == Some(user))
         .collect();
     assert_eq!(bobs.len(), 1, "{:?}", summary.members);
     assert!(!bobs[0].removed);
+    let devices = summary
+        .devices
+        .get(&bobs[0].id)
+        .cloned()
+        .unwrap_or_default();
     for device in [laptop_cert.device_public_key, cert.device_public_key] {
-        assert!(
-            bobs[0].active_device_keys.contains(&device),
-            "{:?}",
-            bobs[0]
-        );
+        assert!(devices.contains(&device), "{devices:?}");
     }
 
     // The phone reconnects and is let in again, still as Bob.

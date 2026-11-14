@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 24
+version = 25
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -498,12 +498,14 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "LiveActivityCall::Controls.after" = "#0 u64"
 "LiveActivityCall::Show" = "#0 tuple(Vec<u8>)"
 "Member" = "struct"
+"Member.administrator" = "#8 bool"
 "Member.avatar" = "#3 Option<AvatarBytes>"
 "Member.colour" = "#4 PresenceHue"
 "Member.id" = "#0 MemberId"
 "Member.is_self" = "#6 bool"
 "Member.joined_at" = "#5 Option<u64>"
 "Member.name" = "#2 String"
+"Member.removed" = "#7 bool"
 "Member.role" = "#1 Option<Role>"
 "MemberId" = "enum external"
 "MemberId::agent" = "#1 tuple(String)"

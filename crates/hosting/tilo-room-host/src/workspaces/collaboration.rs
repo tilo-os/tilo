@@ -155,9 +155,8 @@ impl Workspaces {
         self.people(workspace, governed)
             .members
             .into_iter()
-            .find(|member| member.user_public_key == device.user_public_key && !member.removed)
-            .and_then(|member| member.display_name)
-            .map(|name| name.trim().to_owned())
+            .find(|member| member.root() == Some(device.user_public_key) && !member.removed)
+            .map(|member| member.name.trim().to_owned())
             .filter(|name| {
                 !name.is_empty()
                     && name.chars().count() <= tilo_peer_state::join::MAX_INVITER_NAME_CHARS
@@ -1144,11 +1143,9 @@ impl Workspaces {
             .peer()
             .governance()
             .governed_members(system_time(now))
-            .map_err(CollaborationError::new)?;
-        if members
-            .iter()
-            .any(|member| member.user_public_key == person)
-        {
+            .map_err(CollaborationError::new)?
+            .members;
+        if members.iter().any(|member| member.root() == Some(person)) {
             self.make_administrator(&mut held, person, now).await?;
         }
         drop(held);

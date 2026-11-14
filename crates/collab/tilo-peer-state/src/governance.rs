@@ -437,11 +437,12 @@ mod display_name_tests {
             .governance()
             .governed_members(now)
             .unwrap()
+            .members
             .into_iter()
-            .find(|member| member.user_public_key == guest_cert.user_public_key)
+            .find(|member| member.root() == Some(guest_cert.user_public_key))
             .expect("admitted guest is a governed member");
-        assert_eq!(member.display_name.as_deref(), Some("Gina Guest"));
-        assert_eq!(member.role, Role::Editor);
+        assert_eq!(member.name, "Gina Guest");
+        assert_eq!(member.role, Some(Role::Editor));
     }
 }
 

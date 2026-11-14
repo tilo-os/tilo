@@ -1800,6 +1800,8 @@ impl PresenceCtx {
             colour: self.hue_for(user),
             joined_at: stored(&self.joined, user).copied(),
             is_self: self.is_own_identity(&user.0),
+            removed: false,
+            administrator: false,
         }
     }
 

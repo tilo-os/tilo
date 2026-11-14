@@ -164,21 +164,20 @@ impl Directory {
 
 /// The people of `members` in the workspace now, by `online` user roots: their
 /// faces (at most [`MAX_FACES`]) and how many there are.
-fn faces(
-    members: &[tilo_peer_state::GovernedMember],
-    online: &BTreeSet<[u8; 32]>,
-) -> (Vec<Face>, u32) {
+fn faces(members: &[tilo_peer_state::Member], online: &BTreeSet<[u8; 32]>) -> (Vec<Face>, u32) {
     let here: Vec<_> = members
         .iter()
-        .filter(|member| !member.removed && online.contains(&member.user_public_key))
+        .filter(|member| {
+            !member.removed && member.root().is_some_and(|root| online.contains(&root))
+        })
         .collect();
     let count = u32::try_from(here.len()).unwrap_or(u32::MAX);
     let faces = here
         .into_iter()
         .take(MAX_FACES)
         .map(|member| Face {
-            user_public_key: hex::encode(member.user_public_key),
-            name: member.display_name.clone().unwrap_or_default(),
+            user_public_key: member.root().map(hex::encode).unwrap_or_default(),
+            name: member.name.clone(),
         })
         .collect();
     (faces, count)
@@ -849,15 +848,13 @@ impl Workspaces {
 pub(super) mod tests {
     use super::*;
 
-    fn member(key: u8, name: &str, removed: bool) -> tilo_peer_state::GovernedMember {
-        tilo_peer_state::GovernedMember {
-            user_public_key: [key; 32],
-            role: tilo_peer_state::join::Role::Commenter,
-            display_name: Some(name.into()),
-            active_device_keys: Vec::new(),
-            removed,
-            administrator: false,
-        }
+    fn member(key: u8, name: &str, removed: bool) -> tilo_peer_state::Member {
+        let mut row = tilo_peer_state::Member::of_person(
+            &tilo_peer_state::join::Person::new(hex::encode([key; 32]), name),
+            Some(tilo_peer_state::join::Role::Commenter),
+        );
+        row.removed = removed;
+        row
     }
 
     #[test]
@@ -1070,7 +1067,7 @@ mod door_tests {
             assert!(
                 members
                     .iter()
-                    .all(|member| member.user_public_key != guest.user_public_key),
+                    .all(|member| member.root() != Some(guest.user_public_key)),
                 "{what}: not a member"
             );
         }
@@ -1127,9 +1124,9 @@ mod door_tests {
             let members = workspaces.summary(&workspace).await.unwrap().members;
             let joined = members
                 .iter()
-                .find(|member| member.user_public_key == cert.user_public_key)
+                .find(|member| member.root() == Some(cert.user_public_key))
                 .expect("a member now");
-            assert_eq!(joined.role, Role::Commenter);
+            assert_eq!(joined.role, Some(Role::Commenter));
         }
 
         // Another default from now on: the next person gets it.
@@ -1251,10 +1248,10 @@ mod door_tests {
             user_public_key: hex::encode(guest.user_public_key),
             display_name: "Cy".into(),
         };
-        let member = |members: &[tilo_peer_state::GovernedMember]| {
+        let member = |members: &[tilo_peer_state::Member]| {
             members
                 .iter()
-                .any(|member| member.user_public_key == guest.user_public_key && !member.removed)
+                .any(|member| member.root() == Some(guest.user_public_key) && !member.removed)
         };
         assert!(matches!(
             walk_in_as(workspaces, &workspace, &join, &guest).await,

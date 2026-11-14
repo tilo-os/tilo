@@ -115,7 +115,10 @@ impl Workspace for DeskWorkspace {
             .chain(engine.workspaces().into_iter().map(|held| held.to_string()));
         for held in workspaces {
             for member in engine.people(&held).unwrap_or_default() {
-                if member.removed || member.person == own || !seen.insert(member.person.clone()) {
+                let Some(person) = member.id.person_id().map(str::to_owned) else {
+                    continue;
+                };
+                if member.removed || person == own || !seen.insert(person.clone()) {
                     continue;
                 }
                 people.push(sheet::Person {
@@ -124,7 +127,7 @@ impl Workspace for DeskWorkspace {
                     } else {
                         member.name
                     },
-                    key: member.person,
+                    key: person,
                 });
             }
         }

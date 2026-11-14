@@ -773,7 +773,7 @@ impl GovernedWorkspace {
     /// device governs it, which holds it by being its owner rather than by an
     /// admission receipt: [`Workspaces::people`] is who the workspace has.
     fn summary(&self) -> WorkspaceSummary {
-        let members = self
+        let list = self
             .peer()
             .governance()
             .governed_members(tilo_clock::wall())
@@ -783,7 +783,8 @@ impl GovernedWorkspace {
             workspace_id: self.record.workspace_id,
             name: self.record.name.clone(),
             generation: self.record.generation,
-            members,
+            members: list.members,
+            devices: list.devices,
         }
     }
 
@@ -1799,19 +1800,14 @@ impl Workspaces {
             && !summary
                 .members
                 .iter()
-                .any(|member| member.user_public_key == owner)
+                .any(|member| member.root() == Some(owner))
         {
-            summary.members.insert(
-                0,
-                tilo_peer_state::GovernedMember {
-                    user_public_key: owner,
-                    role: tilo_peer_state::join::Role::Editor,
-                    display_name: None,
-                    active_device_keys: Vec::new(),
-                    removed: false,
-                    administrator: true,
-                },
+            let mut owner_row = tilo_peer_state::join::Member::of_person(
+                &tilo_peer_state::join::Person::new(hex::encode(owner), ""),
+                Some(tilo_peer_state::join::Role::Editor),
             );
+            owner_row.administrator = true;
+            summary.members.insert(0, owner_row);
         }
         summary
     }
@@ -1852,14 +1848,15 @@ impl Workspaces {
             .governance()
             .governed_members(now)
             .unwrap_or_default()
+            .members
             .into_iter()
-            .filter(|member| member.user_public_key != owner)
+            .filter(|member| member.root() != Some(owner))
             .map(|member| {
-                let person = hex::encode(member.user_public_key);
-                let role = if member.administrator {
-                    "owner"
-                } else {
-                    member.role.key()
+                let person = member.id.person_id().unwrap_or_default().to_owned();
+                let role = match member.role {
+                    Some(_) if member.administrator => "owner",
+                    Some(role) => role.key(),
+                    None => "",
                 };
                 let mark = MemberMark {
                     role: role.to_owned(),
@@ -2431,12 +2428,15 @@ impl Workspaces {
             .collect();
         // The person `author` writes for, when `author` is one of them: who
         // left the workspace themselves is not kept out of it.
-        let author_person = self
-            .people(workspace.workspace(), &workspace)
-            .members
-            .iter()
-            .find(|member| member.active_device_keys.contains(&author))
-            .map(|member| member.user_public_key);
+        let author_person = workspace
+            .peer()
+            .governance()
+            .governed_members(now)
+            .ok()
+            .and_then(|list| {
+                list.member_of(&author)
+                    .and_then(tilo_peer_state::Member::root)
+            });
         workspace.commit(candidate, &host.key, now, |record, _| {
             let mut state = record.collaboration.clone();
             state.withdraw_invitations(&removed);

@@ -687,16 +687,16 @@ impl BotRunner {
             summary
                 .members
                 .iter()
-                .filter(|member| member.user_public_key != self.host.user_public_key)
+                .filter(|member| member.root() != Some(self.host.user_public_key))
                 .filter(|member| !member.removed)
                 .map(|member| {
                     let role = if member.administrator {
-                        "owner"
+                        Some("owner")
                     } else {
-                        member.role.key()
+                        member.role.map(tilo_peer_state::join::Role::key)
                     };
                     serde_json::json!({
-                        "person": hex::encode(member.user_public_key),
+                        "person": member.id.key(),
                         "role": role,
                     })
                 }),

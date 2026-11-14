@@ -29,7 +29,6 @@ use tilo_channels::{ChannelAccess, ChannelKeyProvider};
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::KeptRecord;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::Role;
 #[cfg(target_os = "linux")]
@@ -42,6 +41,7 @@ use tilo_peer_state::owner::NativeWorkspaceOwner;
 use tilo_peer_state::owner::{DocumentRead, History, Holding};
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_peer_state::owner::{FileHost, open_file_with, owner_file_of};
+use tilo_peer_state::{KeptRecord, Member};
 use tilo_user_identity::RevocationList;
 
 use crate::channels;
@@ -55,20 +55,6 @@ const FILE: &str = "rooms.json";
 
 /// The largest document the session reads out of a workspace.
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
-
-/// Someone a workspace has in it: the person, as their user key in hex, the name the workspace
-/// knows them by, and the part they take in it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Person {
-    /// The person (user root, hex).
-    pub person: String,
-    /// The name the workspace knows them by, if it knows one.
-    pub name: String,
-    /// The part they take in the workspace.
-    pub role: Role,
-    /// Whether the workspace removed them.
-    pub removed: bool,
-}
 
 /// Why a workspace is not the person's to delete here, when it is not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -967,9 +953,9 @@ impl Engine {
         self.holds(workspace)
             && (self.owner_of(&id).is_ok_and(|owner| owner == person)
                 || self.people(&id).is_ok_and(|people| {
-                    people
-                        .iter()
-                        .any(|member| member.person == person && !member.removed)
+                    people.iter().any(|member| {
+                        member.id.person_id() == Some(person.as_str()) && !member.removed
+                    })
                 }))
     }
 
@@ -1141,22 +1127,14 @@ impl Engine {
     /// Who the workspace has in it, as its governance tells it: every person it was shared with, by
     /// the name it knows them by and the part they take in it. A joined workspace brings its people
     /// with it, so this is how the desk knows them before any of them is here.
-    pub fn people(&self, workspace: &str) -> Result<Vec<Person>, String> {
+    pub fn people(&self, workspace: &str) -> Result<Vec<Member>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.owner.with_current(workspace, |view| {
-            let members = view
+            Ok(view
                 .peer()
                 .governance()
-                .governed_members(tilo_clock::wall())?;
-            Ok(members
-                .into_iter()
-                .map(|member| Person {
-                    person: hex::encode(member.user_public_key),
-                    name: member.display_name.unwrap_or_default(),
-                    role: member.role,
-                    removed: member.removed,
-                })
-                .collect())
+                .governed_members(tilo_clock::wall())?
+                .members)
         })
     }
 
@@ -1208,7 +1186,7 @@ impl Engine {
         self.people(workspace)
             .ok()?
             .into_iter()
-            .find(|member| member.person == person)
+            .find(|member| member.id.person_id() == Some(person.as_str()))
             .map(|member| member.name)
             .filter(|name| !name.is_empty())
     }
@@ -1290,7 +1268,7 @@ impl Engine {
         let alone = self.people(&workspace_id).is_ok_and(|people| {
             people
                 .iter()
-                .all(|member| member.removed || member.person == person)
+                .all(|member| member.removed || member.id.person_id() == Some(person.as_str()))
         });
         if !alone {
             return Some(NotDeletable::OthersInIt);

@@ -18,7 +18,7 @@ use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::VerifiedRedemption;
 use tilo_relay_protocol::workspaces::{
     Inviter, JoinReply, PendingInvite, PreAdmission, Role, WaitListEntry, Workspace,
-    WorkspaceMember, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
+    WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -113,18 +113,19 @@ fn page_room(summary: WorkspaceSummary, certificates: &[DeviceCert], owner: [u8;
     let members: Vec<_> = summary
         .members
         .into_iter()
-        .map(|member| WorkspaceMember {
-            name: member.display_name.clone().or_else(|| {
-                certificates
+        .map(|mut member| {
+            let root = member.root();
+            if member.name.is_empty()
+                && let Some(cert) = certificates
                     .iter()
-                    .find(|cert| cert.user_public_key == member.user_public_key)
-                    .map(|cert| cert.device_label.clone())
-                    .filter(|label| !label.is_empty())
-            }),
-            user_public_key: member.user_public_key,
-            role: member.role,
-            owner: member.user_public_key == owner,
-            removed: member.removed,
+                    .find(|cert| Some(cert.user_public_key) == root)
+            {
+                member.name.clone_from(&cert.device_label);
+            }
+            if root == Some(owner) {
+                member.role = Some(Role::Owner);
+            }
+            member
         })
         .collect();
     Workspace {
@@ -382,8 +383,9 @@ impl Workspaces {
                 .governance()
                 .governed_members(at)
                 .map_err(CollaborationError::new)?
+                .members
                 .iter()
-                .any(|member| member.user_public_key == device.user_public_key && !member.removed);
+                .any(|member| member.root() == Some(device.user_public_key) && !member.removed);
         if !names_themself {
             return Err(CollaborationError::new(
                 "only a person names themself, in a workspace they are a member of",

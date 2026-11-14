@@ -29,8 +29,9 @@ fn is_administrator(peer: &StatePeer, user: [u8; 32], now: SystemTime) -> bool {
     peer.governance()
         .governed_members(now)
         .unwrap()
+        .members
         .iter()
-        .any(|member| member.user_public_key == user && member.administrator)
+        .any(|member| member.root() == Some(user) && member.administrator)
 }
 
 #[test]
@@ -267,8 +268,9 @@ fn a_members_own_device_leaves_the_workspace() {
         peer.governance()
             .governed_members(now)
             .unwrap()
+            .members
             .iter()
-            .all(|member| member.user_public_key != user),
+            .all(|member| member.root() != Some(user)),
         "the member and their device rows are off the roster"
     );
 }
