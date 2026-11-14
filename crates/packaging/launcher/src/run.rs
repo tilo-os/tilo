@@ -2017,6 +2017,18 @@ fn splice_gpu(
             "no GPU: the app renders with the software renderer and sees no render node",
         );
         argv.push(entry);
+    } else if opts.render_node.is_none() {
+        // The compositor named no GPU (not yet, at a session's start, or none it imports from):
+        // Mesa's device-select layer asks the compositor for its device to put it first, finds
+        // none, and crashed in the app's `native-render-prepare` on a machine without 3D. With no
+        // device to prefer it has nothing to do: the app's renderer picks its adapter itself.
+        let entry = pop_entry(argv)?;
+        argv.extend([
+            "--setenv".to_string(),
+            crate::gpu::NO_DEVICE_SELECT_ENV.to_string(),
+            "1".to_string(),
+        ]);
+        argv.push(entry);
     }
     let seed = gpu
         .as_ref()
@@ -5491,6 +5503,15 @@ mod mesa_seed_software_tests {
                     .iter()
                     .any(|arg| arg == crate::gpu::VK_DRIVER_FILES_ENV)
             );
+            // Nor did the compositor name a GPU: Mesa's device-select layer, which asks the
+            // compositor for its device and crashed in `native-render-prepare` where it named
+            // none (a session's first launches, on a machine without 3D), is off.
+            assert!(
+                argv.windows(3)
+                    .any(|args| args == ["--setenv", crate::gpu::NO_DEVICE_SELECT_ENV, "1"]),
+                "{argv:?}"
+            );
+            assert_eq!(argv.last().map(String::as_str), Some("/app/probe"));
         }
 
         phase a_software_launch_gets_only_the_read_only_session_seed_without_a_device_pin;
