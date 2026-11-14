@@ -328,6 +328,11 @@ pub trait KeyStorage: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     fn released(&self, _workspace: WorkspaceId) -> Vec<(String, Vec<u8>)> {
         Vec::new()
     }
+    /// The key the release sealed [`Self::released`]'s state under, when it
+    /// is not the one this store's state is sealed under now.
+    fn released_vault(&self) -> Option<&VaultKey> {
+        None
+    }
     /// Forget everything kept of `workspace`'s group: it was deleted.
     ///
     /// # Errors
@@ -344,6 +349,9 @@ pub trait KeyStorage: std::fmt::Debug + collab_types::signer::MaybeSendSync {
 #[derive(Debug)]
 pub struct KeyDir {
     state: PathBuf,
+    /// Where a 0.1 release kept each workspace's channel state, when this
+    /// device ran one, and the key it sealed that state under.
+    released: Option<(PathBuf, VaultKey)>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -351,7 +359,22 @@ impl KeyDir {
     /// The state kept under `root`.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { state: root.into() }
+        Self {
+            state: root.into(),
+            released: None,
+        }
+    }
+
+    /// This directory, reading the channel state a 0.1 release kept under
+    /// `dir` (`<workspace>/channels/<channel>.peer`), sealed under `vault`:
+    /// what that release sealed opens with those keys
+    /// ([`KeyStorage::released`]).
+    #[must_use]
+    pub fn with_released(self, dir: impl Into<PathBuf>, vault: VaultKey) -> Self {
+        Self {
+            released: Some((dir.into(), vault)),
+            ..self
+        }
     }
 }
 
@@ -394,10 +417,16 @@ impl KeyStorage for KeyDir {
             .collect()
     }
 
-    /// A 0.1 release kept `<workspace>/channels/<channel>.peer` here. The
-    /// files stay where it left them.
+    fn released_vault(&self) -> Option<&VaultKey> {
+        self.released.as_ref().map(|(_, vault)| vault)
+    }
+
+    /// The files stay where the release left them.
     fn released(&self, workspace: WorkspaceId) -> Vec<(String, Vec<u8>)> {
-        let dir = self.state.join(workspace.to_string()).join("channels");
+        let Some((released, _)) = &self.released else {
+            return Vec::new();
+        };
+        let dir = released.join(workspace.to_string()).join("channels");
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -1714,7 +1743,8 @@ impl WorkspaceKeys {
             return;
         };
         for (kept, sealed) in store.state.released(workspace) {
-            let adopted = key_group::released::released_channel_keys(&sealed, &store.vault)
+            let sealed_under = store.state.released_vault().unwrap_or(&store.vault);
+            let adopted = key_group::released::released_channel_keys(&sealed, sealed_under)
                 .and_then(|(channel, keys)| {
                     Ok((channel, keys.len(), peer.adopt(&keys, &store.vault)?))
                 });

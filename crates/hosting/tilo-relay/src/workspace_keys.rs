@@ -55,6 +55,9 @@ const _: () =
     assert!(OPEN_WAIT.as_secs() > tilo_action_broker::workspace_keys::founding_wait().as_secs());
 /// Where the shared key service keeps its state under the state root.
 const STATE: &str = "groups";
+/// Where the 0.1 releases kept each workspace's channel state under the state
+/// root: their keys open what those releases sealed.
+const RELEASED: &str = "channels";
 
 /// The relay's key service: this device's keys and the thread settling the
 /// groups of the workspaces it governs. Stops when dropped.
@@ -83,7 +86,10 @@ impl KeyService {
         };
         let service = WorkspaceKeys::open(
             KeysConfig {
-                state: Arc::new(KeyDir::new(&root)),
+                state: Arc::new(
+                    KeyDir::new(&root)
+                        .with_released(state_root.join(RELEASED), released_vault_key(&device)),
+                ),
                 vault: vault_key(&device),
                 signer: Arc::new(device),
                 role: tilo_action_broker::workspace_keys::KeyRole::Committer,
@@ -298,6 +304,15 @@ impl KeyDirectory for Directory {
 fn vault_key(device: &SigningKey) -> VaultKey {
     VaultKey::new(blake3::derive_key(
         "tilo-relay workspace key vault v1",
+        &device.to_bytes(),
+    ))
+}
+
+/// The key the 0.1 releases sealed the relay's channel state under, from the
+/// same device key.
+fn released_vault_key(device: &SigningKey) -> VaultKey {
+    VaultKey::new(blake3::derive_key(
+        "tilo-relay governed room channel vault v1",
         &device.to_bytes(),
     ))
 }
