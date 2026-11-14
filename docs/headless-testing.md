@@ -30,7 +30,7 @@ The session prints what it bound, so a harness reads the answer rather than gues
 
 ```
 WAYLAND_DISPLAY=wayland-1
-TILO_AGENT_DOOR=/run/user/1000/tilo-session/agent.sock
+TILO_MCP_SERVER=/run/user/1000/tilo-session/agent.sock
 TILO_TEST_CONTROL=/run/user/1000/tilo-session/test-control.sock
 TILO_ADMIN_CONTROL=/run/user/1000/tilo-session/admin-control.sock
 ```

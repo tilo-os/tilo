@@ -43,7 +43,7 @@ fn session(root: &std::path::Path) -> Session {
         services: vec![Box::new(crate::common::seeded_apps())],
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.join("plane.sock")),
-        agent_door: Some(root.join("agent.sock")),
+        mcp_server: Some(root.join("agent.sock")),
         ..Options::default()
     });
     show_preset(&mut session, "so.tilo.shell:frames");

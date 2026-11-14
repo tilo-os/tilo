@@ -10,7 +10,7 @@ against a compositor with no session around it; only a session has the door.
 
 The client is `guest/mcp_client.py`, run in the guest through `tilo-vm slot exec` (the
 session's view, as the account's own process). The door asks the person on its own sheet
-(`so.tilo.portal-sheet`, `session.agent-door`), and the harness answers as the person does:
+(`so.tilo.portal-sheet`, `session.mcp-server`), and the harness answers as the person does:
 it presses the sheet's "Allow once" and then Allow, or its Deny (`acceptance/sheets.py`).
 
 Until the door is in the image (`$XDG_RUNTIME_DIR/tilo-session/agent.sock`), these are

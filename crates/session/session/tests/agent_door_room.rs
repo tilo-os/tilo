@@ -342,7 +342,7 @@ impl Desk {
             collab: false,
             person: PERSON.to_owned(),
             action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(door.clone()),
+            mcp_server: Some(door.clone()),
             state: Some(home.state().to_path_buf()),
             // The person's settings, as the session serves them: what the person sets this
             // box's agent door with.

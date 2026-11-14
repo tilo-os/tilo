@@ -698,7 +698,7 @@ impl SessionSearch {
     ///
     /// A source that never answers cuts the find off at `within` with the rows that are in,
     /// saying so: the caller's own deadline, never the loop's. The loop keeps running at its own
-    /// rate while a search is in flight, which is the point: an MCP `find` over the agent door
+    /// rate while a search is in flight, which is the point: an MCP `find` over the MCP server
     /// must not freeze the desktop's frames.
     pub(crate) fn find_soon(
         &self,

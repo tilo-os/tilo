@@ -30,7 +30,7 @@ pub(crate) struct ListsKey([(u64, u64, u64, bool); 4]);
 pub(crate) const WINDOWS_RESOURCE: &str = "session:windows";
 /// The running applications' tray items.
 pub(crate) const TRAY_RESOURCE: &str = "session:tray";
-/// The agents the person admitted at their agent door.
+/// The agents the person admitted at their MCP server.
 pub(crate) const AGENTS_RESOURCE: &str = "session:agents";
 /// The desk styles every installed package offers.
 pub(crate) const STYLES_RESOURCE: &str = "session:styles";
@@ -52,7 +52,7 @@ pub fn tray_surface() -> tilo_resource::surface::Surface {
 /// The agents as a view of another language reads them (`device.agents`).
 #[must_use]
 pub fn agents_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<crate::agent_door::Agents, AgentsEffect>(
+    tilo_resource::surface::reading_surface::<crate::agent_sessions::Agents, AgentsEffect>(
         "agents", "Agents",
     )
 }
@@ -129,11 +129,10 @@ pub(crate) enum TrayEffect {
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.session.agents")]
 pub(crate) enum AgentsEffect {
-    /// End the agent `agent`'s work here: the connection the person admitted closes and its
-    /// presence leaves the bar
+    /// End one agent session: its connection closes and its presence leaves the bar.
     #[effect(label = "session-agents-stop")]
     StopAgent {
-        #[param("The agent, by the key its presence names it")]
+        #[param("The agent session, by its key")]
         agent: String,
     },
 }
@@ -414,9 +413,9 @@ pub(crate) struct Desk {
     /// The running applications' tray items, when their watcher serves: the bar shows them,
     /// and the person's clicks go back through it.
     pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
-    /// The agents the person admitted at its agent door: each works here as itself, and the bar
+    /// The agents the person admitted at its MCP server: each works here as itself, and the bar
     /// shows it as its own presence.
-    pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,
+    pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
     /// This device's workspaces' record, when the session holds one: the invitations a workspace's
     /// people made are kept there, by the device that made them.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
@@ -431,10 +430,10 @@ pub(crate) struct Desk {
     pub(crate) lists: Option<ListsKey>,
 }
 
-/// The pieces a session's desk is made of, once: the same seats, surfaces and records reach the
-/// desk's reading and every part of the shell.
+/// The pieces a session's desk is made of, once: the same agent sessions, surfaces and records
+/// reach the desk's reading and every part of the shell.
 pub(crate) struct Shared {
-    pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,
+    pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
     pub(crate) activities: Rc<crate::chrome::Activities>,
@@ -447,11 +446,11 @@ pub(crate) struct Shared {
 
 /// A factory making the session's desk, its styles read from the person's store as they move
 /// (shell.md §6): called once for the desk's own service and once for the shell, each a view of
-/// the same seats, surfaces and records.
+/// the same agent sessions, surfaces and records.
 pub(crate) fn desk_from(shared: Shared) -> impl Fn() -> Desk {
     let styles = Rc::new(std::cell::RefCell::new(Styles::default()));
     move || Desk {
-        seats: std::sync::Arc::clone(&shared.seats),
+        agent_sessions: std::sync::Arc::clone(&shared.agent_sessions),
         handle: shared.handle.clone(),
         person: shared.person.clone(),
         activities: Rc::clone(&shared.activities),
@@ -482,7 +481,7 @@ impl Desk {
                 0,
                 false,
             ),
-            (self.seats.revision(), 0, 0, false),
+            (self.agent_sessions.revision(), 0, 0, false),
             (self.styles.borrow().revision, 0, 0, false),
         ])
     }
@@ -498,8 +497,8 @@ impl Desk {
             TRAY_RESOURCE => Some(reading(&Tray {
                 items: self.tray_items(),
             })),
-            AGENTS_RESOURCE => Some(reading(&crate::agent_door::Agents {
-                seated: self.seats.readings(),
+            AGENTS_RESOURCE => Some(reading(&crate::agent_sessions::Agents {
+                seated: self.agent_sessions.readings(),
             })),
             STYLES_RESOURCE => Some(reading(&OfferedStyles {
                 offered: self.styles.borrow().list.clone(),
@@ -924,9 +923,12 @@ impl Service for Desk {
             AGENTS_RESOURCE => {
                 let AgentsEffect::StopAgent { agent } =
                     decode::<AgentsEffect>(&self.resources(), resource, action, arguments)?;
-                if !self.seats.stop(&agent) {
+                if !self
+                    .agent_sessions
+                    .stop(&tilo_action_policy::AgentSessionId::new(agent.clone()))
+                {
                     return Err(DoorError::InvalidArguments(format!(
-                        "no agent {agent} works here"
+                        "no agent session {agent} works here"
                     )));
                 }
                 Ok(Started::Done(tilo_actions::ActionOutput::default()))

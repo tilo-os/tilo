@@ -111,14 +111,14 @@ impl Session {
         sync.set_where(pointer, shell);
     }
 
-    /// Speak for the agents the person admitted at this device's door, each in the workspace it
-    /// works in: a member of its own there, listed beside everyone else for everyone there, in its
-    /// own colour, saying what it is doing and the window of the app it does it in.
+    /// Speak for the agent sessions the person admitted at this device, each in the workspace it
+    /// works in: one presence per session, listed beside everyone else for everyone there, in its
+    /// agent's colour, saying what it is doing and the window of the app it does it in.
     fn say_agents_here(&self, sync: &crate::sync::Client) {
         use tilo_session_client::narration::lines;
-        let seated = self.shared.seats.here();
+        let present = self.shared.agent_sessions.here();
         let runs: Vec<(String, String, ShellPresence)> = self.shared.handle.read(|tree| {
-            seated
+            present
                 .into_iter()
                 .map(|seated| {
                     let (line, focus) = match &seated.doing {
@@ -138,10 +138,9 @@ impl Session {
                         }
                         None => (lines::waiting(), None),
                     };
-                    // The colour the agent wears wherever it shows: the one what it was admitted as
-                    // gives it, never the run it works in, and clear of the colour of the person it
-                    // works for — the one rule and the one key every surface asks (the workspace's
-                    // member list keys it so for its card in a window and its marks).
+                    // The colour the agent wears wherever it shows: its member's, the same for each
+                    // of its sessions, and clear of the colour of the person it works for — the one
+                    // rule and the one key every surface asks.
                     let (r, g, b) = ui::presence::member_color(
                         &ui::permissions::MemberId::agent(&seated.agent),
                         Some(&self.shared.person),
@@ -155,7 +154,7 @@ impl Session {
                         focus.as_ref(),
                         None,
                     );
-                    (seated.workspace, seated.agent, face)
+                    (seated.workspace, seated.session.0, face)
                 })
                 .collect()
         });

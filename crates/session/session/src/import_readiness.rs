@@ -134,7 +134,7 @@ impl Readiness {
                 )
             })?;
         let path = directory.join(file);
-        let listener = crate::agent_door::bind_private(&path)?;
+        let listener = crate::mcp_server::bind_private(&path)?;
         listener.set_nonblocking(true)?;
         let bound = fs::symlink_metadata(&path)?;
         Ok(Self {

@@ -104,7 +104,7 @@ impl Published for ServiceDoor {
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::door::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        // An agent is named `agent:<id>` , as the agent door names it.
+        // An agent is named `agent:<id>` , as the MCP server names it.
         let invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(actor));
         match self.services.borrow_mut().invoke_by(
             &invoker,

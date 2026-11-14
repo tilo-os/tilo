@@ -1,4 +1,4 @@
-//! An agent on another of the person's devices at this desktop's agent door,
+//! An agent on another of the person's devices at this desktop's MCP server,
 //! over iroh: the door this session answers on (`Session::remote_door`, what
 //! its endpoint serves on `tilo_runtime::remote_door::ALPN`) admits only the
 //! person's own devices, and an agent from one is asked about on the same
@@ -135,7 +135,7 @@ impl Person {
     }
 }
 
-/// This box: its headless session with the agent door open, the questions it asks the person, and
+/// This box: its headless session with the MCP server open, the questions it asks the person, and
 /// its endpoint answering the door toward the person's other devices.
 struct ThisBox {
     session: Session,
@@ -159,10 +159,10 @@ impl ThisBox {
             questions: Some(questions.clone()),
             collab: false,
             action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(socket.clone()),
+            mcp_server: Some(socket.clone()),
             state: Some(home.state().to_path_buf()),
             // The person's settings, as the session serves them: what the person sets this
-            // box's agent door with.
+            // box's MCP server with.
             services: vec![std::boxed::Box::new(
                 tilo_settings_service::SettingsService::new(),
             )],
@@ -445,7 +445,7 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
     // an agent of theirs does: the setting's own verb.
     b.session
         .invoke(
-            "settings:settings.agent-door",
+            "settings:settings.mcp-server",
             "set-accept-own-devices",
             json!({"on": true}).as_object().unwrap(),
         )
@@ -789,7 +789,7 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
         state: Some(computer.state.path().to_path_buf()),
         questions: Some(questions.clone()),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
-        agent_door: Some(root.path().join("agent.sock")),
+        mcp_server: Some(root.path().join("agent.sock")),
         services: vec![Box::new(notebook)],
         ..Options::default()
     });
@@ -1019,10 +1019,10 @@ impl DeskWithNotes {
             state: Some(computer.state.path().to_path_buf()),
             questions: Some(questions.clone()),
             action_plane: ActionPlane::At(plane.clone()),
-            agent_door: Some(socket.clone()),
+            mcp_server: Some(socket.clone()),
             launches,
             // The person's settings, as the session serves them: what they set this computer's
-            // agent door with.
+            // MCP server with.
             services: vec![Box::new(tilo_settings_service::SettingsService::new())],
             ..Options::default()
         });
@@ -1083,12 +1083,12 @@ impl DeskWithNotes {
         }
     }
 
-    /// Set the switch `verb` of this computer's agent door, as Settings, the palette or an agent of
+    /// Set the switch `verb` of this computer's MCP server, as Settings, the palette or an agent of
     /// the person's does: the setting's own verb.
     fn set(&mut self, verb: &str, holds: fn(&serde_json::Map<String, Value>) -> bool) {
         self.session
             .invoke(
-                "settings:settings.agent-door",
+                "settings:settings.mcp-server",
                 verb,
                 json!({"on": true}).as_object().unwrap(),
             )

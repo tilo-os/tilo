@@ -16,7 +16,7 @@ use tilo_peer_state::join::agent_cert::AgentCert;
 
 const HOUR_NS: u64 = 3600 * 1_000_000_000;
 /// The issue the door's connection works in.
-const DOOR_ISSUE: &str = "so.tilo.session/agent-door/door-session";
+const DOOR_ISSUE: &str = "so.tilo.session/agent-session/door-session";
 /// The host steps' provider in this fixture.
 const DESKTOP_PROVIDER: &str = "test-desktop";
 

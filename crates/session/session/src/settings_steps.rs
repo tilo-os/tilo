@@ -3,7 +3,7 @@
 //! Settings' sections are records another provider keeps: its window shows them and binds its
 //! controls to their field edits, and each control's action says `run_by("tilo.settings")`, so
 //! the click leaves the window as an invocation at that provider through the workspace's broker
-//! ([`crate::agent_door`]'s caller). The session keeps the settings itself, in its settings
+//! ([`crate::mcp_server`]'s caller). The session keeps the settings itself, in its settings
 //! service, which publishes every section as `settings:<kind>`; this is the provider the broker
 //! answers those actions under, so a control of Settings' window changes the settings the
 //! session publishes whether or not Settings is open, as a script's change does.

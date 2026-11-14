@@ -665,8 +665,8 @@ impl Session {
         if let Some(index) = &record_index {
             index.sweep();
         }
-        // The agent door toward the person's other devices: answered on this device's
-        // endpoint, and served by the agent door once it opens.
+        // The MCP server toward the person's other devices: answered on this device's
+        // endpoint, and served by the MCP server once it opens.
         let remote = crate::remote_door::Remote::new(options.wake.handle());
         let peer_documents = crate::sync::PeerDocuments::new(
             std::sync::Arc::clone(&channels_broker),
@@ -866,9 +866,9 @@ impl Session {
         // The desk as the session publishes it, which the shell reads through the door.
         let chrome_door = crate::shell::chrome_door(options.shell, &chrome, surfaces.clone());
         doors.add(Rc::clone(&chrome_door));
-        // The seam the agent door's connections ask this session's own doors on: made before
+        // The seam the MCP server's connections ask this session's own doors on: made before
         // the plane starts, which serves the programs.
-        let session_doors = std::sync::Arc::new(crate::agent_door::SessionDoors::new(
+        let session_doors = std::sync::Arc::new(crate::mcp_server::SessionDoors::new(
             options.wake.handle(),
             &options.person,
         ));
@@ -902,9 +902,9 @@ impl Session {
         // own among them, beside the conversations' turns.
         session_doors.keep_runs(conversations.runs());
         // The agents the person admits at its door, as the desk and the bar show them.
-        let seats = crate::agent_door::Seats::new();
+        let agent_sessions = crate::agent_sessions::AgentSessions::new();
         let desk = crate::desk_resource::desk_from(crate::desk_resource::Shared {
-            seats: std::sync::Arc::clone(&seats),
+            agent_sessions: std::sync::Arc::clone(&agent_sessions),
             handle: handle.clone(),
             person: options.person.clone(),
             activities: Rc::clone(&activities),
@@ -1197,7 +1197,7 @@ impl Session {
             nearby.attach_authority(std::sync::Arc::clone(&plane.desk)
                 as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>);
         }
-        // The agent door: a program of this login asks here to work in a
+        // The MCP server: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
         // binds first, and is served from the broker the plane starts, which
         // already decides against the desk the loop shows.
@@ -1246,7 +1246,7 @@ impl Session {
         // socket opens, because a program inside an app this session started is served at it too.
         // The activity undoes an agent's run in the records it changed through the same door.
         let door_host = std::sync::Arc::new(
-            crate::agent_door::Host::new(
+            crate::mcp_server::Host::new(
                 action_plane.as_ref().and_then(Plane::agent_broker),
                 std::sync::Arc::clone(&session_doors),
             )
@@ -1257,20 +1257,20 @@ impl Session {
         activity.attach_content(std::sync::Arc::clone(&record_content));
         let control = crate::test_control::Control::open(&options, door_host);
         tilo_startup_metrics::mark("control-door-open");
-        let door = crate::agent_door::mount_named(
+        let door = crate::mcp_server::mount_named(
             &options,
             questions.clone(),
             std::sync::Arc::clone(&session_doors),
             control.door(),
-            std::sync::Arc::clone(&seats),
+            std::sync::Arc::clone(&agent_sessions),
         );
         // Beside the harness's control socket: whether the loop still turns,
         // and where every thread stands when it does not. A session without
         // one serves no such door, and no other session does either.
         let liveness = options.test_control.as_deref().and_then(|control| {
-            compositor.serve_liveness(control, crate::agent_door::bind_private)
+            compositor.serve_liveness(control, crate::mcp_server::bind_private)
         });
-        let agent_door = door.map(|door| {
+        let mcp_server = door.map(|door| {
             let mut door = door.serve(
                 action_plane.as_ref().and_then(Plane::agent_broker),
                 action_plane
@@ -1532,7 +1532,7 @@ impl Session {
             table,
             window_shares,
             pages: crate::page_track::PageTracks::new(),
-            seats,
+            agent_sessions,
             hosted: !options.machine.is_owned(),
             fabric: fabric.clone(),
             vpn,
@@ -1588,7 +1588,7 @@ impl Session {
             notifications: Rc::clone(&notifications),
             mentions,
             asker,
-            agent_door: RefCell::new(agent_door),
+            mcp_server: RefCell::new(mcp_server),
             session_doors,
             remote: std::sync::Arc::clone(&remote),
             folder_import: RefCell::new(None),
@@ -1627,7 +1627,7 @@ impl Session {
         if let (Some(launch), Some(engine)) = (&shared.launch, &shared.engine) {
             let (engine, handle) = (std::sync::Arc::clone(engine), shared.handle.clone());
             launch.lend_admission(Rc::new(move |workspace: &str| {
-                crate::agent_door::awaited_reason(&engine, &handle, workspace)
+                crate::mcp_server::awaited_reason(&engine, &handle, workspace)
             }));
         }
         shared.start_search();
@@ -1842,7 +1842,7 @@ impl Session {
         if let Some(tabs) = &mut self.tabs {
             tabs.wake_on(&mut self.compositor)?;
         }
-        if let Some(door) = self.shared.agent_door.get_mut() {
+        if let Some(door) = self.shared.mcp_server.get_mut() {
             door.wake_on(&mut self.compositor)?;
         }
         if let Some(import) = self.shared.folder_import.get_mut().as_mut() {
@@ -2223,7 +2223,7 @@ impl Session {
 
     /// The broker this session's apps and agents reach its actions through, while it serves
     /// one: what a test asks for the catalogue an agent working a turn is offered, and invokes
-    /// a step of it through, as the agent door does.
+    /// a step of it through, as the MCP server does.
     #[cfg(test)]
     #[must_use]
     pub fn action_broker(

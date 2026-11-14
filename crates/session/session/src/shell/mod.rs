@@ -711,7 +711,7 @@ impl Shell {
     pub(crate) fn share_records(
         &self,
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
-        doors: &crate::agent_door::SessionDoors,
+        doors: &crate::mcp_server::SessionDoors,
     ) {
         let Some(compiled) = self.package() else {
             return;

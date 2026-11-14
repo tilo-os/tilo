@@ -1,6 +1,6 @@
 //! What the headless-session tests share: a private home for a session's sockets, the frames a test
 //! runs until the desk has done what it asked, the shell's laid-out tree read as assistive
-//! technology hears it, a press on one of its controls, the REPL's end of the agent door, and the
+//! technology hears it, a press on one of its controls, the REPL's end of the MCP server, and the
 //! test-control socket `tilo-control` drives a session over.
 //! Included once by `tests/it.rs` as `mod common`, as a directory is not a test target of its own:
 //! the same helpers serve the REPL's test, the shell screen's, the test-control socket's and the
@@ -545,7 +545,7 @@ pub fn seat_in(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
 }
 
 /// The headless session with the shell as the whole screen and the seeded apps published (notes,
-/// tasks, chat and mail), its agent door and test-control socket at `root`, admitting this
+/// tasks, chat and mail), its MCP server and test-control socket at `root`, admitting this
 /// test's program to act as the person, and the framed canvas in front. The apps are the ones
 /// installed in this run's app store ([`app_store`]).
 pub fn seeded_session(root: &Path) -> Session {
@@ -690,7 +690,7 @@ pub fn seeded_session_at(
             services: vec![Box::new(seeded)],
             questions: Some(Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
-            agent_door: Some(root.join("agent.sock")),
+            mcp_server: Some(root.join("agent.sock")),
             admit_repl,
             test_control: Some(root.join("test-control.sock")),
             apps,
@@ -706,7 +706,7 @@ pub fn seeded_session_at(
 }
 
 /// A headless session with the shell as the whole screen, the notes [`notebook`] published, its
-/// agent door and action plane at `root`, the questions the door's admission is asked through,
+/// MCP server and action plane at `root`, the questions the door's admission is asked through,
 /// and the programs named as admitted to act as the person ahead of time.
 pub fn repl_session(
     root: &Path,
@@ -724,7 +724,7 @@ pub fn repl_session(
             services: vec![Box::new(notes)],
             questions: Some(questions.clone()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
-            agent_door: Some(root.join("agent.sock")),
+            mcp_server: Some(root.join("agent.sock")),
             admit_repl,
             ..Options::default()
         },
@@ -799,7 +799,7 @@ pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The REPL's end of the agent door, on a thread of its own so the session runs while it waits: it
+/// The REPL's end of the MCP server, on a thread of its own so the session runs while it waits: it
 /// sends each request it is handed and hands back the answer to it.
 pub struct Repl {
     asks: Sender<Value>,
@@ -820,7 +820,7 @@ impl Repl {
         let (asks, asked) = std::sync::mpsc::channel::<Value>();
         let (answer, answers) = std::sync::mpsc::channel::<Value>();
         std::thread::spawn(move || {
-            let stream = UnixStream::connect(&socket).expect("the agent door's socket");
+            let stream = UnixStream::connect(&socket).expect("the MCP server's socket");
             let mut writer = stream.try_clone().expect("a second handle on the door");
             let mut reader = BufReader::new(stream);
             for request in asked {

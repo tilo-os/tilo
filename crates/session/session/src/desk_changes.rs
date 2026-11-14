@@ -1,5 +1,5 @@
 //! What changed in the records of a workspace this desktop holds: the feed a watch of the whole
-//! workspace reads through the agent door ([`tilo_actions::remote::ChangeFeed`]), from the
+//! workspace reads through the MCP server ([`tilo_actions::remote::ChangeFeed`]), from the
 //! device's replica of the workspace, as a relay's workspace answers it from its own
 //! ([`ui::history_source::feed`]).
 //!

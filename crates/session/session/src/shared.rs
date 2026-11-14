@@ -465,7 +465,7 @@ impl Shared {
         // A program of this login asking to work as an agent is a question of the person's: their
         // answer admits it, and the client is served from the next pass on.
         if !self.boot_join.borrow().waiting()
-            && let Some(door) = self.agent_door.borrow_mut().as_mut()
+            && let Some(door) = self.mcp_server.borrow_mut().as_mut()
         {
             let feed = self.workspace_settings_feed();
             door.follow(

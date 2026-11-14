@@ -3,7 +3,7 @@
 //! [--shell screen] [--host-desktop] [--admit-repl PATH]... [--agent-key FILE]
 //! [--test-control PATH] [--admin-control PATH] [--seed-apps] [-- command args...]`.
 //! It listens on a fresh `wayland-N` socket, serves X11 clients one display per
-//! workspace (unless `--no-x11`), prints the socket and the agent door it serves,
+//! workspace (unless `--no-x11`), prints the socket and the MCP server it serves,
 //! and starts `command` with `WAYLAND_DISPLAY` set to it; with a command, the
 //! session lasts as long as it does. A nested session serves no bus unless a flag
 //! names one. SIGTERM, SIGINT and SIGHUP end the session as ending on its own does.
@@ -199,7 +199,7 @@ struct CommandLine {
     reach: Reach,
     /// Whether the tilolang shell runs, when the command line asked for it.
     shell: bool,
-    /// The programs the person admits to act as them at the agent door
+    /// The programs the person admits to act as them at the MCP server
     /// (`--admit-repl PATH`, as often as they name one): their decision,
     /// made as they start the session.
     admit_repl: Vec<std::path::PathBuf>,
@@ -476,7 +476,7 @@ fn reach(ours: &[String], backend: Backend) -> Reach {
     )
 }
 
-/// The programs the person admits to act as them at the agent door (`--admit-repl PATH`, as often
+/// The programs the person admits to act as them at the MCP server (`--admit-repl PATH`, as often
 /// as they name one).
 #[cfg(target_os = "linux")]
 fn admit_repl(ours: &[String]) -> Vec<std::path::PathBuf> {
@@ -714,11 +714,11 @@ fn start(
         hosted_browser,
         ..device_options(machine, config)
     };
-    // A session in another desktop's window serves no agent door of its own, unless the person
+    // A session in another desktop's window serves no MCP server of its own, unless the person
     // started it naming a program they admit to act as them there (`--admit-repl`): that program
     // reaches it only through a door, and the window's private runtime directory holds it.
-    if options.agent_door.is_none() && !options.admit_repl.is_empty() {
-        options.agent_door = tilo_session::agent_door::path();
+    if options.mcp_server.is_none() && !options.admit_repl.is_empty() {
+        options.mcp_server = tilo_session::mcp_server::path();
     }
     // The person's files: the login's files daemon serves them as the Files app's windowless
     // endpoint, so the session records its process before the daemon's connections to the broker
@@ -767,7 +767,7 @@ fn start(
             }
         }
     }
-    let agent_door = options.agent_door.clone();
+    let mcp_server = options.mcp_server.clone();
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();
     tilo_startup_metrics::mark("session-open-start");
@@ -792,7 +792,7 @@ fn start(
         reach.export_displays,
         host_desktop,
         &Doors {
-            agent: agent_door.as_deref(),
+            agent: mcp_server.as_deref(),
             test_control: test_control.as_deref(),
             admin: admin_control.as_deref(),
         },
@@ -802,7 +802,7 @@ fn start(
 /// The sockets the session bound as it started, printed for what drives it.
 #[cfg(target_os = "linux")]
 struct Doors<'a> {
-    /// The agent door (`TILO_AGENT_DOOR=`).
+    /// The MCP server (`TILO_MCP_SERVER=`).
     agent: Option<&'a std::path::Path>,
     /// The development test-control socket (`TILO_TEST_CONTROL=`).
     test_control: Option<&'a std::path::Path>,
@@ -900,7 +900,7 @@ fn run(
     // Where a program of this login asks to work here as an agent: what `tilolang repl --door`
     // connects to. The session bound it as it started.
     if let Some(door) = doors.agent.filter(|door| door.exists()) {
-        println!("TILO_AGENT_DOOR={}", door.display());
+        println!("TILO_MCP_SERVER={}", door.display());
     }
     // Where `tilo-control` drives it, in a development build started with one.
     if let Some(control) = doors.test_control.filter(|control| control.exists()) {
@@ -1058,9 +1058,9 @@ fn device_options(
         // a session inside another desktop's window serves them on a socket of its own, leaving
         // that desktop's alone.
         action_plane: ActionPlane::for_machine(machine),
-        // A program of this login asks the person at the seat's agent door to work in a workspace
+        // A program of this login asks the person at the seat's MCP server to work in a workspace
         // as an agent; a session in another desktop's window serves none.
-        agent_door: owned.then(tilo_session::agent_door::path).flatten(),
+        mcp_server: owned.then(tilo_session::mcp_server::path).flatten(),
         // A session in another desktop's window dims none of the window's machine: the display it
         // draws in is that desktop's.
         backlights: owned.then(|| Box::new(Screens) as Box<dyn Backlights>),

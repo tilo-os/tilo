@@ -25,14 +25,14 @@ use tilo_sheets::portal::PortalEffect;
 
 use crate::common::{control, private_home};
 
-/// A headless session with the agent door open, and its questions asked on the session's sheets.
+/// A headless session with the MCP server open, and its questions asked on the session's sheets.
 fn session(root: &std::path::Path, socket: &std::path::Path) -> (Session, Questions) {
     let questions = Questions::new();
     let session = crate::common::headless(Options {
         questions: Some(questions.clone()),
         collab: false,
         action_plane: ActionPlane::At(root.join("plane.sock")),
-        agent_door: Some(socket.to_path_buf()),
+        mcp_server: Some(socket.to_path_buf()),
         ..Options::default()
     });
     (session, questions)
@@ -53,7 +53,7 @@ impl Program {
         let (served, answered) = mpsc::channel();
         let (leave, staying) = mpsc::channel();
         let ended = std::thread::spawn(move || {
-            let stream = UnixStream::connect(&socket).expect("the agent door's socket");
+            let stream = UnixStream::connect(&socket).expect("the MCP server's socket");
             stream
                 .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .expect("the program waits for the person");
@@ -290,7 +290,7 @@ fn an_answer_this_build_cannot_read_is_asked_again_and_told_once() {
     // What an older build kept: the client and the agent it asked, in a row this one does not read
     // (no program of theirs named).
     std::fs::write(
-        root.path().join("agent-door-bindings.json"),
+        root.path().join("mcp-server-bindings.json"),
         br#"{"bindings": [{"agent": "claude-code", "client": "Claude Code"}]}"#,
     )
     .expect("the answers kept");
@@ -301,7 +301,7 @@ fn an_answer_this_build_cannot_read_is_asked_again_and_told_once() {
         collab: false,
         state: Some(root.path().to_path_buf()),
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
-        agent_door: Some(socket),
+        mcp_server: Some(socket),
         ..Options::default()
     });
 

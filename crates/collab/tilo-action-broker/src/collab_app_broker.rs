@@ -5173,7 +5173,7 @@ impl AppBrokerState {
         // A door connection's run is the host's own and goes by the name its agent is seated as:
         // what everything the agent writes is named by, after it left too.
         if let Some(DurableContext::Task { binding, .. }) = &durable
-            && tilo_broker_core::services::is_door_run(&binding.task_id)
+            && tilo_broker_core::services::is_agent_session(&binding.task_id)
             && let Some(context) = context.as_mut()
             && let Some(invoker) = context.invoker.as_mut()
         {

@@ -311,6 +311,13 @@ impl BrokerActor {
             None => acting,
         };
         let acting = acting.on_foreign_device(self.capped);
+        // An MCP agent's run is its agent session.
+        let acting = match &self.issue {
+            Some(issue) if crate::services::is_agent_session(issue) => {
+                acting.in_session(issue.clone())
+            }
+            _ => acting,
+        };
         match &self.issue {
             Some(issue) => acting.caused_by(issue.clone()),
             None => acting,
@@ -517,5 +524,36 @@ impl BrokerActor {
     /// least read the workspace.
     pub fn reads_in(&self, workspace: &Workspace, now: u64) -> bool {
         self.answer_in(workspace, &workspace.node(), ActionKind::Read, now) != Answer::Deny
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BrokerActor;
+
+    /// A change an agent session makes records the session beside the agent and the person it
+    /// acts for.
+    #[test]
+    fn an_agent_sessions_change_names_the_session() {
+        let session = format!("{}s1", crate::services::AGENT_SESSION_PREFIX);
+        let acting = BrokerActor::agent("agent:a1")
+            .for_person("p1")
+            .working_on(session.clone())
+            .acting();
+        assert_eq!(acting.agent_id(), Some("a1"));
+        assert_eq!(
+            acting
+                .agent_session
+                .as_ref()
+                .map(tilo_action_policy::AgentSessionId::as_str),
+            Some(session.as_str())
+        );
+        let tracked = BrokerActor::agent("agent:a1")
+            .working_on("tasks.tracker/issues/i_1")
+            .acting();
+        assert_eq!(
+            tracked.agent_session, None,
+            "a tracker issue is no agent session"
+        );
     }
 }

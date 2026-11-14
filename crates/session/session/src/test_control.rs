@@ -39,8 +39,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
 use tilo_session_core::door::Doors;
 
-use crate::agent_door::{self, PeerRefusal};
 use crate::engine::Engine;
+use crate::mcp_server::{self, PeerRefusal};
 
 mod gesture_input;
 mod state;
@@ -200,7 +200,7 @@ pub(crate) struct Desk<'a> {
     pub(crate) overview: &'a std::cell::Cell<bool>,
     pub(crate) engine: Option<&'a Engine>,
     /// The agents the person admitted at its door, as the desk's bar shows them.
-    pub(crate) seats: &'a std::sync::Arc<agent_door::Seats>,
+    pub(crate) agent_sessions: &'a std::sync::Arc<crate::agent_sessions::AgentSessions>,
     /// Who is here, as the collaboration plane says it: this session's membership of each
     /// workspace, when it takes part in one.
     pub(crate) sync: Option<&'a crate::sync::Client>,
@@ -559,7 +559,7 @@ pub(crate) struct Door {
 impl Control {
     /// The sockets `options` name, opened. The actions and the change signal exist whether or not
     /// one does: the app door answers the programs it admits through them too.
-    pub(crate) fn open(options: &crate::Options, host: Arc<agent_door::Host>) -> Self {
+    pub(crate) fn open(options: &crate::Options, host: Arc<mcp_server::Host>) -> Self {
         let (asks, asked) = channel();
         let changes = Arc::new(Changes::new(options.wake.handle()));
         let actions = Arc::new(Actions {
@@ -719,7 +719,7 @@ impl Socket {
     /// what a program asks of the actions is answered there, never after a pass of the loop, and
     /// what it asks of the loop wakes the loop itself.
     fn open(path: &Path, gate: Gate, door: Arc<Door>) -> io::Result<Self> {
-        let listener = agent_door::bind_private(path)?;
+        let listener = mcp_server::bind_private(path)?;
         let stopped = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopped);
         let at = path.to_path_buf();
@@ -754,7 +754,7 @@ fn accept(
         };
         if gate == Gate::Owner
             && let Err(refusal) =
-                agent_door::identify(&stream).and_then(|(_, peer)| agent_door::peer_decision(&peer))
+                mcp_server::identify(&stream).and_then(|(_, peer)| mcp_server::peer_decision(&peer))
         {
             tracing::info!(?refusal, path = %path.display(), "control: a connection is refused");
             refuse_owner(stream, &refusal);
@@ -1400,8 +1400,8 @@ fn asked_of_keys(
 
 /// The actions the control sockets invoke, and how they are asked as.
 struct Actions {
-    /// The broker, with the session's own doors beside it ([`crate::agent_door::Host`]).
-    host: Arc<agent_door::Host>,
+    /// The broker, with the session's own doors beside it ([`crate::mcp_server::Host`]).
+    host: Arc<mcp_server::Host>,
     /// The person's own caller, made once and cloned: the broker remembers an invocation under the
     /// caller that admitted it, so a status or a cancel reads it back as the same caller.
     caller: Caller,

@@ -619,9 +619,9 @@ fi
 rm -rf "$runtime"
 mkdir -m 700 "$runtime"
 export XDG_RUNTIME_DIR=$runtime
-# The session's agent door, where an agent in a terminal of this login (and `tilolang repl`)
+# The session's MCP server, where an agent in a terminal of this login (and `tilolang repl`)
 # reaches it as an admitted agent, at the path a real session's has.
-export TILO_AGENT_DOOR=${TILO_AGENT_DOOR:-$runtime/tilo-session/agent.sock}
+export TILO_MCP_SERVER=${TILO_MCP_SERVER:-$runtime/tilo-session/agent.sock}
 control=$runtime/control.sock
 children=()
 # Stop the process groups the given children lead: each child leads its own

@@ -1,5 +1,5 @@
 //! A program's `find` over an app's records, from the person's REPL and from an agent of theirs,
-//! both admitted at the session's agent door.
+//! both admitted at the session's MCP server.
 //!
 //! A task's programs read each app's record as the door hands it over
 //! (`docs/designs/app-language/agents.md`, "Reading records outside their app"): every tilolang

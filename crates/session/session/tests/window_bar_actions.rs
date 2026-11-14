@@ -197,7 +197,7 @@ fn strip_of(session: &Session, record: &str) -> String {
 }
 
 /// Show the strip `strip` as the one in front, as a press on its window's "Bring to front" does:
-/// the shell's own `focus_strip`, through the agent door.
+/// the shell's own `focus_strip`, through the MCP server.
 fn focus_strip(session: &mut Session, root: &std::path::Path, strip: &str) {
     let mut repl = Repl::connect(&root.join("agent.sock"));
     repl.opened(session);

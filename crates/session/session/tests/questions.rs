@@ -1048,7 +1048,7 @@ fn door_client(
     answers: &std::sync::mpsc::Sender<Vec<Value>>,
     hold: Option<std::sync::mpsc::Receiver<()>>,
 ) {
-    let stream = UnixStream::connect(socket).expect("the agent door's socket");
+    let stream = UnixStream::connect(socket).expect("the MCP server's socket");
     stream
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .expect("the client waits for the person");
@@ -1112,7 +1112,7 @@ fn seated_agents(session: &Session) -> Vec<String> {
         .unwrap_or_default()
         .into_iter()
         .filter(|agent| agent["seat"] == true)
-        .map(|agent| agent["key"].as_str().unwrap_or_default().to_owned())
+        .map(|agent| agent["name"].as_str().unwrap_or_default().to_owned())
         .collect()
 }
 
@@ -1126,11 +1126,11 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
         questions: Some(questions.clone()),
         collab: false,
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
-        agent_door: Some(socket.clone()),
+        mcp_server: Some(socket.clone()),
         ..Options::default()
     });
     // Nobody set this desk's owner up: the desk a device seeds is the person's own, and it is what
-    // lets the Agent door's question be answered at all.
+    // lets the MCP server's question be answered at all.
     assert!(desk_agents(&session).is_empty(), "nobody works here yet");
 
     let (answers, received) = std::sync::mpsc::channel();
@@ -1180,22 +1180,21 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     pump(&mut session, |session| {
         seated_agents(session)
             .iter()
-            .any(|agent| agent == "claude-code@host#1")
+            .any(|agent| agent == "Claude Code #1")
     });
     assert_eq!(
         seated_agents(&session),
-        ["claude-code@host#1".to_owned()],
+        ["Claude Code #1".to_owned()],
         "the bar shows the agent the person let in while it works here"
     );
     assert!(
         desk_agents(&session).is_empty(),
-        "it works as this person's agent, not as a member of the workspace"
+        "its membership is the agent member, not a delegation on the desk"
     );
     assert_eq!(
         agents_tab(&mut session),
-        (true, Vec::new()),
-        "the person administers the desk they sit at, and no workspace agent \
-         joined behind their back"
+        (true, vec!["claude-code".to_owned()]),
+        "the person administers the desk they sit at, and the client is their agent member there"
     );
     let _ = release.send(());
     client.join().expect("the program's thread");
@@ -1211,7 +1210,7 @@ fn a_program_the_person_refuses_works_nowhere() {
         questions: Some(questions.clone()),
         collab: false,
         action_plane: ActionPlane::At(root.path().join("plane.sock")),
-        agent_door: Some(socket.clone()),
+        mcp_server: Some(socket.clone()),
         ..Options::default()
     });
 

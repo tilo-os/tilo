@@ -47,7 +47,7 @@ const GARDEN: &str = "2c9d7a61-0e3b-4c8f-a5d2-7b6e5f4a3c2d";
 /// A workspace on the desk the person is no member of.
 const ELSEWHERE: &str = "f1e2d3c4-b5a6-4978-8a9b-0c1d2e3f4a5b";
 
-/// One session at a time in this process: two headless sessions with agent doors side by side in
+/// One session at a time in this process: two headless sessions with MCP servers side by side in
 /// one test process wait on each other (as `agent_control`'s do), so these take turns.
 static ONE_SESSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -320,7 +320,7 @@ fn desk() -> Layout {
     }
 }
 
-/// A headless session on [`desk`], its agent door at `root`, its questions asked on its sheets.
+/// A headless session on [`desk`], its MCP server at `root`, its questions asked on its sheets.
 fn session(root: &Path) -> (Session, Questions, PathBuf) {
     let door = root.join("agent.sock");
     let questions = Questions::new();
@@ -331,7 +331,7 @@ fn session(root: &Path) -> (Session, Questions, PathBuf) {
             collab: false,
             person: PERSON.to_owned(),
             action_plane: ActionPlane::At(root.join("plane.sock")),
-            agent_door: Some(door.clone()),
+            mcp_server: Some(door.clone()),
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -398,8 +398,8 @@ fn allow(session: &mut Session, choice: usize) {
     press(session, PortalEffect::CONFIRM.id, json!({}));
 }
 
-/// The agents seated at the person's doors, as their desk lists them: each one's id, how the
-/// desk names it, and the workspace it works in.
+/// The agent sessions at the person's MCP servers, as their desk lists them: each one's id, how
+/// the desk names it, and the workspace it works in.
 fn seated(session: &Session) -> Vec<(String, String, String)> {
     session
         .read("session:agents")
@@ -414,11 +414,13 @@ fn seated(session: &Session) -> Vec<(String, String, String)> {
         .collect()
 }
 
-/// Wait until `agent` is seated, and say how.
+/// Wait until a session the desk calls `name` is here, and say how.
 #[track_caller]
-fn seated_as(session: &mut Session, agent: &str) -> (String, String, String) {
-    crate::common::wait_for(session, format!("{agent} at the desk"), |session| {
-        seated(session).into_iter().find(|(key, _, _)| key == agent)
+fn seated_as(session: &mut Session, name: &str) -> (String, String, String) {
+    crate::common::wait_for(session, format!("{name} at the desk"), |session| {
+        seated(session)
+            .into_iter()
+            .find(|(_, shown, _)| shown == name)
     })
 }
 
@@ -515,13 +517,9 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
         listed.get("error").is_none(),
         "it reaches the desktop's actions: {listed}"
     );
+    let (dev_session, _, doing) = seated_as(&mut session, "Claude Code in Env dev #1");
     assert_eq!(
-        seated_as(&mut session, "claude-code@dev#1"),
-        (
-            "claude-code@dev#1".to_owned(),
-            "Claude Code in Env dev #1".to_owned(),
-            "Studio".to_owned()
-        ),
+        doing, "Studio",
         "the desk shows the agent, from its environment, working in Studio"
     );
 
@@ -546,11 +544,8 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
 
     dev.end();
     crate::common::wait_for(&mut session, "the environment's door to go", |session| {
-        (!path.exists()
-            && !seated(session)
-                .iter()
-                .any(|(key, ..)| key == "claude-code@dev#1"))
-        .then_some(())
+        (!path.exists() && !seated(session).iter().any(|(key, ..)| *key == dev_session))
+            .then_some(())
     });
 }
 
@@ -618,7 +613,7 @@ fn always_allow_is_remembered_per_environment() {
     asked(&mut session, &questions);
     allow(&mut session, 2);
     assert!(first.answer(&mut session).get("result").is_some());
-    seated_as(&mut session, "claude-code@dev#1");
+    seated_as(&mut session, "Claude Code in Env dev #1");
 
     let again = Environment::open(&door, "dev", Some(STUDIO), Some(("Claude Code", "own")));
     again.door(&mut session);
@@ -627,7 +622,7 @@ fn always_allow_is_remembered_per_environment() {
         "let in as the person said"
     );
     assert!(questions.pending().is_empty(), "without asking");
-    seated_as(&mut session, "claude-code@dev#2");
+    seated_as(&mut session, "Claude Code in Env dev #2");
 
     let other = Environment::open(&door, "other", Some(STUDIO), Some(("Claude Code", "own")));
     other.door(&mut session);
@@ -678,19 +673,19 @@ fn two_programs_of_one_name_are_two_agents() {
         second.answers(&mut session)[0].get("result").is_some(),
         "the person let this program in for the session"
     );
-    seated_as(&mut session, "claude-code@host#1");
-    let (_, shown, doing) = seated_as(&mut session, "claude-code@host#2");
-    assert_eq!(shown, "Claude Code #2", "the desk tells them apart");
+    let (first_session, ..) = seated_as(&mut session, "Claude Code #1");
+    let (second_session, _, doing) = seated_as(&mut session, "Claude Code #2");
+    assert_ne!(first_session, second_session, "two sessions");
     assert_eq!(doing, "Garden");
 
     let mut stop = Map::new();
-    stop.insert("agent".to_owned(), json!("claude-code@host#1"));
+    stop.insert("agent".to_owned(), json!(first_session));
     session
         .invoke("session:agents", "stop-agent", &stop)
         .expect("the person's Stop");
     crate::common::wait_for(&mut session, "the first agent to stop", |session| {
         let keys: Vec<String> = seated(session).into_iter().map(|(key, ..)| key).collect();
-        (keys == ["claude-code@host#2".to_owned()]).then_some(())
+        (keys == [second_session.clone()]).then_some(())
     });
     first.end();
     second.end();
@@ -715,7 +710,7 @@ fn a_program_asks_for_a_workspace_the_person_may_grant() {
     );
     allow(&mut session, 0);
     assert!(studio.answers(&mut session)[0].get("result").is_some());
-    let (_, _, doing) = seated_as(&mut session, "claude-code@host#1");
+    let (_, _, doing) = seated_as(&mut session, "Claude Code #1");
     assert_eq!(doing, "Studio", "where it asked, not Garden in front");
 
     for workspace in [ELSEWHERE, "00000000-0000-4000-8000-000000000000"] {

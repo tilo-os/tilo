@@ -37,7 +37,7 @@ fn installed_apps(
     let installed = match app_catalogue::apps::signed_surfaces_from_env() {
         Ok(installed) => installed,
         Err(error) => {
-            tracing::warn!(%error, "agent door: the installed apps' surfaces are not read");
+            tracing::warn!(%error, "MCP server: the installed apps' surfaces are not read");
             Vec::new()
         }
     };
@@ -46,7 +46,7 @@ fn installed_apps(
             continue;
         }
         let Ok(surface) = String::from_utf8(surface) else {
-            tracing::warn!(%app, "agent door: an app's surface is not text");
+            tracing::warn!(%app, "MCP server: an app's surface is not text");
             continue;
         };
         named.insert(app.to_string());
@@ -122,14 +122,14 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
                 let task = match opened {
                     Ok(task) => task,
                     Err(error) => {
-                        tracing::warn!(task = request.task, %error, "agent door: a task's host did not start");
+                        tracing::warn!(task = request.task, %error, "MCP server: a task's host did not start");
                         return;
                     }
                 };
                 // Every line the door or the person sends is answered; the host ends when the door
                 // closes the connection, with the client that started it.
                 while task.serve_all() {}
-                tracing::debug!(task = request.task, "agent door: a task's host ended");
+                tracing::debug!(task = request.task, "MCP server: a task's host ended");
             })?;
         Ok(door_end.into())
     }

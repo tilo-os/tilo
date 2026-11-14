@@ -1,35 +1,29 @@
-//! The session's agent door. `$XDG_RUNTIME_DIR/tilo-session/agent.sock` (0600, in the session's
-//! 0700 directory) is where a program of this login — an AI agent in a terminal — reaches this
-//! desktop's actions as an *agent*, never as the person. Framing is newline-delimited MCP JSON-RPC
+//! The session's MCP server: how agents reach the action API. `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
+//! (0600, in the session's 0700 directory) is where a program of this login reaches this desktop's
+//! actions as an agent, never as the person. Framing is newline-delimited MCP JSON-RPC
 //! ([`tilo_runtime::session_door`]). Three gates stand between a connection and the desktop: its
 //! peer must be this session's own account in this session's namespaces; the person must allow it,
-//! on the sheet the question opens, to work in the workspace in front of them ([`Questions`]); and
-//! the broker then serves it as `Caller::local_person(person).delegated_to(agent)` , so discovery
-//! and invocation pass the same gate as every other caller. What it changes it changes in a run of
-//! its own, which the person's admission starts ([`DoorRun`], [`crate::door_runs`]): a task agent
-//! minted for the connection, which this device delegates, and whose run ends with it. An agent is
-//! not a member; the person's session is what ends it. Acting as the person is a request, never authority: the person decides
-//! it on the sheet, or ahead of time by naming the program when they start the session
-//! (`--admit-repl PATH`). "Always allow" is kept in this account's private state.
+//! on the sheet the question opens ([`Questions`]); and the broker then serves it as the person's
+//! agent member for that client. Each connection is one agent session
+//! ([`crate::agent_sessions`]): its own presence, its own run in history, and its own Stop. Acting
+//! as the person is a request, never authority: the person decides it on the sheet, or ahead of
+//! time by naming the program when they start the session (`--admit-repl PATH`). "Always allow"
+//! is kept in this account's private state.
 //!
-//! A confined environment (a `ush` guest) has a door of its own, which its `ush` asks for here
+//! A confined environment (a `ush` guest) has a server of its own, which its `ush` asks for here
 //! ([`environments`]): a program there works in the environment's workspace, and the person's
-//! answers about it are remembered per environment. A client of the session's own door may ask for
-//! a workspace by id instead of the one in front ([`tilo_runtime::session_door::WORKSPACE`]); it is
-//! admitted there only if the person is one of its people. Every connection the person admits is
-//! an agent of its own (`claude-code@host#2`), so its work is attributed to it, and the person's
-//! Stop ends it alone.
+//! answers about it are remembered per environment. A client may ask for a workspace by id instead
+//! of the one in front ([`tilo_runtime::session_door::WORKSPACE`]); it is admitted there only if
+//! the person is one of its people.
 
 mod agent_key;
 mod environments;
 mod room;
-mod seats;
 mod service_steps;
 mod task_hosts;
 
 use environments::Origin;
 pub(crate) use room::{Place, Room};
-pub(crate) use seats::{Agents, Seats, Working};
 pub(crate) use service_steps::invoke_service_step;
 use service_steps::{arguments_of, change_through, with_turn_beside};
 pub(crate) use task_hosts::TaskHosts;
@@ -58,30 +52,32 @@ use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
 
 use crate::Shared;
+use crate::agent_sessions::{AgentSessions, Doing};
 use crate::app_names::app_name;
 use crate::launches::Launches;
 use crate::plane::DeskAuthority;
 use crate::platform::steps::SessionSteps as _;
 use crate::remote_door::Remote;
+use tilo_action_policy::AgentSessionId;
 
 // The records a connection reads and changes, which the door answers for.
 mod records;
 pub(crate) use records::ServiceRecords;
 
 /// The kind of question the door asks the person.
-pub(crate) const KIND: &str = "session.agent-door";
+pub(crate) const KIND: &str = "session.mcp-server";
 
 /// Names the door when it is not the real seat's; honoured by developer builds only.
-pub(crate) const ENV: &str = "TILO_AGENT_DOOR";
+pub(crate) const ENV: &str = "TILO_MCP_SERVER";
 
 /// How often a waiting connection looks for the person's answer and for its client.
 const ASK_EVERY: Duration = Duration::from_millis(50);
 
 /// Where "Always allow" answers are kept, under the session's state directory.
-const BINDINGS_FILE: &str = "agent-door-bindings.json";
+const BINDINGS_FILE: &str = "mcp-server-bindings.json";
 
 /// Where this session's door goes: the seat's own well-known path, or the absolute path a developer
-/// named in `TILO_AGENT_DOOR` . `None` when there is no runtime directory to put it in.
+/// named in `TILO_MCP_SERVER` . `None` when there is no runtime directory to put it in.
 #[must_use]
 pub fn path() -> Option<PathBuf> {
     path_in(std::env::var_os(ENV), std::env::var_os("XDG_RUNTIME_DIR"))
@@ -134,7 +130,7 @@ impl Facts {
     fn subject(&self) -> String {
         if let Some(origin) = &self.origin {
             return words(
-                "agent-door-client-from-device",
+                "mcp-server-client-from-device",
                 &[("client", &self.client), ("device", &origin.name())],
             );
         }
@@ -143,17 +139,17 @@ impl Facts {
             |name| name.to_string_lossy().into_owned(),
         );
         let who = words(
-            "agent-door-client",
+            "mcp-server-client",
             &[("client", &self.client), ("program", &program)],
         );
         let who = match &self.app {
-            Some(app) => words("agent-door-client-in-app", &[("who", &who), ("app", app)]),
+            Some(app) => words("mcp-server-client-in-app", &[("who", &who), ("app", app)]),
             None => who,
         };
         match &self.entrance {
             Origin::Host => who,
             Origin::Environment(environment) => words(
-                "agent-door-client-in-environment",
+                "mcp-server-client-in-environment",
                 &[("who", &who), ("environment", &environment.name)],
             ),
         }
@@ -201,8 +197,7 @@ struct Request {
     workspace: Option<String>,
     /// The agent key it presents ([`agent_key`]), which decides it without asking the person.
     key: Option<String>,
-    /// The seat it is served at, once the person answers.
-    seat: u64,
+    session: AgentSessionId,
     /// Answered by the loop once the person decided and the agent is a member; dropped by the
     /// connection when its client leaves, which withdraws the question.
     decide: tokio::sync::oneshot::Sender<Consent>,
@@ -213,14 +208,12 @@ struct Waiting {
     facts: Facts,
     as_person: bool,
     workspace: String,
-    /// The workspace as the person reads it, for its seat on their desk.
+    /// The workspace as the person reads it.
     workspace_name: String,
-    /// The seat it is served at, once the person answers.
-    seat: u64,
-    /// The agent it is remembered as, and the agent of its own it is admitted as
-    /// (`claude-code@host#2`), shown as `shown` on the desk.
+    session: AgentSessionId,
+    /// The program the answer is remembered for (`claude-code`), and what the desk calls the
+    /// session (`Claude Code #2`).
     agent: String,
-    proposed: String,
     shown: String,
     /// The question up for it; dropping it withdraws the question.
     asked: Option<Asked>,
@@ -382,8 +375,7 @@ pub(crate) struct Loop {
     /// The control protocol's door, which a program inside an app this session started is served
     /// at, as that app.
     control: Arc<crate::test_control::Door>,
-    /// The agents the person admitted, as their desk seats them.
-    seats: Arc<Seats>,
+    sessions: Arc<AgentSessions>,
     /// What the person's other devices connect with, and how this one reaches theirs
     /// ([`crate::remote_door`]).
     remote: Option<Arc<Remote>>,
@@ -403,7 +395,7 @@ struct Serving {
     launches: Arc<Launches>,
     wake: Wake,
     control: Arc<crate::test_control::Door>,
-    seats: Arc<Seats>,
+    sessions: Arc<AgentSessions>,
     /// The places connections are served in: as many as the door serves at once.
     room: Room,
     environments: environments::Opener,
@@ -416,7 +408,7 @@ impl Serving {
     fn serve(&self, place: Place, stream: UnixStream, from: From) {
         let serving = self.clone();
         let spawned = std::thread::Builder::new()
-            .name("tilo-agent-door".into())
+            .name("tilo-mcp-server".into())
             .spawn(move || {
                 serve_connection(Opened { stream, from }, &serving);
                 drop(place);
@@ -425,7 +417,7 @@ impl Serving {
             });
         if let Err(error) = spawned {
             // The thread that did not start took the connection, and its place, with it.
-            tracing::warn!(%error, "agent door: a connection could not be served");
+            tracing::warn!(%error, "MCP server: a connection could not be served");
         }
     }
 }
@@ -451,10 +443,10 @@ pub(crate) fn mount_named(
     questions: Option<Questions>,
     doors: Arc<SessionDoors>,
     control: Arc<crate::test_control::Door>,
-    seats: Arc<Seats>,
+    sessions: Arc<AgentSessions>,
 ) -> Option<Mounted> {
-    let path = options.agent_door.as_deref()?;
-    match mount(Doorway {
+    let path = options.mcp_server.as_deref()?;
+    match mount(Mounting {
         path,
         questions,
         launches: Arc::clone(&options.launches),
@@ -464,11 +456,11 @@ pub(crate) fn mount_named(
         agent_key: options.agent_key.as_deref(),
         doors,
         control,
-        seats,
+        sessions,
     }) {
         Ok(mounted) => Some(mounted),
         Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "the agent door does not open");
+            tracing::warn!(%error, path = %path.display(), "the MCP server does not open");
             None
         }
     }
@@ -478,7 +470,7 @@ pub(crate) fn mount_named(
 /// apps this session started, where "Always allow" is kept, the programs named to admit, the
 /// session's own doors, the workspace governance it holds, and the control door a program inside an
 /// app drives.
-pub(crate) struct Doorway<'a> {
+pub(crate) struct Mounting<'a> {
     path: &'a Path,
     questions: Option<Questions>,
     launches: Arc<Launches>,
@@ -489,17 +481,17 @@ pub(crate) struct Doorway<'a> {
     agent_key: Option<&'a Path>,
     doors: Arc<SessionDoors>,
     control: Arc<crate::test_control::Door>,
-    seats: Arc<Seats>,
+    sessions: Arc<AgentSessions>,
 }
 
-/// Bind the door `doorway` names. "Always allow" answers are kept under its
+/// Bind the server `mounting` names. "Always allow" answers are kept under its
 /// `state`, when the session keeps anything.
 ///
 /// # Errors
 /// The path is not a socket, another session answers on it, or it cannot be
 /// bound.
-pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
-    let Doorway {
+pub(crate) fn mount(mounting: Mounting<'_>) -> io::Result<Mounted> {
+    let Mounting {
         path,
         questions,
         launches,
@@ -509,8 +501,8 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         agent_key,
         doors,
         control,
-        seats,
-    } = doorway;
+        sessions,
+    } = mounting;
     let agent_key = agent_key.and_then(agent_key::AgentKey::kept);
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
@@ -530,7 +522,7 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         .filter_map(|program| match std::fs::canonicalize(program) {
             Ok(program) => Some(program),
             Err(error) => {
-                tracing::warn!(%error, program = %program.display(), "agent door: the program named to admit is not there");
+                tracing::warn!(%error, program = %program.display(), "MCP server: the program named to admit is not there");
                 None
             }
         })
@@ -560,7 +552,7 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         person_session: std::collections::HashSet::new(),
         doors,
         control,
-        seats,
+        sessions,
         remote: None,
         environments,
         agent_key,
@@ -573,7 +565,7 @@ impl Shared {
     /// agent they let work here is asked about again, and they are told why rather than losing the
     /// answer in silence.
     pub(crate) fn tell_agent_bindings_lost(&self) {
-        let mut door = self.agent_door.borrow_mut();
+        let mut door = self.mcp_server.borrow_mut();
         let Some(door) = door.as_mut() else {
             return;
         };
@@ -633,7 +625,7 @@ impl Loop {
                 Ok((stream, _)) => stream,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
                 Err(error) => {
-                    tracing::warn!(%error, "agent door: accepting a connection failed");
+                    tracing::warn!(%error, "MCP server: accepting a connection failed");
                     return;
                 }
             };
@@ -653,7 +645,7 @@ impl Loop {
             let (place, from) = match pressed {
                 Ok(served) => served,
                 Err(refusal) => {
-                    tracing::info!(?refusal, "agent door: a connection is refused");
+                    tracing::info!(?refusal, "MCP server: a connection is refused");
                     refuse(stream, &refusal);
                     continue;
                 }
@@ -693,7 +685,7 @@ impl Loop {
             launches: Arc::clone(&self.launches),
             wake: Arc::clone(&self.wake),
             control: Arc::clone(&self.control),
-            seats: Arc::clone(&self.seats),
+            sessions: Arc::clone(&self.sessions),
             room: self.room.clone(),
             environments: self.environments.opener(),
         }
@@ -712,7 +704,7 @@ impl Loop {
             facts,
             as_person,
             workspace: asked,
-            seat,
+            session,
             decide,
             ..
         } = request;
@@ -742,7 +734,7 @@ impl Loop {
                 .as_ref()
                 .is_some_and(|key| self.person_session.contains(key));
             if named || earlier {
-                tracing::info!(client = %facts.client, pid = facts.pid, named, "agent door: the person admitted this client to act as them");
+                tracing::info!(client = %facts.client, pid = facts.pid, named, "MCP server: the person admitted this client to act as them");
                 let _ = decide.send(Consent::Person {
                     workspace,
                     person: person.to_owned(),
@@ -761,13 +753,10 @@ impl Loop {
             (facts.origin.is_some() && Remote::accepts_own_devices()).then(|| facts.proposed())
         });
         if let Some(agent) = ahead {
-            let (agent, shown) = self.agent_of(&agent, &facts);
-            tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "agent door: what the person said ahead of time admits this client");
-            let consent = as_member(members, &facts, (&workspace, person), shown.clone());
-            if matches!(consent, Consent::Admit { .. }) {
-                self.seats
-                    .admitted(seat, &agent, &shown, (workspace.as_str(), name.as_str()));
-            }
+            let (instance, shown) = self.agent_of(&agent, &facts);
+            tracing::info!(client = %facts.client, pid = facts.pid, %instance, %workspace, "MCP server: what the person said ahead of time admits this client");
+            let consent = as_member(members, &facts, (&workspace, person), shown);
+            self.sessions.admit(&session, &consent, &agent, &name);
             let _ = decide.send(consent);
             return;
         }
@@ -789,10 +778,10 @@ impl Loop {
             pid = facts.pid,
             agent = %proposed,
             %workspace,
-            "agent door: asking the person"
+            "MCP server: asking the person"
         );
         let asked = questions.ask(Question {
-            handle: format!("agent-door:{}", uuid::Uuid::new_v4().simple()),
+            handle: format!("mcp-server:{}", uuid::Uuid::new_v4().simple()),
             kind: KIND.to_owned(),
             app_id: None,
             label,
@@ -803,9 +792,8 @@ impl Loop {
             as_person,
             workspace,
             workspace_name: name,
-            seat,
+            session,
             agent,
-            proposed,
             shown,
             asked: Some(asked),
             decide,
@@ -826,7 +814,7 @@ impl Loop {
         let instance = instance.to_string();
         let shown = match &facts.entrance {
             Origin::Environment(environment) => words(
-                "agent-door-seat-in-environment",
+                "mcp-server-seat-in-environment",
                 &[
                     ("client", &facts.client),
                     ("environment", &environment.name),
@@ -834,7 +822,7 @@ impl Loop {
                 ],
             ),
             Origin::Host => words(
-                "agent-door-seat",
+                "mcp-server-seat",
                 &[("client", &facts.client), ("instance", &instance)],
             ),
         };
@@ -880,13 +868,13 @@ impl Loop {
         members: &Members<'_>,
     ) -> Consent {
         let Some(choice) = answer.and_then(|answer| answer.choice) else {
-            return Consent::Refuse(word("agent-door-declined"));
+            return Consent::Refuse(word("mcp-server-declined"));
         };
         let remembered = match choice {
             tilo_portal::consent::ALLOW_ONCE => Memory::Once,
             tilo_portal::consent::ALLOW_SESSION => Memory::Session,
             tilo_portal::consent::ALLOW_ALWAYS => Memory::Always,
-            _ => return Consent::Refuse(word("agent-door-declined")),
+            _ => return Consent::Refuse(word("mcp-server-declined")),
         };
         if waiting.as_person {
             // Acting as the person makes no one a member: it is them. What they let it do for the
@@ -908,15 +896,15 @@ impl Loop {
             (&waiting.workspace, person),
             waiting.shown.clone(),
         );
+        self.sessions.admit(
+            &waiting.session,
+            &consent,
+            &waiting.agent,
+            &waiting.workspace_name,
+        );
         if !matches!(consent, Consent::Admit { .. }) {
             return consent;
         }
-        self.seats.admitted(
-            waiting.seat,
-            &waiting.proposed,
-            &waiting.shown,
-            (&waiting.workspace, &waiting.workspace_name),
-        );
         // What is remembered is the agent, at its place: each later connection the answer admits
         // is an instance of its own.
         if let Some(key) = waiting.facts.key() {
@@ -936,7 +924,7 @@ impl Loop {
 
     /// Take back the answers that let `agent` in: a client whose answer this was is asked again
     /// the next time it connects, as if the person had never said "always allow". What it works on
-    /// now is ended by whoever asked ([`crate::agent_door::Seats::stop`]).
+    /// now is ended by whoever asked ([`AgentSessions::stop_program`]).
     pub(super) fn revoke(&mut self, agent: &str) {
         if let Some(key) = self.agent_key.as_mut()
             && same_program(&key.agent(), agent)
@@ -970,7 +958,7 @@ impl Loop {
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    "agent door: what the person remembered is kept for this session only"
+                    "MCP server: what the person remembered is kept for this session only"
                 );
                 return;
             }
@@ -980,7 +968,7 @@ impl Loop {
                 tracing::warn!(
                     %error,
                     path = %path.display(),
-                    "agent door: what the person remembered is kept for this session only"
+                    "MCP server: what the person remembered is kept for this session only"
                 );
             }
         });
@@ -1007,7 +995,7 @@ fn as_member(
             name,
         },
         Err(reason) => {
-            tracing::warn!(client = %facts.client, %workspace, %reason, "agent door: the client's agent member is not added");
+            tracing::warn!(client = %facts.client, %workspace, %reason, "MCP server: the client's agent member is not added");
             Consent::Refuse(reason)
         }
     }
@@ -1025,20 +1013,20 @@ fn where_it_works(
     asked: Option<&str>,
 ) -> Result<(String, String), String> {
     if as_person && facts.origin.is_some() {
-        return Err(word("agent-door-person-from-device"));
+        return Err(word("mcp-server-person-from-device"));
     }
     if as_person && matches!(facts.entrance, Origin::Environment(_)) {
         // A confined environment's programs are agents: none acts as the person, whose authority
         // reaches past the environment.
-        return Err(word("agent-door-environment-as-person"));
+        return Err(word("mcp-server-environment-as-person"));
     }
     let found = match &facts.origin {
         Some(origin) => workspace_for(handle, origin.workspace.as_deref())
-            .ok_or_else(|| word("agent-door-no-workspace")),
+            .ok_or_else(|| word("mcp-server-no-workspace")),
         None => environments::workspace_for(handle, person, &facts.entrance, asked),
     };
     if let Err(reason) = &found {
-        tracing::info!(client = %facts.client, pid = facts.pid, ?asked, %reason, "agent door: a client's workspace is refused");
+        tracing::info!(client = %facts.client, pid = facts.pid, ?asked, %reason, "MCP server: a client's workspace is refused");
     }
     found
 }
@@ -1208,9 +1196,9 @@ pub(crate) enum PeerRefusal {
 impl PeerRefusal {
     pub(crate) fn message(&self) -> &'static str {
         match self {
-            Self::Unidentified => "the agent door could not identify the connecting process",
+            Self::Unidentified => "the MCP server could not identify the connecting process",
             Self::OtherAccount => {
-                "the agent door serves only programs of the account whose session it is"
+                "the MCP server serves only programs of the account whose session it is"
             }
             Self::Sandboxed => "programs inside a sandboxed app can't connect here",
             Self::Unavailable => "this desktop isn't serving its actions yet; try again shortly",
@@ -1802,20 +1790,20 @@ pub(crate) struct Host {
     /// it ([`crate::door_runs`]). `None` for the person's own connection, and where the
     /// workspace does not confine its agents to runs.
     run: Option<Arc<DoorRun>>,
-    /// The seat an admitted agent's connection sits at: each step it takes says there what it is
-    /// doing. `None` for the person's own connection.
-    seat: Option<Arc<SeatAt>>,
+    /// The agent session an admitted agent's connection is: each step it takes says there what
+    /// it is doing. `None` for the person's own connection.
+    agent_session: Option<Arc<SessionAt>>,
 }
 
-/// What the catalogue says of one action a seat was offered: the words the person reads the step
+/// What the catalogue says of one action a session was offered: the words the person reads the step
 /// by ("Replace text at a place"), and the kind of step its own declaration names.
 type NamedStep = (String, Option<tilo_actions::StepKind>);
 
-/// The seat one admitted agent's connection sits at, and the apps of what it was offered.
-struct SeatAt {
-    seats: Arc<Seats>,
-    seat: u64,
-    /// What tells the loop the seat moved.
+/// The agent session one admitted connection is, and the apps of what it was offered.
+struct SessionAt {
+    sessions: Arc<AgentSessions>,
+    session: AgentSessionId,
+    /// What tells the loop the session moved.
     wake: Wake,
     /// The app each provider it was offered is of, by provider: what names the app a step of its
     /// is in.
@@ -1824,8 +1812,8 @@ struct SeatAt {
     named: std::sync::Mutex<HashMap<(String, String), NamedStep>>,
 }
 
-impl SeatAt {
-    /// Most providers a seat keeps the app of: a client that lists more is told its apps afresh.
+impl SessionAt {
+    /// Most providers a session keeps the app of: a client that lists more is told its apps afresh.
     const APPS: usize = 4_096;
 
     /// The agent was offered `rows`.
@@ -1881,10 +1869,10 @@ impl SeatAt {
                     None,
                 )
             });
-        if self.seats.acting(
-            self.seat,
-            crate::agent_door::seats::Doing { action, step, app },
-        ) {
+        if self
+            .sessions
+            .acting(&self.session, Doing { action, step, app })
+        {
             (self.wake)();
         }
     }
@@ -1936,7 +1924,7 @@ impl DoorRun {
                 tracing::warn!(
                     workspace = admitted.workspace,
                     %error,
-                    "agent door: this device delegates no run here, so the agent changes nothing"
+                    "MCP server: this device delegates no run here, so the agent changes nothing"
                 );
                 return Ok(None);
             }
@@ -1964,16 +1952,21 @@ impl Host {
             answered: Arc::default(),
             session_actions: None,
             run: None,
-            seat: None,
+            agent_session: None,
         }
     }
 
-    /// The same door, for the agent seated at `seat` of `seats`: what it does is said there, and
-    /// `wake` tells the loop.
-    fn seated(mut self, seats: &Arc<Seats>, seat: u64, wake: &Wake) -> Self {
-        self.seat = Some(Arc::new(SeatAt {
-            seats: Arc::clone(seats),
-            seat,
+    /// The same server, for the agent session `session` of `sessions`: what it does is said there,
+    /// and `wake` tells the loop.
+    fn in_agent_session(
+        mut self,
+        sessions: &Arc<AgentSessions>,
+        session: AgentSessionId,
+        wake: &Wake,
+    ) -> Self {
+        self.agent_session = Some(Arc::new(SessionAt {
+            sessions: Arc::clone(sessions),
+            session,
             wake: Arc::clone(wake),
             apps: std::sync::Mutex::default(),
             named: std::sync::Mutex::default(),
@@ -2050,8 +2043,8 @@ impl Host {
         {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
-        if !person && let Some(seat) = &self.seat {
-            seat.acting(&request);
+        if !person && let Some(session) = &self.agent_session {
+            session.acting(&request);
         }
         if person && (own || self.state.is_none()) {
             return self.invoke_person_step(caller, request);
@@ -2191,7 +2184,7 @@ impl ActionHost for Host {
         };
         if let Some(workspace) = confined {
             let session = Arc::clone(&self.session);
-            let seat = self.seat.clone();
+            let agent_session = self.agent_session.clone();
             let page = match &self.state {
                 Some(state) => state.action_query(caller, &query),
                 None => Pending::ready(Ok(CataloguePage::from_rows(
@@ -2206,8 +2199,8 @@ impl ActionHost for Host {
                         !session.window_elsewhere(&row.resource.id, &workspace)
                             && !session.window_elsewhere(&row.parent_resource, &workspace)
                     });
-                    if let Some(seat) = &seat {
-                        seat.offered(&page.rows);
+                    if let Some(agent_session) = &agent_session {
+                        agent_session.offered(&page.rows);
                     }
                     page
                 })
@@ -2346,10 +2339,10 @@ impl Host {
             state: self.state.as_ref().map(Arc::downgrade),
             session: Arc::clone(&self.session),
             run: self.run.as_ref().and_then(|run| run.host.record_changes()),
-            seat: self
-                .seat
+            agent_session: self
+                .agent_session
                 .as_ref()
-                .map(|seat| (Arc::clone(&seat.seats), seat.seat)),
+                .map(|at| (Arc::clone(&at.sessions), at.session.clone())),
         }
     }
 }
@@ -2401,7 +2394,7 @@ enum From {
 fn left_before_asking(error: &std::io::Error) {
     tilo_failure::ignored!(
         "a client that left before asking needs no answer",
-        tracing::debug!(%error, "agent door: the client left before its first request")
+        tracing::debug!(%error, "MCP server: the client left before its first request")
     );
 }
 
@@ -2417,7 +2410,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         launches,
         wake,
         control,
-        seats,
+        sessions,
         ..
     } = serving;
     let (broker, remote) = (broker.clone(), remote.clone());
@@ -2455,7 +2448,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
                 facts,
                 (broker, remote),
                 session,
-                (requests, wake, seats),
+                (requests, wake, sessions),
             );
             return;
         }
@@ -2467,7 +2460,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     if let Some(forward) = tilo_runtime::remote_door::forward_request(&first) {
         // A client of this login asks to be carried to another of the person's devices, which
         // decides whether it works there.
-        tracing::info!(pid, device = %forward.device, "agent door: a client asks to work on another device");
+        tracing::info!(pid, device = %forward.device, "MCP server: a client asks to work on another device");
         match remote {
             Some(remote) => remote.forward(stream, &forward),
             None => tilo_runtime::remote_door::refuse_forward(
@@ -2484,17 +2477,17 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         let Some(app) = launches.app_of_descendant(pid) else {
             tracing::info!(
                 pid,
-                "agent door: a control connection is outside this session's apps"
+                "MCP server: a control connection is outside this session's apps"
             );
             refuse_control(stream, CONTROL_IN_APP_ONLY);
             return;
         };
         let Some(workspace) = launches.workspace_of(pid, &app) else {
-            tracing::info!(pid, %app, "agent door: a control connection's app is not running");
+            tracing::info!(pid, %app, "MCP server: a control connection's app is not running");
             refuse_control(stream, CONTROL_IN_APP_ONLY);
             return;
         };
-        tracing::info!(pid, %app, %workspace, "agent door: a program in an app asked in the control protocol");
+        tracing::info!(pid, %app, %workspace, "MCP server: a program in an app asked in the control protocol");
         let first = String::from_utf8_lossy(&first).into_owned();
         crate::test_control::serve_app(stream, first, app_name(&app), workspace, control);
         return;
@@ -2510,7 +2503,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         facts,
         (broker, remote),
         session,
-        (requests, wake, seats),
+        (requests, wake, sessions),
     );
 }
 
@@ -2522,7 +2515,7 @@ fn serve_shell_runtime(stream: UnixStream, first: &[u8], pid: u32, serving: &Ser
     } else {
         tracing::info!(
             pid,
-            "agent door: the shell runtime asked for something other than an environment's door"
+            "MCP server: the shell runtime asked for something other than an environment's door"
         );
         refuse(stream, &PeerRefusal::Sandboxed);
     }
@@ -2536,7 +2529,7 @@ fn serve_admitted(
     facts: Facts,
     (broker, remote): (Arc<AppBrokerState>, Option<Arc<Remote>>),
     session: &Arc<SessionDoors>,
-    (requests, wake, seats): (&Sender<Request>, &Wake, &Arc<Seats>),
+    (requests, wake, sessions): (&Sender<Request>, &Wake, &Arc<AgentSessions>),
 ) {
     let tasks = Arc::new(TaskHosts::new(&session.person, Arc::clone(session)));
     let admitted = Arc::clone(&tasks);
@@ -2548,14 +2541,14 @@ fn serve_admitted(
     // Where the connection came from, when another of the person's devices carried it: the
     // device whose certificate the remote door verified, which its run then names.
     let from = facts.origin.as_ref().map(crate::door_runs::device_of);
-    let seat = seats.joining(facts.entrance.door());
+    let agent_session = sessions.joining(facts.entrance.door());
     // An agent from another of the person's own devices, which the door toward them let through:
     // what this device's setting for such agents may answer for once its run asks.
     let from_own_device = facts.origin.is_some();
-    let seat_stream = match stream.try_clone() {
+    let session_stream = match stream.try_clone() {
         Ok(copy) => Some(copy),
         Err(error) => {
-            tracing::warn!(%error, "an agent's seat has no handle on its connection");
+            tracing::warn!(%error, "an agent session has no handle on its connection");
             None
         }
     };
@@ -2568,14 +2561,15 @@ fn serve_admitted(
             let Some([workspace, person, member, name]) = starting.lock_recover().take() else {
                 return Ok(host);
             };
-            let host = host.seated(seats, seat, wake);
-            // The run is named as the desk shows its agent: what its history is listed under and
-            // what its questions to the person call it.
-            let seated = seats.shown(seat).unwrap_or(name);
+            let host = host.in_agent_session(sessions, agent_session.clone(), wake);
+            // The run is named as the desk shows the session: what its history is listed under
+            // and what its questions to the person call it.
+            let seated = sessions.name(&agent_session).unwrap_or(name);
             let admitted = crate::door_runs::Admitted {
                 workspace: &workspace,
                 person: &person,
                 agent: &member,
+                session: &agent_session,
                 seated: &seated,
                 origin: from.as_ref(),
             };
@@ -2586,13 +2580,13 @@ fn serve_admitted(
                     // What it works in, as its card's commands name it: the run taking its work
                     // back names, and the records it changes there.
                     if let Some(run) = &run {
-                        seats.working_in(seat, run.issue());
+                        sessions.working_in(&agent_session, run.issue());
                     }
                     Ok(host.in_run(run))
                 }
                 Err(why) => {
-                    tracing::warn!(%workspace, agent = %seated, %why, "agent door: the agent's run did not start");
-                    Err(format!("{}: {why}", word("agent-door-no-run")))
+                    tracing::warn!(%workspace, agent = %seated, %why, "MCP server: the agent's run did not start");
+                    Err(format!("{}: {why}", word("mcp-server-no-run")))
                 }
             }
         },
@@ -2602,7 +2596,14 @@ fn serve_admitted(
                 .map(|remote| remote as Arc<dyn tilo_runtime::remote_door::DeviceDirectory>),
         },
         |hello, connected| {
-            let consent = ask(requests, wake, facts, hello, connected, seat);
+            let consent = ask(
+                requests,
+                wake,
+                facts,
+                hello,
+                connected,
+                agent_session.clone(),
+            );
             if let Consent::Admit { person, .. } | Consent::Person { person, .. } = &consent {
                 *admitted.person.lock_recover() = Some(person.clone());
             }
@@ -2621,18 +2622,18 @@ fn serve_admitted(
                 ]);
             }
             if let Consent::Admit { .. } = &consent
-                && let Some(stream) = &seat_stream
+                && let Some(stream) = &session_stream
             {
-                seats.attached(seat, stream);
+                sessions.attached(&agent_session, stream);
             }
             consent
         },
     );
-    seats.left(seat);
+    sessions.left(&agent_session);
     if let Err(error) = ended {
         tilo_failure::ignored!(
             "a client that disconnected needs no answer",
-            tracing::debug!(%error, "agent door: the client disconnected")
+            tracing::debug!(%error, "MCP server: the client disconnected")
         );
     }
 }
@@ -2645,7 +2646,7 @@ fn ask(
     mut facts: Facts,
     hello: &Hello,
     connected: &dyn Fn() -> bool,
-    seat: u64,
+    session: AgentSessionId,
 ) -> Consent {
     facts.client.clone_from(&hello.client_name);
     facts.version.clone_from(&hello.client_version);
@@ -2655,7 +2656,7 @@ fn ask(
         as_person: hello.as_person,
         workspace: hello.workspace.clone(),
         key: hello.key.clone(),
-        seat,
+        session,
         decide,
     };
     if requests.send(request).is_err() {
@@ -2666,13 +2667,13 @@ fn ask(
         match decided.try_recv() {
             Ok(consent) => return consent,
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                return Consent::Refuse(word("agent-door-withdrawn"));
+                return Consent::Refuse(word("mcp-server-withdrawn"));
             }
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
         }
         if !connected() {
             // Dropping `decided` withdraws the question.
-            return Consent::Refuse(word("agent-door-withdrawn"));
+            return Consent::Refuse(word("mcp-server-withdrawn"));
         }
         std::thread::sleep(ASK_EVERY);
     }
@@ -2752,12 +2753,12 @@ mod tests {
             "the seat's door"
         );
         let named = path_in(
-            Some("/run/an-agent-door".into()),
+            Some("/run/an-mcp-server".into()),
             Some("/run/user/1000".into()),
         );
         assert_eq!(
             named,
-            Some(PathBuf::from("/run/an-agent-door")),
+            Some(PathBuf::from("/run/an-mcp-server")),
             "a developer's own door"
         );
         assert_eq!(
@@ -2774,81 +2775,6 @@ mod tests {
         assert_eq!(proposed_agent_id("  Claude   Code 2.1 "), "claude-code-2-1");
         assert_eq!(proposed_agent_id("!!!"), "agent");
         assert_eq!(proposed_agent_id("MCP client"), "mcp-client");
-    }
-
-    /// What the commands on a seated agent's card act on: the run its connection works in and the
-    /// records it changed there, each once, as its seat heard of them.
-    #[test]
-    fn a_seat_keeps_the_run_and_the_records_its_agent_changed() {
-        let seats = Seats::new();
-        let seat = seats.joining(None);
-        seats.admitted(seat, "claude-code@host#1", "Claude Code", ("ws", "Desk"));
-        let seated = seats.working("claude-code@host#1").expect("seated here");
-        assert_eq!(seated.workspace, "ws");
-        assert_eq!(seated.run, None, "nothing of it worked in a run yet");
-        seats.working_in(seat, "tilo.task-run:abc");
-        seats.changed(seat, "so.tilo.notes", "main");
-        seats.changed(seat, "so.tilo.notes", "main");
-        let working = seats.working("claude-code@host#1").expect("seated here");
-        assert_eq!(working.run.as_deref(), Some("tilo.task-run:abc"));
-        assert_eq!(
-            working.changed,
-            vec![("so.tilo.notes".to_owned(), "main".to_owned())],
-            "each record once, however many steps touched it"
-        );
-        assert_eq!(seats.working("codex@host#1"), None, "nobody else");
-    }
-
-    #[test]
-    fn a_seated_agent_shows_on_the_desk_and_its_stop_ends_its_connection() {
-        use std::io::Read as _;
-        let seats = Seats::new();
-        let (served, client) = UnixStream::pair().unwrap();
-        let asked = seats.joining(None);
-        assert!(
-            seats.readings().is_empty(),
-            "nothing shows before the answer"
-        );
-        let shown = seats.revision();
-        seats.admitted(asked, "claude-code", "Claude Code", ("w1", "Studio"));
-        seats.attached(asked, &served);
-        assert!(seats.revision() > shown, "the desk is told");
-        let readings = seats.readings();
-        assert_eq!(readings.len(), 1, "one seat");
-        assert_eq!(readings[0].key, "claude-code");
-        assert_eq!(readings[0].name, "Claude Code");
-        assert_eq!(readings[0].doing, "Studio");
-        assert!(readings[0].seat, "a seat, not a run's agent");
-        // What its step is, as the catalogue names it and the app it acts in: said once.
-        let doing = super::seats::Doing {
-            action: "Replace text at a place".into(),
-            step: Some(tilo_actions::StepKind::Write),
-            app: Some("so.tilo.notes".into()),
-        };
-        assert!(seats.acting(asked, doing.clone()), "its step is news");
-        assert!(!seats.acting(asked, doing.clone()), "the same step, once");
-        assert_eq!(seats.here()[0].doing.as_ref(), Some(&doing));
-        // One agent, two connections: the bar shows one presence, and the person's Stop ends both.
-        let (second_served, second_client) = UnixStream::pair().unwrap();
-        let other = seats.joining(None);
-        seats.admitted(other, "claude-code", "Claude Code", ("w1", "Studio"));
-        seats.attached(other, &second_served);
-        assert_eq!(seats.readings().len(), 1, "one presence per agent");
-        assert!(seats.stop("claude-code"), "the person's Stop");
-        for client in [client, second_client] {
-            client
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut byte = [0u8; 1];
-            let mut ended = &client;
-            assert_eq!(
-                ended.read(&mut byte).unwrap_or(0),
-                0,
-                "the connection ended"
-            );
-        }
-        assert!(seats.readings().is_empty(), "the seat left with it");
-        assert!(!seats.stop("claude-code"), "nothing to stop twice");
     }
 
     /// The login's shell runtime is the image's executable in its own unit of the session's
@@ -2941,7 +2867,7 @@ mod tests {
             state: None,
             session: Arc::new(SessionDoors::new(Arc::new(|| {}), "person")),
             run: None,
-            seat: None,
+            agent_session: None,
         };
         let started = std::time::Instant::now();
         let read = records.read(

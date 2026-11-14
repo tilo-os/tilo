@@ -25,13 +25,13 @@ type TaskKey = (String, String, String);
 pub(crate) struct TaskProgramHost {
     /// What a task's host asks the session's own doors before it starts: the records the packages
     /// the session runs itself keep.
-    doors: Arc<crate::agent_door::SessionDoors>,
+    doors: Arc<crate::mcp_server::SessionDoors>,
     sessions: std::sync::Mutex<HashMap<TaskKey, (String, Arc<Door>)>>,
 }
 
 impl TaskProgramHost {
     /// The tasks' programs, whose hosts read the session's own records through `doors`.
-    pub(crate) fn new(doors: Arc<crate::agent_door::SessionDoors>) -> Self {
+    pub(crate) fn new(doors: Arc<crate::mcp_server::SessionDoors>) -> Self {
         Self {
             doors,
             sessions: std::sync::Mutex::default(),
@@ -61,7 +61,7 @@ impl TaskProgramHost {
         let door = Arc::new(
             Door::for_task(host.door(), workspace.to_owned(), agent, person)
                 .with_work_group(group)
-                .with_task_hosts(Some(Arc::new(crate::agent_door::TaskHosts::new(
+                .with_task_hosts(Some(Arc::new(crate::mcp_server::TaskHosts::new(
                     person.unwrap_or_else(|| self.doors.person()),
                     Arc::clone(&self.doors),
                 )))),

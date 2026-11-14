@@ -33,7 +33,7 @@ const BELL: &str = "Notifications";
 /// other surface of the desk shows.
 const NOTHING_TO_CATCH_UP_ON: &str = "Nothing to catch up on";
 
-/// The session with the shell as the whole screen and the seeded apps, its agent door and
+/// The session with the shell as the whole screen and the seeded apps, its MCP server and
 /// test-control socket at `root`, admitting this test's program to act as the person — the same
 /// session the acceptance path drives, so what a test draws is what a person gets. The framed
 /// canvas is in front of it. Two of the notes the seed keeps stand on its desk, each a window of

@@ -50,7 +50,7 @@ fn session(root: &std::path::Path) -> Session {
             ],
             questions: Some(tilo_service::Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
-            agent_door: Some(root.join("agent.sock")),
+            mcp_server: Some(root.join("agent.sock")),
             admit_repl: vec![program],
             test_control: Some(root.join("test-control.sock")),
             ..Options::default()

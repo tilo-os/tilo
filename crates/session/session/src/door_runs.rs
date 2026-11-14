@@ -28,9 +28,6 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::WorkspaceId;
 use tilo_peer_state::join::agent_cert::{AgentCert, MAX_AGENT_CERT_NS};
 
-/// The address every door connection's run is named under: no record holds it.
-pub(crate) const DOOR_RUNS: &str = tilo_broker_core::services::DOOR_RUN_PREFIX;
-
 /// One door connection's run as it goes: its workspace, the run, and the answers its person gave
 /// it for every later step like the one it asked about.
 struct Going {
@@ -208,6 +205,8 @@ pub(crate) struct Admitted<'a> {
     pub(crate) workspace: &'a str,
     pub(crate) person: &'a str,
     pub(crate) agent: &'a str,
+    /// The agent session the connection is, which names its run.
+    pub(crate) session: &'a tilo_action_policy::AgentSessionId,
     pub(crate) seated: &'a str,
     /// The device the connection came from, as the remote door verified it ([`device_of`]);
     /// `None` for a program of this login.
@@ -238,7 +237,7 @@ pub(crate) fn mint(
     if starter != admitted.person {
         return Err("this device's identity is not the person's who admitted the agent".into());
     }
-    let issue = format!("{DOOR_RUNS}{}", uuid::Uuid::new_v4().simple());
+    let issue = admitted.session.as_str().to_owned();
     let delegation = AgentCert::sign(
         device,
         certificate.user_public_key,
@@ -345,15 +344,27 @@ mod tests {
     fn a_connections_run_is_a_session_of_the_agent_certified_by_this_device() {
         let (key, cert) = device();
         let person = person(&cert);
+        let session = crate::agent_sessions::AgentSessions::new().joining(None);
         let admitted = Admitted {
             workspace: WORKSPACE,
+            session: &session,
             person: &person,
             agent: "claude-code",
             seated: "claude-code@box#1",
             origin: None,
         };
         let first = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
-        let second = mint((&key, &cert), &agent_key().unwrap(), &admitted, 1_000).unwrap();
+        let other = crate::agent_sessions::AgentSessions::new().joining(None);
+        let second = mint(
+            (&key, &cert),
+            &agent_key().unwrap(),
+            &Admitted {
+                session: &other,
+                ..admitted
+            },
+            1_000,
+        )
+        .unwrap();
         assert_ne!(first.run.issue, second.run.issue, "a run of its own");
         assert_eq!(
             first.run.agent, "claude-code",
@@ -361,15 +372,11 @@ mod tests {
         );
         assert_eq!(second.run.agent, "claude-code");
         assert!(
-            tilo_broker_core::services::is_door_run(&first.run.issue),
+            tilo_broker_core::services::is_agent_session(&first.run.issue),
             "the broker keeps its invocations as the run's: {}",
             first.run.issue
         );
-        assert!(
-            first.run.issue.starts_with(DOOR_RUNS),
-            "{}",
-            first.run.issue
-        );
+        assert!(first.run.issue == session.as_str(), "{}", first.run.issue);
         assert_eq!(
             first.run.starter, person,
             "acting for the person who admitted it"
@@ -413,8 +420,10 @@ mod tests {
         });
         assert_eq!(from.id, hex::encode(theirs.device_public_key));
         assert_eq!(from.name, "Studio laptop");
+        let session = crate::agent_sessions::AgentSessions::new().joining(None);
         let remote = Admitted {
             workspace: WORKSPACE,
+            session: &session,
             person: &person,
             agent: "claude-code",
             seated: "claude-code@studio-laptop-1a2b3c4d#1",
@@ -440,8 +449,10 @@ mod tests {
     #[test]
     fn another_persons_device_mints_no_run() {
         let (key, cert) = device();
+        let session = crate::agent_sessions::AgentSessions::new().joining(None);
         let admitted = Admitted {
             workspace: WORKSPACE,
+            session: &session,
             person: "someone-else",
             agent: "claude-code",
             seated: "claude-code@box#1",
@@ -455,8 +466,10 @@ mod tests {
     fn a_run_goes_while_its_connection_holds_it() {
         let (key, cert) = device();
         let person = person(&cert);
+        let session = crate::agent_sessions::AgentSessions::new().joining(None);
         let admitted = Admitted {
             workspace: WORKSPACE,
+            session: &session,
             person: &person,
             agent: "claude-code",
             seated: "claude-code@box#1",
@@ -499,8 +512,10 @@ mod tests {
         let (key, cert) = device();
         let person = person(&cert);
         let from = tilo_actions::InvokerDevice::certified([0x4c; 32], "Laptop");
+        let session = crate::agent_sessions::AgentSessions::new().joining(None);
         let admitted = Admitted {
             workspace: WORKSPACE,
+            session: &session,
             person: &person,
             agent: "claude-code",
             seated: "claude-code@laptop#1",

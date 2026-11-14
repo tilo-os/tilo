@@ -416,7 +416,7 @@ impl Unlock {
         let spawned = std::thread::Builder::new()
             .name("device-unlock-enrol".into())
             .spawn(move || {
-                let listener = match crate::agent_door::bind_private(&path) {
+                let listener = match crate::mcp_server::bind_private(&path) {
                     Ok(listener) => listener,
                     Err(error) => {
                         tilo_failure::ignored!(

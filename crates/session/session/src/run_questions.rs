@@ -1,6 +1,6 @@
 //! What an agent's run, or an app, asks its person, on this desk's sheet.
 //!
-//! A run with no issue to ask on (an agent door connection's, [`crate::door_runs`]) pauses before
+//! A run with no issue to ask on (an MCP server connection's, [`crate::door_runs`]) pauses before
 //! a step its grants ask first about, and the broker puts the question to the person here
 //! ([`AppActionConsentPrompter`]): the same sheet family that admitted the agent, naming it as the
 //! desk seats it ("Claude Code in dev #1"), the step and what it would do. The person allows it
@@ -62,7 +62,7 @@ pub(crate) struct RunQuestion {
 /// The desk's sheet, as the broker asks it.
 pub(crate) struct Sheet {
     questions: Questions,
-    /// The agent door's runs going now: which of them are agents' from the person's other
+    /// The MCP server's runs going now: which of them are agents' from the person's other
     /// devices.
     doors: Arc<DoorRuns>,
     /// Whether the person lets such agents act without asking here, as this device's settings
@@ -97,7 +97,7 @@ impl Sheet {
             %agent,
             action = %request.action_label,
             app = %request.target_app,
-            "agent door: the person's setting lets agents from their other devices act without \
+            "MCP server: the person's setting lets agents from their other devices act without \
              asking here, so it allowed this step"
         );
         Some(AppActionAnswer::unedited(AppActionConsent::Once))
@@ -272,7 +272,7 @@ mod tests {
     fn from_another_device(agent: &str) -> (Arc<DoorRuns>, crate::door_runs::Held) {
         let doors = Arc::new(DoorRuns::default());
         let run = tilo_broker_core::services::TrackerRun {
-            issue: format!("{}a1", crate::door_runs::DOOR_RUNS),
+            issue: format!("{}a1", tilo_broker_core::services::AGENT_SESSION_PREFIX),
             title: "claude-code@laptop#1".into(),
             instruction: String::new(),
             agent: agent.into(),

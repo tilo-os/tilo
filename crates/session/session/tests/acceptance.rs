@@ -2,7 +2,7 @@
 //! headless session that starts with the tilolang shell as its whole screen to a theme switch
 //! that changes how it looks and nothing of where it stands.
 //!
-//! Every step drives the production seams only: the session's own loop, its agent door, the
+//! Every step drives the production seams only: the session's own loop, its MCP server, the
 //! arrangement and desk it publishes, and the tree the shell lays out for assistive technology
 //! (never pixels, but where a step is about looks, the frame the compositor drew).
 //!
@@ -87,7 +87,7 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
     });
 }
 
-/// Step 2: the REPL connects through the agent door and lists the session's own resources, each
+/// Step 2: the REPL connects through the MCP server and lists the session's own resources, each
 /// action as a program calls it.
 #[test]
 fn step_2_the_repl_connects_and_lists_the_sessions_resources() {

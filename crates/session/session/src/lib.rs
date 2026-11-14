@@ -73,7 +73,7 @@ mod a11y_settings;
 pub mod activity;
 mod activity_models;
 #[cfg(target_os = "linux")]
-pub mod agent_door;
+mod agent_sessions;
 #[cfg(target_os = "linux")]
 mod agents;
 #[cfg(target_os = "linux")]
@@ -189,7 +189,6 @@ mod display_sheet;
 pub mod displays;
 #[cfg(target_os = "linux")]
 mod documents;
-#[cfg(target_os = "linux")]
 mod door_runs;
 #[cfg(target_os = "linux")]
 mod doors;
@@ -267,6 +266,8 @@ mod lock_screen;
 mod lock_service;
 #[cfg(target_os = "linux")]
 mod look;
+#[cfg(target_os = "linux")]
+pub mod mcp_server;
 pub mod mentions;
 #[cfg(target_os = "linux")]
 pub mod nearby_transfer;

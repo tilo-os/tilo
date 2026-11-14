@@ -1,16 +1,16 @@
-//! The agent door toward the person's other devices.
+//! The MCP server toward the person's other devices.
 //!
 //! This device's endpoint answers [`tilo_runtime::remote_door::ALPN`]: an
 //! agent on another of the person's own devices connects to this session's
-//! agent door over iroh, and is asked about and served exactly as a program of
-//! this login is ([`crate::agent_door`]), as an agent the person delegates to,
+//! MCP server over iroh, and is asked about and served exactly as a program of
+//! this login is ([`crate::mcp_server`]), as an agent the person delegates to,
 //! named after the device it came from. Which device dials is the transport's
 //! to say, and whether it is one of the person's is their own store's
 //! ([`tilo_runtime::remote_door::PersonalDevices`]); a connection from anyone
 //! else is refused before the person is asked.
 //!
-//! A connection the door admits takes one of the agent door's places as it arrives, and waits
-//! in it for the session's pass ([`crate::agent_door::Room`]): no more wait than the door
+//! A connection the door admits takes one of the MCP server's places as it arrives, and waits
+//! in it for the session's pass ([`crate::mcp_server::Room`]): no more wait than the door
 //! serves, and one there is no place for is refused here, where the dialer would otherwise be
 //! told the door opened.
 //!
@@ -39,16 +39,16 @@ use tilo_runtime::remote_door::{
 };
 use tilo_service::Wake;
 
-use crate::agent_door::{PeerRefusal, Place, Room};
+use crate::mcp_server::{PeerRefusal, Place, Room};
 
-/// What the session's agent door hears from the person's other devices, and how it reaches theirs.
+/// What the session's MCP server hears from the person's other devices, and how it reaches theirs.
 pub(crate) struct Remote {
-    /// Connections the door opened, each waiting for the agent door's pass in the place it took
+    /// Connections the door opened, each waiting for the MCP server's pass in the place it took
     /// there: as many as that door has places free, and no more.
     arrivals: Mutex<Vec<(Arrival, Place)>>,
     /// Wakes the session's loop when one arrives.
     wake: Wake,
-    /// The room of the session's agent door, once it takes what arrives: a session that serves no
+    /// The room of the session's MCP server, once it takes what arrives: a session that serves no
     /// door refuses them at once.
     room: OnceLock<Room>,
     /// The person's other devices' doors, once this device's endpoint has bound and its store is
@@ -92,10 +92,10 @@ impl Remote {
         let _ = self.doors.set(Arc::new(doors));
     }
 
-    /// The agent door serves what arrives from now on, each in a place of `room`.
+    /// The MCP server serves what arrives from now on, each in a place of `room`.
     pub(crate) fn serve(&self, room: Room) {
         if self.room.set(room).is_err() {
-            tracing::warn!("agent door: another device's connections are served already");
+            tracing::warn!("MCP server: another device's connections are served already");
         }
     }
 
@@ -146,7 +146,7 @@ impl Arrivals for Remote {
         let Some(place) = room.take() else {
             tracing::info!(
                 device = %arrival.origin.name(),
-                "agent door: another device's connection is refused: the door has no place free"
+                "MCP server: another device's connection is refused: the door has no place free"
             );
             return Err(PeerRefusal::Busy.message().to_owned());
         };

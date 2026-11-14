@@ -159,7 +159,7 @@ impl InvocationOwner {
                 || !(task.starts_with("task:")
                     || crate::services::is_tracker_issue(task)
                     || crate::services::is_conversation_turn(task)
-                    || crate::services::is_door_run(task))
+                    || crate::services::is_agent_session(task))
                 || *epoch == 0)
         {
             return Err("invalid native task invocation owner".into());

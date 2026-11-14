@@ -170,9 +170,9 @@ pub(crate) struct Shared {
     /// conversations — as the workspace holds them: replicated with the engine as either moves.
     #[cfg(target_os = "linux")]
     pub(crate) records: crate::engine_records::EngineRecords,
-    /// The agents the person admitted at its agent door, as the desk and the bar show them.
+    /// The agents the person admitted at its MCP server, as the desk and the bar show them.
     #[cfg(target_os = "linux")]
-    pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,
+    pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
     /// It runs in a window of a desktop it did not start (see
     /// [`Options::machine`]).
     pub(crate) hosted: bool,
@@ -427,15 +427,15 @@ pub(crate) struct Shared {
     /// downloaded to their apps, and whether to uninstall one.
     #[cfg(target_os = "linux")]
     pub(crate) app_sheets: crate::app_sheets::AppSheets,
-    /// The agent door, when this session serves one: what a program of this
+    /// The MCP server, when this session serves one: what a program of this
     /// login asks on, and the person's answers about it.
     #[cfg(target_os = "linux")]
-    pub(crate) agent_door: RefCell<Option<crate::agent_door::Loop>>,
+    pub(crate) mcp_server: RefCell<Option<crate::mcp_server::Loop>>,
     /// What a connection of any door asks of the session's own doors: answered
     /// on the loop's pass, the only place that may touch them.
     #[cfg(target_os = "linux")]
-    pub(crate) session_doors: std::sync::Arc<crate::agent_door::SessionDoors>,
-    /// The agent door toward the person's other devices.
+    pub(crate) session_doors: std::sync::Arc<crate::mcp_server::SessionDoors>,
+    /// The MCP server toward the person's other devices.
     #[cfg(target_os = "linux")]
     pub(crate) remote: std::sync::Arc<crate::remote_door::Remote>,
     /// The installed folder importer's side of this login, once the session

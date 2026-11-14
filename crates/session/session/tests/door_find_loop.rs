@@ -1,4 +1,4 @@
-//! A door's `find` over the agent door never holds the desktop's loop.
+//! A door's `find` over the MCP server never holds the desktop's loop.
 //!
 //! An outside client (an MCP `tilo_find` call) asks the session to search while its sources are
 //! slow. The session carries the ask out on the loop's pass, so it must not wait for a source
@@ -6,7 +6,7 @@
 //! in flight, and the find answers once the source does. A source that never answers is cut off at
 //! the find's own deadline with the rows that came, never at the loop's.
 //!
-//! Every step is the production path: the find is asked over the agent door, and the frames are
+//! Every step is the production path: the find is asked over the MCP server, and the frames are
 //! the session's own passes (`Session::step`). The pass count between the ask and the answer is
 //! what proves the loop never waited: the old code answered the ask with a `recv()` on the
 //! search's channel, so no pass ran until the source was done.
@@ -94,7 +94,7 @@ fn slow_hit() -> Hit {
     }
 }
 
-/// A headless session whose search mounts the slow source beside its own, its agent door at
+/// A headless session whose search mounts the slow source beside its own, its MCP server at
 /// `root`, this test's program admitted to act as the person, and the canvas in front.
 fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (Session, Repl) {
     let program = std::env::current_exe().expect("this test's program");
@@ -107,7 +107,7 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
             services: vec![Box::new(crate::common::seeded_apps())],
             questions: Some(Questions::new()),
             action_plane: ActionPlane::At(root.join("plane.sock")),
-            agent_door: Some(root.join("agent.sock")),
+            mcp_server: Some(root.join("agent.sock")),
             admit_repl: vec![program],
             search: SearchOptions {
                 extra_sources: vec![Held::new(Slow {
@@ -131,7 +131,7 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
     (session, repl)
 }
 
-/// A find asked over the agent door answers once its source does, and no pass of the loop waits
+/// A find asked over the MCP server answers once its source does, and no pass of the loop waits
 /// for the source: the ask is carried out on the loop's pass, so a pass that waited for the source
 /// would take as long as the source does, and the desktop would freeze as it did in the field. The
 /// old code answered the ask with a blocking `recv()` on the search's channel, so exactly one pass

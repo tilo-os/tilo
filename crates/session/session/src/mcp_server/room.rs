@@ -1,4 +1,4 @@
-//! The room at the agent door: how many connections it serves at once, counted as one whichever
+//! The room at the MCP server: how many connections it serves at once, counted as one whichever
 //! way a connection came in, and what the connection past them is told.
 //!
 //! A connection takes a [`Place`] before the door serves it and gives it back when it ends. A
@@ -32,7 +32,7 @@ const MAX_CONNECTIONS: usize = 16;
 /// tells one past its bound (`tilo_runtime::daemon`): what is full, that nothing it asked ran,
 /// and when to connect again. It names the bound, which is the same for everyone, and nothing
 /// of who holds the places.
-pub(super) const NO_ROOM: &str = "the agent door is serving 16 connections, as many as it serves \
+pub(super) const NO_ROOM: &str = "the MCP server is serving 16 connections, as many as it serves \
      at once, so this one is closed and nothing it asked ran; connect again once one of them has \
      closed";
 const _: () = assert!(MAX_CONNECTIONS == 16, "NO_ROOM names the bound");

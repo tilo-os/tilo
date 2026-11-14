@@ -750,7 +750,7 @@ fn compose(question: &Question) -> Option<Composed> {
         NETWORK_KIND => network_secrets(&question.handle, details)?,
         CANNOT_JOIN_KIND => cannot_join(&question.handle, details)?,
         tilo_bluetooth_agent::KIND => pairing(&question.handle, details)?,
-        crate::agent_door::KIND => admitted(&question.handle, &who, details)?,
+        crate::mcp_server::KIND => admitted(&question.handle, &who, details)?,
         crate::network::AGENT_QUESTION => agent_question(&question.handle, details)?,
         crate::run_questions::KIND => run_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
@@ -840,23 +840,23 @@ fn access(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
     Some((dialog, Plan::Choose(allowances)))
 }
 
-/// The agent door's question: a program of this login wants to work in the workspace in front as an
+/// The MCP server's question: a program of this login wants to work in the workspace in front as an
 /// agent. Answering admits it — as an agent member of that workspace, or for this connection only —
 /// and refusing leaves it with no access at all.
 fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
-    let asked: crate::agent_door::Admission = serde_json::from_value(details).ok()?;
+    let asked: crate::mcp_server::Admission = serde_json::from_value(details).ok()?;
     if asked.as_person {
         // Acting as the person is theirs to allow for now or for this session; it is never
         // remembered beyond it, unless they name the program when they start the session.
         let title = words(
-            "agent-door-admission-person",
+            "mcp-server-admission-person",
             &[("workspace", &asked.workspace)],
         );
         let mut dialog = review(
             handle,
             title,
             who.to_owned(),
-            word("agent-door-admission-person-detail"),
+            word("mcp-server-admission-person-detail"),
         );
         dialog.body = Body::Choices(vec![
             word("portal-allow-once"),
@@ -865,10 +865,10 @@ fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
         return Some((dialog, Plan::Choose(vec![ALLOW_ONCE, ALLOW_SESSION])));
     }
     let title = words(
-        "agent-door-admission",
+        "mcp-server-admission",
         &[("workspace", &asked.workspace), ("agent", &asked.agent)],
     );
-    let detail = words("agent-door-admission-detail", &[("agent", &asked.agent)]);
+    let detail = words("mcp-server-admission-detail", &[("agent", &asked.agent)]);
     let mut dialog = review(handle, title, who.to_owned(), detail);
     dialog.body = Body::Choices(vec![
         word("portal-allow-once"),

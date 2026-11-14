@@ -183,7 +183,7 @@ fn session(
         services: vec![Box::new(seeded)],
         questions: Some(Questions::new()),
         action_plane: ActionPlane::At(root.join("plane.sock")),
-        agent_door: Some(root.join("agent.sock")),
+        mcp_server: Some(root.join("agent.sock")),
         test_control: Some(root.join("test-control.sock")),
         apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
         launch: Some(apps),

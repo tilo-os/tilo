@@ -5,7 +5,7 @@
 //! arrangement's `place` and `place-found`, the undo steps, the windows and the notices.
 //! Those are published by the session on its own door, on the loop's thread, and this is
 //! the provider its broker answers them under, so one catalogue names them for every caller
-//! that has a broker: the agent door, a launched agent, and a task's program alike.
+//! that has a broker: the MCP server, a launched agent, and a task's program alike.
 //!
 //! Each step is decided where it lands: the broker admits it as the turn's step (the
 //! person's grants, the agent's, the issue's), and the session carries it out on the loop's

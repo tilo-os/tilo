@@ -328,23 +328,24 @@ pub fn is_conversation_turn(task_id: &str) -> bool {
     id(conversation) && id(message)
 }
 
-/// The prefix of a run an agent door's admitted connection works in
-/// (`crates/session/session/src/door_runs.rs`): the desktop starts one for each
-/// connection its person admits, named by an id of its own beneath this.
-pub const DOOR_RUN_PREFIX: &str = "so.tilo.session/agent-door/";
+/// The prefix of an agent session's id: the desktop names each MCP connection
+/// its person admits by an id of its own beneath this, and the run it works in
+/// by the same id.
+pub const AGENT_SESSION_PREFIX: &str = "so.tilo.session/agent-session/";
 
-/// Whether `task_id` names an agent door connection's run: [`DOOR_RUN_PREFIX`]
-/// and one plain id. A run whose task id is that is the connection's work, so
-/// the agent's own invocations in it are the run's.
+/// Whether `task_id` names an agent session's run: [`AGENT_SESSION_PREFIX`] and
+/// one plain id. The agent's own invocations in it are the run's.
 #[must_use]
-pub fn is_door_run(task_id: &str) -> bool {
-    task_id.strip_prefix(DOOR_RUN_PREFIX).is_some_and(|id| {
-        !id.is_empty()
-            && id.len() <= 64
-            && id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    })
+pub fn is_agent_session(task_id: &str) -> bool {
+    task_id
+        .strip_prefix(AGENT_SESSION_PREFIX)
+        .is_some_and(|id| {
+            !id.is_empty()
+                && id.len() <= 64
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
 }
 
 /// A message to a run, in the issue's thread: steering the run reads.

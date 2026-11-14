@@ -106,7 +106,7 @@ impl super::Loop {
             facts,
             workspace: asked,
             key,
-            seat,
+            session,
             decide,
             ..
         } = request;
@@ -118,7 +118,7 @@ impl super::Loop {
         let agent = match admitted {
             Ok(agent) => agent,
             Err(refusal) => {
-                tracing::info!(client = %facts.client, pid = facts.pid, ?refusal, "agent door: an agent key is refused");
+                tracing::info!(client = %facts.client, pid = facts.pid, ?refusal, "MCP server: an agent key is refused");
                 let _ = decide.send(super::Consent::Refuse(refusal.message()));
                 return;
             }
@@ -131,13 +131,10 @@ impl super::Loop {
                     return;
                 }
             };
-        let (agent, shown) = self.agent_of(&agent, &facts);
-        tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "agent door: the person's agent key admits this client");
-        let consent = super::as_member(members, &facts, (&workspace, person), shown.clone());
-        if matches!(consent, super::Consent::Admit { .. }) {
-            self.seats
-                .admitted(seat, &agent, &shown, (workspace.as_str(), name.as_str()));
-        }
+        let (instance, shown) = self.agent_of(&agent, &facts);
+        tracing::info!(client = %facts.client, pid = facts.pid, %instance, %workspace, "MCP server: the person's agent key admits this client");
+        let consent = super::as_member(members, &facts, (&workspace, person), shown);
+        self.sessions.admit(&session, &consent, &agent, &name);
         let _ = decide.send(consent);
     }
 }
@@ -148,7 +145,7 @@ impl AgentKey {
     pub(crate) fn kept(file: &Path) -> Option<Self> {
         Self::open(file)
             .inspect_err(|error| {
-                tracing::warn!(%error, file = %file.display(), "agent door: the agent key is not kept");
+                tracing::warn!(%error, file = %file.display(), "MCP server: the agent key is not kept");
             })
             .ok()
     }
@@ -201,7 +198,7 @@ impl AgentKey {
         self.standing = match certify(self.grant, person) {
             Ok(standing) => standing,
             Err(why) => {
-                tracing::warn!(%why, "agent door: the agent key's grant is not certified");
+                tracing::warn!(%why, "MCP server: the agent key's grant is not certified");
                 Standing::Failed(why)
             }
         };
@@ -209,7 +206,7 @@ impl AgentKey {
             tracing::info!(
                 agent = %self.agent(),
                 expires_at_ns,
-                "agent door: the agent key's grant is certified"
+                "MCP server: the agent key's grant is certified"
             );
         }
     }
@@ -257,7 +254,7 @@ impl AgentKey {
                     .map_err(|error| error.to_string())
             });
             if let Err(why) = revoked {
-                tracing::warn!(%why, "agent door: the agent key's revocation was not signed");
+                tracing::warn!(%why, "MCP server: the agent key's revocation was not signed");
             }
         }
         self.standing = Standing::Revoked;

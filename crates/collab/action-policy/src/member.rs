@@ -163,7 +163,7 @@ impl AutomationId {
 
 /// One context of one agent: a conversation with a Tilo agent, or one Claude
 /// Code session.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AgentSessionId(pub String);
 

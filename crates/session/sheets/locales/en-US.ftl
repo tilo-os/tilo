@@ -501,25 +501,25 @@ uninstall-entry-body = It's part of the system, so it stays on this computer and
 
 ## The agent door: a program of this login (an AI agent in a terminal) asks to
 ## work in a workspace as an agent member.
-agent-door-client = { $client } ({ $program })
-agent-door-client-in-app = { $who }, in { $app }
-agent-door-client-from-device = { $client }, from your device { $device }
-agent-door-admission = Work in “{ $workspace }” as the agent { $agent }
-agent-door-admission-detail = It joins this workspace as an observer: it reads what the workspace holds and does the actions it is granted, and you can remove it in the workspace’s settings at any time.
-agent-door-no-workspace = There is no workspace here to work in.
-agent-door-client-in-environment = { $who }, in the environment “{ $environment }”
-agent-door-workspace-refused = You can’t let an agent work in that workspace from here.
-agent-door-environment-workspace = A program in an environment works in that environment’s workspace only.
-agent-door-environment-as-person = A program in an environment works as an agent, never as you.
-agent-door-seat = { $client } #{ $instance }
-agent-door-seat-in-environment = { $client } in { $environment } #{ $instance }
-agent-door-workspace-gone = The workspace this program asked to work in is gone.
-agent-door-withdrawn = The request was withdrawn before anyone answered it.
-agent-door-declined = You didn’t let this program work here as an agent.
-agent-door-no-run = This agent’s work here could not start
-agent-door-person-from-device = Only a program on this device can act as you; an agent from another of your devices works here as an agent.
-agent-door-admission-person = Act as you in “{ $workspace }”
-agent-door-admission-person-detail = Everything it does is yours: it runs what you type as you, attributed to you, with everything you may do here. Allow only a program you started yourself, such as a terminal.
+mcp-server-client = { $client } ({ $program })
+mcp-server-client-in-app = { $who }, in { $app }
+mcp-server-client-from-device = { $client }, from your device { $device }
+mcp-server-admission = Work in “{ $workspace }” as the agent { $agent }
+mcp-server-admission-detail = It joins this workspace as an observer: it reads what the workspace holds and does the actions it is granted, and you can remove it in the workspace’s settings at any time.
+mcp-server-no-workspace = There is no workspace here to work in.
+mcp-server-client-in-environment = { $who }, in the environment “{ $environment }”
+mcp-server-workspace-refused = You can’t let an agent work in that workspace from here.
+mcp-server-environment-workspace = A program in an environment works in that environment’s workspace only.
+mcp-server-environment-as-person = A program in an environment works as an agent, never as you.
+mcp-server-seat = { $client } #{ $instance }
+mcp-server-seat-in-environment = { $client } in { $environment } #{ $instance }
+mcp-server-workspace-gone = The workspace this program asked to work in is gone.
+mcp-server-withdrawn = The request was withdrawn before anyone answered it.
+mcp-server-declined = You didn’t let this program work here as an agent.
+mcp-server-no-run = This agent’s work here could not start
+mcp-server-person-from-device = Only a program on this device can act as you; an agent from another of your devices works here as an agent.
+mcp-server-admission-person = Act as you in “{ $workspace }”
+mcp-server-admission-person-detail = Everything it does is yours: it runs what you type as you, attributed to you, with everything you may do here. Allow only a program you started yourself, such as a terminal.
 
 ## The shortcut catalogue on the action door: every desktop shortcut with its
 ## live and default chords, as the shortcut guide shows them.

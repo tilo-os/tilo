@@ -1,0 +1,471 @@
+//! The agent sessions the person admitted at the session's MCP server: one per connection, each
+//! its own presence, history and Stop.
+
+use std::collections::BTreeMap;
+use std::os::unix::net::UnixStream;
+use std::sync::Arc;
+
+use tilo_action_policy::AgentSessionId;
+use tilo_lock::MutexRecover as _;
+use tilo_runtime::session_door::Consent;
+
+/// The agent sessions served here, from the moment a client connects until its connection ends.
+pub(crate) struct AgentSessions {
+    inner: std::sync::Mutex<Inner>,
+}
+
+#[derive(Default)]
+struct Inner {
+    /// Bumped on every change, so a reading made before it is not mistaken for the desk now.
+    revision: u64,
+    sessions: BTreeMap<AgentSessionId, Connection>,
+}
+
+struct Connection {
+    /// The agent member it is a session of: empty until the person admits it.
+    agent: String,
+    /// The program the person's answer was remembered for (`claude-code`), which taking that
+    /// answer back names.
+    program: String,
+    /// What the desk calls it (`Claude Code #2`).
+    name: String,
+    workspace_name: String,
+    workspace: String,
+    doing: Option<Doing>,
+    /// The environment's server it came in by, by number: none for the session's own. It ends
+    /// with that environment.
+    environment: Option<u64>,
+    /// The run its changes are steps of. `None` where the workspace confines no agent to a run.
+    run: Option<String>,
+    /// The records it changed, each as the app that keeps it and the record: what taking back its
+    /// work undoes.
+    changed: Vec<(String, String)>,
+    /// The connection itself, shut when the person stops the session.
+    stream: Option<UnixStream>,
+}
+
+impl AgentSessions {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: std::sync::Mutex::new(Inner::default()),
+        })
+    }
+
+    /// A new connection, by the environment's server `environment` (none for the session's own),
+    /// before the person answers for it: nothing of it shows until it is admitted.
+    pub(crate) fn joining(&self, environment: Option<u64>) -> AgentSessionId {
+        let session = AgentSessionId::new(format!(
+            "{}{}",
+            tilo_broker_core::services::AGENT_SESSION_PREFIX,
+            uuid::Uuid::new_v4().simple()
+        ));
+        self.inner.lock_recover().sessions.insert(
+            session.clone(),
+            Connection {
+                agent: String::new(),
+                program: String::new(),
+                name: String::new(),
+                workspace_name: String::new(),
+                workspace: String::new(),
+                doing: None,
+                environment,
+                run: None,
+                changed: Vec::new(),
+                stream: None,
+            },
+        );
+        session
+    }
+
+    /// The person's answer for `session`: admitted, it is a session of the agent member `consent`
+    /// names, of the program `program`, working in the workspace named `workspace_name`.
+    pub(crate) fn admit(
+        &self,
+        session: &AgentSessionId,
+        consent: &Consent,
+        program: &str,
+        workspace_name: &str,
+    ) {
+        let Consent::Admit {
+            workspace,
+            agent,
+            name,
+            ..
+        } = consent
+        else {
+            return;
+        };
+        let mut inner = self.inner.lock_recover();
+        let Some(connection) = inner.sessions.get_mut(session) else {
+            // It ended while the person was answering: nothing is served.
+            return;
+        };
+        agent.clone_into(&mut connection.agent);
+        program.clone_into(&mut connection.program);
+        name.clone_into(&mut connection.name);
+        workspace.clone_into(&mut connection.workspace);
+        workspace_name.clone_into(&mut connection.workspace_name);
+        inner.revision = inner.revision.wrapping_add(1);
+    }
+
+    /// `session` takes the step `doing`. Whether that is news.
+    pub(crate) fn acting(&self, session: &AgentSessionId, doing: Doing) -> bool {
+        let mut inner = self.inner.lock_recover();
+        let Some(connection) = inner.sessions.get_mut(session) else {
+            return false;
+        };
+        let doing = Some(doing);
+        if connection.doing == doing {
+            return false;
+        }
+        connection.doing = doing;
+        inner.revision = inner.revision.wrapping_add(1);
+        true
+    }
+
+    /// The admitted sessions, each once.
+    pub(crate) fn here(&self) -> Vec<Present> {
+        self.inner
+            .lock_recover()
+            .sessions
+            .iter()
+            .filter(|(_, connection)| !connection.agent.is_empty())
+            .map(|(session, connection)| Present {
+                session: session.clone(),
+                agent: connection.agent.clone(),
+                name: connection.name.clone(),
+                workspace: connection.workspace.clone(),
+                workspace_name: connection.workspace_name.clone(),
+                doing: connection.doing.clone(),
+            })
+            .collect()
+    }
+
+    /// The session that `speaker` (this device) speaks for on the presence board as `member`, by
+    /// its key in hex.
+    pub(crate) fn spoken_as(&self, speaker: [u8; 32], member: &str) -> Option<AgentSessionId> {
+        self.inner
+            .lock_recover()
+            .sessions
+            .keys()
+            .find(|session| {
+                hex::encode(collab_types::presence::stand_in(speaker, session.as_str())) == member
+            })
+            .cloned()
+    }
+
+    /// `session` works in the run `run`: taking its work back names it.
+    pub(crate) fn working_in(&self, session: &AgentSessionId, run: &str) {
+        if let Some(connection) = self.inner.lock_recover().sessions.get_mut(session) {
+            connection.run = Some(run.to_owned());
+        }
+    }
+
+    /// `session` changed `record` of `app`: one of the records taking its work back undoes.
+    pub(crate) fn changed(&self, session: &AgentSessionId, app: &str, record: &str) {
+        let step = (app.to_owned(), record.to_owned());
+        let mut inner = self.inner.lock_recover();
+        if let Some(connection) = inner.sessions.get_mut(session)
+            && !connection.changed.contains(&step)
+        {
+            connection.changed.push(step);
+        }
+    }
+
+    /// What `session` works in. `None` for a session not served here.
+    pub(crate) fn working(&self, session: &AgentSessionId) -> Option<Working> {
+        self.inner
+            .lock_recover()
+            .sessions
+            .get(session)
+            .map(|connection| Working {
+                workspace: connection.workspace.clone(),
+                program: connection.program.clone(),
+                run: connection.run.clone(),
+                changed: connection.changed.clone(),
+                app: connection
+                    .doing
+                    .as_ref()
+                    .and_then(|doing| doing.app.clone()),
+            })
+    }
+
+    /// What the desk calls `session`, once admitted.
+    pub(crate) fn name(&self, session: &AgentSessionId) -> Option<String> {
+        self.inner
+            .lock_recover()
+            .sessions
+            .get(session)
+            .map(|connection| connection.name.clone())
+            .filter(|name| !name.is_empty())
+    }
+
+    /// The connection `session` is served on, which stopping it closes.
+    pub(crate) fn attached(&self, session: &AgentSessionId, stream: &UnixStream) {
+        let copy = match stream.try_clone() {
+            Ok(copy) => Some(copy),
+            Err(error) => {
+                // Without its own handle Stop cannot end this connection; the client keeps it
+                // until it leaves by itself.
+                tracing::warn!(%error, "an agent session's connection could not be duplicated");
+                None
+            }
+        };
+        if let Some(connection) = self.inner.lock_recover().sessions.get_mut(session) {
+            connection.stream = copy;
+        }
+    }
+
+    /// The connection of `session` ended.
+    pub(crate) fn left(&self, session: &AgentSessionId) {
+        let mut inner = self.inner.lock_recover();
+        if inner.sessions.remove(session).is_none() {
+            return;
+        }
+        inner.revision = inner.revision.wrapping_add(1);
+    }
+
+    /// End `session`, as the person's Stop does. Whether it was served here.
+    pub(crate) fn stop(&self, session: &AgentSessionId) -> bool {
+        self.end(|id, _| id == session)
+    }
+
+    /// End every session of the program `program`, as taking back the person's answer does.
+    pub(crate) fn stop_program(&self, program: &str) -> bool {
+        self.end(|_, connection| connection.program == program)
+    }
+
+    /// End every session that came in by the environment's server `environment`, as that
+    /// environment ends.
+    pub(crate) fn stop_environment(&self, environment: u64) -> bool {
+        self.end(|_, connection| connection.environment == Some(environment))
+    }
+
+    /// End every session `ending` picks. Whether there was one.
+    fn end(&self, ending: impl Fn(&AgentSessionId, &Connection) -> bool) -> bool {
+        let ended: Vec<Connection> = {
+            let mut inner = self.inner.lock_recover();
+            let picked: Vec<AgentSessionId> = inner
+                .sessions
+                .iter()
+                .filter(|(id, connection)| ending(id, connection))
+                .map(|(id, _)| id.clone())
+                .collect();
+            if picked.is_empty() {
+                return false;
+            }
+            let ended = picked
+                .iter()
+                .filter_map(|id| inner.sessions.remove(id))
+                .collect();
+            inner.revision = inner.revision.wrapping_add(1);
+            ended
+        };
+        for connection in ended {
+            if let Some(stream) = connection.stream {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        }
+        true
+    }
+
+    /// The sessions as `session:agents` lists them.
+    pub(crate) fn readings(&self) -> Vec<Agent> {
+        self.here()
+            .into_iter()
+            .map(|present| Agent {
+                key: present.session.0,
+                name: present.name,
+                state: "running".to_owned(),
+                doing: present.workspace_name,
+                mark: String::new(),
+                unseen: 0,
+                seat: true,
+            })
+            .collect()
+    }
+
+    /// Changes only when a session was admitted, acted or left.
+    pub(crate) fn revision(&self) -> u64 {
+        self.inner.lock_recover().revision
+    }
+}
+
+/// An admitted agent session, as presence speaks for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Present {
+    pub(crate) session: AgentSessionId,
+    /// The agent member it is a session of: the key of its colour.
+    pub(crate) agent: String,
+    /// What the desk calls it (`Claude Code #2`).
+    pub(crate) name: String,
+    /// The workspace it works in, by id.
+    pub(crate) workspace: String,
+    pub(crate) workspace_name: String,
+    pub(crate) doing: Option<Doing>,
+}
+
+/// A step of an agent session, as its workspace says it beside its face.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Doing {
+    /// The action's name in the catalogue ("Replace text at a place"); the action's id where the
+    /// catalogue names none.
+    pub(crate) action: String,
+    /// The kind of step the action declares.
+    pub(crate) step: Option<tilo_actions::StepKind>,
+    /// The app it acts in, when its provider says which one.
+    pub(crate) app: Option<String>,
+}
+
+/// What the commands on an agent session's card act on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Working {
+    /// The workspace it works in, by id.
+    pub(crate) workspace: String,
+    /// The program the person's answer was remembered for.
+    pub(crate) program: String,
+    /// The run its changes are steps of: `None` where its workspace confines no agent to a run.
+    pub(crate) run: Option<String>,
+    /// The records it changed, each as the app that keeps it and the record.
+    pub(crate) changed: Vec<(String, String)>,
+    /// The app it is working in now, when it says.
+    pub(crate) app: Option<String>,
+}
+
+/// The agent sessions, as `session:agents` publishes them.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct Agents {
+    pub seated: Vec<Agent>,
+}
+
+/// One agent session.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub(crate) struct Agent {
+    /// The agent session.
+    pub key: String,
+    pub name: String,
+    /// `running`, `waiting` (for the person) or `done`.
+    pub state: String,
+    pub doing: String,
+    pub mark: String,
+    pub unseen: i64,
+    /// Whether the person may stop it here.
+    pub seat: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn admit(sessions: &AgentSessions, session: &AgentSessionId, name: &str) {
+        let consent = Consent::Admit {
+            workspace: "w1".to_owned(),
+            agent: "agent-1".to_owned(),
+            person: "p1".to_owned(),
+            name: name.to_owned(),
+        };
+        sessions.admit(session, &consent, "claude-code", "Studio");
+    }
+
+    /// Two connections of one agent are two sessions: each its own presence, and Stop ends the
+    /// one stopped.
+    #[test]
+    fn each_connection_is_a_session_of_its_own_and_stop_ends_one() {
+        let sessions = AgentSessions::new();
+        let (first, _first_peer) = UnixStream::pair().unwrap();
+        let (second, mut second_peer) = UnixStream::pair().unwrap();
+        let one = sessions.joining(None);
+        assert!(
+            sessions.readings().is_empty(),
+            "nothing shows before it is admitted"
+        );
+        let shown = sessions.revision();
+        admit(&sessions, &one, "Claude Code #1");
+        sessions.attached(&one, &first);
+        assert!(sessions.revision() > shown, "the desk is told");
+        let two = sessions.joining(None);
+        admit(&sessions, &two, "Claude Code #2");
+        sessions.attached(&two, &second);
+        let here = sessions.here();
+        assert_eq!(here.len(), 2, "one presence per session");
+        assert!(
+            here.iter().all(|present| present.agent == "agent-1"),
+            "one agent"
+        );
+        assert_ne!(one, two);
+
+        let doing = Doing {
+            action: "Replace text at a place".to_owned(),
+            step: None,
+            app: Some("so.tilo.notes".to_owned()),
+        };
+        assert!(sessions.acting(&two, doing.clone()), "its step is news");
+        assert!(!sessions.acting(&two, doing), "the same step, once");
+
+        sessions.working_in(&two, "run");
+        sessions.changed(&two, "so.tilo.notes", "main");
+        sessions.changed(&two, "so.tilo.notes", "main");
+        let working = sessions.working(&two).expect("served here");
+        assert_eq!(working.run.as_deref(), Some("run"));
+        assert_eq!(
+            working.changed,
+            [("so.tilo.notes".to_owned(), "main".to_owned())]
+        );
+        assert_eq!(working.app.as_deref(), Some("so.tilo.notes"));
+        assert_eq!(
+            sessions.working(&one).unwrap().run,
+            None,
+            "its own run alone"
+        );
+
+        assert!(sessions.stop(&two), "the person's Stop");
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            std::io::Read::read(&mut second_peer, &mut byte).unwrap(),
+            0,
+            "its connection is closed"
+        );
+        let left: Vec<_> = sessions
+            .here()
+            .into_iter()
+            .map(|present| present.session)
+            .collect();
+        assert_eq!(left, [one], "the other session stays");
+        assert!(!sessions.stop(&two), "nothing to stop twice");
+        assert!(
+            sessions.stop_program("claude-code"),
+            "taking the answer back ends the rest"
+        );
+        assert!(sessions.here().is_empty());
+    }
+
+    /// A session's presence is found again by the key this device speaks for it under.
+    #[test]
+    fn a_session_is_found_by_its_presence_key() {
+        let sessions = AgentSessions::new();
+        let one = sessions.joining(None);
+        admit(&sessions, &one, "Claude Code #1");
+        let speaker = [7; 32];
+        let member = hex::encode(collab_types::presence::stand_in(speaker, one.as_str()));
+        assert_eq!(sessions.spoken_as(speaker, &member), Some(one));
+        assert_eq!(sessions.spoken_as([8; 32], &member), None);
+    }
+}

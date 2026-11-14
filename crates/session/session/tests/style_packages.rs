@@ -85,7 +85,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     let _settled = ui::motion::testing::settled();
     crate::common::app_store();
     let _ = workspace();
-    // A session whose agent door a REPL reaches: the door is how the switch runs its own action
+    // A session whose MCP server a REPL reaches: the door is how the switch runs its own action
     // (`shell.show_style`), as a press in the bar's menu does.
     let root = crate::common::private_home();
     let program = std::env::current_exe().expect("this test's program");
@@ -93,7 +93,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     let mut session = crate::common::headless(Options {
         collab: false,
         action_plane: tilo_session::ActionPlane::At(root.path().join("plane.sock")),
-        agent_door: Some(root.path().join("agent.sock")),
+        mcp_server: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
         services: vec![Box::new(crate::common::seeded_apps())],
         questions: Some(questions),
@@ -252,7 +252,7 @@ fn a_broken_copy_is_a_diagnostic_and_never_installs() {
 }
 
 /// The same commands through the REPL's door: a person (or their agent) typing at the
-/// session's agent door runs "make it mine" and gets a style the switch offers, the very call
+/// session's MCP server runs "make it mine" and gets a style the switch offers, the very call
 /// the canvas chat's agent makes (`shell.md` §6, "Every step is an action in the broker's
 /// catalogue, so the REPL does the same").
 #[test]
@@ -274,7 +274,7 @@ fn the_repl_makes_a_style_with_the_same_call() {
             services: vec![Box::new(apps)],
             questions: Some(questions),
             action_plane: tilo_session::ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(root.path().join("agent.sock")),
+            mcp_server: Some(root.path().join("agent.sock")),
             admit_repl: vec![program],
             ..Options::default()
         },

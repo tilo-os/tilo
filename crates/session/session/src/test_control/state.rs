@@ -149,7 +149,7 @@ pub(super) fn state_dump(tree: &Layout, desk: &Desk<'_>) -> Json {
     let tree = tilo_desktop_model::history::without_history(|| serde_json::to_value(tree))
         .unwrap_or(Json::Null);
     let agents: Vec<Json> = desk
-        .seats
+        .agent_sessions
         .readings()
         .iter()
         .map(|agent| {

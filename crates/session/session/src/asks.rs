@@ -132,7 +132,7 @@ impl Shared {
                 DesktopAsk::OpenSettings(link) => {
                     crate::quick_settings::open_settings(self, &link);
                 }
-                // The grant is taken back at the person's agent door, as Console takes it back:
+                // The grant is taken back at the person's MCP server, as Console takes it back:
                 // whatever this session offers it on answers, and without one the person hears
                 // that it did not happen.
                 DesktopAsk::RevokeAgentGrant(grant) => self.revoke_agent_grant(grant),
@@ -330,7 +330,7 @@ impl Shared {
         }
     }
 
-    /// Take the agent grant `grant` back at the person's agent door.
+    /// Take the agent grant `grant` back at the person's MCP server.
     fn revoke_agent_grant(&self, grant: String) {
         use tilo_actions::remote::agent_door;
         let mut arguments = serde_json::Map::new();
@@ -345,13 +345,13 @@ impl Shared {
         }
     }
 
-    /// Carry out what a person's card asked of the agent it shows: an agent this device seats at
-    /// its door is acted on here, where the connection, its workspace and its run are known; one
-    /// it does not seat is the person's hosted door's, whose own card in Console knows it.
+    /// Carry out what a person's card asked of the agent session it shows: a session this device
+    /// serves is acted on here, where the connection, its workspace and its run are known; any
+    /// other through its agent's card in Console.
     fn agent_ask(&self, who: &str, client: &str, ask: tilo_desktop::profile_card::AgentAsk) {
         #[cfg(target_os = "linux")]
-        if let Some(agent) = self.seated_agent(who) {
-            self.seated_agent_ask(&agent, ask);
+        if let Some(session) = self.agent_session_of(who) {
+            self.agent_session_ask(&session, ask);
             return;
         }
         #[cfg(not(target_os = "linux"))]
@@ -359,52 +359,57 @@ impl Shared {
         self.invoke_app_action(LaunchpadAppAction::ask_agent(client, ask));
     }
 
-    /// What a person's card asked of the agent `agent` this device seats at its door.
+    /// What a person's card asked of the agent session `session` this device serves.
     #[cfg(target_os = "linux")]
-    fn seated_agent_ask(&self, agent: &str, ask: tilo_desktop::profile_card::AgentAsk) {
+    fn agent_session_ask(
+        &self,
+        session: &tilo_action_policy::AgentSessionId,
+        ask: tilo_desktop::profile_card::AgentAsk,
+    ) {
         use tilo_desktop::profile_card::AgentAsk;
-        let working = self.seats.working(agent);
+        let Some(working) = self.agent_sessions.working(session) else {
+            return;
+        };
         match ask {
             // Its card of its own is the one the person is looking at: nothing to open.
             AgentAsk::Card => {}
             AgentAsk::Stop => {
-                self.seats.stop(agent);
+                self.agent_sessions.stop(session);
             }
-            AgentAsk::UndoRun => self.undo_seated_run(agent, working.as_ref()),
+            AgentAsk::UndoRun => self.undo_session_run(&working),
             AgentAsk::TakeOver => {
-                // The person picks up where it was: its connections end here, and the app it was
-                // working in comes forward, as the history's own opening does.
-                self.seats.stop(agent);
-                self.open_what_it_worked_in(working.as_ref());
+                // The person picks up where it was: the session ends, and the app it was working
+                // in comes forward, as the history's own opening does.
+                self.agent_sessions.stop(session);
+                self.open_what_it_worked_in(&working);
             }
             AgentAsk::Revoke => {
-                // What let it in here is taken back, and it works here no more: the next client of
-                // that program is asked about, as the first was.
-                if let Some(door) = self.agent_door.borrow_mut().as_mut() {
-                    door.revoke(agent);
+                // What let its program in here is taken back, and every session of it ends: the
+                // next client of that program is asked about, as the first was.
+                if let Some(door) = self.mcp_server.borrow_mut().as_mut() {
+                    door.revoke(&working.program);
                 }
-                self.seats.stop(agent);
+                self.agent_sessions.stop_program(&working.program);
             }
         }
     }
 
-    /// The agent this device seats that the presence member `who` speaks for, by its key.
+    /// The agent session this device serves that the presence member `who` speaks for, by its
+    /// key.
     #[cfg(target_os = "linux")]
-    fn seated_agent(&self, who: &str) -> Option<String> {
+    fn agent_session_of(&self, who: &str) -> Option<tilo_action_policy::AgentSessionId> {
         let sync = self.sync.as_ref()?;
-        self.seats.spoken_as(*sync.publisher().as_bytes(), who)
+        self.agent_sessions
+            .spoken_as(*sync.publisher().as_bytes(), who)
     }
 
-    /// Take back what the agent `agent` did here: its run in the workspace that holds it, undone in
+    /// Take back what an agent session did here: its run in the workspace that holds it, undone in
     /// each record it changed, as the history's own Undo run does.
     #[cfg(target_os = "linux")]
-    fn undo_seated_run(&self, agent: &str, working: Option<&crate::agent_door::Working>) {
-        let Some(working) = working else {
-            return;
-        };
+    fn undo_session_run(&self, working: &crate::agent_sessions::Working) {
         let Some(run) = working.run.as_deref() else {
             // Its changes were the workspace's own, as any app's: there is no run of it to undo.
-            tracing::info!(%agent, "an agent's card asked to undo a run it did not work in");
+            tracing::info!(program = %working.program, "an agent's card asked to undo a run it did not work in");
             return;
         };
         if let Err(error) = self
@@ -415,13 +420,10 @@ impl Shared {
         }
     }
 
-    /// Open what the agent `agent` was working in, in its workspace, as the history opens a
+    /// Open what an agent session was working in, in its workspace, as the history opens a
     /// resource: the person continues the work themselves.
     #[cfg(target_os = "linux")]
-    fn open_what_it_worked_in(&self, working: Option<&crate::agent_door::Working>) {
-        let Some(working) = working else {
-            return;
-        };
+    fn open_what_it_worked_in(&self, working: &crate::agent_sessions::Working) {
         let Some(app) = working
             .changed
             .last()

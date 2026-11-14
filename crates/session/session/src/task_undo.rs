@@ -45,7 +45,7 @@ pub(crate) trait UndoDoor: Send + Sync {
     fn run(&self, caller: &Caller, request: InvokeRequest, until: Instant) -> Result<(), String>;
 }
 
-impl UndoDoor for crate::agent_door::Host {
+impl UndoDoor for crate::mcp_server::Host {
     fn page(&self, caller: &Caller, query: CatalogueQuery) -> Option<CataloguePage> {
         self.query(caller, query).wait_timeout(ANSWER).ok()??.ok()
     }

@@ -9,7 +9,7 @@ own, and reads every claim back off the session rather than off the clients:
   1. asking    each client opens with `initialize` and waits: nothing it asked
                for runs until the person answers the sheet the door puts up.
   2. seats     the person answers each sheet, once per client; each agent is
-               admitted as an agent of its own (`claude-code@host#1`) acting
+               admitted as an agent session of its own (`Claude Code #1`) acting
                for the person, and shows on the desk as its own presence, a
                seat of its own beside the person's runs.
   3. acting    each admitted client is served as itself: its own tools answer,
@@ -49,7 +49,7 @@ SESSION_LAUNCHER = REPO / "dist" / "dev" / "nested-session.sh"
 SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "tilo-session"))
 # What each client calls itself, and the agent of its own the door admits it as:
 # the first connection of that client on this device.
-CLIENTS = [("Claude Code", "claude-code@host#1"), ("Codex", "codex@host#1")]
+CLIENTS = [("Claude Code", "Claude Code #1"), ("Codex", "Codex #1")]
 
 failures: list[str] = []
 
@@ -128,7 +128,7 @@ class Desk:
             "HOME": str(self.home),
             "TILO_TEST_CONTROL": str(self.control),
             # The door a developer names, so this proof never meets the login's own.
-            "TILO_AGENT_DOOR": str(self.door),
+            "TILO_MCP_SERVER": str(self.door),
             "TILO_IDENTITY_ROOT": str(self.identity),
             "XDG_RUNTIME_DIR": str(self.runtime),
             "XDG_DATA_HOME": str(self.dir / "data"),
@@ -280,8 +280,8 @@ def main() -> int:
             agent.notify("notifications/initialized")
         check("admitting them grants nothing beyond the person's own",
               desk.grants() == grants_before, ", ".join(desk.grants())[:160])
-        seated = {agent.get("key") for agent in desk.agents()}
-        check("the desk seats both agents, each as itself",
+        seated = {agent.get("name") for agent in desk.agents()}
+        check("the desk shows both agent sessions, each as itself",
               seated == {expected for _, expected in CLIENTS}, ", ".join(sorted(map(str, seated))))
         check("each seat is the person's own to end",
               all(agent.get("seat") for agent in desk.agents()), json.dumps(desk.agents())[:160])
@@ -301,7 +301,7 @@ def main() -> int:
         stop = desk.stop_row()
         check("the person's own door lists the seat's Stop", stop is not None)
         text, failed = agents[0].call("tilo_do", {"path": "session#stop-agent",
-                                                  "args": {"agent": CLIENTS[1][1]}})
+                                                  "args": {"agent": desk.agents()[-1].get("key")}})
         check("an agent is not offered it", failed, text.splitlines()[0][:100] if text else "")
         # The same door speaks the control protocol to a program inside an app this
         # session started, and to nothing else: a program of this login's own is told so.
@@ -350,8 +350,8 @@ def main() -> int:
         # The name a reader activates it by, as a person's pointer press reaches the same button.
         pressed = desk.call({"op": "click_named", "name": "Stop"})
         check("Stop is a control a reader can name", "ok" in pressed, json.dumps(pressed)[:120])
-        keys = [key for _, key in CLIENTS]
-        gone = keys.index(seats[stopped_name])
+        keys = [shown for _, shown in CLIENTS]
+        gone = keys.index(stopped_name)
         stopped, other = agents[gone], agents[1 - gone]
         until(lambda: len(desk.agents()) < 2, 10)
         text, failed = stopped.call("tilo_ls", {})
@@ -360,7 +360,7 @@ def main() -> int:
         text, failed = other.call("tilo_ls", {})
         check("the other agent still answers", not failed,
               text.splitlines()[0][:100] if text else "")
-        left = [agent.get("key") for agent in desk.agents()]
+        left = [agent.get("name") for agent in desk.agents()]
         check("the desk keeps the other agent's seat alone", left == [keys[1 - gone]],
               ", ".join(map(str, left)))
 

@@ -99,7 +99,7 @@ pub(crate) struct Runs {
     /// Wakes the session's loop when a run reported what it spent, so the day it is charged to is
     /// the day the agent then works in.
     wake: Option<tilo_service::Wake>,
-    /// The runs the agent door's admitted connections work in, beside the turns: each held for as
+    /// The runs the MCP server's admitted connections work in, beside the turns: each held for as
     /// long as its connection lasts ([`crate::door_runs`]).
     doors: Arc<crate::door_runs::DoorRuns>,
 }
@@ -116,7 +116,7 @@ impl Runs {
         }
     }
 
-    /// The runs the agent door's connections work in.
+    /// The runs the MCP server's connections work in.
     pub(crate) fn doors(&self) -> Arc<crate::door_runs::DoorRuns> {
         Arc::clone(&self.doors)
     }
@@ -1478,7 +1478,7 @@ mod tests {
             }],
         };
         let door = TrackerRun {
-            issue: format!("{}a1", crate::door_runs::DOOR_RUNS),
+            issue: format!("{}a1", tilo_broker_core::services::AGENT_SESSION_PREFIX),
             agent: "task-0123456789ab".into(),
             turn: None,
             delegation: Some(Ok(vec![1, 2, 3])),

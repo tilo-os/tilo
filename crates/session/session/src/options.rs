@@ -152,11 +152,11 @@ pub struct Options {
     /// Whether the apps this session runs read and invoke what its services publish, and on which
     /// socket. Off, the apps it starts reach no service at all.
     pub action_plane: ActionPlane,
-    /// Where the session's agent door listens ([`agent_door::path`]): the socket a program of this
+    /// Where the session's MCP server listens ([`mcp_server::path`]): the socket a program of this
     /// login asks on to work in a workspace as an agent, and the person admits it. `None` : this
     /// session serves no agents (a test, or a session in a window of another desktop).
-    pub agent_door: Option<std::path::PathBuf>,
-    /// The programs the person admits, as they start the session, to act as them at the agent door
+    pub mcp_server: Option<std::path::PathBuf>,
+    /// The programs the person admits, as they start the session, to act as them at the MCP server
     /// (`--admit-repl PATH`): their decision, made ahead of time, so a REPL they start is let in
     /// without the sheet. Only a connection whose executable is one of these and that asks to act
     /// as the person is; any other is asked about as before.
@@ -164,7 +164,7 @@ pub struct Options {
     /// The agent key the person starts the session with (`--agent-key FILE`): the session keeps
     /// a secret key in FILE (made there when FILE is empty or absent), and the person's root
     /// certifies an agent's grant for it, listed with their devices. A program presenting the key
-    /// at the agent door ([`tilo_runtime::session_door::AGENT_KEY_ENV`]) is admitted as that
+    /// at the MCP server ([`tilo_runtime::session_door::AGENT_KEY_ENV`]) is admitted as that
     /// grant's agent without asking them: what a session started for an agent, with no one to
     /// answer the door, lets the agent in by. Revoking the grant, as a device or from the agent's
     /// card, ends it.
@@ -253,7 +253,7 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// endpoint serves.
 /// `documents` is where what admission takes in from another device goes, so the apps this session
 /// runs show what everyone wrote.
-/// `remote` is the agent door toward the person's other devices: answered on the endpoint over the
+/// `remote` is the MCP server toward the person's other devices: answered on the endpoint over the
 /// devices the person's own store holds, and dialing theirs from it ([`crate::remote_door`]).
 pub(crate) fn start_collaboration(
     options: &Options,
@@ -418,7 +418,7 @@ impl Default for Options {
             wake_seams: crate::wake::Seams::default(),
             vpn: None,
             action_plane: ActionPlane::default(),
-            agent_door: None,
+            mcp_server: None,
             admit_repl: Vec::new(),
             agent_key: None,
             test_control: None,

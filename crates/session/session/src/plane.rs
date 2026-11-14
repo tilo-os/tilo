@@ -1551,7 +1551,7 @@ fn shortcut_catalogue(services: &tilo_action_broker::services::HostServices) -> 
 #[cfg(test)]
 fn test_session_actions() -> std::sync::Arc<crate::session_actions::SessionActions> {
     let doors =
-        crate::agent_door::SessionDoors::new(tilo_service::LoopWake::default().handle(), "Pat");
+        crate::mcp_server::SessionDoors::new(tilo_service::LoopWake::default().handle(), "Pat");
     std::sync::Arc::new(crate::session_actions::SessionActions::new(
         std::sync::Arc::new(doors),
     ))

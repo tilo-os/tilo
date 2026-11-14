@@ -151,7 +151,7 @@ pub(super) fn workspace(
                     )
                 })
             })
-            .ok_or_else(|| word("agent-door-no-workspace"));
+            .ok_or_else(|| word("mcp-server-no-workspace"));
     };
     handle
         .read(|tree| {
@@ -166,7 +166,7 @@ pub(super) fn workspace(
                     )
                 })
         })
-        .ok_or_else(|| word("agent-door-workspace-refused"))
+        .ok_or_else(|| word("mcp-server-workspace-refused"))
 }
 
 /// The workspace a connection from `origin` that asked for `asked` works in:
@@ -185,11 +185,11 @@ pub(super) fn workspace_for(
         Origin::Host => workspace(handle, person, asked),
         Origin::Environment(environment) => {
             if asked.is_some_and(|asked| asked != environment.workspace) {
-                return Err(word("agent-door-environment-workspace"));
+                return Err(word("mcp-server-environment-workspace"));
             }
             // Still on the desk, and still one the person may let it into.
             workspace(handle, person, Some(&environment.workspace))
-                .map_err(|_| word("agent-door-workspace-gone"))
+                .map_err(|_| word("mcp-server-workspace-gone"))
         }
     }
 }
@@ -235,7 +235,7 @@ impl Doors {
                     .is_some_and(|extension| extension == "sock")
                     && let Err(error) = std::fs::remove_file(&path)
                 {
-                    tracing::warn!(%error, path = %path.display(), "agent door: an ended session's environment door was not removed");
+                    tracing::warn!(%error, path = %path.display(), "MCP server: an ended session's environment door was not removed");
                 }
             }
         }
@@ -292,7 +292,7 @@ pub(super) fn answer_door_requests(
         if *entrance != Origin::Host {
             tracing::info!(
                 pid,
-                "agent door: a program inside an environment asked for a door"
+                "MCP server: a program inside an environment asked for a door"
             );
             super::refuse(stream, &PeerRefusal::OutsideEnvironment);
             return None;
@@ -302,7 +302,7 @@ pub(super) fn answer_door_requests(
     }
     if *entrance != Origin::Host && tilo_runtime::remote_door::forward_request(first).is_some() {
         // A program in an environment works in that environment's workspace, on this device.
-        tilo_runtime::remote_door::refuse_forward(stream, word("agent-door-environment-workspace"));
+        tilo_runtime::remote_door::refuse_forward(stream, word("mcp-server-environment-workspace"));
         return None;
     }
     Some(stream)
@@ -324,7 +324,7 @@ pub(super) fn open(mut stream: UnixStream, request: Request, holder: u32, servin
         return;
     }
     let spawned = std::thread::Builder::new()
-        .name("tilo-agent-door-environment".into())
+        .name("tilo-mcp-server-environment".into())
         .spawn(move || {
             let opener = serving.environments.clone();
             hold(stream, &request, holder, &serving);
@@ -332,7 +332,7 @@ pub(super) fn open(mut stream: UnixStream, request: Request, holder: u32, servin
         });
     if let Err(error) = spawned {
         opener.open.fetch_sub(1, Ordering::Relaxed);
-        tracing::warn!(%error, "agent door: an environment's door could not be opened");
+        tracing::warn!(%error, "MCP server: an environment's door could not be opened");
     }
 }
 
@@ -342,7 +342,7 @@ fn hold(mut stream: UnixStream, request: &Request, holder: u32, serving: &Servin
     let (workspace, workspace_name) = match where_it_works(&stream, request, opener, serving) {
         Ok(found) => found,
         Err(reason) => {
-            tracing::info!(environment = %request.environment, %reason, "agent door: an environment's door is refused");
+            tracing::info!(environment = %request.environment, %reason, "MCP server: an environment's door is refused");
             answer(&mut stream, &Reply::Refused { reason });
             return;
         }
@@ -361,7 +361,7 @@ fn hold(mut stream: UnixStream, request: &Request, holder: u32, serving: &Servin
     }) {
         Ok(listener) => listener,
         Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "agent door: an environment's door could not be bound");
+            tracing::warn!(%error, path = %path.display(), "MCP server: an environment's door could not be bound");
             answer(
                 &mut stream,
                 &Reply::Refused {
@@ -384,7 +384,7 @@ fn hold(mut stream: UnixStream, request: &Request, holder: u32, serving: &Servin
         environment = %environment.id,
         %workspace,
         path = %path.display(),
-        "agent door: an environment's door is open"
+        "MCP server: an environment's door is open"
     );
     answer(
         &mut stream,
@@ -396,11 +396,11 @@ fn hold(mut stream: UnixStream, request: &Request, holder: u32, serving: &Servin
     serve(&stream, &listener, &environment, serving);
     drop(listener);
     if let Err(error) = std::fs::remove_file(&path) {
-        tracing::warn!(%error, path = %path.display(), "agent door: an ended environment's door was not removed");
+        tracing::warn!(%error, path = %path.display(), "MCP server: an ended environment's door was not removed");
     }
     // The environment ended: so does every agent it let in.
-    serving.seats.stop_door(door);
-    tracing::info!(environment = %environment.id, "agent door: an environment's door is closed");
+    serving.sessions.stop_environment(door);
+    tracing::info!(environment = %environment.id, "MCP server: an environment's door is closed");
 }
 
 /// Where the environment `request` names works, as the loop decides on its
@@ -441,7 +441,7 @@ fn where_it_works(
 fn answer(stream: &mut UnixStream, reply: &Reply) {
     if let Err(error) = stream.write_all(&reply.line()) {
         // Its closed lease closes any door it was given.
-        tracing::info!(%error, "agent door: an environment left before its answer");
+        tracing::info!(%error, "MCP server: an environment left before its answer");
     }
 }
 
@@ -476,7 +476,7 @@ fn serve(
             if error.kind() == io::ErrorKind::Interrupted {
                 continue;
             }
-            tracing::warn!(%error, "agent door: an environment's door stopped waiting");
+            tracing::warn!(%error, "MCP server: an environment's door stopped waiting");
             return;
         }
         let [lease_ready, door_ready] = fds;
@@ -487,7 +487,7 @@ fn serve(
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => {
-                    tracing::info!(%error, environment = %environment.id, "agent door: an environment's lease failed, so its door closes");
+                    tracing::info!(%error, environment = %environment.id, "MCP server: an environment's lease failed, so its door closes");
                     return;
                 }
             }
@@ -506,7 +506,7 @@ fn accept(listener: &UnixListener, environment: &Arc<Environment>, serving: &Ser
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => {
-                tracing::warn!(%error, "agent door: accepting at an environment's door failed");
+                tracing::warn!(%error, "MCP server: accepting at an environment's door failed");
                 return;
             }
         };
@@ -523,7 +523,7 @@ fn accept(listener: &UnixListener, environment: &Arc<Environment>, serving: &Ser
                 super::From::Environment(pid, Arc::clone(environment)),
             ),
             Err(refusal) => {
-                tracing::info!(?refusal, environment = %environment.id, "agent door: a connection to an environment's door is refused");
+                tracing::info!(?refusal, environment = %environment.id, "MCP server: a connection to an environment's door is refused");
                 super::refuse(stream, &refusal);
             }
         }

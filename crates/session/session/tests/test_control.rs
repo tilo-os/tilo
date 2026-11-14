@@ -229,7 +229,7 @@ impl StartedSession {
             .env("XDG_CACHE_HOME", home.path().join(".cache"))
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
-            .env_remove("TILO_AGENT_DOOR")
+            .env_remove("TILO_MCP_SERVER")
             // A stop of the whole group, as a session is stopped in a terminal or
             // by a script, reaches it through this group.
             .process_group(0)

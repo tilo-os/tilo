@@ -274,7 +274,7 @@ impl Apps {
     /// The session's launch records: each app started from here on is written into them, so its
     /// connection to the session's services is admitted for the launch that made it.
     /// Lend what says why a workspace's apps may not start yet: the reason, while this device
-    /// waits for the workspace's host to admit it ([`crate::agent_door::awaited_reason`]).
+    /// waits for the workspace's host to admit it ([`crate::mcp_server::awaited_reason`]).
     pub(crate) fn lend_admission(&self, awaited: Admission) {
         *self.admission.borrow_mut() = Some(awaited);
     }

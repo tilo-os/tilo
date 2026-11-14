@@ -44,7 +44,7 @@
 #                     canvas. Development builds only.
 #
 # Drive it from another terminal with the commands it prints:
-#   target/debug/tilolang repl --door "$TILO_AGENT_DOOR"
+#   target/debug/tilolang repl --door "$TILO_MCP_SERVER"
 #   TILO_TEST_CONTROL=... target/debug/tilo-control snapshot /tmp/shot.png
 #
 # The tilolang runtime the apps run on: this tree's thin-app build
@@ -452,7 +452,7 @@ start_session() {
         TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
         TILO_FS_BLOB_SOCKET="$media_socket" \
         TILO_COMMUNITY_CONFIG="$community_file" \
-        TILO_AGENT_DOOR="$door" \
+        TILO_MCP_SERVER="$door" \
         setsid "$session_bus" "$dbus_daemon" \
         "${host_client[@]}" "$bin/tilo-session" "${backend[@]}" --no-x11 \
         --system-bus none --test-control "$control" "$@" \
@@ -502,7 +502,7 @@ start_session --shell screen --admit-repl "$bin/tilolang" "${apps[@]}"
 # The door is announced once the session's own doors are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
 tries=600
-until grep -q "^TILO_AGENT_DOOR=$door\$" "$log"; do
+until grep -q "^TILO_MCP_SERVER=$door\$" "$log"; do
     kill -0 "$session_pid" 2>/dev/null || { tail -40 "$log" >&2; die "the session ended before serving its agent door"; }
     ((tries--)) || { tail -40 "$log" >&2; die "the session serves no agent door"; }
     sleep 0.1
@@ -520,7 +520,7 @@ if [[ -n $model_record ]]; then
 fi
 
 cat <<EOF
-TILO_AGENT_DOOR=$door
+TILO_MCP_SERVER=$door
 TILO_TEST_CONTROL=$control
 XDG_RUNTIME_DIR=$runtime
 The session runs (pid $session_pid). From another terminal:

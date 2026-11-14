@@ -630,7 +630,7 @@ fn an_agents_run_in_a_record_the_session_keeps_is_listed_and_undone_from_the_act
     const CHAT_ROOT: &str = "tl:so.tilo.lang.chat:channel";
     // The run an agent admitted at this desktop's door works in: one run of a task.
     const RUN: &str =
-        "so.tilo.session/agent-door/243b7256ef6c400fa43d111a4988b8ca@ad46de5895801c1c";
+        "so.tilo.session/agent-session/243b7256ef6c400fa43d111a4988b8ca@ad46de5895801c1c";
     // The person names a session-kept record as the app's own record of the workspace.
     let primary = ui::RecordId::package_primary().as_str().to_owned();
 
