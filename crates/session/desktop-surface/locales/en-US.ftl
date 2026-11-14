@@ -1076,6 +1076,8 @@ session-window-share-live-lent = This device can share its own windows in this w
 session-window-share-first-page = Waiting for the window's page from the device that runs it
 session-window-share-first-picture = Waiting for the window's first picture
 session-window-share-page-unsent = Waiting for the window's page to go out to the devices showing it
+session-window-share-page-withheld = The window's app was asked for its page and has not handed it over
+session-window-share-page-overdue = The device that runs the window was asked for its page and has not sent it
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = On-screen readout

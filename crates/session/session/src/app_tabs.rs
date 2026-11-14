@@ -181,6 +181,11 @@ struct Link {
     /// The tab the window takes, when the session connected it itself: what its asks about its own
     /// window are answered for. A window the launcher connected names its tab itself, in each ask.
     instance: Option<u64>,
+    /// The tab whose page this connection's app offered
+    /// ([`FloatingSurfaceClientMessage::PaintCapable`]): where the app is asked for that page, and
+    /// what the frames it sends on this connection are of. A window its launcher connected names
+    /// no tab on its connection, so the offer is what ties the two.
+    page: Option<u64>,
     /// Whether this app's launch let it know the network's state; a window never widens that for
     /// itself.
     network_allowed: bool,
@@ -369,7 +374,10 @@ impl AppTabs {
     /// Publish the pages someone shows, and tell the apps how their windows are watched: a window
     /// that gained a viewer is asked for a whole frame and starts sending, one that lost its last
     /// viewer is told to stop, and a window's whole frame the plane needs again (a viewer joined, or
-    /// lost the chain of changes) is asked for as the app can only answer.
+    /// lost the chain of changes) is asked for as the app can only answer. The app is asked on the
+    /// connection it offered the page on, which for an app's first window is the one its launcher
+    /// made and names no tab; an app that hands nothing over is asked again
+    /// ([`crate::page_track::HAND_OVER_BOUND`]).
     fn follow_pages(&self, shared: &crate::Shared) {
         let planes = shared
             .sync
@@ -379,7 +387,16 @@ impl AppTabs {
         let now_us = tilo_clock::unix_now_ms().saturating_mul(1000);
         let asks = shared.pages.borrow_mut().step(&planes, now_us);
         for (tab, watch) in asks {
-            let Some(link) = self.links.values().find(|link| link.instance == Some(tab)) else {
+            let offered = self.links.values().find(|link| link.page == Some(tab));
+            let Some(link) =
+                offered.or_else(|| self.links.values().find(|link| link.instance == Some(tab)))
+            else {
+                if watch == Watch::Whole {
+                    tracing::warn!(
+                        tab,
+                        "a window's page is asked for and no connection of its app takes the ask"
+                    );
+                }
                 continue;
             };
             let message = match watch {
@@ -768,15 +785,15 @@ impl Answers<'_> {
                     &app,
                     false,
                 );
-                if let Some(tab) = self
-                    .links
-                    .remove(&connection)
-                    .and_then(|link| link.instance)
-                {
+                if let Some(link) = self.links.remove(&connection) {
                     // A page nothing runs any more is published nowhere, and what its window said
                     // it shows goes with it.
-                    self.pages.borrow_mut().closed(tab);
-                    self.launches.notes().forget(tab);
+                    for tab in [link.instance, link.page].into_iter().flatten() {
+                        self.pages.borrow_mut().closed(tab);
+                    }
+                    if let Some(tab) = link.instance {
+                        self.launches.notes().forget(tab);
+                    }
                 }
                 // The cards it presented, and the windows the desk stood
                 // them in, go with it.
@@ -802,6 +819,7 @@ impl Answers<'_> {
                         app,
                         launch,
                         instance,
+                        page: None,
                         network_allowed,
                         selection: false,
                         writer: reply,
@@ -1015,10 +1033,26 @@ impl Answers<'_> {
             // it. Tilo apps' own views are never streamed, and neither is
             // anything but a page.
             FloatingSurfaceClientMessage::PaintCapable => match own {
-                Some(tab) => self.pages.borrow_mut().capable(tab, &workspace),
+                Some(tab) => {
+                    self.pages.borrow_mut().capable(tab, &workspace);
+                    // The page is asked for where it was offered, and of the window's newest
+                    // connection alone.
+                    for (other, link) in &mut *self.links {
+                        if *other == connection {
+                            link.page = Some(tab);
+                        } else if link.page == Some(tab) {
+                            link.page = None;
+                        }
+                    }
+                }
                 None => refuse(&reply, &app, &name, NO_WINDOW),
             },
-            FloatingSurfaceClientMessage::PaintStream { payload, .. } => match own {
+            FloatingSurfaceClientMessage::PaintStream { payload, .. } => match self
+                .links
+                .get(&connection)
+                .and_then(|link| link.page)
+                .or(own)
+            {
                 // `page` and `scale` place a viewer's input in the page, which
                 // this session does not take: the page is drawn, not typed
                 // into, by the members that show it.

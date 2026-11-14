@@ -1092,6 +1092,8 @@ session-window-share-live-lent = Dieses Gerät kann in diesem Arbeitsbereich eig
 session-window-share-first-page = Wartet auf die Seite des Fensters von dem Gerät, auf dem es läuft
 session-window-share-first-picture = Wartet auf das erste Bild des Fensters
 session-window-share-page-unsent = Wartet darauf, dass die Seite des Fensters an die Geräte geht, die es zeigen
+session-window-share-page-withheld = Die App des Fensters wurde nach dessen Seite gefragt und hat sie nicht übergeben
+session-window-share-page-overdue = Das Gerät, auf dem das Fenster läuft, wurde nach dessen Seite gefragt und hat sie nicht gesendet
 
 ## The on-screen readout for the hardware keys.
 desktop-actions-osd = Bildschirmanzeige

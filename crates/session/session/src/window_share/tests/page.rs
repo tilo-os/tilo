@@ -30,6 +30,11 @@ const LINK: Duration = Duration::from_secs(120);
 /// is one pass of the session; this is what a machine busy with the rest of the suite may take.
 const ASKED: Duration = Duration::from_secs(30);
 
+/// How long the two devices may take to say that a page is overdue, past the bounds themselves
+/// ([`crate::page_track::HAND_OVER_BOUND`] and the watching side's, five seconds longer), on a
+/// machine busy with the rest of the suite.
+const SAID: Duration = Duration::from_secs(120);
+
 /// How often the app hands its page over again. An app answers each ask for a whole frame; this
 /// one cannot hear the ask, so it hands the whole page over while it is wanted.
 const HANDED_EVERY: Duration = Duration::from_millis(250);
@@ -637,6 +642,103 @@ fn the_app_of_a_shared_page_is_asked_for_it_on_its_own_connection() {
                 .is_some_and(|shared| shared["streaming"].as_bool() == Some(true))
         }),
         "the sharing device never said it sends the window:{}",
+        two.said()
+    );
+}
+
+/// An app that is asked for its page and hands nothing over is said to, on both devices: the
+/// sharing one says that the window's app was asked and has not handed its page over, in other
+/// words than a page that is merely on its way, and asks the app again; the watching one says
+/// that the device running the window was asked and sent none. Once the app hands its page over,
+/// both wait for nothing.
+#[test]
+fn an_app_that_hands_nothing_over_is_said_to_withhold_its_page() {
+    use tilo_desktop_surface::i18n::t;
+
+    let (withheld, overdue) = (
+        t("session-window-share-page-withheld"),
+        t("session-window-share-page-overdue"),
+    );
+    for said in [&withheld, &overdue] {
+        assert!(
+            !said.trim().is_empty() && !said.starts_with("session-window-share"),
+            "the catalogue has the words: {said}"
+        );
+    }
+    assert_ne!(withheld, t("session-window-share-page-unsent"));
+    assert_ne!(overdue, t("session-window-share-first-page"));
+
+    let mut two = Two::sharing_from_its_app([0xc7, 0xc8]);
+    assert!(
+        two.within(LINK, false, |two| {
+            two.received().is_some() && two.tile().is_some() && two.app_asked()
+        }),
+        "the window's app was never asked for its page:{}",
+        two.said()
+    );
+
+    // The app answers nothing. The sharing device says so once the app's time is up, and asks
+    // it again.
+    assert!(
+        two.within(SAID, false, |two| {
+            two.shared()
+                .is_some_and(|shared| shared["waiting_for"].as_str() == Some(withheld.as_str()))
+        }),
+        "the sharing device never said its window's app has not handed the page over:{}",
+        two.said()
+    );
+    let shared = two.shared().expect("the sharing device shares the window");
+    assert_eq!(
+        shared["streaming"].as_bool(),
+        Some(false),
+        "a window whose app handed nothing over goes out to nobody:{}",
+        two.said()
+    );
+    let asks = two.app.as_ref().map_or(0, |app| {
+        app.told
+            .iter()
+            .filter(|told| **told == FloatingSurfaceHostMessage::PaintKeyframe)
+            .count()
+    });
+    assert!(
+        asks >= 2,
+        "an app that did not answer is asked again: it was asked {asks} times"
+    );
+
+    // The watching device says which side its window waits on.
+    assert!(
+        two.within(SAID, false, |two| {
+            two.received()
+                .is_some_and(|stream| stream["waiting_for"].as_str() == Some(overdue.as_str()))
+        }),
+        "the watching device never said the device running the window sent no page:{}",
+        two.said()
+    );
+    assert_eq!(
+        two.received().expect("the start")["pictured"].as_bool(),
+        Some(false)
+    );
+
+    // The app hands its page over at last: both devices wait for nothing.
+    two.app_hands_over();
+    assert!(
+        two.within(LINK, false, |two| {
+            two.received().is_some_and(|stream| {
+                stream["pictured"].as_bool() == Some(true)
+                    && stream["waiting_for"].as_str() == Some("")
+            })
+        }),
+        "the watching device still waits for a page its tile holds:{}",
+        two.said()
+    );
+    assert!(
+        two.within(LINK, false, |two| {
+            two.shared().is_some_and(|shared| {
+                shared["streaming"].as_bool() == Some(true)
+                    && shared["waiting_for"].as_str() == Some("")
+            })
+        }),
+        "the sharing device still says its app withholds a page it handed over:{}",
         two.said()
     );
 }

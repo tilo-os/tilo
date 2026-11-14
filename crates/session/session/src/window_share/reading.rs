@@ -17,7 +17,11 @@
 //! whole frame, and until then its row waits for the first one. A window this device shares is
 //! `streaming` while a member's desk asks for it and it goes out: a captured window as soon as it
 //! is asked for, a window whose app draws its page once the app handed a whole page over. One that
-//! a member shows and nothing of which went out says so (`waiting_for`).
+//! a member shows and nothing of which went out says so (`waiting_for`), and says which link it
+//! waits on: the page's way out, or, once its app was asked for a whole page and let
+//! [`crate::page_track::HAND_OVER_BOUND`] pass, the app that has not handed it over. The device
+//! showing the window says the same from its side: it waits for the page's first frame, and once
+//! that is overdue, that the device running the window was asked for it and sent none.
 //!
 //! A relay tells the device it turns away nothing but that. So a plane that was refused says which
 //! epoch's keys this device presented (`presented`), and the plane of the device that relays the
@@ -57,20 +61,39 @@ impl WindowShares {
 
     /// Note which shared windows go out to a member's desk now: the ones captured for a desk that
     /// asks for them, and of the ones whose app draws its page (`pages`) those whose page was
-    /// published since a desk asked for it.
-    pub(super) fn follow_streams(&mut self, pages: &crate::page_track::PageTracks) {
+    /// published since a desk asked for it. A page whose app was asked for a whole frame and has
+    /// not handed one over in time goes out to nobody new, and is noted as withheld by its app.
+    pub(super) fn follow_streams(
+        &mut self,
+        pages: &crate::page_track::PageTracks,
+        now: std::time::Instant,
+    ) {
         let sent = pages.sent();
+        let withheld: BTreeSet<TabId> = pages
+            .withheld()
+            .into_iter()
+            .filter(|tab| self.pages.contains_key(tab))
+            .collect();
         let streaming: BTreeSet<TabId> = self
             .hosted
             .iter()
             .filter(|(_, hosted)| hosted.shown)
             .map(|(tab, _)| *tab)
-            .chain(self.pages.keys().copied().filter(|tab| sent.contains(tab)))
+            .chain(
+                self.pages
+                    .keys()
+                    .copied()
+                    .filter(|tab| sent.contains(tab) && !withheld.contains(tab)),
+            )
             .collect();
-        if streaming != self.streaming {
+        if streaming != self.streaming || withheld != self.withheld {
             self.streaming = streaming;
+            self.withheld = withheld;
             self.changed();
         }
+        // The pass that finds an app overdue is one nothing else may ask for.
+        let now_us = tilo_clock::unix_now_ms().saturating_mul(1000);
+        self.page_due = pages.due_in(now_us).and_then(|wait| now.checked_add(wait));
     }
 
     /// What the pictures of a window shared or watched in `workspace` wait for; nothing while the
@@ -100,7 +123,9 @@ impl WindowShares {
         if !plane.is_empty() || stream.pictured {
             return plane;
         }
-        if stream.page {
+        if stream.page && stream.awaited == super::page::Awaited::Overdue {
+            t("session-window-share-page-overdue")
+        } else if stream.page {
             t("session-window-share-first-page")
         } else {
             t("session-window-share-first-picture")
@@ -156,13 +181,16 @@ impl WindowShares {
                     .collect();
                 // An announcement is no page: the window goes out once its app handed a whole
                 // page over for a desk that asks for it. One a member shows and nothing of which
-                // went out waits for that.
+                // went out waits for that, and one whose app was asked and did not answer in time
+                // waits for its app.
                 let streaming = self.streaming.contains(tab);
                 let plane = self.waiting_for(&page.workspace);
-                let waiting_for = if plane.is_empty() && !streaming && !page.announced.is_empty() {
-                    t("session-window-share-page-unsent")
-                } else {
+                let waiting_for = if !plane.is_empty() || streaming || page.announced.is_empty() {
                     plane
+                } else if self.withheld.contains(tab) {
+                    t("session-window-share-page-withheld")
+                } else {
+                    t("session-window-share-page-unsent")
                 };
                 sharing.push(json!({
                     "tab": tab.to_string(),

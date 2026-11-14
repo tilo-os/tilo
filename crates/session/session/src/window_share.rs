@@ -230,6 +230,8 @@ struct Received {
     /// Whether the tile holds the window now, a decoded picture or its page's whole frame: a
     /// stream of which only the start arrived has a tile and nothing in it.
     pictured: bool,
+    /// How this device stands with the window's page while it asks for it and holds none.
+    awaited: page::Awaited,
 }
 
 /// The state behind the resource: what this session shares, what it watches and what reached it.
@@ -262,6 +264,13 @@ pub(crate) struct WindowShares {
     live_seen: u64,
     planes: BTreeMap<String, std::sync::Weak<Plane>>,
     streaming: BTreeSet<TabId>,
+    /// The windows a member shows whose app was asked for its page and has not handed it over
+    /// ([`crate::page_track::PageTracks::withheld`]).
+    withheld: BTreeSet<TabId>,
+    /// When the next page that was asked for is overdue, here or at its app: what the reading
+    /// says of it changes then, with nothing arriving to say so.
+    page_due: Option<Instant>,
+    arrival_due: Option<Instant>,
     /// Moves whenever what the resource says changes.
     revision: u64,
     /// The wake a share's encoder thread rings when a frame is ready.
@@ -450,11 +459,12 @@ impl WindowShares {
         self.close_left_seats(compositor);
         self.ask_again(compositor, sync, now);
         self.capture(compositor, sync, now);
-        self.follow_streams(&pages.borrow());
+        self.follow_streams(&pages.borrow(), now);
         // What the members' windows this device shows bring: the pictures and pages the planes
         // sent, and the tracks of a window that left the desk no longer asked for.
         self.follow_windows(desk, sync);
         self.follow_pictured(desk);
+        self.follow_overdue(now);
         self.end_gone(compositor, desk, sync, engine);
         // Last, so what the tiles asked for while this pass decoded them reaches the devices
         // hosting the windows.
@@ -463,7 +473,8 @@ impl WindowShares {
 
     /// When the shares next need a pass of their own: a viewer's ask for a window said again before
     /// its host stops hearing it, an ask that stops counting as this device still viewing what it
-    /// asked for, or the next frame of a shared window that has someone to send it to.
+    /// asked for, the next frame of a shared window that has someone to send it to, or a page
+    /// that was asked for and is overdue from then.
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         let asked_again = self
             .watching
@@ -481,7 +492,12 @@ impl WindowShares {
             let frame = Duration::from_secs_f64(1.0 / f64::from(rate));
             hosted.captured_at.and_then(|at| at.checked_add(frame))
         });
-        asked_again.chain(expired).chain(frames).min()
+        asked_again
+            .chain(expired)
+            .chain(frames)
+            .chain(self.page_due)
+            .chain(self.arrival_due)
+            .min()
     }
 
     /// Carry out what the person asked: start and stop shares, let a member control one, and ask to
@@ -1357,6 +1373,7 @@ impl WindowShares {
                             start,
                             page,
                             pictured: false,
+                            awaited: page::Awaited::Nothing,
                         },
                     );
                     changed = true;
@@ -1497,6 +1514,7 @@ impl WindowShares {
                         start,
                         page: false,
                         pictured: false,
+                        awaited: page::Awaited::Nothing,
                     },
                 );
                 self.changed();
@@ -2908,6 +2926,7 @@ mod window_tracks {
                 .expect("a stream start"),
             page: codec == ui::webview::paint::stream::wire::CODEC,
             pictured: false,
+            awaited: page::Awaited::Nothing,
         }
     }
 
