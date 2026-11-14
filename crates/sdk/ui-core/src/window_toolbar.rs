@@ -1851,82 +1851,6 @@ mod tests {
             );
         }
 
-        phase the_windows_reactions_are_its_own_and_their_presses_go_to_their_shower;
-        {
-            let pill = |emoji: &str| ToolbarReaction {
-                emoji: emoji.into(),
-                count: 2,
-                mine: true,
-                names: (0..40).map(|n| format!("Person {n}")).collect(),
-            };
-            let mut toolbar = browser();
-            toolbar.reactions = Some(ToolbarReactions {
-                pills: vec![pill("👍")],
-                can_react: true,
-            });
-            declare(Some(toolbar));
-            assert_eq!(
-                declared().and_then(|toolbar| toolbar.reactions),
-                None,
-                "a declaration carries no reactions: they are the window's"
-            );
-            let before = revision();
-            show_reactions(Some(ToolbarReactions {
-                pills: (0..30)
-                    .map(|n| pill(&format!("{}", char::from_u32(0x1F600 + n).unwrap())))
-                    .collect(),
-                can_react: true,
-            }));
-            assert_ne!(revision(), before, "the bar is told");
-            let shown = shown()
-                .and_then(|toolbar| toolbar.reactions)
-                .expect("shown");
-            assert_eq!(shown.pills.len(), MAX_REACTION_PILLS);
-            assert!(
-                shown
-                    .pills
-                    .iter()
-                    .all(|pill| pill.names.len() == MAX_REACTOR_NAMES)
-            );
-            let wire = serde_json::to_string(&shown).unwrap();
-            assert_eq!(
-                serde_json::from_str::<ToolbarReactions>(&wire).unwrap(),
-                shown
-            );
-
-            let _ = take_events();
-            deliver(ToolbarEvent::Action {
-                id: reaction_action("🎉"),
-            });
-            deliver(ToolbarEvent::Action {
-                id: "reload".into(),
-            });
-            assert_eq!(take_reaction_presses(), vec!["🎉".to_owned()]);
-            assert_eq!(
-                take_events(),
-                vec![ToolbarEvent::Action {
-                    id: "reload".into()
-                }],
-                "the app hears its own slots only"
-            );
-
-            show_reactions(Some(ToolbarReactions {
-                pills: vec![pill("👍")],
-                can_react: false,
-            }));
-            deliver(ToolbarEvent::Action {
-                id: reaction_action("👍"),
-            });
-            assert!(
-                take_reaction_presses().is_empty(),
-                "someone who may not react presses nothing"
-            );
-            assert!(take_events().is_empty(), "nor does the app hear it");
-            show_reactions(Some(ToolbarReactions::default()));
-            assert_eq!(reactions(), None, "nothing to show is none");
-            declare(None);
-        }
-
         phase a_window_offer_round_trips_and_an_empty_one_reads_as_nothing;
         {
             let offer = WindowOffer {
@@ -1969,5 +1893,81 @@ mod tests {
                 "Ctrl+H asks for the replacement field"
             );
         }
+    }
+
+    #[test]
+    fn the_windows_reactions_are_its_own_and_their_presses_go_to_their_shower() {
+        let pill = |emoji: &str| ToolbarReaction {
+            emoji: emoji.into(),
+            count: 2,
+            mine: true,
+            names: (0..40).map(|n| format!("Person {n}")).collect(),
+        };
+        let mut toolbar = browser();
+        toolbar.reactions = Some(ToolbarReactions {
+            pills: vec![pill("👍")],
+            can_react: true,
+        });
+        declare(Some(toolbar));
+        assert_eq!(
+            declared().and_then(|toolbar| toolbar.reactions),
+            None,
+            "a declaration carries no reactions: they are the window's"
+        );
+        let before = revision();
+        show_reactions(Some(ToolbarReactions {
+            pills: (0..30)
+                .map(|n| pill(&format!("{}", char::from_u32(0x1F600 + n).unwrap())))
+                .collect(),
+            can_react: true,
+        }));
+        assert_ne!(revision(), before, "the bar is told");
+        let shown = shown()
+            .and_then(|toolbar| toolbar.reactions)
+            .expect("shown");
+        assert_eq!(shown.pills.len(), MAX_REACTION_PILLS);
+        assert!(
+            shown
+                .pills
+                .iter()
+                .all(|pill| pill.names.len() == MAX_REACTOR_NAMES)
+        );
+        let wire = serde_json::to_string(&shown).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ToolbarReactions>(&wire).unwrap(),
+            shown
+        );
+
+        let _ = take_events();
+        deliver(ToolbarEvent::Action {
+            id: reaction_action("🎉"),
+        });
+        deliver(ToolbarEvent::Action {
+            id: "reload".into(),
+        });
+        assert_eq!(take_reaction_presses(), vec!["🎉".to_owned()]);
+        assert_eq!(
+            take_events(),
+            vec![ToolbarEvent::Action {
+                id: "reload".into()
+            }],
+            "the app hears its own slots only"
+        );
+
+        show_reactions(Some(ToolbarReactions {
+            pills: vec![pill("👍")],
+            can_react: false,
+        }));
+        deliver(ToolbarEvent::Action {
+            id: reaction_action("👍"),
+        });
+        assert!(
+            take_reaction_presses().is_empty(),
+            "someone who may not react presses nothing"
+        );
+        assert!(take_events().is_empty(), "nor does the app hear it");
+        show_reactions(Some(ToolbarReactions::default()));
+        assert_eq!(reactions(), None, "nothing to show is none");
+        declare(None);
     }
 }

@@ -149,6 +149,12 @@ mod tests {
     tilo_test_env::scenario! {
         fn phases_are_kept_only_while_a_span_owns_them;
 
+        phase a_phase_outside_an_event_costs_nothing_and_records_nothing;
+        {
+            drop(phase("sync"));
+            assert!(ACTIVE.with(|active| active.borrow().is_none()));
+        }
+
         phase nested_spans_keep_one_owner_and_phases_accumulate;
         {
             let outer = Span::begin("test", "outer");
@@ -161,12 +167,6 @@ mod tests {
             let seen = ACTIVE.with(|active| active.borrow().as_ref().map(|p| p.0.len()));
             assert_eq!(seen, Some(2), "phases are kept until the owner ends");
             drop(outer);
-            assert!(ACTIVE.with(|active| active.borrow().is_none()));
-        }
-
-        phase a_phase_outside_an_event_costs_nothing_and_records_nothing;
-        {
-            drop(phase("sync"));
             assert!(ACTIVE.with(|active| active.borrow().is_none()));
         }
     }
