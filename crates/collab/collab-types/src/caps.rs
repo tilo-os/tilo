@@ -255,7 +255,7 @@ pub enum Effect {
 pub struct CapOverride {
     pub grantee: Grantee,
     /// Only through this app, when the capability is that app's sandbox.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub app: Option<tilo_app_id::AppId>,
     pub scope: Scope,
     pub effect: Effect,
@@ -264,7 +264,7 @@ pub struct CapOverride {
     pub id: String,
     pub expiry: Expiry,
     /// Who granted it, for audit and the share list.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub granted_by: Option<MemberId>,
 }
 
