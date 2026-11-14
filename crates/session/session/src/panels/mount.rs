@@ -47,8 +47,6 @@ pub(crate) struct KeyContext {
     pub(crate) fold: tilo_desktop::desk_widgets::DeskFold,
     /// What stands over the desk, which Escape closes from the top.
     pub(crate) overlays: Overlays,
-    /// The desk's own overlays: the surface up, and Alt+Tab's walk.
-    pub(crate) desk: Rc<crate::overlays::Overlays>,
     /// When each display's bar shows over the window covering it, which Super asks for.
     pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
     /// What the keys ask the panel's own app, when this device draws it.
@@ -84,7 +82,6 @@ pub(crate) fn mount_controls(
         displays,
         fold,
         overlays,
-        desk,
         reveals,
         panel,
     }: KeyContext,
@@ -113,9 +110,7 @@ pub(crate) fn mount_controls(
                 triggered: Rc::clone(&triggered),
             },
             guide,
-            DeskKeys::new(fold, overlays)
-                .with_switcher(desk)
-                .with_panel(panel),
+            DeskKeys::new(fold, overlays).with_panel(panel),
             displays,
             ControllerKeys {
                 last: controller,

@@ -1,12 +1,11 @@
 //! Alt+Tab's panel: what the desk's walk shows, kept in step with the chrome that draws it and the
 //! windows it pictures.
-//! The walk itself is the desk's ([`crate::overlays`]): Alt+Tab's presses ask its verbs, and it
+//! The walk itself is the desk's ([`tilo_desktop::overlays`]): Alt+Tab's presses ask its verbs, and it
 //! says which window it reached. This reads that once a pass, as the panel shows it, so the chrome
 //! draws what the desk decided and nothing of its own.
 //! A host without the desk's door, the page, moves the same walk through [`WindowWalk`].
 
-use std::rc::Rc;
-
+use tilo_desktop::overlays::{Overlay, Overlays};
 use tilo_desktop::window_switcher::Switcher;
 use tilo_session_core::surface::KeyModifiers;
 use ui::winit::event::{ElementState, KeyEvent};
@@ -23,18 +22,18 @@ impl crate::Session {
 }
 
 /// Show on `panel` what `walk` reached over `handle`'s windows this pass, or take it down: whether
-/// the panel changed. A walk held less than [`crate::overlays::REVEAL_DELAY`] shows nothing: a quick
+/// the panel changed. A walk held less than [`tilo_desktop::overlays::REVEAL_DELAY`] shows nothing: a quick
 /// Alt+Tab switches windows without a panel flashing, and the window it reached is still where
 /// Alt's release goes.
 pub(crate) fn show(
     handle: &tilo_desktop_surface::DesktopHandle,
-    walk: &crate::overlays::Overlays,
+    walk: &Overlays,
     panel: &Switcher,
     locked: bool,
     sizes: &std::collections::HashMap<u64, (u32, u32)>,
 ) -> bool {
     if locked {
-        walk.close(crate::overlays::Overlay::Switcher.name());
+        walk.hide(Overlay::Switcher);
         walk.forget_walk();
     }
     // A flick shorter than the panel's reveal delay shows nothing, and costs no reading of the
@@ -50,7 +49,7 @@ pub(crate) fn show(
 /// desk's verbs move on a native desktop; with no door to the desk here, its keys move it directly.
 pub struct WindowWalk {
     handle: tilo_desktop_surface::DesktopHandle,
-    walk: Rc<crate::overlays::Overlays>,
+    walk: Overlays,
     keys: WalkKeys,
     panel: Switcher,
 }
@@ -59,10 +58,10 @@ impl WindowWalk {
     /// The walk over `handle`'s windows, with no panel up.
     #[must_use]
     pub fn new(handle: tilo_desktop_surface::DesktopHandle) -> Self {
-        let walk = Rc::new(crate::overlays::Overlays::new());
+        let walk = Overlays::new();
         Self {
             handle,
-            keys: WalkKeys::new(Rc::clone(&walk)),
+            keys: WalkKeys::new(walk.clone()),
             walk,
             panel: Switcher::default(),
         }
@@ -120,7 +119,7 @@ impl WindowWalk {
 
     /// Carry out what a press on the panel asked.
     pub fn ask(&self, ask: tilo_desktop::window_switcher::SwitcherAsk) {
-        let walking = self.walk.is_up().then(|| self.walk.scope());
+        let walking = self.walk.switcher_up().then(|| self.walk.scope());
         for key in SwitcherKey::of_panel(ask) {
             key.walk(&self.handle, &self.walk, walking);
         }
@@ -237,7 +236,10 @@ mod tests {
                 walk.take(&Key::Named(NamedKey::Alt), false, false, held, mac),
                 "mac {mac}: letting Alt go is the walk's"
             );
-            assert!(!walk.walk.is_up(), "mac {mac}: the walk went to the window");
+            assert!(
+                !walk.walk.switcher_up(),
+                "mac {mac}: the walk went to the window"
+            );
         }
     }
 
@@ -251,6 +253,6 @@ mod tests {
         walk.ask(tilo_desktop::window_switcher::SwitcherAsk::Hover(2));
         assert_eq!(walked(&walk).2, Some(2));
         walk.ask(tilo_desktop::window_switcher::SwitcherAsk::Choose(0));
-        assert!(!walk.walk.is_up());
+        assert!(!walk.walk.switcher_up());
     }
 }

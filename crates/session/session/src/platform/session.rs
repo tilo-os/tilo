@@ -578,7 +578,6 @@ impl Session {
         // What stands over the windows, opened by the chrome's own widgets, by the session's
         // verbs and by the views bound to them, and read by whoever asks through the door.
         let overlays = Overlays::new();
-        let desk_overlays = Rc::new(crate::overlays::Overlays::new());
         // Alt+Tab's panel: the desk's walk says what it shows, the chrome draws it, and the
         // compositor pictures the windows its cards name.
         let switcher = tilo_desktop::window_switcher::Switcher::default();
@@ -590,8 +589,7 @@ impl Session {
         let surfaces = crate::desk_resource::Surfaces {
             status_panel: crate::quick_settings::installed(&options.surfaces),
             shell: options.shell,
-            panel: overlays.clone(),
-            overlays: Rc::clone(&desk_overlays),
+            overlays: overlays.clone(),
             notices: notices.clone(),
             overview: overview.open_flag(),
         };
@@ -1082,7 +1080,6 @@ impl Session {
                     .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
                 fold,
                 overlays: overlays.clone(),
-                desk: Rc::clone(&desk_overlays),
                 reveals: Rc::clone(&reveals),
                 panel: panel_keys.clone(),
             },
@@ -1507,7 +1504,6 @@ impl Session {
             panel_back: Cell::new(None),
             overlays,
             surfaces: one_surface,
-            desk_overlays,
             switcher,
             doors,
             invocations,

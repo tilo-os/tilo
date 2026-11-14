@@ -10,6 +10,7 @@ use tilo_actions::remote::session_actions::INVITE_RESOURCE;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
+use tilo_desktop::overlays::{Overlay, Overlays, Slot};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::ChromeEffect;
@@ -218,10 +219,8 @@ pub(crate) struct Surfaces {
     /// Whether the shell draws the whole screen over the desk: the desk draws none of the panel's
     /// app there, so the quick settings are the shell's own view, as every other surface is.
     pub(crate) shell: bool,
-    /// The stack the panel's own app is placed in.
-    pub(crate) panel: tilo_desktop::overlays::Overlays,
-    /// The surface the shell's views show (`crate::overlays::Overlay`).
-    pub(crate) overlays: Rc<crate::overlays::Overlays>,
+    /// The stack the panel's own app is placed in, with the shell's surface up.
+    pub(crate) overlays: Overlays,
     /// The notifications the desk's own chrome counts and draws: where the one centre opens
     /// when the desk draws it, as the bar's bell opens it.
     pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
@@ -241,7 +240,7 @@ impl Surfaces {
     /// Whether the desk's own chrome draws the centre, rather than the shell's view of it: the
     /// desk draws it whenever it draws the screen, and the bell counts the same one.
     fn desk_centre(&self, surface: &str) -> bool {
-        surface == crate::overlays::Overlay::Centre.name() && !self.shell
+        surface == Overlay::Centre.name() && !self.shell
     }
 
     /// Show `surface` (`show-surface`): the one up closes, and any other opens.
@@ -259,17 +258,22 @@ impl Surfaces {
         // press opens the slot, and the panel's app draws it there. A device without that app,
         // or one the shell covers, keeps the shell's own view of the surface.
         if self.panel_shows(surface) {
-            use tilo_desktop::overlays::Slot;
-            if self.panel.is_open(Slot::QuickSettings) {
-                self.panel.close(Slot::QuickSettings);
+            if self.overlays.is_open(Slot::QuickSettings) {
+                self.overlays.close(Slot::QuickSettings);
             } else {
                 self.clear_shell();
-                self.panel.open(Slot::QuickSettings, None);
+                self.overlays.open(Slot::QuickSettings, None);
             }
             return;
         }
         self.panel_closes();
-        self.overlays.toggle(surface);
+        if let Some(surface) = Overlay::named(surface) {
+            if self.overlays.here() == surface {
+                self.overlays.show(Overlay::Rest);
+            } else {
+                self.overlays.show(surface);
+            }
+        }
         self.clear_beside();
         self.settled();
     }
@@ -285,12 +289,13 @@ impl Surfaces {
         }
         if self.panel_shows(name) {
             self.clear_shell();
-            self.panel
-                .open(tilo_desktop::overlays::Slot::QuickSettings, None);
+            self.overlays.open(Slot::QuickSettings, None);
             return;
         }
         self.panel_closes();
-        self.overlays.open(name);
+        if let Some(surface) = Overlay::named(name) {
+            self.overlays.show(surface);
+        }
         self.clear_beside();
         self.settled();
     }
@@ -298,7 +303,7 @@ impl Surfaces {
     /// One surface at a time: the desk's own popovers go down under the shell's view of the surface
     /// just opened.
     fn clear_beside(&self) {
-        if self.overlays.here() == crate::overlays::Overlay::Rest.name() {
+        if self.overlays.here() == Overlay::Rest {
             return;
         }
         self.clear_panel();
@@ -306,9 +311,9 @@ impl Surfaces {
 
     /// Take every popover of the desk's own down: a surface outside its stack is coming up instead.
     pub(crate) fn clear_panel(&self) {
-        for slot in tilo_desktop::overlays::Slot::ALL {
+        for slot in Slot::ALL {
             if slot.stands_beside() {
-                self.panel.close(slot);
+                self.overlays.close(slot);
             }
         }
     }
@@ -317,28 +322,27 @@ impl Surfaces {
     /// panel's app.
     pub(crate) fn clear_shell(&self) {
         self.caught_up();
-        let here = self.overlays.here();
-        if here == crate::overlays::Overlay::Rest.name() {
+        if self.overlays.here() == Overlay::Rest {
             return;
         }
-        self.overlays.close(&here);
+        self.overlays.show(Overlay::Rest);
         self.settled();
     }
 
     /// Whether any of the desk's own popovers stands over the windows now.
     pub(crate) fn beside_up(&self) -> bool {
-        tilo_desktop::overlays::Slot::ALL
+        Slot::ALL
             .into_iter()
             .filter(|slot| !self.drawn_by_the_shell(*slot))
-            .any(|slot| slot.stands_beside() && self.panel.is_open(slot))
+            .any(|slot| slot.stands_beside() && self.overlays.is_open(slot))
     }
 
     /// Whether the shell's own view draws `slot` instead of the desk, so what the desk keeps in
     /// that slot stands over nothing: the shell's launcher is the search under the shell's screen,
     /// as the quick settings are the shell's view of them. A popover nobody draws is not a surface
     /// the person is looking at, so it neither takes the shell's surface down nor keeps its keys.
-    fn drawn_by_the_shell(&self, slot: tilo_desktop::overlays::Slot) -> bool {
-        self.shell && slot == tilo_desktop::overlays::Slot::Search
+    fn drawn_by_the_shell(&self, slot: Slot) -> bool {
+        self.shell && slot == Slot::Search
     }
 
     /// Close `surface` (`close-surface`), when it is the one up.
@@ -349,35 +353,31 @@ impl Surfaces {
             return;
         }
         if self.panel_shows(surface) {
-            self.panel
-                .close(tilo_desktop::overlays::Slot::QuickSettings);
+            self.overlays.close(Slot::QuickSettings);
             return;
         }
-        self.overlays.close(surface);
+        if let Some(surface) = Overlay::named(surface) {
+            self.overlays.hide(surface);
+        }
         self.settled();
     }
 
     /// Close the panel when a surface of the shell's own opens: one surface stands at a time,
     /// so the centre is not opened behind the panel that asked for it.
     fn panel_closes(&self) {
-        if self
-            .panel
-            .is_open(tilo_desktop::overlays::Slot::QuickSettings)
-        {
-            self.panel
-                .close(tilo_desktop::overlays::Slot::QuickSettings);
+        if self.overlays.is_open(Slot::QuickSettings) {
+            self.overlays.close(Slot::QuickSettings);
         }
     }
 
     /// Read the overview as the flag has it before a surface turns: the desk's own chrome opens and
     /// closes it too (its action, its keys, Escape), and a press answers what the person sees.
     fn caught_up(&self) {
-        let name = crate::overlays::Overlay::Overview.name();
-        let here = self.overlays.here() == name;
+        let here = self.overlays.here() == Overlay::Overview;
         if self.overview.get() && !here {
-            self.overlays.open(name);
+            self.overlays.show(Overlay::Overview);
         } else if !self.overview.get() && here {
-            self.overlays.close(name);
+            self.overlays.show(Overlay::Rest);
         }
     }
 
@@ -385,8 +385,7 @@ impl Surfaces {
     /// folds behind it and its state names it as up the moment the person's press opens it,
     /// instead of after the shell's next frame.
     fn settled(&self) {
-        self.overview
-            .set(self.overlays.here() == crate::overlays::Overlay::Overview.name());
+        self.overview.set(self.overlays.here() == Overlay::Overview);
     }
 }
 
@@ -475,7 +474,7 @@ impl Desk {
                 // Which apps stopped answering is the compositor's: it changes without the tree.
                 self.handle.unresponsive_revision(),
                 self.surfaces.overlays.revision(),
-                self.surfaces.overlays.revealed(std::time::Instant::now()),
+                self.surfaces.overlays.revealed(tilo_clock::now()),
             ),
             (
                 self.tray.as_ref().map_or(0, |tray| tray.revision()),
@@ -494,7 +493,7 @@ impl Desk {
             WINDOWS_RESOURCE => Some(reading(&crate::desk_windows::Windows {
                 all: self
                     .handle
-                    .read(|tree| self.windows_reaching(tree, std::time::Instant::now())),
+                    .read(|tree| self.windows_reaching(tree, tilo_clock::now())),
             })),
             TRAY_RESOURCE => Some(reading(&Tray {
                 items: self.tray_items(),
@@ -511,8 +510,8 @@ impl Desk {
 
     /// When the desk has something to draw that it has not drawn yet, without a frame in between:
     /// the instant the switcher's panel comes up while Alt is held on it.
-    pub(crate) fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.surfaces.overlays.deadline(std::time::Instant::now())
+    pub(crate) fn next_deadline(&self) -> Option<tilo_clock::time::Instant> {
+        self.surfaces.overlays.deadline(tilo_clock::now())
     }
 
     /// The desk's windows, with the one the switcher's walk has reached marked focused while its
@@ -521,7 +520,7 @@ impl Desk {
     fn windows_reaching(
         &self,
         tree: &Layout,
-        now: std::time::Instant,
+        now: tilo_clock::time::Instant,
     ) -> Vec<crate::desk_windows::Window> {
         let mut windows = windows(tree, &self.handle);
         // The app as people know it, never the id: a window is named by what it shows, and its
@@ -907,7 +906,7 @@ impl Service for Desk {
     /// the one the walk reached then.
     fn wakes_in(&self) -> Option<std::time::Duration> {
         self.next_deadline()
-            .map(|at| at.saturating_duration_since(std::time::Instant::now()))
+            .map(|at| at.saturating_duration_since(tilo_clock::now()))
     }
 
     fn invoke(
@@ -945,7 +944,6 @@ impl Service for Desk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::overlays::Overlay;
 
     /// A window whose app stopped answering says so in the reading every view of the desk reads,
     /// and only for that window.
@@ -993,8 +991,7 @@ mod tests {
         Surfaces {
             status_panel,
             shell,
-            panel: tilo_desktop::overlays::Overlays::new(),
-            overlays: Rc::new(crate::overlays::Overlays::new()),
+            overlays: Overlays::new(),
             notices: tilo_desktop_surface::DesktopNotifications::default(),
             overview: Rc::new(std::cell::Cell::new(false)),
         }
@@ -1043,7 +1040,7 @@ mod tests {
         let surfaces = surfaces(true, true);
         surfaces.open(crate::quick_settings::SURFACE);
         surfaces.open(Overlay::Centre.name());
-        assert_eq!(surfaces.overlays.here(), Overlay::Centre.name());
+        assert_eq!(surfaces.overlays.here(), Overlay::Centre);
     }
 
     /// The desk draws the one centre the bar's bell counts: a press on it asks the desk's own
@@ -1052,11 +1049,7 @@ mod tests {
     fn the_desks_own_centre_is_opened_where_the_desk_draws_it() {
         let surfaces = surfaces(true, false);
         surfaces.open(crate::quick_settings::SURFACE);
-        assert!(
-            surfaces
-                .panel
-                .is_open(tilo_desktop::overlays::Slot::QuickSettings)
-        );
+        assert!(surfaces.overlays.is_open(Slot::QuickSettings));
         surfaces.toggle(Overlay::Centre.name());
         assert_eq!(
             surfaces.notices.take_centre_ask(),
@@ -1065,13 +1058,11 @@ mod tests {
         );
         assert_eq!(
             surfaces.overlays.here(),
-            Overlay::Rest.name(),
+            Overlay::Rest,
             "the shell draws no centre of its own over a desk that draws one"
         );
         assert!(
-            !surfaces
-                .panel
-                .is_open(tilo_desktop::overlays::Slot::QuickSettings),
+            !surfaces.overlays.is_open(Slot::QuickSettings),
             "one surface at a time: the centre is not opened behind the panel"
         );
 
@@ -1083,7 +1074,7 @@ mod tests {
         // The shell's own screen keeps its own view of the centre.
         let screen = self::surfaces(true, true);
         screen.toggle(Overlay::Centre.name());
-        assert_eq!(screen.overlays.here(), Overlay::Centre.name());
+        assert_eq!(screen.overlays.here(), Overlay::Centre);
         assert_eq!(screen.notices.take_centre_ask(), None);
     }
 
@@ -1092,14 +1083,10 @@ mod tests {
         for status_panel in [false, true] {
             let surfaces = surfaces(status_panel, true);
             surfaces.toggle(crate::quick_settings::SURFACE);
-            assert_eq!(surfaces.overlays.here(), Overlay::QuickSettings.name());
-            assert!(
-                !surfaces
-                    .panel
-                    .is_open(tilo_desktop::overlays::Slot::QuickSettings)
-            );
+            assert_eq!(surfaces.overlays.here(), Overlay::QuickSettings);
+            assert!(!surfaces.overlays.is_open(Slot::QuickSettings));
             surfaces.close(crate::quick_settings::SURFACE);
-            assert_eq!(surfaces.overlays.here(), Overlay::Rest.name());
+            assert_eq!(surfaces.overlays.here(), Overlay::Rest);
         }
     }
 
@@ -1107,29 +1094,17 @@ mod tests {
     fn the_desk_leaves_the_quick_settings_to_the_panels_app_it_has() {
         let surfaces = surfaces(true, false);
         surfaces.toggle(crate::quick_settings::SURFACE);
-        assert!(
-            surfaces
-                .panel
-                .is_open(tilo_desktop::overlays::Slot::QuickSettings)
-        );
-        assert_eq!(surfaces.overlays.here(), Overlay::Rest.name());
+        assert!(surfaces.overlays.is_open(Slot::QuickSettings));
+        assert_eq!(surfaces.overlays.here(), Overlay::Rest);
         surfaces.close(crate::quick_settings::SURFACE);
-        assert!(
-            !surfaces
-                .panel
-                .is_open(tilo_desktop::overlays::Slot::QuickSettings)
-        );
+        assert!(!surfaces.overlays.is_open(Slot::QuickSettings));
     }
 
     #[test]
     fn without_the_panels_app_the_desk_shows_the_shells_quick_settings() {
         let surfaces = surfaces(false, false);
         surfaces.open(crate::quick_settings::SURFACE);
-        assert_eq!(surfaces.overlays.here(), Overlay::QuickSettings.name());
-        assert!(
-            !surfaces
-                .panel
-                .is_open(tilo_desktop::overlays::Slot::QuickSettings)
-        );
+        assert_eq!(surfaces.overlays.here(), Overlay::QuickSettings);
+        assert!(!surfaces.overlays.is_open(Slot::QuickSettings));
     }
 }

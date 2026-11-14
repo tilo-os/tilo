@@ -25,7 +25,7 @@ use std::rc::Rc;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
-use tilo_desktop::overlays::{Anchor as Place, Overlays, Slot};
+use tilo_desktop::overlays::{Anchor as Place, Overlay, Slot, SwitcherScope};
 use tilo_desktop_model::TabId;
 use tilo_desktop_surface::DesktopHandle;
 
@@ -331,7 +331,7 @@ struct Row {
 #[derive(Debug, Serialize)]
 struct StackReading {
     stack: Vec<Surface>,
-    here: String,
+    here: &'static str,
     switcher_revealed: bool,
     switcher_scope: &'static str,
     spotlight: String,
@@ -393,14 +393,12 @@ fn named(text: &str) -> Result<Slot, DoorError> {
 pub struct ShellService {
     handle: DesktopHandle,
     state: ShellState,
-    /// The surfaces over the desk: what stands where, which holds the keyboard, and what a press
-    /// outside one closes.
-    overlays: Overlays,
-    /// The shell's own surfaces and the switcher's walk, and where each surface stands.
+    /// The surfaces over the desk: what stands where, which holds the keyboard, what a press
+    /// outside one closes, the shell's own surface and the switcher's walk.
     surfaces: Surfaces,
     /// What the stack's reading was last published from: the shell's surface, whether the
     /// switcher's panel shows, and the stack's own revision.
-    seen: Option<(u64, String, bool, u64)>,
+    seen: Option<(u64, Overlay, bool, u64)>,
     /// The desktop's one shortcut table, so a menu row shows the chord a press doing the same thing
     /// would be, as the person binds it now.
     shortcuts: crate::panels::mount::Shortcuts,
@@ -417,7 +415,6 @@ impl ShellService {
         Self {
             handle,
             state: ShellState::default(),
-            overlays: surfaces.panel.clone(),
             surfaces,
             seen: None,
             shortcuts,
@@ -437,12 +434,12 @@ impl ShellService {
     }
 
     /// What the stack's reading is made from beside the stack itself.
-    fn key(&self) -> (u64, String, bool, u64) {
+    fn key(&self) -> (u64, Overlay, bool, u64) {
         let shell = &self.surfaces.overlays;
         (
             shell.revision(),
             shell.here(),
-            shell.revealed(std::time::Instant::now()),
+            shell.revealed(tilo_clock::now()),
             self.handle.personal_ask_revision(),
         )
     }
@@ -509,7 +506,7 @@ impl ShellService {
         }
         let at = anchor.unwrap_or((0.0, 0.0));
         self.state.menu = Some(OpenMenu { tab, anchor });
-        self.overlays.open(
+        self.surfaces.overlays.open(
             Slot::WindowMenu,
             Some(Place::At(ui::kurbo::Point::new(at.0, at.1))),
         );
@@ -519,7 +516,7 @@ impl ShellService {
     /// Close the menu, if one is up.
     fn close(&mut self) {
         self.state.menu = None;
-        self.overlays.close(Slot::WindowMenu);
+        self.surfaces.overlays.close(Slot::WindowMenu);
     }
 
     /// Open a surface the session itself puts up, at `anchor` or where it
@@ -553,7 +550,7 @@ impl ShellService {
                 })
             })
             .transpose()?;
-        self.overlays.open(slot, anchor);
+        self.surfaces.overlays.open(slot, anchor);
         Ok(())
     }
 
@@ -573,7 +570,7 @@ impl ShellService {
             // The menu keeps its window and place beside the stack; both go together.
             self.close();
         }
-        self.overlays.close(slot);
+        self.surfaces.overlays.close(slot);
         Ok(())
     }
 
@@ -624,7 +621,7 @@ impl Service for ShellService {
             WINDOW_MENU => Some(reading(&self.window_menu())),
             OVERLAYS => Some(reading(&self.stack())),
             FOCUS => {
-                let target = crate::chrome::keyboard_target(&self.handle, &self.overlays);
+                let target = crate::chrome::keyboard_target(&self.handle, &self.surfaces.overlays);
                 Some(reading(&Focus {
                     target: target.as_str(),
                     surface: target.slot().map(Slot::as_str),
@@ -647,8 +644,8 @@ impl Service for ShellService {
     fn wakes_in(&self) -> Option<std::time::Duration> {
         self.surfaces
             .overlays
-            .deadline(std::time::Instant::now())
-            .map(|at| at.saturating_duration_since(std::time::Instant::now()))
+            .deadline(tilo_clock::now())
+            .map(|at| at.saturating_duration_since(tilo_clock::now()))
     }
 
     fn invoke(
@@ -672,7 +669,7 @@ impl Service for ShellService {
                     // A surface the shell draws opens through the shell's surfaces; the ones the
                     // session puts up in the stack itself (quick settings) keep their place there.
                     OverlayEffect::OpenSurface { slot, anchor: None }
-                        if crate::overlays::Overlay::named(&slot).is_some()
+                        if Overlay::named(&slot).is_some()
                             && !Slot::named(&slot).is_some_and(Slot::session_closes) =>
                     {
                         self.surfaces.open(&slot);
@@ -680,9 +677,7 @@ impl Service for ShellService {
                     OverlayEffect::OpenSurface { slot, anchor } => {
                         self.open_surface(&slot, anchor.as_deref())?;
                     }
-                    OverlayEffect::CloseSurface { slot }
-                        if crate::overlays::Overlay::named(&slot).is_some() =>
-                    {
+                    OverlayEffect::CloseSurface { slot } if Overlay::named(&slot).is_some() => {
                         self.surfaces.close(&slot);
                         if Slot::named(&slot).is_some_and(Slot::session_closes) {
                             self.close_surface(&slot)?;
@@ -694,7 +689,10 @@ impl Service for ShellService {
                         crate::desk_windows::walk_switcher(
                             &self.handle,
                             &self.surfaces.overlays,
-                            scope.as_deref(),
+                            scope
+                                .as_deref()
+                                .and_then(SwitcherScope::named)
+                                .unwrap_or_default(),
                             steps.unwrap_or(1),
                         );
                     }
@@ -724,6 +722,7 @@ impl ShellService {
         let ask = self.handle.personal_ask();
         StackReading {
             stack: self
+                .surfaces
                 .overlays
                 .entries()
                 .into_iter()
@@ -743,8 +742,8 @@ impl ShellService {
                     }),
                 })
                 .collect(),
-            here: self.surfaces.overlays.here(),
-            switcher_revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
+            here: self.surfaces.overlays.here().name(),
+            switcher_revealed: self.surfaces.overlays.revealed(tilo_clock::now()),
             switcher_scope: self.surfaces.overlays.scope().name(),
             spotlight: self.surfaces.overlays.spotlight(),
             ask_open: ask.as_ref().is_some_and(|ask| ask.open),

@@ -46,7 +46,6 @@ pub(crate) use assembly::Shared;
 mod activity_provider;
 mod continuations;
 pub mod host_actions;
-pub mod overlays;
 #[cfg(target_os = "linux")]
 mod record_reads;
 pub mod records;

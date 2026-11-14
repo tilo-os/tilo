@@ -1059,21 +1059,21 @@ impl ShellChrome {
         if address.resource != tilo_desktop::desk_verbs::CHROME_RESOURCE {
             return Ok(None);
         }
-        let here = |name: &str| self.surfaces.overlays.here() == name;
+        let here = |name: &str| self.surfaces.overlays.here().name() == name;
         let started = match address.action.as_str() {
             "overview" => {
-                let open = here(crate::overlays::Overlay::Overview.name());
+                let open = here(tilo_desktop::overlays::Overlay::Overview.name());
                 if opens(address, arguments, open)? {
                     self.surfaces
-                        .open(crate::overlays::Overlay::Overview.name());
+                        .open(tilo_desktop::overlays::Overlay::Overview.name());
                 } else {
                     self.surfaces
-                        .close(crate::overlays::Overlay::Overview.name());
+                        .close(tilo_desktop::overlays::Overlay::Overview.name());
                 }
                 true
             }
             "notifications" => {
-                let name = crate::overlays::Overlay::Centre.name();
+                let name = tilo_desktop::overlays::Overlay::Centre.name();
                 if opens(address, arguments, here(name))? {
                     self.surfaces.open(name);
                 } else {
@@ -1083,14 +1083,14 @@ impl ShellChrome {
             }
             "quick-settings" => {
                 self.surfaces
-                    .toggle(crate::overlays::Overlay::QuickSettings.name());
+                    .toggle(tilo_desktop::overlays::Overlay::QuickSettings.name());
                 true
             }
             // The workspaces are the shell's one workspace surface: the desk's menu, the workspaces
             // a person switches between and the actions on them.
             "workspace-menu" => {
                 self.surfaces
-                    .toggle(crate::overlays::Overlay::Workspaces.name());
+                    .toggle(tilo_desktop::overlays::Overlay::Workspaces.name());
                 true
             }
             "shortcut"
@@ -1101,7 +1101,7 @@ impl ShellChrome {
                     )
                 }) == Some(ui::shortcut_table::ShortcutAction::WorkspaceOverview) =>
             {
-                let name = crate::overlays::Overlay::Overview.name();
+                let name = tilo_desktop::overlays::Overlay::Overview.name();
                 self.surfaces.toggle(name);
                 true
             }
@@ -1219,7 +1219,7 @@ impl tilo_session_core::door::Published for ShellDesk {
                 return Ok(started);
             }
             self.surfaces
-                .toggle(crate::overlays::Overlay::Launcher.name());
+                .toggle(tilo_desktop::overlays::Overlay::Launcher.name());
             return Ok(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ));
@@ -1250,7 +1250,7 @@ impl tilo_session_core::door::Published for ShellDesk {
                 Some(query) => self.surfaces.overlays.search(query),
                 None => self
                     .surfaces
-                    .toggle(crate::overlays::Overlay::Launcher.name()),
+                    .toggle(tilo_desktop::overlays::Overlay::Launcher.name()),
             }
             return Ok(started);
         }
@@ -1383,7 +1383,7 @@ impl crate::Session {
         // disagree. It is the same surface the views read (`d.here`), and the one place that knows
         // when it closes: however the person left it, the next arrival is a banner on the desk
         // again rather than a row behind a page that is gone.
-        let centre = shell.surface() == crate::overlays::Overlay::Centre.name();
+        let centre = shell.surface() == tilo_desktop::overlays::Overlay::Centre.name();
         self.shared.notices.set_shell_centre(centre);
         if centre {
             self.shared.notices.mark_read();

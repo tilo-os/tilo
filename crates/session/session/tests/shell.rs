@@ -1052,6 +1052,8 @@ fn alt_tab_walks_the_windows_and_commits_to_the_one_it_reached() {
     session.step(Duration::from_millis(1)).unwrap();
     session.compositor().input(key(56, false)).unwrap();
     until(&mut session, |session| here(session) == "none");
+    // The panel goes down on the frame after the reading moves, as it came up.
+    until(&mut session, |session| !says(session, "Go there"));
     let rested = keep(&mut session, "shell-after-switcher");
     assert!(
         changed(&held, &rested) > drawn / 2,

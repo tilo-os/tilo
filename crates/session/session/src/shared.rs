@@ -491,7 +491,7 @@ impl Shared {
         if !self.people.borrow().is_open() {
             return;
         }
-        let shell_up = self.surfaces.overlays.here() != crate::overlays::Overlay::Rest.name();
+        let shell_up = self.surfaces.overlays.here() != tilo_desktop::overlays::Overlay::Rest;
         if shell_up || self.surfaces.beside_up() {
             self.people.borrow().dismiss();
         }

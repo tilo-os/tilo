@@ -3,6 +3,7 @@
 //! resource publishes these readings, and the switcher's panel shows the walk over them.
 
 use serde::{Deserialize, Serialize};
+use tilo_desktop::overlays::{Overlay, Overlays, SwitcherScope};
 use tilo_desktop_model::{Layout, Strip, Tab, WindowGroup, Workspace};
 use tilo_desktop_surface::DesktopHandle;
 
@@ -257,11 +258,7 @@ pub(crate) fn windows(tree: &Layout, handle: &DesktopHandle) -> Vec<Window> {
 /// of the window in front: every window of the workspace in front, or the ones the app the front
 /// window shows has. The walk, the mark the reading carries and the commit all count from this one
 /// list.
-pub(crate) fn walked(
-    windows: &[Window],
-    scope: crate::overlays::SwitcherScope,
-) -> (Vec<usize>, Option<usize>) {
-    use crate::overlays::SwitcherScope;
+pub(crate) fn walked(windows: &[Window], scope: SwitcherScope) -> (Vec<usize>, Option<usize>) {
     let front = windows.iter().position(|window| window.focused);
     let here = front.and_then(|front| windows.get(front));
     let workspace = here.map(|window| window.workspace_key.clone());
@@ -293,7 +290,7 @@ pub(crate) fn walked(
 
 /// The window the walk has reached, of `windows`: its place among them, where it stands to be
 /// lifted and where Alt let go lands. `None` while no walk is up.
-pub(crate) fn reaching(overlays: &crate::overlays::Overlays, windows: &[Window]) -> Option<usize> {
+pub(crate) fn reaching(overlays: &Overlays, windows: &[Window]) -> Option<usize> {
     let (walked, front) = walked(windows, overlays.scope());
     overlays
         .reached(walked.len(), front)
@@ -319,7 +316,7 @@ pub(crate) fn window_surfaces(tree: &Layout) -> std::collections::HashMap<u64, u
 /// and the one it has reached. `None` when no walk is up.
 pub(crate) fn switcher_view(
     handle: &DesktopHandle,
-    overlays: &crate::overlays::Overlays,
+    overlays: &Overlays,
     sizes: &std::collections::HashMap<u64, (u32, u32)>,
 ) -> Option<tilo_desktop::window_switcher::SwitcherView> {
     let (windows, reached, surfaces) = handle.read(|tree| {
@@ -359,13 +356,13 @@ pub(crate) fn switcher_view(
     Some(tilo_desktop::window_switcher::SwitcherView {
         cards,
         selected,
-        app_scope: overlays.scope() == crate::overlays::SwitcherScope::App,
+        app_scope: overlays.scope() == SwitcherScope::App,
     })
 }
 
 /// Bring the window the switcher's walk reached to the front, and close the switcher. The walk
 /// counts from the window in front, over the windows its scope crosses, wrapping.
-pub(crate) fn commit_switcher(handle: &DesktopHandle, walk: &crate::overlays::Overlays) {
+pub(crate) fn commit_switcher(handle: &DesktopHandle, walk: &Overlays) {
     let windows = handle.read(|tree| windows(tree, handle));
     let reached = reaching(walk, &windows).and_then(|at| windows.get(at));
     if let Some(tab) = tilo_failure::ignored!(
@@ -375,7 +372,7 @@ pub(crate) fn commit_switcher(handle: &DesktopHandle, walk: &crate::overlays::Ov
         handle.focus_tab(tab);
     }
     walk.forget_walk();
-    walk.show(crate::overlays::Overlay::Rest);
+    walk.show(Overlay::Rest);
 }
 
 /// Open the switcher on the window before the one in front, or walk it `steps` windows on. A
@@ -383,30 +380,27 @@ pub(crate) fn commit_switcher(handle: &DesktopHandle, walk: &crate::overlays::Ov
 /// window open does what it always has, which is nothing.
 pub(crate) fn walk_switcher(
     handle: &DesktopHandle,
-    walk: &crate::overlays::Overlays,
-    scope: Option<&str>,
+    walk: &Overlays,
+    scope: SwitcherScope,
     steps: i64,
 ) {
-    let scope = scope
-        .and_then(crate::overlays::SwitcherScope::named)
-        .unwrap_or_default();
     // Opening the walk is one window on, as Alt+Tab goes to the window before the one in front
     // whichever way its press names.
     let steps = if steps == 0 { 1 } else { steps };
-    if !walk.is_up() {
+    if !walk.switcher_up() {
         let windows = handle.read(|tree| windows(tree, handle));
         let (walked, _) = walked(&windows, scope);
         if walked.len() < 2 {
             return;
         }
     }
-    walk.walk(Some(scope.name()), steps);
+    walk.walk(scope, steps);
 }
 
 /// Choose the window `at` in the walk's order: `0` the first of them, `-1` the last. Home,
 /// End and a card under the pointer choose by place, without crossing the ones between.
-pub(crate) fn select_switcher(handle: &DesktopHandle, walk: &crate::overlays::Overlays, at: i64) {
-    if !walk.is_up() {
+pub(crate) fn select_switcher(handle: &DesktopHandle, walk: &Overlays, at: i64) {
+    if !walk.switcher_up() {
         return;
     }
     let windows = handle.read(|tree| windows(tree, handle));

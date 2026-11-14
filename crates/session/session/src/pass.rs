@@ -325,7 +325,7 @@ impl Session {
         let shared = &self.shared;
         if crate::switcher::show(
             &shared.handle,
-            &shared.desk_overlays,
+            &shared.overlays,
             &shared.switcher,
             self.compositor.locked(),
             &sizes,
@@ -430,7 +430,7 @@ impl Session {
             self.surfaces.next_deadline(),
             // Alt+Tab's panel comes up while Alt stays held: the one instant it is due at, so
             // nothing draws before it.
-            self.shared.desk_overlays.deadline(now),
+            self.shared.overlays.deadline(now),
             self.shared.restore.borrow().next_deadline(),
             // The add-a-device sheet counts its minutes down, and renews its link once it ran out.
             self.shared.pair_device_deadline(),

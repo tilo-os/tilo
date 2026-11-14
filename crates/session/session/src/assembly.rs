@@ -110,9 +110,6 @@ pub(crate) struct Shared {
     /// others.
     #[cfg(target_os = "linux")]
     pub(crate) surfaces: crate::desk_resource::Surfaces,
-    /// The desk's own overlays, as its reading and its views name them: the
-    /// surface up, and Alt+Tab's walk.
-    pub(crate) desk_overlays: Rc<crate::overlays::Overlays>,
     /// Alt+Tab's panel, shared by the desk's walk (which sets it), the chrome
     /// (which draws it) and the compositor (which pictures its windows).
     pub(crate) switcher: tilo_desktop::window_switcher::Switcher,

@@ -24,7 +24,7 @@ use tilo_session_core::surface::{KeyClaim, KeyModifiers};
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop::desk_widgets::DeskFold;
 use tilo_desktop::osd::OsdKind;
-use tilo_desktop::overlays::{Overlays, Slot};
+use tilo_desktop::overlays::{Overlay, Overlays, Slot, SwitcherScope};
 use tilo_session_core::shell::OVERLAYS;
 use tilo_sheets::shortcut_guide::{Caught, State as GuideState};
 use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig};
@@ -150,8 +150,6 @@ pub(crate) struct ControllerKeys {
 pub(crate) struct DeskKeys {
     fold: DeskFold,
     overlays: Overlays,
-    /// The desk's own overlays, where Alt+Tab's walk lives.
-    switcher: Option<Rc<crate::overlays::Overlays>>,
     /// What the keys ask the panel's own app, when this device has one and draws it: Escape asks it
     /// to go back a page, and the panel answers whether it had one.
     panel: Option<Rc<RefCell<Vec<&'static str>>>>,
@@ -164,16 +162,8 @@ impl DeskKeys {
         Self {
             fold,
             overlays,
-            switcher: None,
             panel: None,
         }
-    }
-
-    /// The same, with the desk's own overlays: Alt+Tab's walk.
-    #[must_use]
-    pub(crate) fn with_switcher(mut self, switcher: Rc<crate::overlays::Overlays>) -> Self {
-        self.switcher = Some(switcher);
-        self
     }
 
     /// The same, with the queue the panel's own app is asked through, when this device has one and
@@ -195,10 +185,7 @@ fn above_tab(key: &Key) -> bool {
 pub(crate) enum SwitcherKey {
     /// Walk on (or back, with Shift), opening the walk over `opened` when it is not up yet.
     /// Everything else steps inside the scope already walking.
-    Walk {
-        back: bool,
-        opened: crate::overlays::SwitcherScope,
-    },
+    Walk { back: bool, opened: SwitcherScope },
     /// Home and End: the window `at` places along the walk, `-1` the last.
     Place(i64),
     /// Enter, Space, or letting Alt go: go to the window the walk reached.
@@ -213,10 +200,7 @@ impl SwitcherKey {
     /// The desk action it asks for: the walk, the place or the commit, as the desk's own published
     /// action. `walking` is the scope of the walk already up: a walk going keeps it, so Alt+grave
     /// opens over the app in front's windows and Alt+Tab steps inside it.
-    pub(crate) fn asks(
-        self,
-        walking: Option<crate::overlays::SwitcherScope>,
-    ) -> Option<Invocation> {
+    pub(crate) fn asks(self, walking: Option<SwitcherScope>) -> Option<Invocation> {
         match self {
             Self::Walk { back, opened } => {
                 let scope = walking.unwrap_or(opened);
@@ -239,20 +223,20 @@ impl SwitcherKey {
     pub(crate) fn walk(
         self,
         handle: &tilo_desktop_surface::DesktopHandle,
-        walk: &crate::overlays::Overlays,
-        walking: Option<crate::overlays::SwitcherScope>,
+        walk: &Overlays,
+        walking: Option<SwitcherScope>,
     ) {
         use crate::desk_windows::{commit_switcher, select_switcher, walk_switcher};
         match self {
             Self::Walk { back, opened } => walk_switcher(
                 handle,
                 walk,
-                Some(walking.unwrap_or(opened).name()),
+                walking.unwrap_or(opened),
                 if back { -1 } else { 1 },
             ),
             Self::Place(at) => select_switcher(handle, walk, at),
             Self::Commit => commit_switcher(handle, walk),
-            Self::Cancel => walk.close(crate::overlays::Overlay::Switcher.name()),
+            Self::Cancel => walk.hide(Overlay::Switcher),
             Self::Hold => {}
         }
     }
@@ -273,11 +257,11 @@ impl SwitcherKey {
 /// Alt+Tab's keys: the chord that opens the desk's walk, and every key it answers while it is up.
 #[derive(Clone)]
 pub(crate) struct WalkKeys {
-    walk: Rc<crate::overlays::Overlays>,
+    walk: Overlays,
 }
 
 impl WalkKeys {
-    pub(crate) const fn new(walk: Rc<crate::overlays::Overlays>) -> Self {
+    pub(crate) const fn new(walk: Overlays) -> Self {
         Self { walk }
     }
 
@@ -285,9 +269,9 @@ impl WalkKeys {
     /// nothing when it is not the walk's at all. While the walk is up it is modal, as every
     /// desktop's switcher is: the keys are its own, and none of them reaches the window behind it.
     pub(crate) fn key(&self, press: &Press) -> Option<SwitcherKey> {
-        let desk = &*self.walk;
+        let desk = &self.walk;
         let held = press.modifiers;
-        if !desk.is_up() {
+        if !desk.switcher_up() {
             // Alt+Tab walks the workspace's windows, and Alt with the key above Tab the ones the
             // app in front shows: fixed chords, as no shortcut table holds a modifier.
             if !press.pressed || !held.alt {
@@ -296,13 +280,13 @@ impl WalkKeys {
             if press.key == Key::Named(NamedKey::Tab) {
                 return Some(SwitcherKey::Walk {
                     back: held.shift,
-                    opened: crate::overlays::SwitcherScope::Workspace,
+                    opened: SwitcherScope::Workspace,
                 });
             }
             if above_tab(&press.key) && !held.ctrl && !held.logo {
                 return Some(SwitcherKey::Walk {
                     back: held.shift,
-                    opened: crate::overlays::SwitcherScope::App,
+                    opened: SwitcherScope::App,
                 });
             }
             return None;
@@ -353,8 +337,8 @@ impl WalkKeys {
     }
 
     /// The scope of the walk already up: a walk going keeps it.
-    fn walking(&self) -> Option<crate::overlays::SwitcherScope> {
-        self.walk.is_up().then(|| self.walk.scope())
+    fn walking(&self) -> Option<SwitcherScope> {
+        self.walk.switcher_up().then(|| self.walk.scope())
     }
 
     /// How the walk claims `press`: the chord that opens it, and, while it is up, every key — its
@@ -367,7 +351,7 @@ impl WalkKeys {
         } else {
             KeyClaim::Take
         };
-        (self.walk.is_up() || (!locked && !inhibited)).then_some(claim)
+        (self.walk.switcher_up() || (!locked && !inhibited)).then_some(claim)
     }
 
     /// Move the walk as `press` asks, on `handle`'s desk itself: what a host without the desk's
@@ -403,7 +387,7 @@ pub(crate) struct SessionKeys {
     /// holds the keyboard a press is that surface's and not the window's.
     overlays: Overlays,
     /// Alt+Tab's keys: the chord that opens the desk's walk, and the keys it answers while it is up.
-    switcher: Option<WalkKeys>,
+    switcher: WalkKeys,
     /// What the keys ask the panel's own app, when this device draws it.
     panel: Option<Rc<RefCell<Vec<&'static str>>>>,
     /// The shortcut resources whose chords are held down, by key.
@@ -444,8 +428,8 @@ impl SessionKeys {
             triggered,
             guide,
             fold: desk.fold,
+            switcher: WalkKeys::new(desk.overlays.clone()),
             overlays: desk.overlays,
-            switcher: desk.switcher.map(WalkKeys::new),
             panel: desk.panel,
             held: RefCell::new(BTreeMap::new()),
             controller,
@@ -462,9 +446,7 @@ impl SessionKeys {
 
     /// Ask the desk for what a key of the walk's is worth: whether it was the walk's.
     fn walk_the_switcher(&self, press: &Press) -> bool {
-        let Some(walk) = &self.switcher else {
-            return false;
-        };
+        let walk = &self.switcher;
         let Some(key) = walk.key(press) else {
             return false;
         };
@@ -669,11 +651,7 @@ impl SessionKeys {
                     .map_or(KeyClaim::Pass, |(_, claim)| claim);
             }
         }
-        if let Some(claim) = self
-            .switcher
-            .as_ref()
-            .and_then(|walk| walk.claim(press, locked, inhibited))
-        {
+        if let Some(claim) = self.switcher.claim(press, locked, inhibited) {
             return claim;
         }
         if self.closes_the_top_surface(press).is_some() || self.folds_the_desk(press) {
@@ -851,9 +829,9 @@ mod tests {
     }
 
     /// The key surface with the desk's walk to answer to, and that walk.
-    fn with_walk() -> (NativeKeys, Rc<crate::overlays::Overlays>) {
-        let walk = Rc::new(crate::overlays::Overlays::new());
-        let keys = over(DeskKeys::default().with_switcher(walk.clone()));
+    fn with_walk() -> (NativeKeys, Overlays) {
+        let walk = Overlays::new();
+        let keys = over(DeskKeys::new(DeskFold::default(), walk.clone()));
         (keys, walk)
     }
 
@@ -980,7 +958,7 @@ mod tests {
     #[test]
     fn the_walk_is_modal_while_it_is_up() {
         let (mut keys, walk) = with_walk();
-        walk.walk(Some("workspace"), 1);
+        walk.walk(SwitcherScope::Workspace, 1);
         let letter = key(keysyms::a, Some('a'), held("a"));
         assert_eq!(
             keys.claim_key(&letter, false, false),
@@ -1001,7 +979,7 @@ mod tests {
     #[test]
     fn letting_alt_go_goes_to_the_window_the_walk_reached() {
         let (mut keys, walk) = with_walk();
-        walk.walk(Some("workspace"), 1);
+        walk.walk(SwitcherScope::Workspace, 1);
         let let_go = released(keysyms::Alt_L, KeyModifiers::default());
         assert_eq!(keys.claim_key(&let_go, false, false), KeyClaim::Take);
         keys.key(&let_go);
@@ -1020,7 +998,7 @@ mod tests {
     #[test]
     fn escape_closes_the_walk_and_enter_goes_to_it() {
         let (mut keys, walk) = with_walk();
-        walk.walk(Some("workspace"), 1);
+        walk.walk(SwitcherScope::Workspace, 1);
         let escape = key(keysyms::Escape, None, held("a"));
         assert_eq!(keys.claim_key(&escape, false, false), KeyClaim::Take);
         keys.key(&escape);
@@ -1071,7 +1049,7 @@ mod tests {
     #[test]
     fn home_end_and_the_arrows_move_inside_the_walk() {
         let (mut keys, walk) = with_walk();
-        walk.walk(Some("workspace"), 1);
+        walk.walk(SwitcherScope::Workspace, 1);
         let home = key(keysyms::Home, None, held("a"));
         keys.key(&home);
         assert_eq!(
@@ -1108,7 +1086,7 @@ mod tests {
     fn a_walk_going_keeps_its_scope_and_the_other_chord_starts_it_again() {
         let (mut keys, walk) = with_walk();
         // A walk in the app's scope: Tab and the key above Tab both step inside it.
-        walk.walk(Some("app"), 1);
+        walk.walk(SwitcherScope::App, 1);
         for keysym in [keysyms::Tab, keysyms::grave] {
             let step = key(keysym, None, held("a"));
             keys.key(&step);
@@ -1125,7 +1103,7 @@ mod tests {
         // The other chord does not cross to the other scope in a walk going: it steps, as it always
         // has. The scope is the chord that opened the walk.
         let (mut keys, walk) = with_walk();
-        walk.walk(Some("workspace"), 1);
+        walk.walk(SwitcherScope::Workspace, 1);
         let grave = key(keysyms::grave, Some('`'), held("a"));
         keys.key(&grave);
         assert_eq!(
@@ -1137,7 +1115,7 @@ mod tests {
             ]
         );
         // Alt let go and pressed again with the key above Tab opens the app's walk.
-        walk.close("switcher");
+        walk.hide(Overlay::Switcher);
         walk.forget_walk();
         keys.key(&grave);
         assert_eq!(
@@ -1153,7 +1131,7 @@ mod tests {
     #[test]
     fn a_press_without_alt_settles_the_walk_and_its_repeats_do_not() {
         let (mut keys, walk) = with_walk();
-        walk.walk(Some("workspace"), 1);
+        walk.walk(SwitcherScope::Workspace, 1);
         let typing = key(keysyms::a, Some('a'), KeyModifiers::default());
         assert_eq!(keys.claim_key(&typing, false, false), KeyClaim::Take);
         keys.key(&typing);
@@ -1164,7 +1142,7 @@ mod tests {
         );
 
         let (mut keys, walk) = with_walk();
-        walk.walk(Some("workspace"), 1);
+        walk.walk(SwitcherScope::Workspace, 1);
         let repeat = HostKey {
             repeat: true,
             ..key(keysyms::a, Some('a'), KeyModifiers::default())

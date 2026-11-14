@@ -461,10 +461,7 @@ impl Shared {
     fn switcher_ask(&self, ask: tilo_desktop::window_switcher::SwitcherAsk) {
         // The walk is the session desk's, as the keys reach it: the panel's presses ask for the
         // same verbs.
-        let walking = self
-            .desk_overlays
-            .is_up()
-            .then(|| self.desk_overlays.scope());
+        let walking = self.overlays.switcher_up().then(|| self.overlays.scope());
         self.invocations.borrow_mut().extend(
             crate::keys::SwitcherKey::of_panel(ask)
                 .into_iter()

@@ -38,6 +38,8 @@ const REFRESH: Duration = Duration::from_millis(16);
 
 /// What a key sends, evdev codes.
 const KEY_ESCAPE: u32 = 1;
+const KEY_TAB: u32 = 15;
+const KEY_ALT: u32 = 56;
 
 /// The display the session runs on.
 const WIDTH: i32 = 1280;
@@ -372,6 +374,104 @@ fn escape_closes_the_topmost_surface_that_answers_it() {
     tap(&mut session, KEY_ESCAPE);
     assert!(slots(&session).is_empty(), "the menu closed");
     assert_eq!(focus(&session), "window");
+}
+
+/// The shell's surface up, as the stack's reading names it.
+fn here(session: &Session) -> String {
+    session
+        .read(OVERLAYS)
+        .expect("the session publishes its surfaces")["here"]
+        .as_str()
+        .expect("a surface")
+        .to_owned()
+}
+
+/// The title of the window in front.
+fn front(session: &Session) -> String {
+    crate::common::windows(session)
+        .into_iter()
+        .find(|window| window.focused)
+        .map(|window| window.title)
+        .unwrap_or_default()
+}
+
+/// The shell's own surface and the popovers are one stack: one stands at a time, Escape closes
+/// the one up, and Alt+Tab's walk holds the keys until Alt comes up.
+#[test]
+fn the_shells_surface_and_the_popovers_stand_one_at_a_time() {
+    let mut tree = desk_tree();
+    tree.workspaces[0].strips[0]
+        .window_groups
+        .push(WindowGroup {
+            id: 4,
+            active_tab: 21,
+            tabs: vec![window(21, "Mail", "so.tilo.mail")],
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+    let mut session = session_with(tree, None);
+    assert_eq!(here(&session), "none");
+    assert_eq!(front(&session), "Notes");
+
+    // The launcher takes the window menu down.
+    session
+        .invoke(
+            WINDOW_MENU,
+            "open",
+            &args(&json!({ "tab": "20", "anchor": "40,50" })),
+        )
+        .expect("the menu opens");
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(focus(&session), "overlay:window-menu");
+    session
+        .invoke(
+            OVERLAYS,
+            "show-surface",
+            &args(&json!({ "surface": "launcher" })),
+        )
+        .expect("the launcher opens");
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(here(&session), "launcher");
+    assert!(slots(&session).is_empty(), "the menu went down for it");
+
+    // And the menu takes the launcher down.
+    session
+        .invoke(
+            WINDOW_MENU,
+            "open",
+            &args(&json!({ "tab": "20", "anchor": "40,50" })),
+        )
+        .expect("the menu opens again");
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(slots(&session), ["window-menu"]);
+    assert_eq!(here(&session), "none", "the launcher went down for it");
+    tap(&mut session, KEY_ESCAPE);
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(slots(&session).is_empty(), "Escape closed the menu");
+    assert_eq!(focus(&session), "window");
+
+    // Alt+Tab walks to the other window; Escape stays where the person was.
+    key(&mut session, KEY_ALT, true);
+    tap(&mut session, KEY_TAB);
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(here(&session), "switcher");
+    tap(&mut session, KEY_ESCAPE);
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(here(&session), "none", "Escape closed the switcher");
+    key(&mut session, KEY_ALT, false);
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(front(&session), "Notes", "and went nowhere");
+
+    // Letting Alt go goes to the window the walk reached.
+    key(&mut session, KEY_ALT, true);
+    tap(&mut session, KEY_TAB);
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(here(&session), "switcher");
+    key(&mut session, KEY_ALT, false);
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(here(&session), "none");
+    assert_eq!(front(&session), "Mail", "Alt+Tab went to the other window");
 }
 
 #[test]
