@@ -4,7 +4,7 @@
 //!
 //! The person admits it either on the sheet the door's question opens, pressed as they press it,
 //! or ahead of time, by naming the program when they start the session (`--admit-repl`). A note
-//! placed on the arrangement by a `tilo` program stands on the shell's screen, read from what the
+//! placed on the layout by a `tilo` program stands on the shell's screen, read from what the
 //! shell lays out for assistive technology, and is the person's step, which `undo` takes back.
 
 #![cfg(target_os = "linux")]
@@ -80,7 +80,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
     assert!(!failed, "{shell}");
     assert!(
         shell.lines().any(|line| line.starts_with("Layout/")),
-        "the arrangement is among the session's resources: {shell}"
+        "the layout is among the session's resources: {shell}"
     );
 
     // `ls` lists each action as a program calls it, what it may go without included. The chrome by
@@ -103,7 +103,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         "as it is typed: {chrome}"
     );
     let (arranging, failed) =
-        repl.call(session, "tilo_ls", &json!({"path": "session/arrangement"}));
+        repl.call(session, "tilo_ls", &json!({"path": "session/layout"}));
     assert!(!failed, "{arranging}");
     let place = arranging
         .lines()
@@ -148,7 +148,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         on_screen(session, CANVAS).is_some()
     });
 
-    // A `tilo` program places the note on the arrangement, as the person.
+    // A `tilo` program places the note on the layout, as the person.
     let (placed_it, failed) = repl.call(
         session,
         "tilo",
@@ -514,10 +514,10 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
     );
 }
 
-/// How many of the seeded notes app's resources stand on the arrangement.
+/// How many of the seeded notes app's resources stand on the layout.
 fn noted(session: &Session) -> usize {
     session
-        .arrangement()
+        .layout()
         .borrow()
         .reading()
         .places
@@ -653,7 +653,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let mailbox = |session: &Session| {
         let resources = session.resources();
         session
-            .arrangement()
+            .layout()
             .borrow()
             .reading()
             .places
@@ -714,7 +714,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
     let placed = |session: &Session| {
         let resources = session.resources();
         session
-            .arrangement()
+            .layout()
             .borrow()
             .reading()
             .places

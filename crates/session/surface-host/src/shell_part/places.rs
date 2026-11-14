@@ -34,7 +34,7 @@ fn click(part: &mut ShellPart, name: &str) {
     }
 }
 
-/// A workspace's notebook, published as the session publishes it.
+/// A room's notebook, published as the session publishes it.
 fn notebook() -> (RecordService, tilolang_tilo::runtime::Meta) {
     let host = Host::new(&tilo_resource::Doc::new(), Principal::new("Pat"), || None).unwrap();
     host.load_builtin(
@@ -137,15 +137,15 @@ fn layout(record: &str, shows: &str, shown_as: &str) -> LayoutReading {
 }
 
 /// The notes app's editor, drawing the note `record`.
-fn note_arrangement(record: &str) -> LayoutReading {
+fn note_layout(record: &str) -> LayoutReading {
     layout(record, "Note", "note_editor")
 }
 
 /// The shell part showing `note` in a place, its reading published, drawn.
 fn showing(service: &RecordService, note: &str) -> (ShellPart, Rc<SessionLink>) {
     let (mut part, link) = part_with(reading_with_windows());
-    let layout = note_arrangement(note);
-    link.publish_arrangement(layout.clone());
+    let layout = note_layout(note);
+    link.publish_layout(layout.clone());
     assert!(
         follow(&link, &layout, service),
         "the place's record has a reading"
@@ -246,7 +246,7 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
     let note = note(&mut service, "Groceries");
 
     let (mut part, link) = showing(&service, &note);
-    let layout = note_arrangement(&note);
+    let layout = note_layout(&note);
 
     let view = canvas(&part);
     let title_field = field_id(&meta, "Note", "title");
@@ -345,14 +345,14 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     let (mut service, _) = notebook();
     let note = note(&mut service, "Groceries");
     let (mut part, link) = super::tests_support::part_as(reading_with_windows(), None);
-    let mut layout = note_arrangement(&note);
+    let mut layout = note_layout(&note);
     // The one place names no view: it falls back to its type's default view.
     let placed = layout
         .places
         .first_mut()
         .expect("the layout places the note");
     placed.shown_as = String::new();
-    link.publish_arrangement(layout.clone());
+    link.publish_layout(layout.clone());
     assert!(follow(&link, &layout, &service));
     for _ in 0..6 {
         part.prepare_frame();
@@ -426,9 +426,9 @@ fn target(value: &Value) -> ResourceRef {
     }
 }
 
-/// The workspace the session publishes: a chat with the channel `design` and Bo's message in it, a
+/// The room the session publishes: a chat with the channel `design` and Bo's message in it, a
 /// tasks app, and the task Ada made from that message through its own menu.
-struct Workspace {
+struct Room {
     service: RecordService,
     channel: String,
     message: ResourceRef,
@@ -441,7 +441,7 @@ struct Workspace {
     needed: std::collections::BTreeSet<String>,
 }
 
-fn workspace() -> Workspace {
+fn room() -> Room {
     let host = Host::new(&tilo_resource::Doc::new(), Principal::new("ada"), || None).unwrap();
     let chat = host.load_builtin(CHAT, CHAT_IDS).unwrap();
     host.load_builtin(DISCUSSION, DISCUSSION_IDS).unwrap();
@@ -486,7 +486,7 @@ fn workspace() -> Workspace {
         tilolang_tilo::runtime::InvokeOutcome::Done(made) => made,
         other => panic!("new_task: {other:?}"),
     };
-    Workspace {
+    Room {
         service: RecordService::new(host, "ada"),
         channel: target(&design).id_string(),
         message,
@@ -588,18 +588,14 @@ fn task_rows(
 /// app the places show and of each app a view read a type of, and the reading of each resource a
 /// place names and of each the views read. `needed` keeps the apps asked for, as the session
 /// keeps them for the rest of its run. Whether anything was published.
-fn session_turn(
-    link: &SessionLink,
-    layout: &LayoutReading,
-    workspace: &mut Workspace,
-) -> bool {
-    let mut needed = std::mem::take(&mut workspace.needed);
+fn session_turn(link: &SessionLink, layout: &LayoutReading, room: &mut Room) -> bool {
+    let mut needed = std::mem::take(&mut room.needed);
     needed.extend(link.take_wanted_packages().into_keys());
     let mut apps = needed.clone();
-    workspace.needed = needed;
+    room.needed = needed;
     for ty in tilolang_tilo::records_service::placed_records(
         layout.places.iter().map(|place| place.record.as_str()),
-        &workspace.service.resources(),
+        &room.service.resources(),
     )
     .values()
     {
@@ -609,45 +605,43 @@ fn session_turn(
     }
     let mut packages = BTreeMap::new();
     for app in apps {
-        if let Some(module) = workspace.service.module(&app) {
+        if let Some(module) = room.service.module(&app) {
             packages.insert(app, module);
         }
     }
     let mut changed = link.publish_packages(packages);
-    changed |= link.follow_places(layout, &workspace.service.resources(), |id| {
-        workspace.service.read(id)
+    changed |= link.follow_places(layout, &room.service.resources(), |id| {
+        room.service.read(id)
     });
     for (id, ty) in link.take_wanted() {
-        workspace.following.insert(id, ty);
+        room.following.insert(id, ty);
     }
     // The session reads again the readings a change touched; the test reads them all, as every
     // one of them is what the place draws.
-    for (id, ty) in &workspace.following {
-        if let Some(reading) = workspace.service.read(id) {
+    for (id, ty) in &room.following {
+        if let Some(reading) = room.service.read(id) {
             changed |= link.publish_reading(id, ty, reading);
         }
     }
     changed
 }
 
-/// A chat window on the workspace's channel, its first frames drawn, with no tasks window open: what
+/// A chat window on the room's channel, its first frames drawn, with no tasks window open: what
 /// the place holds once its views read the readings the session published.
-fn chat_place(
-    mut workspace: Workspace,
-) -> (ShellPart, Rc<SessionLink>, Workspace, LayoutReading) {
+fn chat_place(mut room: Room) -> (ShellPart, Rc<SessionLink>, Room, LayoutReading) {
     let layout = layout(
-        &format!("tl:{CHAT_APP}:{}", workspace.channel),
+        &format!("tl:{CHAT_APP}:{}", room.channel),
         "TextChannel",
         "channel",
     );
     let (mut part, link) = part_with(reading_with_windows());
-    link.publish_arrangement(layout.clone());
+    link.publish_layout(layout.clone());
     part.prepare_frame();
-    session_turn(&link, &layout, &mut workspace);
+    session_turn(&link, &layout, &mut room);
     part.prepare_frame();
-    session_turn(&link, &layout, &mut workspace);
+    session_turn(&link, &layout, &mut room);
     part.prepare_frame();
-    (part, link, workspace, layout)
+    (part, link, room, layout)
 }
 
 /// The row the chat place draws for the task made from its message, once the session served the
@@ -656,19 +650,19 @@ fn row_once_loaded(
     part: &mut ShellPart,
     link: &SessionLink,
     layout: &LayoutReading,
-    workspace: &mut Workspace,
+    room: &mut Room,
 ) -> tilolang_tilo::runtime::UiNode {
     for _ in 0..8 {
-        session_turn(link, layout, workspace);
+        session_turn(link, layout, room);
         part.prepare_frame();
         let mut view = canvas(part);
-        if let Some(row) = task_rows(&mut view, &workspace.task).pop() {
+        if let Some(row) = task_rows(&mut view, &room.task).pop() {
             return row;
         }
     }
     panic!(
         "the chat place draws the task made from the message: asked for {:?}",
-        workspace.needed
+        room.needed
     );
 }
 
@@ -682,17 +676,17 @@ fn row_once_loaded(
 #[test]
 fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_message_done() {
     let _settled = ui::motion::testing::settled();
-    let workspace = workspace();
+    let room = room();
     // What the message's reading says was made from it: the task, as its own app keeps it.
-    let reading = workspace
+    let reading = room
         .service
-        .read(&format!("tl:{CHAT_APP}:{}", workspace.message.id_string()))
+        .read(&format!("tl:{CHAT_APP}:{}", room.message.id_string()))
         .unwrap();
     assert!(
-        reading.to_string().contains(&workspace.task.id_string()),
+        reading.to_string().contains(&room.task.id_string()),
         "the message's reading carries what was made from it: {reading:#}"
     );
-    let (mut part, link, mut workspace, layout) = chat_place(workspace);
+    let (mut part, link, mut room, layout) = chat_place(room);
 
     assert!(
         !link.package_apps().iter().any(|app| app == TASKS_APP),
@@ -706,7 +700,7 @@ fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_me
         view.tree()
     );
     assert!(
-        task_rows(&mut view, &workspace.task).is_empty(),
+        task_rows(&mut view, &room.task).is_empty(),
         "no row of the task is drawn before the tasks package is loaded: {:#?}",
         view.tree()
     );
@@ -714,9 +708,9 @@ fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_me
     // The session serves the ask: the tasks package is published as the place's own is, the
     // task's reading with it, and the message's reference to the task draws it through the
     // task's row view.
-    let row = row_once_loaded(&mut part, &link, &layout, &mut workspace);
+    let row = row_once_loaded(&mut part, &link, &layout, &mut room);
     assert!(
-        workspace.needed.contains(TASKS_APP),
+        room.needed.contains(TASKS_APP),
         "the tasks package was asked for"
     );
     assert_eq!(
@@ -729,7 +723,7 @@ fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_me
     drop(view);
 
     let mut view = canvas(&part);
-    let row = task_rows(&mut view, &workspace.task)
+    let row = task_rows(&mut view, &room.task)
         .pop()
         .expect("the chat place draws the task");
     assert_eq!(
@@ -739,17 +733,16 @@ fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_me
     );
 
     // Ben finishes the task in Tasks, with no Tasks window open: the message's row ticks.
-    workspace
-        .service
-        .invoke(&workspace.task.id_string(), "check", &Map::new())
+    room.service
+        .invoke(&room.task.id_string(), "check", &Map::new())
         .unwrap();
-    workspace.service.settle();
+    room.service.settle();
     for _ in 0..8 {
-        session_turn(&link, &layout, &mut workspace);
+        session_turn(&link, &layout, &mut room);
         part.prepare_frame();
     }
     let mut view = canvas(&part);
-    let row = task_rows(&mut view, &workspace.task)
+    let row = task_rows(&mut view, &room.task)
         .pop()
         .unwrap_or_else(|| panic!("the chat place still draws the task"));
     assert_eq!(

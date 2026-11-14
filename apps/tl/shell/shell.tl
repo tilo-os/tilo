@@ -13,7 +13,7 @@
 /// session's chrome decides. Nothing here draws a window: the windows are the
 /// compositor's, behind this view.
 ///
-/// The shell, with the arrangement `front` filling the room between its bar and its foot, as the
+/// The shell, with the layout `front` filling the room between its bar and its foot, as the
 /// style the person chose shows it (`screen`): the dock stands over that room on its own edge,
 /// as the chrome's does, so a window takes the height the shell gives it rather than stopping
 /// short of the dock. On a compact output that room is a phone's, too little for a window's bar to lose to a
@@ -28,7 +28,7 @@
 ///
 /// `traditional` makes this the traditional desktop's chrome: its bar lists the window in
 /// front's actions, and its own bar is drawn (`top_bar`). The desktop style passes it.
-template view shell_around(front: Option<Arrangement>, traditional: Bool, content: View) {
+template view shell_around(front: Option<Layout>, traditional: Bool, content: View) {
     let s = shell
     let dock_takes_room = front != .none
         and dock_shows(s)
@@ -85,23 +85,23 @@ template view shell_around(front: Option<Arrangement>, traditional: Bool, conten
     }
 }
 
-/// The room between the bar and the foot that the arrangement gets: how wide the shell's
+/// The room between the bar and the foot that the layout gets: how wide the shell's
 /// bar lists actions decides whether each frame's own bar gives way to it (`bar_lists_actions`).
 fn shell_lists(traditional: Bool, roomy: Bool) -> Bool {
     bar_lists_actions_for(shell, roomy, traditional)
 }
 
 /// The shell the person's style draws its places through, with `traditional` for the desktop
-/// style's chrome and `body` the places: every style that shows the arrangement beside the
+/// style's chrome and `body` the places: every style that shows the layout beside the
 /// shell's bar and dock draws through this, so no style repeats the chrome.
-template view style_shell(a: Arrangement, traditional: Bool, body: View) {
+template view style_shell(a: Layout, traditional: Bool, body: View) {
     shell_around(a, traditional, body)
 }
 
 /// Strips
 ///
 /// The person's places as windows in rows and strips, scrolled sideways (`strips_view`).
-view strips(a: Arrangement) {
+view strips(a: Layout) {
     let lists = shell_lists(false, space.width_class == .expanded or space.width_class == .wide)
     style_shell(a, false) {
         strips_view(a, viewing, lists, fill)
@@ -111,7 +111,7 @@ view strips(a: Arrangement) {
 /// Frames
 ///
 /// The places at points on a pannable, zoomable canvas, each in its own frame.
-view frames(a: Arrangement) {
+view frames(a: Layout) {
     let lists = shell_lists(false, space.width_class == .expanded or space.width_class == .wide)
     style_shell(a, false) {
         canvas(a, "Canvas", true, lists, fill)
@@ -121,7 +121,7 @@ view frames(a: Arrangement) {
 /// Spaces
 ///
 /// The places at points, each drawn as its own view standing as content.
-view spaces(a: Arrangement) {
+view spaces(a: Layout) {
     style_shell(a, false) {
         canvas(a, "Spaces", false, false, fill)
     }
@@ -132,7 +132,7 @@ view spaces(a: Arrangement) {
 /// Frames floating over the shell under the traditional bar, the focused window's commands in it,
 /// on a roomy display; a compact output shows the window in front alone in the shell's own
 /// chrome, as a phone does.
-view desktop(a: Arrangement) {
+view desktop(a: Layout) {
     let lists = shell_lists(true, space.width_class == .expanded or space.width_class == .wide)
     if not space.compact {
         layers(fill) {

@@ -396,16 +396,16 @@ fn record_says(session: &Session, text: &str) -> bool {
 }
 
 /// The query a place of `session` shows, by the place whose record is that query: the session's
-/// own arrangement reading, which the shell draws it from.
+/// own layout reading, which the shell draws it from.
 fn query_shown(session: &Session) -> Option<tilo_session_core::layout::LayoutQueryReading> {
-    let arrangement = session.layout().borrow();
-    let reading = arrangement.reading();
+    let layout = session.layout().borrow();
+    let reading = layout.reading();
     // The place a query stands in shows the query's own resource (`shell:query:<place>`).
     reading
         .places
         .iter()
         .find(|place| place.record.starts_with("shell:query:"))
-        .and_then(|place| arrangement.query_of(place.key.parse().ok()?))
+        .and_then(|place| layout.query_of(place.key.parse().ok()?))
 }
 
 /// Type `text` on the canvas at the shell, as the canvas entry's own `place-found` receives it.

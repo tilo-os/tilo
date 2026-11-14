@@ -210,7 +210,7 @@ fn find(resources: &[tilo_actions::ResourceSpec], ty: &str, label: &str) -> Opti
 }
 
 /// Place `resource` on the canvas of the workspace in front, at `(x, y)` and `width` by `height` ,
-/// through the arrangement's published `place` : what an agent does when it puts something on the
+/// through the layout's published `place` : what an agent does when it puts something on the
 /// canvas for the person.
 fn place(session: &mut Session, resource: &str, x: i32, y: i32, width: i32, height: i32) {
     let (workspace, row, strip, place) = {

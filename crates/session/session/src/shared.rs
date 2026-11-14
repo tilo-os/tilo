@@ -113,19 +113,19 @@ impl Shared {
         }
     }
 
-    /// Run what waited for the person to finish their gesture or their typing: an arranging action
+    /// Run what waited for the person to finish their gesture or their typing: a layout action
     /// that arrived then, in the order it came, after the windows the person floated or put back on
     /// the shell, which are their own and never wait.
-    pub(crate) fn follow_arrangement(&self, underway: arrangement::Busy) {
-        let mut arrangement = self.arrangement.borrow_mut();
-        if let Err(why) = arrangement.take_asked_floats() {
+    pub(crate) fn follow_layout(&self, underway: layout::Busy) {
+        let mut layout = self.layout.borrow_mut();
+        if let Err(why) = layout.take_asked_floats() {
             tracing::warn!(why, "a window could not be floated or put back");
         }
         if !underway.holds()
-            && arrangement.waiting() > 0
-            && let Err(why) = arrangement.release()
+            && layout.waiting() > 0
+            && let Err(why) = layout.release()
         {
-            tracing::warn!(why, "an arranging action that waited could not be made");
+            tracing::warn!(why, "a layout action that waited could not be made");
         }
         // A query the canvas stands asks its app for what it names. When the app's records hold
         // resources of that kind it did not hold when it asked, that is what it found (one
@@ -136,36 +136,36 @@ impl Shared {
         let app_resources = self.services.borrow().resources();
         let running: Vec<(
             String,
-            arrangement::LayoutQueryReading,
+            layout::LayoutQueryReading,
             std::collections::BTreeSet<String>,
-        )> = arrangement
+        )> = layout
             .queries_running()
             .into_iter()
             .filter_map(|query| {
-                let held = arrangement.held_when_asked(query.key.parse().ok()?)?;
+                let held = layout.held_when_asked(query.key.parse().ok()?)?;
                 Some((query.key.clone(), query, held))
             })
             .collect();
         for (key, query, held) in running {
-            let fresh: Vec<arrangement::AnswerRef> = app_resources
+            let fresh: Vec<layout::AnswerRef> = app_resources
                 .iter()
                 .flat_map(leaves)
                 .filter(|resource| {
                     resource.kind == query.kind && !held.contains(resource.id.as_str())
                 })
-                .map(|resource| arrangement::AnswerRef {
+                .map(|resource| layout::AnswerRef {
                     address: resource.id.as_str().to_owned(),
                     title: resource.label.clone(),
                     kind: resource.kind.clone(),
                 })
                 .collect();
             if !fresh.is_empty() {
-                arrangement.answer_query_of(&key, Ok(fresh), underway);
+                layout.answer_query_of(&key, Ok(fresh), underway);
                 continue;
             }
             // The search finished and nothing new of the kind came in: it matched nothing.
             if search_finished(&self.services, &app_resources, &query.app) {
-                arrangement.answer_query_of(&key, Ok(Vec::new()), underway);
+                layout.answer_query_of(&key, Ok(Vec::new()), underway);
             }
         }
     }
@@ -382,8 +382,8 @@ impl Shared {
     }
 
     /// Stand each place a service's `open` asked for since the last pass: a resource's own `open`
-    /// and the arrangement's `open(resource)` are one act — the system's — so the requests go
-    /// through the arrangement door's `open`, that same code, beside the place the asking turn is
+    /// and the layout's `open(resource)` are one act — the system's — so the requests go
+    /// through the layout door's `open`, that same code, beside the place the asking turn is
     /// in and attributed to the actor that asked (`docs/designs/app-language/one-app-model.md`
     /// §3; shell.md §8, "The canvas composes views; it opens nothing"). A resource already shown
     /// is brought forward instead of stood a second time.
@@ -421,10 +421,10 @@ impl Shared {
 
     /// Carry out what the person chose in the sheets.
     pub(crate) fn follow_sheets(&self, look: &mut tilo_session_core::door::Look<'_>) {
-        // What a place can show, as the arrangement published it: an agent's `find` leads with the
+        // What a place can show, as the layout published it: an agent's `find` leads with the
         // resource typing the text would place, so it reads the same catalogue the canvas places
         // through.
-        let catalog = self.arrangement.borrow().targets();
+        let catalog = self.layout.borrow().targets();
         self.session_doors.keep_tabs(&self.handle);
         if let Some(engine) = &self.engine {
             self.session_doors.keep_awaiting(&self.handle, engine);
@@ -438,7 +438,7 @@ impl Shared {
         self.session_doors
             .answer(&self.doors, &self.services, &self.search, &shows, look);
         // A service's `open` changes nothing of its record: opening is the session's arranging
-        // step, and the places the services were asked for are stood through the arrangement's
+        // step, and the places the services were asked for are stood through the layout's
         // own `open`, as an agent and a view asking the shell are one act
         // (`docs/designs/app-language/one-app-model.md` §3; shell.md §8, "The canvas composes
         // views; it opens nothing").

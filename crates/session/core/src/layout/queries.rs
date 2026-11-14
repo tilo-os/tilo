@@ -5,7 +5,7 @@ use tilo_actions::{ActionSpec, Noun, ParamType, ResourceSpec, ResourceType, Reso
 
 use super::published::{action, count_of, required, text};
 use super::{
-    LayoutAction, ArrangementQueryReading, ArrangementRefReading, Item, QUERY_KIND,
+    LayoutAction, LayoutQueryReading, LayoutRefReading, Item, QUERY_KIND,
     SearchOutcome, Target, Words,
 };
 
@@ -16,7 +16,7 @@ pub(super) fn query_state_from_outcome(outcome: SearchOutcome) -> (String, Strin
     }
 }
 
-pub(super) fn settle(state: &str, matches: &[ArrangementRefReading]) -> (String, String) {
+pub(super) fn settle(state: &str, matches: &[LayoutRefReading]) -> (String, String) {
     let kind = matches
         .first()
         .map(|one| one.kind.clone())
@@ -37,7 +37,7 @@ pub(super) fn settle(state: &str, matches: &[ArrangementRefReading]) -> (String,
 /// The query `query` publishes as a resource of its own, through the view a place shows it by
 /// (`query_view`): what a place stands as until its app answers, and what several or no matches
 /// leave standing (shell.md §8).
-pub(super) fn query_resource(query: &ArrangementQueryReading, words: &Words) -> ResourceSpec {
+pub(super) fn query_resource(query: &LayoutQueryReading, words: &Words) -> ResourceSpec {
     query_actions(&query.key, words).into_iter().fold(
         ResourceSpec::new(
             Item::Query.resource(&query.key),
@@ -56,7 +56,7 @@ pub(super) fn query_resource(query: &ArrangementQueryReading, words: &Words) -> 
 
 /// What a place showing a query reads it as, in the catalogue: the app the shell draws it with,
 /// its one `page` view, and the words a search goes by.
-pub(super) fn query_target(query: &ArrangementQueryReading) -> Target {
+pub(super) fn query_target(query: &LayoutQueryReading) -> Target {
     Target {
         app: "so.tilo.shell".to_owned(),
         views: vec!["page".to_owned()],

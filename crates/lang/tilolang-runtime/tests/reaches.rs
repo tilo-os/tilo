@@ -9,7 +9,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
 
-    /// The desk's shape, as the shell's is: a root view on one root (`arrangement`) that reads
+    /// The desk's shape, as the shell's is: a root view on one root (`layout`) that reads
     /// another root (`shell`) through a function call and an `if`, choosing one of several
     /// views by it. The preset the person picks is a field of the shell's record.
     const SOURCE: &str = r#"app so.tilo.desk "Desk"
@@ -37,13 +37,13 @@ view shell_settings(s: Shell) {
     }
 }
 
-type Arrangement {
+type Layout {
     places: Int
 }
 
-root arrangement: Arrangement
+root layout: Layout
 
-default view desk_view for arrangement
+default view desk_view for layout
 
 fn is_traditional(s: Shell) -> Bool {
     return s.preset == .desktop and s.bar
@@ -58,13 +58,13 @@ action set_bar(s: Shell, on: Bool) {
     s.bar = on
 }
 
-view desk_view(a: Arrangement) {
+view desk_view(a: Layout) {
     stack {
         screen(a)
     }
 }
 
-view screen(a: Arrangement) {
+view screen(a: Layout) {
     let v = shell
     if is_traditional(shell) {
         text("the desktop")
@@ -77,7 +77,7 @@ view screen(a: Arrangement) {
     }
 }
 
-view shown(a: Arrangement) {
+view shown(a: Layout) {
     let v = shell
     text(match v.preset {
         .frames => "the frames",
@@ -104,7 +104,7 @@ fn pinned_items() -> List<DockItem> {
     return [pinned_item(0), pinned_item(1)]
 }
 
-view dock_run(a: Arrangement) {
+view dock_run(a: Layout) {
     stack {
         for item in pinned_items() {
             dock_tile(item)
@@ -125,7 +125,7 @@ action unpin(item: DockItem) {
     struct Desk {
         rt: Runtime,
         app: App,
-        arrangement: ResourceRef,
+        layout: ResourceRef,
     }
 
     impl Desk {
@@ -134,12 +134,8 @@ action unpin(item: DockItem) {
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
             app.load(&rt);
             let _shell = rt.create_root("Shell").unwrap();
-            let arrangement = rt.create_root("Arrangement").unwrap();
-            Self {
-                rt,
-                app,
-                arrangement,
-            }
+            let layout = rt.create_root("Layout").unwrap();
+            Self { rt, app, layout }
         }
 
         /// The person's shell record, as the package's named root, `root shell: Shell`.
@@ -183,7 +179,7 @@ action unpin(item: DockItem) {
                 .open_view(
                     &me(),
                     &self.app.view(name),
-                    vec![Value::resource(&self.arrangement)],
+                    vec![Value::resource(&self.layout)],
                 )
                 .unwrap_or_else(|e| panic!("{name}: {e}"))
         }
@@ -265,12 +261,12 @@ action unpin(item: DockItem) {
             let rt_a = Runtime::new(store_a.clone(), SimpleAuthority::new()).unwrap();
             app.load(&rt_a);
             let _shell = rt_a.create_root("Shell").unwrap();
-            let arrangement = rt_a.create_root("Arrangement").unwrap();
+            let layout = rt_a.create_root("Layout").unwrap();
             let mut view = rt_a
                 .open_view(
                     &me(),
                     &app.view("desk_view"),
-                    vec![Value::resource(&arrangement)],
+                    vec![Value::resource(&layout)],
                 )
                 .unwrap();
             assert_eq!(texts(&view), ["the strips"]);

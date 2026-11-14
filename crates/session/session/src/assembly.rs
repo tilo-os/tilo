@@ -1,5 +1,5 @@
 //! The session's state between frames, as every host runs it: what its roles keep — the session and
-//! the arrangement it holds, the records, the people, what search reads, the notices and the
+//! the layout it holds, the records, the people, what search reads, the notices and the
 //! workspaces' handles — beside the effects a host provides, which only its own host names: the
 //! compositor and the services of a Linux login (`platform::session`), the page's own on the web.
 //!
@@ -363,11 +363,11 @@ pub(crate) struct Shared {
     /// The copies the person can paste again.
     #[cfg(target_os = "linux")]
     pub(crate) clipboard: Rc<crate::clipboard::Clipboard>,
-    /// The person's arrangement: the session this session holds, with history and
+    /// The person's layout: the session this session holds, with history and
     /// undo (shell.md §2), and the app places its windows from it.
-    pub(crate) arrangement: Rc<RefCell<tilo_session_core::layout::Arrangement>>,
+    pub(crate) layout: Rc<RefCell<tilo_session_core::layout::Layout>>,
     /// Whether the person is mid-gesture or typing, as the compositor last
-    /// said: what an arranging action that is not their own waits for.
+    /// said: what a layout action that is not their own waits for.
     pub(crate) underway: Rc<Cell<tilo_session_core::layout::Busy>>,
     /// The person's settings, kept in step with their other devices.
     #[cfg(target_os = "linux")]

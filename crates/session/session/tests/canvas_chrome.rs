@@ -9,7 +9,7 @@
 //! 2. The style menu's band above its first row stood empty.
 //!
 //! Every step is the production path: the session's own `place_found`/`open` actions, the shell's
-//! preset, and the arrangement the shell reads back.
+//! preset, and the layout the shell reads back.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -27,7 +27,7 @@ use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
 use crate::common::{
-    CANVAS, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for,
+    CANVAS, PERSON, layout, on_screen, private_home, show_preset, until, wait_for,
 };
 
 /// A headless session with the shell as the whole screen and the apps a development session seeds,
@@ -60,7 +60,7 @@ fn enter_text(session: &mut Session, text: &str) {
 /// Every placed strip's canvas box, by the resource its place shows: `(x, y, w, h)`, as the shell
 /// holds it.
 fn boxes(session: &Session) -> Vec<(String, i64, i64, i64, i64)> {
-    arrangement(session)
+    layout(session)
         .places
         .iter()
         .filter_map(|place| {
@@ -96,7 +96,7 @@ fn root_of(session: &Session, app: &str) -> String {
         )
 }
 
-/// Open `resource` beside the place showing `beside`, through the arrangement's own `open`, as an
+/// Open `resource` beside the place showing `beside`, through the layout's own `open`, as an
 /// agent's step does.
 fn open_beside(session: &mut Session, resource: &str, beside: &str) {
     session
@@ -141,7 +141,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
         "the conversation takes the canvas's frame size: {conversation:?}"
     );
 
-    // An agent opens Tasks beside the notes, as a turn's step runs the arrangement's `open`.
+    // An agent opens Tasks beside the notes, as a turn's step runs the layout's `open`.
     let resource = root_of(&session, "so.tilo.lang.tasks");
     open_beside(&mut session, &resource, &conversation.0);
     let tasks = wait_for(&mut session, "tasks beside the conversation", |session| {
@@ -208,7 +208,7 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     let inbox = wait_for(&mut session, "the inbox on the canvas", |session| {
         place_showing(session, "so.tilo.lang.mail")
     });
-    let inbox_name = arrangement(&session)
+    let inbox_name = layout(&session)
         .places
         .into_iter()
         .find(|place| place.record == inbox.0)

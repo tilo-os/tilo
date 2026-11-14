@@ -2,17 +2,17 @@ app so.tilo.shell "Shell" (icon: .monitor, category: .system, records: .own)
 
 use so.tilo.session as session
 
-root arrangement: Arrangement
+root layout: Layout
 
-default view shell_view for arrangement
+default view shell_view for layout
 
 default view shell_settings for Shell
 
 /// The person's layout as a window or a display shows it: the style the person picked
-/// (`Viewing.style`), drawing the arrangement.
+/// (`Viewing.style`), drawing the layout.
 ///
-/// This is the arrangement's default view, so it is the one view a style is drawn *through* and
-/// never one of the styles: a style is a view of the arrangement any installed package
+/// This is the layout's default view, so it is the one view a style is drawn *through* and
+/// never one of the styles: a style is a view of the layout any installed package
 /// declares (`shell.md` §6), found by the type its one parameter takes, never a keyword and never
 /// this view's name. `show` draws the style `Viewing.style` names, in the package it names.
 ///
@@ -24,7 +24,7 @@ default view shell_settings for Shell
 /// was: the session marks the style `loads: false` with why, and raises a notice naming it
 /// (`shell.md` §6, "Nothing can lock a person out"). Fixing the package flips it back, and the
 /// shell shows the chosen style again without a restart.
-view shell_view(a: Arrangement) {
+view shell_view(a: Layout) {
     let chosen = style_of(viewing)
     layers {
         // The chosen style's own settings, over whatever the style drew: the system's one
@@ -175,7 +175,7 @@ view bar_part(part: BarPart) {
     } else if part.slot == .workspace {
         workspace_menu()
     } else if part.slot == .app_menu {
-        action_bar(arrangement, BarRoom.menus)
+        action_bar(layout, BarRoom.menus)
     } else if part.slot == .strip {
         if front_strip_name() != "" {
             ui.Button(front_strip_name(), icon: .chevron_right, role: .bar)
@@ -227,8 +227,8 @@ view bar_part(part: BarPart) {
             network_status()
             battery_status()
             bell()
-            if arrangement.person != "" {
-                ui.Avatar(name: arrangement.person)
+            if layout.person != "" {
+                ui.Avatar(name: layout.person)
             }
         }
     }
@@ -242,7 +242,7 @@ view workspace_menu() {
     let name = if front_workspace_name() != "" { front_workspace_name() } else { "Workspaces" }
     let icon_only = bar_is_narrow(space.width)
     ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
-        for w in arrangement.workspaces {
+        for w in layout.workspaces {
             ui.MenuItem(w.name, checked: w.current) {
                 on choose: session.switch_workspace(workspace: w.key)
             }
@@ -268,7 +268,7 @@ view workspace_menu() {
 /// person finds them; Settings has the same.
 view person_menu() {
     let v = viewing
-    let me = if arrangement.person != "" { arrangement.person } else { "You" }
+    let me = if layout.person != "" { layout.person } else { "You" }
     ui.MenuButton("{me}: desk style and workspaces", faces: [me], role: .bar) {
         for style in device.styles.offered {
             if style_listed(style) {
@@ -280,7 +280,7 @@ view person_menu() {
         ui.MenuItem("Settings for {style_title(v)}", icon: .settings) {
             on choose: open_style_settings(shell)
         }
-        for w in arrangement.workspaces {
+        for w in layout.workspaces {
             ui.MenuItem(w.name, checked: w.current, group: "Workspaces") {
                 on choose: session.switch_workspace(workspace: w.key)
             }

@@ -417,7 +417,7 @@ fn each_change_is_one_turn() {
     ];
     for (name, change) in changes {
         change(&mut now, &link);
-        link.publish_arrangement(now.clone());
+        link.publish_layout(now.clone());
         let before = part.work();
         part.prepare_frame();
         part.prepare_frame();
@@ -716,9 +716,9 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     );
 }
 
-/// The person's arrangement: one strip on the shell, its one place a foreign window's (no
+/// The person's layout: one strip on the shell, its one place a foreign window's (no
 /// record), keyed `p1`.
-fn one_window_arrangement() -> LayoutReading {
+fn one_window_layout() -> LayoutReading {
     LayoutReading {
         person: "Pat".to_owned(),
         people: Vec::new(),
@@ -778,19 +778,19 @@ fn window_menu(part: &mut ShellPart, name: &str) -> Option<(f64, f64, f64, f64)>
         .min_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
 }
 
-/// A part over the arrangement of one foreign window, its wells reporting to the handle it
+/// A part over the layout of one foreign window, its wells reporting to the handle it
 /// returns.
 fn showing_one_window() -> (ShellPart, ui::widget::Wells) {
     let wells = ui::widget::Wells::new();
     let (mut part, link) = super::tests_support::part_as(reading(), Some(wells.clone()));
-    link.publish_arrangement(one_window_arrangement());
+    link.publish_layout(one_window_layout());
     for _ in 0..6 {
         part.prepare_frame();
     }
     (part, wells)
 }
 
-/// The whole screen shows the person's arrangement between the bar and the dock, under the
+/// The whole screen shows the person's layout between the bar and the dock, under the
 /// preset switch, and a foreign window's place is a well reported to the window policy's
 /// handle, on the output under the bar.
 ///
@@ -798,7 +798,7 @@ fn showing_one_window() -> (ShellPart, ui::widget::Wells) {
 /// with it in the frame the drag is drawn in: the window policy reads the well, so a window
 /// stands in its frame wherever the person carries the canvas.
 #[test]
-fn the_screen_shows_the_arrangement_and_a_canvas_pan_carries_each_windows_well() {
+fn the_screen_shows_the_layout_and_a_canvas_pan_carries_each_windows_well() {
     let (mut part, wells) = showing_one_window();
     assert!(part.below_windows(), "the windows stand over the screen");
     let labels = crate::Published::accessible_labels(&mut part);
@@ -809,7 +809,7 @@ fn the_screen_shows_the_arrangement_and_a_canvas_pan_carries_each_windows_well()
         );
     }
     // The preset switch is the bar's own menu, named by the preset in use: the ways of showing
-    // the same arrangement are its items, offered when the person opens it.
+    // the same layout are its items, offered when the person opens it.
     click(&mut part, "Showing Strips");
     let labels = crate::Published::accessible_labels(&mut part);
     for name in ["Frames", "Spaces"] {
@@ -1121,7 +1121,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
     let app = packages.last().unwrap().meta.app.clone();
     let link = Rc::new(SessionLink::default());
     crate::shell_part::tests_support::publish_platform_roots(&link);
-    link.publish_arrangement(reading());
+    link.publish_layout(reading());
     let mut part = ShellPart::new(
         ShellIdentity {
             app: &app,
@@ -1240,7 +1240,7 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
     }
     super::tests_support::publish_windows(&link, &reading.windows);
     super::tests_support::publish_overlays(&link, "switcher", true);
-    link.publish_arrangement(reading.shell);
+    link.publish_layout(reading.shell);
     for _ in 0..6 {
         part.prepare_frame();
         part.draw();
@@ -1296,7 +1296,7 @@ fn the_bars_people_stay_who_is_here_across_a_commit() {
                 name: HERE[at].to_owned(),
             })
             .collect();
-        link.publish_arrangement(now.clone());
+        link.publish_layout(now.clone());
         for _ in 0..4 {
             part.prepare_frame();
         }
@@ -1458,7 +1458,7 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
 /// runs the boundaries that read it and patches the window, so the shell the person sees is the
 /// one the record names.
 ///
-/// The shape that failed it: a shell part over a shell with one local window, its arrangement
+/// The shape that failed it: a shell part over a shell with one local window, its layout
 /// published, then the settings' apply. The record changed and the view's own `is_stale` said so,
 /// but nothing it ran changed a tree, and the screen stayed on the strips (`stale=true`,
 /// `patches=0`) — the record change never marked the boundary that read it.
@@ -1486,7 +1486,7 @@ fn the_shells_preset_reaches_the_screen() {
     let (mut part, link) = super::tests_support::part_as(shell(), None);
     let (mut beside, beside_link) = super::tests_support::part_beside(&part, shell());
     for (part, link) in [(&mut part, link), (&mut beside, beside_link)] {
-        link.publish_arrangement(one_window_arrangement());
+        link.publish_layout(one_window_layout());
         for _ in 0..6 {
             part.prepare_frame();
         }
@@ -1597,22 +1597,22 @@ fn a_shells_week_starts_on_the_persons_first_day() {
 fn the_canvas_pans_to_a_window_arriving_past_its_edge_carrying_every_well() {
     let wells = ui::widget::Wells::new();
     let (mut part, link) = super::tests_support::part_as(reading(), Some(wells.clone()));
-    link.publish_arrangement(one_window_arrangement());
+    link.publish_layout(one_window_layout());
     click(&mut part, "Showing Strips");
     click(&mut part, "Frames");
     for _ in 0..30 {
         part.prepare_frame();
     }
-    let mut arrangement = one_window_arrangement();
-    let mut far = arrangement.strips[0].clone();
+    let mut layout = one_window_layout();
+    let mut far = layout.strips[0].clone();
     far.key = "s2".to_owned();
     far.canvas_x = 1100;
-    arrangement.strips.push(far);
-    let mut arriving = arrangement.places[0].clone();
+    layout.strips.push(far);
+    let mut arriving = layout.places[0].clone();
     arriving.key = "p2".to_owned();
     arriving.strip = "s2".to_owned();
-    arrangement.places.push(arriving);
-    link.publish_arrangement(arrangement);
+    layout.places.push(arriving);
+    link.publish_layout(layout);
     // The frames of the way are drawn 8 ms apart for the two seconds at most the way may take.
     // The way is over once a frame drew nothing and the part has nothing left to turn for
     // (`due`: a reading to take in, a turn that ran out of exchanges, space or input the window

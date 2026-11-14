@@ -2,7 +2,7 @@
 //! its name, its avatar, its subscribe action and its videos — in the shell, exactly as a tilolang
 //! app's view draws (one-app-model.md §2).
 //! Tube declares `Channel` as a resource and `page` as its default view. The channel is placed
-//! through the arrangement's published `place` , as an agent or the person does; the shell's
+//! through the layout's published `place` , as an agent or the person does; the shell's
 //! runtime draws the channel's reading through Tube's view, and what stands on screen is read from
 //! what the shell lays out for assistive technology, never from pixels.
 
@@ -132,7 +132,7 @@ fn session(root: &std::path::Path) -> Session {
     session
 }
 
-/// Place `resource` on the canvas of the workspace in front, through the arrangement's published
+/// Place `resource` on the canvas of the workspace in front, through the layout's published
 /// `place` , as an agent puts it there.
 fn place(session: &mut Session, resource: &str) -> u64 {
     let (workspace, row, strip, place) = {
@@ -237,7 +237,7 @@ fn pressing_a_videos_row_places_the_video() {
         session.shell_says(VIDEO)
     });
     // Pressing the video's row shows the video: the place the press asks for stands on the
-    // arrangement, as a press on a tilolang view's row does.
+    // layout, as a press on a tilolang view's row does.
     crate::common::press(&mut session, VIDEO);
     crate::common::until(&mut session, "the video is placed", |session| {
         crate::common::places(session)

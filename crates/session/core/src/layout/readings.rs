@@ -10,7 +10,7 @@ use tilo_desktop_model::{GroupId, Layout as Tree, Tab, TabId, TileContent};
 use super::{Names, Target};
 /// A workspace the person's layout shows, as their layout names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementWorkspaceReading {
+pub struct LayoutWorkspaceReading {
     pub key: String,
     pub name: String,
     /// Whether it is the workspace in front: a layout holds several and shows one, so a shell draws
@@ -20,7 +20,7 @@ pub struct ArrangementWorkspaceReading {
 
 /// A row of the layout, as the person's layout names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementRowReading {
+pub struct LayoutRowReading {
     pub key: String,
     pub workspace: String,
     pub name: String,
@@ -35,7 +35,7 @@ pub struct ArrangementRowReading {
     clippy::struct_excessive_bools,
     reason = "a reading of the record's own fields, each a fact of the strip a view reads by name"
 )]
-pub struct ArrangementStripReading {
+pub struct LayoutStripReading {
     pub key: String,
     pub workspace: String,
     pub row: String,
@@ -75,7 +75,7 @@ pub struct ArrangementStripReading {
 
 /// A place of the layout, as the person's layout names it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementPlaceReading {
+pub struct LayoutPlaceReading {
     pub key: String,
     pub strip: String,
     pub shows: String,
@@ -95,24 +95,24 @@ pub struct ArrangementPlaceReading {
 /// The person's layout as a shell's views read it, by key: every workspace, its rows, every
 /// window group and every window, each as the layout has it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementReading {
+pub struct LayoutReading {
     /// The person at this device, by their name.
     pub person: String,
     /// The others here in the workspace in front.
-    pub people: Vec<ArrangementPersonReading>,
-    pub workspaces: Vec<ArrangementWorkspaceReading>,
-    pub rows: Vec<ArrangementRowReading>,
-    pub strips: Vec<ArrangementStripReading>,
-    pub places: Vec<ArrangementPlaceReading>,
+    pub people: Vec<LayoutPersonReading>,
+    pub workspaces: Vec<LayoutWorkspaceReading>,
+    pub rows: Vec<LayoutRowReading>,
+    pub strips: Vec<LayoutStripReading>,
+    pub places: Vec<LayoutPlaceReading>,
     /// The queries the canvas stands while their app answers them, by key: what the person typed,
-    /// what it found, or why nothing did (`session.arrangement_query`, shell.md §8).
+    /// what it found, or why nothing did (`session.layout_query`, shell.md §8).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub queries: Vec<ArrangementQueryReading>,
+    pub queries: Vec<LayoutQueryReading>,
 }
 
 /// Someone else here in the workspace in front: a person or an agent, by their presence's key.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementPersonReading {
+pub struct LayoutPersonReading {
     pub key: String,
     pub name: String,
 }
@@ -122,7 +122,7 @@ pub struct ArrangementPersonReading {
 /// confident enough is the one the place becomes, `several` with the `matches` to pick from,
 /// `none` when nothing matched, and `failed` with the `reason` the app gave.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementQueryReading {
+pub struct LayoutQueryReading {
     pub key: String,
     /// What the person typed.
     pub text: String,
@@ -135,13 +135,13 @@ pub struct ArrangementQueryReading {
     /// Why the search failed, in the app's own words; empty while it does better.
     pub reason: String,
     /// The resources it found, in the order the app answered them.
-    pub matches: Vec<ArrangementRefReading>,
+    pub matches: Vec<LayoutRefReading>,
 }
 
 /// A resource a query found: its address in its app, the name it goes by, and its kind — the same
-/// three words a place's record is named by (`session.arrangement_ref`).
+/// three words a place's record is named by (`session.layout_ref`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrangementRefReading {
+pub struct LayoutRefReading {
     pub key: String,
     pub address: String,
     pub title: String,
@@ -150,15 +150,15 @@ pub struct ArrangementRefReading {
 
 /// The person's layout as a shell's views read it: what [`Layout::reading`] answers and
 /// [`Layout::resources`] publishes a resource of.
-pub type Reading = ArrangementReading;
+pub type Reading = LayoutReading;
 /// A workspace of [`Reading`].
-pub type WorkspaceReading = ArrangementWorkspaceReading;
+pub type WorkspaceReading = LayoutWorkspaceReading;
 /// A row of [`Reading`].
-pub type RowReading = ArrangementRowReading;
+pub type RowReading = LayoutRowReading;
 /// A strip of [`Reading`].
-pub type StripReading = ArrangementStripReading;
+pub type StripReading = LayoutStripReading;
 /// A place of [`Reading`].
-pub type PlaceReading = ArrangementPlaceReading;
+pub type PlaceReading = LayoutPlaceReading;
 
 /// The resources the session publishes now, by id: what a place made from a resource takes its app
 /// and view from. The session hands it the door's tree each time it changes, and never reads it

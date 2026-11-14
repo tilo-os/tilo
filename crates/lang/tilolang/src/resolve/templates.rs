@@ -2,7 +2,7 @@
 //! defines them, not the one that calls them.
 //!
 //! A template's body is source in the defining package's namespace: it calls that package's helpers
-//! (`shell_lists`), reads its roots (`shell`) and names its types (`Arrangement`). When another package
+//! (`shell_lists`), reads its roots (`shell`) and names its types (`Layout`). When another package
 //! registers the template at import, every such unqualified reference is rewritten to the qualified
 //! `alias.item` the importer's resolver reads, marked [`ast::Ident::from_template_of`] so the resolver
 //! still admits the package's unoffered helpers. Names bound inside the template stand as they are, and
@@ -60,7 +60,7 @@ pub fn qualify(view: &mut ast::ViewDecl, alias: &str, package: &str, names: &Pac
     for p in &view.params {
         scope.bind(p.name.name.clone());
     }
-    // The parameters' types name the package's types too (`a: Arrangement`), and their defaults read the
+    // The parameters' types name the package's types too (`a: Layout`), and their defaults read the
     // parameters before them, which are bound already.
     for p in &mut view.params {
         qualify_type(&mut p.ty, alias, package, names);

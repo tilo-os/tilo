@@ -1637,7 +1637,7 @@ async fn answer_of(job: &super::super::InvocationJob) -> InvocationCompletion {
 
 use tilo_actions::remote::{ActionHostError, Caller, InvocationReceipt, InvokeRequest};
 
-/// A host's own step that is a turn's (`for_turns`): the session's arrangement, out here.
+/// A host's own step that is a turn's (`for_turns`): the session's layout, out here.
 #[derive(Default)]
 struct TurnSteps {
     taken: Mutex<Vec<String>>,
@@ -1660,7 +1660,7 @@ impl crate::services::HostStepServices for TurnSteps {
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new("shell:layout", "place"),
             resource_kind: "shell".into(),
-            resource_label: "The person's arrangement".into(),
+            resource_label: "The person's layout".into(),
             action_label: "Put a resource on the canvas".into(),
             keywords: Vec::new(),
             icon: None,
@@ -1706,7 +1706,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
                 tilo_action_policy::turn::Turn::new("chat.workspace/channels/c_tide", "message-1");
             f.on_run(|run| run.turn = Some(turn.clone()));
             f.caused("message-1");
-            grant_the_arrangement(&f, true);
+            grant_the_layout(&f, true);
 
             // The agent answering the person's turn, as the MCP server's connection is.
             let agent = Caller::agent_turn(
@@ -1763,7 +1763,7 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
             assert_eq!(steps.taken.lock().unwrap().len(), 1, "nothing ran for it");
 
             // The turn's grants refuse it: the same refusal an app action hears.
-            grant_the_arrangement(&f, false);
+            grant_the_layout(&f, false);
             let refused = stray_invoke(&f.state, &agent, 94);
             assert!(
                 matches!(refused, Err(ActionHostError::Refused { .. })),
@@ -1775,9 +1775,9 @@ async fn a_turn_takes_the_hosts_turn_steps_and_nobody_else_does() {
         .await;
 }
 
-/// Let the turn's agent `place` on the session's arrangement, or refuse it, as the person who
+/// Let the turn's agent `place` on the session's layout, or refuse it, as the person who
 /// started the turn.
-fn grant_the_arrangement(f: &Fixture, may: bool) {
+fn grant_the_layout(f: &Fixture, may: bool) {
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     let node = tilo_actions::action_node(
         &TreePath::workspace(workspace_id().to_string()),
@@ -1791,9 +1791,9 @@ fn grant_the_arrangement(f: &Fixture, may: bool) {
         f,
         Grant::new(
             if may {
-                "fixture-arrangement-place"
+                "fixture-layout-place"
             } else {
-                "fixture-arrangement-deny"
+                "fixture-layout-deny"
             },
             Grantee::agent("scribe"),
             node,

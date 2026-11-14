@@ -2,137 +2,6 @@
 
 d-so-tilo-shell = Shell
 
-d-qhf2pyze = Anordnung
-    .doc = Die Anordnung der Person: was offen ist und wo.
-    .noun = { $count ->
-        [one] Anordnung
-       *[other] Anordnungen
-    }
-
-d-rknsknpw = Arbeitsbereiche
-
-d-2aititgj = Zeilen
-
-d-x2vx3spj = Leisten
-
-d-id3ec54i = Plätze
-    .doc = Jeder Platz, jeder nennt die Leiste, in der er ist, damit die Ansichten nicht durch den Baum laufen müssen.
-
-d-wydxt4zu = Arbeitsbereich der Anordnung
-    .doc = Ein Arbeitsbereich, den das Layout der Person zeigt.
-    .noun = { $count ->
-        [one] Arbeitsbereich der Anordnung
-       *[other] Arbeitsbereiche der Anordnung
-    }
-
-d-6m3fzjng = Schlüssel
-
-d-tljqo2yo = Name
-
-d-3uxxhan3 = Aktuell
-    .doc = Ob es der Arbeitsbereich vorn ist, den die Shell zeigt.
-
-d-wydxt4zu-filter-current = Aktuell
-
-d-k6bv5cxt = Zeile der Anordnung
-    .doc = Eine Zeile des Layouts: ein Band über die Breite eines Arbeitsbereichs, das Leisten hält.
-    .noun = { $count ->
-        [one] Zeile der Anordnung
-       *[other] Zeilen der Anordnung
-    }
-
-d-idcxp7jb = Schlüssel
-
-d-qassqvic = Arbeitsbereich
-
-d-yppyohd5 = Name
-
-d-awgwtm6j = Shell
-    .doc = Die Shell, die sie angelegt hat; leer liest sich als die dieser Shell.
-
-d-vn23musu = Leiste der Anordnung
-    .doc = Eine Leiste: eine Spalte aus Plätzen, mit einer Breite, in einer Zeile eines Arbeitsbereichs.
-    .noun = { $count ->
-        [one] Leiste der Anordnung
-       *[other] Leisten der Anordnung
-    }
-
-d-heuzka3o = Schlüssel
-
-d-dqpmay7u = Arbeitsbereich
-
-d-r22fgcaa = Zeile
-
-d-pbep7iq6 = Breite
-    .doc = Ihre Breite in Promille der nutzbaren Breite ihrer Zeile (333 schmal, 667 normal, 1000 breit).
-
-d-gpviayl3 = Maximiert
-
-d-opotzabz = Aktiv
-    .doc = Der Platz vorn, nach seiner Kennung; leer für keinen.
-
-d-54qldnir = Platziert
-    .doc = Ob er einen Platz auf der Fläche seines Arbeitsbereichs hat.
-
-d-mnpd23ty = Fläche x
-
-d-yzbtjovv = Fläche y
-
-d-m67g5cso = Breite der Fläche
-
-d-4n7jst3f = Höhe der Fläche
-
-d-n2pmgnow = Shell
-
-d-vn23musu-filter-width = Breite
-
-d-vn23musu-filter-maximized = Maximiert
-
-d-vn23musu-filter-placed = Platziert
-
-d-vn23musu-filter-canvas_x = Fläche x
-
-d-vn23musu-filter-canvas_y = Fläche y
-
-d-vn23musu-filter-canvas_width = Breite der Fläche
-
-d-vn23musu-filter-canvas_height = Höhe der Fläche
-
-d-gpmk4o3r = Platz der Anordnung
-    .doc = Ein Platz: ein Fenster, das eine Ressource durch eine Ansicht zeigt.
-    .noun = { $count ->
-        [one] Platz der Anordnung
-       *[other] Plätze der Anordnung
-    }
-
-d-ez2plmfg = Schlüssel
-
-d-rsnsojnc = Leiste
-    .doc = Die Leiste, in der er ist.
-
-d-uxd54qen = Zeigt
-    .doc = Die App, die die Ressource zeigt, nach ihrer kanonischen Kennung (`so.tilo.terminal`).
-
-d-jecpdz4d = Gezeigt als
-    .doc = Die Ansicht, durch die sie die Ressource zeigt; leer für die Vorgabe der App.
-
-d-yesjoqbj = Datensatz
-    .doc = Der Datensatz, den er zeigt, wenn er einen zeigt.
-
-d-iu3wwk2u = Titel
-    .doc = Der Titel, unter dem er gezeigt wird.
-
-d-joj2ey7d = Name
-    .doc = Wie dieser Platz heißt, auf jeder Oberfläche: der Titel seines Fensters und der eigene Name seiner App (`Groceries` in `Notes`, den die Person gewählt hat), oder der Name der App allein, wenn das Fenster keinen Titel hat.
-
-d-aonjenrr = Angeheftet
-    .doc = Ob die Person ihn angeheftet hat: die Anordnung eines Agenten lässt ihn in Ruhe.
-
-d-rqrtd6vq = Shell
-    .doc = Die Shell, die ihn angelegt hat; leer liest sich als die dieser Shell.
-
-d-gpmk4o3r-filter-pinned = Angeheftet
-
 d-nkjtmr33 = Sicht
     .doc = Was die Person von ihrer Anordnung zeigt und welche Leiste vorn steht: die eigene Sicht der Shell darauf, in ihrem eigenen Datensatz (`records: .own`, `root viewing: Viewing`).
     .noun = { $count ->
@@ -404,25 +273,11 @@ d-fqaqauwe = Eine flexible Lücke: die Teile der Leiste davor führen, die danac
     .doc = Eine flexible Lücke: die Teile der Leiste davor führen, die danach folgen.
 
 d-oomdh5mi = Layout
-    .doc = Ein benannter Satz von Einstellungen, den die Person in einer Aktion anwendet: eine Vorgabe für den Rahmen.
-
-d-gdzkj7tc = Das Dock unten mit der Leiste oben: Tilos eigene
-    .doc = Das Dock unten mit der Leiste oben: Tilos eigene.
-
-d-b6bz7ze6 = Ein schwebendes, rundes, durchscheinendes Dock unten, das sich verbirgt, solange ein Fenster es deckt, und eine obere Leiste mit den Menüs der fokussierten App nach denen des Systems
-    .doc = Ein schwebendes, rundes, durchscheinendes Dock unten, das sich verbirgt, solange ein Fenster es deckt, und eine obere Leiste mit den Menüs der fokussierten App nach denen des Systems.
-
-d-k4de63ud = Eine Taskleiste über die volle Breite unten, immer gezeigt
-    .doc = Eine Taskleiste über die volle Breite unten, immer gezeigt.
-
-d-cqbe6g3k = Die obere Leiste allein; die Übersicht auf Abruf
-    .doc = Die obere Leiste allein; die Übersicht auf Abruf.
-
-d-hyr6xrfo = Kein Rahmen in Ruhe; die Kanten zeigen, was die Person braucht
-    .doc = Kein Rahmen in Ruhe; die Kanten zeigen, was die Person braucht.
-
-d-poagvor7 = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen
-    .doc = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen.
+    .doc = Das Layout der Person: was offen ist und wo.
+    .noun = { $count ->
+        [one] Layout
+       *[other] Layouts
+    }
 
 d-q7rxwd72 = Platz der Leiste
     .doc = Wie viel Platz die obere Leiste hat: für das Menü des fokussierten Fensters und für ihre Teile.
@@ -750,7 +605,6 @@ d-dpqvjh2f = Launcher
 d-tst43bqy = Fensterzeile
 
 d-outvdzmi = Layouts
-    .w-layout = Layout
 
 d-5q3okayl = Layoutkarte
     .w-in-use = In Gebrauch
@@ -997,55 +851,6 @@ d-cijhlzxf = Fensterbefehle
 d-yx7doxgr = Traditionelle Leiste
     .w-tilo = Tilo
 
-d-if7lamna = Anfragen
-    .doc = Die Anfragen, die die Arbeitsfläche aufstellt, während eine App sie beantwortet, nach dem Platz, der jede zeigt: was die Person eingegeben hat, was sie gefunden hat oder warum nichts (shell.md §8).
-
-d-bkx6ffql = Verweise
-    .doc = Die Ressourcen, die diese Anfragen gefunden haben, jede mit der Anfrage, zu der sie gehört.
-
-d-7ync2hvz = Anordnungsanfrage
-    .doc = Eine Anfrage, die ein Platz zeigt, während ihre App sie beantwortet: was die Person eingegeben hat, in welcher App und was daraus wurde.
-    .noun = { $count ->
-        [one] Anordnungsanfrage
-       *[other] Anordnungsanfragen
-    }
-
-d-l6u2kjnd = Schlüssel
-    .doc = Ihre ID: der Platz, der sie zeigt.
-
-d-fs44wwaw = Text
-    .doc = Was die Person eingegeben hat.
-
-d-tilkofni = In der App
-    .doc = Die gefragte App, nach ihrer kanonischen ID.
-
-d-hpdpdjlh = Art
-    .doc = Die Art von Ressource, die die Anfrage nennt, wie ihre App sie veröffentlicht (`tube.channel`).
-
-d-34fpixhk = Zustand
-    .doc = Wie die Suche steht: `searching`, `one`, `several`, `none` oder `failed`.
-
-d-wz5iufcx = Grund
-    .doc = Warum sie fehlgeschlagen ist, in den Worten der App; leer, solange es besser läuft.
-
-d-m3of3jpo = Anordnungsverweis
-    .doc = Eine Ressource, die eine Anfrage gefunden hat: ihre Adresse, der Name, unter dem sie läuft, und ihre Art. Der Datensatz eines Platzes ist mit denselben drei Angaben benannt.
-    .noun = { $count ->
-        [one] Anordnungsverweis
-       *[other] Anordnungsverweise
-    }
-
-d-c4hrnixt = Schlüssel
-
-d-7bz4aejw = Anfrage
-    .doc = Die Anfrage, zu der er gehört, nach ihrem Schlüssel.
-
-d-m6dvgoo5 = Adresse
-
-d-e6vecsii = Titel
-
-d-xhyuztvt = Art
-
 d-4zknrelh = Einstellungen offen
     .doc = Ob die eigenen Einstellungen des gewählten Stils über der Shell stehen (`style_settings`), geöffnet aus dem Stilmenü der Leiste: der eine Ort, an dem eine Person den gezeigten Stil ohne Agent ändert, wie es `shell.md` §6 sagt.
 
@@ -1060,6 +865,7 @@ d-cejnvssb-filter-settings_open = Einstellungen offen
 d-cejnvssb-filter-strips_tabs = Reihen-Tabs
 
 d-cejnvssb-filter-frames_snap = Rahmen einrasten
+
 d-cejnvssb-filter-canvas_asked = Auf der Fläche gefragt
 
 d-2e7aappl = Größe ändern
@@ -1183,28 +989,6 @@ d-mnbjennf = Einstellungen des Rahmenstils
 d-xwhxaimf = Einstellungen des Raumstils
     .w-spaces-shows-each-place-as-its = Räume zeigt jeden Platz als eigene Ansicht und hat nichts einzustellen.
 
-d-h3u7qt7x = Person
-    .doc = Die Person an diesem Gerät, mit ihrem Namen.
-
-d-qmdr2dmv = Personen
-    .doc = Die anderen, die im vorderen Arbeitsbereich hier sind.
-
-d-f5ctbqkg = Person der Anordnung
-    .doc = Jemand anderes, der im vorderen Arbeitsbereich hier ist: eine Person oder ein Agent.
-    .noun = { $count ->
-        [one] Person der Anordnung
-       *[other] Personen der Anordnung
-    }
-
-d-ai2x4wtg = Schlüssel
-
-d-doi4uxmt = Name
-
-d-vqhjqkhq = Vorne
-    .doc = Ob es die vordere Reihe in ihrem Arbeitsbereich ist.
-
-d-k6bv5cxt-filter-current = Vorne
-
 d-st426t4p = Ein vorderer Arbeitsbereich
     .doc = Fügt `a` den vorderen Arbeitsbereich mit seiner vorderen Zeile hinzu und gibt den Schlüssel der Zeile zurück.
 
@@ -1226,11 +1010,6 @@ d-dgtjjxex = Menü der Person
     .w-workspace-settings = Einstellungen des Arbeitsbereichs
     .w-overview = Übersicht
 
-d-nyhuwvbj = Fläche schmiegt sich an
-    .doc = Ob `canvas_height` das Höchste ist, was er nimmt: was er zeigt, ist so hoch wie das, was es hält, bis dahin (etwas, das gefunden wurde, wo die Person geklickt hat).
-
-d-vn23musu-filter-canvas_hugs = Fläche schmiegt sich an
-
 d-fcxy4mu5 = Shell-Ansicht
 
 d-iavyg4wt = Shell-Oberflächen
@@ -1241,3 +1020,225 @@ d-iavyg4wt = Shell-Oberflächen
 
 d-54b5rqo4 = Zeilen der Shell
     .w-no-window-here-yet = Noch kein Fenster hier
+
+d-uykuo63i = Person
+    .doc = Die Person an diesem Gerät, mit ihrem Namen.
+
+d-yb7sokzs = Personen
+    .doc = Die anderen, die im vorderen Arbeitsbereich hier sind.
+
+d-7n7jrcg3 = Aktionsleiste
+
+d-hqul2vwj = Aktionsleiste
+
+d-7lq6xkzz = Aktionsleiste
+
+d-2ug5q5cq = Plätze
+    .doc = Jeder Platz, jeder nennt die Leiste, in der er ist, damit die Ansichten nicht durch den Baum laufen müssen.
+
+d-dt4vnrqa = Anfragen
+    .doc = Die Anfragen, die die Arbeitsfläche aufstellt, während eine App sie beantwortet, nach dem Platz, der jede zeigt: was die Person eingegeben hat, was sie gefunden hat oder warum nichts (shell.md §8).
+
+d-fqirvfzw = Verweise
+    .doc = Die Ressourcen, die diese Anfragen gefunden haben, jede mit der Anfrage, zu der sie gehört.
+
+d-zsaib3op = Layoutsanfrage
+    .doc = Eine Anfrage, die ein Platz zeigt, während ihre App sie beantwortet: was die Person eingegeben hat, in welcher App und was daraus wurde.
+    .noun = { $count ->
+        [one] Layoutsanfrage
+       *[other] Layoutsanfragen
+    }
+
+d-6jget5cg = Schlüssel
+    .doc = Ihre ID: der Platz, der sie zeigt.
+
+d-iwuvfj66 = Text
+    .doc = Was die Person eingegeben hat.
+
+d-ybpst64r = In der App
+    .doc = Die gefragte App, nach ihrer kanonischen ID.
+
+d-ibasoiis = Art
+    .doc = Die Art von Ressource, die die Anfrage nennt, wie ihre App sie veröffentlicht (`tube.channel`).
+
+d-a6ewjjom = Zustand
+    .doc = Wie die Suche steht: `searching`, `one`, `several`, `none` oder `failed`.
+
+d-xsjcdedm = Grund
+    .doc = Warum sie fehlgeschlagen ist, in den Worten der App; leer, solange es besser läuft.
+
+d-jq4ftwnw = Layoutsverweis
+    .doc = Eine Ressource, die eine Anfrage gefunden hat: ihre Adresse, der Name, unter dem sie läuft, und ihre Art. Der Datensatz eines Platzes ist mit denselben drei Angaben benannt.
+    .noun = { $count ->
+        [one] Layoutsverweis
+       *[other] Layoutsverweise
+    }
+
+d-k652vouu = Aktionsleiste
+
+d-vdsinb5l = Anfrage
+    .doc = Die Anfrage, zu der er gehört, nach ihrem Schlüssel.
+
+d-vj5mgxi6 = Aktionsleiste
+
+d-pnom4n55 = Aktionsleiste
+
+d-7giiatvv = Aktionsleiste
+
+d-njeklucw = Arbeitsbereich des Layouts
+    .doc = Ein Arbeitsbereich, den das Layout der Person zeigt.
+    .noun = { $count ->
+        [one] Arbeitsbereich des Layouts
+       *[other] Arbeitsbereiche des Layouts
+    }
+
+d-5zibpqs6 = Aktionsleiste
+
+d-b2vzzczj = Aktionsleiste
+
+d-hwfwvs3f = Aktuell
+    .doc = Ob es der Arbeitsbereich vorn ist, den die Shell zeigt.
+
+d-njeklucw-filter-current = Aktionsleiste
+
+d-dpuvzi4j = Person des Layouts
+    .doc = Jemand anderes, der im vorderen Arbeitsbereich hier ist: eine Person oder ein Agent.
+    .noun = { $count ->
+        [one] Person des Layouts
+       *[other] Personen des Layouts
+    }
+
+d-3rpmhtjf = Aktionsleiste
+
+d-6a7urcxy = Aktionsleiste
+
+d-4s5jxxte = Zeile des Layouts
+    .doc = Eine Zeile des Layouts: ein Band über die Breite eines Arbeitsbereichs, das Leisten hält.
+    .noun = { $count ->
+        [one] Zeile des Layouts
+       *[other] Zeilen des Layouts
+    }
+
+d-3xc5xbon = Aktionsleiste
+
+d-v5ef7tkv = Aktionsleiste
+
+d-iqgu3ggi = Aktionsleiste
+
+d-sm4scdu2 = Vorne
+    .doc = Ob es die vordere Reihe in ihrem Arbeitsbereich ist.
+
+d-bowkspu3 = Shell
+    .doc = Die Shell, die ihn angelegt hat; leer liest sich als die dieser Shell.
+
+d-4s5jxxte-filter-current = Aktionsleiste
+
+d-w25t6rl7 = Leiste des Layouts
+    .doc = Eine Leiste: eine Spalte aus Plätzen, mit einer Breite, in einer Zeile eines Arbeitsbereichs.
+    .noun = { $count ->
+        [one] Leiste des Layouts
+       *[other] Leisten des Layouts
+    }
+
+d-dufcke3u = Aktionsleiste
+
+d-x42tiiqe = Aktionsleiste
+
+d-dvberkpa = Aktionsleiste
+
+d-7ekq6qgi = Breite
+    .doc = Ihre Breite in Promille der nutzbaren Breite ihrer Zeile (333 schmal, 667 normal, 1000 breit).
+
+d-2cbikm5m = Aktionsleiste
+
+d-yk2oxjrj = Aktiv
+    .doc = Der Platz vorn, nach seiner Kennung; leer für keinen.
+
+d-44lq6lon = Platziert
+    .doc = Ob er einen Platz auf der Fläche seines Arbeitsbereichs hat.
+
+d-vbv2zrob = Aktionsleiste
+
+d-jvrwsckz = Aktionsleiste
+
+d-m75kjoue = Aktionsleiste
+
+d-s3lpes2e = Aktionsleiste
+
+d-s6rivl3a = Fläche schmiegt sich an
+    .doc = Ob `canvas_height` das Höchste ist, was er nimmt: was er zeigt, ist so hoch wie das, was es hält, bis dahin (etwas, das gefunden wurde, wo die Person geklickt hat).
+
+d-pznsxbgq = Aktionsleiste
+
+d-w25t6rl7-filter-width = Aktionsleiste
+
+d-w25t6rl7-filter-maximized = Aktionsleiste
+
+d-w25t6rl7-filter-placed = Aktionsleiste
+
+d-w25t6rl7-filter-canvas_x = Aktionsleiste
+
+d-w25t6rl7-filter-canvas_y = Aktionsleiste
+
+d-w25t6rl7-filter-canvas_width = Aktionsleiste
+
+d-w25t6rl7-filter-canvas_height = Aktionsleiste
+
+d-w25t6rl7-filter-canvas_hugs = Aktionsleiste
+
+d-farfsl4d = Platz des Layouts
+    .doc = Ein Platz: ein Fenster, das eine Ressource durch eine Ansicht zeigt.
+    .noun = { $count ->
+        [one] Platz des Layouts
+       *[other] Plätze des Layouts
+    }
+
+d-ba3kyokq = Aktionsleiste
+
+d-7dno3n47 = Leiste
+    .doc = Die Leiste, in der er ist.
+
+d-jpzk4cli = Zeigt
+    .doc = Die App, die die Ressource zeigt, nach ihrer kanonischen Kennung (`so.tilo.terminal`).
+
+d-nprpusuo = Gezeigt als
+    .doc = Die Ansicht, durch die sie die Ressource zeigt; leer für die Vorgabe der App.
+
+d-ofkshr4v = Datensatz
+    .doc = Der Datensatz, den er zeigt, wenn er einen zeigt.
+
+d-qqcejiim = Titel
+    .doc = Der Titel, unter dem er gezeigt wird.
+
+d-jeatudax = Name
+    .doc = Wie dieser Platz heißt, auf jeder Oberfläche: der Titel seines Fensters und der eigene Name seiner App (`Groceries` in `Notes`, den die Person gewählt hat), oder der Name der App allein, wenn das Fenster keinen Titel hat.
+
+d-vkbhstef = Angeheftet
+    .doc = Ob die Person ihn angeheftet hat: die Layout eines Agenten lässt ihn in Ruhe.
+
+d-soy4vimv = Shell
+    .doc = Die Shell, die ihn angelegt hat; leer liest sich als die dieser Shell.
+
+d-farfsl4d-filter-pinned = Aktionsleiste
+
+d-socv3cfz = Layout
+    .doc = Ein benannter Satz von Einstellungen, den die Person in einer Aktion anwendet: eine Vorgabe für den Rahmen.
+
+d-cb4a3qsa = Das Dock unten mit der Leiste oben: Tilos eigene
+    .doc = Das Dock unten mit der Leiste oben: Tilos eigene.
+
+d-qmzl573l = Ein schwebendes, rundes, durchscheinendes Dock unten, das sich verbirgt, solange ein Fenster es deckt, und eine obere Leiste mit den Menüs der fokussierten App nach denen des Systems
+    .doc = Ein schwebendes, rundes, durchscheinendes Dock unten, das sich verbirgt, solange ein Fenster es deckt, und eine obere Leiste mit den Menüs der fokussierten App nach denen des Systems.
+
+d-iriqaem6 = Eine Taskleiste über die volle Breite unten, immer gezeigt
+    .doc = Eine Taskleiste über die volle Breite unten, immer gezeigt.
+
+d-n44stfvj = Die obere Leiste allein; die Übersicht auf Abruf
+    .doc = Die obere Leiste allein; die Übersicht auf Abruf.
+
+d-dah75qd2 = Kein Rahmen in Ruhe; die Kanten zeigen, was die Person braucht
+    .doc = Kein Rahmen in Ruhe; die Kanten zeigen, was die Person braucht.
+
+d-zsqlezfj = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen
+    .doc = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen.
+

@@ -176,7 +176,7 @@ pub const KINDS: &[OriginKind] = &[
             field(
                 "resource",
                 "Text",
-                "The resource, by its id in its app, as the arrangement's `place` takes it.",
+                "The resource, by its id in its app, as the layout's `place` takes it.",
             ),
             field("app_id", "Text", "The app that keeps it, by its id."),
             field("type_kind", "Text", "Its type, as its app publishes it."),
@@ -190,7 +190,7 @@ pub const KINDS: &[OriginKind] = &[
     },
     OriginKind {
         name: "session.layout",
-        doc: "The person's own arrangement: what is open where on their desk (shell.md §2), as \
+        doc: "The person's own layout: what is open where on their desk (shell.md §2), as \
               the session keeps it in their own record. A shell's views read it; every change \
               is one of the arranging actions on `shell:layout`, so nothing writes it \
               directly.",
@@ -389,7 +389,7 @@ pub const KINDS: &[OriginKind] = &[
             field(
                 "address",
                 "Text",
-                "The resource, by its id in its app, as the arrangement's `place` takes it.",
+                "The resource, by its id in its app, as the layout's `place` takes it.",
             ),
             field("title", "Text", "What it is called."),
             field(

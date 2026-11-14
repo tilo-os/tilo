@@ -8,7 +8,7 @@ use tilo_compositor::{InputEvent, OutputChange};
 use tilo_desktop::chrome::TopBarPresence;
 use tilo_session::{BarShown, Session};
 
-/// Two displays side by side, the built-in one first: the arrangement a session with a monitor
+/// Two displays side by side, the built-in one first: the layout a session with a monitor
 /// plugged in on the right starts in.
 fn two_displays() -> Session {
     let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);

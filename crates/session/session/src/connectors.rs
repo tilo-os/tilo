@@ -258,7 +258,7 @@ pub(crate) fn reconcile(session: &crate::Session) {
     // connector there. A workspace with no place of an app's records needs none, however the
     // person moves between workspaces.
     let mut needed: std::collections::BTreeSet<Key> = std::collections::BTreeSet::new();
-    for (workspace, records) in session.shared.arrangement.borrow().records_by_workspace() {
+    for (workspace, records) in session.shared.layout.borrow().records_by_workspace() {
         for app in records.iter().filter_map(|record| app_of(record)) {
             for connector in &connectors {
                 if connector.app == app {

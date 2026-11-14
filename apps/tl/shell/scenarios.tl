@@ -13,18 +13,18 @@ use so.tilo.lang.tasks as tasks
 /// An afternoon of work: three workspaces, four strips of the one in front with windows in
 /// each, two people working alongside and a task running. The shell at rest.
 scenario "an afternoon of work" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
     d.rows.insert(
-        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
     )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
-    d.workspaces.insert(ArrangementWorkspace(key: "release", name: "Release 4.2"))
-    d.people.insert(ArrangementPerson(key: "mia", name: "Mia Clayton"))
-    d.people.insert(ArrangementPerson(key: "sam", name: "Sam Okafor"))
+    d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "release", name: "Release 4.2"))
+    d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
+    d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
     stage(
         device.agents,
         device.Agents(
@@ -256,16 +256,16 @@ scenario "an afternoon of work" {
 
 /// The overview of that layout: the strips of the workspace in front, their windows as places.
 scenario "the overview" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
     d.rows.insert(
-        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
     )
     stage(device.time, device.Time(clock: "4:31 PM"))
     stage(device.overlays, device.Overlays(here: "overview"))
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
-    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
-    d.people.insert(ArrangementPerson(key: "mia", name: "Mia Clayton"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
+    d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
     stage(
         device.agents,
         device.Agents(
@@ -402,16 +402,16 @@ scenario "the overview" {
 /// The same overview opened while the person's last search still stands: what that search
 /// found across the other workspaces.
 scenario "the overview, searching" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
     d.rows.insert(
-        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
     )
     stage(device.time, device.Time(clock: "4:31 PM"))
     stage(device.overlays, device.Overlays(here: "overview", spotlight: "quotes"))
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
-    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
-    d.people.insert(ArrangementPerson(key: "mia", name: "Mia Clayton"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
+    d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
     stage(
         device.agents,
         device.Agents(
@@ -564,9 +564,9 @@ scenario "the overview, searching" {
 
 /// The switcher with two windows: what Alt+Tab shows once it is held past the flick.
 scenario "the switcher, two windows" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(
         device.overlays,
         device.Overlays(here: "switcher", switcher_revealed: true, switcher_scope: "workspace"),
@@ -608,9 +608,9 @@ scenario "the switcher, two windows" {
 
 /// The switcher with twenty windows: the walk does not fit one row.
 scenario "the switcher, twenty windows" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(
         device.overlays,
         device.Overlays(here: "switcher", switcher_revealed: true, switcher_scope: "workspace"),
@@ -888,9 +888,9 @@ scenario "the switcher, twenty windows" {
 /// The switcher on this app's windows: Alt+` walks the four Notes windows and nothing else, and
 /// the panel says which app and how far along them the walk is.
 scenario "the switcher, this app's windows" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(
         device.overlays,
         device.Overlays(here: "switcher", switcher_revealed: true, switcher_scope: "app"),
@@ -985,9 +985,9 @@ scenario "the switcher, this app's windows" {
 /// The launcher an empty query shows: the applications installed here, recent windows and the
 /// shell's surfaces.
 scenario "the launcher, before typing" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(device.overlays, device.Overlays(here: "launcher"))
     stage(device.apps, device.Apps(installed: installed_apps()))
     stage(
@@ -1037,9 +1037,9 @@ scenario "the launcher, before typing" {
 
 /// The launcher with "mai" typed: the apps and the windows that match.
 scenario "the launcher, mail typed" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(device.overlays, device.Overlays(here: "launcher", spotlight: "mai"))
     stage(device.apps, device.Apps(installed: installed_apps()))
     stage(
@@ -1101,9 +1101,9 @@ scenario "the launcher, mail typed" {
 
 /// A command palette query: an action, named the way people name it.
 scenario "the launcher, an action typed" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(device.overlays, device.Overlays(here: "launcher", spotlight: "focus"))
     stage(
         device.windows,
@@ -1128,9 +1128,9 @@ scenario "the launcher, an action typed" {
 
 /// The notification centre with fifteen notices from apps and from agent tasks.
 scenario "the notification centre" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(device.overlays, device.Overlays(here: "centre"))
     stage(
         device.notifications,
@@ -1223,9 +1223,9 @@ scenario "the notification centre" {
 /// The centre with nothing new: every notice read, so its header says so and no row carries a
 /// mark, and one group's choices with it.
 scenario "the notification centre, all read" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(device.overlays, device.Overlays(here: "centre"))
     stage(
         device.notifications,
@@ -1267,42 +1267,42 @@ scenario "the notification centre, all read" {
 /// The quick settings over the shell, on a computer that publishes no sound, display or
 /// battery: the tiles stand, and the sliders and the battery line wait for what is there.
 scenario "the quick settings" {
-    let d = root Arrangement
+    let d = root Layout
     stage(device.overlays, device.Overlays(here: "quick-settings"))
 }
 
 /// The centre with nothing in it: what a person sees after Clear all.
 scenario "an empty notification centre" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(device.overlays, device.Overlays(here: "centre"))
 }
 
 /// The workspaces: every one the person is in, and who is here in the one in front.
 scenario "the workspaces" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
     stage(device.time, device.Time(clock: "9:12 AM"))
     stage(device.overlays, device.Overlays(here: "workspaces"))
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
-    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
-    d.workspaces.insert(ArrangementWorkspace(key: "release", name: "Release 4.2"))
-    d.workspaces.insert(ArrangementWorkspace(key: "garden", name: "Garden"))
-    d.people.insert(ArrangementPerson(key: "mia", name: "Mia Clayton"))
-    d.people.insert(ArrangementPerson(key: "sam", name: "Sam Okafor"))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
+    d.workspaces.insert(LayoutWorkspace(key: "release", name: "Release 4.2"))
+    d.workspaces.insert(LayoutWorkspace(key: "garden", name: "Garden"))
+    d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
+    d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
 }
 
 /// A banner over the shell: a build failure with its actions, above a shell at work.
 scenario "a banner" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
     d.rows.insert(
-        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
     )
     stage(device.time, device.Time(clock: "2:04 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(
         device.windows,
         device.Windows(
@@ -1348,26 +1348,26 @@ scenario "a banner" {
 /// device's sound, connection and charge, the person's own avatar and the notifications with
 /// what waits in them.
 scenario "the bar's status" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.rows.insert(
-        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
     )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
     stage(device.notifications, waiting())
-    d.people.insert(ArrangementPerson(key: "mia", name: "Mia Clayton"))
-    d.people.insert(ArrangementPerson(key: "sam", name: "Sam Okafor"))
+    d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
+    d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
     seed(shell)
 }
 
 /// Who is here, and the menu a person's presence opens.
 scenario "a person's menu" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
-    d.people.insert(ArrangementPerson(key: "mia", name: "Mia Clayton"))
-    d.people.insert(ArrangementPerson(key: "sam", name: "Sam Okafor"))
+    d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
+    d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
     stage(
         device.agents,
         device.Agents(
@@ -1386,10 +1386,10 @@ scenario "a person's menu" {
 }
 
 /// Adds a workspace, with one row, to `a`, and returns the row's key.
-action a_workspace(a: Arrangement, name: Text) -> Text {
-    let w = a.workspaces.insert(ArrangementWorkspace(key: "w-{name}", name: name))
+action a_workspace(a: Layout, name: Text) -> Text {
+    let w = a.workspaces.insert(LayoutWorkspace(key: "w-{name}", name: name))
     let r = a.rows.insert(
-        ArrangementRow(
+        LayoutRow(
             key: "r-{name}",
             workspace: w.key,
             name: name,
@@ -1400,10 +1400,10 @@ action a_workspace(a: Arrangement, name: Text) -> Text {
 }
 
 /// Adds the workspace in front, with its row in front, to `a`, and returns the row's key.
-action a_front_workspace(a: Arrangement, name: Text) -> Text {
-    let w = a.workspaces.insert(ArrangementWorkspace(key: "w-{name}", name: name, current: true))
+action a_front_workspace(a: Layout, name: Text) -> Text {
+    let w = a.workspaces.insert(LayoutWorkspace(key: "w-{name}", name: name, current: true))
     let r = a.rows.insert(
-        ArrangementRow(
+        LayoutRow(
             key: "r-{name}",
             workspace: w.key,
             name: name,
@@ -1415,9 +1415,9 @@ action a_front_workspace(a: Arrangement, name: Text) -> Text {
 }
 
 /// Adds a strip named `name` to `row`, standing at `width`, and returns its key.
-action a_strip(a: Arrangement, row: Text, name: Text, width: Int) -> Text {
+action a_strip(a: Layout, row: Text, name: Text, width: Int) -> Text {
     let s = a.strips.insert(
-        ArrangementStrip(
+        LayoutStrip(
             key: "s-{row}-{name}",
             workspace: "w-Main",
             row: row,
@@ -1429,11 +1429,11 @@ action a_strip(a: Arrangement, row: Text, name: Text, width: Int) -> Text {
 }
 
 /// Adds a place showing the note at `index` of the notebook to `strip`, and returns its key.
-action a_note_place(a: Arrangement, strip: Text, index: Int) -> Text {
+action a_note_place(a: Layout, strip: Text, index: Int) -> Text {
     let chosen = notes.notebook.notes.take(index + 1)
     if let n = chosen.last() {
         let p = a.places.insert(
-            ArrangementPlace(
+            LayoutPlace(
                 key: "p-{index}",
                 strip: strip,
                 shows: "so.tilo.lang.notes",
@@ -1450,9 +1450,9 @@ action a_note_place(a: Arrangement, strip: Text, index: Int) -> Text {
 
 /// A place of a kind this build has no record for: it stands as it is, which is what a place
 /// another shell made looks like.
-action a_foreign_place(a: Arrangement, strip: Text, index: Int, title: Text) -> Text {
+action a_foreign_place(a: Layout, strip: Text, index: Int, title: Text) -> Text {
     let p = a.places.insert(
-        ArrangementPlace(
+        LayoutPlace(
             key: "f-{index}",
             strip: strip,
             shows: "so.tilo.terminal",
@@ -1467,9 +1467,9 @@ action a_foreign_place(a: Arrangement, strip: Text, index: Int, title: Text) -> 
 /// Adds a place showing a search for `text` to `strip`, with the two matches the notes app
 /// answered, and returns the place's key: the state a place stands in until the person chooses
 /// one of the resources it found (shell.md §8).
-action a_query_place(a: Arrangement, strip: Text, text: Text) -> Text {
+action a_query_place(a: Layout, strip: Text, text: Text) -> Text {
     let p = a.places.insert(
-        ArrangementPlace(
+        LayoutPlace(
             key: "q-{strip}",
             strip: strip,
             title: "Search: {text}",
@@ -1478,7 +1478,7 @@ action a_query_place(a: Arrangement, strip: Text, text: Text) -> Text {
         ),
     )
     a.queries.insert(
-        ArrangementQuery(
+        LayoutQuery(
             key: p.key,
             text: text,
             in_app: "so.tilo.lang.notes",
@@ -1488,7 +1488,7 @@ action a_query_place(a: Arrangement, strip: Text, text: Text) -> Text {
     )
     for n in notes.notebook.notes.take(2) {
         a.refs.insert(
-            ArrangementRef(
+            LayoutRef(
                 key: "m-{n.title}",
                 query: p.key,
                 address: n.id(),
@@ -1518,10 +1518,10 @@ fn installed_apps() -> List<device.App> {
 
 /// A shell of one note in the style named, with that place in front, and the style's own settings
 /// open over it: what a person sees who opens them from the bar's style menu.
-action a_style_settings(style: Text) -> Arrangement {
+action a_style_settings(style: Text) -> Layout {
     let v = viewing
     v.style = style
-    let a = root Arrangement
+    let a = root Layout
     let row = a_workspace(a, "Main")
     let one = a_strip(a, row, "Note", 667)
     a_note_place(a, one, 0)
@@ -1534,16 +1534,16 @@ action a_style_settings(style: Text) -> Arrangement {
 /// A working layout's places at the counts people keep: one place on its own, three across a
 /// narrow list, a wide board and a usual note, then a busy day as three strips of four. The
 /// strips stand side by side in one row, and the narrow list holds focus.
-scenario "a layout of places" -> Arrangement {
+scenario "a layout of places" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:strips"
-    let a = root Arrangement
+    let a = root Layout
     let row = a_workspace(a, "Main")
     let one = a_strip(a, row, "One", 667)
     a_note_place(a, one, 0)
     let narrow = a_strip(a, row, "List", 333)
     a.places.insert(
-        ArrangementPlace(
+        LayoutPlace(
             key: "n-1",
             strip: narrow,
             shows: "so.tilo.lang.tasks",
@@ -1564,7 +1564,7 @@ scenario "a layout of places" -> Arrangement {
     for n in notes.notebook.notes.take(12) {
         let held = if i < 4 { day_a } else if i < 8 { day_b } else { day_c }
         a.places.insert(
-            ArrangementPlace(
+            LayoutPlace(
                 key: "d-{i}",
                 strip: held,
                 shows: "so.tilo.lang.notes",
@@ -1583,10 +1583,10 @@ scenario "a layout of places" -> Arrangement {
 /// A window of several places: a strip holding three notes, the first of them in front, beside a
 /// strip of one. The face of every surface that shows a group (§3): one window bar, the places
 /// as its tabs, the place in front filling the window under them.
-scenario "a window of several places" -> Arrangement {
+scenario "a window of several places" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:strips"
-    let a = root Arrangement
+    let a = root Layout
     let row = a_workspace(a, "Main")
     let group = a_strip(a, row, "Notes", 667)
     a_note_place(a, group, 0)
@@ -1600,10 +1600,10 @@ scenario "a window of several places" -> Arrangement {
 
 /// One window alone in the shell: a strip with a note in it, filling the room between the bar and
 /// the dock as the chrome's lone window fills its strip.
-scenario "a window alone in the shell" -> Arrangement {
+scenario "a window alone in the shell" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:strips"
-    let a = root Arrangement
+    let a = root Layout
     let row = a_workspace(a, "Main")
     let one = a_strip(a, row, "Note", 1000)
     a_note_place(a, one, 0)
@@ -1613,10 +1613,10 @@ scenario "a window alone in the shell" -> Arrangement {
 
 /// A strip with nothing on it yet, beside a strip with one place: the state a person starts
 /// from when they make a strip.
-scenario "an empty strip" -> Arrangement {
+scenario "an empty strip" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:strips"
-    let a = root Arrangement
+    let a = root Layout
     let row = a_workspace(a, "Main")
     a_strip(a, row, "Empty", 667)
     let used = a_strip(a, row, "In use", 667)
@@ -1626,10 +1626,10 @@ scenario "an empty strip" -> Arrangement {
 
 /// A place standing in for a search: what a person typed into it, and the matches the notes app
 /// answered, each a press that shows it in the same place (`query_view`).
-scenario "a place finding what to show" -> Arrangement {
+scenario "a place finding what to show" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:strips"
-    let a = root Arrangement
+    let a = root Layout
     let row = a_workspace(a, "Main")
     let found = a_strip(a, row, "Found", 667)
     a_query_place(a, found, "release")
@@ -1641,36 +1641,36 @@ scenario "a place finding what to show" -> Arrangement {
 
 /// The strips style's own settings, over the shell they change: the panel the bar's style menu
 /// opens (`style_panel`).
-scenario "the strips style's settings" -> Arrangement {
+scenario "the strips style's settings" -> Layout {
     a_style_settings("so.tilo.shell:strips")
 }
 
 /// The frames style's own settings, over the canvas they change.
-scenario "the frames style's settings" -> Arrangement {
+scenario "the frames style's settings" -> Layout {
     a_style_settings("so.tilo.shell:frames")
 }
 
 /// The spaces style's own settings, over the places they change.
-scenario "the spaces style's settings" -> Arrangement {
+scenario "the spaces style's settings" -> Layout {
     a_style_settings("so.tilo.shell:spaces")
 }
 
 /// The desktop style's own settings, over the shell they change.
-scenario "the desktop style's settings" -> Arrangement {
+scenario "the desktop style's settings" -> Layout {
     a_style_settings("so.tilo.shell:desktop")
 }
 
 /// A reference activated from a chat place: the channel's place, and the note's place it landed
 /// beside — a column after the one it came from (shell.md §3).
-scenario "a reference lands beside its place" -> Arrangement {
+scenario "a reference lands beside its place" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:strips"
-    let a = root Arrangement
+    let a = root Layout
     let row = a_workspace(a, "Main")
     let talks = a_strip(a, row, "Chat", 667)
     let design = channel_named("design")
     a.places.insert(
-        ArrangementPlace(
+        LayoutPlace(
             key: "ch",
             strip: talks,
             shows: "so.tilo.lang.chat",
@@ -1693,10 +1693,10 @@ scenario "a reference lands beside its place" -> Arrangement {
 /// Six places in two clusters on the framed canvas: one space per task, at three zoom levels as
 /// the person looks closer or further out. Each note is its app's editor composed in its frame;
 /// the terminal beside them is a window, shown in its well.
-scenario "a canvas of spaces" -> Arrangement {
+scenario "a canvas of spaces" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:frames"
-    let a = root Arrangement
+    let a = root Layout
     let row = a_workspace(a, "Main")
     let s = a_strip(a, row, "Canvas", 667)
     let strip = a.strips.find(st -> st.key == s)
@@ -1710,7 +1710,7 @@ scenario "a canvas of spaces" -> Arrangement {
     let i = 0
     for n in notes.notebook.notes.take(6) {
         let p = a.places.insert(
-            ArrangementPlace(
+            LayoutPlace(
                 key: "c-{i}",
                 strip: s,
                 shows: "so.tilo.lang.notes",
@@ -1724,7 +1724,7 @@ scenario "a canvas of spaces" -> Arrangement {
         i += 1
     }
     a.places.insert(
-        ArrangementPlace(
+        LayoutPlace(
             key: "c-terminal",
             strip: s,
             shows: "so.tilo.terminal",
@@ -1739,10 +1739,10 @@ scenario "a canvas of spaces" -> Arrangement {
 /// The spaces canvas: the same places with no frame around them, so a resource's view stands as
 /// content and nearness groups it. Each note is its app's editor composed in place; the terminal
 /// beside them is a window, shown in its well.
-scenario "resources standing as content" -> Arrangement {
+scenario "resources standing as content" -> Layout {
     let v = viewing
     v.style = "so.tilo.shell:spaces"
-    let a = root Arrangement
+    let a = root Layout
     let row = a_workspace(a, "Main")
     let s = a_strip(a, row, "Spaces", 667)
     let strip = a.strips.find(st -> st.key == s)
@@ -1756,7 +1756,7 @@ scenario "resources standing as content" -> Arrangement {
     let i = 0
     for n in notes.notebook.notes.take(4) {
         a.places.insert(
-            ArrangementPlace(
+            LayoutPlace(
                 key: "x-{i}",
                 strip: s,
                 shows: "so.tilo.lang.notes",
@@ -1770,7 +1770,7 @@ scenario "resources standing as content" -> Arrangement {
         i += 1
     }
     a.places.insert(
-        ArrangementPlace(
+        LayoutPlace(
             key: "x-terminal",
             strip: s,
             shows: "so.tilo.terminal",
@@ -1790,13 +1790,13 @@ scenario "resources standing as content" -> Arrangement {
 /// is the desktop and the chrome preset the traditional one, so this is exactly what a
 /// person sees when they pick it.
 scenario "the traditional desktop" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.notifications, waiting())
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(ArrangementWorkspace(key: "home", name: "Home"))
-    d.people.insert(ArrangementPerson(key: "mia", name: "Mia Clayton"))
+    d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
+    d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
     stage(
         device.windows,
         device.Windows(
@@ -1854,7 +1854,7 @@ scenario "the traditional desktop" {
     let channel = channel_named("design")
     let v = viewing
     v.style = "so.tilo.shell:desktop"
-    let a = root Arrangement
+    let a = root Layout
     let row = a_front_workspace(a, "Main")
     let main = a_strip(a, row, "Main", 667)
     if let held = a.strips.find(st -> st.key == main) {
@@ -1882,7 +1882,7 @@ scenario "the traditional desktop" {
     }
     if let n = note {
         a.places.insert(
-            ArrangementPlace(
+            LayoutPlace(
                 key: "p1",
                 strip: main,
                 shows: "so.tilo.lang.notes",
@@ -1895,7 +1895,7 @@ scenario "the traditional desktop" {
     }
     if let n = beside {
         a.places.insert(
-            ArrangementPlace(
+            LayoutPlace(
                 key: "p2",
                 strip: behind,
                 shows: "so.tilo.lang.notes",
@@ -1908,7 +1908,7 @@ scenario "the traditional desktop" {
     }
     if let c = channel {
         a.places.insert(
-            ArrangementPlace(
+            LayoutPlace(
                 key: "p3",
                 strip: talk,
                 shows: "so.tilo.lang.chat",
@@ -1929,7 +1929,7 @@ scenario "the traditional desktop" {
 /// the top bar offers the shell's own commands on it — its name, moving it to another row and
 /// closing it — where an app's window would offer the app's.
 scenario "the traditional desktop, a terminal in front" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
@@ -1959,7 +1959,7 @@ scenario "the traditional desktop, a terminal in front" {
     apply(s, .windows_desktop)
     let v = viewing
     v.style = "so.tilo.shell:desktop"
-    let a = root Arrangement
+    let a = root Layout
     let row = a_front_workspace(a, "Main")
     a_workspace(a, "Errands")
     let main = a_strip(a, row, "Main", 667)
@@ -1977,14 +1977,14 @@ scenario "the traditional desktop, a terminal in front" {
 /// The default shell with the agents on the bar: the person showed the Agents part, and the
 /// two agents working for them stand there, each a chip that opens its menu.
 scenario "the agents on the bar" {
-    let d = root Arrangement
+    let d = root Layout
     d.person = "Ada Lovelace"
     d.rows.insert(
-        ArrangementRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
+        LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true),
     )
     stage(device.time, device.Time(clock: "4:28 PM"))
     stage(device.overlays, device.Overlays(here: "none"))
-    d.workspaces.insert(ArrangementWorkspace(key: "studio", name: "Studio", current: true))
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     stage(
         device.agents,
         device.Agents(

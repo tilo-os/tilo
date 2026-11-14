@@ -196,7 +196,7 @@ pub struct Config {
     /// Where outside effects go; the development log when `None`.
     pub sink: Option<Box<dyn OutsideSink>>,
     /// The root and the view the window opens over, each by name. A package with more than one
-    /// root (the shell's `Shell` and its `Arrangement`) says which layer this window is;
+    /// root (the shell's `Shell` and its `Layout`) says which layer this window is;
     /// [`RootView::default`] takes the package's first root and its default view, as the
     /// launcher opens an app.
     pub root: RootView,

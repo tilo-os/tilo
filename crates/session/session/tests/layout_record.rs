@@ -1,4 +1,4 @@
-//! The arrangement is the layout's own record (shell.md §2, workspace-model.md
+//! The layout is the layout's own record (shell.md §2, workspace-model.md
 //! §9): what is open where, kept with the layout the workspace shares, with
 //! history and undo. No second record of it exists, and what the layout's windows
 //! do not carry — the view a place shows and whether it is pinned — is kept
@@ -71,18 +71,18 @@ fn step(session: &mut Session) {
 /// Take back the person's last step, and run frames until `done`: a step is taken once the write
 /// of the record it is in has landed, off the loop.
 fn undone(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    session.undo_arrangement().unwrap();
+    session.undo_layout().unwrap();
     crate::common::wait_for(session, "the step to be taken back", |session| {
         done(session).then_some(())
     });
 }
 
-/// The arrangement the session's layout holds now, as a shell reads it.
-fn arrangement(session: &Session) -> arrangement::Reading {
+/// The layout the session's layout holds now, as a shell reads it.
+fn layout(session: &Session) -> layout::Reading {
     session.layout().borrow().reading()
 }
 
-/// An id as the arrangement reads it out: its whole number.
+/// An id as the layout reads it out: its whole number.
 fn number(key: &str) -> u64 {
     key.parse().expect("an id reads as its number")
 }
@@ -90,26 +90,26 @@ fn number(key: &str) -> u64 {
 /// The strip `tab` stands in, by its id.
 fn strip_of(session: &Session, tab: u64) -> Option<u64> {
     let key = tab.to_string();
-    arrangement(session)
+    layout(session)
         .places
         .iter()
         .find(|place| place.key == key)
         .map(|place| number(&place.strip))
 }
 
-/// The place `tab` is, as the arrangement reads it.
-fn place_of(session: &Session, tab: u64) -> Option<arrangement::PlaceReading> {
+/// The place `tab` is, as the layout reads it.
+fn place_of(session: &Session, tab: u64) -> Option<layout::PlaceReading> {
     let key = tab.to_string();
-    arrangement(session)
+    layout(session)
         .places
         .into_iter()
         .find(|place| place.key == key)
 }
 
-/// The strip `strip` is, as the arrangement reads it.
-fn strip_at(session: &Session, strip: u64) -> Option<arrangement::StripReading> {
+/// The strip `strip` is, as the layout reads it.
+fn strip_at(session: &Session, strip: u64) -> Option<layout::StripReading> {
     let key = strip.to_string();
-    arrangement(session)
+    layout(session)
         .strips
         .into_iter()
         .find(|held| held.key == key)
@@ -172,7 +172,7 @@ fn add_strip(session: &Session, name: &str) -> u64 {
     made.0
 }
 
-/// The row `strip` (a column of places) stands in, in the arrangement.
+/// The row `strip` (a column of places) stands in, in the layout.
 fn row_of(session: &Session, strip: u64) -> u64 {
     number(
         &strip_at(session, strip)
@@ -198,9 +198,9 @@ fn the_persons_drag_is_in_their_record_attributed_and_undone() {
     assert_ne!(from, second);
     let row = second;
 
-    // The drag's end commits one arranging action, as the person's.
+    // The drag's end commits one layout action, as the person's.
     session
-        .arrangement()
+        .layout()
         .borrow_mut()
         .ask_person(&move_to(window, row))
         .unwrap();
@@ -222,8 +222,8 @@ fn the_persons_drag_is_in_their_record_attributed_and_undone() {
 }
 
 /// The action that moves `place` to the row `row` .
-fn move_to(place: u64, row: u64) -> arrangement::LayoutAction {
-    arrangement::LayoutAction::Move {
+fn move_to(place: u64, row: u64) -> layout::LayoutAction {
+    layout::LayoutAction::Move {
         place,
         row,
         before: None,
@@ -232,21 +232,21 @@ fn move_to(place: u64, row: u64) -> arrangement::LayoutAction {
 }
 
 /// The action that floats `place` where the person let it go.
-fn float_at(place: u64, float: tilo_desktop_model::FloatPlace) -> arrangement::LayoutAction {
-    arrangement::LayoutAction::Float { place, float }
+fn float_at(place: u64, float: tilo_desktop_model::FloatPlace) -> layout::LayoutAction {
+    layout::LayoutAction::Float { place, float }
 }
 
 /// The action that snaps the floating `place` back where it stands.
-fn snap_back(place: u64) -> arrangement::LayoutAction {
-    arrangement::LayoutAction::Snap {
+fn snap_back(place: u64) -> layout::LayoutAction {
+    layout::LayoutAction::Snap {
         place,
         row: None,
         before: None,
     }
 }
 
-/// The strip holding `place` , as the arrangement reads it.
-fn strip_reading_of(session: &Session, place: u64) -> arrangement::StripReading {
+/// The strip holding `place` , as the layout reads it.
+fn strip_reading_of(session: &Session, place: u64) -> layout::StripReading {
     let strip = strip_of(session, place).expect("it has a strip");
     strip_at(session, strip).expect("the strip is in the record")
 }
@@ -276,7 +276,7 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
         480,
     );
     session
-        .arrangement()
+        .layout()
         .borrow_mut()
         .ask_person(&float_at(window, float))
         .unwrap();
@@ -301,7 +301,7 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
     session
         .invoke_with_actor(
             &person(),
-            arrangement::RECORD_RESOURCE,
+            layout::RECORD_RESOURCE,
             "redo",
             &serde_json::json!({}),
         )
@@ -312,7 +312,7 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
 
     // Snapping it back with no target returns it exactly where it was.
     session
-        .arrangement()
+        .layout()
         .borrow_mut()
         .ask_person(&snap_back(window))
         .unwrap();
@@ -357,7 +357,7 @@ fn a_float_is_in_the_workspaces_layout_so_the_next_start_shows_it() {
             400,
         );
         session
-            .arrangement()
+            .layout()
             .borrow_mut()
             .ask_person(&float_at(window, float))
             .unwrap();
@@ -397,17 +397,17 @@ fn published_actions(resource: &tilo_actions::ResourceSpec, out: &mut Vec<(Strin
 
 /// The resource the session publishes the place `key` as: what its own actions are pressed on.
 fn place_resource(key: u64) -> String {
-    arrangement::Item::Place.resource(&key.to_string())
+    layout::Item::Place.resource(&key.to_string())
 }
 
 /// The resource the session publishes the row `key` as: what a place's move names.
 fn row_resource(key: u64) -> String {
-    arrangement::Item::Row.resource(&key.to_string())
+    layout::Item::Row.resource(&key.to_string())
 }
 
 /// The resource the session publishes the strip `key` as: what its own resize is pressed on.
 fn strip_resource(key: u64) -> String {
-    arrangement::Item::Strip.resource(&key.to_string())
+    layout::Item::Strip.resource(&key.to_string())
 }
 
 // (2) An agent moves a window through the published action, attributed to the agent and undoable.
@@ -456,7 +456,7 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
     });
 }
 
-// (3) One record answers what the arrangement is: the layout's own, which the workspace shares.
+// (3) One record answers what the layout is: the layout's own, which the workspace shares.
 // Nothing is kept beside it, and another member of the workspace reads none of it.
 #[test]
 fn the_arrangement_is_the_shells_own_and_no_record_beside_it() {
@@ -469,7 +469,7 @@ fn the_arrangement_is_the_shells_own_and_no_record_beside_it() {
     let window = open_window(&mut here, "org.example.Notes");
     let second = add_strip(&here, "Second");
     step(&mut here);
-    here.arrangement()
+    here.layout()
         .borrow_mut()
         .ask_person(&move_to(window, second))
         .unwrap();
@@ -481,24 +481,24 @@ fn the_arrangement_is_the_shells_own_and_no_record_beside_it() {
     );
     drop(here);
 
-    // The workspace's layout record keeps the arrangement; what this device keeps is what it
-    // shows, and no record of the arrangement's own is written beside either.
+    // The workspace's layout record keeps the layout; what this device keeps is what it
+    // shows, and no record of the layout's own is written beside either.
     assert!(
         state.join("tilo").join("shown.json").exists(),
         "the device keeps what it shows"
     );
     assert!(
-        !state.join("tilo").join("arrangement.automerge").exists(),
-        "no second record of the arrangement is kept"
+        !state.join("tilo").join("layout.automerge").exists(),
+        "no second record of the layout is kept"
     );
 
-    // Another member of the workspace runs a layout of their own: nothing of this one's arrangement
+    // Another member of the workspace runs a layout of their own: nothing of this one's layout
     // is theirs.
     let mut theirs = session_as(BO);
     step(&mut theirs);
     assert!(
         place_of(&theirs, window).is_none(),
-        "nothing of this person's arrangement is theirs"
+        "nothing of this person's layout is theirs"
     );
 }
 
@@ -535,10 +535,10 @@ fn a_places_view_and_pin_are_kept_with_the_shell_across_a_restart() {
             "pin",
             &serde_json::json!({"pinned": true}),
         );
-        let held = place_of(&session, window).expect("the place is in the arrangement");
+        let held = place_of(&session, window).expect("the place is in the layout");
         assert_eq!(
             held.shown_as, "editor",
-            "the arrangement holds the view it shows"
+            "the layout holds the view it shows"
         );
         assert!(held.pinned, "and the pin on it");
         window
@@ -688,7 +688,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
     assert_eq!(who, "agent-task:reading", "still attributed to the agent");
 }
 
-// An agent's arrangement leaves a place the person pinned where it is (shell.md §5's default).
+// An agent's layout leaves a place the person pinned where it is (shell.md §5's default).
 #[test]
 fn a_pinned_place_stays_where_the_person_put_it() {
     let _settled = ui::motion::testing::settled();
@@ -728,8 +728,8 @@ fn invoke_as(session: &mut Session, resource: &str, action: &str, arguments: &se
     step(session);
 }
 
-// The arrangement as the shell draws it: every workspace, row, strip and place, by key, as the
-// session publishes it for the shell's views. Which way it is shown is not the arrangement's.
+// The layout as the shell draws it: every workspace, row, strip and place, by key, as the
+// session publishes it for the shell's views. Which way it is shown is not the layout's.
 #[test]
 fn the_arrangement_reads_out_by_key_for_the_shells_views() {
     let _settled = ui::motion::testing::settled();
@@ -907,7 +907,7 @@ fn maximizing_a_window_is_one_step_and_undone() {
     let strip = strip_of(&session, window).expect("it has a strip");
     let other_strip = strip_of(&session, other).expect("the other place is in a strip");
     assert!(
-        arrangement(&session)
+        layout(&session)
             .strips
             .iter()
             .all(|strip| !strip.maximized),

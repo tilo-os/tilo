@@ -178,19 +178,19 @@ impl SessionLink {
         )
     }
 
-    /// Publish the reading of every resource a place of `arrangement` names, from what the
+    /// Publish the reading of every resource a place of `layout` names, from what the
     /// session publishes: `resources`, its catalogue, says each one's kind and `read` its
     /// reading. A place naming nothing the catalogue holds as a tilolang record keeps its
     /// well. Whether any reading changed.
     pub fn follow_places(
         &self,
-        arrangement: &LayoutReading,
+        layout: &LayoutReading,
         resources: &[ui::tilo_actions::ResourceSpec],
         read: impl Fn(&str) -> Option<serde_json::Value>,
     ) -> bool {
         let mut changed = false;
         for (id, ty) in placed_records(
-            arrangement.places.iter().map(|place| place.record.as_str()),
+            layout.places.iter().map(|place| place.record.as_str()),
             resources,
         ) {
             if let Some(reading) = read(&id) {
@@ -513,7 +513,7 @@ fn text(s: &str) -> Value {
     Value::Text(s.to_owned())
 }
 
-/// The fields of an arrangement workspace, as it is written into the shell's record.
+/// The fields of an layout workspace, as it is written into the shell's record.
 pub(super) fn workspace_fields(w: &LayoutWorkspaceReading) -> Vec<(&'static str, Value)> {
     vec![
         ("key", text(&w.key)),

@@ -123,7 +123,7 @@ impl Package {
     }
 
     /// Whether the package declares a root of the type `ty` (a type id): a named root
-    /// (`root shell: Shell`) or an unnamed one (`root Arrangement`).
+    /// (`root shell: Shell`) or an unnamed one (`root Layout`).
     #[must_use]
     pub fn declares_root(&self, ty: &str) -> bool {
         self.meta.roots.iter().any(|root| root == ty)
@@ -153,7 +153,7 @@ pub struct OutboxSettled {
 }
 
 /// The root of a package a view opens over, and the view itself, each chosen by name: a package
-/// with more than one root (the shell's `Shell` and its `Arrangement`) says which layer a view
+/// with more than one root (the shell's `Shell` and its `Layout`) says which layer a view
 /// is, rather than taking the first root. `None`s take the package's first root and that
 /// type's default view, as the launcher opens an app.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

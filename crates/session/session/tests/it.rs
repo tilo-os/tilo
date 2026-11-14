@@ -51,10 +51,10 @@ mod app_sheets;
 mod app_side_records;
 #[path = "arrangement.rs"]
 mod arrangement;
-#[path = "arrangement_placing.rs"]
-mod arrangement_placing;
-#[path = "arrangement_record.rs"]
-mod arrangement_record;
+#[path = "layout_placing.rs"]
+mod layout_placing;
+#[path = "layout_record.rs"]
+mod layout_record;
 #[path = "ask.rs"]
 mod ask;
 #[path = "atspi_bus.rs"]

@@ -78,11 +78,7 @@ impl Shared {
         let resources = self.doors.resources();
         // What a place made from a resource reads its app and views from: the same tree search and
         // the palette read.
-        self.arrangement
-            .borrow()
-            .targets()
-            .borrow_mut()
-            .take(&resources);
+        self.layout.borrow().targets().borrow_mut().take(&resources);
         // The notification centre's rows, as the session publishes them: the palette's empty field
         // lists what waits there, and search never reads a service's own resource.
         let waiting = resources

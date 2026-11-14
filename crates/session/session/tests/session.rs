@@ -2161,7 +2161,7 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
             ..Options::default()
         },
     );
-    let arrangement = |session: &mut Session| {
+    let layout = |session: &mut Session| {
         session
             .compositor()
             .outputs()
@@ -2172,26 +2172,26 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     let on = |name: &str, x: i32| (name.to_owned(), true, Some((x, 0)));
     let off = |name: &str| (name.to_owned(), false, None);
     assert_eq!(
-        arrangement(&mut session),
+        layout(&mut session),
         [on("eDP-1", 0), on("HDMI-A-1", WIDTH)].into()
     );
     invoke(&mut session, tilo_session::displays::RESOURCE, "next-mode");
     assert_eq!(
-        arrangement(&mut session),
+        layout(&mut session),
         [on("eDP-1", 0), on("HDMI-A-1", 0)].into(),
         "mirrored"
     );
     invoke(&mut session, tilo_session::displays::RESOURCE, "next-mode");
     assert_eq!(
-        arrangement(&mut session),
+        layout(&mut session),
         [on("eDP-1", 0), off("HDMI-A-1")].into(),
         "the built-in display only"
     );
     invoke(&mut session, tilo_session::displays::RESOURCE, "next-mode");
-    let external_only = arrangement(&mut session);
+    let external_only = layout(&mut session);
     assert!(external_only.contains(&off("eDP-1")), "{external_only:?}");
     invoke(&mut session, tilo_session::displays::RESOURCE, "next-mode");
-    let extended = arrangement(&mut session);
+    let extended = layout(&mut session);
     assert!(
         extended.iter().all(|(_, enabled, _)| *enabled),
         "every display on again: {extended:?}"

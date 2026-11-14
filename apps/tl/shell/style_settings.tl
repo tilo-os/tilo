@@ -4,7 +4,7 @@
 ///
 /// Every setting here is plain tilolang state with a default (`chrome.tl`'s `Shell` record), so
 /// a person who never touches it gets the style as it ships, and the values live in the
-/// arrangement's own record, synced with the person's devices, with history and undo.
+/// layout's own record, synced with the person's devices, with history and undo.
 ///
 /// Each setting is one action, so an agent — the canvas conversation or the REPL — changes it
 /// with the same call a press does, attributed and undoable: `shell.set_dock_edge(shell.shell,

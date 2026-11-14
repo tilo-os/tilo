@@ -10,7 +10,7 @@
 /// button opens the roster, and its name names the people for assistive technology. With
 /// nobody here it is the people button's own glyph.
 view people_button() {
-    let people = arrangement.people
+    let people = layout.people
     if people.is_empty() {
         ui.Button("People", icon: .users, icon_only: true, role: .bar) {
             on press: session.toggle_people()
@@ -18,7 +18,7 @@ view people_button() {
     } else {
         // Who is here, in the fewest words that name them all: one name, two joined, or the
         // first and how many others.
-        let one = people.first() ?? ArrangementPerson(key: "", name: "People")
+        let one = people.first() ?? LayoutPerson(key: "", name: "People")
         let others = people.len() - 1
         let second = people.last() ?? one
         let label = if others == 0 {

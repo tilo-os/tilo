@@ -12,7 +12,7 @@ view workspaces() {
         stack(gap: .section) {
             ui.Text("Workspaces", role: .title)
             grid(min: 18rem) {
-                for w in arrangement.workspaces.sort_by(w -> w.name) {
+                for w in layout.workspaces.sort_by(w -> w.name) {
                     workspace_card(w)
                 }
             }
@@ -33,11 +33,11 @@ view workspaces() {
 
 /// One workspace: its name, and for the one in front, who is here. The one in front is lifted,
 /// and pressing it does nothing; the others switch to it.
-view workspace_card(w: ArrangementWorkspace) {
+view workspace_card(w: LayoutWorkspace) {
     ui.Card(item: w, title: w.name, selected: w.current) {
-        if w.current and not arrangement.people.is_empty() {
+        if w.current and not layout.people.is_empty() {
             ui.Facts {
-                ui.Fact("{arrangement.people.len()} here", icon: .users)
+                ui.Fact("{layout.people.len()} here", icon: .users)
             }
         }
         on activate: session.switch_workspace(workspace: w.key)

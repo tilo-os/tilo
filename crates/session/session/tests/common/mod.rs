@@ -868,49 +868,49 @@ pub fn repl_session(
     .expect("session")
 }
 
-/// The person's arrangement as a shell reads it: the shell as it stands now,
+/// The person's layout as a shell reads it: the shell as it stands now,
 /// every workspace, row, strip and place by key.
-pub fn arrangement(session: &Session) -> arrangement::Reading {
+pub fn layout(session: &Session) -> layout::Reading {
     session.layout().borrow().reading()
 }
 
-/// An id as the arrangement reads it out: its whole number.
+/// An id as the layout reads it out: its whole number.
 pub fn number(key: &str) -> u64 {
     key.parse().expect("an id reads as its number")
 }
 
-/// The places of the arrangement, by key.
-pub fn places(session: &Session) -> Vec<arrangement::PlaceReading> {
-    arrangement(session).places
+/// The places of the layout, by key.
+pub fn places(session: &Session) -> Vec<layout::PlaceReading> {
+    layout(session).places
 }
 
-/// The rows of the arrangement, by key.
-pub fn rows(session: &Session) -> Vec<arrangement::RowReading> {
-    arrangement(session).rows
+/// The rows of the layout, by key.
+pub fn rows(session: &Session) -> Vec<layout::RowReading> {
+    layout(session).rows
 }
 
-/// The place of the arrangement `key` names.
-pub fn place(session: &Session, key: u64) -> Option<arrangement::PlaceReading> {
+/// The place of the layout `key` names.
+pub fn place(session: &Session, key: u64) -> Option<layout::PlaceReading> {
     let key = key.to_string();
     places(session).into_iter().find(|place| place.key == key)
 }
 
-/// The strip of the arrangement `key` names.
-pub fn strip(session: &Session, key: u64) -> Option<arrangement::StripReading> {
+/// The strip of the layout `key` names.
+pub fn strip(session: &Session, key: u64) -> Option<layout::StripReading> {
     let key = key.to_string();
-    arrangement(session)
+    layout(session)
         .strips
         .into_iter()
         .find(|strip| strip.key == key)
 }
 
-/// The strip the place `key` stands in, as the arrangement reads it.
-pub fn strip_of(session: &Session, key: u64) -> Option<arrangement::StripReading> {
+/// The strip the place `key` stands in, as the layout reads it.
+pub fn strip_of(session: &Session, key: u64) -> Option<layout::StripReading> {
     let place = place(session, key)?;
     strip(session, number(&place.strip))
 }
 
-/// The places of the arrangement that show `resource` .
+/// The places of the layout that show `resource` .
 pub fn placed(session: &Session, resource: &str) -> usize {
     places(session)
         .iter()
@@ -918,7 +918,7 @@ pub fn placed(session: &Session, resource: &str) -> usize {
         .count()
 }
 
-/// What each place of the arrangement shows, by the kind and label of the resource its `open`
+/// What each place of the layout shows, by the kind and label of the resource its `open`
 /// resolves to: what the shell draws there.
 pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
     let resources = session.resources();

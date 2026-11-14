@@ -102,7 +102,7 @@ fn preset_menu_gone(session: &Session) -> bool {
     crate::common::preset_menu(session).is_none() && on_screen(session, "Dock").is_some()
 }
 
-/// Place `resource` on the canvas through the arrangement's published `place`, as the canvas's
+/// Place `resource` on the canvas through the layout's published `place`, as the canvas's
 /// own typed line and an agent do: at `(x, y)`, `width` by `height`. Its place's key.
 fn place(session: &mut Session, resource: &str, x: i64, y: i64, width: i64, height: i64) -> String {
     let (workspace, row, strip, place) = {
@@ -135,10 +135,10 @@ fn place(session: &mut Session, resource: &str, x: i64, y: i64, width: i64, heig
     place.to_string()
 }
 
-/// The canvas rectangle each placed frame stands at, as the arrangement keeps it: `(x, y, w, h)`,
-/// in the arrangement's order.
+/// The canvas rectangle each placed frame stands at, as the layout keeps it: `(x, y, w, h)`,
+/// in the layout's order.
 fn frames(session: &Session) -> Vec<(i64, i64, i64, i64)> {
-    crate::common::arrangement(session)
+    crate::common::layout(session)
         .strips
         .into_iter()
         .filter(|strip| strip.placed)

@@ -33,11 +33,11 @@ fn action_word(words: &Words, id: &str, argument: Option<&str>, source: &str) ->
 /// [`Layout::resources`].
 #[must_use]
 pub fn resources(words: &Words) -> Vec<ResourceSpec> {
-    vec![arrangement_resource(words), record_resource(words)]
+    vec![layout_resource(words), record_resource(words)]
 }
 
 /// What puts a resource on the canvas and steps the layout's history.
-pub(super) fn arrangement_resource(words: &Words) -> ResourceSpec {
+pub(super) fn layout_resource(words: &Words) -> ResourceSpec {
     placing_actions(words)
         .into_iter()
         .fold(

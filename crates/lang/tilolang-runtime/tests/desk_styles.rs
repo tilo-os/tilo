@@ -1,7 +1,7 @@
-//! A desk style is a view of the session's arrangement that any installed package declares
+//! A desk style is a view of the session's layout that any installed package declares
 //! (`docs/designs/app-language/shell.md` §6). The shell's `desk_view` draws the person's chosen
 //! style by `show(a, view: <style>)`, and the style is a view of a package other than the one
-//! holding the arrangement type: `show` resolves it by the type its view takes, never by a list
+//! holding the layout type: `show` resolves it by the type its view takes, never by a list
 //! in code. A style of the shell's own package is found by `views_of_type` as before; one of
 //! another package is found here.
 
@@ -10,42 +10,42 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::{AmStore, Meta, Runtime, SimpleAuthority, ViewInstance};
 
-    /// The session's arrangement type, as the shell's package declares it: the origin is what
+    /// The session's layout type, as the shell's package declares it: the origin is what
     /// makes a view of it a desk style.
     const SESSION: &str = r#"{
         "app": "so.tilo.session",
         "types": [
-            {"id": "Arrangement", "name": "Arrangement", "origin": "session.layout", "fields": [
-                {"id": "Arrangement.places", "name": "places", "type": "Collection<ArrangementPlace>"}
+            {"id": "Layout", "name": "Layout", "origin": "session.layout", "fields": [
+                {"id": "Layout.places", "name": "places", "type": "Collection<LayoutPlace>"}
             ]},
-            {"id": "ArrangementPlace", "name": "ArrangementPlace", "origin": "session.layout_place", "fields": [
-                {"id": "ArrangementPlace.key", "name": "key", "type": "Text"},
-                {"id": "ArrangementPlace.title", "name": "title", "type": "Text"}
+            {"id": "LayoutPlace", "name": "LayoutPlace", "origin": "session.layout_place", "fields": [
+                {"id": "LayoutPlace.key", "name": "key", "type": "Text"},
+                {"id": "LayoutPlace.title", "name": "title", "type": "Text"}
             ]}
         ]
     }"#;
 
-    /// The shell's package: it declares the arrangement type and one style of it of its own
+    /// The shell's package: it declares the layout type and one style of it of its own
     /// (`strips`), and the `desk_view` that draws the person's chosen style.
     const SHELL: &str = r#"app so.tilo.shell "Shell"
 
 use so.tilo.session as session
 
-type Arrangement (origin: session.layout) {
-    places: Collection<ArrangementPlace>
+type Layout (origin: session.layout) {
+    places: Collection<LayoutPlace>
 }
 
-type ArrangementPlace (origin: session.layout_place) {
+type LayoutPlace (origin: session.layout_place) {
     key: Text
     title: Text
 }
 
-root arrangement: Arrangement
+root layout: Layout
 
-default view desk_view for arrangement
+default view desk_view for layout
 
 /// The shipped strips style.
-view strips(a: Arrangement) {
+view strips(a: Layout) {
     stack {
         text("strips")
         for p in a.places {
@@ -56,17 +56,17 @@ view strips(a: Arrangement) {
 
 /// What draws the desk: the style the person chose, by name. The `Viewing` record holds the
 /// style as a package and a view (`me.styles:timeline`), and `show` finds it by that.
-view desk_view(a: Arrangement) {
+view desk_view(a: Layout) {
     show(a, view: "me.styles:timeline")
 }
 
 /// What a person's own style is drawn through, when its package is not loaded.
-view unknown(a: Arrangement) {
+view unknown(a: Layout) {
     show(a, view: "me.styles:timeline")
 }
 "#;
 
-    /// A person's own package, declaring a style of the shell's arrangement: a timeline of the
+    /// A person's own package, declaring a style of the shell's layout: a timeline of the
     /// places as cards. Its `ui.Card` never stands in the shell's own `strips`, so a tree with
     /// one proves the other package's view ran.
     const STYLE: &str = r#"app me.styles "My styles"
@@ -74,7 +74,7 @@ view unknown(a: Arrangement) {
 use so.tilo.shell as shell
 
 /// My agents' work as a timeline.
-view timeline(a: shell.Arrangement) {
+view timeline(a: shell.Layout) {
     stack {
         text("timeline")
         for p in a.places {
@@ -126,7 +126,7 @@ view timeline(a: shell.Arrangement) {
             // The person's own package is installed too, so its `timeline` is declared here: the
             // `show` of `desk_view` finds it by the type its view takes.
             style_app(&shell).load(&rt);
-            let root = arrangement_of(&rt, &shell);
+            let root = layout_of(&rt, &shell);
             let view = rt
                 .open_view(
                     &me(),
@@ -137,7 +137,7 @@ view timeline(a: shell.Arrangement) {
             assert_eq!(
                 drawn(&view),
                 ["timeline"],
-                "the timeline's own view drew the arrangement, not the shell's strips: {}",
+                "the timeline's own view drew the layout, not the shell's strips: {}",
                 dump(view.tree())
             );
         }
@@ -149,7 +149,7 @@ view timeline(a: shell.Arrangement) {
             shell.load(&rt);
             // No `me.styles` here: `desk_view`'s `show` names a view of a package that is not loaded.
             // The call waits on it rather than faulting, and asks for that package.
-            let root = arrangement_of(&rt, &shell);
+            let root = layout_of(&rt, &shell);
             let view = rt
                 .open_view(
                     &me(),
@@ -174,7 +174,7 @@ view timeline(a: shell.Arrangement) {
             let shell = shell_naming("me.broken", "broken");
             shell.load(&rt);
             App::compile(TRAPPING, &[session(), shell.meta().clone()]).load(&rt);
-            let root = arrangement_of(&rt, &shell);
+            let root = layout_of(&rt, &shell);
             let view = rt
                 .open_view(
                     &me(),
@@ -205,7 +205,7 @@ view timeline(a: shell.Arrangement) {
             // The host tried the package and could not load it: nothing more is coming, so the
             // call draws a failed state rather than a skeleton that never fills.
             rt.app_failed("me.miscompiled", "the module does not load".to_owned());
-            let root = arrangement_of(&rt, &shell);
+            let root = layout_of(&rt, &shell);
             let view = rt
                 .open_view(
                     &me(),
@@ -235,7 +235,7 @@ view timeline(a: shell.Arrangement) {
             shell.load(&rt);
             // The package was tried and did not load: the desk shows its failed state.
             rt.app_failed("me.broken", "the module does not load".to_owned());
-            let root = arrangement_of(&rt, &shell);
+            let root = layout_of(&rt, &shell);
             let failed = rt
                 .open_view(
                     &me(),
@@ -279,7 +279,7 @@ view timeline(a: shell.Arrangement) {
 use so.tilo.shell as shell
 
 /// A style that fails.
-view broken(a: shell.Arrangement) {
+view broken(a: shell.Layout) {
     let places = a.places.count()
     ui.Text("at {places / 0}")
 }
@@ -291,7 +291,7 @@ view broken(a: shell.Arrangement) {
 use so.tilo.shell as shell
 
 /// A style that works.
-view broken(a: shell.Arrangement) {
+view broken(a: shell.Layout) {
     ui.Text("a working style")
 }
 "#;
@@ -303,28 +303,28 @@ view broken(a: shell.Arrangement) {
 
 use so.tilo.session as session
 
-type Arrangement (origin: session.layout) {{
-    places: Collection<ArrangementPlace>
+type Layout (origin: session.layout) {{
+    places: Collection<LayoutPlace>
 }}
 
-type ArrangementPlace (origin: session.layout_place) {{
+type LayoutPlace (origin: session.layout_place) {{
     key: Text
     title: Text
 }}
 
-root arrangement: Arrangement
+root layout: Layout
 
-default view desk_view for arrangement
+default view desk_view for layout
 
 /// The shipped strips style.
-view strips(a: Arrangement) {{
+view strips(a: Layout) {{
     stack {{
         text("strips")
     }}
 }}
 
 /// What draws the desk: the style the person chose, by name.
-view desk_view(a: Arrangement) {{
+view desk_view(a: Layout) {{
     show(a, view: "{app}:{view}")
 }}
 "#
@@ -332,16 +332,16 @@ view desk_view(a: Arrangement) {{
         App::compile(&source, &[session()])
     }
 
-    /// The shell's `arrangement` root, made: what a desk style draws.
-    fn arrangement_of(rt: &Runtime, shell: &App) -> tilolang_runtime::ResourceRef {
+    /// The shell's `layout` root, made: what a desk style draws.
+    fn layout_of(rt: &Runtime, shell: &App) -> tilolang_runtime::ResourceRef {
         let ty = shell
             .meta()
             .named_roots
             .iter()
-            .find(|r| r.name == "arrangement")
+            .find(|r| r.name == "layout")
             .map(|r| r.ty.clone())
-            .expect("the shell declares its arrangement as a named root");
-        rt.create_root(&ty).expect("the arrangement is made")
+            .expect("the shell declares its layout as a named root");
+        rt.create_root(&ty).expect("the layout is made")
     }
 
     /// The desk a failed style shows: a failed state naming the view, drawn where the call

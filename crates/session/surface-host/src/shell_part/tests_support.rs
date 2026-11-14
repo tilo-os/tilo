@@ -32,7 +32,7 @@ pub(super) fn publish_notices(link: &SessionLink, notices: &serde_json::Value) {
 }
 
 /// The four shell styles `so.tilo.shell` ships, as the session lists them: a view of the
-/// arrangement each, named by its doc line (shell.md §6).
+/// layout each, named by its doc line (shell.md §6).
 pub(super) fn shipped_styles() -> serde_json::Value {
     [
         ("strips", "Strips"),
@@ -242,7 +242,7 @@ fn part_at(
     let staged: Staged = reading.into();
     publish_windows(&link, &staged.windows);
     publish_overlays(&link, &staged.here, staged.revealed);
-    link.publish_arrangement(staged.shell);
+    link.publish_layout(staged.shell);
     let mut part = ShellPart::new(
         ShellIdentity {
             app: &app,

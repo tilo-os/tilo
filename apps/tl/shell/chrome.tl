@@ -3,9 +3,9 @@
 /// devices with history and undo; every change is one of the actions below, so an agent
 /// acting for the person changes it exactly as they do, and undo takes any of it back.
 ///
-/// shell.md's model: a shell is a view of the person's arrangement. This record is the
-/// arrangement's chrome — the bar and the dock — and the rest of the person's arrangement
-/// (windows, strips, canvas places) is the shell's own arrangement beside it.
+/// shell.md's model: a shell is a view of the person's layout. This record is the
+/// layout's chrome — the bar and the dock — and the rest of the person's layout
+/// (windows, strips, canvas places) is the shell's own layout beside it.
 /// The edge of the screen a part rides.
 enum Edge {
     /// Top
@@ -88,9 +88,9 @@ enum Slot {
 }
 
 /// A named set of the settings, which the person applies in one action: a chrome preset.
-/// `Viewing.preset` (arrangement.tl) is the *view* preset — how the same places are shown — and is
+/// `Viewing.preset` (layout.tl) is the *view* preset — how the same places are shown — and is
 /// a different setting; this one names the bar and the dock.
-enum Layout {
+enum ChromePreset {
     /// The dock on the bottom with the bar on the top: Tilo's own.
     tilo (icon: .layout_grid)
     /// A floating, rounded, translucent dock at the bottom that hides while a window covers it, and a top bar with the focused app's menus after the system's.
@@ -109,10 +109,10 @@ enum Layout {
 type Shell {
     /// The preset the settings were last made from; `tuned` says whether the person has
     /// changed a setting since.
-    preset: Layout = .tilo
+    preset: ChromePreset = .tilo
     /// The preset the settings were last made from, kept while the person tunes one thing,
     /// so the picker says "Custom, based on …" rather than losing where they started.
-    based_on: Layout = .tilo
+    based_on: ChromePreset = .tilo
     /// Whether the person has changed a setting since choosing a preset.
     tuned: Bool = false
     /// The top bar.
@@ -243,7 +243,7 @@ migration action drop_the_tasks_part(s: Shell) {
 
 /// Uses the preset `layout`: every setting it names at once. The result is exactly that preset,
 /// so the picker shows it chosen and "custom" is off.
-primary action apply(s: Shell, layout: Layout) (icon: .layout_grid, label: "Use this layout") {
+primary action apply(s: Shell, layout: ChromePreset) (icon: .layout_grid, label: "Use this layout") {
     s.preset = layout
     s.based_on = layout
     s.tuned = false

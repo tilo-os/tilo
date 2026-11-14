@@ -1,7 +1,7 @@
 //! The tilolang shell as the whole screen of the native session (headless backend): the shell's
-//! arrangement root stands over every display, its bar, its dock and the person's arrangement as
+//! layout root stands over every display, its bar, its dock and the person's layout as
 //! their preset shows it, every window drawn in its place's well.
-//! A note goes onto the canvas through the arrangement's published `place` , as an agent puts it
+//! A note goes onto the canvas through the layout's published `place` , as an agent puts it
 //! there. The style changes through the shell's own `show_style`, which every row of the bar's
 //! switch runs. What stands on screen is read from what the shell lays out for assistive
 //! technology, never from pixels.
@@ -62,7 +62,7 @@ fn session_at(width: i32, height: i32) -> (Session, Vec<String>) {
     (session, notes)
 }
 
-/// Place `resource` on the canvas of the workspace in front, through the arrangement's published
+/// Place `resource` on the canvas of the workspace in front, through the layout's published
 /// `place` .
 fn place(session: &mut Session, resource: &str) -> u64 {
     let (workspace, row, strip, place) = {
@@ -119,7 +119,7 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
         "the shell covers the display"
     );
     // Showing the shell as the framed canvas is the shell's own action, which the preset switch over
-    // the arrangement runs. The canvas's entry (typed text finds something and places it on the
+    // the layout runs. The canvas's entry (typed text finds something and places it on the
     // canvas) stands on it; the strips have none.
     assert!(
         on_screen(&session, CANVAS).is_none(),
@@ -131,7 +131,7 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
     });
     let canvas = on_screen(&session, CANVAS).unwrap();
 
-    // A note placed through the arrangement stands on the canvas, drawn by its app: its title on
+    // A note placed through the layout stands on the canvas, drawn by its app: its title on
     // screen, inside the canvas.
     place(&mut session, &note);
     let shown = shown_as(&session, NOTE_TITLE);
@@ -675,7 +675,7 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
     until(&mut session, "the width menu", |session| {
         on_screen(session, "Wide").is_some()
     });
-    keep(&mut session, "arrangement-window-menu");
+    keep(&mut session, "layout-window-menu");
     press(&mut session, "Wide");
     until(&mut session, "the window widened", |session| {
         strip_width(session, strip) == Some(1000)
@@ -702,7 +702,7 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
     until(&mut session, "the rows to move to", |session| {
         on_screen(session, "Move to Elsewhere").is_some()
     });
-    keep(&mut session, "arrangement-move-to-row-menu");
+    keep(&mut session, "layout-move-to-row-menu");
     press(&mut session, "Move to Elsewhere");
     until(&mut session, "the place moved", |session| {
         place_row(session, placed) == Some(second)
@@ -720,7 +720,7 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
 
 /// Two places in one strip: the strips preset shows a strip of several places as its tab strip
 /// (shell.md §2), and every way to make one — a place moved into another strip from the window's
-/// menu, a found resource opened into it — is an arranging action the person, the REPL and an agent
+/// menu, a found resource opened into it — is a layout action the person, the REPL and an agent
 /// call alike, attributed and undone as one step. Choosing a tab shows its place, and closing a tab
 /// takes that place off the strip and nothing else.
 #[test]
@@ -744,7 +744,7 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
     );
 
     // The person moves the first place into the second one's strip from the first window's menu:
-    // the arranging action's `strip` , which is what a drag onto another strip means. The window in
+    // the layout action's `strip` , which is what a drag onto another strip means. The window in
     // front is the one the person is working in, so its menu is the one that stands.
     let one_name = shown_as(&session, TITLES[0]);
     let two_name = shown_as(&session, TITLES[1]);
@@ -811,7 +811,7 @@ fn two_places_in_one_strip_are_its_tabs_on_the_shells_screen() {
     });
 }
 
-/// A resource a text finds opens into the strip in front as its tab, through the arranging action
+/// A resource a text finds opens into the strip in front as its tab, through the layout action
 /// the launcher's "Open as a tab" runs (`place-found` with the strip named): one step of the
 /// person's, the same an agent or the REPL makes.
 #[test]
@@ -826,7 +826,7 @@ fn a_found_resource_opens_as_a_tab_of_the_strip_in_front() {
     let strip = place_strip(&session, placed).expect("the place stands in a strip");
     let before = crate::common::places(&session).len();
 
-    // The launcher's "Open as a tab" runs the arranging action with the strip in front named.
+    // The launcher's "Open as a tab" runs the layout action with the strip in front named.
     session
         .invoke(
             "shell:layout",
@@ -913,7 +913,7 @@ fn a_place_arrives_over_the_frames_between() {
 }
 
 /// An app the shell opens stands on the framed canvas: the canvas draws a window group by the place
-/// the arrangement holds for it, so a group the shell launched with no place of its own is a window
+/// the layout holds for it, so a group the shell launched with no place of its own is a window
 /// the person opened and never sees. The shell gives every group it holds a place, and the opened
 /// app's window is on screen.
 #[test]
@@ -956,7 +956,7 @@ fn an_app_the_shell_opens_stands_on_the_framed_canvas() {
                 .strips
                 .iter()
                 .flat_map(|strip| &strip.window_groups)
-                .all(|group| workspace.arrangement.place_of(group.id).is_some())
+                .all(|group| workspace.layout.place_of(group.id).is_some())
         })
     });
     assert!(

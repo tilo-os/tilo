@@ -206,9 +206,9 @@ impl Session {
         let underway = tilo_session_core::layout::Busy { gesture, typing };
         self.shared.underway.set(underway);
         // What each window shows, as its app holds the record: the note this pass's session, layout
-        // and arrangement are read from.
+        // and layout are read from.
         self.read_window_notes();
-        self.shared.follow_arrangement(underway);
+        self.shared.follow_layout(underway);
         self.follow_controllers()?;
         self.follow_displays()?;
         self.follow_fullscreen();

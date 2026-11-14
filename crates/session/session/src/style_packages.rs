@@ -442,7 +442,7 @@ struct ShippedView {
 }
 
 /// Write the person's own style package into `dir`: a small package of its own that `use`s the
-/// shell and declares one view of `shell.Arrangement`, the shipped style `view` rebuilt through
+/// shell and declares one view of `shell.Layout`, the shipped style `view` rebuilt through
 /// `shell.style_shell(...)` with the style's own places inside it.
 fn write_copy(dir: &Path, view: &ShippedView) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
@@ -467,7 +467,7 @@ fn style_source(view: &ShippedView) -> String {
          use so.tilo.device as device\n\
          \n\
          /// {line}\n\
-         view {name}(a: shell.Arrangement) {{\n\
+         view {name}(a: shell.Layout) {{\n\
          {body}\n\
          }}\n",
         package = tilo_surface_host::shell_part::SHELL_APP,
@@ -517,7 +517,7 @@ fn install(package: &str) -> Result<(String, String), String> {
 }
 
 /// Compile the package in `dir` against the shell this session runs and what this session
-/// publishes. A style names the arrangement as `shell.Arrangement` (`use so.tilo.shell as
+/// publishes. A style names the layout as `shell.Layout` (`use so.tilo.shell as
 /// shell`) and calls the shell's `template view`s, so the shell's own compiled package stands in
 /// `published`: only its metadata carries the package's templates, and it is read from the
 /// compiled shell itself, so it names the actions, types and templates the shell's own code calls.

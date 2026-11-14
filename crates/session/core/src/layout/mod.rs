@@ -32,7 +32,7 @@ use sizing::canvas_size;
 use sizing::width_in_view;
 mod published;
 use published::{
-    arrangement_resource, hash_resources, place_actions, place_label, record_resource, row_label,
+    layout_resource, hash_resources, place_actions, place_label, record_resource, row_label,
     strip_actions, strip_label,
 };
 pub use published::{place_kind_resource, resources, row_kind_resource, strip_kind_resource};
@@ -76,7 +76,7 @@ pub const STRIP_KIND: &str = "layout.strip";
 /// The kind of a row's own resource.
 pub const ROW_KIND: &str = "layout.row";
 /// The kind of a query's own resource: what a place shows while its app answers what the person
-/// typed (`session.arrangement_query`, shell.md §8).
+/// typed (`session.layout_query`, shell.md §8).
 pub const QUERY_KIND: &str = "layout.query";
 
 /// What a place, a strip or a row of the layout is published as a resource of.
@@ -387,7 +387,7 @@ pub type Answer = Result<Vec<AnswerRef>, String>;
 
 /// One resource an outside origin's query found: its address in its app, the name it goes by, and
 /// its kind as its app publishes it (`tube.channel`). The same three words a place's record is
-/// named by (`session.arrangement_ref`), so the query's rows and a place's record are one shape.
+/// named by (`session.layout_ref`), so the query's rows and a place's record are one shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnswerRef {
     pub address: String,
@@ -782,10 +782,10 @@ pub struct Layout {
     /// Which message Chat posted for an ask, once it answered: what names a waiting ask's turn.
     posted: RefCell<Option<Posted>>,
     /// The queries the canvas stood while their app answers them, by the key each place shows it
-    /// under (`session.arrangement_query`, shell.md §8): a query is no part of the layout's record
+    /// under (`session.layout_query`, shell.md §8): a query is no part of the layout's record
     /// — a place still shows one while it runs — so the session keeps it here, in step with the
     /// place that shows it.
-    queries: RefCell<BTreeMap<String, ArrangementQueryReading>>,
+    queries: RefCell<BTreeMap<String, LayoutQueryReading>>,
     /// The resources of a query's kind its app held when the query went out, by place: what the
     /// app holds now of that kind that it did not then is what the search found — the answer is
     /// told apart from what the app already had without a service's private words (shell.md §8).
@@ -1007,7 +1007,7 @@ impl Layout {
             // refused / failed, which is this invocation's own result: the query stands `.failed`
             // with the reason it gave (shell.md §8).
             let (state, reason) = query_state_from_outcome(outcome);
-            let query = ArrangementQueryReading {
+            let query = LayoutQueryReading {
                 key: key.clone(),
                 text: text.to_owned(),
                 app,
@@ -1108,7 +1108,7 @@ impl Layout {
         query.matches = found
             .into_iter()
             .enumerate()
-            .map(|(at, found)| ArrangementRefReading {
+            .map(|(at, found)| LayoutRefReading {
                 key: format!("{key}/{at}"),
                 address: found.address,
                 title: found.title,
@@ -1178,7 +1178,7 @@ impl Layout {
     /// The queries the canvas stands that still search, by place: what the host answers with
     /// [`Self::answer_query_of`] once the app's own records hold what it found (shell.md §8).
     #[must_use]
-    pub fn queries_running(&self) -> Vec<ArrangementQueryReading> {
+    pub fn queries_running(&self) -> Vec<LayoutQueryReading> {
         self.queries
             .borrow()
             .values()
@@ -1416,7 +1416,7 @@ impl Layout {
 
     /// The query `place` shows, if it shows one.
     #[must_use]
-    pub fn query_of(&self, place: u64) -> Option<ArrangementQueryReading> {
+    pub fn query_of(&self, place: u64) -> Option<LayoutQueryReading> {
         self.queries.borrow().get(&place.to_string()).cloned()
     }
 
@@ -1506,7 +1506,7 @@ impl Layout {
             .iter()
             .map(|query| query_resource(query, &self.words));
         vec![
-            arrangement_resource(&self.words)
+            layout_resource(&self.words)
                 .with_children(rows.chain(strips).chain(places).chain(queries)),
             record_resource(&self.words),
         ]

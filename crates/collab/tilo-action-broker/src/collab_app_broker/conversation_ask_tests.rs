@@ -243,14 +243,14 @@ async fn an_ended_turns_question_is_taken_away() {
         .await;
 }
 
-/// The session's own arrangement, as a turn's host step: `open` places the
+/// The session's own layout, as a turn's host step: `open` places the
 /// resource it names, and records what it was handed.
 #[derive(Default)]
-struct TurnArrangement {
+struct TurnLayout {
     placed: std::sync::Mutex<Vec<(String, String)>>,
 }
 
-impl crate::services::HostStepServices for TurnArrangement {
+impl crate::services::HostStepServices for TurnLayout {
     fn provider(&self) -> &'static str {
         tilo_actions::remote::session_actions::PROVIDER
     }
@@ -270,7 +270,7 @@ impl crate::services::HostStepServices for TurnArrangement {
                 tilo_actions::remote::session_actions::OPEN,
             ),
             resource_kind: "shell".into(),
-            resource_label: "The person's arrangement".into(),
+            resource_label: "The person's layout".into(),
             action_label: "Open a resource with its own view".into(),
             keywords: Vec::new(),
             icon: None,
@@ -295,8 +295,8 @@ impl crate::services::HostStepServices for TurnArrangement {
                 .get("resource")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
-                .ok_or("the arrangement's open names no resource")?,
-            _ => return Err("the arrangement's open takes its arguments by name".into()),
+                .ok_or("the layout's open names no resource")?,
+            _ => return Err("the layout's open takes its arguments by name".into()),
         };
         self.placed
             .lock()
@@ -308,9 +308,9 @@ impl crate::services::HostStepServices for TurnArrangement {
     }
 }
 
-/// The step of [`TurnArrangement`], invoked through the broker's own door by
+/// The step of [`TurnLayout`], invoked through the broker's own door by
 /// a caller on the turn, as the agent's child is.
-fn arrangement_invoke(
+fn layout_invoke(
     state: &Arc<AppBrokerState>,
     caller: &Caller,
     invocation: u128,
@@ -347,9 +347,9 @@ fn arrangement_invoke(
         .expect("admission answers at once")
 }
 
-/// Let the turn's agent `open` through the session's arrangement, or ask it
+/// Let the turn's agent `open` through the session's layout, or ask it
 /// first, as the person who started the turn.
-fn arrangement_grant(f: &Fixture, answer: tilo_action_policy::Answer) {
+fn layout_grant(f: &Fixture, answer: tilo_action_policy::Answer) {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     use tilo_action_policy::{Grant, Grantee, KindSet, TreePath};
     let node = tilo_actions::action_node(
@@ -373,7 +373,7 @@ fn arrangement_grant(f: &Fixture, answer: tilo_action_policy::Answer) {
         )
     } else {
         Grant::new(
-            "fixture-arrangement-open",
+            "fixture-layout-open",
             Grantee::agent("scribe"),
             node,
             KindSet::UNDOABLE,
@@ -391,7 +391,7 @@ fn arrangement_grant(f: &Fixture, answer: tilo_action_policy::Answer) {
 async fn a_turn_steps_ask_goes_to_the_persons_sheet_and_their_answer_runs_it() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let steps = Arc::new(TurnArrangement::default());
+            let steps = Arc::new(TurnLayout::default());
             let f = Fixture::with_services(None, vec![steps.clone()]);
             f.approve();
             let turn = tilo_action_policy::turn::Turn::new(
@@ -403,7 +403,7 @@ async fn a_turn_steps_ask_goes_to_the_persons_sheet_and_their_answer_runs_it() {
                 run.turn = Some(turn.clone());
             });
             f.caused("asked");
-            arrangement_grant(&f, tilo_action_policy::Answer::Ask);
+            layout_grant(&f, tilo_action_policy::Answer::Ask);
             let sheet = Arc::new(PersonSheet::default());
             f.state.set_app_action_consent(sheet.clone());
             let agent = Caller::agent_turn(
@@ -416,7 +416,7 @@ async fn a_turn_steps_ask_goes_to_the_persons_sheet_and_their_answer_runs_it() {
             // The step asks: the question stands on the person's sheet, and
             // the child hears the wait the app action's held child hears.
             let waiting =
-                arrangement_invoke(&f.state, &agent, 9600, "tl:so.tilo.lang.notes:root-1")
+                layout_invoke(&f.state, &agent, 9600, "tl:so.tilo.lang.notes:root-1")
                     .unwrap_err();
             assert!(
                 matches!(&waiting, ActionHostError::Refused { reason } if reason.contains(tilo_actions::draft::AWAITING_CONFIRMATION)),
@@ -430,7 +430,7 @@ async fn a_turn_steps_ask_goes_to_the_persons_sheet_and_their_answer_runs_it() {
             // The person allows this once: the step runs.
             sheet.answer_next(AppActionConsent::Once);
             let receipt =
-                arrangement_invoke(&f.state, &agent, 9600, "tl:so.tilo.lang.notes:root-1").unwrap();
+                layout_invoke(&f.state, &agent, 9600, "tl:so.tilo.lang.notes:root-1").unwrap();
             assert!(
                 matches!(
                     receipt.status,
@@ -458,7 +458,7 @@ async fn a_turn_steps_ask_goes_to_the_persons_sheet_and_their_answer_runs_it() {
 async fn a_turn_steps_allowed_open_stands_the_place() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let steps = Arc::new(TurnArrangement::default());
+            let steps = Arc::new(TurnLayout::default());
             let f = Fixture::with_services(None, vec![steps.clone()]);
             f.approve();
             let turn = tilo_action_policy::turn::Turn::new(
@@ -470,7 +470,7 @@ async fn a_turn_steps_allowed_open_stands_the_place() {
                 run.turn = Some(turn.clone());
             });
             f.caused("asked");
-            arrangement_grant(&f, tilo_action_policy::Answer::Allow);
+            layout_grant(&f, tilo_action_policy::Answer::Allow);
             let sheet = Arc::new(PersonSheet::default());
             f.state.set_app_action_consent(sheet.clone());
             let agent = Caller::agent_turn(
@@ -480,7 +480,7 @@ async fn a_turn_steps_allowed_open_stands_the_place() {
             )
             .in_workspace(workspace_id().to_string());
             let receipt =
-                arrangement_invoke(&f.state, &agent, 9601, "tl:so.tilo.lang.tasks:root-1").unwrap();
+                layout_invoke(&f.state, &agent, 9601, "tl:so.tilo.lang.tasks:root-1").unwrap();
             assert!(
                 matches!(
                     receipt.status,
@@ -513,7 +513,7 @@ async fn a_turn_steps_allowed_open_stands_the_place() {
 async fn a_turn_step_that_cannot_be_routed_is_refused_at_once() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let steps = Arc::new(TurnArrangement::default());
+            let steps = Arc::new(TurnLayout::default());
             let f = Fixture::with_services(None, vec![steps]);
             f.approve();
             let turn = tilo_action_policy::turn::Turn::new(
@@ -525,7 +525,7 @@ async fn a_turn_step_that_cannot_be_routed_is_refused_at_once() {
                 run.turn = Some(turn.clone());
             });
             f.caused("asked");
-            arrangement_grant(&f, tilo_action_policy::Answer::Ask);
+            layout_grant(&f, tilo_action_policy::Answer::Ask);
             let sheet = Arc::new(PersonSheet::default());
             f.state.set_app_action_consent(sheet);
             let agent = Caller::agent_turn(
@@ -537,7 +537,7 @@ async fn a_turn_step_that_cannot_be_routed_is_refused_at_once() {
             // A provider nothing serves at all cannot be routed, so the
             // child is refused with its own reason at once: no row stands as
             // an accepted child with nothing behind it, and no question waits.
-            let unrouted = arrangement_invoke_unserved(&f.state, &agent, 9603).unwrap_err();
+            let unrouted = layout_invoke_unserved(&f.state, &agent, 9603).unwrap_err();
             assert!(
                 matches!(unrouted, ActionHostError::UnknownAction),
                 "{unrouted:?}"
@@ -549,7 +549,7 @@ async fn a_turn_step_that_cannot_be_routed_is_refused_at_once() {
 
 /// The same step invoked under a provider nothing serves here: it cannot be
 /// routed at all.
-fn arrangement_invoke_unserved(
+fn layout_invoke_unserved(
     state: &Arc<AppBrokerState>,
     caller: &Caller,
     invocation: u128,
@@ -590,7 +590,7 @@ fn arrangement_invoke_unserved(
 async fn a_turn_step_that_asks_with_no_sheet_is_refused_at_once() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let steps = Arc::new(TurnArrangement::default());
+            let steps = Arc::new(TurnLayout::default());
             let f = Fixture::with_services(None, vec![steps.clone()]);
             f.approve();
             let turn = tilo_action_policy::turn::Turn::new(
@@ -602,7 +602,7 @@ async fn a_turn_step_that_asks_with_no_sheet_is_refused_at_once() {
                 run.turn = Some(turn.clone());
             });
             f.caused("asked");
-            arrangement_grant(&f, tilo_action_policy::Answer::Ask);
+            layout_grant(&f, tilo_action_policy::Answer::Ask);
             // No sheet is installed on this broker.
             let agent = Caller::agent_turn(
                 "scribe",
@@ -611,7 +611,7 @@ async fn a_turn_step_that_asks_with_no_sheet_is_refused_at_once() {
             )
             .in_workspace(workspace_id().to_string());
             let refused =
-                arrangement_invoke(&f.state, &agent, 9605, "tl:so.tilo.lang.notes:root-1")
+                layout_invoke(&f.state, &agent, 9605, "tl:so.tilo.lang.notes:root-1")
                     .unwrap_err();
             assert!(
                 matches!(&refused, ActionHostError::Refused { reason } if !reason.contains(tilo_actions::draft::AWAITING_CONFIRMATION)),
@@ -634,10 +634,10 @@ async fn a_turn_step_that_asks_with_no_sheet_is_refused_at_once() {
 async fn a_session_step_that_asks_on_an_issue_run_is_refused_at_once() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let steps = Arc::new(TurnArrangement::default());
+            let steps = Arc::new(TurnLayout::default());
             let f = Fixture::with_services(None, vec![steps.clone()]);
             f.approve();
-            arrangement_grant(&f, tilo_action_policy::Answer::Ask);
+            layout_grant(&f, tilo_action_policy::Answer::Ask);
             let sheet = Arc::new(PersonSheet::default());
             f.state.set_app_action_consent(sheet.clone());
             let turn = tilo_action_policy::turn::Turn::new("tasks.tracker/issues/release", "m1");
@@ -650,7 +650,7 @@ async fn a_session_step_that_asks_on_an_issue_run_is_refused_at_once() {
             )
             .in_workspace(workspace_id().to_string());
             let refused =
-                arrangement_invoke(&f.state, &agent, 9604, "tl:so.tilo.lang.notes:root-1")
+                layout_invoke(&f.state, &agent, 9604, "tl:so.tilo.lang.notes:root-1")
                     .unwrap_err();
             assert!(
                 matches!(&refused, ActionHostError::Refused { reason } if !reason.contains(tilo_actions::draft::AWAITING_CONFIRMATION)),

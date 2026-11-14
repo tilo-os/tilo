@@ -1,271 +1,239 @@
-/// Layouts: the presets a person picks among, each a named set of the settings `chrome.tl`
-/// holds, and the individual settings underneath for anyone who wants to tune one thing.
-/// Picking a preset applies it live through the shared motion primitives; changing one
-/// setting after that makes the result "Custom, based on X" and never loses the preset.
+/// The person's layout: what is open where. It is a row across a workspace, a strip of places in
+/// a row, a place showing a resource through a view, which the session keeps with the layout the
+/// workspace shares, with history and undo.
 ///
-/// Each preset's card draws the shell **with the real views**: the bar's parts and the dock's
-/// items in miniature, on the edge and in the fit and material the preset names, so what a
-/// person picks is what they get.
-/// The layout picker: a card per preset, the one in use marked, and the sentence saying where
-/// the settings stand.
-view layouts(s: Shell) {
-    section("Layout") {
-        row(gap: .related, align: .center) {
-            ui.Text(standing(s), role: .subheading)
-            if s.tuned {
-                spacer
-                button(reset(s))
-            }
-        }
-        grid(min: 15rem, gap: .section) {
-            for preset in cases(Layout) {
-                layout_card(s, preset)
-            }
+/// The session reads it off the live layout and publishes its reading as
+/// `session.layout`. The shell's views read it and change it only through the arranging
+/// actions on `shell:layout` (`so.tilo.session`'s), so a person, an agent and a script
+/// arrange the same way, attributed and undoable.
+///
+/// Every entry names the shell that made it (`shell`): a shell that does not know an entry
+/// another shell made keeps it and never changes or removes it.
+/// The person's layout as the session reads it off the layout: the workspaces it holds, its
+/// rows, its strips, and every place. Which preset it shows and which strip stands in front are
+/// the shell's own view of it (`viewing`), this package's record, so a shell is picked per
+/// person and device without changing what the layout holds.
+type Layout (origin: session.layout) {
+    /// The person at this device, by their name.
+    person: Text merge register
+    /// The others here in the workspace in front.
+    people: Collection<LayoutPerson>
+    workspaces: Collection<LayoutWorkspace>
+    rows: Collection<LayoutRow>
+    strips: Collection<LayoutStrip>
+    /// Every place, each naming the strip it is in, so the views need not walk the tree.
+    places: Collection<LayoutPlace>
+    /// The queries the canvas stands while an app answers them, by the place that shows each:
+    /// what the person typed, what it found, or why nothing did (shell.md §8).
+    queries: Collection<LayoutQuery>
+    /// The resources those queries found, each naming the query it is of.
+    refs: Collection<LayoutRef>
+}
+
+/// A query a place shows while its app answers it: what the person typed, in which app, and what
+/// came of it. Its place is the one whose key this is (`LayoutPlace.key`), and a press on a
+/// row shows that match in the same place.
+type LayoutQuery (origin: session.layout_query) {
+    /// Its id: the place showing it.
+    key: Text merge register
+    /// What the person typed.
+    text: Text merge register
+    /// The app asked, by its canonical id.
+    in_app: Text merge register
+    /// The kind of resource the query names, as its app publishes it (`tube.channel`).
+    kind: Text merge register
+    /// How the search stands: `searching`, `one`, `several`, `none` or `failed`.
+    state: Text merge register
+    /// Why it failed, in the app's own words; empty while it does better.
+    reason: Text merge register
+}
+
+/// A resource a query found: its address, the name it goes by, and its kind, the same three words a
+/// place's record is named by.
+type LayoutRef (origin: session.layout_ref) {
+    key: Text merge register
+    /// The query it is of, by its key.
+    query: Text merge register
+    address: Text merge register
+    title: Text merge register
+    kind: Text merge register
+}
+
+/// A workspace the person's layout shows.
+type LayoutWorkspace (origin: session.layout_workspace) {
+    key: Text merge register
+    name: Text merge register
+    /// Whether it is the workspace in front, which the shell shows.
+    current: Bool
+}
+
+/// Someone else here in the workspace in front: a person or an agent.
+type LayoutPerson (origin: session.layout_person) {
+    key: Text merge register
+    name: Text merge register
+}
+
+/// A row of the layout: a strip across a workspace's width, holding columns.
+type LayoutRow (origin: session.layout_row) {
+    key: Text merge register
+    workspace: Text merge register
+    name: Text merge register
+    /// Whether it is the row in front in its workspace.
+    current: Bool
+    /// The shell that made it; empty reads as this shell's.
+    shell: Text merge register
+}
+
+/// A strip: a column of places, with a width, in a row of a workspace.
+type LayoutStrip (origin: session.layout_strip) {
+    key: Text merge register
+    workspace: Text merge register
+    row: Text merge register
+    /// Its width in per-mille of its row's usable width (333 narrow, 667 normal, 1000 wide).
+    width: Int
+    maximized: Bool
+    /// The place in front, by its id; empty for none.
+    active: Text merge register
+    /// Whether it has a place on its workspace's canvas.
+    placed: Bool
+    canvas_x: Int
+    canvas_y: Int
+    canvas_width: Int
+    canvas_height: Int
+    /// Whether `canvas_height` is the most it takes: what it shows is as tall as what it holds
+    /// up to it (a thing found where the person clicked).
+    canvas_hugs: Bool
+    shell: Text merge register
+}
+
+/// A place: one window, showing a resource through a view. A place is the shell's view of a
+/// resource, so two places may show one resource, each with its own state.
+type LayoutPlace (origin: session.layout_place) {
+    key: Text merge register
+    /// The strip it is in.
+    strip: Text merge register
+    /// The app showing the resource, by its canonical id (`so.tilo.terminal`).
+    shows: Text merge register
+    /// The view it shows the resource through; empty for the app's default.
+    shown_as: Text merge register
+    /// The record it shows, when it shows one.
+    record: Text merge register
+    /// The title it is shown under.
+    title: Text merge register
+    /// What this place is called, on every surface: its window's title and its app's own name
+    /// (`Groceries` in `Notes`, the one the person picked), or the app's name alone when the
+    /// window has no title. The session resolves it, so the bar, the chips, the switcher, the
+    /// overview and search never disagree, and none of them falls back to an app id.
+    name: Text merge register
+    /// Whether the person pinned it: an agent's layout leaves it alone.
+    pinned: Bool
+    /// The shell that made it; empty reads as this shell's.
+    shell: Text merge register
+}
+
+/// How wide a strip stands within its row, in per-mille of the row's width.
+enum Width {
+    /// Three tenths of the row: a list, a set of options.
+    narrow
+    /// Two thirds of the row: a note, a conversation.
+    normal
+    /// The row's whole usable width.
+    wide
+}
+
+/// The width a strip's per-mille stands for, as the nearest of the three.
+fn width_of(permille: Int) -> Width {
+    if permille <= 500 { .narrow } else if permille < 900 { .normal } else { .wide }
+}
+
+/// The per-mille one of the widths stands for.
+fn permille_of(w: Width) -> Int {
+    match w {
+        .narrow => 333,
+        .normal => 667,
+        .wide => 1000,
+    }
+}
+
+/// A way of laying out the same resources and actions a person picked before the shell had
+/// styles: `Viewing.showing` kept one. It is declared still, and unchanged, so the
+/// record the old shell wrote — an enum value the store holds as it wrote it — reads as it was
+/// and the migration below can name the style it stands for. Nothing writes it again.
+enum Preset {
+    /// Columns of places, scrolled horizontally, with strips stacked and scrolled vertically.
+    strips
+    /// Places at points on a pannable, zoomable surface, each drawn in a frame.
+    frames
+    /// Places at points, each drawn as its own view: resources standing as content on one surface, grouped by where they are rather than by a frame around them.
+    spaces
+    /// The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
+    desktop
+}
+
+/// What the person shows of their layout, and which strip stands in front: the shell's own
+/// view of it, in their own record (`records: .own`, `root viewing: Viewing`). The layout
+/// is the session's and the same whichever way it is shown; this is what changes when the
+/// person picks a style or brings a strip forward, and switching keeps every place where
+/// it was.
+type Viewing {
+    /// The style the person shows, as a view reference: a package and a view
+    /// (`so.tilo.shell:strips`, `me.styles:timeline`). A style is a view of the
+    /// layout any installed package declares; empty shows this shell's
+    /// strips.
+    style: Text
+    /// The preset the person showed before styles were views. It kept its declaration, its type
+    /// and its default, so a record the old shell wrote reads as it was, a record made now
+    /// reads the strips, and the migration below names the style it stands for. Nothing writes
+    /// it again.
+    showing: Preset = .strips
+    /// The strip in front, by its key; empty for none.
+    focused: Text
+}
+
+root viewing: Viewing
+
+/// A style picked before styles were views: the preset's name turned into this package's
+/// view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept. A record
+/// whose `style` is already set keeps it.
+migration action name_the_style(v: Viewing) {
+    if v.style == "" {
+        v.style = style_named(v.showing)
+    }
+}
+
+/// The style reference a preset stands for: this package's own view of that name, the four
+/// that ship.
+fn style_named(p: Preset) -> Text {
+    match p {
+        .frames => "so.tilo.shell:frames",
+        .spaces => "so.tilo.shell:spaces",
+        .desktop => "so.tilo.shell:desktop",
+        .strips => "so.tilo.shell:strips",
+    }
+}
+
+default view viewing_settings for Viewing
+
+/// The shell's own settings: the style the person shows, and where to pick another. The
+/// styles every installed package offers are listed by their own words; picking one
+/// switches the shell, and the style's own settings stand under the list, from its own record.
+view viewing_settings(v: Viewing) {
+    page {
+        section("Shell") {
+            ui.Text("Switching a style keeps every window where it is.")
+            style_switch(v)
         }
     }
 }
 
-/// What the person's settings stand as: the preset's name, or "Custom, based on" it.
-fn standing(s: Shell) -> Text {
-    if s.tuned {
-        if s.based_on == .tilo {
-            "Custom, based on Tilo"
-        } else if s.based_on == .macos {
-            "Custom, based on macOS"
-        } else if s.based_on == .windows {
-            "Custom, based on Windows"
-        } else if s.based_on == .gnome {
-            "Custom, based on GNOME"
-        } else if s.based_on == .windows_desktop {
-            "Custom, based on the traditional desktop"
-        } else { "Custom, based on Minimal" }
-    } else if s.preset == .tilo {
-        "Tilo"
-    } else if s.preset == .macos {
-        "Like macOS"
-    } else if s.preset == .windows {
-        "Like Windows"
-    } else if s.preset == .gnome { "Like GNOME" } else { "Minimal" }
+/// Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`).
+/// Switching keeps the layout: the same places stand where they were, drawn another way.
+action show_style(v: Viewing, style: Text) (icon: .layout_grid, label: "Show as") {
+    require v.style != style "It is shown that way already"
+    v.style = style
 }
 
-/// One preset's card: its name, what it is, and a miniature of the shell it makes, drawn
-/// from the preset's own settings rather than pictured.
-view layout_card(s: Shell, preset: Layout) {
-    let chosen = s.preset == preset and not s.tuned
-    ui.Card(title: preset.label(), selected: chosen) {
-        body: {
-            preview(preset)
-            ui.Text(describe(preset), role: .caption, secondary: true)
-            if chosen {
-                ui.Badge("In use", tone: .success)
-            } else {
-                button(apply(s, preset))
-            }
-        }
-    }
-}
-
-/// What a preset is, in a sentence.
-fn describe(preset: Layout) -> Text {
-    if preset == .tilo {
-        "A dock at the bottom and the top bar, always shown."
-    } else if preset == .macos {
-        "A floating, rounded dock that hides when a window covers it; the bar carries the app's menus."
-    } else if preset == .windows {
-        "A full-width taskbar at the bottom, always shown."
-    } else if preset == .gnome {
-        "The top bar alone; the overview on demand."
-    } else if preset == .windows_desktop {
-        "Windows floating over the screen, each with its own bar, the focused window's commands in the top bar, and a dock at the foot."
-    } else {
-        "No chrome at rest: the screen edges reveal the bar and the dock."
-    }
-}
-
-/// A preset's shell in miniature: where its bar and dock stand, how they sit, and what they hold,
-/// drawn with the same views the shell itself uses at the size a card gives them.
-view preview(preset: Layout) {
-    layers {
-        row(fill, align: .center, padding: .tight) {
-            if preset == .tilo
-                or preset == .macos
-                or preset == .gnome
-                or preset == .minimal
-                or preset == .windows_desktop {
-                preview_bar(preset)
-            }
-        }
-        row(at: .bottom, fill, align: .center, padding: .tight) {
-            if preset == .tilo
-                or preset == .macos
-                or preset == .windows
-                or preset == .windows_desktop {
-                preview_dock(preset)
-            }
-        }
-    }
-}
-
-/// The miniature bar: its parts, left to right, in the fit the preset gives it.
-view preview_bar(preset: Layout) {
-    row(gap: .tight, align: .center, fill) {
-        ui.Icon(.tilo, size: .small)
-        if preset == .macos or preset == .windows_desktop {
-            ui.Text("File", role: .caption)
-            ui.Text("Edit", role: .caption)
-            ui.Text("View", role: .caption)
-        }
-        spacer
-        ui.Text("4:28", role: .caption, numeric: true)
-        spacer
-        ui.Icon(.bell, size: .small)
-    }
-}
-
-/// The miniature dock: the launcher and three items, on the fit the preset gives it.
-view preview_dock(preset: Layout) {
-    if preset == .macos or preset == .windows_desktop {
-        row(gap: .tight, align: .center) {
-            ui.Icon(.layout_grid, size: .small)
-            ui.Icon(.file_text, size: .small)
-            ui.Icon(.message_square, size: .small)
-            ui.Icon(.mail, size: .small)
-        }
-    } else {
-        row(gap: .tight, align: .center, fill) {
-            ui.Icon(.layout_grid, size: .small)
-            ui.Icon(.file_text, size: .small)
-            ui.Icon(.message_square, size: .small)
-            spacer
-            ui.Icon(.mail, size: .small)
-        }
-    }
-}
-
-/// The settings underneath the presets: the bar's and the dock's, each change one action.
-view shell_settings(s: Shell) {
-    std.page(s) {
-        stack(gap: .section) {
-            layouts(s)
-            section("Top bar") {
-                form {
-                    toggle("Show the top bar", bind: s.bar_shown)
-                    ui.ToggleGroup(caption: "Edge", fill: true) {
-                        for edge in cases(Edge) {
-                            ui.Segment(edge.label(), chosen: s.bar_edge == edge) {
-                                on press: bar_on(s, edge)
-                            }
-                        }
-                    }
-                    ui.ToggleGroup(caption: "Fit", fill: true) {
-                        for fit in cases(Fit) {
-                            ui.Segment(fit.label(), chosen: s.bar_fit == fit) {
-                                on press: set_bar_fit(s, fit)
-                            }
-                        }
-                    }
-                    ui.ToggleGroup(caption: "Material", fill: true) {
-                        for finish in cases(Finish) {
-                            ui.Segment(finish.label(), chosen: s.bar_finish == finish) {
-                                on press: set_bar_finish(s, finish)
-                            }
-                        }
-                    }
-                    ui.ToggleGroup(caption: "When it shows", fill: true) {
-                        for showing in cases(Showing) {
-                            ui.Segment(showing.label(), chosen: s.bar_showing == showing) {
-                                on press: set_bar_showing(s, showing)
-                            }
-                        }
-                    }
-                    ui.ToggleGroup(caption: "Size", fill: true) {
-                        for size in cases(Size) {
-                            ui.Segment(size.label(), chosen: s.bar_size == size) {
-                                on press: set_bar_size(s, size)
-                            }
-                        }
-                    }
-                }
-                bar_parts(s)
-            }
-            section("Dock") {
-                form {
-                    toggle("Show the dock", bind: s.dock_shown)
-                    ui.ToggleGroup(caption: "Edge", fill: true) {
-                        for edge in cases(Edge) {
-                            ui.Segment(edge.label(), chosen: s.dock_edge == edge) {
-                                on press: dock_on(s, edge)
-                            }
-                        }
-                    }
-                    ui.ToggleGroup(caption: "Fit", fill: true) {
-                        for fit in cases(Fit) {
-                            ui.Segment(fit.label(), chosen: s.dock_fit == fit) {
-                                on press: set_dock_fit(s, fit)
-                            }
-                        }
-                    }
-                    ui.ToggleGroup(caption: "Material", fill: true) {
-                        for finish in cases(Finish) {
-                            ui.Segment(finish.label(), chosen: s.dock_finish == finish) {
-                                on press: set_dock_finish(s, finish)
-                            }
-                        }
-                    }
-                    ui.ToggleGroup(caption: "When it shows", fill: true) {
-                        for showing in cases(Showing) {
-                            ui.Segment(showing.label(), chosen: s.dock_showing == showing) {
-                                on press: set_dock_showing(s, showing)
-                            }
-                        }
-                    }
-                    ui.ToggleGroup(caption: "Size", fill: true) {
-                        for size in cases(Size) {
-                            ui.Segment(size.label(), chosen: s.dock_size == size) {
-                                on press: set_dock_size(s, size)
-                            }
-                        }
-                    }
-                }
-                dock_settings(s)
-            }
-        }
-    }
-}
-
-/// The bar's parts, in the person's order, each shown or hidden, and the two the bar can
-/// gain.
-view bar_parts(s: Shell) {
-    section("Parts, in order") {
-        ui.VirtualList {
-            for part in s.bar_parts {
-                ui.ListItem(item: part) {
-                    part_row(s, part)
-                }
-            }
-        }
-        row(gap: .related) {
-            button(show_app_menus(s))
-        }
-    }
-}
-
-/// One bar part in the settings: its glyph, its name, and whether it shows.
-view part_row(s: Shell, part: BarPart) {
-    ui.ListRow(part_name(part.slot), icon: part.slot.icon(), selected: part.shown) {
-        trailing: {
-            ui.Button(if part.shown { "Shown" } else { "Hidden" }, toggled: part.shown) {
-                on press: show_part(s, part, not part.shown)
-            }
-        }
-    }
-}
-
-/// The dock's settings the form does not hold: what it shows besides the pinned items.
-view dock_settings(s: Shell) {
-    form {
-        toggle("Running apps", bind: s.dock_running)
-        toggle("Launcher entry", bind: s.dock_launcher)
-        toggle("Magnify the item under the pointer", bind: s.dock_zoom)
-    }
+/// Makes the strip `strip` the one in front: what a press on a column's header does.
+action focus_strip(v: Viewing, strip: Text) (icon: .columns_2, label: "In front") {
+    v.focused = strip
 }

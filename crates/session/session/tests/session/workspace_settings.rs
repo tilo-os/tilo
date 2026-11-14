@@ -893,7 +893,7 @@ fn workspace_settings_general_says_what_the_workspace_is() {
         !labels
             .iter()
             .any(|(label, _)| label.contains("stay on each device")),
-        "nothing says the arrangement stays on one device: {labels:?}"
+        "nothing says the layout stays on one device: {labels:?}"
     );
     assert!(
         !labels

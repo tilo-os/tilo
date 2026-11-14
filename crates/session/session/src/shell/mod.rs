@@ -92,7 +92,7 @@ pub(crate) struct Shell {
     /// The due timer ids announced already, so an unchanged one is announced once.
     announced: std::cell::RefCell<std::collections::BTreeSet<String>>,
     link: Rc<SessionLink>,
-    /// The services' revision and the arrangement the places' readings were last followed at.
+    /// The services' revision and the layout the places' readings were last followed at.
     followed: Option<(u64, LayoutReading)>,
     /// The resources whose readings the shell holds for its places, by id, each with its type as
     /// the shell's runtime names another app's (`<app>#<Type>`): what a place names, and what the
@@ -377,7 +377,7 @@ impl Shell {
     /// resource those views read, as they read it (an item of a collection a reading lists by id).
     /// Each reading is read again only when its service says it moved, so a change costs the shell
     /// only the resources it touched.
-    pub(crate) fn follow_places(&mut self, arrangement: &LayoutReading, services: &mut Services) {
+    pub(crate) fn follow_places(&mut self, layout: &LayoutReading, services: &mut Services) {
         let wanted = self.link.take_wanted();
         // A view composed in a place read a resource of a type no loaded package declared: its
         // app's package is published like those a place shows, so the place draws it through that
@@ -391,7 +391,7 @@ impl Shell {
         if std::mem::take(&mut self.republish) {
             asked = true;
         }
-        let key = (services.revision(), arrangement.clone());
+        let key = (services.revision(), layout.clone());
         let moved_on = asked || self.followed.as_ref() != Some(&key);
         if !moved_on && wanted.is_empty() {
             return;
@@ -400,12 +400,12 @@ impl Shell {
         // The apps whose views this process links as Rust apps, which draw their resources
         // without a package of their own.
         let rust_views = tilolang_tilo::views::declared_apps();
-        if asked || self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
+        if asked || self.followed.as_ref().map(|(_, was)| was) != Some(layout) {
             // Every app a place shows is published with this pass, however this pass was asked for:
             // a package a view asked for arrives beside them, and none of them goes with it.
             let resources = services.resources();
             let placed = tilolang_tilo::records_service::placed_records(
-                arrangement.places.iter().map(|place| place.record.as_str()),
+                layout.places.iter().map(|place| place.record.as_str()),
                 &resources,
             );
             let mut packages = std::collections::BTreeMap::new();
@@ -506,9 +506,9 @@ impl Shell {
             .unwrap_or_default()
     }
 
-    /// Hand the shell the person's arrangement, which its views draw, whenever it changed.
-    pub(crate) fn publish_arrangement(&self, reading: LayoutReading) {
-        self.link.publish_arrangement(reading);
+    /// Hand the shell the person's layout, which its views draw, whenever it changed.
+    pub(crate) fn publish_layout(&self, reading: LayoutReading) {
+        self.link.publish_layout(reading);
     }
 
     /// Read the styles every installed package offers, when the person's package store
@@ -699,7 +699,7 @@ impl Shell {
     }
 
     /// The shell's own record (`root shell: Shell`, `root viewing: Viewing` ,
-    /// `root arrangement: Arrangement` ), as the shell's parts keep it: the document every part
+    /// `root layout: Layout` ), as the shell's parts keep it: the document every part
     /// commits into and draws from, shared by them. It exists as soon as the shell does, before any
     /// display's part is made.
     pub(crate) fn records(&self) -> Rc<RefCell<tilo_resource::Doc>> {
@@ -1595,10 +1595,10 @@ impl crate::Session {
         let notices = Rc::clone(&self.shared.notifications);
         Self::follow_view_failures(&notices, shell, failures, recoveries);
         shell.follow_deadline();
-        let arrangement = self.shared.arrangement_reading();
+        let layout = self.shared.layout_reading();
         shell.publish_readings(&self.shared.services.borrow());
-        shell.follow_places(&arrangement, &mut self.shared.services.borrow_mut());
-        shell.publish_arrangement(arrangement);
+        shell.follow_places(&layout, &mut self.shared.services.borrow_mut());
+        shell.publish_layout(layout);
         // What the places draw reads its pictures from the document media of the workspaces
         // those places stand in: the parts draw in the session's own process, which the launcher
         // handed no store of its own, so the session lends them one (`docs/architecture/apps.md`

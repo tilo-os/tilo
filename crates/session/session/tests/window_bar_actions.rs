@@ -87,7 +87,7 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
     }
 }
 
-/// Place `resource` on the canvas through the arrangement's published `place`, as the canvas's
+/// Place `resource` on the canvas through the layout's published `place`, as the canvas's
 /// own typed line and an agent do. Its place's key.
 fn place(session: &mut Session, resource: &str) -> String {
     let (workspace, row, strip, place) = {

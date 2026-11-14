@@ -129,7 +129,7 @@ view app_row(a: device.App) {
 /// last, so a found resource joins the window they are working in. Empty while the layout has
 /// no strip.
 fn front_strip() -> Text {
-    let a = arrangement
+    let a = layout
     let v = viewing
     if v.focused != "" {
         return v.focused

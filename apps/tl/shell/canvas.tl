@@ -3,14 +3,14 @@
 /// is into a space per task (`spaces`).
 ///
 /// Pan and zoom are the map component's (`ui.Map`) camera: each person's lens, kept on their
-/// device, never in the arrangement. What this file gives the map is where every place stands,
+/// device, never in the layout. What this file gives the map is where every place stands,
 /// in canvas pixels. The record keeps a canvas place on each strip (`canvas_x`, `canvas_y`,
 /// `canvas_width`, `canvas_height`); the places of a strip stand in a row from that corner, so a
 /// strip of several windows is one run of work and a strip of one is one window where it was
 /// dropped (canvas.md §6).
 /// The canvas: every strip at its point, its places standing side by side from there.
 /// Panning and zooming is the map's camera (a middle drag, Ctrl and a wheel, the arrow keys, two
-/// fingers); it moves the lens and nothing in the arrangement, so a place stays where it was
+/// fingers); it moves the lens and nothing in the layout, so a place stays where it was
 /// while the person looks around, and the places keep their canvas points.
 /// The map fills the desk: it cuts off what it holds at its edge, so a map only as tall as its
 /// content would show none of it.
@@ -35,7 +35,7 @@
 /// An answer arrives from where it was asked: each place grows out of the caret or the rectangle
 /// the person pointed at (`grows`), and a turn hugs its words up to the rectangle it was asked in
 /// (`hug`), where a find fills it.
-view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
+view canvas(a: Layout, name: Text, framed: Bool, lists: Bool) {
     state typed: Text = ""
     // Where the person pointed, in canvas pixels: a point (`x`, `y`) for a click, a rectangle
     // (`x`, `y`, width, height) for a drag, and nothing while no caret stands.
@@ -129,7 +129,7 @@ view canvas(a: Arrangement, name: Text, framed: Bool, lists: Bool) {
 /// it (`canvas.md` §7, "The card hugs what it holds"): a turn, whose answer is as long as its
 /// words, and a thing found where the person clicked, which named no size (`canvas_hugs`). What
 /// a find placed in a rectangle the person dragged fills it.
-fn hugs(s: ArrangementStrip, p: ArrangementPlace) -> Bool {
+fn hugs(s: LayoutStrip, p: LayoutPlace) -> Bool {
     p.shown_as == "turn" or s.canvas_hugs
 }
 
@@ -215,8 +215,8 @@ fn snap(at: Int, pitch: Int) -> Int {
 
 /// The place standing on the canvas that shows the resource `record`, if one does: what a drag
 /// that ended on the canvas moves rather than placing a second time.
-fn place_showing(record: Text) -> Option<ArrangementPlace> {
-    let a = arrangement
+fn place_showing(record: Text) -> Option<LayoutPlace> {
+    let a = layout
     a.places.find(p -> p.record == record)
 }
 
@@ -230,7 +230,7 @@ fn canvas_grid() -> Int {
 
 /// How wide a strip's places stand on the canvas: the width the record keeps for it, so a window
 /// that was dropped wide stays wide, and 720 when it kept none.
-fn pin_width(s: ArrangementStrip) -> Int {
+fn pin_width(s: LayoutStrip) -> Int {
     if s.canvas_width > 0 { s.canvas_width } else { 720 }
 }
 
@@ -238,7 +238,7 @@ fn pin_width(s: ArrangementStrip) -> Int {
 /// strip laid end to end. The record keeps one canvas point on a strip, and the places of the strip
 /// stand in a row from it (canvas.md §6), so a strip of several places is a run of work and none
 /// stands over another.
-fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
+fn pin_x(a: Layout, s: LayoutStrip, p: LayoutPlace) -> Int {
     let place = 0
     for q in places_of(a, s.key) {
         if q.key == p.key {
@@ -257,7 +257,7 @@ fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
 ///
 /// A foreign window — an app's own surface the shell cannot compose — keeps its frame
 /// (`framed_place`): it is the one thing on the canvas that is a window.
-view canvas_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
+view canvas_place(a: Layout, p: LayoutPlace, lists: Bool) {
     if composed(p) {
         ui.Place(
             name: content_title(p),
@@ -281,13 +281,13 @@ view canvas_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
 /// answer by its question, an inbox as Inbox). It is content, not a window, so its app's name is
 /// not joined to it as a window's title is (`place_title`); a place with no title of its own goes
 /// by that one.
-fn content_title(p: ArrangementPlace) -> Text {
+fn content_title(p: LayoutPlace) -> Text {
     if p.title != "" { p.title } else { place_title(p) }
 }
 
 /// Whether the place `p` draws its view itself — its resource's view, or the query it stands for
 /// while an app answers it — rather than showing an app's window.
-fn composed(p: ArrangementPlace) -> Bool {
+fn composed(p: LayoutPlace) -> Bool {
     if let q = query_of(p.key) {
         true
     } else if let r = placed_resource(p.record) { p.shown_as != "" or meta(r).opens } else { false }
@@ -296,7 +296,7 @@ fn composed(p: ArrangementPlace) -> Bool {
 /// A foreign window on the canvas: the shell's frame around the well its window shows in, its
 /// controls at the end of the bar. The bar is its handle: the frame carries the place's resource,
 /// so a press on the bar's empty area and a drag lifts the whole place.
-view framed_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
+view framed_place(a: Layout, p: LayoutPlace, lists: Bool) {
     ui.WindowFrame(
         name: place_title(p),
         carries: p.record,
@@ -315,7 +315,7 @@ view framed_place(a: Arrangement, p: ArrangementPlace, lists: Bool) {
 /// A place on the frameless canvas: its resource's view standing as content (or its window's
 /// well), with a line naming what it is rather than a frame around it. The controls stand
 /// outside it, and the content itself is `place_content`'s, as every preset draws it.
-view space_content(a: Arrangement, p: ArrangementPlace) {
+view space_content(a: Layout, p: LayoutPlace) {
     stack(gap: .related, fill) {
         // A space has no frame bar: its content's own header row carries the window's actions,
         // so the shell's controls keep theirs off (`listed`), and each command stands once.
@@ -328,6 +328,6 @@ view space_content(a: Arrangement, p: ArrangementPlace) {
 /// How tall a strip's places stand on the canvas: the height the record keeps for it, so a view
 /// that fills its place (an editor, a mailbox) has the room it was placed with. A strip placed
 /// before it kept one stands as tall as a desktop frame does.
-fn pin_height(s: ArrangementStrip) -> Int {
+fn pin_height(s: LayoutStrip) -> Int {
     if s.canvas_height > 0 { s.canvas_height } else { 480 }
 }

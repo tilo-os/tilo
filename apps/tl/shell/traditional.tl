@@ -22,11 +22,11 @@
 /// Views name theme roles only: no colour, radius, font or size of their own.
 /// The desktop's surface: each placed strip's places as frames over the shell, on the
 /// desktop's ground, the frame in front drawn last so it stands on top, exactly where the
-/// window policy put it. Each place keeps its canvas point in the arrangement, so a drag that
+/// window policy put it. Each place keeps its canvas point in the layout, so a drag that
 /// ends in one arranging action moves the frame and its window together. `lists` says whether
 /// the shell's bar lists the window in front's actions (`bar_lists_actions`), as each frame is
 /// told: the window's bar then keeps its title and the shell's controls alone.
-view traditional_desktop(a: Arrangement, lists: Bool) {
+view traditional_desktop(a: Layout, lists: Bool) {
     let front = front_place(a)
     ui.Map(name: "Desktop", ground: true, fill) {
         for s in a.strips {
@@ -53,7 +53,7 @@ view traditional_desktop(a: Arrangement, lists: Bool) {
 /// The window in front alone, filling the room it is given: what a compact output shows of the
 /// desktop (`desktop`), where windows standing where they were left would show their corners cut
 /// off and the window the person is in could stand behind another.
-view front_window(a: Arrangement, lists: Bool) {
+view front_window(a: Layout, lists: Bool) {
     if let s = focused_strip(a) {
         if let p = active_place(a, s) {
             frame_classic(a, p, true, lists, fill)
@@ -63,9 +63,9 @@ view front_window(a: Arrangement, lists: Bool) {
 
 /// One frame on the desktop, at its strip's canvas point and size.
 view desktop_frame(
-    a: Arrangement,
-    s: ArrangementStrip,
-    p: ArrangementPlace,
+    a: Layout,
+    s: LayoutStrip,
+    p: LayoutPlace,
     focused: Bool,
     lists: Bool,
 ) {
@@ -91,7 +91,7 @@ view desktop_frame(
 /// `Window actions` where the shell's bar lists none, else the shell's bar
 /// (`bar_lists_actions`). `lists`: the shell's bar already lists them, so the frame's menu gives
 /// way, and every action stands once.
-view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bool) {
+view frame_classic(a: Layout, p: LayoutPlace, focused: Bool, lists: Bool) {
     ui.WindowFrame(
         name: place_title(p),
         focused: focused,
@@ -112,7 +112,7 @@ view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bo
 /// them — the window's title and its app's own name (`Groceries — Notes`), or the app alone when
 /// the window has no title. A bar, a chip, a switcher row and a search row never disagree, and
 /// none of them ever falls back to an app id.
-fn place_title(p: ArrangementPlace) -> Text {
+fn place_title(p: LayoutPlace) -> Text {
     if p.name != "" {
         p.name
     } else if p.title != "" { p.title } else if p.shows != "" { p.shows } else { "Window" }
@@ -120,11 +120,11 @@ fn place_title(p: ArrangementPlace) -> Text {
 
 /// A frame's controls: its window's one menu, which lists the actions the place's resource
 /// publishes and then the way to carry the place to another row, and close. Each is one action of
-/// the app's or one arranging action of the session's (`shell:arrangement`), so a press, a
+/// the app's or one arranging action of the session's (`shell:layout`), so a press, a
 /// shortcut and an agent change it the same way. Where the shell's bar already names the window in
 /// front's resource (`lists`), the frame's menu keeps the shell's controls alone, so every action
 /// stands once.
-view frame_buttons(a: Arrangement, p: ArrangementPlace, lists: Bool) {
+view frame_buttons(a: Layout, p: LayoutPlace, lists: Bool) {
     row(gap: .tight, align: .center) {
         ui.MenuButton(
             "This window",
@@ -155,7 +155,7 @@ view frame_buttons(a: Arrangement, p: ArrangementPlace, lists: Bool) {
 /// never lists them itself. A place that shows no record (a foreign surface) offers the shell's
 /// commands on the window instead, so the bar is never empty. `room` is how much the top bar has:
 /// on the narrowest it stands as the window's icon, named by the window.
-view action_bar(a: Arrangement, room: BarRoom) {
+view action_bar(a: Layout, room: BarRoom) {
     if let s = focused_strip(a) {
         if let p = active_place(a, s) {
             if let r = placed_resource(p.record) {
@@ -183,9 +183,9 @@ enum BarRoom {
     one
 }
 
-/// The strip in front: the one the shell's own view of the arrangement names, else the first
+/// The strip in front: the one the shell's own view of the layout names, else the first
 /// that has a place on the desktop.
-fn focused_strip(a: Arrangement) -> Option<ArrangementStrip> {
+fn focused_strip(a: Layout) -> Option<LayoutStrip> {
     let v = viewing
     if let named = a.strips.find(s -> s.key == v.focused) {
         named
@@ -193,13 +193,13 @@ fn focused_strip(a: Arrangement) -> Option<ArrangementStrip> {
 }
 
 /// The place in front of `s`: its active place, else the first one it holds.
-fn active_place(a: Arrangement, s: ArrangementStrip) -> Option<ArrangementPlace> {
+fn active_place(a: Layout, s: LayoutStrip) -> Option<LayoutPlace> {
     let held = places_of(a, s.key)
     if let chosen = held.find(p -> p.key == s.active) { chosen } else { held.first() }
 }
 
 /// The key of the window in front: the focused strip's place in front; empty for none.
-fn front_place(a: Arrangement) -> Text {
+fn front_place(a: Layout) -> Text {
     if let s = focused_strip(a) {
         if let p = active_place(a, s) {
             return p.key
@@ -218,7 +218,7 @@ fn placed_resource(record: Text) -> Option<host.Resource> {
 /// The shell's own commands on a window whose record it cannot read (a foreign surface): its
 /// name, moving it to another row, and closing it. On the narrowest bar the menu is named by the
 /// window's icon alone, as an app's window's one menu is.
-view window_commands(a: Arrangement, p: ArrangementPlace, room: BarRoom) {
+view window_commands(a: Layout, p: LayoutPlace, room: BarRoom) {
     ui.MenuButton(place_title(p), icon: .app_window, icon_only: room == .one, role: .bar) {
         for r in a.rows {
             if r.key != strip_row(a, p.strip) {
@@ -249,7 +249,7 @@ view traditional_bar() {
         ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
             on press: session.overview()
         }
-        action_bar(arrangement, room)
+        action_bar(layout, room)
         spacer
         clock()
         if room != .one {
@@ -261,8 +261,8 @@ view traditional_bar() {
         network_status()
         battery_status()
         bell()
-        if arrangement.person != "" {
-            ui.Avatar(name: arrangement.person)
+        if layout.person != "" {
+            ui.Avatar(name: layout.person)
         }
     }
 }

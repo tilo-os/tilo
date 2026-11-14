@@ -117,13 +117,13 @@ fn workspace() -> Replica {
         .find(|ty| {
             meta.types
                 .iter()
-                .any(|t| &&t.id == ty && t.name == "Arrangement")
+                .any(|t| &&t.id == ty && t.name == "Layout")
         })
         .cloned();
     if let Some(ty) = layout_ty {
         let root = replica.host.root_record(APP, &ty).unwrap();
         let meta = replica.host.package(APP).unwrap().meta;
-        let person = crate::fixtures::field_id(&meta, "Arrangement", "person");
+        let person = crate::fixtures::field_id(&meta, "Layout", "person");
         replica
             .host
             .runtime()
@@ -320,14 +320,14 @@ fn shell_ref(r: &Replica) -> Value {
     Value::resource(&r.host.root_record(APP, &ty).unwrap())
 }
 
-/// The screen the session shows (the arrangement's default view, `shell_view`), laid out as the
+/// The screen the session shows (the layout's default view, `shell_view`), laid out as the
 /// person sees it: the bar and the dock over the shell and the person's shell record.
 fn shell_view(r: &Replica) -> tilolang_runtime::ViewInstance {
     r.host
         .open_layer(
             APP,
             &tilolang_tilo::host::RootView {
-                root: Some("arrangement".to_owned()),
+                root: Some("layout".to_owned()),
                 view: None,
             },
         )
@@ -537,9 +537,9 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
     scenario(&r, "so.tilo.lang.notes", "a week of notes");
     r.commit();
     use_preset(&mut r, "macos");
-    // The arrangement is the session's: the scenario writes it in this host, and nothing of it
+    // The layout is the session's: the scenario writes it in this host, and nothing of it
     // goes to the workspace.
-    let arrangement = scenario(&r, APP, "a canvas of spaces");
+    let layout = scenario(&r, APP, "a canvas of spaces");
     let meta = r.host.package(APP).unwrap().meta;
     let shell = meta
         .views
@@ -551,7 +551,7 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
     let mut macos = r
         .host
         .runtime()
-        .open_view(&Principal::new("ada"), &shell, vec![arrangement])
+        .open_view(&Principal::new("ada"), &shell, vec![layout])
         .unwrap();
     // A desktop's output: 1280 by 800, where the bar has room for the window's commands.
     macos.set_space("", tilolang_runtime::Space::from_rem(80.0, 50.0));
@@ -615,7 +615,7 @@ fn a_window_is_named_by_its_window_and_app_never_an_id() {
     r.commit();
     scenario(&r, "so.tilo.lang.notes", "a week of notes");
     r.commit();
-    let arrangement = scenario(&r, APP, "a reference lands beside its place");
+    let layout = scenario(&r, APP, "a reference lands beside its place");
     let meta = r.host.package(APP).unwrap().meta;
     let front = meta
         .views
@@ -630,7 +630,7 @@ fn a_window_is_named_by_its_window_and_app_never_an_id() {
         .open_view(
             &Principal::new("ada"),
             &front,
-            vec![arrangement, Value::Bool(false)],
+            vec![layout, Value::Bool(false)],
         )
         .unwrap();
     let names: Vec<String> = nodes(&view, "ui.WindowFrame")
@@ -869,9 +869,9 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
     scenario(&r, "so.tilo.lang.notes", "a week of notes");
     r.commit();
     let meta = r.host.package(APP).unwrap().meta;
-    // The arrangement is the session's (`origin: session.layout`): the scenario writes it
+    // The layout is the session's (`origin: session.layout`): the scenario writes it
     // in this host, as the session's reading would, and nothing of it goes to the workspace.
-    let arrangement = scenario(&r, APP, "a canvas of spaces");
+    let layout = scenario(&r, APP, "a canvas of spaces");
     let shell = meta
         .views
         .iter()
@@ -882,7 +882,7 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
     let view = r
         .host
         .runtime()
-        .open_view(&Principal::new("ada"), &shell, vec![arrangement])
+        .open_view(&Principal::new("ada"), &shell, vec![layout])
         .unwrap();
     let tree = format!("{:?}", view.tree());
     // Each note's place is the notes app's own editor, drawn inline (its body's input, which
@@ -912,7 +912,7 @@ fn resources_standing_as_content_stand_on_the_spaces_canvas() {
     scenario(&r, "so.tilo.lang.notes", "a week of notes");
     r.commit();
     let meta = r.host.package(APP).unwrap().meta;
-    let arrangement = scenario(&r, APP, "resources standing as content");
+    let layout = scenario(&r, APP, "resources standing as content");
     let shell = meta
         .views
         .iter()
@@ -923,7 +923,7 @@ fn resources_standing_as_content_stand_on_the_spaces_canvas() {
     let view = r
         .host
         .runtime()
-        .open_view(&Principal::new("ada"), &shell, vec![arrangement])
+        .open_view(&Principal::new("ada"), &shell, vec![layout])
         .unwrap();
     let tree = format!("{:?}", view.tree());
     // The scenario's strip stands on the canvas, so its places do: four notes as their editor,

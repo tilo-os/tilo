@@ -6,8 +6,8 @@
 //! out and the CPU rasterizes it, as [`WidgetHost`] does for every widget tree the session
 //! shows; the compositor gets the buffer as a layer. Nothing here renders on its own.
 //!
-//! What the views read of the session comes in as the person's arrangement, whose origin is the
-//! session (`type Arrangement (origin: session.layout)`), which [`SessionOrigin`] writes,
+//! What the views read of the session comes in as the person's layout, whose origin is the
+//! session (`type Layout (origin: session.layout)`), which [`SessionOrigin`] writes,
 //! and as the readings of the device's resources (`device.overlays`). The views call the
 //! session's actions as an app's (`use so.tilo.session as session`, then `session.overview()`),
 //! each an invocation on its door ([`PlaceInvoker`]). A shell view never reaches the session
@@ -59,10 +59,6 @@ mod settings;
 const SHELL_FILES: &[(&str, &str)] = &[
     ("app.tl", include_str!("../../../../apps/tl/shell/app.tl")),
     (
-        "arrangement.tl",
-        include_str!("../../../../apps/tl/shell/arrangement.tl"),
-    ),
-    (
         "canvas.tl",
         include_str!("../../../../apps/tl/shell/canvas.tl"),
     ),
@@ -81,6 +77,10 @@ const SHELL_FILES: &[(&str, &str)] = &[
     (
         "layout.tl",
         include_str!("../../../../apps/tl/shell/layout.tl"),
+    ),
+    (
+        "layout_picker.tl",
+        include_str!("../../../../apps/tl/shell/layout_picker.tl"),
     ),
     (
         "notices.tl",
@@ -198,14 +198,14 @@ pub const fn shell_catalogues() -> [(&'static str, &'static str); 2] {
     ]
 }
 
-/// The shell's whole screen: the `shell_view` view over the person's arrangement (the package's
-/// `arrangement` root), which stands the shell's bar, dock and surfaces around the places as the
+/// The shell's whole screen: the `shell_view` view over the person's layout (the package's
+/// `layout` root), which stands the shell's bar, dock and surfaces around the places as the
 /// preset the person picked lays them out. Each place an app's window shows in is a well, and
 /// the window stands where that well does.
 #[must_use]
 pub fn screen_layer() -> RootView {
     RootView {
-        root: Some("arrangement".to_owned()),
+        root: Some("layout".to_owned()),
         view: Some("shell_view".to_owned()),
     }
 }
@@ -305,10 +305,10 @@ const EXCHANGES: usize = 8;
 /// of its loop ([`SessionLink::serve`]); the origin reads and writes the rest.
 #[derive(Default)]
 pub struct SessionLink {
-    /// The person's arrangement the session last published, and whether the origin has taken
+    /// The person's layout the session last published, and whether the origin has taken
     /// it in.
-    arrangement: RefCell<Option<LayoutReading>>,
-    arrangement_fresh: Cell<bool>,
+    layout: RefCell<Option<LayoutReading>>,
+    layout_fresh: Cell<bool>,
     /// The readings of the resources the places name, by their session id: each with its type
     /// as the shell's runtime names another app's (`<app>#<Type>`) and its JSON.
     readings: RefCell<BTreeMap<String, (String, serde_json::Value)>>,
@@ -351,14 +351,14 @@ pub struct SessionLink {
 }
 
 impl SessionLink {
-    /// The session published `reading`, the person's arrangement as it stands now: the shell
+    /// The session published `reading`, the person's layout as it stands now: the shell
     /// writes it on its next frame when it differs from the last. Whether it did.
-    pub fn publish_arrangement(&self, reading: LayoutReading) -> bool {
-        if self.arrangement.borrow().as_ref() == Some(&reading) {
+    pub fn publish_layout(&self, reading: LayoutReading) -> bool {
+        if self.layout.borrow().as_ref() == Some(&reading) {
             return false;
         }
-        *self.arrangement.borrow_mut() = Some(reading);
-        self.arrangement_fresh.set(true);
+        *self.layout.borrow_mut() = Some(reading);
+        self.layout_fresh.set(true);
         true
     }
 
@@ -597,13 +597,13 @@ fn text(s: &str) -> Value {
 }
 
 impl SessionOrigin {
-    /// Write the person's arrangement into the shell's `Arrangement` root, when the session
+    /// Write the person's layout into the shell's `Layout` root, when the session
     /// published one the origin has not written yet. Whether anything was written.
-    fn poll_arrangement(&mut self, cx: &OriginCx<'_>) -> bool {
-        if !self.link.arrangement_fresh.replace(false) {
+    fn poll_layout(&mut self, cx: &OriginCx<'_>) -> bool {
+        if !self.link.layout_fresh.replace(false) {
             return false;
         }
-        let Some(reading) = self.link.arrangement.borrow().clone() else {
+        let Some(reading) = self.link.layout.borrow().clone() else {
             return false;
         };
         let Some(types) = cx.host.find_in_packages(|package| {
@@ -612,13 +612,13 @@ impl SessionOrigin {
             tracing::error!(app = cx.app, "the shell's package is not loaded");
             return false;
         };
-        // The root the `Arrangement` type is: `root-<type id>`, made the first time it is
-        // wanted, as `root arrangement` reads it.
+        // The root the `Layout` type is: `root-<type id>`, made the first time it is
+        // wanted, as `root layout` reads it.
         let Some(kind) = types
             .iter()
-            .find(|ty| ty.kind == format!("{ORIGIN}.arrangement"))
+            .find(|ty| ty.kind == format!("{ORIGIN}.layout"))
         else {
-            // A shell without an arrangement view keeps its bar alone: nothing to write.
+            // A shell without an layout view keeps its bar alone: nothing to write.
             return false;
         };
         let root = if cx.host.store().contains(&format!("root-{}", kind.ty)) {
@@ -627,12 +627,12 @@ impl SessionOrigin {
             match cx.host.runtime().create_root(&kind.ty) {
                 Ok(root) => root,
                 Err(error) => {
-                    tracing::error!(%error, "the shell has no arrangement to write");
+                    tracing::error!(%error, "the shell has no layout to write");
                     return false;
                 }
             }
         };
-        let writes = self.arrangement_writes(&reading, &root, &types);
+        let writes = self.layout_writes(&reading, &root, &types);
         match cx
             .host
             .runtime()
@@ -644,14 +644,14 @@ impl SessionOrigin {
             }
             Err(error) => {
                 self.mirror.made(None);
-                tracing::error!(%error, "the person's arrangement could not be written");
+                tracing::error!(%error, "the person's layout could not be written");
                 false
             }
         }
     }
 
-    /// The writes that bring the shell's arrangement root from what was written to `reading`.
-    fn arrangement_writes(
+    /// The writes that bring the shell's layout root from what was written to `reading`.
+    fn layout_writes(
         &mut self,
         reading: &LayoutReading,
         root: &ResourceRef,
@@ -662,7 +662,7 @@ impl SessionOrigin {
                 .iter()
                 .find(|ty| ty.kind == format!("{ORIGIN}.{name}"))
         };
-        let Some(ty) = find("arrangement") else {
+        let Some(ty) = find("layout") else {
             return Vec::new();
         };
         let person = ty
@@ -685,32 +685,22 @@ impl SessionOrigin {
         sync!(
             reading.workspaces,
             "workspaces",
-            "arrangement_workspace",
+            "layout_workspace",
             workspace_fields
         );
-        sync!(
-            reading.people,
-            "people",
-            "arrangement_person",
-            person_fields
-        );
-        sync!(reading.rows, "rows", "arrangement_row", row_fields);
-        sync!(reading.strips, "strips", "arrangement_strip", strip_fields);
-        sync!(reading.places, "places", "arrangement_place", place_fields);
+        sync!(reading.people, "people", "layout_person", person_fields);
+        sync!(reading.rows, "rows", "layout_row", row_fields);
+        sync!(reading.strips, "strips", "layout_strip", strip_fields);
+        sync!(reading.places, "places", "layout_place", place_fields);
         // The refs each query found live in their own collection, keyed by their `key`
         // (as `<query>/<number>`), so a query's rows are the refs that name it.
-        sync!(
-            reading.queries,
-            "queries",
-            "arrangement_query",
-            query_fields
-        );
+        sync!(reading.queries, "queries", "layout_query", query_fields);
         let refs: Vec<LayoutRefReading> = reading
             .queries
             .iter()
             .flat_map(|query| query.matches.iter().cloned())
             .collect();
-        sync!(refs, "refs", "arrangement_ref", ref_fields);
+        sync!(refs, "refs", "layout_ref", ref_fields);
         writes
     }
 }
@@ -727,7 +717,7 @@ impl Origin for SessionOrigin {
     }
 
     fn due(&self) -> bool {
-        self.link.arrangement_fresh.get()
+        self.link.layout_fresh.get()
             || self.link.packages_fresh.get()
             || self.link.published_fresh.get()
             || !self.link.readings_fresh.borrow().is_empty()
@@ -738,8 +728,8 @@ impl Origin for SessionOrigin {
             wrote: false,
             settle: false,
         };
-        let wrote_arrangement = self.poll_arrangement(cx);
-        polled.wrote |= wrote_arrangement;
+        let wrote_layout = self.poll_layout(cx);
+        polled.wrote |= wrote_layout;
         // The packages the places need first: a reading of a resource is read as its app's
         // package declares it.
         polled.wrote |= self.poll_packages(cx);
@@ -1022,7 +1012,7 @@ impl ShellPart {
     /// placing the windows they stand for shares (`crate::WellPolicy`).
     ///
     /// The part is the shell's whole screen ([`screen_layer`]): it shows the person's
-    /// arrangement and puts each window in its well.
+    /// layout and puts each window in its well.
     #[must_use]
     pub fn new(
         identity: ShellIdentity<'_>,
@@ -1854,7 +1844,7 @@ impl ShellPart {
     }
 
     /// What a composed view opened since the last turn, each placed on the canvas through the
-    /// arrangement's own `place`, one arranging step of the person's: a video row pressed on a
+    /// layout's own `place`, one arranging step of the person's: a video row pressed on a
     /// channel's page stands the video beside it (one-app-model.md §2, shell.md §8).
     fn place_opens(&mut self) {
         let opened = self.instance.take_opens_to_place();

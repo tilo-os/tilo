@@ -488,7 +488,7 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
 
     // The record's undo takes that one step back, and the window floats again.
     session
-        .undo_arrangement()
+        .undo_layout()
         .expect("the shell undoes the step");
     until(
         &mut session,
@@ -597,7 +597,7 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     );
     assert!(
         session
-            .arrangement()
+            .layout()
             .borrow()
             .reading()
             .strips

@@ -345,8 +345,8 @@ impl Session {
         if activity.show(&mut tree) {
             handle.replace_tree(tree);
         }
-        // The person's arrangement: the shell this session holds, whose layout the workspaces keep.
-        let arrangement = Rc::new(RefCell::new(arrangement::Arrangement::new(
+        // The person's layout: the shell this session holds, whose layout the workspaces keep.
+        let layout = Rc::new(RefCell::new(layout::Layout::new(
             &options.person,
             handle.clone(),
             Rc::new(crate::layout::Steps::new(
@@ -357,9 +357,9 @@ impl Session {
             Rc::new(crate::i18n::word),
         )));
         // Whether the person is mid-gesture or typing, as only the
-        // compositor knows: what an arranging action that is not their own
+        // compositor knows: what a layout action that is not their own
         // reads before it moves anything.
-        let busy = Rc::new(Cell::new(arrangement::Busy::default()));
+        let busy = Rc::new(Cell::new(layout::Busy::default()));
         let underway = Rc::clone(&busy);
         // The one search text typed on the canvas places through: the
         // session search's own, the same `find` the palette and an agent's
@@ -371,16 +371,16 @@ impl Session {
         // sources answer on their own threads, and what they found reaches `done` on a later pass,
         // where the place stands. A source that never answers is cut off at the canvas's own
         // deadline with what is in, so a wedged index costs the person a place, never a frame.
-        let find: arrangement::Find = {
+        let find: layout::Find = {
             let search = Rc::clone(&session_search);
-            Rc::new(move |needle: &str, done: arrangement::FindDone| {
+            Rc::new(move |needle: &str, done: layout::FindDone| {
                 let Some(search) = search.get() else {
                     done(Vec::new());
                     return;
                 };
-                // What the text finds is what the arrangement places, through its own catalogue:
+                // What the text finds is what the layout places, through its own catalogue:
                 // the hits reach the door's callback, which places what a place can show.
-                search.place_soon(needle, None, arrangement::canvas_find_within(), done);
+                search.place_soon(needle, None, layout::canvas_find_within(), done);
             })
         };
         // The conversations this session's agents answer in, and the agents each workspace keeps,
@@ -390,13 +390,13 @@ impl Session {
         // app, through the search action its package tags `outside:<origin>.search` (shell.md §8,
         // "Finding what to place"; search.md §7, "Who indexes"). The app's own action runs the
         // text against its origin, and the session settles the query when the app's own search
-        // state leaves `searching` (`Arrangement::settle_queries`). The closure late-binds the
+        // state leaves `searching` (`Layout::settle_queries`). The closure late-binds the
         // session's search and the action host the way `find` does: both exist before any action
         // runs.
         // A cell the closure reads the session's services through, filled once they are mounted.
         let origin_services: Rc<std::cell::OnceCell<Rc<RefCell<tilo_service::Services>>>> =
             Rc::default();
-        let ask_origin: arrangement::AskOrigin = {
+        let ask_origin: layout::AskOrigin = {
             let search = Rc::clone(&session_search);
             let services = Rc::clone(&origin_services);
             Rc::new(move |text: &str| {
@@ -467,7 +467,7 @@ impl Session {
         // the agent they keep in the workspace in front — a new one where they keep none — through
         // `session:send-to#send`, so it lands in their conversation with it exactly as a send-to
         // box's message does, and Chat opens it.
-        let ask: arrangement::Ask = {
+        let ask: layout::Ask = {
             let handle = handle.clone();
             let person = options.person.clone();
             let agents = Rc::clone(&agents);
@@ -500,7 +500,7 @@ impl Session {
         {
             let search = Rc::clone(&session_search);
             let sends = sends.clone();
-            arrangement.borrow().know_posted(Rc::new(move |sent: u64| {
+            layout.borrow().know_posted(Rc::new(move |sent: u64| {
                 if sends.posted(sent).is_none()
                     && let Some(search) = search.get()
                 {
@@ -510,8 +510,8 @@ impl Session {
                 sends.posted(sent)
             }));
         }
-        doors.add(Rc::new(RefCell::new(arrangement::Door::new(
-            Rc::clone(&arrangement),
+        doors.add(Rc::new(RefCell::new(layout::Door::new(
+            Rc::clone(&layout),
             Rc::new(move || underway.get()),
             find.clone(),
             ask,
@@ -900,8 +900,8 @@ impl Session {
             )),
         ));
         // The session's own actions, offered to a turn's agent as the broker's steps: the
-        // arrangement, its undo, the windows and the notices, which the REPL already calls.
-        // Each is answered on the loop's pass, where the arrangement is. The shell's styles, read
+        // layout, its undo, the windows and the notices, which the REPL already calls.
+        // Each is answered on the loop's pass, where the layout is. The shell's styles, read
         // from the store, share the shell's reading (shell.md §6).
         let steps: std::sync::Arc<dyn crate::platform::steps::SessionSteps> =
             std::sync::Arc::clone(&session_doors)
@@ -1375,7 +1375,7 @@ impl Session {
             .add(Box::new(crate::conversations::TurnSummonses::new(
                 Rc::clone(&conversations),
                 sends.clone(),
-                Rc::clone(&arrangement),
+                Rc::clone(&layout),
             )));
         services
             .borrow_mut()
@@ -1426,7 +1426,7 @@ impl Session {
                 keyboard.clone(),
             )));
         // Which controls Quick Settings shows, and in what order: this device's own setting, kept
-        // here so the arrangement is the same whether the panel is drawn or not.
+        // here so the layout is the same whether the panel is drawn or not.
         services
             .borrow_mut()
             .add(Box::new(crate::quick_settings::QuickSettingsService::new()));
@@ -1628,7 +1628,7 @@ impl Session {
             _workspace_keys: channels,
             personal,
             clipboard,
-            arrangement,
+            layout,
             underway: busy,
             settings: crate::settings_sync::SettingsSync::new(),
             fleet_renewal: crate::renewal::FleetRenewal::for_joined_device(fabric)
@@ -1943,12 +1943,12 @@ impl Session {
         Ok(())
     }
 
-    /// Bring the displays in line with the person's arrangement and the way up
+    /// Bring the displays in line with the person's layout and the way up
     /// the device is held, and advance a change waiting for their answer.
     pub(crate) fn follow_displays(&mut self) -> Result<(), Error> {
         // The panel follows the light in the room while the person asked for
         // it, and the displays are warmed to what the night light shows now;
-        // a new output takes both with the displays' arrangement.
+        // a new output takes both with the displays' layout.
         let working = self.working_output().map(|output| output.name);
         let night_light = self.follow_light()?;
         let turned = self.rotation.follow(&self.compositor.outputs());
@@ -1967,7 +1967,7 @@ impl Session {
         );
         // Where this device's screens stand reaches the person's other
         // devices, and what every device shows is published for the shared
-        // arrangement the display sheet and Settings show.
+        // layout the display sheet and Settings show.
         if let Some(fabric) = &self.shared.fabric {
             self.published_displays
                 .follow(fabric, self.compositor.display_snapshot());
@@ -2255,16 +2255,16 @@ impl Session {
         self.shared.services.borrow_mut().settle();
     }
 
-    /// The person's arrangement: the shell this session holds, with its history and undo.
+    /// The person's layout: the shell this session holds, with its history and undo.
     #[must_use]
-    pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
-        &self.shared.arrangement
+    pub fn layout(&self) -> &Rc<RefCell<layout::Layout>> {
+        &self.shared.layout
     }
 
-    /// The person's arrangement as the shell reads it, with who else is here.
+    /// The person's layout as the shell reads it, with who else is here.
     #[must_use]
-    pub fn arrangement_reading(&self) -> tilo_session_core::shell::LayoutReading {
-        self.shared.arrangement_reading()
+    pub fn layout_reading(&self) -> tilo_session_core::shell::LayoutReading {
+        self.shared.layout_reading()
     }
 
     /// The broker this session's apps and agents reach its actions through, while it serves
@@ -2304,8 +2304,8 @@ impl Session {
     ///
     /// # Errors
     /// The door's refusal: there is no step to take back.
-    pub fn undo_arrangement(&mut self) -> Result<(), DoorError> {
-        let address = ActionAddress::new(arrangement::RECORD_RESOURCE, "undo");
+    pub fn undo_layout(&mut self) -> Result<(), DoorError> {
+        let address = ActionAddress::new(layout::RECORD_RESOURCE, "undo");
         self.shared.doors.invoke(
             &address,
             &serde_json::Map::new(),
@@ -2338,7 +2338,7 @@ impl Session {
     }
 
     /// Invoke `action` of `resource` as `actor` taking a step of the turn the message `message` of
-    /// `conversation` asked: what the arrangement stands it beside is filled in exactly as the agent
+    /// `conversation` asked: what the layout stands it beside is filled in exactly as the agent
     /// door fills it for a step the broker hands it in that turn.
     ///
     /// # Errors
@@ -2670,7 +2670,7 @@ impl Session {
         let Some(actions) = &self.published_steps else {
             return;
         };
-        // The rows read here, on the loop that holds the arrangement: nothing off this thread
+        // The rows read here, on the loop that holds the layout: nothing off this thread
         // reads a place. They are read again only once the door moved, and what is offered then
         // is compared with what was offered before, so the broker is told only when the rows
         // themselves moved.

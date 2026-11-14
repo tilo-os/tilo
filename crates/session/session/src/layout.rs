@@ -1841,7 +1841,7 @@ fn next_step(
 /// each and the windows in each group, and where the arrangement puts them.
 pub(crate) type Arranged = (
     Vec<(u64, String, Vec<(u64, Vec<u64>)>)>,
-    tilo_desktop_model::arrangement::Arrangement,
+    tilo_desktop_model::WorkspaceLayout,
 );
 
 pub(crate) fn arranged(doc: &automerge::AutoCommit, workspace_id: WorkspaceId) -> Option<Arranged> {
@@ -1858,7 +1858,7 @@ pub(crate) fn arranged(doc: &automerge::AutoCommit, workspace_id: WorkspaceId) -
             (strip.id.0, strip.name.clone(), groups)
         })
         .collect();
-    Some((strips, workspace.arrangement))
+    Some((strips, workspace.layout))
 }
 
 /// What this device's write lays down: `workspace`, the layout as this device has it, with the

@@ -279,7 +279,7 @@ impl RecordService {
     /// package's app, as it does Notes'.
     ///
     /// The package's own record is where its views' roots read: the shell keeps the person's
-    /// arrangement and the shell's settings, and both are the person's, synced with their
+    /// layout and the shell's settings, and both are the person's, synced with their
     /// devices, as an app's record is.
     ///
     /// An app's record ([`Self::of_app`]) is that app's alone, and takes no other package's.
@@ -653,7 +653,7 @@ impl RecordService {
     /// beside the place the asking turn is in (`docs/designs/app-language/one-app-model.md`
     /// §3; shell.md §8, "The canvas composes views; it opens nothing"). What was asked waits in
     /// [`Self::opens`] for the session's next pass, which places it with the same `open` the
-    /// arrangement's own action runs — never a second implementation of it.
+    /// layout's own action runs — never a second implementation of it.
     fn run(
         &mut self,
         action: &str,
@@ -1104,7 +1104,7 @@ impl Service for RecordService {
     }
 
     /// The places a resource's `open` asked this service for since the last pass: the session
-    /// places each through its arrangement, as its own `open` does
+    /// places each through its layout, as its own `open` does
     /// (`docs/designs/app-language/one-app-model.md` §3).
     fn take_open(&mut self) -> Vec<(tilo_actions::ActionInvoker, tilo_service::Open)> {
         std::mem::take(&mut self.opens)

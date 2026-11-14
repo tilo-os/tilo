@@ -10,7 +10,7 @@
 /// The frame is `ui.WindowFrame`: one window bar for the whole shell, with the window's own
 /// controls in a pill of the floating material at its trailing end, so a person sees the same
 /// bar here as on the frames, the spaces and the traditional desktop. Every arranging change is
-/// one of the session's published actions (`shell:arrangement`): a press, a tab, a script and an
+/// one of the session's published actions (`shell:layout`): a press, a tab, a script and an
 /// agent arrange the same way, attributed and undoable.
 ///
 /// Rows of several strips stand side by side across the row's width, each strip taking the share
@@ -18,29 +18,29 @@
 /// narrower window rather than pushing one off the screen, so every window of the row stays on it,
 /// on a phone as on a laptop.
 /// The places of the strip `strip`, in the order the record keeps them.
-fn places_of(a: Arrangement, strip: Text) -> List<ArrangementPlace> {
+fn places_of(a: Layout, strip: Text) -> List<LayoutPlace> {
     a.places.filter(p -> p.strip == strip)
 }
 
 /// The strips the row `row` holds, in the record's order.
-fn strips_of(a: Arrangement, row: Text) -> List<ArrangementStrip> {
+fn strips_of(a: Layout, row: Text) -> List<LayoutStrip> {
     a.strips.filter(s -> s.row == row)
 }
 
 /// The rows of the workspace `workspace`, in the record's order.
-fn rows_of(a: Arrangement, workspace: Text) -> List<ArrangementRow> {
+fn rows_of(a: Layout, workspace: Text) -> List<LayoutRow> {
     a.rows.filter(r -> r.workspace == workspace)
 }
 
 /// The strip the shell shows in front: the one the person brought forward, or the window that
 /// came last, so the strip in front follows what arrived.
-fn strip_in_front(a: Arrangement, v: Viewing) -> Text {
+fn strip_in_front(a: Layout, v: Viewing) -> Text {
     if v.focused != "" { v.focused } else { a.strips.last()?.key ?? "" }
 }
 
 /// The strips standing maximized: each shows alone, filling the shell, the others behind
 /// it. Empty while none is.
-fn maximized_strips(a: Arrangement) -> List<ArrangementStrip> {
+fn maximized_strips(a: Layout) -> List<LayoutStrip> {
     a.strips.filter(s -> s.maximized)
 }
 
@@ -125,7 +125,7 @@ view style_menu(v: Viewing) {
 /// `current`). The others are a switch away in the bar, not a second shell under this one, so the
 /// view draws the front workspace's rows and no other's — two workspaces side by side would halve
 /// the room every window has, and an empty one would take half of it for nothing.
-view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
+view strips_view(a: Layout, v: Viewing, lists: Bool) {
     let maximizing = maximized_strips(a)
     if not maximizing.is_empty() {
         row(gap: .group, fill) {
@@ -149,7 +149,7 @@ view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
 
 /// The workspace the shell shows: the one in front, else the first it holds — a shell that has not
 /// said which is in front still shows its first rather than nothing.
-fn shown_workspace(a: Arrangement) -> Option<ArrangementWorkspace> {
+fn shown_workspace(a: Layout) -> Option<LayoutWorkspace> {
     if let current = a.workspaces.find(w -> w.current) {
         return current
     }
@@ -158,7 +158,7 @@ fn shown_workspace(a: Arrangement) -> Option<ArrangementWorkspace> {
 
 /// The rows of one workspace, filling the room the shell gives them: a workspace's rows stand
 /// under one another, each the height of its share of the shell.
-view workspace_rows(a: Arrangement, v: Viewing, workspace: Text, lists: Bool) {
+view workspace_rows(a: Layout, v: Viewing, workspace: Text, lists: Bool) {
     stack(gap: .group, fill) {
         for held in rows_of(a, workspace) {
             rows_of_the_shell(a, v, held, lists, fill(1))
@@ -175,7 +175,7 @@ view workspace_rows(a: Arrangement, v: Viewing, workspace: Text, lists: Bool) {
 ///
 /// A row is not named here: the strip a person is in is what the bar's strip pill says, and the
 /// row itself carries no label of its own (docs/design-language.md, `BarChip`).
-view rows_of_the_shell(a: Arrangement, v: Viewing, held: ArrangementRow, lists: Bool) {
+view rows_of_the_shell(a: Layout, v: Viewing, held: LayoutRow, lists: Bool) {
     let strips = strips_of(a, held.key)
     let front = strips.find(s -> s.key == strip_in_front(a, v)) ?? strips.last()
     stack(gap: .related, fill) {
@@ -205,7 +205,7 @@ view rows_of_the_shell(a: Arrangement, v: Viewing, held: ArrangementRow, lists: 
 /// and a lone window takes the room its neighbours left. Never narrower than 44rem — the room a
 /// window's bar, its tabs and an app's own layout need — so a row of more windows than the shell
 /// holds keeps their width and scrolls along it, as the chrome's own row does.
-view row_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
+view row_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
     strip_window(a, v, s, lists, fill: if s.width <= 0 { 667 } else { s.width }, min: 44rem)
 }
 
@@ -225,7 +225,7 @@ view row_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
 /// of the place it was let go under). Every one is an arranging action of the session's, so a
 /// press, a key and an agent make the same change, attributed and undoable. A window's bar
 /// likewise carries its place's record, so another window's bar takes it as a tab.
-view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) {
+view strip_window(a: Layout, v: Viewing, s: LayoutStrip, lists: Bool) {
     let in_front = s.key == strip_in_front(a, v)
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
@@ -271,7 +271,7 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
 /// The resource a window's bar carries when the person picks it up: the record its place in front
 /// shows, or empty when the place shows none (a window's well). A bar that carries nothing is not
 /// lifted, so a foreign window's bar is no drag at all.
-fn window_record(shown: Option<ArrangementPlace>) -> Text {
+fn window_record(shown: Option<LayoutPlace>) -> Text {
     if let p = shown { p.record } else { "" }
 }
 
@@ -281,7 +281,7 @@ fn window_record(shown: Option<ArrangementPlace>) -> Text {
 /// comes to the front of them, so the window shows what was dropped on it. A place already in
 /// this strip is only brought to the front, so dropping a window on itself raises it rather than
 /// standing a second place. The strip comes forward with it.
-action tab_place_here(a: Arrangement, v: Viewing, s: ArrangementStrip, target: host.Resource) (
+action tab_place_here(a: Layout, v: Viewing, s: LayoutStrip, target: host.Resource) (
     icon: .columns_2,
     label: "Tab it here",
 ) {
@@ -311,7 +311,7 @@ fn place_key(place: session.Place) -> Text {
 /// window's bar does, as the shell's own `move` with the place it goes before. The strip reports
 /// the pill's place among the tabs with the moved pill taken out, so the tab it lands before is
 /// that index of the others; the last place goes last.
-action reorder_place(a: Arrangement, s: ArrangementStrip, place: session.Place, at: Int) (
+action reorder_place(a: Layout, s: LayoutStrip, place: session.Place, at: Int) (
     icon: .arrow_up_down,
     label: "Rearrange",
 ) {
@@ -338,7 +338,7 @@ action reorder_place(a: Arrangement, s: ArrangementStrip, place: session.Place, 
 /// Give the place `place` a window of its own: what dragging a tab out of its window's bar does,
 /// as the shell's own `split-right` for the window in front. The place stands in front of its new
 /// window, and that window comes to the front of the shell.
-action detach_place(v: Viewing, s: ArrangementStrip, place: session.Place) (
+action detach_place(v: Viewing, s: LayoutStrip, place: session.Place) (
     icon: .columns_2,
     label: "Its own window",
 ) {
@@ -347,13 +347,13 @@ action detach_place(v: Viewing, s: ArrangementStrip, place: session.Place) (
 }
 
 /// What a strip as a whole is called: the place in front, or an empty strip.
-fn window_name(shown: Option<ArrangementPlace>) -> Text {
+fn window_name(shown: Option<LayoutPlace>) -> Text {
     if let p = shown { place_title(p) } else { "Empty strip" }
 }
 
 /// The place in front of `s`, as another strip's menu names it while it offers where a place
 /// can join.
-fn strip_place(a: Arrangement, s: ArrangementStrip) -> Option<ArrangementPlace> {
+fn strip_place(a: Layout, s: LayoutStrip) -> Option<LayoutPlace> {
     let placed = places_of(a, s.key)
     let chosen = placed.find(p -> p.key == s.active)
     chosen ?? placed.first()
@@ -361,7 +361,7 @@ fn strip_place(a: Arrangement, s: ArrangementStrip) -> Option<ArrangementPlace> 
 
 /// The resource of the place in front of `s`, as its tab names it: empty while the strip has no
 /// place in front, which lights its first tab instead.
-fn place_in_front(s: ArrangementStrip) -> Option<session.Place> {
+fn place_in_front(s: LayoutStrip) -> Option<session.Place> {
     if s.active != "" { the_place(s.active) }
 }
 
@@ -381,10 +381,10 @@ action show_place(v: Viewing, strip: Text, place: session.Place) {
 /// names the window in front's resource (`listed`), this menu keeps the shell's controls alone,
 /// so every action stands once.
 view window_controls(
-    a: Arrangement,
+    a: Layout,
     v: Viewing,
-    s: ArrangementStrip,
-    shown: Option<ArrangementPlace>,
+    s: LayoutStrip,
+    shown: Option<LayoutPlace>,
     in_front: Bool,
     listed: Bool,
 ) {
@@ -481,12 +481,12 @@ view window_controls(
 /// menu with that resource's actions. The frame is told this (`ui.WindowFrame(lists_actions:)`),
 /// so the app's own header keeps its title and the shell's controls alone and every action
 /// stands once, in the one list the person reaches.
-fn lists_the_place(p: ArrangementPlace) -> Bool {
+fn lists_the_place(p: LayoutPlace) -> Bool {
     if let r = placed_resource(p.record) { true } else { false }
 }
 
 /// [`lists_the_place`] for a window that may show nothing: a strip holding no place lists none.
-fn lists_the_shown(p: Option<ArrangementPlace>) -> Bool {
+fn lists_the_shown(p: Option<LayoutPlace>) -> Bool {
     if let shown = p { lists_the_place(shown) } else { false }
 }
 
@@ -495,7 +495,7 @@ fn lists_the_shown(p: Option<ArrangementPlace>) -> Bool {
 /// it for the window in front (`listed`, the traditional desktop's `action_bar`). A place that
 /// shows no record this store holds (a foreign window) offers none, and its menu keeps the
 /// shell's own commands alone.
-fn menu_resource(p: ArrangementPlace, listed: Bool) -> Option<host.Resource> {
+fn menu_resource(p: LayoutPlace, listed: Bool) -> Option<host.Resource> {
     if not listed { placed_resource(p.record) }
 }
 
@@ -503,7 +503,7 @@ fn menu_resource(p: ArrangementPlace, listed: Bool) -> Option<host.Resource> {
 /// the well, so a press there is the shell's and one on the well is the app's. The canvas's
 /// framed places carry these alone: they are not a strip's window, so its width and its way to
 /// the front are not theirs.
-view place_controls(a: Arrangement, p: ArrangementPlace, listed: Bool) {
+view place_controls(a: Layout, p: LayoutPlace, listed: Bool) {
     row(gap: .tight, align: .center) {
         ui.MenuButton(
             "This window",
@@ -545,7 +545,7 @@ view place_controls(a: Arrangement, p: ArrangementPlace, listed: Bool) {
 ///
 /// Every preset draws a place through this one view — a strip's body, a framed canvas pin, a
 /// space on the frameless canvas — so a place looks the same whichever preset shows it.
-view place_content(p: ArrangementPlace) {
+view place_content(p: LayoutPlace) {
     place_view(p, fill)
 }
 
@@ -553,7 +553,7 @@ view place_content(p: ArrangementPlace) {
 /// (shell.md §8, "The canvas composes views"), or the well the app's window shows in when there
 /// is no resource here to draw (a terminal, a legacy window). The window's controls are the
 /// frame's, in its one bar, outside it.
-view place_view(p: ArrangementPlace) {
+view place_view(p: LayoutPlace) {
     if let q = query_of(p.key) {
         query_view(q, p)
     } else if let r = placed_resource(p.record) {
@@ -569,15 +569,15 @@ view place_view(p: ArrangementPlace) {
 
 /// The query the place `key` shows, while its app answers it; `.none` for a place showing a
 /// resource (shell.md §8, "Finding what to place").
-fn query_of(key: Text) -> Option<ArrangementQuery> {
-    let a = root Arrangement
+fn query_of(key: Text) -> Option<LayoutQuery> {
+    let a = root Layout
     a.queries.find(q -> q.key == key)
 }
 
 /// A place's body while it shows a query (shell.md §8): what the person searched for and where,
 /// the rows it found (each a press that places that match in this same place), and what became
 /// of it — still searching, nothing matched (with Retry), or the app's reason (with Retry).
-view query_view(q: ArrangementQuery, p: ArrangementPlace) {
+view query_view(q: LayoutQuery, p: LayoutPlace) {
     stack(gap: .related, fill) {
         ui.Text(query_heading(q), role: .label, secondary: true)
         if q.state == "searching" {
@@ -605,23 +605,23 @@ view query_view(q: ArrangementQuery, p: ArrangementPlace) {
 }
 
 /// The resources the query `key` found, in the order the app answered them.
-fn refs_of(key: Text) -> List<ArrangementRef> {
-    let a = root Arrangement
+fn refs_of(key: Text) -> List<LayoutRef> {
+    let a = root Layout
     a.refs.filter(r -> r.query == key)
 }
 
 /// What a query's place says while it runs: "Looking for <text> in <app>…".
-fn query_heading(q: ArrangementQuery) -> Text {
+fn query_heading(q: LayoutQuery) -> Text {
     "Looking for {q.text} in {q.in_app}"
 }
 
 /// The row the strip `strip` stands in, by the place it holds.
-fn strip_row(a: Arrangement, strip: Text) -> Text {
+fn strip_row(a: Layout, strip: Text) -> Text {
     a.strips.find(s -> s.key == strip)?.row ?? ""
 }
 
 /// The workspace the strip `strip` stands in: a row is one workspace's, so what a place moves
 /// within is that workspace's strips and rows.
-fn strip_workspace(a: Arrangement, strip: Text) -> Text {
+fn strip_workspace(a: Layout, strip: Text) -> Text {
     a.strips.find(s -> s.key == strip)?.workspace ?? ""
 }

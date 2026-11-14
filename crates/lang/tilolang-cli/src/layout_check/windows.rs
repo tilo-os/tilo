@@ -846,7 +846,7 @@ fn a_window_alone_in_the_shell_takes_the_shell() {
     bar_and_content_in(frames[0], window);
 }
 
-/// A place is made from the resource it shows (`session.Arrangement`'s `record`), so a place
+/// A place is made from the resource it shows (`session.Layout`'s `record`), so a place
 /// whose app the shell has draws that app's views, that app's header row and, with nothing in it
 /// yet, that app's empty state. `staged` is the layout of places.
 fn a_place_the_shell_has_shows_its_app(staged: &stage::Staged, packages: &Rc<stage::Packages>) {

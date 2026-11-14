@@ -120,7 +120,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     assert_eq!(answer["ok"], true, "{answer}");
     assert_eq!(answer["package"], tilo_session::style_packages::COPY_ID);
     // The copy is the person's own short style package: one .tl file, its own `app` header, the
-    // shell it uses, and one view of `shell.Arrangement` whose body draws the shell through the
+    // shell it uses, and one view of `shell.Layout` whose body draws the shell through the
     // shell's own template.
     let source = workspace().join(tilo_session::style_packages::COPY_ID);
     let text = std::fs::read_to_string(source.join("app.tl")).expect("the copy's app.tl");
@@ -221,7 +221,7 @@ fn a_broken_copy_is_a_diagnostic_and_never_installs() {
     std::fs::write(
         dir.join("app.tl"),
         "app mine.broken \"Broken\"\n\nuse so.tilo.shell as shell\n\n\
-         /// Broken style\nview broken(a: shell.Arrangement) {\n    ui.Text(oops\n}\n",
+         /// Broken style\nview broken(a: shell.Layout) {\n    ui.Text(oops\n}\n",
     )
     .expect("the broken source");
     let mut session = session();

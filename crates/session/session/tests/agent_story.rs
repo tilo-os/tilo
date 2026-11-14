@@ -50,7 +50,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
     let root = crate::common::private_home();
     let mut session = crate::common::seeded_session(root.path());
 
-    // Open the notebook in a window, as the arrangement's published `open` does for a person.
+    // Open the notebook in a window, as the layout's published `open` does for a person.
     let notebook = found(&session, "tl.so.tilo.lang.notes.Notebook");
     act(
         &mut session,
@@ -149,7 +149,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
         "the history lists what was copied: {history}"
     );
 
-    // Take a control off Quick Settings, as the panel's own arranging does: the arrangement is this
+    // Take a control off Quick Settings, as the panel's own arranging does: the layout is this
     // device's setting, so it reads back whether the panel is drawn or not.
     act(
         &mut session,
@@ -159,7 +159,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
     );
     let arranged = session
         .read("session:quick-settings")
-        .expect("the session publishes the panel's arrangement");
+        .expect("the session publishes the panel's layout");
     assert!(
         !arranged["controls"].to_string().contains("bluetooth"),
         "the control is off the panel: {arranged}"

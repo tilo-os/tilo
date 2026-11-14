@@ -582,7 +582,7 @@ required = true
 type = "text"
 
 [[resources]]
-id = "shell:arrangement"
+id = "shell:layout"
 kind = "shell"
 label = ""
 version = 0
@@ -753,7 +753,7 @@ name = "place"
 required = true
 
 [resources.verbs.params.type]
-resource = "arrangement.place"
+resource = "layout.place"
 
 [[resources.verbs.params]]
 name = "resource"
@@ -776,7 +776,7 @@ name = "place"
 required = true
 
 [resources.verbs.params.type]
-resource = "arrangement.place"
+resource = "layout.place"
 
 [[resources.verbs]]
 id = "undo"
@@ -863,7 +863,7 @@ params = []
 
 [[resources]]
 instances = true
-kind = "arrangement.row"
+kind = "layout.row"
 label = ""
 version = 0
 verbs = []
@@ -871,7 +871,7 @@ fields = []
 
 [[resources]]
 instances = true
-kind = "arrangement.strip"
+kind = "layout.strip"
 label = ""
 version = 0
 fields = []
@@ -896,7 +896,7 @@ type = "bool"
 
 [[resources]]
 instances = true
-kind = "arrangement.place"
+kind = "layout.place"
 label = ""
 version = 0
 fields = []
@@ -962,21 +962,21 @@ name = "row"
 required = true
 
 [resources.verbs.params.type]
-resource = "arrangement.row"
+resource = "layout.row"
 
 [[resources.verbs.params]]
 name = "strip"
 required = false
 
 [resources.verbs.params.type]
-resource = "arrangement.strip"
+resource = "layout.strip"
 
 [[resources.verbs.params]]
 name = "before"
 required = false
 
 [resources.verbs.params.type]
-resource = "arrangement.place"
+resource = "layout.place"
 
 [[resources.verbs]]
 id = "float"
@@ -1016,11 +1016,11 @@ name = "row"
 required = false
 
 [resources.verbs.params.type]
-resource = "arrangement.row"
+resource = "layout.row"
 
 [[resources.verbs.params]]
 name = "before"
 required = false
 
 [resources.verbs.params.type]
-resource = "arrangement.place"
+resource = "layout.place"

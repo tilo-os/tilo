@@ -1574,7 +1574,7 @@ impl SearchThrough {
 
 /// The search hits `found` names, as a caller who addresses resources reads them: the resource each
 /// is about, best first, and never below the one `place_found` places. The canvas stands the hit
-/// [`arrangement::placed`] chooses; `find` leads with that same hit, so an agent asked for a text
+/// [`layout::placed`] chooses; `find` leads with that same hit, so an agent asked for a text
 /// answers with what typing it would place, then with what else the search found under it. Without
 /// one (a file, a command, a window's focus), the resources the search does name stand on their
 /// own.

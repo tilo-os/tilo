@@ -607,7 +607,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     // The frame names its window the way every surface does: the window's own title and its
     // app's own name, resolved once by the session.
     let shown = session
-        .arrangement()
+        .layout()
         .borrow()
         .reading()
         .places

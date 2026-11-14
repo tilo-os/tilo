@@ -3,231 +3,6 @@
 
 d-so-tilo-shell = Shell
 
-d-qhf2pyze = Arrangement
-    .doc = The person's layout: what is open where.
-    .noun = { $count ->
-        [one] arrangement
-       *[other] arrangements
-    }
-
-d-h3u7qt7x = Person
-    .doc = The person at this device, by their name.
-
-d-qmdr2dmv = People
-    .doc = The others here in the workspace in front.
-
-d-rknsknpw = Workspaces
-
-d-2aititgj = Rows
-
-d-x2vx3spj = Strips
-
-d-id3ec54i = Places
-    .doc = Every place, each naming the strip it is in, so the views need not walk the tree.
-
-d-if7lamna = Queries
-    .doc = The queries the canvas stands while an app answers them, by the place that shows each: what the person typed, what it found, or why nothing did (shell.md §8).
-
-d-bkx6ffql = Refs
-    .doc = The resources those queries found, each naming the query it is of.
-
-d-7ync2hvz = Arrangement query
-    .doc = A query a place shows while its app answers it: what the person typed, in which app, and what came of it.
-    .noun = { $count ->
-        [one] arrangement query
-       *[other] arrangement queries
-    }
-
-d-l6u2kjnd = Key
-    .doc = Its id: the place showing it.
-
-d-fs44wwaw = Text
-    .doc = What the person typed.
-
-d-tilkofni = In app
-    .doc = The app asked, by its canonical id.
-
-d-hpdpdjlh = Kind
-    .doc = The kind of resource the query names, as its app publishes it (`tube.channel`).
-
-d-34fpixhk = State
-    .doc = How the search stands: `searching`, `one`, `several`, `none` or `failed`.
-
-d-wz5iufcx = Reason
-    .doc = Why it failed, in the app's own words; empty while it does better.
-
-d-m3of3jpo = Arrangement ref
-    .doc = A resource a query found: its address, the name it goes by, and its kind, the same three words a place's record is named by.
-    .noun = { $count ->
-        [one] arrangement ref
-       *[other] arrangement refs
-    }
-
-d-c4hrnixt = Key
-
-d-7bz4aejw = Query
-    .doc = The query it is of, by its key.
-
-d-m6dvgoo5 = Address
-
-d-e6vecsii = Title
-
-d-xhyuztvt = Kind
-
-d-wydxt4zu = Arrangement workspace
-    .doc = A workspace the person's layout shows.
-    .noun = { $count ->
-        [one] arrangement workspace
-       *[other] arrangement workspaces
-    }
-
-d-6m3fzjng = Key
-
-d-tljqo2yo = Name
-
-d-3uxxhan3 = Current
-    .doc = Whether it is the workspace in front, which the shell shows.
-
-d-wydxt4zu-filter-current = Current
-
-d-f5ctbqkg = Arrangement person
-    .doc = Someone else here in the workspace in front: a person or an agent.
-    .noun = { $count ->
-        [one] arrangement person
-       *[other] arrangement people
-    }
-
-d-ai2x4wtg = Key
-
-d-doi4uxmt = Name
-
-d-k6bv5cxt = Arrangement row
-    .doc = A row of the layout: a strip across a workspace's width, holding columns.
-    .noun = { $count ->
-        [one] arrangement row
-       *[other] arrangement rows
-    }
-
-d-idcxp7jb = Key
-
-d-qassqvic = Workspace
-
-d-yppyohd5 = Name
-
-d-vqhjqkhq = Current
-    .doc = Whether it is the row in front in its workspace.
-
-d-awgwtm6j = Shell
-    .doc = The shell that made it; empty reads as this shell's.
-
-d-k6bv5cxt-filter-current = Current
-
-d-vn23musu = Arrangement strip
-    .doc = A strip: a column of places, with a width, in a row of a workspace.
-    .noun = { $count ->
-        [one] arrangement strip
-       *[other] arrangement strips
-    }
-
-d-heuzka3o = Key
-
-d-dqpmay7u = Workspace
-
-d-r22fgcaa = Row
-
-d-pbep7iq6 = Width
-    .doc = Its width in per-mille of its row's usable width (333 narrow, 667 normal, 1000 wide).
-
-d-gpviayl3 = Maximized
-
-d-opotzabz = Active
-    .doc = The place in front, by its id; empty for none.
-
-d-54qldnir = Placed
-    .doc = Whether it has a place on its workspace's canvas.
-
-d-mnpd23ty = Canvas x
-
-d-yzbtjovv = Canvas y
-
-d-m67g5cso = Canvas width
-
-d-4n7jst3f = Canvas height
-
-d-nyhuwvbj = Canvas hugs
-    .doc = Whether `canvas_height` is the most it takes: what it shows is as tall as what it holds up to it (a thing found where the person clicked).
-
-d-n2pmgnow = Shell
-
-d-vn23musu-filter-width = Width
-
-d-vn23musu-filter-maximized = Maximized
-
-d-vn23musu-filter-placed = Placed
-
-d-vn23musu-filter-canvas_x = Canvas x
-
-d-vn23musu-filter-canvas_y = Canvas y
-
-d-vn23musu-filter-canvas_width = Canvas width
-
-d-vn23musu-filter-canvas_height = Canvas height
-
-d-vn23musu-filter-canvas_hugs = Canvas hugs
-
-d-gpmk4o3r = Arrangement place
-    .doc = A place: one window, showing a resource through a view.
-    .noun = { $count ->
-        [one] arrangement place
-       *[other] arrangement places
-    }
-
-d-ez2plmfg = Key
-
-d-rsnsojnc = Strip
-    .doc = The strip it is in.
-
-d-uxd54qen = Shows
-    .doc = The app showing the resource, by its canonical id (`so.tilo.terminal`).
-
-d-jecpdz4d = Shown as
-    .doc = The view it shows the resource through; empty for the app's default.
-
-d-yesjoqbj = Record
-    .doc = The record it shows, when it shows one.
-
-d-iu3wwk2u = Title
-    .doc = The title it is shown under.
-
-d-joj2ey7d = Name
-    .doc = What this place is called, on every surface: its window's title and its app's own name (`Groceries` in `Notes`, the one the person picked), or the app's name alone when the window has no title.
-
-d-aonjenrr = Pinned
-    .doc = Whether the person pinned it: an agent's arrangement leaves it alone.
-
-d-rqrtd6vq = Shell
-    .doc = The shell that made it; empty reads as this shell's.
-
-d-gpmk4o3r-filter-pinned = Pinned
-
-d-nkjtmr33 = Viewing
-    .doc = What the person shows of their arrangement, and which strip stands in front: the shell's own view of it, in their own record (`records: .own`, `root viewing: Viewing`).
-    .noun = { $count ->
-        [one] viewing
-       *[other] viewings
-    }
-
-d-kna5sco4 = Style
-    .doc = The style the person shows, as a view reference: a package and a view (`so.tilo.shell:strips`, `me.styles:timeline`).
-
-d-nl27ikjq = Showing
-    .doc = The preset the person showed before styles were views.
-
-d-6b2coqll = Focused
-    .doc = The strip in front, by its key; empty for none.
-
-d-nkjtmr33-filter-showing = Showing
-
 d-cejnvssb = Shell
     .doc = The person's own shell record, reached as `shell` (`root shell: Shell`).
     .noun = { $count ->
@@ -392,32 +167,230 @@ d-bnfk7mx5-filter-badge = Badge
 
 d-bnfk7mx5-filter-attention = Attention
 
-d-clhqzrkb = Width
-    .doc = How wide a strip stands within its row, in per-mille of the row's width.
+d-oomdh5mi = Layout
+    .doc = The person's layout: what is open where.
+    .noun = { $count ->
+        [one] layout
+       *[other] layouts
+    }
 
-d-hrjwxtwf = Three tenths of the row: a list, a set of options
-    .doc = Three tenths of the row: a list, a set of options.
+d-uykuo63i = Person
+    .doc = The person at this device, by their name.
 
-d-ipingyqi = Two thirds of the row: a note, a conversation
-    .doc = Two thirds of the row: a note, a conversation.
+d-yb7sokzs = People
+    .doc = The others here in the workspace in front.
 
-d-nfufnx7j = The row's whole usable width
-    .doc = The row's whole usable width.
+d-7n7jrcg3 = Workspaces
 
-d-vvznzcd4 = Preset
-    .doc = A way of laying out the same resources and actions a person picked before the shell had styles: `Viewing.showing` kept one.
+d-hqul2vwj = Rows
 
-d-25lm42aq = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically
-    .doc = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically.
+d-7lq6xkzz = Strips
 
-d-3ha7yyn2 = Places at points on a pannable, zoomable surface, each drawn in a frame
-    .doc = Places at points on a pannable, zoomable surface, each drawn in a frame.
+d-2ug5q5cq = Places
+    .doc = Every place, each naming the strip it is in, so the views need not walk the tree.
 
-d-whadpf2h = Places at points, each drawn as its own view: resources standing as content on one surface, grouped by where they are rather than by a frame around them
-    .doc = Places at points, each drawn as its own view: resources standing as content on one surface, grouped by where they are rather than by a frame around them.
+d-dt4vnrqa = Queries
+    .doc = The queries the canvas stands while an app answers them, by the place that shows each: what the person typed, what it found, or why nothing did (shell.md §8).
 
-d-6uzzl3rd = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know
-    .doc = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
+d-fqirvfzw = Refs
+    .doc = The resources those queries found, each naming the query it is of.
+
+d-zsaib3op = Layout query
+    .doc = A query a place shows while its app answers it: what the person typed, in which app, and what came of it.
+    .noun = { $count ->
+        [one] layout query
+       *[other] layout queries
+    }
+
+d-6jget5cg = Key
+    .doc = Its id: the place showing it.
+
+d-iwuvfj66 = Text
+    .doc = What the person typed.
+
+d-ybpst64r = In app
+    .doc = The app asked, by its canonical id.
+
+d-ibasoiis = Kind
+    .doc = The kind of resource the query names, as its app publishes it (`tube.channel`).
+
+d-a6ewjjom = State
+    .doc = How the search stands: `searching`, `one`, `several`, `none` or `failed`.
+
+d-xsjcdedm = Reason
+    .doc = Why it failed, in the app's own words; empty while it does better.
+
+d-jq4ftwnw = Layout ref
+    .doc = A resource a query found: its address, the name it goes by, and its kind, the same three words a place's record is named by.
+    .noun = { $count ->
+        [one] layout ref
+       *[other] layout refs
+    }
+
+d-k652vouu = Key
+
+d-vdsinb5l = Query
+    .doc = The query it is of, by its key.
+
+d-vj5mgxi6 = Address
+
+d-pnom4n55 = Title
+
+d-7giiatvv = Kind
+
+d-njeklucw = Layout workspace
+    .doc = A workspace the person's layout shows.
+    .noun = { $count ->
+        [one] layout workspace
+       *[other] layout workspaces
+    }
+
+d-5zibpqs6 = Key
+
+d-b2vzzczj = Name
+
+d-hwfwvs3f = Current
+    .doc = Whether it is the workspace in front, which the shell shows.
+
+d-njeklucw-filter-current = Current
+
+d-dpuvzi4j = Layout person
+    .doc = Someone else here in the workspace in front: a person or an agent.
+    .noun = { $count ->
+        [one] layout person
+       *[other] layout people
+    }
+
+d-3rpmhtjf = Key
+
+d-6a7urcxy = Name
+
+d-4s5jxxte = Layout row
+    .doc = A row of the layout: a strip across a workspace's width, holding columns.
+    .noun = { $count ->
+        [one] layout row
+       *[other] layout rows
+    }
+
+d-3xc5xbon = Key
+
+d-v5ef7tkv = Workspace
+
+d-iqgu3ggi = Name
+
+d-sm4scdu2 = Current
+    .doc = Whether it is the row in front in its workspace.
+
+d-bowkspu3 = Shell
+    .doc = The shell that made it; empty reads as this shell's.
+
+d-4s5jxxte-filter-current = Current
+
+d-w25t6rl7 = Layout strip
+    .doc = A strip: a column of places, with a width, in a row of a workspace.
+    .noun = { $count ->
+        [one] layout strip
+       *[other] layout strips
+    }
+
+d-dufcke3u = Key
+
+d-x42tiiqe = Workspace
+
+d-dvberkpa = Row
+
+d-7ekq6qgi = Width
+    .doc = Its width in per-mille of its row's usable width (333 narrow, 667 normal, 1000 wide).
+
+d-2cbikm5m = Maximized
+
+d-yk2oxjrj = Active
+    .doc = The place in front, by its id; empty for none.
+
+d-44lq6lon = Placed
+    .doc = Whether it has a place on its workspace's canvas.
+
+d-vbv2zrob = Canvas x
+
+d-jvrwsckz = Canvas y
+
+d-m75kjoue = Canvas width
+
+d-s3lpes2e = Canvas height
+
+d-s6rivl3a = Canvas hugs
+    .doc = Whether `canvas_height` is the most it takes: what it shows is as tall as what it holds up to it (a thing found where the person clicked).
+
+d-pznsxbgq = Shell
+
+d-w25t6rl7-filter-width = Width
+
+d-w25t6rl7-filter-maximized = Maximized
+
+d-w25t6rl7-filter-placed = Placed
+
+d-w25t6rl7-filter-canvas_x = Canvas x
+
+d-w25t6rl7-filter-canvas_y = Canvas y
+
+d-w25t6rl7-filter-canvas_width = Canvas width
+
+d-w25t6rl7-filter-canvas_height = Canvas height
+
+d-w25t6rl7-filter-canvas_hugs = Canvas hugs
+
+d-farfsl4d = Layout place
+    .doc = A place: one window, showing a resource through a view.
+    .noun = { $count ->
+        [one] layout place
+       *[other] layout places
+    }
+
+d-ba3kyokq = Key
+
+d-7dno3n47 = Strip
+    .doc = The strip it is in.
+
+d-jpzk4cli = Shows
+    .doc = The app showing the resource, by its canonical id (`so.tilo.terminal`).
+
+d-nprpusuo = Shown as
+    .doc = The view it shows the resource through; empty for the app's default.
+
+d-ofkshr4v = Record
+    .doc = The record it shows, when it shows one.
+
+d-qqcejiim = Title
+    .doc = The title it is shown under.
+
+d-jeatudax = Name
+    .doc = What this place is called, on every surface: its window's title and its app's own name (`Groceries` in `Notes`, the one the person picked), or the app's name alone when the window has no title.
+
+d-vkbhstef = Pinned
+    .doc = Whether the person pinned it: an agent's layout leaves it alone.
+
+d-soy4vimv = Shell
+    .doc = The shell that made it; empty reads as this shell's.
+
+d-farfsl4d-filter-pinned = Pinned
+
+d-nkjtmr33 = Viewing
+    .doc = What the person shows of their layout, and which strip stands in front: the shell's own view of it, in their own record (`records: .own`, `root viewing: Viewing`).
+    .noun = { $count ->
+        [one] viewing
+       *[other] viewings
+    }
+
+d-kna5sco4 = Style
+    .doc = The style the person shows, as a view reference: a package and a view (`so.tilo.shell:strips`, `me.styles:timeline`).
+
+d-nl27ikjq = Showing
+    .doc = The preset the person showed before styles were views.
+
+d-6b2coqll = Focused
+    .doc = The strip in front, by its key; empty for none.
+
+d-nkjtmr33-filter-showing = Showing
 
 d-nxjnwtsd = Edge
     .doc = The person's shell: which parts the top bar and the dock have, in what order, on which edge, how they look and when they show.
@@ -500,25 +473,52 @@ d-ezboaery = The agent's own indicator: a task working for the person
 d-fqaqauwe = A flexible gap: the bar's parts before it lead, those after it trail
     .doc = A flexible gap: the bar's parts before it lead, those after it trail.
 
-d-oomdh5mi = Layout
+d-socv3cfz = Chrome preset
     .doc = A named set of the settings, which the person applies in one action: a chrome preset.
 
-d-gdzkj7tc = The dock on the bottom with the bar on the top: Tilo's own
+d-cb4a3qsa = The dock on the bottom with the bar on the top: Tilo's own
     .doc = The dock on the bottom with the bar on the top: Tilo's own.
 
-d-b6bz7ze6 = A floating, rounded, translucent dock at the bottom that hides while a window covers it, and a top bar with the focused app's menus after the system's
+d-qmzl573l = A floating, rounded, translucent dock at the bottom that hides while a window covers it, and a top bar with the focused app's menus after the system's
     .doc = A floating, rounded, translucent dock at the bottom that hides while a window covers it, and a top bar with the focused app's menus after the system's.
 
-d-k4de63ud = A full-width taskbar at the bottom, always shown
+d-iriqaem6 = A full-width taskbar at the bottom, always shown
     .doc = A full-width taskbar at the bottom, always shown.
 
-d-cqbe6g3k = The top bar alone; the overview on demand
+d-n44stfvj = The top bar alone; the overview on demand
     .doc = The top bar alone; the overview on demand.
 
-d-hyr6xrfo = No chrome at rest; the edges reveal what the person needs
+d-dah75qd2 = No chrome at rest; the edges reveal what the person needs
     .doc = No chrome at rest; the edges reveal what the person needs.
 
-d-poagvor7 = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know
+d-zsqlezfj = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know
+    .doc = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
+
+d-clhqzrkb = Width
+    .doc = How wide a strip stands within its row, in per-mille of the row's width.
+
+d-hrjwxtwf = Three tenths of the row: a list, a set of options
+    .doc = Three tenths of the row: a list, a set of options.
+
+d-ipingyqi = Two thirds of the row: a note, a conversation
+    .doc = Two thirds of the row: a note, a conversation.
+
+d-nfufnx7j = The row's whole usable width
+    .doc = The row's whole usable width.
+
+d-vvznzcd4 = Preset
+    .doc = A way of laying out the same resources and actions a person picked before the shell had styles: `Viewing.showing` kept one.
+
+d-25lm42aq = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically
+    .doc = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically.
+
+d-3ha7yyn2 = Places at points on a pannable, zoomable surface, each drawn in a frame
+    .doc = Places at points on a pannable, zoomable surface, each drawn in a frame.
+
+d-whadpf2h = Places at points, each drawn as its own view: resources standing as content on one surface, grouped by where they are rather than by a frame around them
+    .doc = Places at points, each drawn as its own view: resources standing as content on one surface, grouped by where they are rather than by a frame around them.
+
+d-6uzzl3rd = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know
     .doc = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
 
 d-q7rxwd72 = Bar room
@@ -532,20 +532,6 @@ d-qqg4smi5 = The menu by its window's name, but not the tasks and who is here
 
 d-7caakb5b = The least: the menu stands as the window's icon, and only what a phone keeps stays
     .doc = The least: the menu stands as the window's icon, and only what a phone keeps stays.
-
-d-p4bqyuzt = Name the style
-    .doc = A style picked before styles were views: the preset's name turned into this package's view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept.
-
-d-7j7tzynq = Show as
-    .doc = Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`).
-    .w-it-is-shown-that-way-already = It is shown that way already
-
-d-7j7tzynq-style = Style
-
-d-dkylvhw4 = In front
-    .doc = Makes the strip `strip` the one in front: what a press on a column's header does.
-
-d-dkylvhw4-strip = Strip
 
 d-ukun4zmh = Asked on the canvas
     .doc = The person asked on the canvas: the hint the empty canvas says until then has been said (`Shell.canvas_asked`), and stays away from now on.
@@ -719,6 +705,20 @@ d-5giytccr = Open first
     .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the shell's own rows do not hold.
 
 d-5giytccr-query = Query
+
+d-p4bqyuzt = Name the style
+    .doc = A style picked before styles were views: the preset's name turned into this package's view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept.
+
+d-7j7tzynq = Show as
+    .doc = Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`).
+    .w-it-is-shown-that-way-already = It is shown that way already
+
+d-7j7tzynq-style = Style
+
+d-dkylvhw4 = In front
+    .doc = Makes the strip `strip` the one in front: what a press on a column's header does.
+
+d-dkylvhw4-strip = Strip
 
 d-zm35wbjg = A workspace
     .doc = Adds a workspace, with one row, to `a`, and returns the row's key.
@@ -896,12 +896,6 @@ d-moh3hzne = Bell
     .w-1-unread = { $name }, 1 unread
     .w-unread = { $name }, { $waiting } unread
 
-d-fniigjed = Viewing settings
-    .w-shell = Shell
-    .w-switching-a-style-keeps-every-window = Switching a style keeps every window where it is.
-
-d-gapwwnqc = Show style~present
-
 d-s7yqm7cb = Canvas
     .w-click-anywhere-and-say-what-you = Click anywhere and say what you want
     .w-caret = Caret
@@ -957,8 +951,14 @@ d-iavyg4wt = Shell surfaces
     .w-workspaces = Workspaces
     .w-notifications = Notifications
 
+d-fniigjed = Viewing settings
+    .w-shell = Shell
+    .w-switching-a-style-keeps-every-window = Switching a style keeps every window where it is.
+
+d-gapwwnqc = Show style~present
+
 d-outvdzmi = Layouts
-    .w-layout = Layout
+    .w-chromepreset = ChromePreset
 
 d-5q3okayl = Layout card
     .w-in-use = In use

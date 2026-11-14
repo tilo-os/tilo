@@ -186,7 +186,7 @@ const EXCHANGES: usize = 8;
 #[derive(Default)]
 pub struct Staging {
     pub scenario: Option<String>,
-    /// The layer a package with more than one root shows (`Desk`, `Arrangement`).
+    /// The layer a package with more than one root shows (`Desk`, `Layout`).
     pub root: Option<String>,
     pub record: Option<ui::automerge::AutoCommit>,
     /// Whether what the app's units run is counted ([`tilolang_tilo::runtime::cost`]).
@@ -199,7 +199,7 @@ pub struct Staging {
 impl Staged {
     /// The app `app` of `packages` with `scenario` staged, its window laid out at `viewport`, showing
     /// the layer `root` names rather than the package's first root: a package with more than one root
-    /// (the shell's `Desk` beside its `Arrangement`) shows each, and each is laid out as a person sees
+    /// (the shell's `Desk` beside its `Layout`) shows each, and each is laid out as a person sees
     /// it.
     pub fn over(
         app: &str,
@@ -277,7 +277,7 @@ impl Staged {
             host.runtime().record_costs(true);
         }
         // The package's own root resources — every layer it has (the shell's `Desk` beside its
-        // arrangement) and a person's record kept beside them (`root shell: Shell`) — are made and
+        // layout) and a person's record kept beside them (`root shell: Shell`) — are made and
         // its migrations run, as the live session does when it loads the package: a scenario that
         // seeds another layer than the one laid out, or seeds a root through a migration, shows
         // them.
@@ -407,7 +407,7 @@ impl Staged {
         &self.harness
     }
 
-    /// The places the staged desk holds, as the shell's own arrangement has them: each the app it
+    /// The places the staged desk holds, as the shell's own layout has them: each the app it
     /// shows and the record it shows.
     #[cfg(test)]
     pub fn places(&self) -> Vec<PlaceShown> {
@@ -417,7 +417,7 @@ impl Staged {
         let Some(meta) = host.package(&self.app).map(|package| package.meta) else {
             return Vec::new();
         };
-        // The fields the arrangement and its places keep, by the names the shell declared them
+        // The fields the layout and its places keep, by the names the shell declared them
         // under: a record is stored by the field's id.
         let field = |ty: &str, name: &str| -> Option<String> {
             meta.types
@@ -429,15 +429,15 @@ impl Staged {
                 .map(|held| held.id.clone())
         };
         let (Some(places), Some(key), Some(shows), Some(record)) = (
-            field("Arrangement", "places"),
-            field("ArrangementPlace", "key"),
-            field("ArrangementPlace", "shows"),
-            field("ArrangementPlace", "record"),
+            field("Layout", "places"),
+            field("LayoutPlace", "key"),
+            field("LayoutPlace", "shows"),
+            field("LayoutPlace", "record"),
         ) else {
             return Vec::new();
         };
         let layer = tilolang_tilo::host::RootView {
-            root: Some("Arrangement".to_owned()),
+            root: Some("Layout".to_owned()),
             view: None,
         };
         let Ok(root) = host.root_of_layer(&self.app, &layer) else {
@@ -872,7 +872,7 @@ fn commit(
     action: &tilolang_tilo::action::DynAction,
 ) -> Result<(), String> {
     use ui::tilo_actions::{ActionContext, ActionInvoker, apply_local_with_context};
-    // A resource its origin derives — the shell's desk and arrangement, a session's desk — lives in
+    // A resource its origin derives — the shell's desk and layout, a session's desk — lives in
     // the store's unsaved layer and is never the workspace record's to have, so its steps stay
     // there: what the store holds of it, the window is laid out with.
     let Some(action) = only_the_record(action, host) else {

@@ -3,7 +3,7 @@
 //! (one-app-model.md §2), and what the person does there reaches Chat's record.
 //!
 //! Chat declares `Channel` as a resource and `page` as its default view. The channel is placed
-//! through the arrangement's published `place`, as an agent or the person does; the shell's
+//! through the layout's published `place`, as an agent or the person does; the shell's
 //! runtime draws the channel's reading through Chat's view. Typing in the composer and pressing
 //! send sends to the channel through Chat's own `send`; pressing an attachment places what it
 //! holds. What stands on screen is read from what the shell lays out for assistive technology,
@@ -69,14 +69,14 @@ fn session(root: &std::path::Path) -> Session {
     session
 }
 
-/// Place `resource` on the canvas of the workspace in front, through the arrangement's
+/// Place `resource` on the canvas of the workspace in front, through the layout's
 /// published `place`, as an agent puts it there.
 fn place(session: &mut Session, resource: &str) -> u64 {
     place_at(session, resource, 720, 620)
 }
 
 /// Place `resource` on the canvas of the workspace in front at `width` by `height`, through the
-/// arrangement's published `place`, as an agent puts it there.
+/// layout's published `place`, as an agent puts it there.
 fn place_at(session: &mut Session, resource: &str, width: i64, height: i64) -> u64 {
     let (workspace, row, strip, place) = {
         let tree = session.handle().read(Clone::clone);
@@ -109,7 +109,7 @@ fn place_at(session: &mut Session, resource: &str, width: i64, height: i64) -> u
 }
 
 /// Place `resource` on the canvas far from the origin, so it stands clear of a conversation
-/// placed there: through the arrangement's published `place`, as an agent puts it there.
+/// placed there: through the layout's published `place`, as an agent puts it there.
 fn place_far(session: &mut Session, resource: &str) -> u64 {
     let (workspace, row, strip, place) = {
         let tree = session.handle().read(Clone::clone);
@@ -446,7 +446,7 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
         .map(|place| place.record)
         .collect();
     crate::common::press(&mut session, SHARED);
-    // The press places the video beside the page: the arrangement takes it as one step of the
+    // The press places the video beside the page: the layout takes it as one step of the
     // person's, and the page stays where it was.
     for _ in 0..20 {
         session
@@ -537,7 +537,7 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
         "the drag is taken"
     );
     // The drag places the resource the chip held: the map's `drop` ran the system's `place`, so
-    // a place of the video stands in the arrangement, at the canvas point it was let go.
+    // a place of the video stands in the layout, at the canvas point it was let go.
     crate::common::until(&mut session, "the video placed on the canvas", |session| {
         crate::common::places(session)
             .iter()
@@ -559,7 +559,7 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
         .into_iter()
         .find(|place| place.record == DROPPED)
         .and_then(|place| place.key.parse().ok())
-        .expect("the video's place stands in the arrangement");
+        .expect("the video's place stands in the layout");
     let strip =
         crate::common::strip_of(&session, place_key).expect("the video's place has a strip");
     assert!(

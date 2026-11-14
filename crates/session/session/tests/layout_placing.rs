@@ -1,7 +1,7 @@
-//! Showing a resource is an action on the person's arrangement, never on the
+//! Showing a resource is an action on the person's layout, never on the
 //! resource (shell.md §8, "The canvas composes views; it opens nothing").
 //!
-//! An arrangement entry names a resource and a view: the `place` action puts a
+//! An layout entry names a resource and a view: the `place` action puts a
 //! resource on the canvas as one of its published views at a point, and the
 //! entry's `shows` follows from the resource's app. Text typed on the canvas
 //! runs the one `find` the palette and an agent's `tilo` tool use, and the top
@@ -37,7 +37,7 @@ const ADA: &str = "ababababababababababababababababababababababababababababababa
 
 /// A tilolang-style app resource: a mailbox shown through an `inbox` view (primary) and a `reader`
 /// view, published under `app` . Its `open` is a view operation, as every resource's opener is, and
-/// it carries no action that shows it: showing is the arrangement's.
+/// it carries no action that shows it: showing is the layout's.
 fn view_action(id: &'static str) -> tilo_actions::ActionSpec {
     tilo_actions::ActionSpec::typed_operation(
         id,
@@ -117,7 +117,7 @@ fn options() -> Options {
 }
 
 /// A session on a device that holds its workspaces, as a person's own device does: the layout it
-/// shows is a workspace's, and what the arrangement does to it is that workspace's layout.
+/// shows is a workspace's, and what the layout does to it is that workspace's layout.
 fn session() -> Session {
     crate::common::headless_on(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options())
 }
@@ -140,7 +140,7 @@ fn settle(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
 
 /// The place `key` stands as, once the workspace holds the record it shows: a place's record is the
 /// layout's, which the workspace has a look after the action.
-fn placed(session: &mut Session, key: u64) -> arrangement::PlaceReading {
+fn placed(session: &mut Session, key: u64) -> layout::PlaceReading {
     crate::common::wait_for(
         session,
         "the place's record to reach the workspace",
@@ -148,30 +148,30 @@ fn placed(session: &mut Session, key: u64) -> arrangement::PlaceReading {
     )
 }
 
-/// The arrangement the session's layout holds now, as a shell reads it.
-fn arrangement(session: &Session) -> arrangement::Reading {
+/// The layout the session's layout holds now, as a shell reads it.
+fn layout(session: &Session) -> layout::Reading {
     session.layout().borrow().reading()
 }
 
-/// The place of the arrangement `key` names.
-fn place_of(session: &Session, key: u64) -> Option<arrangement::PlaceReading> {
+/// The place of the layout `key` names.
+fn place_of(session: &Session, key: u64) -> Option<layout::PlaceReading> {
     let key = key.to_string();
-    arrangement(session)
+    layout(session)
         .places
         .into_iter()
         .find(|place| place.key == key)
 }
 
-/// The strip of the arrangement `key` names.
-fn strip_of(session: &Session, key: u64) -> Option<arrangement::StripReading> {
+/// The strip of the layout `key` names.
+fn strip_of(session: &Session, key: u64) -> Option<layout::StripReading> {
     let key = key.to_string();
-    arrangement(session)
+    layout(session)
         .strips
         .into_iter()
         .find(|strip| strip.key == key)
 }
 
-/// An id as the arrangement reads it out: its whole number.
+/// An id as the layout reads it out: its whole number.
 fn number(key: &str) -> u64 {
     key.parse().expect("an id reads as its number")
 }
@@ -191,14 +191,14 @@ fn with_mailbox(session: &mut Session) -> (String, Rc<std::cell::RefCell<Vec<Str
         app: app.clone(),
         asked: Rc::clone(&asked),
     })));
-    // What the session publishes reaches the arrangement's catalogue and the search on the first
+    // What the session publishes reaches the layout's catalogue and the search on the first
     // frame after it.
     step(session);
     step(session);
     (app, asked)
 }
 
-// (1) The arranging action places a resource as one of its views at a point: the entry names the
+// (1) The layout action places a resource as one of its views at a point: the entry names the
 // resource and the view, `shows` follows from the resource's app, and the change is the person's
 // one undoable step.
 #[test]
@@ -236,7 +236,7 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
             .as_object()
             .expect("arguments"),
         )
-        .expect("the arranging action runs");
+        .expect("the layout action runs");
     let entry = placed(&mut session, place);
     assert_eq!(
         entry.record, "tl:so.tilo.lang.mail:inbox",
@@ -252,12 +252,12 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
     // One attributed, undoable step.
     let who = crate::common::last_step(&mut session, "place");
     assert_eq!(who, person(), "attributed to the person");
-    session.undo_arrangement().expect("undo");
+    session.undo_layout().expect("undo");
     settle(&mut session, |session| place_of(session, place).is_none());
 }
 
 // (2) A view left unnamed is the resource's primary published view, and nothing on the resource
-// itself shows it: the arrangement carries the act.
+// itself shows it: the layout carries the act.
 #[test]
 fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
     let _settled = ui::motion::testing::settled();
@@ -287,7 +287,7 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
             .as_object()
             .expect("arguments"),
         )
-        .expect("the arranging action runs");
+        .expect("the layout action runs");
     let entry = placed(&mut session, place);
     assert_eq!(entry.shown_as, "inbox", "the primary published view");
     assert_eq!(entry.shows, app);
@@ -297,14 +297,14 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
         "the app ran nothing to be shown: {:?}",
         asked.borrow()
     );
-    // And the arrangement publishes the act, so a person, an agent and the REPL show things the
+    // And the layout publishes the act, so a person, an agent and the REPL show things the
     // same way.
     assert!(
         session.resources().iter().any(|resource| {
             resource.id.as_str() == "shell:layout"
                 && resource.actions.iter().any(|action| action.id == "place")
         }),
-        "the arranging action is published"
+        "the layout action is published"
     );
     assert!(
         !session.resources().iter().any(|resource| resource
@@ -406,18 +406,18 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
                 .as_object()
                 .expect("arguments"),
         )
-        .expect("the arranging action runs");
+        .expect("the layout action runs");
 
     // The entry that stands is the one the search found, at the caret. The action is accepted and
     // the place lands a pass later, once the search's sources answer: the canvas never waits for
     // one (a source reading a disk, a mailbox or a service on a slow machine would freeze it).
     settle(&mut session, |session| {
-        arrangement(session)
+        layout(session)
             .places
             .iter()
             .any(|place| place.record == "tl:so.tilo.lang.mail:inbox")
     });
-    let placed = arrangement(&session)
+    let placed = layout(&session)
         .places
         .into_iter()
         .find(|place| place.record == "tl:so.tilo.lang.mail:inbox")
@@ -432,7 +432,7 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
     let who = crate::common::last_step(&mut session, "place");
     assert_eq!(who, person());
     let id = number(&placed.key);
-    session.undo_arrangement().expect("undo");
+    session.undo_layout().expect("undo");
     settle(&mut session, |session| place_of(session, id).is_none());
 }
 
@@ -444,7 +444,7 @@ fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     step(&mut session);
-    let before = arrangement(&session).places.len();
+    let before = layout(&session).places.len();
     session
         .invoke(
             "shell:layout",
@@ -457,7 +457,7 @@ fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
     let sent = crate::common::last_sent(&mut session);
     assert_eq!(sent["text"], "nothing is called this", "{sent}");
     assert_eq!(
-        arrangement(&session).places.len(),
+        layout(&session).places.len(),
         before,
         "the ask stands no place of its own"
     );
@@ -520,12 +520,12 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
         .expect("a workspace with no row takes a place");
     let _ = placed;
     settle(&mut session, |session| {
-        arrangement(session)
+        layout(session)
             .places
             .iter()
             .any(|place| place.record == "tl:so.tilo.lang.mail:inbox")
     });
-    let entry = arrangement(&session)
+    let entry = layout(&session)
         .places
         .into_iter()
         .find(|place| place.record == "tl:so.tilo.lang.mail:inbox")
@@ -590,7 +590,7 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
             .as_object()
             .expect("arguments"),
         )
-        .expect("the arranging action runs");
+        .expect("the layout action runs");
     let entry = placed(&mut session, place);
     let held = strip_of(&session, number(&entry.strip)).expect("its strip is in the record");
     assert!(held.floating, "it stands above the windows");
@@ -607,7 +607,7 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
     );
     assert!(!held.placed, "a float stands above the canvas, not on it");
 
-    session.undo_arrangement().expect("undo");
+    session.undo_layout().expect("undo");
     settle(&mut session, |session| place_of(session, place).is_none());
 }
 
@@ -660,7 +660,7 @@ fn the_system_open_brings_what_is_placed_forward() {
         )
         .expect("the open runs");
 
-    let held: Vec<_> = arrangement(&session)
+    let held: Vec<_> = layout(&session)
         .places
         .into_iter()
         .filter(|held| held.record == "tl:so.tilo.lang.mail:inbox")
@@ -683,7 +683,7 @@ fn the_system_open_stands_a_new_place() {
     let mut session = session();
     step(&mut session);
     let (app, _) = with_mailbox(&mut session);
-    let before = arrangement(&session).places.len();
+    let before = layout(&session).places.len();
 
     session
         .invoke(
@@ -695,13 +695,13 @@ fn the_system_open_stands_a_new_place() {
         )
         .expect("the open runs");
     settle(&mut session, |session| {
-        arrangement(session).places.len() == before + 1
+        layout(session).places.len() == before + 1
     });
     let entry = crate::common::wait_for(
         &mut session,
         "the new place to show its record",
         |session| {
-            arrangement(session)
+            layout(session)
                 .places
                 .into_iter()
                 .find(|held| held.record == "tl:so.tilo.lang.mail:inbox")
@@ -734,7 +734,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
                                 ResourceViewSpec::new("page", "Page", "open-thing")
                                     .with_primary(true),
                             );
-                    // An app's resource: the arrangement places what an app publishes, the way
+                    // An app's resource: the layout places what an app publishes, the way
                     // every app's own resources are.
                     resource.app_id = Some("test.anchor".to_owned());
                     resource
@@ -777,7 +777,7 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
     };
     open(&mut session, "tl:test.anchor:conversation", "");
     settle(&mut session, |session| {
-        arrangement(session)
+        layout(session)
             .places
             .iter()
             .any(|held| held.record == "tl:test.anchor:conversation")
@@ -789,14 +789,14 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
     ] {
         open(&mut session, opened, "tl:test.anchor:conversation");
         settle(&mut session, |session| {
-            arrangement(session)
+            layout(session)
                 .places
                 .iter()
                 .any(|held| held.record == opened)
         });
     }
     // Every place's canvas rectangle, as the layout holds it.
-    let boxes: Vec<(String, i64, i64, i64, i64)> = arrangement(&session)
+    let boxes: Vec<(String, i64, i64, i64, i64)> = layout(&session)
         .places
         .iter()
         .filter_map(|held| {
@@ -914,7 +914,7 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_secon
             .expect("the open runs");
     };
     let places_of = |session: &Session, prefix: &str| {
-        arrangement(session)
+        layout(session)
             .places
             .into_iter()
             .filter(|held| held.record.starts_with(prefix))
@@ -936,7 +936,7 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_secon
         places_of(&session, "tl:so.tilo.lang.mail:root-a1b2c3"),
         1,
         "one mailbox is open: {:?}",
-        arrangement(&session).places
+        layout(&session).places
     );
 
     // A thread of another root of the same app is the other mailbox, and opens in its own place.

@@ -197,10 +197,10 @@ fn sheets_name_themselves(session: &tilo_session::Session) {
     }
 }
 
-/// The arrangement and its history are the person's layout: both name themselves in the person's
+/// The layout and its history are the person's layout: both name themselves in the person's
 /// language, not only the rows and places of it.
 #[test]
-fn the_arrangement_names_itself_in_the_persons_language() {
+fn the_layout_names_itself_in_the_persons_language() {
     let root = private_home();
     let session = seeded_session(root.path());
     speak("de-DE");

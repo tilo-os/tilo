@@ -1,7 +1,7 @@
 /// The overview: what the workspace holds, to search and move things in, over the windows it
-/// covers. It reads the arrangement and the windows the session publishes (`device.windows`),
+/// covers. It reads the layout and the windows the session publishes (`device.windows`),
 /// never a copy, and every choice it offers is an action the session publishes
-/// (`so.tilo.session`), so the arrangement stays the session's: each change is attributed and
+/// (`so.tilo.session`), so the layout stays the session's: each change is attributed and
 /// undoable.
 ///
 /// The picture is the layout's: each strip top to bottom, its windows left to right at the share
@@ -53,9 +53,9 @@ view overview() {
 
 /// The workspaces the person is in, as chips that switch to them, and how many people are here.
 view workspaces_here() {
-    if not arrangement.workspaces.is_empty() or not arrangement.people.is_empty() {
+    if not layout.workspaces.is_empty() or not layout.people.is_empty() {
         row(gap: .related, align: .center, wrap: true) {
-            for w in arrangement.workspaces.sort_by(w -> w.name) {
+            for w in layout.workspaces.sort_by(w -> w.name) {
                 ui.Chip(
                     w.name,
                     icon: if w.current { .layers } else { .folder },
@@ -64,9 +64,9 @@ view workspaces_here() {
                     on press: session.switch_workspace(workspace: w.key)
                 }
             }
-            if not arrangement.people.is_empty() {
+            if not layout.people.is_empty() {
                 ui.Facts {
-                    ui.Fact("{arrangement.people.len()} here", icon: .users)
+                    ui.Fact("{layout.people.len()} here", icon: .users)
                 }
             }
         }
@@ -189,7 +189,7 @@ view window_menu(w: device.Window) {
                 }
             }
         }
-        for o in arrangement.workspaces.filter(o -> o.key != w.workspace_key) {
+        for o in layout.workspaces.filter(o -> o.key != w.workspace_key) {
             ui.MenuItem("Move to {o.name}", icon: .layers) {
                 on choose: session.move_tab(
                     tab: w.key,

@@ -1105,7 +1105,7 @@ impl Core {
                 self.ret_h(Value::Text(r.target.id_string()))
             }
             // `resource(id)`: the resource the store keeps under `id`, read as its own type.
-            // A place names what it shows by the id alone (`ArrangementPlace.record`), so a
+            // A place names what it shows by the id alone (`LayoutPlace.record`), so a
             // shell reads the place's resource — its actions, its title — without knowing the
             // type ahead; a view that reads it runs again when it changes.
             Imp::ResourceRef => self.resource_by_id(a.h(0)?),
