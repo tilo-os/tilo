@@ -14,7 +14,7 @@
 use ui::search::RowFace;
 use ui::search::system::ResourceKind;
 
-use crate::model::{CHROME_RESOURCE, Hit, InvokeTarget, SHOW_COLLABORATORS, Source, Target};
+use crate::model::{CHROME_RESOURCE, Hit, InvokeTarget, SHOW_PEOPLE, Source, Target};
 
 /// Row ids: a workspace, a window in one, a call.
 const WORKSPACE_PREFIX: &str = "workspace:";
@@ -162,7 +162,7 @@ impl Happening {
                 crate::model::DESKTOP_APP,
                 &workspace.workspace,
                 CHROME_RESOURCE,
-                SHOW_COLLABORATORS,
+                SHOW_PEOPLE,
             )))
         } else {
             Target::Command {
@@ -389,7 +389,7 @@ mod tests {
             let Target::Invoke(panel) = &rows[0].target else {
                 panic!("who is here opens the people panel");
             };
-            assert_eq!(panel.address.action.as_str(), SHOW_COLLABORATORS);
+            assert_eq!(panel.address.action.as_str(), SHOW_PEOPLE);
         }
 
         phase the_search_over_every_workspace_lists_the_others_too;

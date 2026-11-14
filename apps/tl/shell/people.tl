@@ -13,7 +13,7 @@ view people_button(d: Desk) {
     let people = d.people
     if people.is_empty() {
         ui.Button("People", icon: .users, icon_only: true, role: .bar) {
-            on press: session.toggle_collaborators()
+            on press: session.toggle_people()
         }
     } else {
         // Who is here, in the fewest words that name them all: one name, two joined, or the
@@ -29,7 +29,7 @@ view people_button(d: Desk) {
             "{one.name} and {others} others are here"
         }
         ui.Button(label, faces: people.map(p -> p.name), role: .bar) {
-            on press: session.toggle_collaborators()
+            on press: session.toggle_people()
         }
     }
 }

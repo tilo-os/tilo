@@ -1197,7 +1197,7 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
 
 /// Who is here is one button of faces — up to three, then a face counting the rest — whose name
 /// names the people, so no words take the bar's room at any width; pressing it calls the session's
-/// own `toggle-collaborators` , and the roster opens and lists them.
+/// own `toggle-people` , and the roster opens and lists them.
 #[test]
 fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     let _settled = ui::motion::testing::settled();

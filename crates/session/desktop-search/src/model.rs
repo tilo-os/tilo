@@ -172,7 +172,7 @@ pub const CHROME_RESOURCE: &str = "desktop:chrome";
 
 /// The chrome's action that opens or closes who is here (the people
 /// panel).
-pub const SHOW_COLLABORATORS: &str = "toggle-collaborators";
+pub const SHOW_PEOPLE: &str = "toggle-people";
 
 /// The desktop command that goes to workspace `id` (`desktop.workspace:id`).
 pub const WORKSPACE_COMMAND_PREFIX: &str = "desktop.workspace:";

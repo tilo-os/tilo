@@ -373,7 +373,7 @@ fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
     click(&mut part, "Mia Clayton and Sam Okafor are here");
     assert_eq!(
         link.asked.borrow_mut().pop_front().map(|ask| ask.action),
-        Some("toggle-collaborators".to_owned()),
+        Some("toggle-people".to_owned()),
         "refusals {:?}",
         part.refusals()
     );

@@ -71,7 +71,7 @@ pub use lazy::{
 };
 pub use model::{
     ALL_APPS_COMMAND, ActionTarget, CHROME_RESOURCE, DESKTOP_APP, Held, Hit, InvokeTarget,
-    LaunchPlace, OPEN_ACTION, OPEN_ANCHOR, RECORD_LAUNCH, SHOW_COLLABORATORS, SearchStream, Source,
+    LaunchPlace, OPEN_ACTION, OPEN_ANCHOR, RECORD_LAUNCH, SHOW_PEOPLE, SearchStream, Source,
     Target, Thing, WORKSPACE_COMMAND_PREFIX, launched_record, on_the_loop, record_launch, search,
     search_stream, the_loop,
 };

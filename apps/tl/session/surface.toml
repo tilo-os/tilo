@@ -423,7 +423,7 @@ required = true
 type = "text"
 
 [[resources.verbs]]
-id = "toggle-collaborators"
+id = "toggle-people"
 kind = "read"
 params = []
 

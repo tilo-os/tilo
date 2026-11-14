@@ -29,6 +29,7 @@ use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceId, WorkspaceSlot,
 };
+use tilo_desktop_search::SHOW_PEOPLE;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_session::sync::{Client, Event, OwnPresence};
@@ -341,7 +342,7 @@ impl AppActions for Host {
 
 fn press_faces(session: &mut Session) {
     session
-        .invoke(CHROME_RESOURCE, "toggle-collaborators", &Arguments::new())
+        .invoke(CHROME_RESOURCE, SHOW_PEOPLE, &Arguments::new())
         .expect("the bar's faces open who is here");
     for _ in 0..6 {
         session.step(Duration::from_millis(1)).expect("step");
@@ -1504,7 +1505,7 @@ fn the_rosters_first_frame_on_the_desk_is_final() {
     // The faces open the roster, and the frame that draws it is the one the person sees: the next
     // turn of the session draws nothing new of it.
     session
-        .invoke(CHROME_RESOURCE, "toggle-collaborators", &Arguments::new())
+        .invoke(CHROME_RESOURCE, SHOW_PEOPLE, &Arguments::new())
         .expect("the bar's faces open who is here");
     session.step(Duration::from_millis(1)).expect("step");
     let first = frame(&mut session);
