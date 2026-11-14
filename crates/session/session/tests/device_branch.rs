@@ -531,20 +531,12 @@ fn a_copy_opens_the_windows_its_source_left_once_its_host_admits_it() {
 
 /// Bring the workspace `workspace` (its id) to the front on `device`'s desk.
 fn show_held(device: &Device, workspace: &str) {
-    let key = || -> Option<u64> {
-        device.state()["state"]["held_workspaces"]
-            .as_array()?
-            .iter()
-            .find(|held| held["room"].as_str() == Some(workspace))
-            .and_then(|held| held["workspace"].as_u64())
-    };
-    tilo_test_env::wait_until(format!("{} holds {workspace}", device.label), || {
-        key().is_some()
-    });
+    let held = || device.held().iter().any(|held| held == workspace);
+    tilo_test_env::wait_until(format!("{} holds {workspace}", device.label), held);
     let shown = device.act(
         "so.tilo.session",
         "desktop:chrome\u{1f}switch-workspace",
-        &json!({"workspace": key().expect("held").to_string()}),
+        &json!({"workspace": workspace}),
     );
     assert!(
         shown.get("err").is_none(),
@@ -623,8 +615,9 @@ fn start_both(laptop: &mut Device, copy: &mut Device, hosted: &str) {
     loop {
         let rows = copy.ask(&json!({"op": "workspace_hosts"}));
         let admitted = rows["answer"]["workspaces"].as_array().is_some_and(|held| {
-            held.iter()
-                .any(|row| row["room"].as_str() == Some(hosted) && row["awaiting_host"] == false)
+            held.iter().any(|row| {
+                row["workspace"].as_str() == Some(hosted) && row["awaiting_host"] == false
+            })
         });
         if admitted {
             break;

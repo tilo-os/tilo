@@ -641,7 +641,7 @@ pub(super) fn held_of(answer: &Value) -> Vec<Held> {
         .into_iter()
         .flatten()
         .filter_map(|row| {
-            let room = row.get("room")?.as_str()?.to_owned();
+            let room = row.get("workspace")?.as_str()?.to_owned();
             let text = |key: &str| row.get(key).and_then(Value::as_str).unwrap_or_default();
             let flag = |key: &str| row.get(key).and_then(Value::as_bool).unwrap_or(false);
             Some(Held {

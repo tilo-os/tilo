@@ -1105,8 +1105,8 @@ tilo_test_env::scenario! {
     phase a_sessions_workspace_hosts_say_who_hosts_them_and_whether_they_wait;
     {
         let answer = json!({"answer": {"workspaces": [
-            {"room": "room-desk", "name": "Desk", "host": "dev", "hosted_here": false, "awaiting_host": true},
-            {"room": "room-old", "name": ""},
+            {"workspace": "room-desk", "name": "Desk", "host": "dev", "hosted_here": false, "awaiting_host": true},
+            {"workspace": "room-old", "name": ""},
         ]}});
         assert_eq!(
             branch_admit::held_of(&answer),
