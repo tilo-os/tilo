@@ -75,6 +75,8 @@ pub struct UndoLog {
     index: std::cell::RefCell<steps::StepIndex>,
     /// How many changes the document had when this history began.
     origin_len: usize,
+    /// The changes since then it never closed a step over, as last read.
+    unclosed: std::cell::RefCell<Unclosed>,
     /// What [`Self::next_undo_in`] and [`Self::next_redo_in`] last answered
     /// per author, window and direction, with what it depended on: every
     /// frame asks, and the answer moves only with the document or this
@@ -85,6 +87,23 @@ pub struct UndoLog {
     /// ([`authors::device_actor`]), where a window's history counts only what
     /// this device wrote.
     any_device: bool,
+}
+
+/// The changes from `origin` on that no step of a history closed over,
+/// read up to the change at `read`: what the next read adds to, so asking
+/// for the next undo reads what came since, not every change of the
+/// session.
+#[derive(Default)]
+struct Unclosed {
+    origin: usize,
+    read: usize,
+    open: HashSet<ChangeHash>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Changes [`UndoLog::open_changes`] read, for the test that pins it.
+    static READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// An author's window and whether it asks for the next redo.
@@ -111,6 +130,7 @@ impl Default for UndoLog {
             steps: 0,
             index: std::cell::RefCell::default(),
             origin_len: 0,
+            unclosed: std::cell::RefCell::default(),
             next: std::cell::RefCell::default(),
             any_device: false,
         }
@@ -220,6 +240,7 @@ impl UndoLog {
             steps: 0,
             index: std::cell::RefCell::default(),
             origin_len: 0,
+            unclosed: std::cell::RefCell::default(),
             next: std::cell::RefCell::default(),
             any_device: false,
         };
@@ -383,12 +404,29 @@ impl UndoLog {
         // over (the open step, an unrecorded raw write) are nobody's step.
         let mut index = self.index.borrow_mut();
         index.refresh(doc);
-        let open = (self.origin_len..index.len())
+        let mut unclosed = self.unclosed.borrow_mut();
+        if unclosed.origin != self.origin_len {
+            *unclosed = Unclosed {
+                origin: self.origin_len,
+                read: self.origin_len,
+                open: HashSet::new(),
+            };
+        }
+        // A step closes over changes already read: they leave the set.
+        unclosed
+            .open
+            .retain(|hash| !self.presented.contains_key(hash));
+        let read = unclosed.read.max(self.origin_len)..index.len();
+        #[cfg(test)]
+        READ.with(|counted| counted.set(counted.get().saturating_add(read.len())));
+        let fresh: Vec<ChangeHash> = read
             .filter_map(|position| index.hash(position))
             .filter(|hash| !self.presented.contains_key(hash))
             .collect();
+        unclosed.open.extend(fresh);
+        unclosed.read = unclosed.read.max(index.len());
         Reach {
-            open,
+            open: unclosed.open.clone(),
             device: authors::DeviceActors::of(doc.get_actor()),
         }
     }
@@ -1082,3 +1120,7 @@ impl UndoLog {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "undo_log_tests.rs"]
+mod tests;
