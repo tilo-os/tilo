@@ -32,6 +32,15 @@ was no part of any interface, and its rows could have left their absent parts
 out unnoticed. A call with no type written at it names nothing to read, and the
 tree is judged by its declarations for those.
 
+What a named type is made of is followed into whichever crate declares it, the
+way the compiler finds it: the path a field is written at, or the ``use`` that
+brings the type in, names a dependency in the crate's ``Cargo.toml``. Before it,
+only the crate that held the call was read, and a grant's ``CapOverride``,
+declared in ``collab-types`` and carried in an agent's postcard frame, left its
+absent ``app`` and ``granted_by`` out of the bytes unnoticed. A field written
+``with`` a module of its own is written by that module, as a type with its own
+impl is: what its type is made of is not followed.
+
 ``#[serde(default)]`` is not refused: it says what an absent field reads as and
 never changes what is written, and a positional format only omits a field at
 the end of a frame. Neither are ``rename``/``rename_all`` (a positional format
@@ -50,6 +59,7 @@ with ``--no-verify`` is judged by the suite on the tree that would land.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -63,7 +73,12 @@ from check_interfaces import (  # noqa: E402
     tokenize,
 )
 from check_wire_enums import carried_types  # noqa: E402
-from rust_source import is_test_file, production_source  # noqa: E402
+from rust_source import (  # noqa: E402
+    dependency_tables,
+    is_test_file,
+    load_manifest,
+    production_source,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -169,19 +184,245 @@ def named_call_types(text: str) -> set[str]:
     return found
 
 
-def components(item) -> set[str]:
-    """The types `item` is made of: its fields', its variants' and its target's."""
-    types = [field.ty for field in item.fields]
+def components(item) -> list[tuple[str, tuple[str, ...]]]:
+    """The types `item` is made of — its fields', its variants' and its target's —
+    each with the path it is written at.
+
+    A field written through `with`/`serialize_with` is written by that module,
+    which decides its bytes the way a type's own impl does (a frame handed on as
+    JSON bytes, say): what its type is made of is not read by position here."""
+    fields = list(item.fields) + [field for variant in item.variants for field in variant.fields]
+    types = [field.ty for field in fields if not written_by_hand(field.serde)]
     types += [variant_ty for variant in item.variants for variant_ty in variant.types]
-    types += [field.ty for variant in item.variants for field in variant.fields]
+    types += list(item.types)
     if item.target:
         types.append(item.target)
-    return {name for ty in types for name in named_types(ty)}
+    return [named for ty in types for named in qualified_types(ty)]
+
+
+def written_by_hand(serde) -> bool:
+    """Whether a field's serde attributes hand its bytes to a module of its own."""
+    return any(key in serde.values for key in ("with", "serialize_with"))
+
+
+def qualified_types(tokens) -> list[tuple[str, tuple[str, ...]]]:
+    """`(name, path before it)` for each type `tokens` names:
+    `collab_types::caps::CapOverride` is `("CapOverride", ("collab_types", "caps"))`."""
+    found = []
+    for i, token in enumerate(tokens):
+        if token.kind != "ident":
+            continue
+        if i + 1 < len(tokens) and tokens[i + 1].text == "::":
+            continue
+        if token.text in ("dyn", "impl", "mut", "const", "as", "where", "for"):
+            continue
+        path, at = [], i
+        while at >= 2 and tokens[at - 1].text == "::" and tokens[at - 2].kind == "ident":
+            at -= 2
+            path.insert(0, tokens[at].text)
+        found.append((token.text, tuple(path)))
+    return found
 
 
 def crate_of(source: str) -> str:
     """The crate directory `source` belongs to: everything before its `src/`."""
     return source.partition("/src/")[0]
+
+
+DECLARED = re.compile(r"\b(?:struct|enum|union|type)\s+([A-Za-z_][A-Za-z0-9_]*)")
+USE = re.compile(r"\buse\s+([^;]*);")
+LOCAL_ROOTS = ("crate", "self", "super", "Self")
+
+
+class Crates:
+    """The crates of a tree, read as far as judging a carried type needs.
+
+    A type a compact call names, or one such a type is made of, is often
+    declared in another crate: an agent's grant carries `collab_types`'
+    `CapOverride`. That crate is found the way the compiler finds it — the path
+    the type is written at, or the `use` that brings it in, names a dependency
+    of the crate (its `Cargo.toml`) — and the type is judged in the file that
+    declares it. A dependency that only re-exports the type is looked through to
+    its own dependencies."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self._dependencies: dict[str, dict[str, str]] = {}
+        self._files: dict[str, list[tuple[str, str]]] = {}
+        self._names: dict[str, dict[str, set[str]]] = {}
+        self._items: dict[str, list[tuple[object, bool]]] = {}
+        self._workspace: dict[str, str] | None = None
+
+    def workspace(self) -> dict[str, str]:
+        """`{dependency key: crate directory}` of the root manifest's
+        `[workspace.dependencies]` that are paths in the tree."""
+        if self._workspace is None:
+            self._workspace = {}
+            manifest = self.root / "Cargo.toml"
+            if manifest.exists():
+                listed = load_manifest(manifest).get("workspace", {}).get("dependencies", {})
+                for key, value in listed.items():
+                    if isinstance(value, dict) and "path" in value:
+                        self._workspace[key] = self.relative(self.root / value["path"])
+        return self._workspace
+
+    def relative(self, path: Path) -> str:
+        return Path(os.path.normpath(path)).relative_to(self.root).as_posix()
+
+    def dependencies(self, crate: str) -> dict[str, str]:
+        """`{name the code writes: crate directory}` of `crate`'s tree dependencies."""
+        if crate not in self._dependencies:
+            found: dict[str, str] = {}
+            manifest = self.root / crate / "Cargo.toml"
+            if manifest.exists():
+                for _, table in dependency_tables(load_manifest(manifest)):
+                    for key, value in table.items():
+                        if not isinstance(value, dict):
+                            continue
+                        if "path" in value:
+                            path = self.relative(self.root / crate / value["path"])
+                        elif value.get("workspace"):
+                            path = self.workspace().get(key)
+                        else:
+                            path = None
+                        if path:
+                            found[key.replace("-", "_")] = path
+            self._dependencies[crate] = found
+        return self._dependencies[crate]
+
+    def files(self, crate: str) -> list[tuple[str, str]]:
+        """`(source, production text)` of `crate`'s production sources."""
+        if crate not in self._files:
+            files = []
+            for path in sorted((self.root / crate / "src").rglob("*.rs")):
+                source = path.relative_to(self.root).as_posix()
+                if not is_test_file(Path(source)):
+                    files.append((source, path.read_text()))
+            self._files[crate] = files
+        return self._files[crate]
+
+    def declared(self, crate: str, name: str) -> list[tuple[str, object, bool]]:
+        """`(source, item, serde-derived)` for each declaration of `name` in `crate`.
+
+        Only the files whose text declares `name` are tokenized: a standard type
+        is looked for in every dependency, and declares nothing in any."""
+        if crate not in self._names:
+            self._names[crate] = {
+                source: set(DECLARED.findall(text)) for source, text in self.files(crate)
+            }
+        found = []
+        for source, text in self.files(crate):
+            if name not in self._names[crate][source]:
+                continue
+            if source not in self._items:
+                items: list = []
+                read_items(tokenize(text), source, items)
+                written = serde_derived(text)
+                self._items[source] = [(item, item.name in written) for item in items]
+            found += [(source, item, written) for item, written in self._items[source] if item.name == name]
+        return found
+
+    def resolve(
+        self, crate: str, name: str, path: tuple[str, ...], source: str, text: str
+    ) -> list[tuple[str, object, bool]]:
+        """The declarations of the type `name`, written in `crate`'s `source`
+        (whose text is `text`) at `path`: none when the tree declares no such type
+        (a standard type, a generic parameter)."""
+        if not path:
+            here = [found for found in self.declared(crate, name) if found[0] == source]
+            if here:
+                return here
+            path = self.use_path(name, text)
+        if not path or path[0] in LOCAL_ROOTS:
+            declared = self.declared(crate, name)
+            if declared or path:
+                return narrowed(declared, path)
+            # A bare name neither declared here nor imported by a `use` naming it
+            # (a glob import, say): the one dependency that declares it.
+            declaring = [
+                dep for dep in sorted(set(self.dependencies(crate).values()))
+                if self.declared(dep, name)
+            ]
+            return self.declared(declaring[0], name) if len(declaring) == 1 else []
+        target = self.dependencies(crate).get(path[0])
+        return self.through(target, name, path, set()) if target else []
+
+    def through(
+        self, crate: str, name: str, path: tuple[str, ...], seen: set[str]
+    ) -> list[tuple[str, object, bool]]:
+        """`crate`'s declarations of `name`, or those of the crate a re-export of it
+        names."""
+        if crate in seen:
+            return []
+        seen.add(crate)
+        declared = self.declared(crate, name)
+        if declared:
+            return narrowed(declared, path)
+        for _, text in self.files(crate):
+            if not re.search(rf"\bpub\s+use\b[^;]*\b{re.escape(name)}\b", text):
+                continue
+            again = self.use_path(name, text, public=True)
+            target = self.dependencies(crate).get(again[0]) if again else None
+            if target:
+                return self.through(target, name, again, seen)
+        return []
+
+    @staticmethod
+    def use_path(name: str, text: str, public: bool = False) -> tuple[str, ...]:
+        """The path, before `name`, of the `use` in `text` that brings `name` in:
+        `use collab_types::{caps::CapOverride, Expiry}` gives `("collab_types",
+        "caps")` for `CapOverride`."""
+        for match in USE.finditer(text):
+            if public and not re.search(r"\bpub\s*(?:\([^)]*\))?\s*$", text[: match.start()]):
+                continue
+            body = re.sub(r"\s+", "", match.group(1)).lstrip(":")
+            if not re.search(rf"\b{re.escape(name)}\b", body):
+                continue
+            return use_tree_path(body, name) or tuple(re.findall(r"^[A-Za-z_][A-Za-z0-9_]*", body))
+        return ()
+
+
+def use_tree_path(tree: str, name: str, prefix: tuple[str, ...] = ()) -> tuple[str, ...] | None:
+    """The path before `name` in the `use` tree `tree` (whitespace removed)."""
+    depth, start, parts = 0, 0, []
+    for at, char in enumerate(tree):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(tree[start:at])
+            start = at + 1
+    parts.append(tree[start:])
+    for part in parts:
+        if "{" in part:
+            head, _, rest = part.partition("{")
+            segments = tuple(segment for segment in head.split("::") if segment)
+            found = use_tree_path(rest[: rest.rfind("}")], name, prefix + segments)
+            if found is not None:
+                return found
+            continue
+        segments = [segment for segment in part.split("::") if segment]
+        if segments and re.fullmatch(rf"{re.escape(name)}(?:as\w+)?", segments[-1]):
+            return prefix + tuple(segments[:-1])
+    return None
+
+
+def narrowed(declared: list, path: tuple[str, ...]) -> list:
+    """Of several declarations of one name in a crate, those in the module `path`
+    names (`crate::workspaces::door` is `src/workspaces/door.rs`); all of them when
+    the path names no module that tells them apart."""
+    if len({source for source, _, _ in declared}) <= 1:
+        return declared
+    modules = [segment for segment in path if segment not in LOCAL_ROOTS][1 if path and path[0] not in LOCAL_ROOTS else 0 :]
+    if not modules:
+        return declared
+    suffix = "/".join(modules)
+    matching = [
+        found for found in declared
+        if re.sub(r"(?:/mod|/lib)?\.rs$", "", found[0]).endswith("/" + suffix)
+    ]
+    return matching or declared
 
 
 def compact_sources(root: Path = ROOT) -> list[str]:
@@ -222,40 +463,34 @@ def stored_types(root: Path = ROOT) -> dict[str, set[str]]:
     """`{file: type names}` of what the compact calls of `root` name, and of what
     those types are made of.
 
-    A crate is read when one of its production files writes or reads a compact
-    value at a type written in the call (`postcard::from_bytes::<T>` and its
-    like); every type of that crate a `T` is made of is included, transitively. A
-    name the crate does not define is another crate's type and is judged there, or
-    by the interfaces; `T` and `Self` name nothing at all.
+    A file is read when it writes or reads a compact value at a type written in
+    the call (`postcard::from_bytes::<T>` and its like); every serde-derived type
+    a `T` is made of is included, transitively, in whichever crate of the tree
+    declares it (`Crates`). `T` and `Self` name nothing at all, and neither does a
+    name no crate of the tree declares (a standard type).
     """
-    per_crate: dict[str, list[tuple[str, str, set[str]]]] = {}
+    crates = Crates(root)
+    pending: list[tuple[str, str, tuple[str, ...], str, str]] = []
     for source in compact_sources(root):
         text = (root / source).read_text()
         if not any(format in text for format in COMPACT):
             continue
-        roots = named_call_types(production_source(text))
-        if roots:
-            per_crate.setdefault(crate_of(source), []).append((source, text, roots))
+        for name in named_call_types(production_source(text)):
+            pending.append((crate_of(source), name, (), source, text))
     found: dict[str, set[str]] = {}
-    for _, files in sorted(per_crate.items()):
-        items: dict[str, list[tuple[str, object]]] = {}
-        for source, text, _ in files:
-            read: list = []
-            read_items(tokenize(text), source, read)
-            written = serde_derived(text)
-            for item in read:
-                if item.name in written:
-                    items.setdefault(item.name, []).append((source, item))
-        pending = {name for _, _, roots in files for name in roots if name in items}
-        seen: set[str] = set()
-        while pending:
-            name = pending.pop()
-            if name in seen:
+    seen: set[tuple[str, str]] = set()
+    while pending:
+        crate, name, path, source, text = pending.pop()
+        for declared_in, item, written in crates.resolve(crate, name, path, source, text):
+            if (declared_in, name) in seen or (not written and item.kind != "alias"):
                 continue
-            seen.add(name)
-            for source, item in items[name]:
-                found.setdefault(source, set()).add(name)
-                pending.update(components(item) & items.keys() - seen)
+            seen.add((declared_in, name))
+            if written:
+                found.setdefault(declared_in, set()).add(name)
+            declaring = crate_of(declared_in)
+            declared_text = dict(crates.files(declaring))[declared_in]
+            for part, part_path in components(item):
+                pending.append((declaring, part, part_path, declared_in, declared_text))
     return found
 
 

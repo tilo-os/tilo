@@ -303,8 +303,123 @@ pub fn read(bytes: &[u8]) -> Choice {
         found = attributes.problems(root)
         self.assertEqual(len(found), 1, found)
 
+    def test_a_type_of_its_own_crate_in_a_file_without_the_call_is_judged(self):
+        """The sandbox's plan: written by postcard in one file, declared in another."""
+        found = self.judged(
+            "pub fn read(bytes: &[u8]) -> plan::Plan {\n"
+            "    postcard::from_bytes::<plan::Plan>(bytes).unwrap()\n}\n",
+            extra_files={"crates/demo/store/src/plan.rs": SKIPPED.format(name="Plan")},
+        )
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("crates/demo/store/src/plan.rs: Plan.note", found[0])
+
+
     def test_the_tree_omits_no_field_a_compact_format_carries(self):
         self.assertEqual(attributes.problems(), [])
+
+
+SKIPPED = '''#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct {name} {{
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}}
+'''
+
+CALLER = '''use serde::{{Deserialize, Serialize}};
+{imports}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Held {{
+    pub id: String,
+    pub grants: Vec<{written}>,
+}}
+
+pub fn read(bytes: &[u8]) -> Held {{
+    postcard::from_bytes::<Held>(bytes).unwrap()
+}}
+'''
+
+
+class CrossCrateTests(unittest.TestCase):
+    """A type a compact call reaches is judged in whichever crate declares it."""
+
+    def tree(self, files):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        for name, text in files.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        return root
+
+    def caller(self, imports="", written="Grant", dependencies='types = { path = "../types" }'):
+        return {
+            "crates/demo/store/Cargo.toml": f'[package]\nname = "store"\n\n[dependencies]\n{dependencies}\n',
+            "crates/demo/store/src/lib.rs": CALLER.format(imports=imports, written=written),
+            "crates/demo/types/Cargo.toml": '[package]\nname = "types"\n',
+            "crates/demo/types/src/lib.rs": "pub mod caps;\npub use caps::Grant;\n",
+            "crates/demo/types/src/caps.rs": SKIPPED.format(name="Grant"),
+        }
+
+    def judged(self, files):
+        return attributes.problems(self.tree(files))
+
+    def test_a_type_another_crate_declares_is_judged_where_it_is_declared(self):
+        """An agent's grant carries the collaboration's `CapOverride`, declared in another crate."""
+        for imports, written in (
+            ("use types::caps::Grant;", "Grant"),
+            ("use types::{caps::Grant};", "Grant"),
+            ("use types::Grant;", "Grant"),
+            ("", "types::caps::Grant"),
+        ):
+            with self.subTest(imports=imports, written=written):
+                found = self.judged(self.caller(imports, written))
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("crates/demo/types/src/caps.rs: Grant.note", found[0])
+
+    def test_a_workspace_dependency_is_found_through_the_root_manifest(self):
+        files = self.caller("use types::caps::Grant;", dependencies="types.workspace = true")
+        files["Cargo.toml"] = (
+            '[workspace.dependencies]\ntypes = { path = "crates/demo/types" }\n'
+        )
+        found = self.judged(files)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("Grant.note", found[0])
+
+    def test_a_re_export_is_followed_to_the_crate_that_declares_the_type(self):
+        files = self.caller("use middle::Grant;", dependencies='middle = { path = "../middle" }')
+        files["crates/demo/middle/Cargo.toml"] = (
+            '[package]\nname = "middle"\n\n[dependencies]\ntypes = { path = "../types" }\n'
+        )
+        files["crates/demo/middle/src/lib.rs"] = "pub use types::caps::Grant;\n"
+        found = self.judged(files)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("crates/demo/types/src/caps.rs: Grant.note", found[0])
+
+    def test_a_crate_that_is_no_dependency_declares_nothing_the_caller_reads(self):
+        found = self.judged(self.caller("use types::caps::Grant;", dependencies=""))
+        self.assertEqual(found, [])
+
+    def test_a_same_named_type_of_another_module_is_left_alone(self):
+        """A JSON record named like the postcard one, in another file of the crate."""
+        files = self.caller("use crate::wire::Grant;")
+        files["crates/demo/store/src/wire.rs"] = (
+            "#[derive(Clone, Debug, Serialize, Deserialize)]\n"
+            "pub struct Grant {\n    pub id: String,\n}\n"
+        )
+        files["crates/demo/store/src/json.rs"] = SKIPPED.format(name="Grant")
+        self.assertEqual(self.judged(files), [])
+
+    def test_a_field_a_module_of_its_own_writes_is_not_followed(self):
+        """A frame handed on as JSON bytes inside a postcard one."""
+        files = self.caller("use types::caps::Grant;")
+        files["crates/demo/store/src/lib.rs"] = files["crates/demo/store/src/lib.rs"].replace(
+            "    pub grants: Vec<Grant>,",
+            '    #[serde(with = "as_json")]\n    pub grants: Vec<Grant>,',
+        )
+        self.assertEqual(self.judged(files), [])
 
 
 class SpecTests(unittest.TestCase):
