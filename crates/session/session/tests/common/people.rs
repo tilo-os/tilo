@@ -1608,31 +1608,49 @@ impl Device {
     /// The provider and id this device lists for the running `app`'s `operation`, once the app
     /// published it: a provider the session names by the app's live connection.
     pub fn app_action(&self, app: &str, operation: &str) -> (String, String) {
-        let mut named = None;
-        tilo_test_env::wait_until(
-            format!("{} publishes {app}'s {operation}", self.label),
-            || {
-                named = self.actions()["answer"]["actions"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .find(|row| {
-                        row["application"] == app
-                            && row["operation"] == operation
-                            && row["provider"]
-                                .as_str()
-                                .is_some_and(|provider| provider.parse::<u64>().is_ok())
-                    })
-                    .map(|row| {
-                        (
-                            row["provider"].as_str().expect("a provider").to_owned(),
-                            row["id"].as_str().expect("an action's id").to_owned(),
-                        )
-                    });
-                named.is_some()
-            },
-        );
-        named.expect("the action the app published")
+        let until = tilo_test_env::hang_deadline();
+        loop {
+            let listed = self.actions()["answer"]["actions"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let named = listed.iter().find(|row| {
+                row["application"] == app
+                    && row["operation"] == operation
+                    && row["provider"]
+                        .as_str()
+                        .is_some_and(|provider| provider.parse::<u64>().is_ok())
+            });
+            if let Some(row) = named {
+                return (
+                    row["provider"].as_str().expect("a provider").to_owned(),
+                    row["id"].as_str().expect("an action's id").to_owned(),
+                );
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "{} never published {app}'s {operation}; it lists {app}'s {} of {} actions, and \
+                 the rows' titles: {:?}\n{}",
+                self.label,
+                listed
+                    .iter()
+                    .filter(|row| row["application"] == app)
+                    .map(|row| format!(
+                        "{} by {}",
+                        row["operation"].as_str().unwrap_or_default(),
+                        row["provider"].as_str().unwrap_or_default()
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                listed.len(),
+                listed
+                    .iter()
+                    .map(|row| row["title"].as_str().unwrap_or_default().to_owned())
+                    .collect::<Vec<_>>(),
+                self.warnings(),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
 
     /// Invoke the running `app`'s `operation` with `args` and wait until it settled, as a program
