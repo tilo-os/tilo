@@ -1495,7 +1495,11 @@ export async function startEntryPage({mode}) {
       // over: a shelf that keeps nothing is said, not worked around.
       inviteLink: invitation => runtime.sealedInvitationLink(page.entry.base, page.peer.origin, invitation),
       open: async ({origin, room, name, hostDevice: holder}) => {
-        keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
+        // The person this page is here as: a page a person signed in by their
+        // agent opened holds no root, and opening the workspace it made is
+        // theirs by the host's admission, not their signature.
+        const person = page.peer?.userPublicKey ?? currentIdentity()?.userPublicKey;
+        keepJoinedHost({origin, room, userPublicKey: person});
         remembering(() => rememberEntered(runtime, {origin, room, name, hostDevice: holder}));
         // Creating a workspace leaves through the same save-and-close path as switching.
         await openWorkspace({choice: {origin, room, name}, page, status});
