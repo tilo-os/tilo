@@ -2057,17 +2057,17 @@ mod tests {
         );
     }
 
-    /// An owner's desk makes an administrator's invitation: an Editor's link
+    /// An owner's layout makes an administrator's invitation: an Editor's link
     /// that also makes whoever redeems it an administrator.
     #[test]
     #[cfg(target_os = "linux")]
-    fn a_desk_issues_an_invitation_that_makes_an_administrator() {
+    fn an_owner_issues_an_invitation_that_makes_an_administrator() {
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, _) = identity(DeviceCapabilities::member());
         let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Office", Some(&at)));
 
         let issued = pollster::block_on(engine.issue_invitation(
             &workspace.to_string(),
