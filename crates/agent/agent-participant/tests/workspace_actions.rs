@@ -104,6 +104,9 @@ mod route_parity;
 #[cfg(test)]
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
+#[cfg(test)]
+#[path = "workspace_actions/workspace_find.rs"]
+mod workspace_find;
 
 #[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]

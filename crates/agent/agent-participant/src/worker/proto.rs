@@ -34,7 +34,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 7;
+pub(crate) const PROTOCOL_VERSION: u32 = 8;
 
 /// What a worker is started to do. It decides what the worker prepares
 /// before it confines itself: a reader loads the fonts a component lays its
@@ -164,6 +164,12 @@ pub(crate) enum Request {
     /// [`crate::AppCatalogue::resource_title`]. The document is read for the
     /// answer and dropped; the worker answers any number of these.
     Title { app_id: String, doc: Vec<u8> },
+    /// What search finds in an existing document of `app_id`
+    /// ([`Mode::Views`]): the entries its app publishes to the search index,
+    /// each a resource of the record by what it says (a note by its title
+    /// and its words), answered with [`Reply::Entries`]. Read and dropped as
+    /// [`Self::Title`] is.
+    Entries { app_id: String, doc: Vec<u8> },
     /// The views of one resource of the loaded document under `policy`.
     Views {
         /// JSON `ViewResourceQuery`.
@@ -245,6 +251,9 @@ pub(crate) enum Reply {
     Wanted(Vec<String>),
     /// What a document is called, when its app names it.
     Title(Option<String>),
+    /// JSON `Vec<IndexEntry>`: what search finds in a document. Not
+    /// trusted: a host bounds each entry before it ranks it.
+    Entries(String),
     /// A picture written out again as a PNG or JPEG. Not trusted: its
     /// header is checked before it is shown to anyone.
     Picture(Vec<u8>),

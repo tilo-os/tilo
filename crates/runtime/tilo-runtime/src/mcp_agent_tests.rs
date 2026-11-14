@@ -2427,7 +2427,7 @@ fn every_row_find_answers_is_one_ls_lists() {
                     );
                 } else {
                     assert!(
-                        header.ends_with(&format!("({rest})")),
+                        header.ends_with(&format!("({})", rest.split("  ").next().unwrap_or(rest))),
                         "{query}: find says {line}, and ls reads {listed}"
                     );
                 }

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use automerge::{AutoCommit, ReadDoc as _};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::engine::Engine;
+use ui::search::index_publication::IndexEntry;
 
 /// The route of a workspace's shared browser desktop (`tilo-browser-runtime`'s
 /// replication): its `desktop` value names each tab's record.
@@ -97,6 +98,9 @@ pub(crate) struct WorkspaceRecords {
     arrived: HashMap<DocumentRoute, u64>,
     landings: u64,
     titles: Read<Option<String>>,
+    /// What search finds in each record, as its app reads it: the entries it
+    /// publishes to the search index, one per resource of the record.
+    entries: Read<Arc<[IndexEntry]>>,
     /// The plain text of each record the planner searches, and of open records
     /// ([`Self::open_text`]).
     texts: HashMap<DocumentRoute, (Stamp, Arc<str>)>,
@@ -115,6 +119,7 @@ impl WorkspaceRecords {
             arrived: HashMap::new(),
             landings: 0,
             titles: HashMap::new(),
+            entries: HashMap::new(),
             texts: HashMap::new(),
             messages: HashMap::new(),
             counts: HashMap::new(),
@@ -269,6 +274,28 @@ impl WorkspaceRecords {
         .flatten()
     }
 
+    /// What search finds in the record at `route`, as `read` finds it in the
+    /// record's saved document: the entries its app publishes to the search
+    /// index. Read once per change of the record.
+    pub(crate) fn entries(
+        &mut self,
+        route: &DocumentRoute,
+        read: impl FnOnce(Vec<u8>) -> Result<Vec<IndexEntry>, String>,
+    ) -> Option<Arc<[IndexEntry]>> {
+        self.cached(
+            route,
+            |records| &mut records.entries,
+            |bytes| {
+                read(bytes)
+                    .unwrap_or_else(|reason| {
+                        tracing::warn!(%reason, "agent: a record is not read for search");
+                        Vec::new()
+                    })
+                    .into()
+            },
+        )
+    }
+
     fn read_texts(&mut self, reading: Reading) -> &mut HashMap<DocumentRoute, (Stamp, Arc<str>)> {
         match reading {
             Reading::Plain => &mut self.texts,
@@ -388,6 +415,7 @@ impl WorkspaceRecords {
     /// Stop listing `route`: an open replica holds it now.
     pub(crate) fn forget(&mut self, route: &DocumentRoute) {
         self.titles.remove(route);
+        self.entries.remove(route);
         self.counts.remove(route);
         self.opened.insert(route.clone());
     }

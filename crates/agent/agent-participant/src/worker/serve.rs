@@ -191,6 +191,7 @@ impl Worker {
             Request::ViewsLoad { app_id, doc } => self.load_views(app_id, &doc),
             Request::Views { wanted, policy } => self.views(&wanted, &policy),
             Request::Title { app_id, doc } => self.title(&app_id, &doc),
+            Request::Entries { app_id, doc } => self.entries(&app_id, &doc),
             Request::ReadPrepare {
                 app_id,
                 workspace,
@@ -385,6 +386,21 @@ impl Worker {
             return Reply::Failed(error.to_string());
         }
         Reply::Title(self.catalogue.resource_title(app_id, &doc))
+    }
+
+    fn entries(&self, app_id: &str, bytes: &[u8]) -> Reply {
+        if self.mode != Mode::Views {
+            return Reply::Failed("this worker reads no records for search".into());
+        }
+        let mut doc = automerge::AutoCommit::new();
+        if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes) {
+            return Reply::Failed(error.to_string());
+        }
+        let entries = ui::framework::record_index::hosted_entries(app_id, &doc);
+        match serde_json::to_string(&entries) {
+            Ok(entries) => Reply::Entries(entries),
+            Err(error) => Reply::Failed(error.to_string()),
+        }
     }
 
     fn views(&self, wanted: &str, policy: &str) -> Reply {

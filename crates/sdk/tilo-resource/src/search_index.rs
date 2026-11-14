@@ -171,6 +171,56 @@ fn cut(mut text: String, max: usize) -> String {
     text
 }
 
+/// `entries` with one entry per key, in the order each key first appears: an
+/// app that publishes several entries about one resource (a note, and each
+/// paragraph of it, all opening the note) is one entry the index keeps,
+/// found by every text each of them is found by. The first entry of a key
+/// says what the row shows; the later ones add their fields (their title
+/// where they have none), so a resource is found by what it holds as well
+/// as by its name. An index keyed by entry would otherwise keep one of them
+/// and lose what the others say.
+#[must_use]
+pub fn merged_by_key(entries: impl IntoIterator<Item = IndexEntry>) -> Vec<IndexEntry> {
+    let mut merged: Vec<IndexEntry> = Vec::new();
+    let mut at: BTreeMap<String, usize> = BTreeMap::new();
+    for entry in entries {
+        let Some(&first) = at.get(&entry.key) else {
+            at.insert(entry.key.clone(), merged.len());
+            merged.push(entry);
+            continue;
+        };
+        let Some(kept) = merged.get_mut(first) else {
+            continue;
+        };
+        let IndexEntry {
+            title,
+            fields,
+            references,
+            ..
+        } = entry;
+        // A later entry's title is what its own fields shorten (a paragraph's
+        // first words): counted only where it has none.
+        let titled = fields.is_empty().then_some((title, IndexWeight::Body));
+        let said = titled.into_iter().chain(fields);
+        for (text, weight) in said {
+            let text = text.trim();
+            if text.is_empty()
+                || text == kept.title
+                || kept.fields.iter().any(|(held, _)| held == text)
+            {
+                continue;
+            }
+            kept.fields.push((text.to_owned(), weight));
+        }
+        for reference in references {
+            if !kept.references.contains(&reference) {
+                kept.references.push(reference);
+            }
+        }
+    }
+    merged
+}
+
 impl IndexEntry {
     /// The entry within this module's bounds: texts cut, fields capped,
     /// empty fields dropped. `None` for an entry with nothing to find it by

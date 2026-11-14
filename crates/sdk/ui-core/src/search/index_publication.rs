@@ -9,4 +9,5 @@
 pub use tilo_resource::search_index::{
     IndexAction, IndexDelta, IndexEntry, IndexKind, IndexPerson, IndexState, IndexWeight,
     MAX_DELTA_BYTES, MAX_ENTRIES, MAX_FIELDS, MAX_ID_BYTES, MAX_TEXT_BYTES, Publisher,
+    merged_by_key,
 };

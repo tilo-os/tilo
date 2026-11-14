@@ -49,9 +49,32 @@ pub const INDEX_FLAG: &str = "--index";
 /// version, in memory: the document itself is the app's to migrate.
 #[must_use]
 pub fn entries<A: ResourceApp>(doc: &Doc) -> Vec<IndexEntry> {
+    entries_of(kinds_of::<A>().iter(), doc)
+}
+
+/// What search finds in `doc`, a record of `app_id`, read by the kinds that
+/// app's definition registered in this process
+/// ([`hosted_kinds`](super::hosted_kinds)): [`entries`] for a host that links
+/// the app but names it only by its id. A page or a workspace's host reads
+/// each record it holds this way, so a note, a block of it and a file are
+/// found by what they say whether or not a window has the record open.
+/// Empty for an app this process has no definition of.
+#[must_use]
+pub fn hosted_entries(app_id: &str, doc: &Doc) -> Vec<IndexEntry> {
+    let kinds = super::hosted_kinds();
+    entries_of(
+        kinds.iter().filter(|kind| kind.app_id() == Some(app_id)),
+        doc,
+    )
+}
+
+/// The entries `doc` holds as each of `kinds` reads it, each key once.
+fn entries_of<'a>(
+    kinds: impl Iterator<Item = &'a tilo_resource::ResourceKind>,
+    doc: &Doc,
+) -> Vec<IndexEntry> {
     let mut found = Vec::new();
-    let mut keys = std::collections::BTreeSet::new();
-    for kind in kinds_of::<A>().iter() {
+    for kind in kinds {
         let mut read = doc.clone();
         if kind.needs_migrate(&read) && kind.migrate(&mut read).is_err() {
             continue;
@@ -60,16 +83,14 @@ pub fn entries<A: ResourceApp>(doc: &Doc) -> Vec<IndexEntry> {
             // The document holds another kind: its own type answers for it.
             continue;
         };
-        for entry in entries {
-            let Some(entry) = super::root::index_entry(&entry).and_then(IndexEntry::bounded) else {
-                continue;
-            };
-            if keys.insert(entry.key.clone()) {
-                found.push(entry);
-            }
-        }
+        found.extend(entries.iter().filter_map(super::root::index_entry));
     }
-    found
+    // One entry per key, found by what every entry of it says (a note by its
+    // title and its paragraphs), then bounded as the index keeps it.
+    ui_core::search::index_publication::merged_by_key(found)
+        .into_iter()
+        .filter_map(IndexEntry::bounded)
+        .collect()
 }
 
 /// Answer the `--index` mode when the command line asks for it: read the

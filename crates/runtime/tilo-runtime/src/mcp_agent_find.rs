@@ -156,11 +156,21 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // resource at: a search row and a listing name it the same way.
         let (named, kind) = located?;
         let kind = forms.kind(&kind).unwrap_or(&kind);
+        let label = found.label.trim();
         Some(match found.open.as_deref() {
-            // The resource's own `open` names the resource itself; any other
-            // action is written after `#`.
-            Some("open") | None => format!("{named}  {kind}"),
-            Some(action) => format!("{named}#{action}  {}", found.label.trim()),
+            // The resource's own `open` names the resource itself, with what
+            // it is called when the path does not say it (a note named by its
+            // id, a file whose name holds a slash); any other action is
+            // written after `#`.
+            Some("open") | None => {
+                let said = named.rsplit('/').next() == Some(label) || label.is_empty();
+                if said {
+                    format!("{named}  {kind}")
+                } else {
+                    format!("{named}  {kind}  {label}")
+                }
+            }
+            Some(action) => format!("{named}#{action}  {label}"),
         })
     }
 
@@ -313,7 +323,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     return None;
                 };
                 if top.children.iter().any(|node| node.id == here.id) {
-                    names.push(here.name(&top.children));
+                    names.push(here.found_name(&top.children));
                     break;
                 }
                 // A field published beside its record (a note's body) hangs
@@ -337,10 +347,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     }
                 }
                 let Some((owner, at)) = under else {
-                    names.push(here.name(&top.children));
+                    names.push(here.found_name(&top.children));
                     break;
                 };
-                names.push(here.name(&at.children));
+                names.push(here.found_name(&at.children));
                 here = owner;
                 continue;
             }
@@ -401,11 +411,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                         .unwrap_or_else(|_| level.clone());
                     let mut siblings = held.children.clone();
                     siblings.push(owner.clone());
-                    names.push(here.name(&siblings));
+                    names.push(here.found_name(&siblings));
                     here = owner;
                     continue;
                 }
-                names.push(here.name(&level.children));
+                names.push(here.found_name(&level.children));
                 break;
             };
             // Named among the siblings of its own holder's level, which is
@@ -418,7 +428,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .unwrap_or_else(|_| level.clone());
             let mut siblings = held.children.clone();
             siblings.push(holder.clone());
-            names.push(here.name(&siblings));
+            names.push(here.found_name(&siblings));
             here = holder;
         }
         names.reverse();
@@ -623,6 +633,26 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             frontier = deeper;
         }
         None
+    }
+}
+
+impl Node {
+    /// [`Self::name`] as a search result names it: a name that would be
+    /// written with escapes (a file's title, `files/legal/contract.txt`)
+    /// gives way to its key's last part, which `tilo_ls` takes as well, so
+    /// the path reads plainly and the title is shown beside it whole.
+    fn found_name(&self, siblings: &[Node]) -> String {
+        let name = self.name(siblings);
+        if !name.contains('\\') {
+            return name;
+        }
+        let tail = self.key.rsplit('/').next().unwrap_or_default();
+        for plain in [tail, self.token()] {
+            if !plain.is_empty() && !plain.contains(['/', '#', '\\']) {
+                return plain.to_owned();
+            }
+        }
+        name
     }
 }
 

@@ -118,8 +118,9 @@ impl ConfinedViews {
     }
 }
 
-/// What existing documents are called, read in one confined app worker
-/// started on the first question and kept for the next.
+/// What existing documents are called and what search finds in them, read
+/// in one confined app worker started on the first question and kept for
+/// the next.
 #[derive(Default)]
 pub(crate) struct ConfinedTitles {
     process: Option<Process>,
@@ -146,6 +147,44 @@ impl ConfinedTitles {
             }
             Err(reason) => {
                 // A worker that stopped answering is started again next time.
+                self.process = None;
+                Err(reason)
+            }
+        }
+    }
+
+    /// What search finds in `doc`, a document of `app_id`: the entries its
+    /// app publishes to the search index
+    /// ([`ui::framework::record_index::hosted_entries`]), each bounded as an
+    /// index keeps it.
+    pub(crate) fn entries(
+        &mut self,
+        app_id: &str,
+        doc: Vec<u8>,
+    ) -> Result<Vec<ui::search::index_publication::IndexEntry>, String> {
+        let process = match &mut self.process {
+            Some(process) => process,
+            None => self.process.insert(Process::start(Mode::Views)?),
+        };
+        let reply = process.call(&Request::Entries {
+            app_id: app_id.to_owned(),
+            doc,
+        });
+        match reply {
+            Ok(Reply::Entries(entries)) => {
+                let entries: Vec<ui::search::index_publication::IndexEntry> =
+                    serde_json::from_str(&entries).map_err(|error| error.to_string())?;
+                Ok(entries
+                    .into_iter()
+                    .filter_map(ui::search::index_publication::IndexEntry::bounded)
+                    .collect())
+            }
+            Ok(Reply::Failed(reason)) => Err(reason),
+            Ok(_) => {
+                self.process = None;
+                Err("the app worker answered out of turn".into())
+            }
+            Err(reason) => {
                 self.process = None;
                 Err(reason)
             }

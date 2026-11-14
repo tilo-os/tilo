@@ -2104,7 +2104,8 @@ impl RootSearch for ResourceRoot {
     }
 
     /// Every entry a hit can open, as the session's persistent index keeps
-    /// it: short metadata only, never a prose body. A view that keeps its
+    /// it: one per resource, found by what each entry about it says, each
+    /// text cut short. A view that keeps its
     /// entries out of the index
     /// ([`Publishes::search_entries_while_running`](super::Publishes::search_entries_while_running))
     /// contributes none.
@@ -2115,7 +2116,7 @@ impl RootSearch for ResourceRoot {
                 entries.extend(surface.search_entries());
             }
         });
-        entries.iter().filter_map(index_entry).collect()
+        ui_core::search::index_publication::merged_by_key(entries.iter().filter_map(index_entry))
     }
 
     /// A picked hit opens the app at its anchor: the views registered with
