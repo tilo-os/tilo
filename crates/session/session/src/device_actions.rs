@@ -499,10 +499,10 @@ mod tests {
     /// The package whose transform a test's action declares.
     const PACKAGE: &str = "so.tilo.images";
     const ENTRYPOINT: &str = "thumbnail";
-    /// How long the transform last took on the device that asked: longer than moving its photograph
-    /// to another device takes, so a device that holds the photograph is one that would run it
-    /// sooner.
-    const LOCAL_RUN: Duration = Duration::from_millis(500);
+    /// How long the transform last took on the device that asked: far longer than moving its
+    /// photograph to another device takes, so that a device holding the photograph is one that
+    /// would run it sooner however slow the day's round trip is.
+    const LOCAL_RUN: Duration = Duration::from_secs(60);
 
     /// A device key certified by `root` as one of its person's devices.
     fn device(root: &SigningKey, seed: u8, label: &str) -> (SigningKey, DeviceCert) {
