@@ -718,7 +718,14 @@ impl DirectSync {
         if self.fans_out() {
             self.note_genesis(&authored);
         }
-        let _ = self.0.outgoing.send(authored);
+        let author = authored.from;
+        let links = self.0.outgoing.send(authored).unwrap_or(0);
+        tracing::debug!(
+            workspace = ?self.workspace().ok(),
+            author = %short(&author),
+            links,
+            "a frame goes out on the links up now"
+        );
     }
 
     /// Take `message`, `from`'s channel governance another carrier admitted
@@ -968,6 +975,13 @@ impl DirectSync {
             }
             catch_up.extend(history);
         }
+        tracing::debug!(
+            workspace = ?self.workspace().ok(),
+            remote = %short(&remote),
+            dialing,
+            catch_up = catch_up.len(),
+            "a direct link starts"
+        );
         let send = connection
             .open_uni()
             .await
@@ -1028,12 +1042,20 @@ impl DirectSync {
             let mut ended = self.0.ended.subscribe();
             ended.wait_for(Option::is_some).await.ok()?.clone()
         };
-        tokio::select! {
+        let ended = tokio::select! {
             result = receiving => result,
             result = sending => result,
             result = history => result,
             Some(reason) = ended => Err(refuse(connection, &reason)),
-        }
+        };
+        tracing::debug!(
+            workspace = ?self.workspace().ok(),
+            remote = %short(&remote),
+            dialing,
+            ended = ?ended,
+            "a direct link ended"
+        );
+        ended
     }
 
     /// The workspace ended for good on this device, for `reason`: every link of
@@ -1051,7 +1073,13 @@ impl DirectSync {
     /// names as its author. A frame still waiting for history after that waits
     /// for what the other device lacks too: asking again would bring nothing.
     async fn ask_store(&self, control: &mut Control) -> Result<(), String> {
-        for (author, message) in fetch_store(control, self.cursors()).await? {
+        let frames = fetch_store(control, self.cursors()).await?;
+        tracing::debug!(
+            workspace = ?self.workspace().ok(),
+            frames = frames.len(),
+            "the other device's history is taken in"
+        );
+        for (author, message) in frames {
             self.admit(author, message, true).await;
         }
         Ok(())
@@ -1113,6 +1141,13 @@ impl DirectSync {
             frames.extend(
                 kept.into_iter()
                     .map(|message| (store::author_of(&message).unwrap_or(own), message)),
+            );
+            tracing::debug!(
+                workspace = ?self.workspace().ok(),
+                frames = frames.len(),
+                more,
+                with_state = opens_an_ask,
+                "a link's ask for history is answered"
             );
             write_link(&mut control.send, &LinkFrame::Frames { frames, more }).await?;
             answered.send_replace(true);
@@ -1288,6 +1323,16 @@ impl DirectSync {
             .as_ref()
             .is_ok_and(|report| report.lacks_history);
         heard.fresh = self.keep(&heard.message, true);
+        tracing::debug!(
+            workspace = ?self.workspace().ok(),
+            author = %short(&heard.author),
+            retained,
+            landed = heard.landed,
+            fresh = heard.fresh,
+            lacks_history,
+            refused = ?heard.report.as_ref().err(),
+            "a link's frame is judged"
+        );
         if heard.landed {
             self.0.changed.send_modify(bump);
         }
@@ -2036,6 +2081,11 @@ async fn read_authored(recv: &mut RecvStream) -> Result<Option<Authored>, String
             .map_err(|error| error.to_string()),
         None => Ok(None),
     }
+}
+
+/// A device key, short, as the logs name it.
+fn short(key: &[u8; 32]) -> String {
+    hex::encode(&key[..4])
 }
 
 #[cfg(test)]
