@@ -10,6 +10,13 @@ use crate::files::{FileNameV1, FileNodeKind, FileRecordId};
 
 pub const TREE_KIND: &str = "files.tree";
 
+/// The record a workspace's tree travels as, under the Files app: every device
+/// derives it from the kind alone.
+#[must_use]
+pub fn record_id() -> String {
+    collab_types::person_record_id(TREE_KIND)
+}
+
 /// The app whose record a workspace's tree is: it declares the kind, and a
 /// host that keeps the tree reads it as that app's record.
 pub const FILES_APP: &str = <FilesTree as SharedRecord>::OWNER;

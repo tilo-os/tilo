@@ -15,9 +15,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use fs_protocol::files::FileNodeKind;
-use fs_protocol::tree::{ROOT_ID, Tree, TreeEntry};
+use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeEntry};
 use ui::carry_out::{ContentLinkAsk, ContentLinkFile, Offers};
-use ui::framework::{Dispatcher, Live, People, PersonRecord, ResourceApp, ViewCx};
+use ui::framework::{Dispatcher, Live, People, ResourceApp, ViewCx, WorkspaceRecord};
 use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
 use ui::tilo_actions::remote::ApplicationLaunch;
@@ -114,7 +114,7 @@ fn opening_app(head: &[u8], name: &str) -> Option<String> {
 pub struct TreeBrowser {
     live: Live<FilesWindow>,
     /// The workspace's tree, as the page holds it.
-    tree: Option<PersonRecord<fs_protocol::tree::FilesTree>>,
+    tree: Option<WorkspaceRecord<fs_protocol::tree::FilesTree>>,
     /// What the workspace calls the people its nodes name.
     people: People,
     /// The window's own record, which the open folder is set in.
@@ -151,7 +151,13 @@ impl TreeBrowser {
             .map(|content| Rc::new(move |bytes: &[u8]| content.put(bytes).ok()) as Keeps);
         let mut browser = Self {
             live: cx.live().clone(),
-            tree: cx.shared_person::<fs_protocol::tree::FilesTree>(),
+            // The workspace's tree is the record every member holds, under the
+            // Files app's own name for it — the one the page's search reads
+            // when it finds a file by what it says.
+            tree: cx.shared_record::<fs_protocol::tree::FilesTree>(
+                FILES_APP,
+                &fs_protocol::tree::record_id(),
+            ),
             people: cx.people(),
             dispatch: cx.dispatcher(),
             read,
@@ -184,7 +190,7 @@ impl TreeBrowser {
     /// names moved; open what the person asked for once its bytes are here.
     fn refresh(&mut self) -> bool {
         self.open_what_arrived();
-        let tree = self.tree.as_ref().map(PersonRecord::get);
+        let tree = self.tree.as_ref().map(WorkspaceRecord::get);
         let folder = self.folder(tree.as_deref());
         let names = self.people.revision().get();
         let moved = self.shown.as_ref().is_none_or(|shown| {
@@ -372,7 +378,7 @@ impl TreeBrowser {
             .as_deref()
             .filter(|parent| *parent != ROOT_ID)
             .map(|parent| {
-                let held = self.tree.as_ref().map(PersonRecord::get);
+                let held = self.tree.as_ref().map(WorkspaceRecord::get);
                 let path = match held.as_deref() {
                     Some(tree) => Self::path_of(tree, parent),
                     None => String::new(),
