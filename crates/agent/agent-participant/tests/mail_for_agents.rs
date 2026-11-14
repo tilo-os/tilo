@@ -283,3 +283,31 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
     assert!(body.contains("Booked for 14"), "{body}");
     assert!(notes.contains("catering"), "{notes}");
 }
+
+/// Adding a moved account is offered to an agent as an action reaching
+/// outside the record, which an agent's grants put to its person before it
+/// runs, unless the person allowed it.
+#[test]
+fn an_agent_is_offered_adding_an_account_its_person_is_asked_for() {
+    let agent = ConfinedReplica::open(
+        &AppCatalogue::native(),
+        MAIL,
+        WORKSPACE,
+        "assistant",
+        &ReplicaActor::Agent,
+        Seed::New,
+    )
+    .expect("a Mail record is held in a confined worker");
+    let add = operation(&agent, "add-account");
+    assert_eq!(add.kind, OperationKind::Effect);
+    assert_eq!(
+        add.contract.kind,
+        tilo_action_policy::ActionKind::Outside,
+        "{add:?}"
+    );
+    assert_eq!(
+        tilo_action_policy::agent_answers::default_answer(add.contract.kind, false),
+        tilo_action_policy::Answer::Ask,
+        "an agent asks its person first"
+    );
+}
